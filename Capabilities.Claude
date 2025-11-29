@@ -1,0 +1,10 @@
+=================================================
+26-GPU SCORER META-OPTIMIZATION (Step 2.5) - PULL Mode
+=================================================
+Trials: 6Fix
+Scoring Method: VECTORIZED (GPU-accelerated)
+Study name: scorer_meta_opt_1764444767
+
+Local data files found.
+Creating local Optuna study: sqlite:///./optuna_studies/scorer_meta_opt_1764444767.db
+Generating 6Fix job specifications and pre-sampling parameters...

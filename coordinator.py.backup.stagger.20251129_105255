@@ -1268,14 +1268,6 @@ class MultiGPUCoordinator:
                 # Step 4: Increment active job counter
                 self._increment_node_jobs(hostname, analysis_type)
 
-                # Step 4.5: Stagger localhost script jobs to prevent CUDA init collision
-                # GPU 0 starts immediately, GPU 1 waits 3s, etc.
-                if analysis_type == 'script' and hostname == 'localhost':
-                    stagger_delay = worker.gpu_id * 3.0  # 3 seconds per GPU
-                    if stagger_delay > 0:
-                        self.logger.info(f"[localhost stagger] GPU {worker.gpu_id} waiting {stagger_delay}s before CUDA init")
-                        time.sleep(stagger_delay)
-
                 # Step 5: Process the job (unified handling for both script and seed jobs)
                 try:
                     # Handle script-based jobs (Step 2.5)

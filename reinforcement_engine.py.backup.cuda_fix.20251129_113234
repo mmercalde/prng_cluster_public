@@ -4,16 +4,16 @@ Reinforcement Engine - ML Training Orchestrator (DISTRIBUTED-READY)
 ====================================================================
 
 IMPROVEMENTS:
-âœ… 1. Smart model saving - only when validation improves
-âœ… 2. CUDA lazy initialization (FIX: no conflict with dual GPU scorer)
-âœ… 3. Better epoch logging with progress indicators
-âœ… 4. Training summary with best epoch info
-âœ… 5. Configurable save frequency
-âœ… 6. DISTRIBUTED MODE - DDP support with --distributed flag
-âœ… 7. ROCm SUPPORT - Compatible with AMD RX 6600 GPUs
-âœ… 8. STATELESS BUG FIX: train(), predict...() now accept lottery_history
-âœ… 9. META-OPTIMIZER HOOK: __init__ accepts scorer_config_dict
-âœ… 10. OPTUNA PRUNING SUPPORT: train() accepts epoch_callback for early stopping
+✅ 1. Smart model saving - only when validation improves
+✅ 2. CUDA lazy initialization (FIX: no conflict with dual GPU scorer)
+✅ 3. Better epoch logging with progress indicators
+✅ 4. Training summary with best epoch info
+✅ 5. Configurable save frequency
+✅ 6. DISTRIBUTED MODE - DDP support with --distributed flag
+✅ 7. ROCm SUPPORT - Compatible with AMD RX 6600 GPUs
+✅ 8. STATELESS BUG FIX: train(), predict...() now accept lottery_history
+✅ 9. META-OPTIMIZER HOOK: __init__ accepts scorer_config_dict
+✅ 10. OPTUNA PRUNING SUPPORT: train() accepts epoch_callback for early stopping
 
 Author: Distributed PRNG Analysis System
 Date: November 12, 2025
@@ -96,25 +96,28 @@ def initialize_cuda():
 
     This fixes the warning:
     "Attempting to run cuBLAS, but there was no current CUDA context!"
-    
-    IMPORTANT: Always use cuda:0 (the logical device). CUDA_VISIBLE_DEVICES
-    handles mapping to the correct physical GPU. Do NOT iterate over 
-    device_count() as that returns physical count, breaking isolation.
     """
     if torch.cuda.is_available():
+        # Check if CUDA is already initialized (don't re-init if GPU already in use)
         try:
-            # Always use cuda:0 - CUDA_VISIBLE_DEVICES maps this correctly
             device = torch.device('cuda:0')
             torch.cuda.set_device(device)
             # Force CUDA context creation with a dummy operation
             _ = torch.zeros(1).to(device)
-            return True
         except RuntimeError as e:
             if "busy or unavailable" in str(e):
                 # CUDA already initialized by another process/thread - that's fine
                 return True
             else:
                 raise
+
+        # Initialize both GPUs if available
+        if torch.cuda.device_count() > 1:
+            for i in range(torch.cuda.device_count()):
+                device_i = torch.device(f'cuda:{i}')
+                _ = torch.zeros(1).to(device_i)
+
+        return True
     return False
 
 CUDA_INITIALIZED = False
@@ -469,7 +472,7 @@ class ReinforcementEngine:
             self.logger.info("Initializing CUDA context...")
             CUDA_INITIALIZED = initialize_cuda()
             if CUDA_INITIALIZED:
-                self.logger.info("âœ… CUDA initialized successfully")
+                self.logger.info("✅ CUDA initialized successfully")
 
         # Survivor scorer
         self.scorer = SurvivorScorer(
@@ -511,7 +514,7 @@ class ReinforcementEngine:
         # Model wrapping
         self._wrap_model()
 
-        self.logger.info(f"  Neural network: {total_input_size} inputs â†’ {config.model['hidden_layers']}")
+        self.logger.info(f"  Neural network: {total_input_size} inputs → {config.model['hidden_layers']}")
         self.logger.info(f"  Device: {self.device}")
 
         # Optimizer
@@ -553,7 +556,7 @@ class ReinforcementEngine:
     def _init_distributed(self):
         """Initialize distributed training"""
         if not DDP_AVAILABLE:
-            self.logger.error("âŒ DDP not available - install PyTorch with distributed support")
+            self.logger.error("❌ DDP not available - install PyTorch with distributed support")
             raise RuntimeError("DDP not available")
 
         self.rank = int(os.environ.get('RANK', self.config.distributed.get('rank', 0)))
@@ -575,9 +578,9 @@ class ReinforcementEngine:
                 rank=self.rank,
                 world_size=self.world_size
             )
-            self.logger.info("  âœ… DDP initialized successfully")
+            self.logger.info("  ✅ DDP initialized successfully")
         except Exception as e:
-            self.logger.error(f"âŒ DDP initialization failed: {e}")
+            self.logger.error(f"❌ DDP initialization failed: {e}")
             raise
 
     def _get_device(self) -> torch.device:
@@ -601,17 +604,14 @@ class ReinforcementEngine:
                 output_device=self.local_rank,
                 find_unused_parameters=self.config.distributed.get('find_unused_parameters', False)
             )
-            self.logger.info(f"  âœ… DDP wrapper active (rank {self.rank})")
-        elif torch.cuda.device_count() > 1 and os.environ.get('CUDA_VISIBLE_DEVICES') is None:
-            # Only use DataParallel when CUDA_VISIBLE_DEVICES is NOT set
-            # When set, we're running isolated single-GPU jobs
-            self.logger.info(f"  Using {torch.cuda.device_count()} GPUs for training!")
-            device_ids = list(range(torch.cuda.device_count()))
-            self.model = nn.DataParallel(self.model, device_ids=device_ids)
-            for i in device_ids:
+            self.logger.info(f"  ✅ DDP wrapper active (rank {self.rank})")
+        elif torch.cuda.device_count() > 1:
+            self.logger.info(f"  🚀 Using {torch.cuda.device_count()} GPUs for training!")
+            self.model = nn.DataParallel(self.model, device_ids=[0, 1])
+            for i in range(torch.cuda.device_count()):
                 self.logger.info(f"     GPU {i}: {torch.cuda.get_device_name(i)}")
         else:
-            self.logger.info(f"  â„¹ï¸  Using single device: {self.device}")
+            self.logger.info(f"  ℹ️  Using single device: {self.device}")
 
     def _setup_logger(self) -> logging.Logger:
         log_level = self.config.output.get('log_level', 'INFO')
@@ -665,12 +665,12 @@ class ReinforcementEngine:
              reverse_survivors: Optional[List[int]] = None,
              epochs: Optional[int] = None,
              lottery_history: Optional[List[int]] = None,
-             epoch_callback: Optional[callable] = None):  # âœ… NEW: Pruning callback
+             epoch_callback: Optional[callable] = None):  # ✅ NEW: Pruning callback
         """
         Train model - DISTRIBUTED-READY VERSION WITH PRUNING SUPPORT
         MODIFIED: Accepts lottery_history override for stateless operation.
         NEW: Accepts epoch_callback for Optuna pruning support.
-
+        
         Args:
             epoch_callback: Optional function(epoch: int, val_loss: float) -> bool
                            Returns True to continue training, False to stop (prune)
@@ -684,7 +684,7 @@ class ReinforcementEngine:
         save_best_only = self.config.training.get('save_best_only', True)
         verbose_freq = self.config.training.get('verbose_frequency', 10)
         should_log = not self.is_distributed or self.rank == 0
-
+        
         if should_log:
             self.logger.info(f"Training on {len(survivors)} survivors for {epochs} epochs...")
 
@@ -697,7 +697,7 @@ class ReinforcementEngine:
             elif self.config.normalization.get('refit_on_drift', True):
                  if self._check_distribution_drift(survivors, forward_survivors, reverse_survivors, lottery_history):
                     if should_log:
-                        self.logger.warning("âš ï¸ Distribution drift detected - refitting normalizer")
+                        self.logger.warning("⚠️ Distribution drift detected - refitting normalizer")
                     self._fit_normalizer(survivors, forward_survivors, reverse_survivors, lottery_history)
 
         # Extract features
@@ -711,7 +711,7 @@ class ReinforcementEngine:
 
         X = np.array(X, dtype=np.float32)
         y = np.array(actual_results, dtype=np.float32).reshape(-1, 1)
-
+        
         # Train/val split
         val_split = self.config.training['validation_split']
         n_val = int(len(X) * val_split)
@@ -720,83 +720,83 @@ class ReinforcementEngine:
         val_idx = indices[:n_val]
         X_train, y_train = X[train_idx], y[train_idx]
         X_val, y_val = X[val_idx], y[val_idx]
-
+        
         X_train_t = torch.tensor(X_train).to(self.device)
         y_train_t = torch.tensor(y_train).to(self.device)
         X_val_t = torch.tensor(X_val).to(self.device)
         y_val_t = torch.tensor(y_val).to(self.device)
-
+        
         best_val_loss = float('inf')
         best_epoch = 0
         patience_counter = 0
 
-        # âœ… MODIFIED: Training loop with pruning callback support
+        # ✅ MODIFIED: Training loop with pruning callback support
         for epoch in range(epochs):
             self.model.train()
             n_batches = len(X_train) // batch_size + (1 if len(X_train) % batch_size else 0)
             epoch_loss = 0.0
-
+            
             for i in range(n_batches):
                 start_idx = i * batch_size
                 end_idx = min((i + 1) * batch_size, len(X_train))
                 batch_X = X_train_t[start_idx:end_idx]
                 batch_y = y_train_t[start_idx:end_idx]
-
+                
                 self.optimizer.zero_grad()
                 outputs = self.model(batch_X)
                 loss = self.criterion(outputs, batch_y)
                 loss.backward()
                 self.optimizer.step()
-
+                
                 epoch_loss += loss.item()
-
+            
             # Validation
             self.model.eval()
             with torch.no_grad():
                 val_outputs = self.model(X_val_t)
                 val_loss = self.criterion(val_outputs, y_val_t).item()
-
+            
             avg_loss = epoch_loss / n_batches
-
+            
             # Update history
             self.training_history['epoch'].append(epoch)
             self.training_history['loss'].append(avg_loss)
             self.training_history['val_loss'].append(val_loss)
-
-            # âœ… NEW: Call pruning callback if provided
+            
+            # ✅ NEW: Call pruning callback if provided
             if epoch_callback is not None:
                 should_continue = epoch_callback(epoch, val_loss)
                 if not should_continue:
                     if should_log:
-                        self.logger.info(f"âš¡ Training stopped by callback at epoch {epoch+1}")
+                        self.logger.info(f"⚡ Training stopped by callback at epoch {epoch+1}")
                     break
-
+            
             # Logging
             if should_log and (epoch + 1) % verbose_freq == 0:
                 self.logger.info(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}, Val Loss: {val_loss:.4f}")
-
+            
             # Best model tracking
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_epoch = epoch + 1
                 patience_counter = 0
-
+                
                 if save_best_only and should_log:
                     self.save_model(f"best_model_epoch_{epoch+1}.pth")
             else:
                 patience_counter += 1
-
+                
                 if patience_counter >= self.config.training['early_stopping_patience']:
                     if should_log:
                         self.logger.info(f"Early stopping at epoch {epoch+1}")
                     break
-
+        
         # Training summary
         self.training_history['best_epoch'] = best_epoch
         self.training_history['best_val_loss'] = best_val_loss
         self.best_val_loss = best_val_loss
         self.best_overfit_ratio = val_loss / avg_loss if avg_loss > 0 else float('inf')
-
+        
         if should_log:
             self.logger.info(f"Training complete! Best val loss: {best_val_loss:.4f}")
             self.logger.info(f"  Best epoch: {best_epoch}/{epochs}")
@@ -896,7 +896,7 @@ class ReinforcementEngine:
         mean_range = [self.feature_stats['means'].min(), self.feature_stats['means'].max()]
         std_range = [self.feature_stats['stds'].min(), self.feature_stats['stds'].max()]
 
-        self.logger.info(f"âœ… Normalizer fitted on {len(survivors)} survivors")
+        self.logger.info(f"✅ Normalizer fitted on {len(survivors)} survivors")
         self.logger.info(f"   Feature mean range: [{mean_range[0]:.2f}, {mean_range[1]:.2f}]")
         self.logger.info(f"   Feature std range: [{std_range[0]:.2f}, {std_range[1]:.2f}]")
 
@@ -1035,7 +1035,7 @@ class ReinforcementEngine:
         if self.is_distributed and dist.is_initialized():
             self.logger.info("Cleaning up distributed resources...")
             dist.destroy_process_group()
-            self.logger.info("âœ… Distributed cleanup complete")
+            self.logger.info("✅ Distributed cleanup complete")
 
 
 # ============================================================================
@@ -1077,7 +1077,7 @@ def main():
 
         try:
             engine = ReinforcementEngine(config, lottery_history)
-            print("âœ… Engine initialized successfully")
+            print("✅ Engine initialized successfully")
             print(f"   Device: {engine.device}")
             print(f"   Distributed: {engine.is_distributed}")
             print(f"   CUDA initialized: {CUDA_INITIALIZED}")
@@ -1085,22 +1085,22 @@ def main():
             print(f"   Hostname: {HOST}")
 
             global_state = engine.global_tracker.get_global_state()
-            print(f"âœ… Global state computed: {len(global_state)} features")
+            print(f"✅ Global state computed: {len(global_state)} features")
 
             features = engine.extract_combined_features(12345)
-            print(f"âœ… Feature extraction: {len(features)} features")
+            print(f"✅ Feature extraction: {len(features)} features")
 
             quality = engine.predict_quality(12345)
-            print(f"âœ… Prediction: quality={quality:.4f}")
+            print(f"✅ Prediction: quality={quality:.4f}")
 
             if engine.is_distributed:
                 engine.cleanup_distributed()
 
-            print("\nâœ… All tests passed!")
+            print("\n✅ All tests passed!")
             return 0
 
         except Exception as e:
-            print(f"âŒ Test failed: {e}")
+            print(f"❌ Test failed: {e}")
             import traceback
             traceback.print_exc()
             return 1
@@ -1110,7 +1110,7 @@ def main():
 
     try:
         config = ReinforcementConfig.from_json(args.config)
-        print(f"âœ… Config loaded from {args.config}")
+        print(f"✅ Config loaded from {args.config}")
     except Exception as e:
         print(f"Warning: Could not load config: {e}")
         print("Using default config")
@@ -1127,10 +1127,10 @@ def main():
         else:
             lottery_history = data.get('draws', [])
 
-    print(f"âœ… Loaded {len(lottery_history)} lottery draws")
+    print(f"✅ Loaded {len(lottery_history)} lottery draws")
 
     engine = ReinforcementEngine(config, lottery_history)
-    print("âœ… ReinforcementEngine initialized")
+    print("✅ ReinforcementEngine initialized")
     print(f"   Device: {engine.device}")
     print(f"   Distributed: {engine.is_distributed}")
     print(f"   Model: {sum(p.numel() for p in engine.model.parameters())} parameters")

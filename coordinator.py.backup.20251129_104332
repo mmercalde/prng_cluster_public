@@ -106,7 +106,18 @@ class MultiGPUCoordinator:
         self._node_capacity_lock = threading.Lock()
         self._node_max_concurrent = {}   # {hostname: max_concurrent}
 
-        # v1.7.4.1 - Per-node concurrency limits initialized in load_configuration()
+        # Load capacity limits from config
+        for node in self.nodes:
+            hostname = node.hostname
+            # Get limit from node config, default to 99 (unlimited) if not specified
+            limit = 99  # Default: unlimited (no throttling)
+            for node_config in config.get('nodes', []):
+                if node_config.get('hostname') == hostname:
+                    limit = node_config.get('max_concurrent_script_jobs', 99)
+                    break
+            self._node_max_concurrent[hostname] = limit
+            self._node_active_jobs[hostname] = 0
+
         self.progress_save_interval = 30 # Save progress every 30 seconds
         # Target file for this run
         self.current_target_file: Optional[str] = None
@@ -168,15 +179,6 @@ class MultiGPUCoordinator:
             "enable_candidate_caching": False,
             "candidate_cache_path": "cache/candidates"
         })
-
-        # v1.7.4.1 FIX: Initialize per-node concurrency limits from config
-        # (Moved here from __init__ because self.nodes and config are now available)
-        for node_config in config.get('nodes', []):
-            hostname = node_config['hostname']
-            limit = node_config.get('max_concurrent_script_jobs', 99)
-            self._node_max_concurrent[hostname] = limit
-            self._node_active_jobs[hostname] = 0
-            self.logger.info(f"Node {hostname}: max_concurrent_script_jobs={limit}")
     def _is_rocm(self, node: WorkerNode) -> bool:
         """Check if node uses ROCm (AMD GPU) - FROM WORKING VERSION"""
         gt = (node.gpu_type or "").lower()
@@ -1267,14 +1269,6 @@ class MultiGPUCoordinator:
 
                 # Step 4: Increment active job counter
                 self._increment_node_jobs(hostname, analysis_type)
-
-                # Step 4.5: Stagger localhost script jobs to prevent CUDA init collision
-                # GPU 0 starts immediately, GPU 1 waits 3s, etc.
-                if analysis_type == 'script' and hostname == 'localhost':
-                    stagger_delay = worker.gpu_id * 3.0  # 3 seconds per GPU
-                    if stagger_delay > 0:
-                        self.logger.info(f"[localhost stagger] GPU {worker.gpu_id} waiting {stagger_delay}s before CUDA init")
-                        time.sleep(stagger_delay)
 
                 # Step 5: Process the job (unified handling for both script and seed jobs)
                 try:
