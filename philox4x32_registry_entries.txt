@@ -1,0 +1,11 @@
+    'philox4x32_reverse': {
+        'kernel_source': PHILOX4X32_REVERSE_KERNEL,
+        'kernel_name': 'philox4x32_reverse_sieve',
+        'description': 'philox4x32 reverse sieve - fixed skip backward validation'
+    },
+    'philox4x32_hybrid_reverse': {
+        'kernel_source': PHILOX4X32_HYBRID_REVERSE_KERNEL,
+        'kernel_name': 'philox4x32_hybrid_reverse_sieve',
+        'description': 'philox4x32 hybrid reverse - variable skip backward validation',
+        'variable_skip': True
+    },

@@ -1,0 +1,60 @@
+--- prng_registry.py (lcg32_reverse kernel)
++++ prng_registry.py (lcg32_reverse kernel FIXED)
+
+REPLACE lines 2222-2265 with:
+
+void lcg32_reverse_sieve(
+    unsigned int* candidate_seeds, 
+    unsigned char* candidate_skips,  // NEW: per-candidate skip values
+    unsigned int* residues, 
+    unsigned int* survivors,
+    float* match_rates, 
+    unsigned int* survivor_count,
+    int n_candidates, 
+    int k, 
+    float threshold, 
+    int offset
+) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n_candidates) return;
+    
+    const unsigned int a = 1103515245;
+    const unsigned int c = 12345;
+    const unsigned int m = 0x7FFFFFFF;
+    
+    unsigned int seed = candidate_seeds[idx];
+    int skip = (int)candidate_skips[idx];  // Use THIS candidate's skip value
+    
+    // Apply offset
+    unsigned int state = seed;
+    for (int o = 0; o < offset; o++) {
+        unsigned long long temp = ((unsigned long long)a * state + c);
+        state = (unsigned int)(temp % m);
+    }
+    
+    // Apply skip
+    for (int s = 0; s < skip; s++) {
+        unsigned long long temp = ((unsigned long long)a * state + c);
+        state = (unsigned int)(temp % m);
+    }
+    
+    // Test against draws - GOING BACKWARDS
+    int matches = 0;
+    for (int i = k - 1; i >= 0; i--) {
+        unsigned int draw_val = residues[i];
+        if (state % 1000 == draw_val) {
+            matches++;
+        }
+        // Reverse step
+        unsigned int prev = (state >= c) ? (state - c) : (m + state - c);
+        unsigned long long a_inv = 3327281937ULL;  // modular inverse of a
+        state = (unsigned int)((a_inv * prev) % m);
+    }
+    
+    float match_rate = (float)matches / k;
+    if (match_rate >= threshold) {
+        int pos = atomicAdd(survivor_count, 1);
+        survivors[pos] = seed;
+        match_rates[pos] = match_rate;
+    }
+}

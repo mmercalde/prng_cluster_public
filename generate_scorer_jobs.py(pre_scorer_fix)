@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""
+generate_scorer_jobs.py (v3 - WITH OPTUNA PRUNING)
+===================================================
+Generates job specs for the 26-GPU Scorer Meta-Optimization (Step 2.5).
+
+This script is run ONCE on the head node (zeus). It:
+1. Creates a local Optuna study WITH PRUNER.
+2. Pre-samples N parameter sets from Optuna (using TPE).
+3. Writes job specs to scorer_jobs.json (for coordinator).
+4. Each job is "dumb" - it receives params and just runs them.
+
+The coordinator will:
+- Push data to remote nodes
+- Execute jobs (which write results locally)
+- Pull results back
+- Report them to Optuna
+
+Usage:
+    python3 generate_scorer_jobs.py \\
+        --trials 100 \\
+        --survivors bidirectional_survivors.json \\
+        --train-history train_history.json \\
+        --holdout-history holdout_history.json \\
+        --study-name scorer_meta \\
+        --study-db "sqlite:///./optuna_studies/scorer_meta.db"
+"""
+# --- ROCm env prelude: set BEFORE any imports ---
+import os, socket
+HOST = socket.gethostname()
+# Force ROCm compatibility on RX 6600/XT rigs
+if HOST in ("rig-6600", "rig-6600b"):
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+# Common ROCm include/lib search
+os.environ.setdefault("ROCM_PATH", "/opt/rocm")
+os.environ.setdefault("HIP_PATH", "/opt/rocm")
+os.environ["PATH"] = "/opt/rocm/bin:" + os.environ.get("PATH", "")
+os.environ["LD_LIBRARY_PATH"] = "/opt/rocm/lib:/opt/rocm/hip/lib:" + os.environ.get("LD_LIBRARY_PATH","")
+os.environ["CPATH"] = "/opt/rocm/include:/opt/rocm/hip/include:" + os.environ.get("CPATH","")
+# Now safe to import everything else
+
+
+import argparse
+import json
+import optuna
+from pathlib import Path
+
+
+def define_search_space(trial: optuna.trial.Trial) -> dict:
+    """Define the hyperparameter search space for scorer + mini-model."""
+    params = {
+        # Scorer Parameters (7 dimensions)
+        "residue_mod_1": trial.suggest_int("residue_mod_1", 5, 20),
+        "residue_mod_2": trial.suggest_int("residue_mod_2", 50, 150),
+        "residue_mod_3": trial.suggest_int("residue_mod_3", 500, 1500),
+        "max_offset": trial.suggest_int("max_offset", 3, 15),
+        "temporal_window_size": trial.suggest_categorical("temporal_window_size", [50, 100, 150, 200]),
+        "temporal_num_windows": trial.suggest_int("temporal_num_windows", 3, 10),
+        "min_confidence_threshold": trial.suggest_float("min_confidence_threshold", 0.05, 0.3, log=True),
+        
+        # Mini-Model Parameters (4 dimensions)
+        "hidden_layers": trial.suggest_categorical('hidden_layers', ['128_64', '256_128_64']),
+        "dropout": trial.suggest_float('dropout', 0.1, 0.5),
+        "learning_rate": trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True),
+        "batch_size": trial.suggest_categorical('batch_size', [64, 128, 256])
+    }
+    
+    return params
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate scorer meta-optimization jobs with pruning")
+    parser.add_argument('--trials', type=int, required=True, help='Number of trials to generate')
+    parser.add_argument('--survivors', type=str, required=True, help='Path to survivors JSON')
+    parser.add_argument('--train-history', type=str, required=True, help='Path to training history JSON')
+    parser.add_argument('--holdout-history', type=str, required=True, help='Path to holdout history JSON')
+    parser.add_argument('--study-name', type=str, required=True, help='Optuna study name')
+    parser.add_argument('--study-db', type=str, required=True, help='Optuna storage URL')
+    parser.add_argument('--output', type=str, default='scorer_jobs.json', help='Output jobs file')
+    
+    args = parser.parse_args()
+    
+    # Ensure study directory exists
+    Path(args.study_db.replace('sqlite:///', '')).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create Optuna study WITH CONSERVATIVE PRUNER
+    pruner = optuna.pruners.MedianPruner(
+        n_startup_trials=10,      # First 10 trials always complete (build baseline)
+        n_warmup_steps=6,         # Wait until epoch 6 before pruning
+        interval_steps=2,         # Check every 2 epochs
+        n_min_trials=5            # Need at least 5 completed trials for median
+    )
+    
+    study = optuna.create_study(
+        study_name=args.study_name,
+        storage=args.study_db,
+        direction='maximize',  # Maximize negative MSE
+        pruner=pruner,
+        load_if_exists=True
+    )
+    
+    print(f"Pre-sampling {args.trials} parameter sets from Optuna with MedianPruner...")
+    print(f"Pruner settings: startup={pruner._n_startup_trials}, warmup={pruner._n_warmup_steps}")    
+    # Define the *remote* path where workers will find the data
+    remote_data_path = "/home/michael/distributed_prng_analysis"
+    
+    jobs = []
+    
+    # --- HERE IS THE FIX ---
+    # Pre-sample N parameter combinations from Optuna
+    for i in range(args.trials):
+        # 1. Ask Optuna for a new trial object (with no parameters)
+        trial = study.ask()
+        
+        # 2. Call the function to APPLY suggestions to this trial
+        params = define_search_space(trial)
+        # --- END OF FIX ---
+        
+        # Store the Optuna trial number for later connection
+        params['optuna_trial_number'] = trial.number
+        
+        # Create job spec
+        job = {
+            "job_id": f"scorer_trial_{i}",
+            "script": "scorer_trial_worker.py",
+            "args": [
+                f"{remote_data_path}/{Path(args.survivors).name}",
+                f"{remote_data_path}/{Path(args.train_history).name}",
+                f"{remote_data_path}/{Path(args.holdout_history).name}",
+                str(i),
+                json.dumps(params),
+                "--optuna-study-name", args.study_name,
+                "--optuna-study-db", args.study_db
+            ],
+            "expected_output": f"scorer_trial_results/trial_{i:04d}.json",
+            "timeout": 3600
+        }
+        jobs.append(job)
+    
+    # Write jobs file
+    with open(args.output, 'w') as f:
+        json.dump(jobs, f, indent=2)
+    
+    print(f"✅ Generated {len(jobs)} jobs with pre-sampled parameters")
+    print(f"   Output: {args.output}")
+    print(f"   Optuna study: {args.study_name} ({args.study_db})")
+    print(f"\n📋 Sample job:")
+    print(json.dumps(jobs[0], indent=2))
+
+
+if __name__ == "__main__":
+    main()

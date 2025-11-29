@@ -1,0 +1,82 @@
+{
+  "strategy": "optuna_bayesian",
+  "best_config": {
+    "window_size": 1902,
+    "offset": 410,
+    "sessions": [
+      "midday",
+      "evening"
+    ],
+    "skip_min": 64,
+    "skip_max": 129
+  },
+  "best_result": {
+    "config": {
+      "window_size": 1902,
+      "offset": 410,
+      "sessions": [
+        "midday",
+        "evening"
+      ],
+      "skip_min": 64,
+      "skip_max": 129
+    },
+    "forward_count": 100,
+    "reverse_count": 100,
+    "bidirectional_count": 39,
+    "precision": 0.39,
+    "recall": 0.39,
+    "iteration": 0
+  },
+  "best_score": 39.0,
+  "all_results": [
+    {
+      "config": {
+        "window_size": 1902,
+        "offset": 410,
+        "sessions": [
+          "midday",
+          "evening"
+        ],
+        "skip_min": 64,
+        "skip_max": 129
+      },
+      "forward_count": 100,
+      "reverse_count": 100,
+      "bidirectional_count": 39,
+      "precision": 0.39,
+      "recall": 0.39,
+      "iteration": 0
+    },
+    {
+      "config": {
+        "window_size": 666,
+        "offset": 360,
+        "sessions": [
+          "midday",
+          "evening"
+        ],
+        "skip_min": 24,
+        "skip_max": 71
+      },
+      "forward_count": 100,
+      "reverse_count": 100,
+      "bidirectional_count": 14,
+      "precision": 0.14,
+      "recall": 0.14,
+      "iteration": 1
+    }
+  ],
+  "iterations": 2,
+  "optuna_study": {
+    "best_trial": 0,
+    "best_value": 39.0,
+    "best_params": {
+      "window_size": 1902,
+      "offset": 410,
+      "session_idx": 0,
+      "skip_min": 64,
+      "skip_max": 129
+    }
+  }
+}

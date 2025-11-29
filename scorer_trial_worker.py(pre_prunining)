@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""
+scorer_trial_worker.py (v2 - Pull Architecture) - FIXED
+==============================================
+Runs ONE pre-defined scorer trial on a remote worker.
+
+This script is "dumb" and does NOT connect to Optuna. It:
+1. Receives all trial parameters as a JSON string argument.
+2. Loads data from its *local* home directory (e.g., ~/distributed_prng_analysis).
+3. Runs the "Score -> Mini-Train -> Evaluate" test.
+4. Writes its result to a local JSON file in
+   ~/distributed_prng_analysis/scorer_trial_results/
+"""
+
+import json
+import sys
+import os
+import logging
+from pathlib import Path
+import time
+import numpy as np
+import socket # For logging hostname
+from typing import Optional
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# --- Global Imports (Lazy) ---
+optuna = None
+torch = None
+ReinforcementEngine = None
+ReinforcementConfig = None
+SurvivorScorer = None
+survivors = None
+train_history = None
+holdout_history = None
+seeds_to_score = None # Cache seeds
+
+def lazy_imports():
+    """Import heavy libraries only when needed."""
+    global optuna, torch, ReinforcementEngine, ReinforcementConfig, SurvivorScorer
+    if optuna is None:
+        import optuna
+    if torch is None:
+        import torch
+    if ReinforcementEngine is None:
+        # We need to add the local dir to path for imports to work
+        # This assumes worker runs in the same dir as the scripts
+        sys.path.append(os.getcwd())
+        from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
+        from survivor_scorer import SurvivorScorer
+
+def load_data(survivors_file, train_history_file, holdout_history_file):
+    """Load all necessary data from local paths."""
+    global survivors, train_history, holdout_history, seeds_to_score
+
+    if survivors is None:
+        logger.info("Loading data (one time)...")
+        try:
+            # Expand ~ to user's home directory
+            survivors_file = os.path.expanduser(survivors_file)
+            train_history_file = os.path.expanduser(train_history_file)
+            holdout_history_file = os.path.expanduser(holdout_history_file)
+
+            with open(survivors_file) as f:
+                survivors = json.load(f)
+
+            with open(train_history_file) as f:
+                train_data = json.load(f)
+                if isinstance(train_data, list) and len(train_data) > 0 and isinstance(train_data[0], dict):
+                    train_history = [d['draw'] for d in train_data]
+                else:
+                    train_history = train_data # Assume list of ints
+
+            with open(holdout_history_file) as f:
+                holdout_data = json.load(f)
+                if isinstance(holdout_data, list) and len(holdout_data) > 0 and isinstance(holdout_data[0], dict):
+                    holdout_history = [d['draw'] for d in holdout_data]
+                else:
+                    holdout_history = holdout_data # Assume list of ints
+
+            # Pre-calculate seeds list
+            seeds_to_score = [s.get('seed', s) if isinstance(s, dict) else s for s in survivors]
+
+            logger.info(f"Loaded {len(survivors)} survivors from {survivors_file}.")
+            logger.info(f"Loaded {len(train_history)} training draws from {train_history_file}.")
+            logger.info(f"Loaded {len(holdout_history)} holdout draws from {holdout_history_file}.")
+
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}", exc_info=True)
+            raise
+    
+    # ✅ FIX: Return the loaded data!
+    return seeds_to_score, train_history, holdout_history
+
+def run_trial(seeds_to_score, train_history, holdout_history, params):
+    """
+    Runs the full test and returns the accuracy score.
+    """
+
+    # 1. Prepare Scorer Config
+    scorer_params = {
+        "residue_mods": [
+            params["residue_mod_1"],
+            params["residue_mod_2"],
+            params["residue_mod_3"]
+        ],
+        "max_offset": params["max_offset"],
+        "temporal_window_size": params["temporal_window_size"],
+        "temporal_num_windows": params["temporal_num_windows"],
+        "min_confidence_threshold": params["min_confidence_threshold"]
+    }
+
+    # 2. Prepare Mini-Model Config
+    config = ReinforcementConfig()
+    config.training['epochs'] = 25 # Fast
+    config.training['validation_split'] = 0.2
+    config.training['early_stopping_patience'] = 5
+    config.training['verbose_frequency'] = 100 # Quiet
+    config.model['hidden_layers'] = [int(x) for x in params['hidden_layers'].split('_')]
+    config.model['dropout'] = params['dropout']
+    config.training['learning_rate'] = params['learning_rate']
+    config.training['batch_size'] = params['batch_size']
+
+    # 3. Instantiate Engine
+    logger.info("Initializing Mini-Run Engine...")
+    engine = ReinforcementEngine(
+        config=config,
+        lottery_history=train_history, # Pass train history for init
+        scorer_config_dict=scorer_params # Pass tuned scorer params
+    )
+
+    # 4. Train
+    logger.info(f"Pre-calculating scores for {len(seeds_to_score)} seeds...")
+    train_scorer = SurvivorScorer(prng_type='java_lcg', mod=1000, config_dict=scorer_params)
+    y_train = [train_scorer.score_survivor(s, train_history)['score'] for s in seeds_to_score]
+
+    logger.info("Starting mini-run training...")
+    start_train = time.time()
+    engine.train(
+        survivors=seeds_to_score,
+        actual_results=y_train,
+        lottery_history=train_history # Pass history explicitly
+    )
+    logger.info(f"Training took {time.time() - start_train:.1f}s")
+
+    # 5. Evaluate
+    logger.info("Evaluating on holdout...")
+    holdout_scorer = SurvivorScorer(prng_type='java_lcg', mod=1000, config_dict=scorer_params)
+    y_holdout = [holdout_scorer.score_survivor(s, holdout_history)['score'] for s in seeds_to_score]
+    y_pred = engine.predict_quality_batch(
+        seeds_to_score,
+        lottery_history=holdout_history # Pass history explicitly
+    )
+
+    # 6. Calculate Metric (Negative MSE)
+    y_holdout_tensor = torch.tensor(y_holdout, dtype=torch.float32)
+    y_pred_tensor = torch.tensor(y_pred, dtype=torch.float32)
+    mse = torch.nn.functional.mse_loss(y_pred_tensor, y_holdout_tensor).item()
+    accuracy = -mse  # Negative MSE (higher is better for Optuna)
+
+    logger.info(f"Holdout MSE: {mse:.6f}, Accuracy (NegMSE): {accuracy:.6f}")
+    return accuracy
+
+def save_local_result(trial_id: int, params: dict, accuracy: float, state: str, error: Optional[str]):
+    """
+    Saves the result to the local filesystem for the coordinator to pull.
+    """
+    # Create local results dir (matches path in run_...sh)
+    local_results_dir = Path.home() / "distributed_prng_analysis" / "scorer_trial_results"
+    local_results_dir.mkdir(parents=True, exist_ok=True)
+
+    output_file = local_results_dir / f"trial_{trial_id:04d}.json"
+
+    result = {
+        "trial_id": trial_id, # Our internal job ID
+        "optuna_trial_number": params.get('optuna_trial_number', -1), # The ID from Optuna's DB
+        "hostname": socket.gethostname(),
+        "state": state,
+        "accuracy": accuracy,
+        "params": params,
+        "error": error
+    }
+
+    try:
+        with open(output_file, 'w') as f:
+            json.dump(result, f, indent=2)
+        logger.info(f"✅ Result saved locally to {output_file}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save local result to {output_file}: {e}")
+        # Also print to stdout as a fallback
+        print(json.dumps(result))
+
+def main():
+    if len(sys.argv) != 6:
+        logger.error("Usage: scorer_trial_worker.py <survivors> <train_hist> <holdout_hist> <trial_id> <params_json>")
+        sys.exit(1)
+
+    survivors_file = sys.argv[1]
+    train_history_file = sys.argv[2]
+    holdout_history_file = sys.argv[3]
+    trial_id = int(sys.argv[4])
+    params_json = sys.argv[5]
+
+    logger.info(f"--- Scorer Trial Worker {trial_id} Starting on {socket.gethostname()} ---")
+
+    try:
+        params = json.loads(params_json)
+        logger.info(f"Parameters: {params}")
+
+        # Import and load data
+        lazy_imports()
+        seeds, train_hist, holdout_hist = load_data(survivors_file, train_history_file, holdout_history_file)
+
+        # Run the trial
+        accuracy = run_trial(seeds, train_hist, holdout_hist, params)
+
+        # Save the result
+        save_local_result(trial_id, params, accuracy, "COMPLETE", None)
+
+        # Print a simple JSON to stdout for the coordinator's main log
+        print(json.dumps({"status": "success", "trial_id": trial_id, "accuracy": accuracy}))
+
+    except Exception as e:
+        logger.error(f"❌ Trial {trial_id} failed: {e}", exc_info=True)
+
+        # Try to save a failure report
+        try:
+            params_for_error = json.loads(params_json) if 'params_json' in locals() else {}
+            save_local_result(trial_id, params_for_error, -float('inf'), "FAILED", str(e))
+        except:
+            pass # Failed to even save the error
+
+        # Print error to stdout for coordinator's log
+        print(json.dumps({"status": "error", "trial_id": trial_id, "error": str(e)}))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

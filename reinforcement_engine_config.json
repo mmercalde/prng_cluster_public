@@ -1,0 +1,71 @@
+{
+  "model": {
+    "input_features": 46,
+    "hidden_layers": [
+      256,
+      128,
+      64
+    ],
+    "dropout": 0.3,
+    "activation": "relu",
+    "output_activation": "sigmoid"
+  },
+  "training": {
+    "learning_rate": 0.001,
+    "batch_size": 256,
+    "epochs": 99,
+    "optimizer": "adam",
+    "loss_function": "mse",
+    "early_stopping_patience": 10,
+    "validation_split": 0.2
+  },
+  "prng": {
+    "prng_type": "java_lcg",
+    "mod": 1000,
+    "skip": 0
+  },
+  "global_state": {
+    "window_size": 1000,
+    "anomaly_threshold": 3.0,
+    "regime_change_threshold": 0.15,
+    "marker_numbers": [
+      390,
+      804,
+      575
+    ],
+    "variance_threshold": 1.0,
+    "gap_threshold": 500,
+    "frequency_bias_threshold": 3.0
+  },
+  "normalization": {
+    "enabled": true,
+    "method": "standard",
+    "auto_fit": true,
+    "per_feature": true,
+    "save_with_model": true,
+    "refit_on_drift": true,
+    "drift_threshold": 0.3
+  },
+  "survivor_pool": {
+    "max_pool_size": 58838,
+    "prune_threshold": 0.3,
+    "min_confidence": 0.5,
+    "update_frequency": 10
+  },
+  "output": {
+    "models_dir": "models/reinforcement",
+    "logs_dir": "logs/reinforcement",
+    "save_frequency": 100,
+    "log_level": "INFO"
+  },
+  "_meta_optimizer": {
+    "last_calibration": "2025-11-14T17:27:04.060545",
+    "calibration_type": "full",
+    "confidence": 0.845,
+    "weights_used": {
+      "window_optimizer": 0.6,
+      "historical_patterns": 0.35,
+      "reinforcement_feedback": 0.05
+    }
+  }
+}

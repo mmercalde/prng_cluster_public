@@ -1,0 +1,134 @@
+{
+  "analysis_id": "analysis_f3b01407fa48",
+  "total_jobs": 3,
+  "completed_jobs": {},
+  "failed_jobs": {},
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "scorer_trial_0",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_0",
+          "analysis_type": "script",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "bidirectional_survivors.json",
+            "train_history.json",
+            "holdout_history.json",
+            "0",
+            "{\"window_size\": 512, \"offset\": 0, \"skip_min\": 2, \"skip_max\": 10, \"prng_type\": \"java_lcg\", \"session\": \"evening\"}"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scorer_trial_1",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_1",
+          "analysis_type": "script",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "bidirectional_survivors.json",
+            "train_history.json",
+            "holdout_history.json",
+            "1",
+            "{\"window_size\": 512, \"offset\": 10, \"skip_min\": 5, \"skip_max\": 15, \"prng_type\": \"java_lcg\", \"session\": \"evening\"}"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scorer_trial_2",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_2",
+          "analysis_type": "script",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "bidirectional_survivors.json",
+            "train_history.json",
+            "holdout_history.json",
+            "2",
+            "{\"window_size\": 768, \"offset\": 20, \"skip_min\": 3, \"skip_max\": 12, \"prng_type\": \"java_lcg\", \"session\": \"evening\"}"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    }
+  ],
+  "retry_count": {},
+  "start_time": 1763601048.730365,
+  "last_update": 1763601048.7304049
+}

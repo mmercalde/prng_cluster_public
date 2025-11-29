@@ -1,0 +1,18 @@
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+HOME=/home/michael
+HSA_OVERRIDE_GFX_VERSION=10.3.0
+LANG=en_US.UTF-8
+LOGNAME=michael
+MOTD_SHOWN=pam
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+PWD=/home/michael
+SHELL=/bin/bash
+SHLVL=0
+SSH_CLIENT=192.168.3.127 41578 22
+SSH_CONNECTION=192.168.3.127 41578 192.168.3.120 22
+USER=michael
+_=/usr/bin/env
+XDG_RUNTIME_DIR=/run/user/1000
+XDG_SESSION_CLASS=user
+XDG_SESSION_ID=57
+XDG_SESSION_TYPE=tty

@@ -1,0 +1,167 @@
+# Distributed PRNG Analysis System - ROCm Environment Setup Instructions
+
+## Critical Environment Setup for AMD GPU Nodes
+
+The ROCm environment MUST be properly configured for AMD GPU nodes to function correctly. This document provides explicit instructions for both manual troubleshooting and coordinator implementation.
+
+### Environment Variables Required for ROCm
+
+These variables must be set BEFORE Python/CuPy initialization:
+
+```bash
+HSA_OVERRIDE_GFX_VERSION=10.3.0
+HSA_ENABLE_SDMA=0
+ROCM_PATH=/opt/rocm
+HIP_PATH=/opt/rocm/hip
+LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}
+PATH=/opt/rocm/bin:${PATH}
+CUPY_CACHE_DIR=${HOME}/.cache/cupy
+CUDA_VISIBLE_DEVICES=<gpu_id>
+HIP_VISIBLE_DEVICES=<gpu_id>
+```
+
+## Manual SSH Troubleshooting Commands
+
+For manual testing and debugging, use this pattern:
+
+```bash
+# Single command execution with ROCm environment
+ssh michael@192.168.3.120 'bash -lc "
+  source ~/rocm_env/bin/activate &&
+  export HSA_OVERRIDE_GFX_VERSION=10.3.0 &&
+  export HSA_ENABLE_SDMA=0 &&
+  export ROCM_PATH=/opt/rocm &&
+  export HIP_PATH=/opt/rocm/hip &&
+  export PATH=/opt/rocm/bin:$PATH &&
+  export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:${LD_LIBRARY_PATH} &&
+  export CUPY_CACHE_DIR=${HOME}/.cache/cupy &&
+  cd ~/distributed_prng_analysis &&
+  python3 distributed_worker.py job.json --gpu-id 0
+"'
+```
+
+**Note:** This bash -lc pattern is for MANUAL testing only, not for coordinator implementation.
+
+## Coordinator Implementation
+
+For the coordinator's `_build_sh_safe_cmd` method, use the `env` prefix pattern:
+
+```python
+def _build_sh_safe_cmd(self, node: WorkerNode, payload_filename: str, payload_json: dict,
+                       gpu_id: int = 0, timeout_s: Optional[int] = None) -> str:
+    """Build shell-safe SSH command with ROCm environment variables."""
+    
+    # ROCm environment variables for AMD nodes
+    rocm_env = [
+        "HSA_OVERRIDE_GFX_VERSION=10.3.0",
+        "HSA_ENABLE_SDMA=0",
+        "ROCM_PATH=/opt/rocm",
+        "HIP_PATH=/opt/rocm/hip",
+        "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
+        "PATH=/opt/rocm/bin:${PATH}",
+        "CUPY_CACHE_DIR=${HOME}/.cache/cupy",
+        f"CUDA_VISIBLE_DEVICES={gpu_id}",
+        f"HIP_VISIBLE_DEVICES={gpu_id}"
+    ] if self._is_rocm(node) else [
+        f"CUDA_VISIBLE_DEVICES={gpu_id}"
+    ]
+    
+    # Create environment prefix for SSH command
+    env_prefix = ("env " + " ".join(rocm_env) + " ") if rocm_env else ""
+    
+    # Build complete command
+    py = node.python_env
+    worker = "distributed_worker.py"
+    j = json.dumps(payload_json)
+    job_id = payload_json.get('job_id', 'unknown')
+    
+    # Mining flag and GPU flag
+    mining_flag = "--mining-mode" if payload_json.get('mining_mode', False) else ""
+    gpu_flag = f"--gpu-id {gpu_id}"
+    
+    # Command body with environment prefix
+    cmd_body = f"{py} -u {worker} {payload_filename} {gpu_flag} {mining_flag}"
+    tmo = timeout_s if timeout_s is not None else self.job_timeout
+    
+    # Complete SSH command with timeout and cleanup
+    return (
+        f"cd '{node.script_path}' && "
+        f"cat > {payload_filename} <<'JSON'\n{j}\nJSON\n"
+        f"if command -v timeout >/dev/null 2>&1; then "
+        f"timeout -k 10 {tmo} {env_prefix}{cmd_body}; "
+        f"else {env_prefix}{cmd_body}; fi ; "
+        f"rm -f {payload_filename} || true"
+    )
+```
+
+### ROCm Node Detection
+
+```python
+def _is_rocm(self, node: WorkerNode) -> bool:
+    """Check if node uses ROCm (AMD GPU)"""
+    gt = (node.gpu_type or "").lower()
+    return ("rx" in gt) or ("amd" in gt) or ("rocm" in gt)
+```
+
+## Key Differences: Manual vs Programmatic
+
+| Context | Pattern | Why |
+|---------|---------|-----|
+| Manual SSH | `bash -lc "source venv && export VARS && command"` | Interactive shell with venv activation |
+| Coordinator | `env VAR1=value1 VAR2=value2 command` | Programmatic execution without shell complexity |
+
+## Common GPU Errors and Solutions
+
+### "rocRAND internal error: hipErrorNoDevice"
+**Cause:** ROCm environment variables not set before CuPy initialization  
+**Solution:** Ensure environment variables are set in SSH command prefix, not inside Python files
+
+```bash
+# Clear CuPy cache (often resolves kernel compilation issues)
+rm -rf ~/.cache/cupy
+ssh 192.168.3.120 "rm -rf ~/.cache/cupy"
+ssh 192.168.3.154 "rm -rf ~/.cache/cupy"
+```
+
+### "radix_sort: failed on 2nd step"
+**Cause:** CuPy kernel compilation failure  
+**Solution:** Clear cache and ensure proper ROCm environment
+
+### Node-Specific Files
+The system uses hostname-based runtime adaptation with symlinks:
+- `rig-6600`: `distributed_worker.py` -> `distributed_worker_rig6600.py`
+- `rig-6600b`: `distributed_worker.py` -> `distributed_worker_rig6600b.py`
+
+Environment setup should be in the coordinator's SSH commands, not duplicated in Python files.
+
+## Testing Commands
+
+### Verify Environment Setup
+```bash
+# Test ROCm environment via SSH
+ssh michael@192.168.3.120 'env HSA_OVERRIDE_GFX_VERSION=10.3.0 python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
+```
+
+### Debug Failed Jobs
+```bash
+# Test single worker with full error output
+ssh michael@192.168.3.120 'bash -lc "source ~/rocm_env/bin/activate && cd ~/distributed_prng_analysis && echo \"{\\\"job_id\\\":\\\"debug\\\",\\\"seeds\\\":[1],\\\"prng_type\\\":\\\"mt\\\",\\\"samples\\\":100}\" > debug.json && python3 distributed_worker.py debug.json --gpu-id 0"'
+```
+
+## Critical Success Factors
+
+1. **Environment Timing:** ROCm variables MUST be set before Python process starts
+2. **Complete Variable Set:** All ROCm environment variables are required, not just HSA overrides
+3. **Proper Node Detection:** Use reliable GPU type string matching
+4. **Cache Management:** Clear CuPy cache when changing ROCm settings
+5. **Command Structure:** Use `env` prefix for programmatic execution, `bash -lc` for manual testing
+
+## Deployment Checklist
+
+- [ ] ROCm environment variables in coordinator's `_build_sh_safe_cmd`
+- [ ] Proper `_is_rocm()` node detection
+- [ ] Environment prefix applied only to AMD nodes
+- [ ] Both CUDA_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES set
+- [ ] CuPy cache cleared on AMD nodes
+- [ ] Test connectivity shows all GPUs available
+- [ ] Manual SSH test confirms ROCm initialization works

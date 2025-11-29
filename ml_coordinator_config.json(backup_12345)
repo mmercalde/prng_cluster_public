@@ -1,0 +1,46 @@
+{
+  "nodes": [
+    {
+      "hostname": "localhost",
+      "username": "michael",
+      "gpu_count": 2,
+      "gpu_type": "RTX 3080 Ti",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/venvs/torch/bin/python"
+    },
+    {
+      "hostname": "192.168.3.120",
+      "username": "michael",
+      "gpu_count": 12,
+      "gpu_type": "RX 6600",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/rocm_env/bin/python"
+    },
+    {
+      "hostname": "192.168.3.154",
+      "username": "michael",
+      "gpu_count": 12,
+      "gpu_type": "RX 6600",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/rocm_env/bin/python"
+    }
+  ],
+  "sieve_defaults": {
+    "min_match_threshold": 0.01,
+    "phase1_threshold": 0.01,
+    "phase2_threshold": 0.01,
+    "window_size": 512,
+    "skip_range": [0, 20],
+    "offset": 0,
+    "sessions": ["midday", "evening"],
+    "prng_families": ["mt19937"]
+  },
+  "reverse_sieve_defaults": {
+    "candidate_generation_method": "brute_force_sample",
+    "candidates_per_draw": 1000,
+    "max_candidates_per_job": 10000,
+    "reverse_batch_size": 1000,
+    "enable_candidate_caching": false,
+    "candidate_cache_path": "cache/candidates"
+  }
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""
+================================================================================
+REVERSE SIEVE FILTER - GPU WORKER SCRIPT
+================================================================================
+
+⚠️  CRITICAL USAGE WARNING ⚠️
+
+This is a WORKER SCRIPT designed to be called internally by the coordinator
+system. It should NOT be run directly by users.
+
+INCORRECT USAGE (causes segfault):
+  ❌ python3 reverse_sieve_filter.py --job-file test.json --gpu-id 0
+
+CORRECT USAGE:
+  ✅ Use run_bidirectional_test() from window_optimizer_integration_final.py
+
+Example:
+  from coordinator import MultiGPUCoordinator
+  from window_optimizer_integration_final import run_bidirectional_test
+  from window_optimizer import WindowConfig
+  
+  coordinator = MultiGPUCoordinator('distributed_config.json')
+  config = WindowConfig(window_size=244, offset=139, sessions=['evening'],
+                        skip_min=3, skip_max=29)
+  
+  result = run_bidirectional_test(
+      coordinator=coordinator,
+      config=config,
+      dataset_path='daily3.json',
+      seed_start=0,
+      seed_count=100_000,
+      prng_base='java_lcg',
+      threshold=0.012
+  )
+
+See test_100k_bidirectional_CORRECT.py for a complete working example.
+
+Revision History:
+  2025-11-03: Added usage documentation after discovering correct pattern
+  
+================================================================================
+"""

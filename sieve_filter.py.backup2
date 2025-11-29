@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""
+GPU Residue Sieve - Main Engine
+Flexible, modular, standalone sieve for PRNG seed discovery
+
+Usage: python3 sieve_filter.py --job-file job.json --gpu-id 0
+
+Compatible with coordinator.py and unified_system.py
+"""
+
+import argparse
+import json
+import time
+import os
+import sys
+from typing import List, Dict, Any, Optional, Tuple
+
+# ROCm environment setup - MUST BE FIRST
+import socket
+HOST = socket.gethostname()
+if HOST in ["rig-6600", "rig-6600b"]:
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+os.environ.setdefault("ROCM_PATH", "/opt/rocm")
+os.environ.setdefault("HIP_PATH", "/opt/rocm")
+
+# Import PRNG registry
+try:
+    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs
+except ImportError:
+    print("ERROR: prng_registry.py not found - must be in same directory", file=sys.stderr)
+    sys.exit(1)
+
+# GPU backend
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    print("ERROR: CuPy not available - GPU required for sieve", file=sys.stderr)
+    sys.exit(1)
+
+import numpy as np
+
+
+# ============================================================================
+# DATASET LOADING
+# ============================================================================
+
+def load_draws_from_daily3(
+    path: str,
+    window_size: int = 30,
+    sessions: Optional[List[str]] = None
+) -> List[int]:
+    """Load draws from daily3.json format"""
+    with open(path, 'r') as f:
+        data = json.load(f)
+    
+    # Filter by session
+    if sessions:
+        data = [entry for entry in data if entry.get('session') in sessions]
+    
+    # Sort chronologically by date then session
+    # Don't sort - data is already chronological
+    
+    draws = [int(entry.get("full_state", entry["draw"])) for entry in data[-window_size:]]
+    
+    return draws
+
+
+# ============================================================================
+# GPU SIEVE ENGINE
+# ============================================================================
+
+class GPUSieve:
+    """GPU-accelerated flexible residue sieve"""
+    
+    def __init__(self, gpu_id: int = 0):
+        if not GPU_AVAILABLE:
+            raise RuntimeError("CuPy not available")
+        
+        self.gpu_id = gpu_id
+        self.device = cp.cuda.Device(gpu_id)
+        self.compiled_kernels = {}
+        
+    def _get_kernel(self, prng_family: str, custom_params: Optional[Dict] = None):
+        """Get or compile kernel for PRNG family"""
+        cache_key = f"{prng_family}_{hash(frozenset(custom_params.items()) if custom_params else 0)}"
+        
+        if cache_key in self.compiled_kernels:
+            return self.compiled_kernels[cache_key]
+        
+        config = get_kernel_info(prng_family)
+        kernel = cp.RawKernel(config['kernel_source'], config['kernel_name'])
+        self.compiled_kernels[cache_key] = (kernel, config)
+        
+        return kernel, config
+    
+    def run_sieve(
+        self,
+        prng_family: str,
+        seed_start: int,
+        seed_end: int,
+        residues: List[int],
+        skip_range: Tuple[int, int] = (0, 16),
+        min_match_threshold: float = 0.5,
+        custom_params: Optional[Dict] = None,
+        chunk_size: int = 1_000_000,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """Run flexible residue sieve for specified PRNG family"""
+        
+        with self.device:
+            kernel, config = self._get_kernel(prng_family, custom_params)
+            
+            # Prepare inputs
+            k = len(residues)
+            residues_gpu = cp.array(residues, dtype=cp.uint32)
+            skip_min, skip_max = skip_range
+            
+            # Result containers
+            all_survivors = []
+            all_match_rates = []
+            all_best_skips = []
+            total_tested = 0
+            start_time = time.time()
+            
+            # Process in chunks
+            for chunk_start in range(seed_start, seed_end, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, seed_end)
+                n_seeds = chunk_end - chunk_start
+                
+                # Allocate arrays
+                seed_type = config.get("seed_type", "uint32")
+                dtype = cp.uint64 if seed_type == "uint64" else cp.uint32
+                
+                seeds_gpu = cp.arange(chunk_start, chunk_end, dtype=dtype)
+                survivors_gpu = cp.zeros(n_seeds, dtype=dtype)
+                match_rates_gpu = cp.zeros(n_seeds, dtype=cp.float32)
+                best_skips_gpu = cp.zeros(n_seeds, dtype=cp.uint8)
+                survivor_count_gpu = cp.zeros(1, dtype=cp.uint32)
+                
+                # Launch kernel
+                threads_per_block = 256
+                blocks = (n_seeds + threads_per_block - 1) // threads_per_block
+                
+                # Build kernel arguments
+                kernel_args = [
+                    seeds_gpu, residues_gpu, survivors_gpu,
+                    match_rates_gpu, best_skips_gpu, survivor_count_gpu,
+                    n_seeds, k, skip_min, skip_max, cp.float32(min_match_threshold)
+                ]
+                # Add PRNG-specific parameters
+                default_params = config.get("default_params", {})
+                if prng_family == 'xorshift32':
+                    kernel_args.append(cp.uint32(default_params.get("shift_a", 13)))
+                    kernel_args.append(cp.uint32(default_params.get("shift_b", 17)))
+                    kernel_args.append(cp.uint32(default_params.get("shift_c", 5)))
+                kernel_args.append(cp.int32(offset))
+                
+                # Execute kernel
+                kernel((blocks,), (threads_per_block,), tuple(kernel_args))
+                
+                # Collect survivors
+                count = int(survivor_count_gpu[0].get())
+                if count > 0:
+                    survivors = survivors_gpu[:count].get().tolist()
+                    rates = match_rates_gpu[:count].get().tolist()
+                    skips = best_skips_gpu[:count].get().tolist()
+                    
+                    # DEBUG: Filter out false positives from kernel bug
+                    for i, rate in enumerate(rates):
+                        if rate >= min_match_threshold:
+                            all_survivors.append(survivors[i])
+                            all_match_rates.append(rate)
+                            all_best_skips.append(skips[i])
+                        else:
+                            print(f"DEBUG: Filtered kernel false positive - seed {survivors[i]} rate {rate:.3f} < threshold {min_match_threshold}", file=sys.stderr)
+                
+                total_tested += n_seeds
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Build detailed survivor records
+            survivor_records = []
+            for seed, rate, skip in zip(all_survivors, all_match_rates, all_best_skips):
+                matches = int(rate * k)
+                survivor_records.append({
+                    'seed': int(seed),
+                    'family': prng_family,
+                    'match_rate': float(rate),
+                    'matches': matches,
+                    'total': k,
+                    'best_skip': int(skip)
+                })
+            
+            return {
+                'family': prng_family,
+                'seed_range': {'start': seed_start, 'end': seed_end},
+                'survivors': survivor_records,
+                'stats': {
+                    'seeds_tested': total_tested,
+                    'survivors_found': len(survivor_records),
+                    'duration_ms': duration_ms,
+                    'seeds_per_sec': total_tested / (duration_ms / 1000) if duration_ms > 0 else 0
+                }
+            }
+
+
+# ============================================================================
+# JOB EXECUTION
+# ============================================================================
+
+def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+    """Execute a sieve job from job specification"""
+    
+    job_id = job.get('job_id', 'unknown')
+    
+    try:
+        # Extract parameters
+        dataset_path = job.get('dataset_path') or job.get('target_file')
+        window_size = job.get('window_size', 10)
+        seed_start = job.get('seed_start', 0)
+        seed_end = job.get('seed_end', 100000)
+        skip_range = tuple(job.get('skip_range', [0, 16]))
+        min_match_threshold = job.get('min_match_threshold', 0.5)
+        offset = job.get('offset', 0)
+        sessions = job.get('sessions', ['midday', 'evening'])
+        
+        # Load draws
+        draws = load_draws_from_daily3(dataset_path, window_size, sessions)
+        
+        if not draws:
+            raise ValueError("No draws loaded from dataset")
+        
+        # Get PRNG families to test
+        prng_families = job.get('prng_families')
+        if not prng_families:
+            # Default: fast families
+            prng_families = ['xorshift32', 'lcg32_glibc', 'splitmix64']
+        
+        # Initialize sieve
+        sieve = GPUSieve(gpu_id=gpu_id)
+        
+        # Run sieve for each family
+        per_family_results = []
+        all_survivors = []
+        
+        for family_spec in prng_families:
+            # Handle both string names and dict with custom params
+            if isinstance(family_spec, dict):
+                family_name = family_spec['type']
+                custom_params = family_spec.get('params', {})
+            else:
+                family_name = family_spec
+                custom_params = None
+            
+            print(f"Testing {family_name}...", file=sys.stderr)
+            
+            result = sieve.run_sieve(
+                prng_family=family_name,
+                seed_start=seed_start,
+                seed_end=seed_end,
+                residues=draws,
+                skip_range=skip_range,
+                offset=offset,
+                min_match_threshold=min_match_threshold,
+                custom_params=custom_params
+            )
+            
+            per_family_results.append(result)
+            all_survivors.extend(result['survivors'])
+        
+        # Compile final result
+        total_tested = sum(r['stats']['seeds_tested'] for r in per_family_results)
+        total_duration = sum(r['stats']['duration_ms'] for r in per_family_results)
+        
+        final_result = {
+            'job_id': job_id,
+            'success': True,
+            'prng_families': [r['family'] for r in per_family_results],
+            'seed_range': {'start': seed_start, 'end': seed_end},
+            'k': len(draws),
+            'skip_range': list(skip_range),
+            'min_match_threshold': min_match_threshold,
+            'survivors': all_survivors,
+            'stats': {
+                'total_seeds_tested': total_tested,
+                'total_survivors': len(all_survivors),
+                'duration_ms': total_duration,
+                'avg_seeds_per_sec': total_tested / (total_duration / 1000) if total_duration > 0 else 0
+            },
+            'per_family': {
+                r['family']: {
+                    'survivors': r['survivors'],
+                    'tested': r['stats']['seeds_tested'],
+                    'found': r['stats']['survivors_found'],
+                    'duration_ms': r['stats']['duration_ms']
+                }
+                for r in per_family_results
+            },
+            'seeds_analyzed': total_tested  # For coordinator compatibility
+        }
+        
+        return final_result
+        
+    except Exception as e:
+        import traceback
+        return {
+            'job_id': job_id,
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc(),
+            'seeds_analyzed': 0
+        }
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='GPU Residue Sieve - Flexible PRNG seed discovery',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Available PRNG families:
+{chr(10).join('  - ' + name for name in list_available_prngs())}
+
+Job file format (JSON):
+{{
+  "job_id": "sieve_001",
+  "dataset_path": "daily3.json",
+  "seed_start": 0,
+  "seed_end": 1000000,
+  "window_size": 10,
+  "min_match_threshold": 0.5,
+  "skip_range": [0, 16],
+  "prng_families": ["xorshift32", "pcg32"],
+  "sessions": ["midday", "evening"]
+}}
+        """
+    )
+    
+    parser.add_argument('--job-file', required=True, help='Job specification JSON file')
+    parser.add_argument('--gpu-id', type=int, default=0, help='GPU device ID')
+    parser.add_argument('--list-prngs', action='store_true', help='List available PRNG families')
+    
+    args = parser.parse_args()
+    
+    # List PRNGs if requested
+    if args.list_prngs:
+        print("Available PRNG families:")
+        for name in list_available_prngs():
+            config = get_kernel_info(name)
+            print(f"  {name:25} - {config['description']}")
+        return 0
+    
+    # Load job specification
+    try:
+        with open(args.job_file, 'r') as f:
+            job = json.load(f)
+    except Exception as e:
+        print(f"ERROR: Failed to load job file: {e}", file=sys.stderr)
+        return 1
+    
+    job_id = job.get('job_id', 'unknown')
+    
+    # Execute sieve
+    result = execute_sieve_job(job, args.gpu_id)
+    
+    # Write result file
+    result_file = f"result_{job_id}.json"
+    try:
+        with open(result_file, 'w') as f:
+            json.dump(result, f, indent=2)
+    except Exception as e:
+        print(f"WARNING: Failed to write result file: {e}", file=sys.stderr)
+    
+    # Echo to stdout for coordinator parsing
+    print(json.dumps(result))
+    
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,37 @@
+# ============================================================================
+# ADD TO ARGPARSE SECTION (around line 1970)
+# ============================================================================
+
+# Window Optimization
+parser.add_argument('--optimize-window', action='store_true',
+                   help='Run window optimization to find best configuration')
+parser.add_argument('--opt-strategy', 
+                   choices=['random', 'grid', 'bayesian', 'evolutionary'],
+                   default='bayesian',
+                   help='Optimization search strategy')
+parser.add_argument('--opt-iterations', type=int, default=50,
+                   help='Maximum optimization iterations')
+parser.add_argument('--opt-seed-count', type=int, default=10_000_000,
+                   help='Seeds per configuration test')
+
+# ============================================================================
+# ADD TO MAIN() AFTER COORDINATOR CREATION (around line 2050)
+# ============================================================================
+
+# Window optimization mode
+if args.optimize_window:
+    from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+    add_window_optimizer_to_coordinator()
+    
+    results = coordinator.optimize_window(
+        dataset_path=args.target_file,
+        seed_start=args.seed_start,
+        seed_count=args.opt_seed_count,
+        prng_base=args.prng_type,
+        strategy_name=args.opt_strategy,
+        max_iterations=args.opt_iterations,
+        output_file='window_optimization_results.json'
+    )
+    return
+
+# Continue with normal execution...

@@ -1,0 +1,771 @@
+#!/usr/bin/env python3
+"""
+Database Manager Module - Fixed to show actual search_jobs data
+"""
+import os
+import json
+import sqlite3
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+# Import process_jobs functionality
+try:
+    from process_db_jobs import process_jobs
+except ImportError:
+    process_jobs = None
+
+class DatabaseManager:
+    """Database management functionality showing actual data"""
+    
+    def __init__(self, core):
+        self.core = core
+        self.db_path = core.db_path if hasattr(core, 'db_path') else 'prng_analysis.db'
+        
+    def init(self, core):
+        """Initialize database manager with core reference"""
+        self.core = core
+        # Set up any required database connections or configurations
+        try:
+            # Test database connection
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = cursor.fetchall()
+                if not tables:
+                    print("Warning: Database appears to be empty")
+        except Exception as e:
+            print(f"Database connection warning: {e}")
+    
+    def menu(self):
+        """Show database manager menu"""
+        while True:
+            print("\n" + "="*70)
+            print("DATABASE MANAGER")
+            print("-"*35)
+            print("DATABASE OPERATIONS:")
+            print("  1. View Database Statistics")
+            print("  2. Browse Search Jobs")
+            print("  3. View Job Details")
+            print("  4. Job Status Summary")
+            print("  5. Failed Jobs Analysis")
+            print("MAINTENANCE:")
+            print("  6. Database Cleanup")
+            print("  7. Result File Cleanup")  # New option
+            print("  8. Backup Database")
+            print("  9. Database Integrity Check")
+            print(" 10. Export Database")
+            print(" 11. Back to Main Menu")
+            print("-"*35)
+            
+            try:
+                choice = input("Select option (1-11): ").strip()
+                
+                if choice == '1':
+                    self.view_statistics()
+                elif choice == '2':
+                    self.browse_search_jobs()
+                elif choice == '3':
+                    self.view_job_details()
+                elif choice == '4':
+                    self.job_status_summary()
+                elif choice == '5':
+                    self.failed_jobs_analysis()
+                elif choice == '6':
+                    self.database_cleanup()
+                elif choice == '7':
+                    self.result_file_cleanup()  # New method
+                elif choice == '8':
+                    self.backup_database()
+                elif choice == '9':
+                    self.integrity_check()
+                elif choice == '10':
+                    self.export_database()
+                elif choice == '11':
+                    break
+                else:
+                    print("Invalid choice. Please select 1-11.")
+                    
+            except KeyboardInterrupt:
+                print("\nReturning to main menu...")
+                break
+            except Exception as e:
+                print(f"Error in menu selection: {e}")
+
+    def process_jobs_menu(self):
+        """Process DB jobs menu with selection options"""
+        print("\nProcess DB Jobs")
+        print("=" * 40)
+        
+        if not self.core.db:
+            print("Database not available")
+            input("Press Enter to continue...")
+            return
+        
+        try:
+            from process_db_jobs import process_jobs, JobProcessorConfig, JobProcessor
+        except ImportError:
+            print("process_db_jobs module not available")
+            input("Press Enter to continue...")
+            return
+        
+        # Show job statistics
+        import sqlite3
+        conn = sqlite3.connect(self.core.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT search_type, COUNT(*) FROM search_jobs WHERE status='pending' GROUP BY search_type")
+        pending_by_type = cursor.fetchall()
+        
+        if not pending_by_type:
+            print("No pending jobs found")
+            conn.close()
+            input("Press Enter to continue...")
+            return
+        
+        print("\nPending Jobs:")
+        for job_type, count in pending_by_type:
+            print(f"  - {job_type}: {count} jobs")
+        
+        print("\nProcessing Options:")
+        print("1. Process ALL pending jobs")
+        print("2. Process by job type")
+        print("3. Process specific number of jobs")
+        print("4. Cancel")
+        
+        choice = input("\nSelect option (1-4): ").strip()
+        
+        if choice == '1':
+            if self.core.confirm_operation("Process all pending jobs"):
+                try:
+                    stats = process_jobs(self.core.db_path)
+                    print(f"\nProcessed {stats['successful']} jobs successfully")
+                    self.core.log_operation("db_jobs", "SUCCESS", f"Processed {stats['total_processed']} jobs")
+                except Exception as e:
+                    print(f"Error: {e}")
+                    self.core.log_operation("db_jobs", "ERROR", str(e))
+        
+        elif choice == '2':
+            print("\nSelect job type:")
+            for i, (job_type, count) in enumerate(pending_by_type, 1):
+                print(f"{i}. {job_type} ({count} jobs)")
+            
+            type_choice = input(f"Select (1-{len(pending_by_type)}): ").strip()
+            try:
+                idx = int(type_choice) - 1
+                selected_type = pending_by_type[idx][0]
+                
+                if self.core.confirm_operation(f"Process all {selected_type} jobs"):
+                    config = JobProcessorConfig(db_path=self.core.db_path, job_types=[selected_type])
+                    processor = JobProcessor(config)
+                    stats = processor.process_jobs()
+                    print(f"\nProcessed {stats['successful']} jobs successfully")
+                    self.core.log_operation("db_jobs", "SUCCESS", f"Processed {selected_type} jobs")
+            except (ValueError, IndexError):
+                print("Invalid selection")
+        
+        elif choice == '3':
+            try:
+                batch_size = int(input("How many jobs to process? ").strip())
+                if batch_size > 0:
+                    if self.core.confirm_operation(f"Process {batch_size} jobs"):
+                        config = JobProcessorConfig(db_path=self.core.db_path, batch_size=batch_size)
+                        processor = JobProcessor(config)
+                        stats = processor.process_jobs()
+                        print(f"\nProcessed {stats['successful']} jobs successfully")
+                        self.core.log_operation("db_jobs", "SUCCESS", f"Processed batch")
+            except ValueError:
+                print("Invalid number")
+        
+        conn.close()
+        input("\nPress Enter to continue...")
+
+    def view_statistics(self):
+        """View database statistics showing actual data"""
+        print("\nDatabase Statistics")
+        print("="*40)
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get table list
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = cursor.fetchall()
+                
+                print(f"Database file: {self.db_path}")
+                print(f"File size: {os.path.getsize(self.db_path) / 1024:.1f} KB")
+                print(f"Tables found: {len(tables)}")
+                
+                for (table_name,) in tables:
+                    try:
+                        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                        count = cursor.fetchone()[0]
+                        print(f"  - {table_name}: {count} records")
+                        
+                        # Show additional details for search_jobs table
+                        if table_name == 'search_jobs':
+                            cursor.execute("SELECT status, COUNT(*) FROM search_jobs GROUP BY status")
+                            status_counts = cursor.fetchall()
+                            for status, count in status_counts:
+                                print(f"    └─ {status}: {count}")
+                                
+                    except Exception as e:
+                        print(f"  - {table_name}: Error reading ({str(e)[:50]})")
+                        
+        except Exception as e:
+            print(f"Error reading database statistics: {e}")
+            
+        input("\nPress Enter to continue...")
+
+    def browse_search_jobs(self):
+        """Browse search jobs with actual data display"""
+        print("\nBrowse Search Jobs")
+        print("="*50)
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='search_jobs'")
+                if not cursor.fetchone():
+                    print("No search_jobs table found in database")
+                    input("Press Enter to continue...")
+                    return
+                
+                # Get all search jobs
+                cursor.execute("""
+                    SELECT job_id, search_type, status, created_at, parameters, priority
+                    FROM search_jobs 
+                    ORDER BY created_at DESC 
+                    LIMIT 50
+                """)
+                
+                jobs = cursor.fetchall()
+                
+                if not jobs:
+                    print("No search jobs found in database")
+                else:
+                    print(f"Found {len(jobs)} jobs (showing most recent 50)")
+                    print("-" * 80)
+                    print(f"{'Job ID':<30} {'Type':<20} {'Status':<12} {'Created':<20}")
+                    print("-" * 80)
+                    
+                    for job_id, search_type, status, created_at, parameters, priority in jobs:
+                        # Format the created_at timestamp
+                        try:
+                            if created_at:
+                                dt = datetime.fromtimestamp(float(created_at))
+                                formatted_date = dt.strftime("%Y-%m-%d %H:%M")
+                            else:
+                                formatted_date = "Unknown"
+                        except:
+                            formatted_date = str(created_at)[:19] if created_at else "Unknown"
+                        
+                        print(f"{job_id:<30} {search_type:<20} {status:<12} {formatted_date:<20}")
+                    
+                    print("-" * 80)
+                    print(f"\nTotal jobs displayed: {len(jobs)}")
+                    
+                # Show summary by status
+                cursor.execute("SELECT status, COUNT(*) FROM search_jobs GROUP BY status")
+                status_summary = cursor.fetchall()
+                
+                if status_summary:
+                    print("\nStatus Summary:")
+                    for status, count in status_summary:
+                        print(f"  {status}: {count}")
+                        
+        except Exception as e:
+            print(f"Error browsing search jobs: {e}")
+            
+        input("\nPress Enter to continue...")
+
+    def show_job_details(self, job_data):
+        """Show detailed information for a specific job"""
+        job_id, search_type, status, created_at, parameters, priority, seed_start, seed_end = job_data
+        
+        print(f"\nJob Details")
+        print("="*50)
+        print(f"Job ID: {job_id}")
+        print(f"Search Type: {search_type}")
+        print(f"Status: {status}")
+        print(f"Priority: {priority}")
+        print(f"Seed Range: {seed_start} - {seed_end}")
+        
+        # Format timestamp
+        try:
+            if created_at:
+                dt = datetime.fromtimestamp(float(created_at))
+                print(f"Created: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        except:
+            print(f"Created: {created_at}")
+        
+        # Parse and display parameters
+        if parameters:
+            try:
+                params = json.loads(parameters) if isinstance(parameters, str) else parameters
+                print(f"\nParameters:")
+                for key, value in params.items():
+                    print(f"  {key}: {value}")
+            except:
+                print(f"Parameters: {parameters}")
+
+    def view_job_details(self):
+        """View details for a specific job"""
+        print("\nView Job Details")
+        print("="*30)
+        
+        job_id = input("Enter job ID: ").strip()
+        if not job_id:
+            print("No job ID provided")
+            input("Press Enter to continue...")
+            return
+            
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT job_id, search_type, status, created_at, parameters, priority, seed_start, seed_end
+                    FROM search_jobs 
+                    WHERE job_id = ?
+                """, (job_id,))
+                
+                job_data = cursor.fetchone()
+                
+                if job_data:
+                    self.show_job_details(job_data)
+                else:
+                    print(f"Job '{job_id}' not found")
+                    
+        except Exception as e:
+            print(f"Error viewing job details: {e}")
+            
+        input("\nPress Enter to continue...")
+
+    def job_status_summary(self):
+        """Show summary of job statuses"""
+        print("\nJob Status Summary")
+        print("="*40)
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Overall counts
+                cursor.execute("SELECT COUNT(*) FROM search_jobs")
+                total_jobs = cursor.fetchone()[0]
+                
+                if total_jobs == 0:
+                    print("No jobs found in database")
+                    input("Press Enter to continue...")
+                    return
+                
+                print(f"Total Jobs: {total_jobs}")
+                print("-" * 30)
+                
+                # Status breakdown
+                cursor.execute("""
+                    SELECT status, COUNT(*) as count,
+                           ROUND(COUNT(*) * 100.0 / ?, 1) as percentage
+                    FROM search_jobs 
+                    GROUP BY status 
+                    ORDER BY count DESC
+                """, (total_jobs,))
+                
+                status_data = cursor.fetchall()
+                
+                for status, count, percentage in status_data:
+                    print(f"{status:<15}: {count:>5} ({percentage:>5.1f}%)")
+                
+                # Recent activity
+                print("\nRecent Activity (Last 24 hours):")
+                cursor.execute("""
+                    SELECT status, COUNT(*) 
+                    FROM search_jobs 
+                    WHERE created_at > ? 
+                    GROUP BY status
+                """, (datetime.now().timestamp() - 86400,))
+                
+                recent = cursor.fetchall()
+                if recent:
+                    for status, count in recent:
+                        print(f"  {status}: {count}")
+                else:
+                    print("  No recent activity")
+                    
+        except Exception as e:
+            print(f"Error generating status summary: {e}")
+            
+        input("\nPress Enter to continue...")
+
+    def failed_jobs_analysis(self):
+        """Analyze failed jobs"""
+        print("\nFailed Jobs Analysis")
+        print("="*40)
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get failed jobs
+                cursor.execute("""
+                    SELECT job_id, search_type, created_at, parameters
+                    FROM search_jobs 
+                    WHERE status = 'failed'
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                """)
+                
+                failed_jobs = cursor.fetchall()
+                
+                if not failed_jobs:
+                    print("No failed jobs found")
+                else:
+                    print(f"Found {len(failed_jobs)} failed jobs (showing last 20):")
+                    print("-" * 70)
+                    
+                    for job_id, search_type, created_at, parameters in failed_jobs:
+                        try:
+                            dt = datetime.fromtimestamp(float(created_at))
+                            formatted_date = dt.strftime("%Y-%m-%d %H:%M")
+                        except:
+                            formatted_date = "Unknown"
+                        
+                        print(f"{job_id:<30} {search_type:<20} {formatted_date}")
+                    
+                    # Failure patterns
+                    cursor.execute("""
+                        SELECT search_type, COUNT(*) 
+                        FROM search_jobs 
+                        WHERE status = 'failed' 
+                        GROUP BY search_type
+                    """)
+                    
+                    patterns = cursor.fetchall()
+                    if patterns:
+                        print("\nFailure Patterns:")
+                        for search_type, count in patterns:
+                            print(f"  {search_type}: {count} failures")
+                            
+        except Exception as e:
+            print(f"Error analyzing failed jobs: {e}")
+            
+        input("\nPress Enter to continue...")
+
+    def database_cleanup(self):
+        """Clean up database with multiple options"""
+        print("\nDatabase Cleanup")
+        print("="*30)
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Show current status
+                cursor.execute("SELECT status, COUNT(*) FROM search_jobs GROUP BY status")
+                status_counts = cursor.fetchall()
+                
+                print("Current Database Status:")
+                total_jobs = 0
+                for status, count in status_counts:
+                    print(f"  {status}: {count} jobs")
+                    total_jobs += count
+                
+                if total_jobs == 0:
+                    print("No jobs to clean up")
+                    input("Press Enter to continue...")
+                    return
+                
+                print(f"\nTotal jobs: {total_jobs}")
+                print("\nCleanup Options:")
+                print("  1. Clear all jobs")
+                print("  2. Clear completed jobs only")
+                print("  3. Clear failed jobs only")
+                print("  4. Clear pending jobs only")
+                print("  5. Cancel")
+                
+                choice = input("\nSelect cleanup option (1-5): ").strip()
+                
+                if choice == '1':
+                    if self.core.confirm_operation(f"Delete all {total_jobs} jobs"):
+                        deleted = self._delete_jobs_by_status(None)  # None = all jobs
+                        print(f"Deleted {deleted} jobs")
+                elif choice == '2':
+                    deleted = self._delete_jobs_by_status('completed')
+                    print(f"Deleted {deleted} completed jobs")
+                elif choice == '3':
+                    deleted = self._delete_jobs_by_status('failed')
+                    print(f"Deleted {deleted} failed jobs")
+                elif choice == '4':
+                    deleted = self._delete_jobs_by_status('pending')
+                    print(f"Deleted {deleted} pending jobs")
+                elif choice == '5':
+                    print("Cleanup cancelled")
+                else:
+                    print("Invalid choice")
+                    
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            
+        input("Press Enter to continue...")
+
+    def _delete_jobs_by_status(self, status):
+        """Helper method to delete jobs by status"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                if status is None:
+                    # Delete all jobs
+                    cursor.execute("DELETE FROM search_jobs")
+                else:
+                    # Delete jobs with specific status
+                    cursor.execute("DELETE FROM search_jobs WHERE status = ?", (status,))
+                
+                deleted_count = cursor.rowcount
+                conn.commit()
+                
+                self.core.log_operation("cleanup", "SUCCESS", f"Deleted {deleted_count} {status or 'all'} jobs")
+                return deleted_count
+                
+        except Exception as e:
+            self.core.log_operation("cleanup", "ERROR", str(e))
+            raise
+
+    def result_file_cleanup(self):
+        """Clean up result files from filesystem"""
+        print("\nResult File Cleanup")
+        print("="*30)
+        
+        results_dir = "results"
+        if not os.path.exists(results_dir):
+            print(f"Results directory '{results_dir}' not found")
+            input("Press Enter to continue...")
+            return
+            
+        try:
+            # Get all result files
+            result_files = [f for f in os.listdir(results_dir) if f.endswith('.json')]
+            
+            if not result_files:
+                print("No result files found")
+                input("Press Enter to continue...")
+                return
+            
+            # Categorize files
+            file_categories = {
+                'connectivity': [f for f in result_files if 'connectivity' in f],
+                'correlation': [f for f in result_files if 'correlation' in f],
+                'reconstruction': [f for f in result_files if 'reconstruction' in f],
+                'other': [f for f in result_files if not any(x in f for x in ['connectivity', 'correlation', 'reconstruction'])]
+            }
+            
+            print(f"Found {len(result_files)} result files:")
+            for category, files in file_categories.items():
+                if files:
+                    print(f"  {category.title()}: {len(files)} files")
+            
+            total_size = sum(os.path.getsize(os.path.join(results_dir, f)) for f in result_files)
+            print(f"\nTotal size: {total_size / 1024 / 1024:.1f} MB")
+            
+            print("\nCleanup Options:")
+            print("  1. Delete all result files")
+            print("  2. Delete connectivity test files only")
+            print("  3. Delete correlation analysis files only") 
+            print("  4. Delete reconstruction files only")
+            print("  5. Delete other files only")
+            print("  6. Show file details")
+            print("  7. Cancel")
+            
+            choice = input("\nSelect cleanup option (1-7): ").strip()
+            
+            files_to_delete = []
+            
+            if choice == '1':
+                files_to_delete = result_files
+            elif choice == '2':
+                files_to_delete = file_categories['connectivity']
+            elif choice == '3':
+                files_to_delete = file_categories['correlation']
+            elif choice == '4':
+                files_to_delete = file_categories['reconstruction']
+            elif choice == '5':
+                files_to_delete = file_categories['other']
+            elif choice == '6':
+                self._show_file_details(results_dir, result_files)
+                input("Press Enter to continue...")
+                return
+            elif choice == '7':
+                print("Cleanup cancelled")
+                input("Press Enter to continue...")
+                return
+            else:
+                print("Invalid choice")
+                input("Press Enter to continue...")
+                return
+            
+            if files_to_delete:
+                size_to_delete = sum(os.path.getsize(os.path.join(results_dir, f)) for f in files_to_delete)
+                print(f"\nWill delete {len(files_to_delete)} files ({size_to_delete / 1024 / 1024:.1f} MB)")
+                
+                if self.core.confirm_operation(f"Delete {len(files_to_delete)} result files"):
+                    deleted_count = 0
+                    for filename in files_to_delete:
+                        try:
+                            os.remove(os.path.join(results_dir, filename))
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"Error deleting {filename}: {e}")
+                    
+                    print(f"Successfully deleted {deleted_count} files")
+                    self.core.log_operation("file_cleanup", "SUCCESS", f"Deleted {deleted_count} result files")
+                else:
+                    print("File cleanup cancelled")
+            else:
+                print("No files selected for deletion")
+                
+        except Exception as e:
+            print(f"Error during file cleanup: {e}")
+            self.core.log_operation("file_cleanup", "ERROR", str(e))
+            
+        input("Press Enter to continue...")
+
+    def _show_file_details(self, results_dir, result_files):
+        """Show detailed information about result files"""
+        print("\nResult File Details:")
+        print("-" * 80)
+        print(f"{'Filename':<45} {'Size (KB)':<12} {'Modified':<20}")
+        print("-" * 80)
+        
+        for filename in sorted(result_files):
+            filepath = os.path.join(results_dir, filename)
+            try:
+                size_kb = os.path.getsize(filepath) / 1024
+                mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+                modified = mtime.strftime("%Y-%m-%d %H:%M")
+                
+                print(f"{filename:<45} {size_kb:>8.1f}    {modified:<20}")
+                
+            except Exception as e:
+                print(f"{filename:<45} {'Error':<12} {'Unknown':<20}")
+
+    def backup_database(self):
+        """Create database backup"""
+        print("\nDatabase Backup")
+        print("="*20)
+        
+        try:
+            timestamp = int(datetime.now().timestamp())
+            backup_name = f"prng_analysis_backup_{timestamp}.db"
+            
+            # Simple file copy backup
+            import shutil
+            shutil.copy2(self.db_path, backup_name)
+            
+            backup_size = os.path.getsize(backup_name) / 1024
+            print(f"Database backed up to: {backup_name}")
+            print(f"Backup size: {backup_size:.1f} KB")
+            self.core.log_operation("backup", "SUCCESS", f"Created backup: {backup_name}")
+            
+        except Exception as e:
+            print(f"Backup failed: {e}")
+            self.core.log_operation("backup", "ERROR", str(e))
+            
+        input("Press Enter to continue...")
+
+    def integrity_check(self):
+        """Check database integrity"""
+        print("\nDatabase Integrity Check")
+        print("="*30)
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Run SQLite integrity check
+                cursor.execute("PRAGMA integrity_check")
+                result = cursor.fetchone()
+                
+                if result and result[0] == 'ok':
+                    print("✓ Database integrity: OK")
+                else:
+                    print(f"✗ Database integrity issues: {result}")
+                
+                # Check for orphaned records, etc.
+                cursor.execute("SELECT COUNT(*) FROM search_jobs WHERE job_id IS NULL OR job_id = ''")
+                null_ids = cursor.fetchone()[0]
+                
+                if null_ids == 0:
+                    print("✓ Job ID integrity: OK")
+                else:
+                    print(f"✗ Found {null_ids} jobs with invalid IDs")
+                
+                self.core.log_operation("integrity_check", "SUCCESS", "Integrity check completed")
+                
+        except Exception as e:
+            print(f"Integrity check failed: {e}")
+            self.core.log_operation("integrity_check", "ERROR", str(e))
+            
+        input("Press Enter to continue...")
+
+    def export_database(self):
+        """Export database to JSON"""
+        print("\nExport Database")
+        print("="*20)
+        
+        try:
+            timestamp = int(datetime.now().timestamp())
+            export_name = f"database_export_{timestamp}.json"
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get all tables
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = cursor.fetchall()
+                
+                export_data = {}
+                total_records = 0
+                
+                for (table_name,) in tables:
+                    cursor.execute(f"SELECT * FROM {table_name}")
+                    rows = cursor.fetchall()
+                    
+                    # Get column names
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    columns = [col[1] for col in cursor.fetchall()]
+                    
+                    # Convert to list of dictionaries
+                    table_data = []
+                    for row in rows:
+                        table_data.append(dict(zip(columns, row)))
+                    
+                    export_data[table_name] = table_data
+                    total_records += len(table_data)
+                
+                # Write to file
+                with open(export_name, 'w') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+                
+                export_size = os.path.getsize(export_name) / 1024
+                print(f"Database exported to: {export_name}")
+                print(f"Records exported: {total_records}")
+                print(f"Export size: {export_size:.1f} KB")
+                
+                self.core.log_operation("export", "SUCCESS", f"Exported {total_records} records to {export_name}")
+                
+        except Exception as e:
+            print(f"Export failed: {e}")
+            self.core.log_operation("export", "ERROR", str(e))
+            
+        input("Press Enter to continue...")
+
+    def shutdown(self):
+        """Clean shutdown of database manager"""
+        try:
+            # Close any open connections, cleanup resources
+            pass
+        except Exception as e:
+            print(f"Error during database manager shutdown: {e}")

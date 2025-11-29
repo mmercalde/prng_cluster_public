@@ -1,0 +1,441 @@
+{
+  "_schema_info": {
+    "version": "1.0.0",
+    "created": "2025-11-03",
+    "purpose": "Master schema defining all possible fields for PRNG analysis results",
+    "author": "Distributed PRNG Analysis System",
+    "modification_log": [
+      {
+        "date": "2025-11-03",
+        "version": "1.0.0",
+        "changes": "Initial schema creation",
+        "author": "System"
+      }
+    ],
+    "usage": "This schema defines the contract for all analysis results. Add new fields here to extend functionality without code changes."
+  },
+
+  "_field_types": {
+    "string": "Text values",
+    "integer": "Whole numbers",
+    "float": "Decimal numbers",
+    "boolean": "true/false",
+    "datetime": "ISO 8601 timestamp",
+    "array": "List of values",
+    "object": "Nested structure"
+  },
+
+  "run_metadata": {
+    "_description": "Information about the analysis run itself",
+    "fields": {
+      "run_id": {
+        "type": "string",
+        "required": true,
+        "description": "Unique identifier for this analysis run",
+        "example": "1B_java_lcg_20251103_172508"
+      },
+      "analysis_type": {
+        "type": "string",
+        "required": true,
+        "description": "Type of analysis performed",
+        "allowed_values": [
+          "bidirectional_sieve",
+          "forward_sieve",
+          "reverse_sieve",
+          "window_optimization",
+          "prng_sweep",
+          "pattern_analysis",
+          "custom"
+        ],
+        "example": "bidirectional_sieve"
+      },
+      "timestamp_start": {
+        "type": "datetime",
+        "required": true,
+        "description": "When analysis started (ISO 8601)",
+        "example": "2025-11-03T17:25:08-08:00"
+      },
+      "timestamp_end": {
+        "type": "datetime",
+        "required": false,
+        "description": "When analysis completed",
+        "example": "2025-11-03T18:30:15-08:00"
+      },
+      "execution_time_seconds": {
+        "type": "float",
+        "required": false,
+        "description": "Total execution time in seconds",
+        "example": 3907.5
+      },
+      "hostname": {
+        "type": "string",
+        "required": false,
+        "description": "Machine where analysis ran",
+        "example": "gpu-server-01"
+      },
+      "python_version": {
+        "type": "string",
+        "required": false,
+        "description": "Python version used",
+        "example": "3.10.12"
+      },
+      "schema_version": {
+        "type": "string",
+        "required": true,
+        "description": "Schema version used for this result",
+        "example": "1.0.0"
+      }
+    }
+  },
+
+  "analysis_parameters": {
+    "_description": "Configuration and parameters used for the analysis",
+    "fields": {
+      "prng_type": {
+        "type": "string",
+        "required": true,
+        "description": "PRNG algorithm used",
+        "allowed_values": [
+          "java_lcg",
+          "lcg_parkmiller",
+          "lcg_numerical",
+          "minstd",
+          "xorshift32",
+          "xorshift64",
+          "xorshift128",
+          "pcg32",
+          "custom"
+        ],
+        "example": "java_lcg"
+      },
+      "seed_start": {
+        "type": "integer",
+        "required": true,
+        "description": "Starting seed value",
+        "example": 0
+      },
+      "seed_end": {
+        "type": "integer",
+        "required": true,
+        "description": "Ending seed value (exclusive)",
+        "example": 1000000000
+      },
+      "total_seeds_tested": {
+        "type": "integer",
+        "required": true,
+        "description": "Total number of seeds tested",
+        "example": 1000000000
+      },
+      "window_size": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of draws in analysis window",
+        "example": 244
+      },
+      "window_offset": {
+        "type": "integer",
+        "required": false,
+        "description": "Draw offset for window start",
+        "example": 139
+      },
+      "skip_min": {
+        "type": "integer",
+        "required": false,
+        "description": "Minimum skip length tested",
+        "example": 3
+      },
+      "skip_max": {
+        "type": "integer",
+        "required": false,
+        "description": "Maximum skip length tested",
+        "example": 29
+      },
+      "threshold": {
+        "type": "float",
+        "required": false,
+        "description": "Match threshold (as decimal percentage)",
+        "example": 0.012
+      },
+      "dataset_file": {
+        "type": "string",
+        "required": true,
+        "description": "Source data file used",
+        "example": "daily3.json"
+      },
+      "sessions_analyzed": {
+        "type": "array",
+        "required": false,
+        "description": "List of session types analyzed",
+        "example": ["evening", "midday"]
+      },
+      "gpu_devices": {
+        "type": "array",
+        "required": false,
+        "description": "GPU devices used",
+        "example": [0, 1, 2, 3]
+      },
+      "batch_size": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds processed per batch",
+        "example": 10000000
+      },
+      "custom_parameters": {
+        "type": "object",
+        "required": false,
+        "description": "Any additional parameters not in schema",
+        "example": {"temperature_limit": 80, "fan_speed": "auto"}
+      }
+    }
+  },
+
+  "results_summary": {
+    "_description": "High-level summary of analysis results",
+    "fields": {
+      "total_survivors": {
+        "type": "integer",
+        "required": true,
+        "description": "Total seeds that passed filters",
+        "example": 278
+      },
+      "survival_rate": {
+        "type": "float",
+        "required": true,
+        "description": "Percentage of seeds that survived",
+        "example": 0.0000278
+      },
+      "forward_survivors": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds passing forward sieve",
+        "example": 52341
+      },
+      "reverse_survivors": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds passing reverse sieve",
+        "example": 51892
+      },
+      "bidirectional_survivors": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds passing both directions",
+        "example": 278
+      },
+      "best_match_count": {
+        "type": "integer",
+        "required": false,
+        "description": "Highest number of matches found",
+        "example": 10
+      },
+      "best_match_rate": {
+        "type": "float",
+        "required": false,
+        "description": "Best match rate achieved",
+        "example": 0.041
+      },
+      "best_seed": {
+        "type": "integer",
+        "required": false,
+        "description": "Seed with best performance",
+        "example": 47774590
+      },
+      "analysis_complete": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether analysis completed successfully",
+        "example": true
+      },
+      "error_message": {
+        "type": "string",
+        "required": false,
+        "description": "Error message if analysis failed",
+        "example": null
+      }
+    }
+  },
+
+  "survivor_details": {
+    "_description": "Detailed information about each surviving seed",
+    "fields": {
+      "seed": {
+        "type": "integer",
+        "required": true,
+        "description": "The seed value",
+        "example": 47774590
+      },
+      "matches": {
+        "type": "integer",
+        "required": true,
+        "description": "Number of matches found",
+        "example": 10
+      },
+      "total_draws": {
+        "type": "integer",
+        "required": true,
+        "description": "Total draws in window",
+        "example": 244
+      },
+      "match_rate": {
+        "type": "float",
+        "required": true,
+        "description": "Percentage of matches",
+        "example": 0.041
+      },
+      "skip_length": {
+        "type": "integer",
+        "required": false,
+        "description": "Skip pattern length",
+        "example": 7
+      },
+      "direction": {
+        "type": "string",
+        "required": false,
+        "description": "Analysis direction",
+        "allowed_values": ["forward", "reverse", "bidirectional"],
+        "example": "bidirectional"
+      },
+      "matched_numbers": {
+        "type": "array",
+        "required": false,
+        "description": "List of matched numbers",
+        "example": [7, 23, 45, 12, 33, 8, 19, 42, 31, 16]
+      },
+      "match_positions": {
+        "type": "array",
+        "required": false,
+        "description": "Positions of matches in window",
+        "example": [12, 34, 67, 89, 112, 145, 178, 201, 223, 240]
+      },
+      "confidence_score": {
+        "type": "float",
+        "required": false,
+        "description": "Statistical confidence (if calculated)",
+        "example": 0.95
+      },
+      "custom_metrics": {
+        "type": "object",
+        "required": false,
+        "description": "Additional metrics not in schema",
+        "example": {"entropy": 3.45, "autocorrelation": 0.02}
+      }
+    }
+  },
+
+  "performance_metrics": {
+    "_description": "Performance and resource usage statistics",
+    "fields": {
+      "seeds_per_second": {
+        "type": "float",
+        "required": false,
+        "description": "Processing rate",
+        "example": 256000.5
+      },
+      "gpu_utilization_avg": {
+        "type": "float",
+        "required": false,
+        "description": "Average GPU utilization (0-100%)",
+        "example": 87.3
+      },
+      "memory_peak_gb": {
+        "type": "float",
+        "required": false,
+        "description": "Peak memory usage in GB",
+        "example": 14.2
+      },
+      "cpu_utilization_avg": {
+        "type": "float",
+        "required": false,
+        "description": "Average CPU utilization (0-100%)",
+        "example": 45.6
+      },
+      "temperature_max_celsius": {
+        "type": "float",
+        "required": false,
+        "description": "Maximum GPU temperature",
+        "example": 78.5
+      },
+      "batches_processed": {
+        "type": "integer",
+        "required": false,
+        "description": "Total batches processed",
+        "example": 100
+      },
+      "batches_failed": {
+        "type": "integer",
+        "required": false,
+        "description": "Batches that failed/retried",
+        "example": 2
+      }
+    }
+  },
+
+  "data_sources": {
+    "_description": "Information about data sources used",
+    "fields": {
+      "dataset_name": {
+        "type": "string",
+        "required": true,
+        "description": "Name of dataset",
+        "example": "daily3.json"
+      },
+      "dataset_path": {
+        "type": "string",
+        "required": false,
+        "description": "Full path to dataset",
+        "example": "/home/michael/distributed_prng_analysis/daily3.json"
+      },
+      "dataset_size_bytes": {
+        "type": "integer",
+        "required": false,
+        "description": "File size in bytes",
+        "example": 1048576
+      },
+      "dataset_md5": {
+        "type": "string",
+        "required": false,
+        "description": "MD5 hash for verification",
+        "example": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "total_draws": {
+        "type": "integer",
+        "required": false,
+        "description": "Total draws in dataset",
+        "example": 5000
+      },
+      "date_range_start": {
+        "type": "string",
+        "required": false,
+        "description": "First draw date",
+        "example": "2020-01-01"
+      },
+      "date_range_end": {
+        "type": "string",
+        "required": false,
+        "description": "Last draw date",
+        "example": "2025-11-03"
+      }
+    }
+  },
+
+  "extensibility": {
+    "_description": "How to extend this schema",
+    "_instructions": [
+      "1. Add new fields to appropriate section",
+      "2. Specify type, required, description, example",
+      "3. For new analysis types, add to 'allowed_values'",
+      "4. Use 'custom_parameters' or 'custom_metrics' for temporary additions",
+      "5. Increment schema version for breaking changes",
+      "6. Document changes in modification_log",
+      "7. Update output_templates.json if display format changes"
+    ],
+    "_example_new_field": {
+      "field_name": {
+        "type": "string",
+        "required": false,
+        "description": "What this field represents",
+        "example": "Example value"
+      }
+    }
+  }
+}

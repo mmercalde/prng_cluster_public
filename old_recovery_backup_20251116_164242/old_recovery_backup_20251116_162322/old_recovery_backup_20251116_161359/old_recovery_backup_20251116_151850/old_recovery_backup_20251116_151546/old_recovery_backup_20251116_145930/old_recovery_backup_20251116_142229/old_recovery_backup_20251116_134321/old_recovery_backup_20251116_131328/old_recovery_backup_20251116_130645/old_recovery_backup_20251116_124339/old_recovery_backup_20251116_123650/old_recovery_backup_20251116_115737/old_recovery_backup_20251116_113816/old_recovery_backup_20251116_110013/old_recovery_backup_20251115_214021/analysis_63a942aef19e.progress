@@ -1,0 +1,1547 @@
+{
+  "analysis_id": "analysis_63a942aef19e",
+  "total_jobs": 26,
+  "completed_jobs": {},
+  "failed_jobs": {
+    "sieve_000": "Local execution failed (rc=1).\nSTDOUT tail:\n\nSTDERR tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax\n",
+    "sieve_001": "Local execution failed (rc=1).\nSTDOUT tail:\n\nSTDERR tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax\n",
+    "sieve_002": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_003": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_004": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_010": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_011": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_005": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_012": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_013": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_014": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_006": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_007": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_008": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_009": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_018": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_016": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_015": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_017": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_023": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_024": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_025": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_022": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_019": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_020": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax",
+    "sieve_021": "No valid JSON in output. stderr tail:\nTraceback (most recent call last):\n  File \"/home/michael/distributed_prng_analysis/sieve_filter.py\", line 30, in <module>\n    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs\n  File \"/home/michael/distributed_prng_analysis/prng_registry.py\", line 159\n    def mt19937_extract(state, index, 624, 397, 0x80000000, 0x7FFFFFFF, 0x9908B0DF):\n                                      ^^^\nSyntaxError: invalid syntax"
+  },
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "sieve_000",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1735765200,
+          1735957508
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_000",
+          "dataset_path": "daily3.json",
+          "seed_start": 1735765200,
+          "seed_end": 1735957508,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_001",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1735957508,
+          1736149816
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_001",
+          "dataset_path": "daily3.json",
+          "seed_start": 1735957508,
+          "seed_end": 1736149816,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_002",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1736149816,
+          1736342124
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_002",
+          "dataset_path": "daily3.json",
+          "seed_start": 1736149816,
+          "seed_end": 1736342124,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_003",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1736342124,
+          1736534432
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_003",
+          "dataset_path": "daily3.json",
+          "seed_start": 1736342124,
+          "seed_end": 1736534432,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.120_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_004",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1736534432,
+          1736726740
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_004",
+          "dataset_path": "daily3.json",
+          "seed_start": 1736534432,
+          "seed_end": 1736726740,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.120_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_005",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1736726740,
+          1736919048
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_005",
+          "dataset_path": "daily3.json",
+          "seed_start": 1736726740,
+          "seed_end": 1736919048,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.120_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_006",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1736919048,
+          1737111356
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_006",
+          "dataset_path": "daily3.json",
+          "seed_start": 1736919048,
+          "seed_end": 1737111356,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.120_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_007",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1737111356,
+          1737303664
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_007",
+          "dataset_path": "daily3.json",
+          "seed_start": 1737111356,
+          "seed_end": 1737303664,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.120_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_008",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1737303664,
+          1737495972
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_008",
+          "dataset_path": "daily3.json",
+          "seed_start": 1737303664,
+          "seed_end": 1737495972,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.120_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_009",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1737495972,
+          1737688280
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_009",
+          "dataset_path": "daily3.json",
+          "seed_start": 1737495972,
+          "seed_end": 1737688280,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.120_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_010",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1737688280,
+          1737880588
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_010",
+          "dataset_path": "daily3.json",
+          "seed_start": 1737688280,
+          "seed_end": 1737880588,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.120_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_011",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1737880588,
+          1738072896
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_011",
+          "dataset_path": "daily3.json",
+          "seed_start": 1737880588,
+          "seed_end": 1738072896,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.120_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_012",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1738072896,
+          1738265204
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_012",
+          "dataset_path": "daily3.json",
+          "seed_start": 1738072896,
+          "seed_end": 1738265204,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.120_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_013",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1738265204,
+          1738457512
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_013",
+          "dataset_path": "daily3.json",
+          "seed_start": 1738265204,
+          "seed_end": 1738457512,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.120_gpu11"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_014",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1738457512,
+          1738649820
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_014",
+          "dataset_path": "daily3.json",
+          "seed_start": 1738457512,
+          "seed_end": 1738649820,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.154_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_015",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1738649820,
+          1738842128
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_015",
+          "dataset_path": "daily3.json",
+          "seed_start": 1738649820,
+          "seed_end": 1738842128,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.154_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_016",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1738842128,
+          1739034436
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_016",
+          "dataset_path": "daily3.json",
+          "seed_start": 1738842128,
+          "seed_end": 1739034436,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.154_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_017",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1739034436,
+          1739226744
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_017",
+          "dataset_path": "daily3.json",
+          "seed_start": 1739034436,
+          "seed_end": 1739226744,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.154_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_018",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1739226744,
+          1739419052
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_018",
+          "dataset_path": "daily3.json",
+          "seed_start": 1739226744,
+          "seed_end": 1739419052,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.154_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_019",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1739419052,
+          1739611360
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_019",
+          "dataset_path": "daily3.json",
+          "seed_start": 1739419052,
+          "seed_end": 1739611360,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.154_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_020",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1739611360,
+          1739803668
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_020",
+          "dataset_path": "daily3.json",
+          "seed_start": 1739611360,
+          "seed_end": 1739803668,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.154_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_021",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1739803668,
+          1739995976
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_021",
+          "dataset_path": "daily3.json",
+          "seed_start": 1739803668,
+          "seed_end": 1739995976,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.154_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_022",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1739995976,
+          1740188284
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_022",
+          "dataset_path": "daily3.json",
+          "seed_start": 1739995976,
+          "seed_end": 1740188284,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.154_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_023",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1740188284,
+          1740380592
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_023",
+          "dataset_path": "daily3.json",
+          "seed_start": 1740188284,
+          "seed_end": 1740380592,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.154_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_024",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1740380592,
+          1740572900
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_024",
+          "dataset_path": "daily3.json",
+          "seed_start": 1740380592,
+          "seed_end": 1740572900,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.154_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_025",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          1740572900,
+          1740765200
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_025",
+          "dataset_path": "daily3.json",
+          "seed_start": 1740572900,
+          "seed_end": 1740765200,
+          "window_size": 512,
+          "min_match_threshold": 0.01,
+          "skip_range": [
+            5,
+            5
+          ],
+          "prng_families": [
+            "mt19937"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.154_gpu11"
+      }
+    }
+  ],
+  "retry_count": {
+    "sieve_000": 1,
+    "sieve_001": 1,
+    "sieve_002": 1,
+    "sieve_003": 1,
+    "sieve_004": 1,
+    "sieve_010": 1,
+    "sieve_011": 1,
+    "sieve_005": 1,
+    "sieve_012": 1,
+    "sieve_013": 1,
+    "sieve_014": 1,
+    "sieve_006": 1,
+    "sieve_007": 1,
+    "sieve_008": 1,
+    "sieve_009": 1,
+    "sieve_018": 1,
+    "sieve_016": 1,
+    "sieve_015": 1,
+    "sieve_017": 1,
+    "sieve_023": 1,
+    "sieve_024": 1,
+    "sieve_025": 1,
+    "sieve_022": 1,
+    "sieve_019": 1,
+    "sieve_020": 1,
+    "sieve_021": 1
+  },
+  "start_time": 1760584359.9559176,
+  "last_update": 1760584362.439324
+}

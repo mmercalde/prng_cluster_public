@@ -1,0 +1,66 @@
+================================================================================
+ADDON FOR INSTRUCTIONS.TXT
+================================================================================
+Add this section after "System Overview" or in a new "Results System" section:
+
+---
+
+## Results System (NEW - November 2025)
+
+### Overview
+All sieve analysis now automatically creates three output formats:
+- Human-readable summaries (`.txt`)
+- Excel-compatible spreadsheets (`.csv`)
+- Machine-readable JSON for AI/ML (`.json`)
+
+### Integrated Scripts
+✅ `sieve_filter.py` - Forward sieve
+✅ `reverse_sieve_filter.py` - Reverse sieve
+✅ `window_optimizer_integration_final.py` - Bidirectional analysis
+
+### Output Locations
+```
+results/
+├── summaries/          # Human-readable text summaries
+├── csv/                # Excel-compatible data
+├── json/               # Machine-readable structured data
+└── *.json             # Old format (backward compatible)
+```
+
+### Usage
+No changes needed! Just run your analysis:
+```bash
+# 100K test
+python3 test_100k_bidirectional_CORRECT.py
+
+# 1B seed run (edit seed_count first)
+python3 test_100k_bidirectional_CORRECT.py
+```
+
+Results automatically appear in `results/` subdirectories.
+
+### Viewing Results
+
+**Quick Summary:**
+```bash
+ls -lht results/summaries/*.txt | head -5
+cat results/summaries/forward_sieve_java_lcg_TIMESTAMP_summary.txt
+```
+
+**CSV Analysis:**
+```bash
+libreoffice results/csv/forward_sieve_java_lcg_TIMESTAMP.csv
+```
+
+**Machine-Readable:**
+```bash
+cat results/json/forward_sieve_java_lcg_TIMESTAMP_top100.json | jq
+```
+
+### Documentation
+- `RESULTS_SYSTEM_QUICKSTART.txt` - Quick reference
+- `INTEGRATION_STATUS_REPORT.txt` - Integration status
+- `schemas/` - Data schemas and templates
+
+---
+

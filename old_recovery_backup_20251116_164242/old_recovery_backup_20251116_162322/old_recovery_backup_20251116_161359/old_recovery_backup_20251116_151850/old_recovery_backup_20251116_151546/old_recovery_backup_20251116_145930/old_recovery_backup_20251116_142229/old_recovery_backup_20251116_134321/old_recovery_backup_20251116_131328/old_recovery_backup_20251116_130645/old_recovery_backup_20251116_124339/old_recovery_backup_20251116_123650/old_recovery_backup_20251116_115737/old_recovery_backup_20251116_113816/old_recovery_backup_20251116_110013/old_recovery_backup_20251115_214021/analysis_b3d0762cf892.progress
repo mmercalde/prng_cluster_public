@@ -1,0 +1,663 @@
+{
+  "analysis_id": "analysis_b3d0762cf892",
+  "total_jobs": 26,
+  "completed_jobs": {
+    "sieve_000": {
+      "job_id": "sieve_000",
+      "success": true,
+      "prng_families": [
+        "xorshift32"
+      ],
+      "seed_range": {
+        "start": 0,
+        "end": 3846
+      },
+      "k": 30,
+      "skip_range": [
+        0,
+        20
+      ],
+      "min_match_threshold": 0.6,
+      "survivors": [],
+      "stats": {
+        "total_seeds_tested": 3846,
+        "total_survivors": 0,
+        "duration_ms": 151.900053024292,
+        "avg_seeds_per_sec": 25319.280167630648
+      },
+      "per_family": {
+        "xorshift32": {
+          "survivors": [],
+          "tested": 3846,
+          "found": 0,
+          "duration_ms": 151.900053024292
+        }
+      },
+      "seeds_analyzed": 3846
+    },
+    "sieve_001": {
+      "job_id": "sieve_001",
+      "success": true,
+      "prng_families": [
+        "xorshift32"
+      ],
+      "seed_range": {
+        "start": 3846,
+        "end": 7692
+      },
+      "k": 30,
+      "skip_range": [
+        0,
+        20
+      ],
+      "min_match_threshold": 0.6,
+      "survivors": [],
+      "stats": {
+        "total_seeds_tested": 3846,
+        "total_survivors": 0,
+        "duration_ms": 151.7324447631836,
+        "avg_seeds_per_sec": 25347.24861253402
+      },
+      "per_family": {
+        "xorshift32": {
+          "survivors": [],
+          "tested": 3846,
+          "found": 0,
+          "duration_ms": 151.7324447631836
+        }
+      },
+      "seeds_analyzed": 3846
+    },
+    "sieve_010": {
+      "job_id": "sieve_010",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 8,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.014007806777954
+    },
+    "sieve_011": {
+      "job_id": "sieve_011",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 9,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.2527353763580322
+    },
+    "sieve_012": {
+      "job_id": "sieve_012",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 10,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.179163932800293
+    },
+    "sieve_013": {
+      "job_id": "sieve_013",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 11,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.7056686878204346
+    },
+    "sieve_014": {
+      "analysis_type": "gpu_correlation",
+      "gpu_id": 0,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "device_info": {
+        "name": "AMD Radeon RX 6600",
+        "memory": 8573157376,
+        "compute_capability": 10
+      },
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 0,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.227937936782837
+    },
+    "sieve_006": {
+      "job_id": "sieve_006",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 4,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.254807710647583
+    },
+    "sieve_015": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 1,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.234797716140747
+    },
+    "sieve_016": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 2,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.3395557403564453
+    },
+    "sieve_007": {
+      "job_id": "sieve_007",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 5,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.5595736503601074
+    },
+    "sieve_017": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 3,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.3746602535247803
+    },
+    "sieve_018": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 4,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.3535823822021484
+    },
+    "sieve_019": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 5,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.43144154548645
+    }
+  },
+  "failed_jobs": {
+    "sieve_002": "No valid JSON in output. stderr tail:\nHW Exception by GPU node-9 (Agent handle: 0x5da917bb76a0) reason :GPU Hang\ntimeout: the monitored command dumped core\nbash: line 4: 87316 Aborted                 timeout -k 10 1200 env HSA_OVERRIDE_GFX_VERSION=10.3.0 HSA_ENABLE_SDMA=0 ROCM_PATH=/opt/rocm HIP_PATH=/opt/rocm/hip LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH} PATH=/opt/rocm/bin:${PATH} CUPY_CACHE_DIR=${HOME}/.cache/cupy CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 /home/michael/rocm_env/bin/python -u distributed_worker.py job_sieve_002.json --gpu-id 0"
+  },
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "sieve_002",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          7692,
+          11538
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_003",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          11538,
+          15384
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.120_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_004",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          15384,
+          19230
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.120_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_005",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          19230,
+          23076
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.120_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_008",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          30768,
+          34614
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.120_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_009",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          34614,
+          38460
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.120_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_020",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          76920,
+          80766
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.154_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_021",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          80766,
+          84612
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.154_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_022",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          84612,
+          88458
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.154_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_023",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          88458,
+          92304
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.154_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_024",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          92304,
+          96150
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.154_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_025",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          96150,
+          99996
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.154_gpu11"
+      }
+    }
+  ],
+  "retry_count": {
+    "sieve_002": 1
+  },
+  "start_time": 1759802747.5164678,
+  "last_update": 1759802813.7894158
+}

@@ -1,0 +1,149 @@
+{
+  "analysis_id": "analysis_6337e00d858c",
+  "total_jobs": 3,
+  "completed_jobs": {},
+  "failed_jobs": {},
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "scorer_trial_0",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_0",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/bidirectional_survivors.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "0",
+            "{\"residue_mod_1\": 9, \"residue_mod_2\": 61, \"residue_mod_3\": 780, \"max_offset\": 4, \"temporal_window_size\": 50, \"temporal_num_windows\": 9, \"min_confidence_threshold\": 0.21282909135811462, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.4497828621962826, \"learning_rate\": 1.77363972064738e-05, \"batch_size\": 128, \"optuna_trial_number\": 0}",
+            "--optuna-study-name",
+            "scorer_meta_opt_1763325410",
+            "--optuna-study-db",
+            "sqlite:///./optuna_studies/scorer_meta_opt_1763325410.db"
+          ],
+          "expected_output": "scorer_trial_results/trial_0000.json",
+          "timeout": 3600
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/torch/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scorer_trial_1",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_1",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/bidirectional_survivors.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "1",
+            "{\"residue_mod_1\": 7, \"residue_mod_2\": 59, \"residue_mod_3\": 783, \"max_offset\": 12, \"temporal_window_size\": 200, \"temporal_num_windows\": 5, \"min_confidence_threshold\": 0.16750530490894916, \"hidden_layers\": \"128_64\", \"dropout\": 0.4659412519913825, \"learning_rate\": 5.651390759351643e-05, \"batch_size\": 256, \"optuna_trial_number\": 1}",
+            "--optuna-study-name",
+            "scorer_meta_opt_1763325410",
+            "--optuna-study-db",
+            "sqlite:///./optuna_studies/scorer_meta_opt_1763325410.db"
+          ],
+          "expected_output": "scorer_trial_results/trial_0001.json",
+          "timeout": 3600
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/torch/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scorer_trial_2",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_2",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/bidirectional_survivors.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "2",
+            "{\"residue_mod_1\": 18, \"residue_mod_2\": 128, \"residue_mod_3\": 1214, \"max_offset\": 13, \"temporal_window_size\": 200, \"temporal_num_windows\": 4, \"min_confidence_threshold\": 0.05492606279378177, \"hidden_layers\": \"128_64\", \"dropout\": 0.17419364409005383, \"learning_rate\": 0.003111716837338466, \"batch_size\": 64, \"optuna_trial_number\": 2}",
+            "--optuna-study-name",
+            "scorer_meta_opt_1763325410",
+            "--optuna-study-db",
+            "sqlite:///./optuna_studies/scorer_meta_opt_1763325410.db"
+          ],
+          "expected_output": "scorer_trial_results/trial_0002.json",
+          "timeout": 3600
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    }
+  ],
+  "retry_count": {},
+  "start_time": 1763325431.475049,
+  "last_update": 1763325431.4750993
+}

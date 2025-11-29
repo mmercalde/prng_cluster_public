@@ -1,0 +1,992 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Modular sieve_filter.py
+
+Purpose
+-------
+A drop-in, preset-driven sieve engine that supports both the simple
+one-seed/one-draw eliminator and a more sophisticated pipeline
+(prefilter → permutations with BH/FDR → composite gate), with a
+minimal surface area so operators can run it via simple presets.
+
+Design notes
+------------
+- Pure Python + NumPy implementation with optional CuPy acceleration.
+- PRNG stepping is injected through a minimal interface so you can
+  swap in your real generator without editing the sieve core.
+- Draws are provided as a list of dicts with fields:
+  {"value": int (0..999), "timestamp": int (unix seconds)}.
+- Mapping supported: "mod1000" and "xor_ts_mod1000".
+- Outputs a compact result object with masks, survivors, per-stage
+  stats, and (when enabled) scores and p/q-values.
+
+Usage sketch (from your orchestrator)
+-------------------------------------
+from sieve_filter import (
+    PRESETS, build_sophisticated_params, SieveParams,
+    run_sieve, SimplePRNG
+)
+params_dict = build_sophisticated_params(mode="BALANCED", conf=0.5,
+                                         time_offset_sec=0, targets=None)
+params = SieveParams.from_dict(params_dict)
+
+prng = SimplePRNG()  # replace with your real PRNG implementation
+result = run_sieve(seed_start=0, seed_end=1_000_000, draws=draws,
+                   prng=prng, params=params, use_gpu=False)
+print(result.summary_line())
+path = result.save("results/")
+
+This module intentionally contains no CLI; wire it from your UI/driver.
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+import json
+import math
+import os
+import time
+
+# Backend selection (NumPy default; CuPy optional)
+try:
+    import cupy as cp  # type: ignore
+    _CUPY_AVAILABLE = True
+except Exception:
+    cp = None  # type: ignore
+    _CUPY_AVAILABLE = False
+import numpy as np
+
+# ----------------------------
+# Presets & Param Builders
+# ----------------------------
+
+PRESETS: Dict[str, Dict[str, Any]] = {
+    "FAST": {
+        "permutation.perms": 8192,
+        "permutation.perm_batch": 2048,
+        "permutation.fdr_q": 0.12,
+        "prefilter_corr.lmax": 12,
+        "prefilter_corr.samples": 4000,
+        "prefilter_corr.corr_threshold": 0.055,
+        "composite.weights": {"corr": 0.5, "pval": 0.5},
+        "exec.samples": 10_000,
+        "exec.batch_size": 2048,
+    },
+    "BALANCED": {
+        "permutation.perms": 12_288,
+        "permutation.perm_batch": 2048,
+        "permutation.fdr_q": 0.10,
+        "prefilter_corr.lmax": 12,
+        "prefilter_corr.samples": 6000,
+        "prefilter_corr.corr_threshold": 0.062,
+        "composite.weights": {"corr": 0.5, "pval": 0.5},
+        "exec.samples": 15_000,
+        "exec.batch_size": 2048,
+    },
+    "STRICT": {
+        "permutation.perms": 16_384,
+        "permutation.perm_batch": 2048,
+        "permutation.fdr_q": 0.08,
+        "prefilter_corr.lmax": 16,
+        "prefilter_corr.samples": 8000,
+        "prefilter_corr.corr_threshold": 0.070,
+        "composite.weights": {"corr": 0.45, "pval": 0.55},
+        "exec.samples": 20_000,
+        "exec.batch_size": 1536,
+    },
+}
+
+
+def _map_confidence(conf: float) -> Tuple[float, float]:
+    """Map [0,1] confidence to (score_min, fdr_q)."""
+    conf = max(0.0, min(1.0, conf))
+    score_min = 0.28 + 0.10 * conf     # 0.28 → 0.38
+    fdr_q = 0.14 - 0.08 * conf         # 0.14 → 0.06
+    return round(score_min, 3), round(fdr_q, 3)
+
+
+def build_sophisticated_params(
+    mode: str,
+    conf: float,
+    time_offset_sec: int = 0,
+    targets: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    base = PRESETS[mode.upper()]
+    score_min, fdr_q = _map_confidence(conf)
+    params: Dict[str, Any] = {
+        "sieve": {
+            "residue": {"allowed_residues": []},
+            "affine":  {"enabled": True, "k_candidates": [-10], "time_offset_sec": time_offset_sec},
+            "prefilter_corr": {
+                "lmax": base["prefilter_corr.lmax"],
+                "samples": base["prefilter_corr.samples"],
+                "corr_threshold": base["prefilter_corr.corr_threshold"],
+            },
+            "permutation": {
+                "perms": base["permutation.perms"],
+                "perm_batch": base["permutation.perm_batch"],
+                "fdr_q": fdr_q,
+            },
+            "composite": {
+                "weights": base["composite.weights"],
+                "score_min": score_min,
+                "top_k_per_batch": 5000,
+            },
+            "targets": {
+                "enabled": bool(targets),
+                "values": targets or [],
+                "min_targets_hit": 1,
+            },
+            # Optional advanced filters are disabled by default in presets
+            "offset_stability": {"enabled": False, "range_sec": 0, "step_sec": 0, "policy": "any"},
+            "family": {"enabled": False, "id": "auto", "shift_days": [12, 14], "tolerance": 0},
+            "chi2": {"enabled": False, "min_p": 0.01, "min_samples": 5000},
+            "gap": {"enabled": False, "window_days": 120, "step_days": 7, "min_hits_A": 3, "min_hits_B": 2, "merge_rule": "weighted", "weight_recent": 0.65},
+        },
+        "exec": {
+            "samples": base["exec.samples"],
+            "grid_size": 16,
+            "batch_size": base["exec.batch_size"],
+            "max_candidates": 500_000,
+            "retry_failed": True,
+        },
+        "coord": {"reserve_gpus": 0},
+    }
+    return params
+
+
+# ----------------------------
+# Dataclasses for IO
+# ----------------------------
+
+@dataclass
+class SieveParams:
+    # minimal, operator-facing subset
+    mode: str = "BALANCED"
+    affine_enabled: bool = True
+    k_candidates: Tuple[int, ...] = (-10,)
+    time_offset_sec: int = 0
+
+    prefilter_lmax: int = 12
+    prefilter_samples: int = 6000
+    prefilter_corr_threshold: float = 0.062
+
+    perms: int = 12288
+    perm_batch: int = 2048
+    fdr_q: float = 0.10
+
+    weight_corr: float = 0.5
+    weight_pval: float = 0.5
+    score_min: float = 0.33
+    top_k_per_batch: int = 5000
+
+    targets_enabled: bool = False
+    targets: Tuple[int, ...] = ()
+    min_targets_hit: int = 1
+
+    # Optional filters (off by default)
+    offset_stability_enabled: bool = False
+    offset_range_sec: int = 0
+    offset_step_sec: int = 0
+    offset_policy: str = "any"  # any|majority|all
+
+    family_enabled: bool = False
+    family_id: str = "auto"
+    family_shift_days: Tuple[int, int] = (12, 14)
+    family_tolerance: int = 0
+
+    chi2_enabled: bool = False
+    chi2_min_p: float = 0.01
+    chi2_min_samples: int = 5000
+
+    gap_enabled: bool = False
+    gap_window_days: int = 120
+    gap_step_days: int = 7
+    gap_min_hits_A: int = 3
+    gap_min_hits_B: int = 2
+    gap_merge_rule: str = "weighted"  # weighted|union|intersect
+    gap_weight_recent: float = 0.65
+
+    # Execution
+    exec_samples: int = 15000
+    exec_grid_size: int = 16
+    exec_batch_size: int = 2048
+    exec_max_candidates: int = 500000
+    exec_retry_failed: bool = True
+
+    @classmethod
+    def from_dict(cls, blob: Dict[str, Any]) -> "SieveParams":
+        s = blob.get("sieve", {})
+        e = blob.get("exec", {})
+        params = cls(
+            mode=blob.get("mode", "BALANCED"),
+            affine_enabled=bool(s.get("affine", {}).get("enabled", True)),
+            k_candidates=tuple(s.get("affine", {}).get("k_candidates", [-10])),
+            time_offset_sec=int(s.get("affine", {}).get("time_offset_sec", 0)),
+
+            prefilter_lmax=int(s.get("prefilter_corr", {}).get("lmax", 12)),
+            prefilter_samples=int(s.get("prefilter_corr", {}).get("samples", 6000)),
+            prefilter_corr_threshold=float(s.get("prefilter_corr", {}).get("corr_threshold", 0.062)),
+
+            perms=int(s.get("permutation", {}).get("perms", 12288)),
+            perm_batch=int(s.get("permutation", {}).get("perm_batch", 2048)),
+            fdr_q=float(s.get("permutation", {}).get("fdr_q", 0.10)),
+
+            weight_corr=float(s.get("composite", {}).get("weights", {}).get("corr", 0.5)),
+            weight_pval=float(s.get("composite", {}).get("weights", {}).get("pval", 0.5)),
+            score_min=float(s.get("composite", {}).get("score_min", 0.33)),
+            top_k_per_batch=int(s.get("composite", {}).get("top_k_per_batch", 5000)),
+
+            targets_enabled=bool(s.get("targets", {}).get("enabled", False)),
+            targets=tuple(s.get("targets", {}).get("values", [])),
+            min_targets_hit=int(s.get("targets", {}).get("min_targets_hit", 1)),
+
+            offset_stability_enabled=bool(s.get("offset_stability", {}).get("enabled", False)),
+            offset_range_sec=int(s.get("offset_stability", {}).get("range_sec", 0)),
+            offset_step_sec=int(s.get("offset_stability", {}).get("step_sec", 0)),
+            offset_policy=str(s.get("offset_stability", {}).get("policy", "any")),
+
+            family_enabled=bool(s.get("family", {}).get("enabled", False)),
+            family_id=str(s.get("family", {}).get("id", "auto")),
+            family_shift_days=tuple(s.get("family", {}).get("shift_days", [12, 14])),
+            family_tolerance=int(s.get("family", {}).get("tolerance", 0)),
+
+            chi2_enabled=bool(s.get("chi2", {}).get("enabled", False)),
+            chi2_min_p=float(s.get("chi2", {}).get("min_p", 0.01)),
+            chi2_min_samples=int(s.get("chi2", {}).get("min_samples", 5000)),
+
+            gap_enabled=bool(s.get("gap", {}).get("enabled", False)),
+            gap_window_days=int(s.get("gap", {}).get("window_days", 120)),
+            gap_step_days=int(s.get("gap", {}).get("step_days", 7)),
+            gap_min_hits_A=int(s.get("gap", {}).get("min_hits_A", 3)),
+            gap_min_hits_B=int(s.get("gap", {}).get("min_hits_B", 2)),
+            gap_merge_rule=str(s.get("gap", {}).get("merge_rule", "weighted")),
+            gap_weight_recent=float(s.get("gap", {}).get("weight_recent", 0.65)),
+
+            exec_samples=int(e.get("samples", 15000)),
+            exec_grid_size=int(e.get("grid_size", 16)),
+            exec_batch_size=int(e.get("batch_size", 2048)),
+            exec_max_candidates=int(e.get("max_candidates", 500000)),
+            exec_retry_failed=bool(e.get("retry_failed", True)),
+        )
+        return params
+
+
+@dataclass
+class SieveStageStat:
+    stage: str
+    input: int
+    kept: int
+    ms: float
+    notes: Optional[str] = None
+
+
+@dataclass
+class SieveResult:
+    survivor_mask: np.ndarray  # shape=(N,), dtype=bool
+    survivor_indices: List[int]
+    stage_stats: List[SieveStageStat]
+    scores: Optional[np.ndarray] = None  # only for sophisticated pipeline
+    p_values: Optional[np.ndarray] = None
+    q_values: Optional[np.ndarray] = None
+    meta: Optional[Dict[str, Any]] = None
+
+    def summary_line(self) -> str:
+        total = int(self.meta.get("input", 0)) if self.meta else len(self.survivor_mask)
+        mode = self.meta.get("mode", "?") if self.meta else "?"
+        kept = len(self.survivor_indices)
+        dur = self.meta.get("duration_ms", 0) if self.meta else 0
+        return f"input={total:,} → survivors={kept:,} ({mode}) in {dur/1000.0:.1f}s"
+
+    def save(self, outdir: str) -> str:
+        os.makedirs(outdir, exist_ok=True)
+        ts = time.strftime("%Y-%m-%d_%H-%M-%S")
+        fname = f"sieve_{ts}.json"
+        path = os.path.join(outdir, fname)
+        payload = {
+            "meta": self.meta or {},
+            "stages": [asdict(s) for s in self.stage_stats],
+            "survivors_top": _pack_top(self),
+            "counts": {"input": self.meta.get("input", None), "final": len(self.survivor_indices)},
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return path
+
+
+def _pack_top(res: SieveResult, k: int = 50) -> List[Dict[str, Any]]:
+    idxs = res.survivor_indices
+    out: List[Dict[str, Any]] = []
+    if res.scores is not None and len(idxs) > 0:
+        # sort by score desc
+        order = np.argsort(-res.scores)
+        order = order[: min(k, len(order))]
+        for i in order:
+            out.append({
+                "seed": int(idxs[i]),
+                "score": float(res.scores[i]),
+                "q": (float(res.q_values[i]) if res.q_values is not None else None),
+            })
+    else:
+        for s in idxs[: min(k, len(idxs))]:
+            out.append({"seed": int(s)})
+    return out
+
+
+# ----------------------------
+# Minimal PRNG interface
+# ----------------------------
+
+class PRNGInterface:
+    """Minimal interface your real PRNG should implement."""
+    name: str = "PRNG"
+
+    def step_value(self, seeds: np.ndarray, draw_index: int) -> np.ndarray:
+        """Return one 32-bit value per seed for this draw index.
+        Replace with your true stepping. Default: simple LCG demo.
+        """
+        a, c, m = 1664525, 1013904223, 0xFFFFFFFF
+        # one-step per draw (demo only)
+        return (a * (seeds & m) + c) & m
+
+
+class SimplePRNG(PRNGInterface):
+    name = "LCG-demo"
+
+
+# ----------------------------
+# Mapping helpers
+# ----------------------------
+
+def _apply_mapping(values: np.ndarray, draw_value: int, mapping: str, ts: int) -> np.ndarray:
+    if mapping == "mod1000":
+        return (values % 1000) == draw_value
+    elif mapping == "xor_ts_mod1000":
+        return ((values ^ np.uint64(ts)) % 1000) == draw_value
+    else:
+        raise ValueError(f"Unknown mapping: {mapping}")
+
+
+# ----------------------------
+# Core stages (vectorized CPU; optional CuPy injection)
+# ----------------------------
+
+def stage_simple_fit(
+    seeds: np.ndarray,
+    draws: Sequence[Dict[str, Any]],
+    prng: PRNGInterface,
+    mapping: str,
+    time_offset_sec: int = 0,
+) -> Tuple[np.ndarray, SieveStageStat]:
+    t0 = time.time()
+    mask = np.ones(seeds.shape[0], dtype=bool)
+    for i, d in enumerate(draws):
+        vals = prng.step_value(seeds, i)
+        ts = int(d.get("timestamp") or 0) + int(time_offset_sec)
+        ok = _apply_mapping(vals, int(d["value"]), mapping, ts)
+        mask &= ok
+        if not mask.any():
+            break
+        seeds = seeds  # explicit for clarity; seeds unchanged in demo
+    ms = (time.time() - t0) * 1000
+    stat = SieveStageStat("simple_fit", input=int(len(mask)), kept=int(mask.sum()), ms=ms)
+    return mask, stat
+
+
+def stage_residue(
+    seeds: np.ndarray,
+    prng: PRNGInterface,
+    draw_value: int,
+    allowed_residues: Sequence[int],
+) -> Tuple[np.ndarray, SieveStageStat]:
+    t0 = time.time()
+    if not allowed_residues:
+        mask = np.ones(seeds.shape[0], dtype=bool)
+        kept = int(mask.sum())
+        stat = SieveStageStat("residue", input=int(len(mask)), kept=kept, ms=(time.time() - t0) * 1000, notes="skip")
+        return mask, stat
+    vals = prng.step_value(seeds, 0)
+    res = (vals % 1000).astype(int)
+    allowed = np.isin(res, np.asarray(allowed_residues, dtype=int))
+    ms = (time.time() - t0) * 1000
+    stat = SieveStageStat("residue", input=int(len(allowed)), kept=int(allowed.sum()), ms=ms)
+    return allowed, stat
+
+
+def stage_affine_timestamp(
+    seeds: np.ndarray,
+    draws: Sequence[Dict[str, Any]],
+    prng: PRNGInterface,
+    k_candidates: Sequence[int],
+    time_offset_sec: int,
+    mapping: str,
+) -> Tuple[np.ndarray, SieveStageStat]:
+    t0 = time.time()
+    mask = np.zeros(seeds.shape[0], dtype=bool)
+    for k in k_candidates:
+        m_k = np.ones(seeds.shape[0], dtype=bool)
+        for i, d in enumerate(draws):
+            vals = prng.step_value(seeds, i)
+            ts = int(d.get("timestamp") or 0) + int(time_offset_sec)
+            # NOTE: place-holder for using k; incorporate k into mapping if needed.
+            ok = _apply_mapping(vals, int(d["value"]), mapping, ts)
+            m_k &= ok
+            if not m_k.any():
+                break
+        mask |= m_k
+        if not (~mask).any():  # every seed passed for some k
+            break
+    ms = (time.time() - t0) * 1000
+    stat = SieveStageStat("affine_ts", input=int(len(mask)), kept=int(mask.sum()), ms=ms)
+    return mask, stat
+
+
+def stage_lag_corr_prefilter(
+    seeds: np.ndarray,
+    prng: PRNGInterface,
+    lmax: int,
+    samples: int,
+    corr_threshold: float,
+) -> Tuple[np.ndarray, SieveStageStat, np.ndarray]:
+    t0 = time.time()
+    # Lightweight proxy: compute a simple normalized variance proxy as a stand-in for small-lag corr.
+    # Replace with your true correlation implementation if available.
+    vals = prng.step_value(seeds, 0).astype(np.float64)
+    x = (vals % 1000) / 999.0
+    x = (x - x.mean()) / (x.std() + 1e-9)
+    # Fake multi-lag measure: moving average of squared signal as a proxy.
+    corr_proxy = np.abs(x)  # shape (N,)
+    mask = corr_proxy >= corr_threshold
+    ms = (time.time() - t0) * 1000
+    stat = SieveStageStat("prefilter_corr", input=int(len(mask)), kept=int(mask.sum()), ms=ms,
+                          notes=f"lmax={lmax}, samples={samples}")
+    return mask, stat, corr_proxy
+
+
+def _benjamini_hochberg(p: np.ndarray) -> np.ndarray:
+    n = len(p)
+    order = np.argsort(p)
+    ranked = p[order]
+    q = np.empty_like(ranked)
+    prev = 1.0
+    for i in range(n - 1, -1, -1):
+        val = ranked[i] * n / (i + 1)
+        prev = min(prev, val)
+        q[i] = prev
+    out = np.empty_like(q)
+    out[order] = q
+    return out
+
+
+def stage_permutation_significance(
+    seeds: np.ndarray,
+    signal: np.ndarray,
+    perms: int,
+    batch: int,
+    fdr_q: float,
+) -> Tuple[np.ndarray, SieveStageStat, np.ndarray, np.ndarray]:
+    t0 = time.time()
+    N = seeds.shape[0]
+    # Very simple permutation test: shuffle signal per batch; count how often random >= observed.
+    observed = np.asarray(signal, dtype=np.float64)
+    counts = np.zeros(N, dtype=np.int32)
+    rng = np.random.default_rng(12345)
+    for start in range(0, perms, batch):
+        m = min(batch, perms - start)
+        # Broadcast compare: generate m random noise draws and compare percentiles
+        noise = rng.normal(loc=0.0, scale=1.0, size=(m,))
+        # Count exceedances with a simple threshold per run (coarse but consistent ordering)
+        thr = np.quantile(observed, 0.5) + noise  # crude null; replace with domain-specific null if available
+        exceed = observed[None, :] <= thr[:, None]
+        counts += exceed.sum(axis=0)
+    # p-value estimate
+    p = (counts + 1.0) / (perms + 1.0)
+    q = _benjamini_hochberg(p)
+    mask = q <= fdr_q
+    ms = (time.time() - t0) * 1000
+    stat = SieveStageStat("permutation", input=int(N), kept=int(mask.sum()), ms=ms,
+                          notes=f"perms={perms}, batch={batch}, fdr_q={fdr_q}")
+    return mask, stat, p, q
+
+
+def stage_composite_gate(
+    survivors: np.ndarray,
+    scores_corr: np.ndarray,
+    p_values: Optional[np.ndarray],
+    weight_corr: float,
+    weight_pval: float,
+    score_min: float,
+) -> Tuple[np.ndarray, SieveStageStat, np.ndarray]:
+    t0 = time.time()
+    eps = 1e-12
+    # Normalize corr proxy to [0,1]
+    corr_n = (scores_corr - scores_corr.min()) / (scores_corr.ptp() + eps)
+    if p_values is None:
+        comp = corr_n
+    else:
+        # Convert p to "confidence" 1-p, then normalize
+        conf = 1.0 - p_values
+        conf_n = (conf - conf.min()) / (conf.ptp() + eps)
+        w1 = max(0.0, min(1.0, weight_corr))
+        w2 = max(0.0, min(1.0, weight_pval))
+        if (w1 + w2) <= eps:
+            w1, w2 = 0.5, 0.5
+        comp = (w1 * corr_n + w2 * conf_n) / (w1 + w2)
+    comp[~survivors] = 0.0
+    mask = comp >= score_min
+    ms = (time.time() - t0) * 1000
+    stat = SieveStageStat("composite", input=int(survivors.sum()), kept=int(mask.sum()), ms=ms,
+                          notes=f"score_min={score_min}")
+    return mask, stat, comp
+
+
+# ----------------------------
+# Orchestrator
+# ----------------------------
+
+def _ensure_backend(use_gpu: bool) -> str:
+    if use_gpu and not _CUPY_AVAILABLE:
+        raise RuntimeError("use_gpu=True but CuPy is not available. Install CuPy (CUDA) or cupy-rocm and set ROCm env before import.")
+    return "gpu" if (use_gpu and _CUPY_AVAILABLE) else "cpu"
+
+
+def _np(arr):
+    """Return a NumPy array regardless of backend."""
+    if _CUPY_AVAILABLE and isinstance(arr, cp.ndarray):
+        return cp.asnumpy(arr)
+    return np.asarray(arr)
+
+
+def stage_simple_fit_gpu(
+    seed_start: int,
+    seed_end: int,
+    draws: Sequence[Dict[str, Any]],
+    prng: PRNGInterface,
+    mapping: str,
+    time_offset_sec: int,
+    device_id: int = 0,
+) -> Tuple[np.ndarray, SieveStageStat]:
+    t0 = time.time()
+    with cp.cuda.Device(device_id):
+        seeds = cp.arange(seed_start, seed_end, dtype=cp.uint64)
+        mask = cp.ones(seeds.shape[0], dtype=cp.bool_)
+        for i, d in enumerate(draws):
+            vals = cp.asarray(prng.step_value(_np(seeds), i)) if not hasattr(prng, "step_value_gpu") else prng.step_value_gpu(seeds, i)
+            ts = int(d.get("timestamp") or 0) + int(time_offset_sec)
+            if mapping == "mod1000":
+                ok = (vals % 1000) == int(d["value"])
+            elif mapping == "xor_ts_mod1000":
+                ok = ((vals ^ cp.uint64(ts)) % 1000) == int(d["value"])
+            else:
+                raise ValueError("Unknown mapping")
+            mask &= ok
+            if not bool(mask.any()):
+                break
+        kept = int(mask.sum().get())
+        ms = (time.time() - t0) * 1000
+        return _np(mask), SieveStageStat("simple_fit(gpu)", input=int(mask.size), kept=kept, ms=ms)
+
+
+def stage_lag_corr_prefilter_gpu(
+    seeds_masked_np: np.ndarray,
+    prng: PRNGInterface,
+    lmax: int,
+    samples: int,
+    corr_threshold: float,
+    device_id: int = 0,
+) -> Tuple[np.ndarray, SieveStageStat, np.ndarray]:
+    t0 = time.time()
+    with cp.cuda.Device(device_id):
+        seeds = cp.asarray(seeds_masked_np, dtype=cp.uint64)
+        vals = cp.asarray(prng.step_value(_np(seeds), 0)) if not hasattr(prng, "step_value_gpu") else prng.step_value_gpu(seeds, 0)
+        x = (vals % 1000).astype(cp.float64) / 999.0
+        x = (x - x.mean()) / (x.std() + 1e-9)
+        corr_proxy = cp.abs(x)
+        mask = corr_proxy >= corr_threshold
+        kept = int(mask.sum().get())
+        ms = (time.time() - t0) * 1000
+        return _np(mask), SieveStageStat("prefilter_corr(gpu)", input=int(mask.size), kept=kept, ms=ms, notes=f"lmax={lmax}, samples={samples}"), _np(corr_proxy)
+
+
+def stage_permutation_significance_gpu(
+    observed_np: np.ndarray,
+    perms: int,
+    batch: int,
+    fdr_q: float,
+    device_id: int = 0,
+) -> Tuple[np.ndarray, SieveStageStat, np.ndarray, np.ndarray]:
+    t0 = time.time()
+    with cp.cuda.Device(device_id):
+        observed = cp.asarray(observed_np, dtype=cp.float64)
+        N = observed.size
+        counts = cp.zeros(N, dtype=cp.int32)
+        rng = cp.random.RandomState(12345)
+        for start in range(0, perms, batch):
+            m = min(batch, perms - start)
+            noise = rng.standard_normal(size=(m,))
+            thr = cp.quantile(observed, 0.5) + noise
+            exceed = observed[None, :] <= thr[:, None]
+            counts += exceed.sum(axis=0)
+        p = (counts + 1.0) / (perms + 1.0)
+        q = cp.asarray(_benjamini_hochberg(_np(p)))
+        mask = q <= fdr_q
+        kept = int(mask.sum().get())
+        ms = (time.time() - t0) * 1000
+        return _np(mask), SieveStageStat("permutation(gpu)", input=int(N), kept=kept, ms=ms, notes=f"perms={perms}, batch={batch}, fdr_q={fdr_q}"), _np(p), _np(q)
+
+
+def stage_composite_gate_gpu(
+    survivors_mask_np: np.ndarray,
+    scores_corr_np: np.ndarray,
+    p_values_np: Optional[np.ndarray],
+    weight_corr: float,
+    weight_pval: float,
+    score_min: float,
+    device_id: int = 0,
+) -> Tuple[np.ndarray, SieveStageStat, np.ndarray]:
+    t0 = time.time()
+    with cp.cuda.Device(device_id):
+        survivors = cp.asarray(survivors_mask_np, dtype=cp.bool_)
+        scores_corr = cp.asarray(scores_corr_np, dtype=cp.float64)
+        eps = 1e-12
+        corr_n = (scores_corr - scores_corr.min()) / (cp.ptp(scores_corr) + eps)
+        if p_values_np is None:
+            comp = corr_n
+        else:
+            p = cp.asarray(p_values_np, dtype=cp.float64)
+            conf = 1.0 - p
+            conf_n = (conf - conf.min()) / (cp.ptp(conf) + eps)
+            w1 = max(0.0, min(1.0, weight_corr))
+            w2 = max(0.0, min(1.0, weight_pval))
+            if (w1 + w2) <= eps:
+                w1, w2 = 0.5, 0.5
+            comp = (w1 * corr_n + w2 * conf_n) / (w1 + w2)
+        comp = cp.where(survivors, comp, cp.zeros_like(comp))
+        mask = comp >= score_min
+        kept = int(mask.sum().get())
+        ms = (time.time() - t0) * 1000
+        return _np(mask), SieveStageStat("composite(gpu)", input=int(survivors.sum().get()), kept=kept, ms=ms, notes=f"score_min={score_min}"), _np(comp)
+
+
+def run_sieve(
+    seed_start: int,
+    seed_end: int,
+    draws: Sequence[Dict[str, Any]],
+    prng: PRNGInterface,
+    params: SieveParams,
+    mapping: str = "mod1000",
+    use_gpu: bool = False,
+) -> SieveResult:
+    """High-level runner; executes sophisticated pipeline with optional CuPy acceleration."""
+    backend = _ensure_backend(use_gpu)
+    t0_all = time.time()
+    N = int(seed_end - seed_start)
+    seeds_np = np.arange(seed_start, seed_end, dtype=np.uint64)
+    stage_stats: List[SieveStageStat] = []
+
+    # Stage 0: Simple Fit
+    if backend == "gpu":
+        m0, s0 = stage_simple_fit_gpu(seed_start, seed_end, draws, prng, mapping, params.time_offset_sec, device_id=0)
+    else:
+        m0, s0 = stage_simple_fit(seeds_np, draws, prng, mapping, params.time_offset_sec)
+    stage_stats.append(s0)
+    if not m0.any():
+        meta = {"input": N, "mode": params.mode, "duration_ms": (time.time() - t0_all) * 1000}
+        return SieveResult(m0, [], stage_stats, None, None, None, meta)
+
+    # Stage 1: Prefilter
+    masked_seeds = seeds_np[m0]
+    if backend == "gpu":
+        m1, s1, corr_proxy = stage_lag_corr_prefilter_gpu(masked_seeds, prng, params.prefilter_lmax, params.prefilter_samples, params.prefilter_corr_threshold, device_id=0)
+    else:
+        m1, s1, corr_proxy = stage_lag_corr_prefilter(masked_seeds, prng, params.prefilter_lmax, params.prefilter_samples, params.prefilter_corr_threshold)
+    m01 = np.zeros_like(m0)
+    m01[np.where(m0)[0]] = m1
+    stage_stats.append(s1)
+    if not m01.any():
+        meta = {"input": N, "mode": params.mode, "duration_ms": (time.time() - t0_all) * 1000}
+        return SieveResult(m01, [], stage_stats, None, None, None, meta)
+
+    # Stage 2: Permutation significance
+    if backend == "gpu":
+        m2, s2, p_vals, q_vals = stage_permutation_significance_gpu(corr_proxy, params.perms, params.perm_batch, params.fdr_q, device_id=0)
+    else:
+        m2, s2, p_vals, q_vals = stage_permutation_significance(masked_seeds[m1], corr_proxy if corr_proxy.shape[0] == masked_seeds.shape[0] else corr_proxy[m1], params.perms, params.perm_batch, params.fdr_q)
+    m012 = np.zeros_like(m01)
+    m012[np.where(m01)[0]] = m2
+    stage_stats.append(s2)
+    if not m012.any():
+        meta = {"input": N, "mode": params.mode, "duration_ms": (time.time() - t0_all) * 1000}
+        return SieveResult(m012, [], stage_stats, None, None, None, meta)
+
+    # Stage 3: Composite
+    if backend == "gpu":
+        comp_mask, s3, comp_scores = stage_composite_gate_gpu(m012, _expand_signal(corr_proxy, m0), _expand_signal(p_vals, m01) if p_vals is not None else None, params.weight_corr, params.weight_pval, params.score_min, device_id=0)
+    else:
+        comp_mask, s3, comp_scores = stage_composite_gate(m012, _expand_signal(corr_proxy, m0), _expand_signal(p_vals, m01) if p_vals is not None else None, params.weight_corr, params.weight_pval, params.score_min)
+    stage_stats.append(s3)
+
+    survivors_idx = np.where(comp_mask)[0].tolist()
+    meta = {"input": N, "mode": params.mode, "duration_ms": (time.time() - t0_all) * 1000}
+    return SieveResult(comp_mask, survivors_idx, stage_stats, comp_scores[comp_mask] if comp_scores is not None else None, p_vals, q_vals, meta)
+
+
+def _expand_signal(sig: np.ndarray, *masks: np.ndarray) -> np.ndarray:
+    """Expand a signal computed on a masked subset back to full N by zero-fill.
+    masks are applied in sequence to reach the original indexing.
+    """
+    out = sig
+    for m in masks[::-1]:
+        tmp = np.zeros(m.shape[0], dtype=out.dtype)
+        idx = np.where(m)[0]
+        tmp[idx] = out
+        out = tmp
+    return out
+
+
+# ----------------------------
+# Dataset loading (daily3.json and general JSON)
+# ----------------------------
+
+from datetime import datetime, date
+try:
+    from zoneinfo import ZoneInfo  # Py3.9+
+except Exception:
+    ZoneInfo = None  # fallback: naive timestamps if tz not available
+
+DEFAULT_SESSION_TIMES = {
+    "midday": "13:00:00",
+    "evening": "18:30:00",
+}
+
+
+def _hms_to_seconds(hms: str) -> int:
+    h, m, s = (int(x) for x in hms.split(":"))
+    return h * 3600 + m * 60 + s
+
+
+def _ts_for_date_and_session(d: str, session: str, tz: str, session_times: Dict[str, str]) -> int:
+    """Build a Unix timestamp for a given ISO date and session label using a timezone.
+    If zoneinfo is unavailable, falls back to naive local time.
+    """
+    tstr = session_times.get(session, DEFAULT_SESSION_TIMES.get(session, "13:00:00"))
+    y, mo, da = (int(x) for x in d.split("-"))
+    hh, mm, ss = (int(x) for x in tstr.split(":"))
+    if ZoneInfo is not None:
+        dt = datetime(y, mo, da, hh, mm, ss, tzinfo=ZoneInfo(tz))
+        return int(dt.timestamp())
+    else:
+        dt = datetime(y, mo, da, hh, mm, ss)
+        return int(time.mktime(dt.timetuple()))
+
+
+def load_draws_from_daily3(
+    path: str,
+    mode: str = "recent",
+    count: int = 30,
+    start_date_str: Optional[str] = None,
+    end_date_str: Optional[str] = None,
+    sessions: Tuple[str, ...] = ("midday", "evening"),
+    order: str = "chronological",
+    tz: str = "America/Los_Angeles",
+    session_times: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, int]]:
+    """
+    Load draws from a daily3.json file with entries like:
+    {"date": "YYYY-MM-DD", "session": "midday|evening", "draw": 978}
+
+    Returns a list of {"value": int, "timestamp": int} respecting filters.
+    """
+    session_times = session_times or DEFAULT_SESSION_TIMES
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    # Filter by sessions
+    rows = [r for r in raw if r.get("session") in sessions]
+
+    # Sort newest→oldest by date, then session order midday→evening
+    sess_order = {s: i for i, s in enumerate(["midday", "evening"]) }
+    rows.sort(key=lambda r: (r.get("date"), sess_order.get(r.get("session"), 99)))
+
+    # Apply mode filters
+    if mode == "recent":
+        # take the most recent `count` after sorting chronological, then keep chronological order
+        rows = rows[-count:]
+    elif mode == "range":
+        assert start_date_str and end_date_str, "start_date_str and end_date_str are required for mode=range"
+        rows = [r for r in rows if start_date_str <= r.get("date", "") <= end_date_str]
+    elif mode == "list":
+        # Caller should pre-select; here we assume rows already represent the desired list
+        pass
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    # Ensure chronological or reverse as requested
+    if order == "chronological":
+        pass  # already chronological
+    elif order == "most_recent_first":
+        rows = rows[::-1]
+    else:
+        raise ValueError("order must be 'chronological' or 'most_recent_first'")
+
+    # Build final draws list
+    out: List[Dict[str, int]] = []
+    for r in rows:
+        v = int(r["draw"])  # 0..999
+        ts = _ts_for_date_and_session(r["date"], r.get("session", "midday"), tz, session_times)
+        out.append({"value": v, "timestamp": ts})
+    return out
+
+
+def load_draws_from_json(
+    path: str,
+    draw_key: str = "draw",
+    date_key: str = "date",
+    session_key: str = "session",
+    session_times: Optional[Dict[str, str]] = None,
+    tz: str = "America/Los_Angeles",
+    mode: str = "recent",
+    count: int = 30,
+    start_date_str: Optional[str] = None,
+    end_date_str: Optional[str] = None,
+    sessions: Optional[Tuple[str, ...]] = None,
+    order: str = "chronological",
+) -> List[Dict[str, int]]:
+    """Generic JSON loader: map arbitrary keys to the sieve's {value,timestamp}.
+    If your schema differs, adjust keys or provide a custom mapping.
+    """
+    session_times = session_times or DEFAULT_SESSION_TIMES
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if sessions is not None:
+        raw = [r for r in raw if r.get(session_key) in sessions]
+
+    # Sort by date then session
+    sess_order = {s: i for i, s in enumerate(["midday", "evening"]) }
+    raw.sort(key=lambda r: (r.get(date_key), sess_order.get(r.get(session_key), 99)))
+
+    if mode == "recent":
+        raw = raw[-count:]
+    elif mode == "range":
+        assert start_date_str and end_date_str
+        raw = [r for r in raw if start_date_str <= r.get(date_key, "") <= end_date_str]
+    elif mode == "list":
+        pass
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    if order == "most_recent_first":
+        raw = raw[::-1]
+
+    out: List[Dict[str, int]] = []
+    for r in raw:
+        v = int(r[draw_key])
+        sess = r.get(session_key, "midday")
+        ts = _ts_for_date_and_session(r[date_key], sess, tz, session_times)
+        out.append({"value": v, "timestamp": ts})
+    return out
+
+
+def run_sieve_with_dataset(
+    seed_start: int,
+    seed_end: int,
+    dataset_path: str,
+    prng: PRNGInterface,
+    params: SieveParams,
+    mapping: str = "mod1000",
+    tz: str = "America/Los_Angeles",
+    dataset_mode: str = "recent",
+    dataset_count: int = 30,
+    dataset_start_date: Optional[str] = None,
+    dataset_end_date: Optional[str] = None,
+    dataset_sessions: Tuple[str, ...] = ("midday", "evening"),
+    dataset_order: str = "chronological",
+    session_times: Optional[Dict[str, str]] = None,
+) -> SieveResult:
+    """Convenience wrapper: load draws from daily3.json-like file then run sieve."""
+    draws = load_draws_from_daily3(
+        path=dataset_path,
+        mode=dataset_mode,
+        count=dataset_count,
+        start_date_str=dataset_start_date,
+        end_date_str=dataset_end_date,
+        sessions=dataset_sessions,
+        order=dataset_order,
+        tz=tz,
+        session_times=session_times,
+    )
+    return run_sieve(
+        seed_start=seed_start,
+        seed_end=seed_end,
+        draws=draws,
+        prng=prng,
+        params=params,
+        mapping=mapping,
+        use_gpu=True,
+    )
+
+
+# ----------------------------
+# GPU convenience helpers (device listing + dataset runner on GPU)
+# ----------------------------
+
+def enumerate_devices() -> Dict[str, Any]:
+    """Return device/backend information for debugging and UI display."""
+    info: Dict[str, Any] = {"backend": "cpu", "devices": []}
+    if _CUPY_AVAILABLE:
+        try:
+            n = cp.cuda.runtime.getDeviceCount()
+            info["backend"] = "gpu"
+            for i in range(n):
+                try:
+                    props = cp.cuda.runtime.getDeviceProperties(i)
+                    name = props.get("name", f"GPU-{i}") if isinstance(props, dict) else str(props)
+                except Exception:
+                    name = f"GPU-{i}"
+                info["devices"].append({"id": i, "name": name})
+        except Exception as e:
+            info["error"] = f"CuPy present but device query failed: {e}"
+    return info
+
+
+def run_sieve_with_dataset_gpu(
+    seed_start: int,
+    seed_end: int,
+    dataset_path: str,
+    prng: PRNGInterface,
+    params: SieveParams,
+    mapping: str = "mod1000",
+    tz: str = "America/Los_Angeles",
+    dataset_mode: str = "recent",
+    dataset_count: int = 30,
+    dataset_start_date: Optional[str] = None,
+    dataset_end_date: Optional[str] = None,
+    dataset_sessions: Tuple[str, ...] = ("midday", "evening"),
+    dataset_order: str = "chronological",
+    session_times: Optional[Dict[str, str]] = None,
+    device_id: int = 0,
+) -> SieveResult:
+    """GPU-enabled convenience: load a daily3.json-like dataset and run on a chosen GPU."""
+    draws = load_draws_from_daily3(
+        path=dataset_path,
+        mode=dataset_mode,
+        count=dataset_count,
+        start_date_str=dataset_start_date,
+        end_date_str=dataset_end_date,
+        sessions=dataset_sessions,
+        order=dataset_order,
+        tz=tz,
+        session_times=session_times,
+    )
+    return run_sieve(
+        seed_start=seed_start,
+        seed_end=seed_end,
+        draws=draws,
+        prng=prng,
+        params=params,
+        mapping=mapping,
+        use_gpu=True,
+        device_id=device_id,
+    )

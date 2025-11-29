@@ -1,0 +1,2292 @@
+
+#!/usr/bin/env python3
+"""
+Multi-GPU Distributed PRNG Analysis Coordinator
+Combines 26-GPU architecture with working ROCm environment setup
+VERSION: 1.6.3 - Scorer Meta-Opt Result Collection + Enhancements
+CHANGES:
+- v1.0: Initial multi-GPU coordinator with SSH connection pooling
+- v1.1: Fixed hostname variable scope bug in execute_distributed_analysis
+- v1.2: Added CUDA_VISIBLE_DEVICES for localhost GPU isolation
+- v1.3: Fixed TensorFlow environment activation for localhost jobs
+- v1.4: Added job-splitting parameters to prevent RTX 3080 Ti memory issues
+- v1.5: Added system stability fixes to prevent Zeus segfaults under heavy load
+- v1.6: Added automatic fault tolerance with transparent job recovery and progress persistence
+- v1.6.1: Removed all CuPy usage from coordinator; added process-group kill on timeout; added max_local_concurrent
+- v1.6.2: Added collect_scorer_results() for "pull architecture" meta-optimizer
+- v1.6.3: Integrated 'script' based job handling for meta-optimizer framework
+"""
+from models import WorkerNode, JobSpec, GPUWorker, JobResult, ProgressState, GPUPerformanceProfile
+from gpu_optimizer import GPUOptimizer
+from recovery_manager import AutoRecoveryManager
+from connection_manager import SSHConnectionPool
+import json
+import sys
+import subprocess
+import time
+import argparse
+import itertools
+import threading
+import gc
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass, asdict, field
+import queue
+import socket
+import paramiko
+import os
+import hashlib
+import signal
+from datetime import datetime
+from collections import defaultdict, deque
+import glob     # <-- ADDED
+import tempfile # <-- ADDED
+import logging  # <-- ADDED
+
+# Hybrid strategy support (optional)
+try:
+    from hybrid_strategy import get_all_strategies, STRATEGY_PRESETS
+    HYBRID_AVAILABLE = True
+except ImportError:
+    HYBRID_AVAILABLE = False
+    print("Note: hybrid_strategy module not available. Hybrid mode disabled.")
+
+@dataclass
+class MultiGPUCoordinator:
+    def __init__(self, config_file: str = "distributed_config.json",
+                 seed_cap_nvidia: int = 40000, seed_cap_amd: int = 19000, seed_cap_default: int = 19000,
+                 max_concurrent: int = 8, max_per_node: int = 4, max_local_concurrent: Optional[int] = None,
+                 job_timeout: int = 300, resume_policy: str = 'prompt'):
+        self.config_file = config_file
+        self.nodes: List[WorkerNode] = []
+        self.gpu_workers: List[GPUWorker] = []
+        # Enhanced SSH pool with connection reuse and resource limits
+        self.ssh_pool = SSHConnectionPool(max_concurrent_per_node=max_per_node)
+        # Job-splitting parameters based on capacity probe results
+        self.seed_cap_nvidia = seed_cap_nvidia
+        self.seed_cap_amd = seed_cap_amd
+        self.seed_cap_default = seed_cap_default
+        # System stability parameters
+        self.max_concurrent = max_concurrent # Global job concurrency limit
+        self.max_per_node = max_per_node # Per-node job concurrency limit
+        self.max_local_concurrent = max_local_concurrent if max_local_concurrent is not None else max_per_node
+        self.job_timeout = job_timeout # Unified job timeout (local + remote)
+        # Automatic recovery system
+        self.recovery_manager = AutoRecoveryManager()
+        self.gpu_optimizer = GPUOptimizer()
+        self.progress_save_interval = 30 # Save progress every 30 seconds
+        # Target file for this run
+        self.current_target_file: Optional[str] = None
+        # Thread safety for progress state
+        self._progress_lock: threading.RLock = threading.RLock()
+        # Localhost concurrency throttle (do not exceed GPU driver stability)
+        self._localhost_semaphore = threading.Semaphore(self.max_local_concurrent)
+        # Resume/Restart policy
+        self.resume_policy = resume_policy
+        
+        # --- ADDED: Logger for new methods ---
+        self.logger = logging.getLogger(self.__class__.__name__)
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        # --- END ADDED ---
+        
+        self.load_configuration()
+        
+    def load_configuration(self):
+        """Load node configuration from JSON file"""
+        try:
+            with open(self.config_file, 'r') as f:
+                config = json.load(f)
+            self.nodes = []
+            for node_config in config.get('nodes', []):
+                node = WorkerNode(
+                    hostname=node_config['hostname'],
+                    gpu_count=node_config['gpu_count'],
+                    gpu_type=node_config['gpu_type'],
+                    python_env=node_config['python_env'],
+                    script_path=node_config['script_path'],
+                    username=node_config.get('username'),
+                    password=node_config.get('password')
+                )
+                self.nodes.append(node)
+                print(f"Configured node {node.hostname}: {node.gpu_count}x {node.gpu_type}")
+            # Load sieve defaults from config
+            self.sieve_defaults = config.get("sieve_defaults", {
+                "min_match_threshold": 0.01,
+                "phase1_threshold": "auto",
+                "phase2_threshold": "auto",
+                "window_size": 512,
+                "skip_range": [0, 20],
+                "offset": 0,
+                "sessions": ["midday", "evening"],
+                "prng_families": ["mt19937"]
+            })
+
+        # Load reverse sieve defaults from config (ML-friendly)
+        except Exception as e:
+            print(f"Error loading configuration: {e}")
+            raise
+
+        # Load reverse sieve defaults from config (ML-friendly)
+        self.reverse_sieve_defaults = config.get("reverse_sieve_defaults", {
+            "candidate_generation_method": "brute_force_sample",
+            "candidates_per_draw": 1000,
+            "max_candidates_per_job": 10000,
+            "reverse_batch_size": 1000,
+            "enable_candidate_caching": False,
+            "candidate_cache_path": "cache/candidates"
+        })
+    def _is_rocm(self, node: WorkerNode) -> bool:
+        """Check if node uses ROCm (AMD GPU) - FROM WORKING VERSION"""
+        gt = (node.gpu_type or "").lower()
+        return ("rx" in gt) or ("amd" in gt) or ("rocm" in gt)
+    # adaptive timeout calculator (doubles per attempt, cap 1200s)
+    def _effective_timeout(self, base: int, attempt: int, hostname: str) -> int:
+        try:
+            t = base
+            if self.is_localhost(hostname):
+                t = min(1200, base * (2 ** max(0, attempt)))
+            return max(30, int(t))
+        except Exception:
+            return base
+            
+    def _build_sh_safe_cmd(self, node: WorkerNode, payload_filename: str, payload_json: dict,
+                           gpu_id: int = 0, timeout_s: Optional[int] = None) -> str:
+        """Build shell-safe SSH command with ROCm env + graceful timeout fallback + result-file stdout fallback."""
+        rocm_env = [
+            "HSA_OVERRIDE_GFX_VERSION=10.3.0",
+            "HSA_ENABLE_SDMA=0",
+            "ROCM_PATH=/opt/rocm",
+            "HIP_PATH=/opt/rocm/hip",
+            "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
+            "PATH=/opt/rocm/bin:${PATH}",
+            "CUPY_CACHE_DIR=${HOME}/.cache/cupy",
+            f"CUDA_VISIBLE_DEVICES={gpu_id}",
+            f"HIP_VISIBLE_DEVICES={gpu_id}"
+        ] if self._is_rocm(node) else [
+            f"CUDA_VISIBLE_DEVICES={gpu_id}"
+        ]
+        env_prefix = ("env " + " ".join(rocm_env) + " ") if rocm_env else ""
+        py = node.python_env
+        
+        # --- MODIFIED: Handle 'script' based jobs ---
+        # This makes it compatible with the new optimizer framework
+        if 'script' in payload_json:
+            worker = payload_json['script']
+            # Arguments are passed directly, no job file needed
+            # We must shell-escape each argument
+            worker_args_list = [f"'{arg}'" for arg in payload_json.get('args', [])]
+            worker_args = " ".join(worker_args_list)
+            # The payload file is just a formality, not read by the script
+            payload_filename = f"job_{payload_json.get('job_id', 'unknown')}.json"
+        # --- END MODIFIED ---
+        elif payload_json.get('search_type') == 'residue_sieve':
+            worker = "sieve_filter.py"
+            worker_args = f"--job-file {payload_filename} --gpu-id 0"
+        else:
+            worker = "distributed_worker.py"
+            mining_flag = "--mining-mode" if payload_json.get('mining_mode', False) else ""
+            worker_args = f"{payload_filename} --gpu-id {gpu_id} {mining_flag}"
+            
+        j = json.dumps(payload_json)
+        job_id = payload_json.get('job_id', 'unknown')
+        result_file = f"result_{job_id}.json"
+        
+        # Command body using conditional worker_args
+        cmd_body = f"{py} -u {worker} {worker_args}"
+        
+        # Timeout wrapper (graceful if `timeout` exists; otherwise run as-is)
+        timeout_wrapper = (
+            f"if command -v timeout >/dev/null 2>&1; then "
+            f"timeout -k 10 {timeout_s or 300} {env_prefix}{cmd_body}; "
+            f"else {env_prefix}{cmd_body}; fi"
+        )
+        # Run, then echo result file if present, then cleanup
+        return (
+            f"cd '{node.script_path}' && "
+            f"cat > {payload_filename} <<'JSON'\n{j}\nJSON\n"
+            f"{timeout_wrapper} ; "
+            f"[ -f {result_file} ] && cat {result_file} ; "
+            f"rm -f {payload_filename} {result_file} || true"
+        )
+        
+    def parse_json_result(self, output: str) -> Optional[Dict]:
+        """Parse JSON result from worker output - FROM WORKING VERSION"""
+        lines = output.strip().split('\n')
+        for line in reversed(lines):
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+        return None
+    def is_localhost(self, hostname: str) -> bool:
+        """Check if hostname is localhost - FROM WORKING VERSION"""
+        return hostname in ['localhost', '127.0.0.1', socket.gethostname()]
+    def create_gpu_workers(self) -> List[GPUWorker]:
+        """Create individual GPU worker specifications"""
+        workers: List[GPUWorker] = []
+        for node in self.nodes:
+            # Create exactly gpu_count workers for this node
+            for gpu_id in range(node.gpu_count):
+                worker = GPUWorker(node=node, gpu_id=gpu_id, worker_id="")
+                workers.append(worker)
+        self.gpu_workers = workers
+        print(f"Created {len(workers)} individual GPU workers across {len(self.nodes)} nodes")
+        return workers
+    def _preflight_node(self, node: WorkerNode) -> Tuple[bool, list, list]:
+        """
+        Preflight: check worker script, python env/venv activation, and `timeout` availability.
+        Returns (ok, warnings, errors)
+        """
+        warnings, errors = [], []
+        worker_path = os.path.join(node.script_path, "distributed_worker.py")
+        activate_path = os.path.join(os.path.dirname(node.python_env), "activate")
+        if self.is_localhost(node.hostname):
+            if not os.path.isfile(worker_path):
+                errors.append("missing distributed_worker.py")
+            if not os.path.isfile(node.python_env):
+                warnings.append(f"python_env not found: {node.python_env}")
+            if not os.path.isfile(activate_path):
+                warnings.append(f"venv activate not found: {activate_path}")
+            try:
+                rc = subprocess.call("command -v timeout >/dev/null 2>&1", shell=True)
+                if rc != 0:
+                    warnings.append("`timeout` not found in PATH")
+            except Exception:
+                warnings.append("could not check `timeout` locally")
+        else:
+            ssh = None
+            try:
+                ssh = self.ssh_pool.get_connection(node.hostname, node.username, node.password)
+                probe = (
+                    f"cd '{node.script_path}' 2>/dev/null || echo __ERR_BAD_PATH__ ; "
+                    f"[ -f 'distributed_worker.py' ] && echo __OK_WORKER__ || echo __ERR_NO_WORKER__ ; "
+                    f"[ -x '{node.python_env}' ] && echo __OK_PYENV__ || echo __WARN_PYENV__ ; "
+                    f"command -v timeout >/dev/null 2>&1 && echo __OK_TIMEOUT__ || echo __WARN_NO_TIMEOUT__"
+                )
+                stdin, out, err = ssh.exec_command(probe)
+                output = out.read().decode(errors='ignore')
+                if "__ERR_BAD_PATH__" in output:
+                    errors.append(f"script_path not accessible: {node.script_path}")
+                if "__ERR_NO_WORKER__" in output:
+                    errors.append("missing distributed_worker.py")
+                if "__WARN_PYENV__" in output:
+                    warnings.append(f"python_env not executable: {node.python_env}")
+                if "__WARN_NO_TIMEOUT__" in output:
+                    warnings.append("`timeout` not found in PATH")
+            except Exception as e:
+                errors.append(f"SSH preflight failed: {e}")
+                print(f"🔍 SSH Debug - {node.hostname}: {type(e).__name__}: {str(e)}")
+                if "Authentication" in str(e):
+                    print(f" - Check username/password for {node.hostname}")
+                elif "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                    print(f" - Connection timeout to {node.hostname}")
+                elif "refused" in str(e).lower():
+                    print(f" - Connection refused by {node.hostname}")
+            finally:
+                if ssh:
+                    self.ssh_pool.return_connection(node.hostname, ssh)
+        ok = not errors
+        return ok, warnings, errors
+    def test_connectivity(self) -> bool:
+        """Test connectivity to all GPU workers and preflight each node."""
+        print("Testing individual GPU connectivity...")
+        workers = self.create_gpu_workers()
+        overall_ok = True
+        for node in self.nodes:
+            node_workers = [w for w in workers if w.node.hostname == node.hostname]
+            capacity = self.get_node_capacity(node)
+            print(f"✅ {node.hostname}: {len(node_workers)} GPUs available ({capacity:,} seeds/GPU)")
+            ok, warns, errs = self._preflight_node(node)
+            for w in warns:
+                print(f" ⚠️ {node.hostname}: {w}")
+            for e in errs:
+                print(f" ❌ {node.hostname}: {e}")
+            if not ok:
+                overall_ok = False
+        total_workers = len(workers)
+        print(f"Active GPU workers: {total_workers}")
+        return overall_ok
+    def get_node_capacity(self, node: WorkerNode) -> int:
+        """Calculate processing capacity per GPU for a node - FROM WORKING VERSION"""
+        if ('RTX 3080 Ti' in node.gpu_type) or ('RTX 3090 Ti' in node.gpu_type):
+            return 2800000 # High-end NVIDIA capacity
+        elif 'RX 6600' in node.gpu_type:
+            return 125000 # AMD mining rig capacity
+        else:
+            return 100000 # Default capacity
+    def is_mining_node(self, node: WorkerNode) -> bool:
+        """Check if node should use mining-optimized execution - FROM WORKING VERSION"""
+        return 'RX 6600' in node.gpu_type
+    def max_seeds_for_worker(self, worker: GPUWorker) -> int:
+        """Get maximum seeds per job for a specific worker based on probe results"""
+        if ('RTX 3080 Ti' in worker.node.gpu_type) or ('RTX 3090 Ti' in worker.node.gpu_type):
+            return self.seed_cap_nvidia # 40,000 from manual capacity probe
+        elif 'RX 6600' in worker.node.gpu_type:
+            return self.seed_cap_amd # 19,000 from 24-GPU parallel probe (19,456 limit)
+        else:
+            return self.seed_cap_default # 19,000 conservative default
+    def create_job_distribution(self, total_seeds: int, prng_types: List[str],
+                              mapping_types: List[str], samples: int, lmax: int,
+                              grid_size: int) -> List[Tuple[JobSpec, GPUWorker]]:
+        """Create GPU-optimized job distribution with performance-based allocation"""
+        workers = self.gpu_workers
+        if not workers:
+            workers = self.create_gpu_workers()
+        print(f"Creating GPU-optimized job distribution...")
+        print(f" Target seeds: {total_seeds:,}")
+        print(f" Active GPUs: {len(workers)}")
+        print(f" Seed caps: NVIDIA={self.seed_cap_nvidia:,}, AMD={self.seed_cap_amd:,}, Default={self.seed_cap_default:,}")
+        jobs: List[Tuple[JobSpec, GPUWorker]] = []
+        job_counter = 0
+        # Create jobs for each PRNG/mapping combination
+        for i, (prng_type, mapping_type) in enumerate(itertools.product(prng_types, mapping_types)):
+            # Calculate total processing capacity across all workers
+            total_capacity = sum(
+                self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)["seeds_per_second"]
+                for worker in workers
+            )
+            remaining_seeds = total_seeds
+            # Sort workers by performance (fastest first for better distribution)
+            sorted_workers = sorted(
+                workers,
+                key=lambda w: self.gpu_optimizer.get_gpu_profile(w.node.gpu_type)["seeds_per_second"],
+                reverse=True
+            )
+            # Distribute seeds based on GPU performance capacity
+            for worker in sorted_workers:
+                if remaining_seeds <= 0:
+                    break
+                # Get performance profile for this worker
+                worker_profile = self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)
+                worker_capacity = worker_profile["seeds_per_second"]
+                # Calculate proportional allocation based on capacity
+                capacity_ratio = worker_capacity / total_capacity if total_capacity > 0 else 1.0 / len(workers)
+                base_allocation = int(total_seeds * capacity_ratio)
+                # Apply GPU optimization scaling
+                optimal_seeds = self.gpu_optimizer.calculate_optimal_chunk_size(worker.node.gpu_type, base_allocation)
+                # Respect hardware limits
+                seed_cap = self.max_seeds_for_worker(worker)
+                seeds_to_assign = min(optimal_seeds, remaining_seeds, seed_cap)
+                if seeds_to_assign > 0:
+                    start_seed = job_counter * 1000
+                    seed_list = list(range(start_seed, start_seed + seeds_to_assign))
+                    job_id = f"{prng_type}_{mapping_type}_{worker.node.hostname}_gpu{worker.gpu_id}_{i}_{job_counter}"
+                    job = JobSpec(
+                        job_id=job_id,
+                        prng_type=prng_type,
+                        mapping_type=mapping_type,
+                        seeds=seed_list,
+                        samples=samples,
+                        lmax=lmax,
+                        grid_size=grid_size,
+                        mining_mode=self.is_mining_node(worker.node),
+                        search_type="draw_match" if (hasattr(self, 'args') and hasattr(self.args, "draw_match") and self.args.draw_match is not None) else "standard",
+                        target_draw=[self.args.draw_match] if (hasattr(self, 'args') and hasattr(self.args, "draw_match") and self.args.draw_match is not None) else None,
+                        analysis_type=getattr(self, 'args', {}).get('analysis_type', 'statistical'),
+                        attempt=0,
+                        payload={} # Add payload
+                    )
+                    jobs.append((job, worker))
+                    # Show job assignment with optimization info
+                    scaling_factor = worker_profile["scaling_factor"]
+                    mode = "Mining" if self.is_mining_node(worker.node) else "Standard"
+                    print(f" {job_id}: {seeds_to_assign:,} seeds ({worker.node.gpu_type} - {mode}) [{scaling_factor:.1f}x scaling]")
+                    remaining_seeds -= seeds_to_assign
+                    job_counter += 1
+        print(f"Created {len(jobs)} GPU-optimized jobs with performance-based distribution")
+        return jobs
+    def serialize_job_assignment(self, job: JobSpec, worker: GPUWorker) -> Dict:
+        """Serialize job and worker assignment for progress tracking"""
+        return {
+            'job': asdict(job),
+            'worker': {
+                'node': asdict(worker.node),
+                'gpu_id': worker.gpu_id,
+                'worker_id': worker.worker_id
+            }
+        }
+    def deserialize_job_assignment(self, data: Dict) -> Tuple[JobSpec, GPUWorker]:
+        """Deserialize job and worker assignment from progress data"""
+        job_data = data['job']
+        worker_data = data['worker']
+        # Reconstruct JobSpec
+        job = JobSpec(**job_data)
+        # Reconstruct WorkerNode and GPUWorker
+        node = WorkerNode(**worker_data['node'])
+        worker = GPUWorker(
+            node=node,
+            gpu_id=worker_data['gpu_id'],
+            worker_id=worker_data['worker_id']
+        )
+        return job, worker
+    def create_initial_progress_state(self, analysis_id: str, job_assignments: List[Tuple[JobSpec, GPUWorker]]) -> ProgressState:
+        """Create initial progress state for new analysis"""
+        pending_jobs = [self.serialize_job_assignment(job, worker) for job, worker in job_assignments]
+        return ProgressState(
+            analysis_id=analysis_id,
+            total_jobs=len(job_assignments),
+            completed_jobs={},
+            failed_jobs={},
+            pending_jobs=pending_jobs,
+            retry_count={},
+            start_time=time.time(),
+            last_update=time.time()
+        )
+    def update_progress_state(self, progress_state: ProgressState, job_id: str, result: JobResult) -> None:
+        """Update progress state with job result.
+        NOTE: Only remove from pending on success so that failed jobs can be retried.
+        """
+        if result.success:
+            # Remove from pending jobs only on success
+            progress_state.pending_jobs = [
+                job_data for job_data in progress_state.pending_jobs
+                if job_data['job']['job_id'] != job_id
+            ]
+            # Add to completed jobs
+            progress_state.completed_jobs[job_id] = result.results
+            # Remove from failed jobs if previously failed
+            if job_id in progress_state.failed_jobs:
+                del progress_state.failed_jobs[job_id]
+        else:
+            # Keep in pending for possible retry
+            progress_state.failed_jobs[job_id] = result.error or "Unknown error"
+            # Increment retry count
+            progress_state.retry_count[job_id] = progress_state.retry_count.get(job_id, 0) + 1
+    def _select_alternate_worker(self, src_worker: GPUWorker) -> Optional[GPUWorker]:
+        """Pick a non-localhost worker (prefer same gpu_type) to migrate a retry to."""
+        try:
+            same_type = [w for w in self.gpu_workers
+                         if not self.is_localhost(w.node.hostname)
+                         and (w.node.gpu_type == src_worker.node.gpu_type)]
+            if same_type:
+                return same_type[0]
+            # fallback: any remote GPU
+            any_remote = [w for w in self.gpu_workers if not self.is_localhost(w.node.hostname)]
+            if any_remote:
+                return any_remote[0]
+        except Exception:
+            pass
+        return None
+    def get_retry_jobs(self, progress_state: ProgressState) -> List[Tuple[JobSpec, GPUWorker]]:
+        """Get jobs that should be retried. Thread-safe; may migrate from localhost on repeated timeouts."""
+        retry_jobs: List[Tuple[JobSpec, GPUWorker]] = []
+        with self._progress_lock:
+            for job_id, err in progress_state.failed_jobs.items():
+                if not self.recovery_manager.should_retry_job(job_id, progress_state.retry_count):
+                    continue
+                # Locate the serialized job/worker in pending_jobs
+                ser = None
+                for job_data in progress_state.pending_jobs:
+                    if job_data['job']['job_id'] == job_id:
+                        ser = job_data
+                        break
+                if not ser:
+                    # Shouldn't happen because we keep failed jobs pending
+                    continue
+                job, worker = self.deserialize_job_assignment(ser)
+                attempt = progress_state.retry_count.get(job_id, 0)
+                job.attempt = attempt # carry attempt count forward
+                # If this failed on localhost due to timeout, try migrating to a remote GPU
+                lower_err = (err or "").lower()
+                if self.is_localhost(worker.node.hostname) and ("timed out" in lower_err or "timeout" in lower_err):
+                    alt = self._select_alternate_worker(worker)
+                    if alt:
+                        # mutate the serialized worker to migrate target
+                        ser['worker'] = {
+                            'node': asdict(alt.node),
+                            'gpu_id': alt.gpu_id,
+                            'worker_id': alt.worker_id
+                        }
+                        retry_jobs.append((job, alt))
+                        continue
+                # Otherwise, retry on the same worker
+                retry_jobs.append((job, worker))
+        return retry_jobs
+    def execute_local_job(self, job: JobSpec, worker: GPUWorker) -> JobResult:
+        """Execute a job locally with proper venv activation, GPU isolation, timeout, PG kill, and memory management."""
+        start_time = time.time()
+        try:
+            node = worker.node
+            
+            # --- MODIFIED: Handle 'script' based jobs ---
+            if 'script' in job.payload:
+                job_data = job.payload
+            # --- END MODIFIED ---
+            elif job.search_type == 'residue_sieve':
+                # Sieve requires completely different job structure
+                seed_start = job.seeds[0] if isinstance(job.seeds, list) and len(job.seeds) == 2 else 0
+                seed_end = job.seeds[1] if isinstance(job.seeds, list) and len(job.seeds) == 2 else 100000
+
+                job_data = {
+                    'job_id': job.job_id,
+                    'search_type': 'residue_sieve',
+                    'dataset_path': self.current_target_file or 'test_known.json',
+                    'seed_start': seed_start,
+                    'seed_end': seed_end,
+                    'window_size': self._sieve_config.get('window_size', self.sieve_defaults.get('window_size', 512)) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('window_size', 512),
+                    'min_match_threshold': self._sieve_config.get('min_match_threshold', self.sieve_defaults.get('min_match_threshold', 0.01)) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('min_match_threshold', 0.01),
+                    'skip_range': self._sieve_config.get('skip_range', self.sieve_defaults.get('skip_range', [0, 20])) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('skip_range', [0, 20]),
+                    'offset': self._sieve_config.get('offset', self.sieve_defaults.get('offset', 0)) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('offset', 0),
+                    'prng_families': [job.prng_type] if job.prng_type else (self._sieve_config.get('prng_families', self.sieve_defaults.get('prng_families', ['mt19937'])) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('prng_families', ['mt19937'])),
+                    'sessions': self._sieve_config.get('sessions', self.sieve_defaults.get('sessions', ['midday', 'evening'])) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('sessions', ['midday', 'evening']),
+                    'hybrid': '_hybrid' in (job.prng_type if hasattr(job, 'prng_type') else ''),
+                    'phase1_threshold': self._sieve_config.get('phase1_threshold') if hasattr(self, '_sieve_config') else None,
+                    'phase2_threshold': self._sieve_config.get('phase2_threshold') if hasattr(self, '_sieve_config') else None,
+                    'strategies': self._sieve_config['strategies'] if (hasattr(self, '_sieve_config') and self._sieve_config.get('strategies')) else None
+                }
+            elif job.search_type == 'reverse_sieve':
+                # Reverse sieve: use payload from JobSpec (already contains candidate_seeds)
+                if job.payload:
+                    job_data = job.payload
+                else:
+                    raise ValueError("reverse_sieve job missing payload")
+            else:
+                # Standard job structure
+                job_data = {
+                    'job_id': job.job_id,
+                    'prng_type': job.prng_type,
+                    'mapping_type': job.mapping_type,
+                    'seeds': job.seeds,
+                    'samples': job.samples,
+                    'lmax': job.lmax,
+                    'grid_size': job.grid_size,
+                    'mining_mode': job.mining_mode,
+                    'search_type': job.search_type,
+                    'job_type': 'advanced_draw_matching' if job.search_type == 'draw_match' else 'standard_analysis',
+                    'target_draw': job.target_draw,
+                    'target_file': self.current_target_file,
+                    'analysis_type': job.analysis_type,
+                }
+            # Write the job file into the worker's cwd
+            job_file = f"job_{job.job_id}.json"
+            job_path = os.path.join(node.script_path, job_file)
+            with open(job_path, 'w') as f:
+                json.dump(job_data, f)
+            # Robust activate path (handles python / python3)
+            activate_path = os.path.join(os.path.dirname(node.python_env), 'activate')
+            # Mining flag
+            mining_flag = "--mining-mode" if job.mining_mode else ""
+            
+            # --- MODIFIED: Handle 'script' based jobs ---
+            if 'script' in job_data:
+                worker_script = job_data['script']
+                worker_args_list = [f"'{arg}'" for arg in job_data.get('args', [])]
+                worker_args = " ".join(worker_args_list)
+                cmd_str = (
+                    f"source {activate_path} && "
+                    f"CUDA_VISIBLE_DEVICES={worker.gpu_id} "
+                    f"python -u {worker_script} {worker_args}"
+                ).strip()
+            # --- END MODIFIED ---
+            elif job.search_type == 'residue_sieve':
+                # Direct call to sieve_filter.py
+                cmd_str = (
+                    f"source {activate_path} && "
+                    f"CUDA_VISIBLE_DEVICES={worker.gpu_id} "
+                    f"python -u sieve_filter.py --job-file {job_file} --gpu-id 0"
+                ).strip()
+            elif job.search_type == 'reverse_sieve':
+                # Direct call to reverse_sieve_filter.py
+                cmd_str = (
+                    f"source {activate_path} && "
+                    f"CUDA_VISIBLE_DEVICES={worker.gpu_id} "
+                    f"python -u reverse_sieve_filter.py --job-file {job_file} --gpu-id 0"
+                ).strip()
+            else:
+                # Standard jobs use distributed_worker.py (positional job_file)
+                cmd_str = (
+                    f"source {activate_path} && "
+                    f"CUDA_VISIBLE_DEVICES={worker.gpu_id} "
+                    f"python -u distributed_worker.py {job_file} --gpu-id 0 {mining_flag}"
+                ).strip()
+                
+            # Enhanced environment with memory management settings
+            env = os.environ.copy()
+            env.update({
+                'CUPY_CUDA_MEMORY_POOL_TYPE': 'none', # Worker-only; safe to pass through
+                'OPENBLAS_NUM_THREADS': '1', # Limit CPU threading
+                'OMP_NUM_THREADS': '1',
+                'CUDA_DEVICE_MAX_CONNECTIONS': '1' # Limit CUDA contexts
+            })
+            # adaptive timeout per attempt (localhost)
+            eff_timeout = self._effective_timeout(self.job_timeout, job.attempt, 'localhost')
+            # Start in a new process group so we can terminate children on timeout
+            proc = subprocess.Popen(
+                cmd_str,
+                shell=True,
+                executable="/bin/bash",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=node.script_path,
+                env=env,
+                preexec_fn=os.setsid,
+                text=True,
+                encoding='utf-8', # ADDED
+                errors='ignore' # Add this for robustness
+            )
+            try:
+                stdout, stderr = proc.communicate(timeout=eff_timeout)
+            except subprocess.TimeoutExpired:
+                # Kill the whole process group
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except Exception:
+                    pass
+                # Give it a moment to die cleanly
+                try:
+                    stdout, stderr = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+                    stdout, stderr = proc.communicate(timeout=5) if proc.poll() is None else ("", "")
+                runtime = time.time() - start_time
+                # Cleanup job files
+                try:
+                    if os.path.exists(job_path):
+                        os.remove(job_path)
+                    rf = os.path.join(node.script_path, f"result_{job.job_id}.json")
+                    if os.path.exists(rf):
+                        os.remove(rf)
+                except Exception:
+                    pass
+                # Light memory cleanup in coordinator only
+                gc.collect()
+                return JobResult(job.job_id, worker.node.hostname, False, None,
+                                 f"Local job timed out after {eff_timeout}s", runtime)
+            runtime = time.time() - start_time
+            # Attempt to parse stdout JSON first
+            json_result = None
+            if proc.returncode == 0:
+                json_result = self.parse_json_result(stdout)
+                if not json_result:
+                    # Fallback: read result file if present
+                    result_file = os.path.join(node.script_path, f"result_{job.job_id}.json")
+                    if os.path.exists(result_file):
+                        try:
+                            with open(result_file, "r") as rf:
+                                json_result = json.load(rf)
+                        except Exception:
+                            json_result = None
+            # cleanup files
+            try:
+                if os.path.exists(job_path):
+                    os.remove(job_path)
+                rf = os.path.join(node.script_path, f"result_{job.job_id}.json")
+                if os.path.exists(rf):
+                    os.remove(rf)
+            except Exception:
+                pass
+            # Light memory cleanup in coordinator only
+            gc.collect()
+            if proc.returncode == 0 and json_result:
+                return JobResult(job.job_id, worker.node.hostname, True, json_result, None, runtime)
+            elif proc.returncode == 0:
+                return JobResult(job.job_id, worker.node.hostname, False, None,
+                                 f"No valid JSON found in output or result file.\n"
+                                 f"STDOUT tail:\n{stdout[-600:]}\n"
+                                 f"STDERR tail:\n{stderr[-600:]}", runtime)
+            else:
+                return JobResult(job.job_id, worker.node.hostname, False, None,
+                                 f"Local execution failed (rc={proc.returncode}).\n"
+                                 f"STDOUT tail:\n{stdout[-600:]}\n"
+                                 f"STDERR tail:\n{stderr[-600:]}", runtime)
+        except Exception as e:
+            runtime = time.time() - start_time
+            # Ensure coordinator remains lightweight on failure
+            gc.collect()
+            return JobResult(job.job_id, worker.node.hostname, False, None,
+                             f"Local job failed: {e}", runtime)
+    def execute_remote_job(self, job: JobSpec, worker: GPUWorker) -> JobResult:
+        """Execute a job on a remote node via SSH with enhanced connection pooling"""
+        start_time = time.time()
+        ssh = None
+        try:
+            node = worker.node
+            
+            # --- MODIFIED: Handle 'script' based jobs ---
+            if 'script' in job.payload:
+                job_data = job.payload
+            # --- END MODIFIED ---
+            elif job.search_type == 'residue_sieve':
+                # Sieve requires completely different job structure
+                seed_start = job.seeds[0] if isinstance(job.seeds, list) and len(job.seeds) == 2 else 0
+                seed_end = job.seeds[1] if isinstance(job.seeds, list) and len(job.seeds) == 2 else 100000
+
+                job_data = {
+                    'job_id': job.job_id,
+                    'search_type': 'residue_sieve',
+                    'dataset_path': self.current_target_file or 'test_known.json',
+                    'seed_start': seed_start,
+                    'seed_end': seed_end,
+                    'window_size': self._sieve_config.get('window_size', self.sieve_defaults.get('window_size', 512)) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('window_size', 512),
+                    'min_match_threshold': self._sieve_config.get('min_match_threshold', self.sieve_defaults.get('min_match_threshold', 0.01)) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('min_match_threshold', 0.01),
+                    'skip_range': self._sieve_config.get('skip_range', self.sieve_defaults.get('skip_range', [0, 20])) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('skip_range', [0, 20]),
+                    'offset': self._sieve_config.get('offset', self.sieve_defaults.get('offset', 0)) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('offset', 0),
+                    'prng_families': [job.prng_type] if job.prng_type else (self._sieve_config.get('prng_families', self.sieve_defaults.get('prng_families', ['mt19937'])) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('prng_families', ['mt19937'])),
+                    'sessions': self._sieve_config.get('sessions', self.sieve_defaults.get('sessions', ['midday', 'evening'])) if hasattr(self, '_sieve_config') else self.sieve_defaults.get('sessions', ['midday', 'evening']),
+                    'hybrid': '_hybrid' in (job.prng_type if hasattr(job, 'prng_type') else ''),
+                    'phase1_threshold': self._sieve_config.get('phase1_threshold') if hasattr(self, '_sieve_config') else None,
+                    'phase2_threshold': self._sieve_config.get('phase2_threshold') if hasattr(self, '_sieve_config') else None,
+                    'strategies': self._sieve_config['strategies'] if (hasattr(self, '_sieve_config') and self._sieve_config.get('strategies')) else None
+                }
+            else:
+                # Standard job structure
+                job_data = {
+                    'job_id': job.job_id,
+                    'prng_type': job.prng_type,
+                    'mapping_type': job.mapping_type,
+                    'seeds': job.seeds,
+                    'samples': job.samples,
+                    'lmax': job.lmax,
+                    'grid_size': job.grid_size,
+                    'mining_mode': job.mining_mode,
+                    'search_type': job.search_type,
+                    'job_type': 'advanced_draw_matching' if job.search_type == 'draw_match' else 'standard_analysis',
+                    'target_draw': job.target_draw,
+                    'target_file': self.current_target_file,
+                    'analysis_type': job.analysis_type,
+                }
+            # Get reusable SSH connection
+            ssh = self.ssh_pool.get_connection(node.hostname, node.username, node.password)
+            # adaptive timeout also applied remotely (via shell timeout)
+            eff_timeout = self._effective_timeout(self.job_timeout, job.attempt, node.hostname)
+            cmd = self._build_sh_safe_cmd(node, f"job_{job.job_id}.json", job_data, worker.gpu_id, timeout_s=eff_timeout)
+            # Debug: Print command for failed connections
+            if hasattr(self, '_debug_failed_nodes') and node.hostname in self._debug_failed_nodes:
+                print(f"🔍 Debug command for {node.hostname}:")
+                print(f" Python env: {node.python_env}")
+                print(f" Script path: {node.script_path}")
+                print(f" Command preview: {cmd[:200]}...")
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            # Set reasonable timeouts for both channel and command
+            stdout.channel.settimeout(eff_timeout)
+            stderr.channel.settimeout(eff_timeout)
+            output, errout = stdout.read().decode(encoding='utf-8', errors='ignore'), stderr.read().decode(encoding='utf-8', errors='ignore')
+            # Return connection to pool for reuse
+            self.ssh_pool.return_connection(node.hostname, ssh)
+            ssh = None
+            runtime = time.time() - start_time
+            json_result = self.parse_json_result(output)
+            if json_result:
+                # Coordinator memory cleanup (no CUDA calls)
+                gc.collect()
+                return JobResult(job.job_id, worker.node.hostname, True, json_result, None, runtime)
+            else:
+                tail = (errout[-600:] if errout else "").strip()
+                gc.collect()
+                return JobResult(job.job_id, worker.node.hostname, False, None,
+                               f"No valid JSON in output. stderr tail:\n{tail}", runtime)
+        except Exception as e:
+            # Clean up connection on error
+            if ssh:
+                try:
+                    ssh.close()
+                except:
+                    pass
+            runtime = time.time() - start_time
+            gc.collect()
+            return JobResult(job.job_id, worker.node.hostname, False, None, f"Remote job failed: {str(e)}", runtime)
+    def execute_gpu_job(self, job: JobSpec, worker: GPUWorker) -> JobResult:
+        """Execute a single job on a specific GPU worker with connection management"""
+        hostname = worker.node.hostname
+        acquired_local = False
+
+        try:
+            # Acquire SSH connection slot for remote jobs
+            if not self.is_localhost(hostname):
+                self.ssh_pool.acquire(hostname)
+            else:
+                # Acquire localhost semaphore
+                self._localhost_semaphore.acquire()
+                acquired_local = True
+
+            # Execute job
+            if self.is_localhost(hostname):
+                result = self.execute_local_job(job, worker)
+            else:
+                result = self.execute_remote_job(job, worker)
+
+            # Track performance for GPU optimization
+            if result.success and job.search_type != 'residue_sieve' and hasattr(job, 'seeds') and len(job.seeds) > 0:
+                self.gpu_optimizer.update_performance(
+                    worker.node.gpu_type,
+                    worker.node.hostname,
+                    len(job.seeds),
+                    result.runtime
+                )
+
+            return result
+
+        except Exception as e:
+            # Return failure result instead of crashing
+            return JobResult(
+                job.job_id,
+                hostname,
+                False,
+                None,
+                f"Job execution failed: {e}",
+                0.0
+            )
+        finally:
+            # Always release connection/throttle
+            if not self.is_localhost(hostname):
+                self.ssh_pool.release(hostname)
+            elif acquired_local:
+                self._localhost_semaphore.release() # Release localhost semaphore
+                
+    def _decide_resume_or_restart(
+        self,
+        analysis_id: str,
+        progress: "ProgressState"
+    ) -> str:
+        """
+        Returns 'resume' or 'restart' based on self.resume_policy.
+        - prompt: ask on TTY; default to 'resume' if non-interactive
+        - resume: always resume
+        - restart: always restart (deletes progress file)
+        - auto: resume if not all jobs completed; restart if it looks complete
+        """
+        policy = (self.resume_policy or 'prompt').lower()
+        if policy == 'auto':
+            complete = (
+                len(progress.completed_jobs) >= progress.total_jobs and
+                len(progress.pending_jobs) == 0
+            )
+            return 'restart' if complete else 'resume'
+        if policy in ('resume', 'restart'):
+            return policy
+        # 'prompt' (default): try to ask; fall back to resume if not interactive
+        try:
+            import sys
+            is_tty = sys.stdin is not None and sys.stdin.isatty()
+        except Exception:
+            is_tty = False
+        if not is_tty:
+            print(f"[resume-policy=prompt] Non-interactive session detected -> defaulting to RESUME")
+            return 'resume'
+        # Interactive prompt
+        print("\n=== Previous Analysis Found ===")
+        print(f"Analysis ID: {analysis_id}")
+        print(f"Completed: {len(progress.completed_jobs)}/{progress.total_jobs}")
+        print(f"Failed (so far): {len(progress.failed_jobs)}")
+        print("What do you want to do?")
+        print(" [R]esume from saved progress")
+        print(" [S]tart over (delete saved progress and re-distribute all jobs)")
+        try:
+            choice = input("Enter R or S [R]: ").strip().lower()
+        except EOFError:
+            choice = ''
+        if choice in ('s', 'restart'):
+            return 'restart'
+        return 'resume'
+    def execute_distributed_analysis_dynamic(self, target_file: str, output_file: str,
+                                           total_seeds: int, samples: int, lmax: int,
+                                           grid_size: int) -> Dict[str, Any]:
+        """Execute analysis with dynamic job distribution and GPU optimization"""
+        print("Multi-GPU Distributed PRNG Analysis with Dynamic Job Distribution + GPU Optimization")
+        print(f"Target: {total_seeds:,} total seeds, {samples:,} samples each")
+        # remember target file for job payloads
+        self.current_target_file = target_file
+        start_time = time.time()
+        # Test connectivity first
+        if not self.test_connectivity():
+            raise RuntimeError("Connectivity test failed")
+        # Create workers if needed
+        workers = self.gpu_workers or self.create_gpu_workers()
+        # Create dynamic job queue
+        job_queue = DynamicJobQueue(self.gpu_optimizer)
+        # Populate queue with work chunks
+        prng_types = ["mt", "xorshift", "lcg"]
+        mapping_types = ["mod", "scale"]
+        job_queue.populate_with_work(
+            total_seeds=total_seeds,
+            prng_types=prng_types,
+            mapping_types=mapping_types,
+            samples=samples,
+            lmax=lmax,
+            grid_size=grid_size
+        )
+        initial_stats = job_queue.get_stats()
+        print(f"Created {initial_stats['jobs_remaining']} work chunks for dynamic distribution")
+        # Dynamic worker function
+        def dynamic_worker_loop(worker):
+            results = []
+            while True:
+                # Get next job optimized for this worker
+                job_spec = job_queue.get_next_job_for_worker(worker)
+                if not job_spec:
+                    time.sleep(0.1) # Brief pause if no work available
+                    continue
+                # Convert dict to JobSpec object
+                job = JobSpec(**job_spec)
+                # Execute job with existing infrastructure
+                try:
+                    result = self.execute_gpu_job(job, worker)
+                except Exception as job_error:
+                    # Create a failed result for job execution errors
+                    gpu_info = f"{worker.node.gpu_type}@{worker.node.hostname}"
+                    print(f"❌ {gpu_info} | Job execution failed: {str(job_error)}")
+                    print(f" Job ID: {job.job_id}")
+                    print(f" Error type: {type(job_error).__name__}")
+                    # Create a dummy failed result
+                    from dataclasses import dataclass
+                    result = type('JobResult', (), {
+                        'job_id': job.job_id,
+                        'success': False,
+                        'error': str(job_error),
+                        'runtime': 0.0,
+                        'results': None
+                    })()
+                results.append(result)
+                # Update queue and tracking
+                job_queue.complete_job(job_spec, result)
+                # Visual feedback (PRESERVED)
+                if result.success:
+                    seeds_per_sec = len(job.seeds) / result.runtime if result.runtime > 0 else 0
+                    gpu_info = f"{worker.node.gpu_type}@{worker.node.hostname}"
+                    scaling_factor = self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)["scaling_factor"]
+                    print(f"✅ Dynamic | {gpu_info} | {len(job.seeds):,} seeds | {result.runtime:.1f}s | {seeds_per_sec:.0f} seeds/sec | [{scaling_factor:.1f}x scaling]")
+                else:
+                    print(f"❌ Dynamic | {worker.node.gpu_type}@{worker.node.hostname} | FAILED: {result.error[:100] if result.error else 'Unknown error'}")
+                # Check if all work is done
+                stats = job_queue.get_stats()
+                if stats['jobs_remaining'] == 0:
+                    break
+            return results
+        # Launch dynamic workers
+        print(f"Launching {len(workers)} dynamic workers")
+        print("Workers will pull work as they complete jobs (eliminates idle time)")
+        with ThreadPoolExecutor(max_workers=len(workers)) as executor:
+            # Launch all workers
+            futures = []
+            for worker in workers:
+                future = executor.submit(dynamic_worker_loop, worker)
+                futures.append(future)
+            # Monitor progress
+            last_update = time.time()
+            while True:
+                stats = job_queue.get_stats()
+                current_time = time.time()
+                # Periodic progress updates
+                if current_time - last_update > 5: # Every 5 seconds
+                    percentage = stats['completion_percentage']
+                    print(f"🔄 Dynamic Progress: {percentage:.1f}% complete | "
+                          f"Completed: {stats['jobs_completed']}, Remaining: {stats['jobs_remaining']}")
+                    last_update = current_time
+                if stats['jobs_remaining'] == 0:
+                    print("All work completed!")
+                    break
+                time.sleep(1)
+            # Collect all results
+            all_results = []
+            worker_timeout = self.job_timeout * 2
+            print(f"Collecting worker results with {worker_timeout}s timeout per worker...")
+            for i, future in enumerate(futures):
+                try:
+                    worker = workers[i] if i < len(workers) else None
+                    worker_info = f"{worker.node.gpu_type}@{worker.node.hostname}" if worker else f"Worker {i}"
+                    print(f"⏳ Waiting for {worker_info} to complete...")
+                    worker_results = future.result(timeout=self.job_timeout * 2)
+                    print(f"✅ {worker_info} completed {len(worker_results)} jobs") # 2x job timeout for safety
+                    all_results.extend(worker_results)
+                except Exception as e:
+                    worker = workers[i] if i < len(workers) else None
+                    worker_info = f"{worker.node.gpu_type}@{worker.node.hostname}" if worker else f"Worker {i}"
+                    print(f"❌ {worker_info} | Worker failed with error: {str(e)}")
+                    print(f" Error type: {type(e).__name__}")
+                    if hasattr(e, '__traceback__') and e.__traceback__:
+                        import traceback
+                        print(f" Traceback: {traceback.format_exc().splitlines()[-1]}")
+        # Compile results
+        successful_results = [r for r in all_results if r.success]
+        failed_results = [r for r in all_results if not r.success]
+        total_runtime = time.time() - start_time
+        print(f"\n{'='*60}")
+        print("DYNAMIC DISTRIBUTION COMPLETED")
+        print(f"{'='*60}")
+        print(f"Total jobs executed: {len(all_results)}")
+        print(f"Successful jobs: {len(successful_results)}")
+        print(f"Failed jobs: {len(failed_results)}")
+        # Enhanced results compilation
+        final_results = {
+            "metadata": {
+                "analysis_id": f"dynamic_{int(time.time())}",
+                "total_jobs": len(all_results),
+                "successful_jobs": len(successful_results), # Menu system checks this
+                "failed_jobs": len(failed_results),
+                "total_runtime": total_runtime,
+                "nodes_used": len(self.nodes),
+                "total_gpus": len(self.gpu_workers),
+                "gpu_optimization_enabled": True,
+                "dynamic_distribution_enabled": True,
+                "hardware_optimized": True
+            },
+            "results": [r.results for r in successful_results if r.results],
+            "performance_summary": {
+                "total_seeds_processed": sum(len(r.results.get('seeds_analyzed', [])) for r in successful_results if r.results),
+                "average_job_runtime": sum(r.runtime for r in successful_results) / len(successful_results) if successful_results else 0
+            }
+        }
+        # Save results
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        print(f"Results saved: {output_file}")
+        print(f"Runtime: {total_runtime:.1f}s")
+        return final_results
+    def execute_truly_parallel_dynamic(self, target_file: str, output_file: str, args,
+                                      total_seeds: int, samples: int, lmax: int,
+                                      grid_size: int) -> Dict[str, Any]:
+        """Execute with true parallel dynamic distribution - no sequential waiting"""
+        print("🚀 True Parallel Dynamic Distribution Mode")
+        print(f"Target: {total_seeds:,} seeds across {len(self.gpu_workers or self.create_gpu_workers())} GPUs")
+        self.current_target_file = target_file
+
+        # CRITICAL: Set _sieve_config from args (execute_local_job reads from this)
+        if hasattr(args, 'method') and args.method == 'residue_sieve':
+            self._sieve_config = {
+                'dataset_path': args.target_file,
+                'window_size': getattr(args, 'window_size', self.sieve_defaults.get('window_size', 512)),
+                'offset': getattr(args, 'offset', self.sieve_defaults.get('offset', 0)),
+                'min_match_threshold': getattr(args, 'threshold', self.sieve_defaults.get('min_match_threshold', 0.01)),
+                'skip_range': [getattr(args, 'skip_min', self.sieve_defaults.get('skip_range', [0, 20])[0]),
+                               getattr(args, 'skip_max', self.sieve_defaults.get('skip_range', [0, 20])[1])],
+                'prng_families': [args.prng_type] if hasattr(args, 'prng_type') else self.sieve_defaults.get('prng_families', ['mt19937']),
+                'sessions': self.sieve_defaults.get('sessions', ['midday', 'evening']),
+                'hybrid': False,
+                'phase1_threshold': None,
+                'phase2_threshold': None,
+            }
+
+        start_time = time.time()
+        # Test connectivity first
+        if not self.test_connectivity():
+            raise RuntimeError("Connectivity test failed")
+        # Create work queue and results collection
+        work_queue = queue.Queue()
+        results_queue = queue.Queue()
+        # Populate work queue with optimized chunks
+        base_chunk_size = max(500, total_seeds // 100) # Dynamic chunk sizing
+        current_seed = 0 # <-- CORRECTED: Start from 0
+        job_id = 0
+        print(f"Creating work chunks (base size: {base_chunk_size:,})...")
+        while current_seed < total_seeds: # <-- CORRECTED: Use total_seeds
+            seeds_this_chunk = min(base_chunk_size, total_seeds - current_seed) # <-- CORRECTED
+            seed_list = list(range(current_seed, current_seed + seeds_this_chunk))
+            current_seed += seeds_this_chunk # <-- CORRECTED
+            
+            # Create job_spec based on analysis method
+            if hasattr(args, 'method') and args.method == 'residue_sieve':
+                # SIEVE job
+                job_spec = {
+                    'job_id': f"sieve_{job_id:03d}",
+                    'seeds': seed_list,
+                    'dataset_path': args.target_file,
+                    'window_size': args.window_size,
+                    'min_match_threshold': getattr(args, 'threshold', 0.01),
+                    'skip_range': [args.skip_min, args.skip_max],
+                    'offset': getattr(args, 'offset', 0),
+                    'sessions': ['midday', 'evening'],
+                    'search_type': 'residue_sieve'
+                }
+                if hasattr(args, 'prng_type'):
+                    job_spec['prng_type'] = args.prng_type
+            else:
+                # STANDARD job
+                job_spec = {
+                    'job_id': f"parallel_dynamic_{job_id}",
+                    'seeds': seed_list,
+                    'samples': samples,
+                    'lmax': lmax,
+                    'grid_size': grid_size,
+                    'prng_type': 'mt',
+                    'mapping_type': 'mod',
+                    'search_type': 'draw_match' if (hasattr(args, 'draw_match') and args.draw_match is not None) else 'correlation',
+                    'target_draw': [args.draw_match] if (hasattr(args, 'draw_match') and args.draw_match is not None) else None,
+                    'analysis_type': getattr(args, 'analysis_type', 'statistical')
+                }
+            work_queue.put(job_spec)
+            job_id += 1
+        total_chunks = job_id
+        print(f"Created {total_chunks} work chunks for parallel processing")
+        # Worker function that continuously pulls work
+        def worker_loop(worker):
+            my_results = []
+            jobs_completed = 0
+            while True:
+                try:
+                    job_spec = work_queue.get_nowait()
+                    # Apply GPU optimization to chunk size
+                    original_size = len(job_spec['seeds'])
+                    optimal_size = self.gpu_optimizer.calculate_optimal_chunk_size(
+                        worker.node.gpu_type, original_size
+                    )
+                    # Adjust chunk if significantly beneficial
+                    if optimal_size > original_size * 1.2 and not self.is_localhost(worker.node.hostname):
+                        start_seed = job_spec['seeds'][0]
+                        # Don't exceed remaining work
+                        remaining_work = work_queue.qsize() * base_chunk_size
+                        chunk_size = min(optimal_size, remaining_work + original_size)
+                        job_spec['seeds'] = list(range(start_seed, start_seed + chunk_size))
+                    # Handle sieve jobs separately
+                    if job_spec.get('search_type') == 'residue_sieve':
+                        # Convert job_spec dict to JobSpec object
+                        job = JobSpec(
+                            job_id=job_spec.get('job_id', 'unknown'),
+                            seeds=[job_spec['seeds'][0], job_spec['seeds'][-1] + 1],  # Convert to [start, end]
+                            samples=job_spec.get('samples', 1000),
+                            lmax=job_spec.get('lmax', 10),
+                            grid_size=job_spec.get('grid_size', 50),
+                            prng_type=job_spec.get('prng_type', 'mt19937'),
+                            mapping_type=job_spec.get('mapping_type', 'mod'),
+                            search_type='residue_sieve',
+                            mining_mode=False,
+                            target_draw=None,
+                            analysis_type='sieve',
+                            attempt=0,
+                            payload=job_spec # Pass the whole spec as payload
+                        )
+                        try:
+                            # Use execute_gpu_job which handles local vs remote execution
+                            result = self.execute_gpu_job(job, worker)
+                            result_dict = {
+                                'success': result.success,
+                                'runtime': result.runtime,
+                                'error': result.error,
+                                'results': result.results
+                            }
+                        except ValueError as e:
+                            # Hybrid mode not supported for this PRNG
+                            print(f"⚠️  {worker.node.hostname}(gpu{worker.gpu_id}) | {str(e)[:80]}")
+                            result_dict = {
+                                'success': False,
+                                'error': str(e),
+                                'runtime': 0,
+                                'survivors_found': 0
+                            }
+                        # Wrap dict in simple object for compatibility
+                        class SieveResult:
+                            def __init__(self, d):
+                                self.success = d.get('success', True)
+                                self.runtime = d.get('runtime', 0)
+                                self.error = d.get('error', None)
+                                self.survivors_found = 0
+                                if d.get('results'):
+                                    self.survivors_found = d['results'].get('survivors_found', 0)
+                                self.results = d.get('results', d)  # Support both formats
+                                self.__dict__.update(d)
+                        result = SieveResult(result_dict)
+                        my_results.append(result)
+                        jobs_completed += 1
+                        work_queue.task_done()
+                        continue
+
+                    # Convert to JobSpec object (standard jobs)
+                    job = JobSpec(
+                        job_id=job_spec['job_id'],
+                        prng_type=job_spec['prng_type'],
+                        mapping_type=job_spec['mapping_type'],
+                        seeds=job_spec['seeds'],
+                        samples=job_spec['samples'],
+                        lmax=job_spec['lmax'],
+                        grid_size=job_spec['grid_size'],
+                        mining_mode=self.is_mining_node(worker.node),
+                        search_type=job_spec.get('search_type', 'correlation'),
+                        target_draw=job_spec.get('target_draw', None),
+                        analysis_type=job_spec.get('analysis_type', 'statistical'),
+                        attempt=0,
+                        payload=job_spec # Pass spec as payload
+                    )
+                    # Execute job using existing infrastructure
+                    result = self.execute_gpu_job(job, worker)
+                    my_results.append(result)
+                    jobs_completed += 1
+                    # Immediate visual feedback (PRESERVED)
+                    if result.success:
+                        sps = len(job.seeds) / result.runtime if result.runtime > 0 else 0
+                        profile = self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)
+                        scaling = profile["scaling_factor"]
+                        print(f"✅ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
+                              f"{len(job.seeds):,} seeds | {result.runtime:.1f}s | {sps:.0f} seeds/sec | [{scaling:.1f}x scaling]")
+                        # Update performance tracking
+                        self.gpu_optimizer.update_performance(
+                            worker.node.gpu_type, worker.node.hostname,
+                            len(job.seeds), result.runtime
+                        )
+                    else:
+                        print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname} | "
+                              f"FAILED: {result.error[:80] if result.error else 'Unknown error'}")
+                    work_queue.task_done()
+                except queue.Empty:
+                    # No more work available
+                    break
+                except Exception as e:
+                    print(f"❌ Worker error on {worker.node.hostname}: {str(e)}")
+                    break
+            # Return results for this worker
+            print(f"DEBUG: Worker {worker.node.hostname}(gpu{worker.gpu_id}) putting {len(my_results)} results in queue")
+            results_queue.put(my_results)
+            print(f"DEBUG: Worker {worker.node.hostname}(gpu{worker.gpu_id}) - put complete")
+            if jobs_completed > 0:
+                print(f"🏁 {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) completed {jobs_completed} jobs")
+        # Launch all workers in parallel - NO SEQUENTIAL WAITING
+        workers = self.gpu_workers or self.create_gpu_workers()
+        threads = []
+        print(f"Launching {len(workers)} parallel workers...")
+        for worker in workers:
+            thread = threading.Thread(target=worker_loop, args=(worker,))
+            thread.daemon = False # Wait for all threads to complete properly
+            thread.start()
+            threads.append(thread)
+        # Monitor progress without blocking
+        completed_chunks = 0
+        while completed_chunks < total_chunks:
+            time.sleep(2) # Check every 2 seconds
+            completed_chunks = total_chunks - work_queue.qsize()
+            if completed_chunks > 0:
+                progress_pct = (completed_chunks / total_chunks) * 100
+                print(f"🔄 Parallel Progress: {progress_pct:.1f}% | {completed_chunks}/{total_chunks} chunks completed")
+        print("All work distributed! Waiting for final workers to finish...")
+        # Wait for all work to be marked as done
+        work_queue.join()
+        # Wait for all worker threads to complete
+        for thread in threads:
+            thread.join() # Wait indefinitely - we need ALL results!
+
+        # Give workers a moment to put results in queue
+        time.sleep(2.0)  # Increased from 0.5 to 2.0 seconds
+
+        # Collect all results - IMMEDIATE, NO SEQUENTIAL WAITING
+        all_results = []
+        print(f"DEBUG: Starting collection, queue size: {results_queue.qsize()}")
+        collected_count = 0
+        while not results_queue.empty():
+            try:
+                worker_results = results_queue.get_nowait()
+                all_results.extend(worker_results)
+                collected_count += 1
+                print(f"DEBUG: Collected batch {collected_count}, total results now: {len(all_results)}")
+            except queue.Empty:
+                break
+        print(f"DEBUG: Collection complete, total results: {len(all_results)}")
+
+        # Debug: Show failed job info
+        failed_jobs = [r for r in all_results if not r.success]
+        if failed_jobs:
+            print(f"\nDEBUG: {len(failed_jobs)} FAILED jobs found:")
+            for i, job in enumerate(failed_jobs[:3]):  # Show first 3
+                print(f"  Failed job {i+1}:")
+                print(f"    Error: {getattr(job, 'error', 'No error message')}")
+                print(f"    Results: {type(getattr(job, 'results', None))}")
+        total_runtime = time.time() - start_time
+        # Compile results
+        successful_results = [r for r in all_results if r.success]
+        failed_results = [r for r in all_results if not r.success]
+        print(f"\n{'='*60}")
+        print("PARALLEL DYNAMIC DISTRIBUTION COMPLETED")
+        print(f"{'='*60}")
+        print(f"Total jobs executed: {len(all_results)}")
+        print(f"Successful jobs: {len(successful_results)}")
+        print(f"Failed jobs: {len(failed_results)}")
+        print(f"Total runtime: {total_runtime:.1f}s")
+        # Enhanced results compilation for menu system compatibility
+        final_results = {
+            "metadata": {
+                "analysis_id": f"parallel_dynamic_{int(time.time())}",
+                "total_jobs": len(all_results),
+                "successful_jobs": len(successful_results), # Menu system checks this field
+                "failed_jobs": len(failed_results),
+                "total_runtime": total_runtime,
+                "nodes_used": len(self.nodes),
+                "total_gpus": len(workers),
+                "gpu_optimization_enabled": True,
+                "parallel_dynamic_distribution_enabled": True,
+                "hardware_optimized": True,
+                "execution_mode": "parallel_dynamic"
+            },
+            "results": [r.results for r in successful_results if r.results],
+            "performance_summary": {
+                "total_seeds_processed": sum(r.results.get('seeds_analyzed', 0) for r in successful_results if r.results),
+                "average_job_runtime": sum(r.runtime for r in successful_results) / len(successful_results) if successful_results else 0,
+                "fastest_gpu_runtime": min((r.runtime for r in successful_results), default=0),
+                "slowest_gpu_runtime": max((r.runtime for r in successful_results), default=0)
+            }
+        }
+        # Save results
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        # Old format JSON writing removed - now using new results_manager system via coordinator_adapter
+        # with open(output_file, 'w') as f:
+        # json.dump(final_results, f, indent=2)
+        print(f"Results saved: {output_file}")
+
+        # NEW: Also save in new format (optional, non-breaking)
+        try:
+            from integration.coordinator_adapter import save_coordinator_results
+            save_coordinator_results(
+                run_id=f"coordinator_{int(time.time())}",
+                final_results=final_results,
+                config={
+                    "prng_type": args.prng_type if hasattr(args, "prng_type") else "unknown",
+                    "total_seeds": total_seeds,
+                    "samples": samples,
+                    "lmax": lmax,
+                    "grid_size": grid_size,
+                    "target_file": target_file
+                },
+                output_file=output_file
+            )
+        except Exception as e:
+            pass  # Silent fail - old format still works
+
+        print(f"Execution mode: Parallel Dynamic Distribution")
+        return final_results
+    def load_and_analyze_dataset(self, dataset_file: str, output_file: str,
+                                samples: int, lmax: int, grid_size: int) -> Dict[str, Any]:
+        """Load dataset and run correlation analysis on actual data"""
+        print(f"Loading dataset: {dataset_file}")
+        try:
+            with open(dataset_file, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load dataset: {e}")
+        # Extract numerical values
+        values = []
+        if isinstance(data, dict) and 'data' in data:
+            # Test dataset format
+            for entry in data['data']:
+                values.append(entry.get('number', 0))
+            print(f"Loaded test dataset: {data.get('metadata', {}).get('pattern_type', 'unknown')}")
+        elif isinstance(data, list):
+            # Direct array format
+            for entry in data:
+                if isinstance(entry, dict):
+                    value = entry.get('number') or entry.get('draw') or entry.get('value')
+                    if value is not None:
+                        values.append(int(value))
+        if not values:
+            raise RuntimeError("No values found in dataset")
+        print(f"Dataset loaded: {len(values)} values")
+        print(f"Range: {min(values)} to {max(values)}")
+        # Create special dataset analysis jobs
+        self.current_target_file = dataset_file
+        start_time = time.time()
+        if not self.test_connectivity():
+            raise RuntimeError("Connectivity test failed")
+        # Create jobs that analyze the dataset chunks
+        jobs = self._create_dataset_analysis_jobs(values, samples, lmax, grid_size)
+        # Execute jobs
+        print(f"Executing {len(jobs)} dataset analysis jobs...")
+        with ThreadPoolExecutor(max_workers=min(len(jobs), self.max_concurrent)) as executor:
+            future_to_job = {}
+            for job, worker in jobs:
+                # Inject dataset chunk into job
+                job.dataset_chunk = job.seeds # Use seeds list to store dataset indices
+                actual_chunk = [values[i] for i in job.seeds if i < len(values)]
+                job.dataset_values = actual_chunk
+                future = executor.submit(self.execute_gpu_job, job, worker)
+                future_to_job[future] = (job, worker)
+            # Collect results
+            all_results = []
+            for future in as_completed(future_to_job):
+                job, worker = future_to_job[future]
+                try:
+                    result = future.result()
+                    all_results.append(result)
+                    if result.success:
+                        print(f"✅ Dataset chunk | {worker.node.hostname} | "
+                              f"{len(job.dataset_values)} values | {result.runtime:.1f}s")
+                    else:
+                        print(f"❌ Dataset chunk | {worker.node.hostname} | FAILED")
+                except Exception as e:
+                    print(f"❌ Job error: {e}")
+        # Compile results
+        successful = [r for r in all_results if r.success]
+        total_runtime = time.time() - start_time
+        final_results = {
+            "metadata": {
+                "analysis_id": f"dataset_{int(time.time())}",
+                "analysis_type": "dataset_correlation_analysis",
+                "dataset_file": dataset_file,
+                "dataset_size": len(values),
+                "total_jobs": len(all_results),
+                "successful_jobs": len(successful),
+                "failed_jobs": len(all_results) - len(successful),
+                "total_runtime": total_runtime,
+                "dataset_analysis": True
+            },
+            "results": [r.results for r in successful if r.results],
+            "dataset_summary": {
+                "total_values": len(values),
+                "value_range": [min(values), max(values)],
+                "sample_values": values[:10]
+            }
+        }
+        # Save results
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        with open(output_file, 'w') as f:
+            json.dump(final_results, f, indent=2)
+        print(f"Dataset analysis complete!")
+        print(f"Analyzed: {len(values)} values")
+        print(f"Results: {output_file}")
+        return final_results
+    def _create_dataset_analysis_jobs(self, values: List[int], samples: int,
+                                    lmax: int, grid_size: int) -> List[Tuple[JobSpec, GPUWorker]]:
+        """Create jobs for dataset analysis"""
+        workers = self.gpu_workers or self.create_gpu_workers()
+        jobs = []
+        # Split dataset into chunks
+        chunk_size = max(50, len(values) // len(workers))
+        job_id = 0
+        for i in range(0, len(values), chunk_size):
+            chunk_end = min(i + chunk_size, len(values))
+            chunk_indices = list(range(i, chunk_end))
+            if len(chunk_indices) < 10:
+                continue
+            worker = workers[job_id % len(workers)]
+            job = JobSpec(
+                job_id=f"dataset_analysis_{job_id}",
+                prng_type="dataset",
+                mapping_type="direct",
+                seeds=chunk_indices, # Store chunk indices
+                samples=samples,
+                lmax=lmax,
+                grid_size=grid_size,
+                mining_mode=self.is_mining_node(worker.node),
+                search_type="dataset_correlation",
+                attempt=0,
+                payload = { # <-- ADDED PAYLOAD
+                    "analysis_type": "dataset_correlation",
+                    "job_id": f"dataset_analysis_{job_id}",
+                    "search_type": "dataset_correlation",
+                }
+            )
+            jobs.append((job, worker))
+            job_id += 1
+        return jobs
+    def execute_distributed_analysis(self, target_file: str, output_file: str,
+                                   args, total_seeds: int, samples: int, lmax: int,
+                                   grid_size: int) -> Dict[str, Any]:
+        """Execute distributed analysis across all GPU workers with automatic fault tolerance and transparent recovery"""
+        # Choose execution mode - DEFAULT: Dynamic distribution enabled
+        # ALL methods use dynamic distribution (including sieve)
+        
+        # --- MODIFIED: Handle script-based jobs ---
+        if hasattr(args, 'jobs_file') and args.jobs_file:
+            print(f"🚀 Using Script-Based Job File Mode: {args.jobs_file}")
+            # Use the static executor, but it will be populated by _create_jobs_from_file
+            use_parallel_dynamic = False
+        # --- END MODIFIED ---
+        elif hasattr(args, 'method') and args.method == 'residue_sieve':
+            print("🔬 Using Residue Sieve Method (Dynamic Distribution)")
+            use_parallel_dynamic = True
+        else:
+             use_parallel_dynamic = True
+
+        if use_parallel_dynamic:
+            print("🚀 Using Parallel Dynamic Job Distribution Mode")
+            return self.execute_truly_parallel_dynamic(
+                target_file, output_file, args, total_seeds, samples, lmax, grid_size
+            )
+        
+        print("⚙️ Using Traditional Static Distribution Mode (for Scripted Jobs)")
+        # ... (rest of existing static execute_distributed_analysis) ...
+        self.current_target_file = target_file
+        analysis_params = {
+            'target_file': target_file,
+            'total_seeds': total_seeds,
+            'samples': samples,
+            'lmax': lmax,
+            'grid_size': grid_size,
+            'jobs_file': getattr(args, 'jobs_file', None) # <-- ADDED
+        }
+        analysis_id = self.recovery_manager.generate_analysis_id(analysis_params)
+        existing_progress = self.recovery_manager.load_progress(analysis_id)
+        
+        remaining_jobs: List[Tuple[JobSpec, GPUWorker]] = [] # <-- Define here
+        progress_state: Optional[ProgressState] = None      # <-- Define here
+        
+        if existing_progress:
+            print(f"Found previous analysis (ID: {analysis_id})")
+            print(f"Completed: {len(existing_progress.completed_jobs)}/{existing_progress.total_jobs}")
+            print(f"Failed (so far): {len(existing_progress.failed_jobs)}")
+            action = self._decide_resume_or_restart(analysis_id, existing_progress)
+            if action == 'restart':
+                removed = self.recovery_manager.cleanup_progress(analysis_id)
+                if removed:
+                    print("🧹 Old progress file deleted. Starting a fresh analysis...")
+                else:
+                    print("⚠️ Could not delete old progress file (will overwrite as we go). Starting fresh.")
+                existing_progress = None
+            else:
+                print("🔁 Resuming from saved progress...")
+                progress_state = existing_progress
+                with self._progress_lock:
+                    for job_data in progress_state.pending_jobs:
+                        job, worker = self.deserialize_job_assignment(job_data)
+                        job.attempt = progress_state.retry_count.get(job.job_id, 0)
+                        remaining_jobs.append((job, worker))
+                retry_jobs = self.get_retry_jobs(progress_state)
+                remaining_jobs.extend(retry_jobs)
+                if not remaining_jobs:
+                    print("All jobs already completed. Compiling final results...")
+                else:
+                    print(f"Will execute {len(remaining_jobs)} remaining/retry jobs")
+                    
+        if not existing_progress:
+            print(f"Starting new analysis (ID: {analysis_id})")
+            if not self.test_connectivity():
+                raise RuntimeError("Connectivity test failed")
+            prng_types = ["mt", "xorshift", "lcg"]
+            mapping_types = ["mod", "scale"]
+            
+            # --- MODIFIED: Handle job creation based on args ---
+            if hasattr(args, "method") and args.method == "residue_sieve":
+                remaining_jobs = self._create_sieve_jobs(args)
+            elif hasattr(args, "jobs_file") and args.jobs_file: # <-- ADDED
+                print(f"Loading jobs from file: {args.jobs_file}")
+                remaining_jobs = self._create_jobs_from_file(args.jobs_file)
+            # --- END MODIFIED ---
+            else:
+                remaining_jobs = self.create_job_distribution(
+                    total_seeds, prng_types, mapping_types, samples, lmax, grid_size
+                )
+            progress_state = self.create_initial_progress_state(analysis_id, remaining_jobs)
+            self.recovery_manager.save_progress(progress_state)
+            print(f"Created {len(remaining_jobs)} jobs across {len(self.gpu_workers)} GPUs")
+        
+        if remaining_jobs:
+            max_concurrent = min(len(remaining_jobs), self.max_concurrent)
+            print(f"Executing {len(remaining_jobs)} jobs with automatic fault tolerance...")
+            last_progress_save = time.time()
+            with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+                future_to_job = {}
+                for job, worker in remaining_jobs:
+                    future = executor.submit(self.execute_gpu_job, job, worker)
+                    # Log job start
+                    script_name = job.payload.get("script", "N/A") if hasattr(job, "payload") and job.payload else "standard"
+                    gpu_name = worker.node.gpu_type if hasattr(worker.node, "gpu_type") else "GPU"
+                    print(f"🚀 Starting | {gpu_name}@{worker.node.hostname}(gpu{worker.gpu_id}) | {job.job_id} | {script_name}")
+                    future_to_job[future] = (job, worker)
+                for future in as_completed(future_to_job):
+                    job, worker = future_to_job[future]
+                    try:
+                        result = future.result()
+                        with self._progress_lock:
+                            self.update_progress_state(progress_state, job.job_id, result)
+                        if result.success:
+                            # --- MODIFIED: Quieter success for 'script' jobs ---
+                            if 'script' in job.payload:
+                                # Try to parse the JSON result from the worker's stdout
+                                job_result_data = self.parse_json_result(result.results.get('stdout', ''))
+                                if job_result_data and job_result_data.get('status') == 'success':
+                                    print(f"✅ {worker.node.hostname} GPU{worker.gpu_id} | {job.job_id} | {result.runtime:.1f}s | Acc: {job_result_data.get('accuracy', 'N/A')}")
+                                else:
+                                    print(f"✅ {worker.node.hostname} GPU{worker.gpu_id} | {job.job_id} | {result.runtime:.1f}s")
+                            else:
+                                print(f"✅ {worker.node.hostname} GPU{worker.gpu_id} | {job.prng_type}-{job.mapping_type} | {result.runtime:.1f}s | {len(job.seeds)} seeds")
+                            # --- END MODIFIED ---
+                        else:
+                            with self._progress_lock:
+                                retry_count = progress_state.retry_count.get(job.job_id, 0)
+                            max_retries = self.recovery_manager.max_retries
+                            if retry_count < max_retries:
+                                print(f"⚠️ {worker.node.hostname} GPU{worker.gpu_id} | {job.job_id} | {result.runtime:.1f}s | Failed (will retry {retry_count}/{max_retries})")
+                            else:
+                                print(f"❌ {worker.node.hostname} GPU{worker.gpu_id} | {job.job_id} | {result.runtime:.1f}s | Failed (max retries exceeded)")
+                        current_time = time.time()
+                        if current_time - last_progress_save >= self.progress_save_interval:
+                            with self._progress_lock:
+                                self.recovery_manager.save_progress(progress_state)
+                                completed = len(progress_state.completed_jobs)
+                                total = progress_state.total_jobs
+                                failed = len([jid for jid, rcnt in progress_state.retry_count.items()
+                                              if rcnt >= self.recovery_manager.max_retries])
+                            last_progress_save = current_time
+                            progress_pct = (completed / total * 100) if total > 0 else 0
+                            print(f"💾 Progress saved - Completed: {completed}/{total} ({progress_pct:.1f}%) | Failed: {failed}")
+                        with self._progress_lock:
+                            completed_now = len(progress_state.completed_jobs)
+                        if completed_now % 10 == 0:
+                            gc.collect()
+                    except Exception as e:
+                        error_msg = f"Unexpected error: {str(e)}"
+                        print(f"❌ ERROR: {worker.node.hostname} GPU{worker.gpu_id} | {error_msg}")
+                        dummy_result = JobResult(job.job_id, worker.node.hostname, False, None, error_msg, 0.0)
+                        with self._progress_lock:
+                            self.update_progress_state(progress_state, job.job_id, dummy_result)
+        
+        # This should only be null if there were no jobs to begin with
+        if progress_state is None:
+             print("No jobs were scheduled to run.")
+             return {"metadata": {"successful_jobs": 0}, "results": []}
+
+        retry_jobs = self.get_retry_jobs(progress_state)
+        if retry_jobs:
+            with self._progress_lock:
+                max_attempt = 0
+                for j, _w in retry_jobs:
+                    a = progress_state.retry_count.get(j.job_id, 0)
+                    if a > max_attempt:
+                        max_attempt = a
+            delay = self.recovery_manager.calculate_retry_delay(max_attempt)
+            print(f"\nRetrying {len(retry_jobs)} failed jobs after backoff: {delay}s ...")
+            time.sleep(delay)
+            return self.execute_distributed_analysis(target_file, output_file, args, total_seeds, samples, lmax, grid_size)
+        
+        total_runtime = time.time() - progress_state.start_time
+        with self._progress_lock:
+            permanently_failed = {
+                job_id: error for job_id, error in progress_state.failed_jobs.items()
+                if progress_state.retry_count.get(job_id, 0) >= self.recovery_manager.max_retries
+            }
+            successful_jobs_count = len(progress_state.completed_jobs)
+            total_jobs_count = progress_state.total_jobs
+        
+        final_results = {
+            "metadata": {
+                "analysis_id": analysis_id,
+                "total_jobs": total_jobs_count,
+                "successful_jobs": successful_jobs_count,
+                "failed_jobs": len(permanently_failed),
+                "total_runtime": total_runtime,
+                # ... (rest of metadata) ...
+                "hardware_optimized": True,
+                "job_splitting_enabled": True,
+                "memory_management_enabled": True,
+                "automatic_fault_tolerance_enabled": True,
+                "max_retries_per_job": self.recovery_manager.max_retries,
+                "seed_caps": {
+                    "nvidia": self.seed_cap_nvidia,
+                    "amd": self.seed_cap_amd,
+                    "default": self.seed_cap_default
+                }
+            },
+            "results": list(progress_state.completed_jobs.values()),
+            "failed_jobs": list(permanently_failed.items())
+        }
+        res_dir = os.path.dirname(output_file) or "."
+        os.makedirs(res_dir, exist_ok=True)
+        
+        print(f"""\n=== ANALYSIS COMPLETE ===
+Analysis ID: {analysis_id}
+Total jobs: {total_jobs_count}
+Successful: {successful_jobs_count}
+Failed: {len(permanently_failed)}
+Runtime: {total_runtime:.1f}s
+Results saved: {output_file}
+""".rstrip())
+
+        # --- MODIFIED: Handle 'script' based jobs ---
+        # This is for the *new* optimizer, so we don't aggregate sieve results
+        if hasattr(args, 'jobs_file') and args.jobs_file:
+            print("Script-based job run detected, skipping sieve aggregation.")
+        elif hasattr(self, '_sieve_config'):
+             self._aggregate_sieve_results(analysis_id, output_file)
+        # --- END MODIFIED ---
+
+        if len(permanently_failed) == 0:
+            self.recovery_manager.cleanup_progress(analysis_id)
+            print("✅ Analysis completed successfully - progress file cleaned up")
+        else:
+            print(f"⚠️ {len(permanently_failed)} jobs failed permanently - progress file retained for investigation")
+        return final_results
+        
+    def _aggregate_sieve_results(self, analysis_id: str, output_file: str) -> None:
+        """Aggregate individual sieve result files into one coherent output"""
+        import glob
+        sieve_dir = "results/sieve"
+        os.makedirs(sieve_dir, exist_ok=True)
+        # Clean up old sieve files before aggregating
+        import glob
+        for old_file in glob.glob(os.path.join(sieve_dir, "sieve_*.json")):
+            os.remove(old_file)
+        for node in self.nodes:
+            if not self.is_localhost(node.hostname):
+                remote_path = f"{node.script_path}/results/sieve/sieve_*.json"
+                try:
+                    subprocess.run(['scp', f'{node.username}@{node.hostname}:{remote_path}', sieve_dir], capture_output=True, timeout=30)
+                except Exception as e:
+                    print(f"Warning: Could not fetch from {node.hostname}: {e}")
+        pattern = os.path.join(sieve_dir, "sieve_*.json")
+        sieve_files = glob.glob(pattern)
+        import time
+        cutoff_time = time.time() - 120
+        all_files = sieve_files
+        sieve_files = [f for f in all_files if os.path.getmtime(f) > cutoff_time]
+        if not sieve_files:
+            print("No sieve result files found")
+            return
+        total_survivors = 0
+        all_survivors = []
+        job_summaries = []
+        for sieve_file in sieve_files:
+            try:
+                with open(sieve_file, 'r') as f:
+                    data = json.load(f)
+                survivors_top = data.get('survivors_top', [])
+                total_survivors += len(survivors_top)
+                all_survivors.extend(survivors_top)
+                meta = data.get('meta', {})
+                job_summaries.append({'file': os.path.basename(sieve_file), 'job_id': meta.get('job_id', 'unknown'), 'input': meta.get('input', 0), 'survivors': len(survivors_top), 'duration_ms': meta.get('duration_ms', 0)})
+            except Exception as e:
+                    print(f"Error reading {sieve_file}: {e}")
+        aggregated = {
+            'analysis_id': analysis_id,
+            'total_jobs': len(sieve_files),
+            'total_survivors': total_survivors,
+            'job_summaries': job_summaries,
+            'all_survivors': all_survivors[:100]
+        }
+        agg_file = output_file.replace('.json', '_aggregated.json')
+        with open(agg_file, 'w') as f:
+            json.dump(aggregated, f, indent=2)
+            print(f"\n📊 Sieve Results Aggregated:")
+            print(f"   Total survivors: {total_survivors}")
+            print(f"   Aggregated file: {agg_file}")
+            
+    def _create_sieve_jobs(self, args):
+        """Create sieve jobs with proper parameters for sieve_filter.py"""
+        workers = self.gpu_workers or self.create_gpu_workers()
+        jobs = []
+        total_seeds = args.seeds or 1000000
+
+        # Fix sharding bug: ensure no jobs get 0 seeds
+        num_jobs = min(total_seeds, len(workers) * 4) # <-- Create more, smaller jobs (4x workers)
+        if num_jobs == 0: num_jobs = 1
+        seeds_per_job = (total_seeds + num_jobs - 1) // num_jobs  # Ceiling division
+
+        # Handle timestamp searches - seed_start shifts the entire range
+        base_seed_start = getattr(args, "seed_start", 0)
+
+        # Check if hybrid mode requested
+        use_hybrid = getattr(args, 'hybrid', False)
+
+        # Compute phase thresholds (use config if args is 'auto')
+        p1_arg = getattr(args, 'phase1_threshold', 'auto')
+        p2_arg = getattr(args, 'phase2_threshold', 'auto')
+        p1 = self.sieve_defaults.get('phase1_threshold', 0.01) if p1_arg == 'auto' else p1_arg
+        p2 = self.sieve_defaults.get('phase2_threshold', 0.01) if p2_arg == 'auto' else p2_arg
+
+        self._sieve_config = {
+            'dataset_path': args.target_file,
+            'window_size': getattr(args, 'window_size', self.sieve_defaults.get('window_size', 512)),
+            'min_match_threshold': getattr(args, 'threshold', self.sieve_defaults.get('min_match_threshold', 0.01)),
+            'skip_range': [getattr(args, 'skip_min', self.sieve_defaults.get('skip_range', [0, 20])[0]), getattr(args, 'skip_max', self.sieve_defaults.get('skip_range', [0, 20])[1])],
+            'offset': args.offset if hasattr(args, 'offset') else self.sieve_defaults.get('offset', 0),
+            'prng_families': [args.prng_type] if hasattr(args, 'prng_type') else self.sieve_defaults.get('prng_families', ['mt19937']),
+            'sessions': self.sieve_defaults.get('sessions', ['midday', 'evening']),
+            'hybrid': use_hybrid,
+            'phase1_threshold': p1 if use_hybrid else None,
+            'phase2_threshold': p2 if use_hybrid else None,
+        }
+
+        if use_hybrid:
+            if HYBRID_AVAILABLE:
+                # Load strategies for hybrid mode
+                try:
+                    from hybrid_strategy import get_all_strategies
+                    strategies = get_all_strategies()
+                    self._sieve_config['strategies'] = [
+                        {
+                            'name': s.name,
+                            'max_consecutive_misses': s.max_consecutive_misses,
+                            'skip_tolerance': s.skip_tolerance,
+                            'enable_reseed_search': s.enable_reseed_search,
+                            'skip_learning_rate': s.skip_learning_rate,
+                            'breakpoint_threshold': s.breakpoint_threshold
+                        }
+                        for s in strategies
+                    ]
+                except ImportError:
+                    self._sieve_config['strategies'] = []
+                print(f"🔬 Hybrid mode enabled with {len(self._sieve_config.get('strategies', []))} strategies")
+            else:
+                print("⚠️ Hybrid mode requested but hybrid_strategy module not available")
+                print("   Falling back to standard fixed-skip mode")
+                self._sieve_config['hybrid'] = False
+
+        for i in range(num_jobs):
+            worker = workers[i % len(workers)]
+            seed_start = base_seed_start + (i * seeds_per_job)
+            seed_end = min(base_seed_start + total_seeds, seed_start + seeds_per_job)
+
+            # Skip empty jobs
+            if seed_start >= seed_end:
+                continue
+            # Build sieve payload with all config
+            payload = {
+                "analysis_type": "sieve",
+                "job_id": f"sieve_{i:03d}",
+                "dataset_path": self._sieve_config['dataset_path'],
+                "seed_start": seed_start,
+                "seed_end": seed_end,
+                "window_size": self._sieve_config['window_size'],
+                "min_match_threshold": self._sieve_config['min_match_threshold'],
+                "skip_range": self._sieve_config['skip_range'],
+                "prng_families": self._sieve_config['prng_families'],
+                "sessions": self._sieve_config['sessions'],
+                "offset": self._sieve_config['offset'],
+                "hybrid": self._sieve_config['hybrid'],
+                "phase1_threshold": self._sieve_config['phase1_threshold'],
+                "search_type": "residue_sieve",
+                "phase2_threshold": self._sieve_config['phase2_threshold'],
+            }
+
+            if self._sieve_config.get('strategies'):
+                payload["strategies"] = self._sieve_config['strategies']
+
+            job = JobSpec(
+                job_id=f"sieve_{i:03d}",
+                seeds=[seed_start, seed_end],
+                prng_type=args.prng_type,
+                mapping_type='sieve',
+                samples=1,
+                lmax=1,
+                grid_size=1,
+                mining_mode=False,
+                search_type='residue_sieve',
+                target_draw=None,
+                payload=payload,
+                analysis_type='sieve',
+                attempt=0
+            )
+
+            jobs.append((job, worker))
+
+        print(f"Created {len(jobs)} sieve jobs")
+        return jobs
+
+    # --- ADDED: _create_jobs_from_file ---
+    def _create_jobs_from_file(self, jobs_file_path: str) -> List[Tuple[JobSpec, GPUWorker]]:
+        """Loads jobs from a JSON file (e.g., scorer_jobs.json)"""
+        workers = self.gpu_workers or self.create_gpu_workers()
+        if not workers:
+            raise RuntimeError("No workers available to assign jobs")
+            
+        print(f"Loading jobs from {jobs_file_path}...")
+        try:
+            with open(jobs_file_path, 'r') as f:
+                jobs_data = json.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load jobs file {jobs_file_path}: {e}")
+
+        job_assignments = []
+        for i, job_payload in enumerate(jobs_data):
+            worker = workers[i % len(workers)] # Round-robin assignment
+            
+            job = JobSpec(
+                job_id=job_payload.get('job_id', f'job_{i}'),
+                prng_type=job_payload.get('prng_type', 'script'),
+                mapping_type='script',
+                seeds=[], # Seeds are irrelevant for script jobs
+                samples=0,
+                lmax=0,
+                grid_size=0,
+                mining_mode=False,
+                search_type='script',
+                target_draw=None,
+                payload=job_payload, # Pass the whole JSON object
+                analysis_type='script',
+                attempt=0
+            )
+            job_assignments.append((job, worker))
+            
+        print(f"Loaded {len(job_assignments)} script-based jobs.")
+        return job_assignments
+    # --- END ADDED ---
+
+    def _create_reverse_sieve_jobs(self, args, candidate_seeds: list):
+        """
+        Create reverse sieve jobs - splits candidate seeds across GPUs.
+        ML-FRIENDLY: All parameters from config.
+        """
+        workers = self.gpu_workers
+        if not workers:
+            raise ValueError("No workers available")
+
+        # Get config (ML can modify)
+        max_candidates_per_job = self.reverse_sieve_defaults.get('max_candidates_per_job', 10000)
+
+        total_candidates = len(candidate_seeds)
+        num_gpus = len(workers)
+
+        print(f"Creating reverse sieve jobs for {total_candidates:,} candidates", file=sys.stderr)
+
+        # Calculate distribution
+        candidates_per_job = min(max_candidates_per_job,
+                                 (total_candidates + num_gpus - 1) // num_gpus)
+        num_jobs = (total_candidates + candidates_per_job - 1) // candidates_per_job
+        if num_jobs == 0: num_jobs = 1
+
+        print(f"  {num_jobs} jobs across {num_gpus} GPUs", file=sys.stderr)
+
+        # Build config from args
+        use_hybrid = getattr(args, 'hybrid', False)
+        p2_arg = getattr(args, 'phase2_threshold', 'auto')
+        p2 = self.sieve_defaults.get('phase2_threshold', 0.50) if p2_arg == 'auto' else float(p2_arg)
+
+        sieve_config = {
+            'dataset_path': args.target_file,
+            'window_size': getattr(args, 'window_size', 512),
+            'min_match_threshold': getattr(args, 'threshold', 0.01),
+            'skip_range': [
+                getattr(args, 'skip_min', 0),
+                getattr(args, 'skip_max', 20)
+            ],
+            'offset': getattr(args, 'offset', 0),
+            'prng_families': [args.prng_type] if hasattr(args, 'prng_type') and args.prng_type else ['mt19937'],
+            'sessions': ['midday', 'evening'],
+            'hybrid': use_hybrid,
+            'phase2_threshold': p2 if use_hybrid else None,
+        }
+
+        # Add strategies for hybrid
+        if use_hybrid:
+            try:
+                from hybrid_strategy import get_all_strategies
+                strategies = get_all_strategies()
+                sieve_config['strategies'] = [
+                    {
+                        'name': s.name,
+                        'max_consecutive_misses': s.max_consecutive_misses,
+                        'skip_tolerance': s.skip_tolerance,
+                        'enable_reseed_search': s.enable_reseed_search,
+                        'skip_learning_rate': s.skip_learning_rate,
+                        'breakpoint_threshold': s.breakpoint_threshold
+                    }
+                    for s in strategies
+                ]
+            except ImportError:
+                pass
+
+        # Create jobs
+        jobs = []
+        for i in range(num_jobs):
+            worker = workers[i % len(workers)]
+
+            start_idx = i * candidates_per_job
+            end_idx = min(total_candidates, start_idx + candidates_per_job)
+            job_candidates = candidate_seeds[start_idx:end_idx]
+
+            if not job_candidates:
+                continue
+
+            payload = {
+                "analysis_type": "reverse_sieve",
+                "job_id": f"reverse_{i:03d}",
+                **sieve_config,
+                "candidate_seeds": job_candidates,
+                "search_type": "reverse_sieve", # Added for clarity
+            }
+
+            job = JobSpec(
+                job_id=f"reverse_{i:03d}",
+                seeds=job_candidates,
+                prng_type='reverse_sieve',
+                mapping_type='reverse_sieve',
+                samples=1,
+                lmax=1,
+                grid_size=1,
+                mining_mode=False,
+                search_type='reverse_sieve',
+                target_draw=None,
+                payload=payload,
+                analysis_type='reverse_sieve', # Added
+                attempt=0 # Added
+                )
+
+            jobs.append((job, worker))
+
+        print(f"✅ Created {len(jobs)} reverse sieve jobs", file=sys.stderr)
+        return jobs
+
+    # ============================================================================
+    # --- NEW METHODS FOR SCORER META-OPTIMIZER (PULL ARCHITECTURE) ---
+    # ============================================================================
+
+    def collect_scorer_results(self, total_trials: int) -> List[Dict]:
+        """
+        Pulls scorer trial results from all nodes.
+        This is the "PULL" architecture, avoiding /shared storage.
+        """
+        self.logger.info(f"--- Collecting Scorer Trial Results from {len(self.nodes)} nodes ---")
+        all_results = []
+        
+        # 1. Create a set of node hostnames to query
+        hosts_to_query = set()
+        for node in self.nodes:
+            hosts_to_query.add(node.hostname)
+
+        for host in hosts_to_query:
+            self.logger.info(f"Querying node: {host}")
+            
+            if self.is_localhost(host):
+                # Read results directly from local filesystem
+                local_results = self._read_local_scorer_results()
+                all_results.extend(local_results)
+            else:
+                # Pull results from remote node via SCP
+                remote_results = self._pull_remote_scorer_results(host)
+                all_results.extend(remote_results)
+        
+        # --- ADDED: ENHANCED WARNINGS ---
+        if len(all_results) == 0:
+            self.logger.warning("No results collected from any node!")
+        elif len(all_results) < total_trials:
+            self.logger.warning(f"Only found {len(all_results)}/{total_trials} results")
+        # --- END ADDED ---
+
+        self.logger.info(f"--- Collection Complete: Found {len(all_results)} / {total_trials} results ---")
+        return all_results
+
+    def _read_local_scorer_results(self) -> List[Dict]:
+        """Read results from local filesystem"""
+        results = []
+        # Path matches the one in scorer_trial_worker.py
+        local_path = Path.home() / "distributed_prng_analysis" / "scorer_trial_results"
+        search_pattern = str(local_path / "trial_*.json")
+        
+        file_list = glob.glob(search_pattern)
+        self.logger.info(f"  [localhost] Found {len(file_list)} result files locally.")
+
+        for result_file in file_list:
+            try:
+                with open(result_file, 'r') as f:
+                    results.append(json.load(f))
+                # Clean up file after reading
+                os.remove(result_file)
+            except Exception as e:
+                self.logger.warning(f"  [localhost] Failed to read/delete {result_file}: {e}")
+        
+        return results
+
+    def _pull_remote_scorer_results(self, host: str) -> List[Dict]:
+        """Pull results from a single remote node via SCP"""
+        results = []
+        
+        # Find the node config to get credentials
+        node = next((n for n in self.nodes if n.hostname == host), None)
+        if not node:
+            self.logger.error(f"  [{host}] Node config not found. Skipping.")
+            return []
+
+        ssh = None
+        sftp = None
+        try:
+            # SSH to remote node
+            ssh = self.ssh_pool.get_connection(node.hostname, node.username, node.password)
+            sftp = ssh.open_sftp()
+
+            # Path matches the one in scorer_trial_worker.py
+            remote_path = f"/home/{node.username}/distributed_prng_analysis/scorer_trial_results"
+            remote_pattern = f"{remote_path}/trial_*.json"
+            
+            # List remote result files
+            stdin, stdout, stderr = ssh.exec_command(f"ls {remote_pattern} 2>/dev/null")
+            remote_files = stdout.read().decode().strip().split('\n')
+            
+            if not remote_files or remote_files == ['']:
+                self.logger.info(f"  [{host}] No result files found in {remote_path}")
+                return results
+
+            self.logger.info(f"  [{host}] Found {len(remote_files)} files. Pulling...")
+
+            # Pull each file
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for remote_file_path in remote_files:
+                    if not remote_file_path:
+                        continue
+                    
+                    local_path = os.path.join(tmpdir, os.path.basename(remote_file_path))
+                    
+                    try:
+                        sftp.get(remote_file_path, local_path)
+                        with open(local_path, 'r') as f:
+                            results.append(json.load(f))
+                        # Clean up remote file after successful pull
+                        sftp.remove(remote_file_path)
+                    except Exception as e:
+                        self.logger.warning(f"  [{host}] Failed to pull/read/delete {remote_file_path}: {e}")
+            
+            self.logger.info(f"  [{host}] Successfully pulled and cleaned {len(results)} results.")
+
+        except Exception as e:
+            self.logger.warning(f"  [{host}] Could not pull results: {e}")
+        finally:
+            if sftp:
+                sftp.close()
+            if ssh:
+                self.ssh_pool.return_connection(node.hostname, ssh)
+        
+        return results
+
+    # ============================================================================
+    # --- END OF NEW METHODS ---
+    # ============================================================================
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Multi-GPU Distributed PRNG Analysis with Automatic Fault Tolerance')
+    parser.add_argument('--seed-start', type=int, default=0, help='Starting seed value for timestamp searches (default: 0)')
+    # --- MODIFIED: Make target_file optional for script-based jobs ---
+    parser.add_argument('target_file', nargs='?', default=None, help='Target data file (e.g., daily3.json)')
+    # --- END MODIFIED ---
+    parser.add_argument('-c', '--config', default='distributed_config.json', help='Configuration file')
+    parser.add_argument('-s', '--seeds', type=int, default=1000, help='Total number of seeds')
+    parser.add_argument('--offset', type=int, default=0, help='Position offset - advance seeds by offset*(skip+1) before testing')
+    parser.add_argument('-n', '--samples', type=int, default=1000, help='Samples per seed')
+    parser.add_argument('--lmax', type=int, default=8, help='Maximum lag for correlation')
+    parser.add_argument('--grid-size', type=int, default=4, help='Grid size for analysis')
+    parser.add_argument('--analysis-type', type=str, default='statistical',
+                    choices=['correlation', 'statistical'],
+                    help='Analysis type: correlation (vectorized, fast) or statistical (detailed, comprehensive)')
+    parser.add_argument('-o', '--output', help='Output results file')
+    parser.add_argument('--test-only', action='store_true', help='Test connectivity only')
+    # Job-splitting parameters for memory management based on capacity probe results
+    parser.add_argument('--seed-cap-nvidia', type=int, default=40000,
+                       help='Max seeds per job on NVIDIA GPUs (40K from RTX 3080 Ti probe)')
+    parser.add_argument('--seed-cap-amd', type=int, default=19000,
+                       help='Max seeds per job on AMD GPUs (19K from RX 6600 probe)')
+    parser.add_argument('--seed-cap-default', type=int, default=19000,
+                       help='Max seeds per job for other/unknown GPUs')
+    # System stability parameters
+    parser.add_argument('--max-concurrent', type=int, default=26, # <-- INCREASED DEFAULT
+                       help='Maximum concurrent jobs across entire cluster')
+    parser.add_argument('--max-per-node', type=int, default=12, # <-- INCREASED DEFAULT
+                       help='Maximum concurrent jobs per remote node')
+    parser.add_argument('--max-local-concurrent', type=int, default=4,
+                       help='Maximum concurrent local (localhost) jobs')
+    parser.add_argument('--job-timeout', type=int, default=1200,
+                       help='Job timeout in seconds (applies to both local and remote)')
+    # NEW: resume policy flag
+    parser.add_argument(
+        '--resume-policy',
+        choices=['prompt', 'resume', 'restart', 'auto'],
+        default='prompt',
+        help=(
+            "What to do if a previous analysis progress file is found:\n"
+            " prompt = interactively ask (default)\n"
+            " resume = resume without asking\n"
+            " restart = delete progress and start over\n"
+            " auto = resume if progress is incomplete; restart if it looks complete"
+        )
+    )
+    # Residue Sieve arguments
+    parser.add_argument('--method', choices=['standard', 'draw_match', 'residue_sieve'],
+                        default='standard', help='Analysis method to use')
+    parser.add_argument('--prng-type', default='lcg32',
+                        choices=['lcg32', 'xorshift32', 'pcg32', 'mt19937', 'xorshift64',
+         'xorshift32_hybrid', 'pcg32_hybrid', 'lcg32_hybrid', 'xorshift64_hybrid', 'mt19937_hybrid',
+         'java_lcg', 'java_lcg_hybrid', 'minstd', 'minstd_hybrid', 'xorshift128', 'xorshift128_hybrid',
+         'mt19937_reverse', 'mt1g937_hybrid_reverse',
+         'lcg32_reverse', 'lcg32_hybrid_reverse',
+            'xorshift32_reverse', 'xorshift32_hybrid_reverse', 'xorshift64_reverse', 'xorshift64_hybrid_reverse', 'xorshift128_reverse', 'xorshift128_hybrid_reverse', 'pcg32_reverse', 'pcg32_hybrid_reverse', 'java_lcg_reverse', 'java_lcg_hybrid_reverse', 'minstd_reverse', 'minstd_hybrid_reverse', 'philox4x32_reverse', 'philox4x32_hybrid_reverse',
+         'xoshiro256pp', 'xoshiro256pp_hybrid', 'xoshiro256pp_reverse', 'xoshiro256pp_hybrid_reverse',
+         'philox4x32', 'philox4x32_hybrid',
+         'sfc64', 'sfc64_hybrid', 'sfc64_reverse', 'sfc64_hybrid_reverse'],
+                        help='PRNG type for sieve analysis')
+    parser.add_argument('--window-size', type=int, choices=[512, 768, 1024], default=512,
+                        help='Sieve window size (512/768/1024 draws)')
+    parser.add_argument('--k-sigma', type=float, default=6.0,
+                        help='Statistical threshold (k-sigma)')
+    parser.add_argument('--skip', type=int, default=0, choices=range(17), help='Skip/burn-in count (0-16)')
+    parser.add_argument('--skip-min', type=int, default=0, help='Minimum skip value for sieve')
+    parser.add_argument('--skip-max', type=int, default=20, help='Maximum skip value for sieve')
+    parser.add_argument('--threshold', type=float, default=0.01, help='Match threshold for sieve (0.0-1.0)')
+
+    # Hybrid variable skip mode arguments
+    parser.add_argument('--hybrid', action='store_true',
+                       help='Enable hybrid variable skip detection (multi-strategy)')
+    parser.add_argument('--phase1-threshold', type=str, default='auto',
+                       help="Phase 1 threshold (float or 'auto')")
+    parser.add_argument('--phase2-threshold', type=str, default='auto',
+                       help="Phase 2 threshold (float or 'auto')")
+
+    parser.add_argument('--session-filter', choices=['midday', 'evening', 'both'],
+                        default='both', help='Session filter for dataset')
+    parser.add_argument('--draw-match', type=int, help='Target draw number for matching analysis')
+
+    # --- ADDED: --jobs-file argument ---
+    parser.add_argument('--jobs-file', type=str, help='A JSON file containing a list of jobs to run (e.g., scorer_jobs.json)')
+    # --- END ADDED ---
+
+    # Window Optimization arguments
+    parser.add_argument('--opt-iterations', type=int, default=50,
+                       help='Maximum optimization iterations (default: 50)')
+    parser.add_argument('--opt-seed-count', type=int, default=10_000_000,
+                       help='Number of seeds to test per configuration (default: 10M)')
+
+    global args # Make args global for legacy methods
+    args = parser.parse_args()
+    
+    # --- MODIFIED: Check for target_file ---
+    if not args.target_file and not args.jobs_file:
+        parser.error("Either 'target_file' or '--jobs-file' must be provided.")
+    # --- END MODIFIED ---
+    
+    # Generate output filename if not provided
+    if not args.output:
+        timestamp = int(time.time())
+        if args.jobs_file:
+            output_name = Path(args.jobs_file).stem
+            args.output = f"results/{output_name}_results_{timestamp}.json"
+        else:
+            output_name = Path(args.target_file).stem
+            args.output = f"results/{output_name}_analysis_{timestamp}.json"
+            
+    try:
+        # Initialize coordinator with enhanced resource management and automatic fault tolerance
+        # Patch coordinator class for window optimization
+
+        coordinator = MultiGPUCoordinator(
+            args.config,
+            seed_cap_nvidia=args.seed_cap_nvidia,
+            seed_cap_amd=args.seed_cap_amd,
+            seed_cap_default=args.seed_cap_default,
+            max_concurrent=args.max_concurrent,
+            max_per_node=args.max_per_node,
+            max_local_concurrent=args.max_local_concurrent,
+            job_timeout=args.job_timeout,
+            resume_policy=args.resume_policy, # NEW
+        )
+
+
+        if args.test_only:
+            # Test connectivity only
+            if coordinator.test_connectivity():
+                print("✅ All GPU workers accessible")
+                return 0
+            else:
+                print("❌ Connectivity test failed")
+                return 1
+        else:
+            # Run full analysis with automatic fault tolerance
+            results = coordinator.execute_distributed_analysis(
+                args.target_file, args.output, args, args.seeds, args.samples,
+                args.lmax, args.grid_size
+            )
+            if results['metadata']['successful_jobs'] > 0:
+                return 0
+            else:
+                return 1
+    except KeyboardInterrupt:
+        print("\nSystem interrupted by user")
+        print("Analysis progress has been saved and can be automatically resumed on next run")
+        return 1
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    finally:
+        # Ensure cleanup on any exit
+        try:
+            if 'coordinator' in locals():
+                coordinator.ssh_pool.cleanup_all()
+        except:
+            pass
+if __name__ == "__main__":
+    exit(main())

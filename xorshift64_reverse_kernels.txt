@@ -1,0 +1,169 @@
+
+XORSHIFT64_REVERSE_KERNEL = r'''
+extern "C" __global__
+void xorshift64_reverse_sieve(
+    unsigned long long* candidate_seeds, unsigned int* residues, unsigned int* survivors,
+    float* match_rates, unsigned char* best_skips, unsigned int* survivor_count,
+    int n_candidates, int k, int skip_min, int skip_max, float threshold, int offset
+) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n_candidates) return;
+    
+    unsigned long long seed = candidate_seeds[idx];
+    float best_rate = 0.0f;
+    int best_skip_val = 0;
+    
+    for (int skip = skip_min; skip <= skip_max; skip++) {
+        unsigned long long state = seed;
+        
+        // Pre-advance by offset
+        for (int o = 0; o < offset; o++) {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state *= 0x2545F4914F6CDD1DULL;
+        }
+        
+        // Burn skip values before first draw
+        for (int s = 0; s < skip; s++) {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state *= 0x2545F4914F6CDD1DULL;
+        }
+        
+        int matches = 0;
+        for (int i = 0; i < k; i++) {
+            // Generate draw
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state *= 0x2545F4914F6CDD1DULL;
+            
+            // Multi-modulo validation
+            if (((state % 1000) == (unsigned int)(residues[i] % 1000)) &&
+                ((state % 8) == (unsigned int)(residues[i] % 8)) &&
+                ((state % 125) == (unsigned int)(residues[i] % 125))) {
+                matches++;
+            }
+            
+            // Skip between draws
+            for (int s = 0; s < skip; s++) {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                state *= 0x2545F4914F6CDD1DULL;
+            }
+        }
+        
+        float rate = ((float)matches) / ((float)k);
+        if (rate > best_rate) {
+            best_rate = rate;
+            best_skip_val = skip;
+        }
+    }
+    
+    if (best_rate >= threshold) {
+        unsigned int pos = atomicAdd(survivor_count, 1);
+        survivors[pos] = (unsigned int)candidate_seeds[idx];
+        match_rates[pos] = best_rate;
+        best_skips[pos] = (unsigned char)best_skip_val;
+    }
+}
+'''
+
+XORSHIFT64_HYBRID_REVERSE_KERNEL = r'''
+extern "C" __global__
+void xorshift64_hybrid_reverse_sieve(
+    unsigned long long* candidate_seeds, unsigned int* residues, unsigned int* survivors,
+    float* match_rates, unsigned int* skip_sequences, unsigned int* strategy_ids,
+    unsigned int* survivor_count, int n_candidates, int k,
+    int* strategy_max_misses, int* strategy_tolerances, int n_strategies,
+    float threshold, int offset
+) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n_candidates) return;
+    
+    unsigned long long seed = candidate_seeds[idx];
+    
+    for (int strat_id = 0; strat_id < n_strategies; strat_id++) {
+        int max_consecutive_misses = strategy_max_misses[strat_id];
+        int skip_tolerance = strategy_tolerances[strat_id];
+        
+        unsigned long long state = seed;
+        
+        // Pre-advance by offset
+        for (int o = 0; o < offset; o++) {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state *= 0x2545F4914F6CDD1DULL;
+        }
+        
+        int matches = 0;
+        int consecutive_misses = 0;
+        unsigned int skip_seq[512];
+        bool failed = false;
+        
+        for (int i = 0; i < k && !failed; i++) {
+            bool found = false;
+            
+            for (int try_skip = 0; try_skip <= skip_tolerance && !found; try_skip++) {
+                unsigned long long state_save = state;
+                
+                // Apply trial skip
+                for (int s = 0; s < try_skip; s++) {
+                    state ^= state >> 12;
+                    state ^= state << 25;
+                    state ^= state >> 27;
+                    state *= 0x2545F4914F6CDD1DULL;
+                }
+                
+                // Generate next value
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                state *= 0x2545F4914F6CDD1DULL;
+                
+                // Multi-modulo test
+                if (((state % 1000) == (unsigned int)(residues[i] % 1000)) &&
+                    ((state % 8) == (unsigned int)(residues[i] % 8)) &&
+                    ((state % 125) == (unsigned int)(residues[i] % 125))) {
+                    found = true;
+                    matches++;
+                    consecutive_misses = 0;
+                    skip_seq[i] = try_skip;
+                } else {
+                    state = state_save;
+                }
+            }
+            
+            if (!found) {
+                consecutive_misses++;
+                if (consecutive_misses > max_consecutive_misses) {
+                    failed = true;
+                }
+                skip_seq[i] = 0;
+            }
+        }
+        
+        if (!failed) {
+            float rate = ((float)matches) / ((float)k);
+            
+            if (rate >= threshold) {
+                int pos = atomicAdd(survivor_count, 1);
+                survivors[pos] = (unsigned int)candidate_seeds[idx];
+                match_rates[pos] = rate;
+                strategy_ids[pos] = strat_id;
+                
+                for (int i = 0; i < k; i++) {
+                    skip_sequences[pos * 512 + i] = skip_seq[i];
+                }
+                
+                return;
+            }
+        }
+    }
+}
+'''
+

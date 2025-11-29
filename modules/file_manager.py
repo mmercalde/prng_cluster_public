@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""
+File Manager Module - File system operations for analysis results
+Complements database_manager by handling files rather than database records
+"""
+
+import os
+import json
+import glob
+import shutil
+from datetime import datetime
+
+class FileManager:
+    def __init__(self, core):
+        self.core = core
+        self.module_name = "File Manager"
+        self.base_dir = os.getcwd()
+
+    def menu(self):
+        """File manager menu"""
+        while True:
+            self.core.clear_screen()
+            self.core.print_header()
+            print(f"\n{self.module_name.upper()}")
+            print("-" * 70)
+            print("FILE OPERATIONS:")
+            print("  1. Browse Analysis Files")
+            print("  2. View File Details")
+            print("  3. Search Files by Type")
+            print("  4. Archive Old Files")
+            print("  5. Delete Specific Files")
+            print("ORGANIZATION:")
+            print("  6. Organize by Date")
+            print("  7. Organize by Type")
+            print("  8. Create Archive")
+            print("UTILITIES:")
+            print("  9. Disk Space Analysis")
+            print(" 10. File Integrity Check")
+            print(" 11. Back to Main Menu")
+            print("-" * 70)
+            
+            choice = input("Select option (1-11): ").strip()
+            
+            if choice == '1':
+                self.browse_analysis_files()
+            elif choice == '2':
+                self.view_file_details()
+            elif choice == '3':
+                self.search_files_by_type()
+            elif choice == '4':
+                self.archive_old_files()
+            elif choice == '5':
+                self.delete_specific_files()
+            elif choice == '6':
+                self.organize_by_date()
+            elif choice == '7':
+                self.organize_by_type()
+            elif choice == '8':
+                self.create_archive()
+            elif choice == '9':
+                self.disk_space_analysis()
+            elif choice == '10':
+                self.file_integrity_check()
+            elif choice == '11':
+                break
+            else:
+                print("Invalid option")
+                input("Press Enter to continue...")
+
+    def browse_analysis_files(self):
+        """Browse all analysis result files"""
+        print("\nAnalysis Files")
+        print("=" * 70)
+        
+        # File categories
+        categories = {
+            # NEW FORMAT: Organized subdirectories
+            'Result Summaries': 'results/summaries/*.txt',
+            'CSV Exports': 'results/csv/*.csv',
+            'JSON Results': 'results/json/*.json',
+            'Detailed Results': 'results/detailed/*.json',
+            'Config Files': 'results/configs/*.json',
+            'Lottery Data': 'daily*.json'
+        }
+        
+        total_files = 0
+        total_size = 0
+        
+        for category, pattern in categories.items():
+            files = glob.glob(pattern)
+            if files:
+                size = sum(os.path.getsize(f) for f in files)
+                total_size += size
+                total_files += len(files)
+                print(f"\n{category}: {len(files)} files ({size/1024:.1f} KB)")
+                
+                # Show first 3 files
+                for f in sorted(files, key=os.path.getmtime, reverse=True)[:3]:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(f))
+                    print(f"  {f} ({mtime.strftime('%Y-%m-%d %H:%M')})")
+                
+                if len(files) > 3:
+                    print(f"  ... and {len(files)-3} more")
+        
+        print(f"\nTotal: {total_files} files, {total_size/1024/1024:.2f} MB")
+        input("\nPress Enter to continue...")
+
+    def view_file_details(self):
+        """View details of a specific file"""
+        print("\nView File Details")
+        print("=" * 40)
+        
+        filename = input("Enter filename: ").strip()
+        
+        if not filename or not os.path.exists(filename):
+            print(f"File '{filename}' not found")
+            input("Press Enter to continue...")
+            return
+        
+        try:
+            size = os.path.getsize(filename)
+            mtime = datetime.fromtimestamp(os.path.getmtime(filename))
+            
+            print(f"\nFile: {filename}")
+            print(f"Size: {size/1024:.2f} KB ({size:,} bytes)")
+            print(f"Modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # If JSON, show structure
+            if filename.endswith('.json'):
+                with open(filename, 'r') as f:
+                    data = json.load(f)
+                
+                print(f"\nJSON Structure:")
+                if isinstance(data, dict):
+                    print(f"  Keys: {list(data.keys())}")
+                    for key in list(data.keys())[:5]:
+                        value = data[key]
+                        if isinstance(value, (list, dict)):
+                            print(f"  {key}: {type(value).__name__} ({len(value)} items)")
+                        else:
+                            print(f"  {key}: {value}")
+                elif isinstance(data, list):
+                    print(f"  Array with {len(data)} items")
+            
+        except Exception as e:
+            print(f"Error reading file: {e}")
+        
+        input("\nPress Enter to continue...")
+
+    def search_files_by_type(self):
+        """Search for files by type/pattern"""
+        print("\nSearch Files by Type")
+        print("=" * 40)
+        print("Common patterns:")
+        print("  1. gap_aware  - Gap-aware analysis")
+        print("  2. daily      - Lottery data")
+        print("  3. export     - Database exports")
+        print("  4. search     - Search results")
+        print("  5. Custom pattern")
+        
+        choice = input("\nSelect pattern (1-5) or enter custom: ").strip()
+        
+        pattern_map = {
+            '1': 'gap_aware',
+            '2': 'daily',
+            '3': 'export',
+            '4': 'search'
+        }
+        
+        if choice in pattern_map:
+            pattern = pattern_map[choice]
+        elif choice == '5':
+            pattern = input("Enter custom pattern: ").strip()
+        else:
+            pattern = choice  # Allow direct pattern entry
+        
+        if not pattern:
+            return
+        
+        # Search with wildcards
+        search_pattern = f"*{pattern}*.json"
+        files = glob.glob(search_pattern)
+        
+        if not files:
+            print(f"\nNo files matching '{search_pattern}'")
+        else:
+            total_size = sum(os.path.getsize(f) for f in files)
+            print(f"\nFound {len(files)} file(s) ({total_size/1024:.1f} KB):")
+            print("-" * 80)
+            print(f"{'Filename':<50} {'Size (KB)':<12} {'Modified'}")
+            print("-" * 80)
+            
+            for f in sorted(files, key=os.path.getmtime, reverse=True):
+                size = os.path.getsize(f) / 1024
+                mtime = datetime.fromtimestamp(os.path.getmtime(f))
+                print(f"{f:<50} {size:>8.1f}    {mtime.strftime('%Y-%m-%d %H:%M')}")
+            
+            print("-" * 80)
+            print(f"Total: {len(files)} files, {total_size/1024:.1f} KB")
+        
+        input("\nPress Enter to continue...")
+
+    def archive_old_files(self):
+        """Archive files older than specified days"""
+        print("\nArchive Old Files")
+        print("=" * 40)
+        
+        days = input("Archive files older than how many days? (default 30): ").strip()
+        days = int(days) if days else 30
+        
+        cutoff_time = datetime.now().timestamp() - (days * 86400)
+        
+        # Find old JSON files
+        old_files = []
+        for f in glob.glob("*.json"):
+            if os.path.getmtime(f) < cutoff_time:
+                old_files.append(f)
+        
+        if not old_files:
+            print(f"No files older than {days} days")
+            input("Press Enter to continue...")
+            return
+        
+        total_size = sum(os.path.getsize(f) for f in old_files)
+        print(f"\nFound {len(old_files)} files older than {days} days")
+        print(f"Total size: {total_size/1024/1024:.2f} MB")
+        
+        if self.core.confirm_operation(f"Archive {len(old_files)} old files"):
+            archive_dir = f"archive_{datetime.now().strftime('%Y%m%d')}"
+            os.makedirs(archive_dir, exist_ok=True)
+            
+            moved = 0
+            for f in old_files:
+                try:
+                    shutil.move(f, os.path.join(archive_dir, f))
+                    moved += 1
+                except Exception as e:
+                    print(f"Error moving {f}: {e}")
+            
+            print(f"\nArchived {moved} files to {archive_dir}/")
+            self.core.log_operation("archive", "SUCCESS", f"Archived {moved} files")
+        
+        input("Press Enter to continue...")
+
+    def delete_specific_files(self):
+        """Delete specific files by pattern"""
+        print("\nDelete Specific Files")
+        print("=" * 40)
+        print("WARNING: This will permanently delete files!")
+        
+        pattern = input("\nEnter file pattern to delete (e.g., gap_aware_*): ").strip()
+        
+        if not pattern:
+            return
+        
+        files = glob.glob(pattern)
+        
+        if not files:
+            print(f"No files matching '{pattern}'")
+            input("Press Enter to continue...")
+            return
+        
+        print(f"\nFiles to delete ({len(files)}):")
+        for f in files[:10]:
+            print(f"  {f}")
+        if len(files) > 10:
+            print(f"  ... and {len(files)-10} more")
+        
+        if self.core.confirm_operation(f"DELETE {len(files)} files"):
+            deleted = 0
+            for f in files:
+                try:
+                    os.remove(f)
+                    deleted += 1
+                except Exception as e:
+                    print(f"Error deleting {f}: {e}")
+            
+            print(f"\nDeleted {deleted} files")
+            self.core.log_operation("delete", "SUCCESS", f"Deleted {deleted} files")
+        
+        input("Press Enter to continue...")
+
+    def organize_by_date(self):
+        """Organize files into date-based folders"""
+        print("\nOrganize by Date")
+        print("=" * 40)
+        print("This will move files into YYYY-MM/ folders")
+        
+        if not self.core.confirm_operation("Organize files by date"):
+            return
+        
+        files = glob.glob("*.json")
+        organized = 0
+        
+        for f in files:
+            try:
+                mtime = datetime.fromtimestamp(os.path.getmtime(f))
+                folder = mtime.strftime("%Y-%m")
+                
+                os.makedirs(folder, exist_ok=True)
+                shutil.move(f, os.path.join(folder, f))
+                organized += 1
+            except Exception as e:
+                print(f"Error organizing {f}: {e}")
+        
+        print(f"\nOrganized {organized} files")
+        input("Press Enter to continue...")
+
+    def organize_by_type(self):
+        """Organize files by analysis type"""
+        print("\nOrganize by Type")
+        print("=" * 40)
+        
+        type_folders = {
+            'gap_aware': 'gap_aware_analysis',
+            'search_results': 'exhaustive_searches',
+            'database_export': 'database_exports',
+            'daily': 'lottery_data'
+        }
+        
+        if not self.core.confirm_operation("Organize files by type"):
+            return
+        
+        organized = 0
+        for pattern, folder in type_folders.items():
+            files = glob.glob(f"*{pattern}*.json")
+            if files:
+                os.makedirs(folder, exist_ok=True)
+                for f in files:
+                    try:
+                        shutil.move(f, os.path.join(folder, f))
+                        organized += 1
+                    except Exception as e:
+                        print(f"Error: {e}")
+        
+        print(f"\nOrganized {organized} files")
+        input("Press Enter to continue...")
+
+    def create_archive(self):
+        """Create compressed archive of all analysis files"""
+        print("\nCreate Archive")
+        print("=" * 40)
+        
+        archive_name = f"analysis_archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        print(f"Creating archive: {archive_name}.tar.gz")
+        
+        if self.core.confirm_operation("Create compressed archive"):
+            try:
+                shutil.make_archive(archive_name, 'gztar', '.', '*.json')
+                size = os.path.getsize(f"{archive_name}.tar.gz") / 1024 / 1024
+                print(f"\nArchive created: {archive_name}.tar.gz ({size:.2f} MB)")
+                self.core.log_operation("archive", "SUCCESS", f"Created {archive_name}.tar.gz")
+            except Exception as e:
+                print(f"Error creating archive: {e}")
+        
+        input("Press Enter to continue...")
+
+    def disk_space_analysis(self):
+        """Analyze disk space usage"""
+        print("\nDisk Space Analysis")
+        print("=" * 70)
+        
+        # Analyze current directory
+        total_size = 0
+        file_types = {}
+        
+        for root, dirs, files in os.walk('.'):
+            for f in files:
+                filepath = os.path.join(root, f)
+                try:
+                    size = os.path.getsize(filepath)
+                    total_size += size
+                    
+                    ext = os.path.splitext(f)[1] or 'no_ext'
+                    file_types[ext] = file_types.get(ext, 0) + size
+                except:
+                    pass
+        
+        print(f"Total disk usage: {total_size/1024/1024:.2f} MB\n")
+        print("By file type:")
+        for ext, size in sorted(file_types.items(), key=lambda x: x[1], reverse=True)[:10]:
+            pct = (size / total_size * 100) if total_size > 0 else 0
+            print(f"  {ext:<10} {size/1024/1024:>8.2f} MB  ({pct:>5.1f}%)")
+        
+        input("\nPress Enter to continue...")
+
+    def file_integrity_check(self):
+        """Check JSON files for validity"""
+        print("\nFile Integrity Check")
+        print("=" * 40)
+        
+        json_files = glob.glob("*.json")
+        valid = 0
+        invalid = []
+        
+        for f in json_files:
+            try:
+                with open(f, 'r') as file:
+                    json.load(file)
+                valid += 1
+            except Exception as e:
+                invalid.append((f, str(e)))
+        
+        print(f"\nValid JSON files: {valid}")
+        if invalid:
+            print(f"Invalid JSON files: {len(invalid)}")
+            for f, error in invalid:
+                print(f"  {f}: {error[:50]}")
+        else:
+            print("All JSON files are valid")
+        
+        input("\nPress Enter to continue...")
+
+    def shutdown(self):
+        """Cleanup"""
+        pass

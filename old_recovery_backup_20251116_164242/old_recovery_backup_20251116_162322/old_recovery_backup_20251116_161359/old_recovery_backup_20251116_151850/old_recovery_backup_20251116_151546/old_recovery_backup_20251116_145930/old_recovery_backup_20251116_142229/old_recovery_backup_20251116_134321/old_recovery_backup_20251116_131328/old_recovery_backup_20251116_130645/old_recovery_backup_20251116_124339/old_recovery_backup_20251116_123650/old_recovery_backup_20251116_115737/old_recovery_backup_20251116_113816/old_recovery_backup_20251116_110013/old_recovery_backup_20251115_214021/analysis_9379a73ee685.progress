@@ -1,0 +1,1493 @@
+{
+  "analysis_id": "analysis_9379a73ee685",
+  "total_jobs": 26,
+  "completed_jobs": {},
+  "failed_jobs": {},
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "sieve_000",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12000,
+          12077
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_000",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12000,
+          "seed_end": 12077,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_001",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12077,
+          12154
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_001",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12077,
+          "seed_end": 12154,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_002",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12154,
+          12231
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_002",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12154,
+          "seed_end": 12231,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_003",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12231,
+          12308
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_003",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12231,
+          "seed_end": 12308,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.120_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_004",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12308,
+          12385
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_004",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12308,
+          "seed_end": 12385,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.120_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_005",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12385,
+          12462
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_005",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12385,
+          "seed_end": 12462,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.120_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_006",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12462,
+          12539
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_006",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12462,
+          "seed_end": 12539,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.120_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_007",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12539,
+          12616
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_007",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12539,
+          "seed_end": 12616,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.120_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_008",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12616,
+          12693
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_008",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12616,
+          "seed_end": 12693,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.120_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_009",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12693,
+          12770
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_009",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12693,
+          "seed_end": 12770,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.120_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_010",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12770,
+          12847
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_010",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12770,
+          "seed_end": 12847,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.120_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_011",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12847,
+          12924
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_011",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12847,
+          "seed_end": 12924,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.120_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_012",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          12924,
+          13001
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_012",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 12924,
+          "seed_end": 13001,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.120_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_013",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13001,
+          13078
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_013",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13001,
+          "seed_end": 13078,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.120_gpu11"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_014",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13078,
+          13155
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_014",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13078,
+          "seed_end": 13155,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.154_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_015",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13155,
+          13232
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_015",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13155,
+          "seed_end": 13232,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.154_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_016",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13232,
+          13309
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_016",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13232,
+          "seed_end": 13309,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.154_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_017",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13309,
+          13386
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_017",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13309,
+          "seed_end": 13386,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.154_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_018",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13386,
+          13463
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_018",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13386,
+          "seed_end": 13463,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.154_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_019",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13463,
+          13540
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_019",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13463,
+          "seed_end": 13540,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.154_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_020",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13540,
+          13617
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_020",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13540,
+          "seed_end": 13617,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.154_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_021",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13617,
+          13694
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_021",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13617,
+          "seed_end": 13694,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.154_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_022",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13694,
+          13771
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_022",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13694,
+          "seed_end": 13771,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.154_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_023",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13771,
+          13848
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_023",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13771,
+          "seed_end": 13848,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.154_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_024",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13848,
+          13925
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_024",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13848,
+          "seed_end": 13925,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.154_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_025",
+        "prng_type": "xorshift32_hybrid_reverse",
+        "mapping_type": "sieve",
+        "seeds": [
+          13925,
+          14000
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_025",
+          "dataset_path": "test_multi_prng_xorshift32.json",
+          "seed_start": 13925,
+          "seed_end": 14000,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            4,
+            6
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": false,
+          "phase1_threshold": null,
+          "search_type": "residue_sieve",
+          "phase2_threshold": null
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.154_gpu11"
+      }
+    }
+  ],
+  "retry_count": {},
+  "start_time": 1760917645.9387848,
+  "last_update": 1760917645.938816
+}

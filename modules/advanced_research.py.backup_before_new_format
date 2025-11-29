@@ -1,0 +1,938 @@
+#!/usr/bin/env python3
+"""
+Advanced Research Module - Advanced research functionality using search manager
+
+Handles advanced search operations including exhaustive searches, parameter sweeps,
+state reconstruction, and specialized analysis types.
+"""
+
+import os
+import sqlite3
+import json
+import time
+from typing import Dict, Any, List
+from advanced_search_manager import (
+    AdvancedSearchManager,
+    ExhaustiveSearchConfig,
+    ParameterSweepConfig,
+    StateReconstructionConfig,
+    SpecificDrawAnalysisConfig
+)
+
+# Import enhanced gap-aware functionality
+try:
+    from enhanced_gap_aware_reconstruction import create_enhanced_gap_aware_analysis as create_gap_aware_reconstruction_analysis
+    GAP_AWARE_AVAILABLE = True
+except ImportError:
+    GAP_AWARE_AVAILABLE = False
+    print("Warning: Enhanced gap-aware reconstruction not available")
+
+class AdvancedResearch:
+    def __init__(self, core):
+        self.core = core
+        self.module_name = "Advanced Research"
+        self.search_manager = AdvancedSearchManager()
+
+    def menu(self):
+        """Display advanced research menu"""
+        while True:
+            self.core.clear_screen()
+            self.core.print_header()
+            print(f"\n{self.module_name.upper()}")
+            print("-" * 35)
+            print("ADVANCED RESEARCH OPTIONS:")
+            print("  1. Exhaustive Seed Search")
+            print("  2. Parameter Sweep Analysis")
+            print("  3. State Reconstruction")
+            print("  4. Specific Draw Analysis")
+            print("  5. Historical Pattern Analysis")
+            print("  6. Temporal Sequence Analysis")
+            print("  7. View Search Progress")
+            print("  8. Cancel Running Search")
+            print("  9. Export Search Results")
+            print(" 10. Lottery MT19937 Analysis")
+            print(" 11. Gap-Aware PRNG Reconstruction")
+            print(" 12. Back to Main Menu")
+            print("-" * 35)
+            choice = input("Select option (1-12): ").strip()
+
+            if choice == '1':
+                self.exhaustive_seed_search()
+            elif choice == '2':
+                self.parameter_sweep_analysis()
+            elif choice == '3':
+                self.state_reconstruction()
+            elif choice == '4':
+                self.specific_draw_analysis()
+            elif choice == '5':
+                self.historical_pattern_analysis()
+            elif choice == '6':
+                self.temporal_sequence_analysis()
+            elif choice == '7':
+                self.view_search_progress()
+            elif choice == '8':
+                self.cancel_running_search()
+            elif choice == '9':
+                self.export_search_results()
+            elif choice == '10':
+                self.lottery_mt19937_analysis()
+            elif choice == '11':
+                self.gap_aware_reconstruction()
+            elif choice == '12':
+                break
+            else:
+                print("Invalid option. Please try again.")
+                input("Press Enter to continue...")
+
+    def gap_aware_reconstruction(self):
+        """Enhanced gap-aware PRNG reconstruction with 18 algorithms"""
+        print("\nGap-Aware PRNG Reconstruction")
+        print("=" * 50)
+        print("Analyzes sparse/gapped data for PRNG patterns")
+        print("Supports 18 different PRNG algorithms including MT19937")
+
+        if not GAP_AWARE_AVAILABLE:
+            print("Error: Enhanced gap-aware reconstruction module not available")
+            print("Please ensure 'enhanced_gap_aware_reconstruction.py' is in the main directory")
+            input("Press Enter to continue...")
+            return
+
+        # Load lottery data
+        try:
+            with open(self.core.data_file, 'r') as f:
+                lottery_data = json.load(f)
+
+            draws = [entry.get('draw') for entry in lottery_data if entry.get('draw') is not None]
+            if not draws:
+                print("No draw data found in lottery file")
+                input("Press Enter to continue...")
+                return
+
+            # Convert lottery draws to 32-bit values
+            try:
+                from analyze_my_lottery_data import convert_lottery_to_32bit
+                draws = convert_lottery_to_32bit(draws, method='hash')
+                print(f"Converted {len(draws)} lottery draws to 32-bit values")
+            except ImportError:
+                print("Error: analyze_my_lottery_data module not found")
+                input("Press Enter to continue...")
+                return
+            except Exception as e:
+                print(f"Error converting lottery data: {e}")
+                input("Press Enter to continue...")
+                return
+
+            # Create sparse data format with positions
+            draws_with_positions = [(i, draw[0] if isinstance(draw, list) else draw) for i, draw in enumerate(draws)]
+
+            print(f"Loaded {len(draws_with_positions)} lottery draws with position information")
+
+        except Exception as e:
+            print(f"Error loading lottery data: {e}")
+            input("Press Enter to continue...")
+            return
+
+        # Analysis configuration
+        print(f"\nAnalysis Configuration:")
+        print(f"Available draws: {len(draws_with_positions)}")
+
+        # Sample size selection
+        print("\nSample size options:")
+        print("1. All draws (full dataset)")
+        print("2. Custom range (specify start/end)")
+        print("3. Rolling window analysis (detect reseeding)")
+
+        sample_choice = input("Select option (1-3): ").strip()
+
+        if sample_choice == '1':
+            # Use all draws
+            analysis_data = draws_with_positions
+            analysis_type = "full_dataset"
+
+        elif sample_choice == '2':
+            # Custom range
+            try:
+                start_idx = int(input(f"Start index (0-{len(draws_with_positions)-1}): "))
+                end_idx = int(input(f"End index ({start_idx+1}-{len(draws_with_positions)}): "))
+
+                if start_idx < 0 or end_idx > len(draws_with_positions) or start_idx >= end_idx:
+                    print("Invalid range")
+                    input("Press Enter to continue...")
+                    return
+
+                analysis_data = draws_with_positions[start_idx:end_idx]
+                analysis_type = "custom_range"
+
+            except ValueError:
+                print("Invalid input")
+                input("Press Enter to continue...")
+                return
+
+        elif sample_choice == '3':
+            # Rolling window analysis
+            try:
+                window_size = int(input("Window size (default 500): ") or "500")
+                step_size = int(input(f"Step size (default {window_size//2}): ") or str(window_size//2))
+
+                if window_size <= 0 or step_size <= 0:
+                    print("Window and step sizes must be positive")
+                    input("Press Enter to continue...")
+                    return
+
+                analysis_data = draws_with_positions
+                analysis_type = "rolling_window"
+
+            except ValueError:
+                print("Invalid input")
+                input("Press Enter to continue...")
+                return
+        else:
+            print("Invalid option")
+            input("Press Enter to continue...")
+            return
+
+        # PRNG type selection
+        print("\nSelect PRNG types to test:")
+        print("1. All algorithms (comprehensive - 18 algorithms)")
+        print("2. Common algorithms (LCG, Xorshift, MT19937)")
+        print("3. Specific algorithm")
+
+        prng_choice = input("Select option (1-3): ").strip()
+
+        if prng_choice == '1':
+            prng_types = 'all'
+        elif prng_choice == '2':
+            prng_types = ['lcg', 'xorshift', 'mt19937']
+        elif prng_choice == '3':
+            print("\nAvailable algorithms:")
+            algorithms = ['lcg', 'xorshift', 'mt19937', 'xorshift32', 'xorshift64',
+                         'xorshift128', 'xorshift_plus', 'xorshift_star', 'xoshiro128',
+                         'xoshiro256', 'lfsr', 'fibonacci', 'well512', 'pcg32',
+                         'splitmix64', 'lehmer64', 'combined_lcg', 'mt19937_64']
+
+            for i, alg in enumerate(algorithms, 1):
+                print(f"{i:2d}. {alg}")
+
+            try:
+                alg_idx = int(input("Select algorithm number: ")) - 1
+                if 0 <= alg_idx < len(algorithms):
+                    prng_types = [algorithms[alg_idx]]
+                else:
+                    print("Invalid selection")
+                    input("Press Enter to continue...")
+                    return
+            except ValueError:
+                print("Invalid input")
+                input("Press Enter to continue...")
+                return
+        else:
+            print("Invalid option")
+            input("Press Enter to continue...")
+            return
+
+        # Run analysis
+        print(f"\nStarting gap-aware analysis...")
+        print(f"Analysis type: {analysis_type}")
+        print(f"Data points: {len(analysis_data)}")
+        print(f"PRNG types: {prng_types}")
+
+        try:
+            start_time = time.time()
+
+            if analysis_type == "rolling_window":
+                # Rolling window analysis for reseeding detection
+                results = self._run_rolling_window_analysis(analysis_data, prng_types, window_size, step_size)
+            else:
+                # Standard gap-aware analysis
+                results = create_gap_aware_reconstruction_analysis(prng_types, analysis_data)
+
+            end_time = time.time()
+
+            # Display results
+            print(f"\nAnalysis completed in {end_time - start_time:.2f} seconds")
+            print("=" * 50)
+
+            if analysis_type == "rolling_window":
+                self._display_rolling_window_results(results)
+            else:
+                self._display_gap_aware_results(results)
+
+            # Save results option
+            save_choice = input("\nSave results to file? (y/n): ").lower().startswith('y')
+            if save_choice:
+                timestamp = int(time.time())
+                filename = f"gap_aware_analysis_{timestamp}.json"
+
+                with open(filename, 'w') as f:
+                    json.dump(results, f, indent=2)
+                print(f"Results saved to: {filename}")
+
+        except Exception as e:
+            print(f"Analysis failed: {e}")
+
+        input("Press Enter to continue...")
+
+    def _run_rolling_window_analysis(self, data, prng_types, window_size, step_size):
+        """Run rolling window analysis for reseeding detection"""
+        results = {
+            'analysis_type': 'rolling_window',
+            'window_size': window_size,
+            'step_size': step_size,
+            'total_data_points': len(data),
+            'windows_analyzed': 0,
+            'algorithm_results': {},
+            'reseeding_indicators': []
+        }
+
+        # Calculate number of windows
+        num_windows = max(1, (len(data) - window_size) // step_size + 1)
+        results['num_windows'] = num_windows
+
+        print(f"Creating {num_windows} overlapping windows...")
+
+        # Test each algorithm across all windows
+        if prng_types == 'all':
+            test_algorithms = ['lcg', 'xorshift', 'mt19937']  # Start with common ones for rolling window
+        else:
+            test_algorithms = prng_types if isinstance(prng_types, list) else [prng_types]
+
+        for algorithm in test_algorithms:
+            print(f"\nTesting {algorithm.upper()} across windows...")
+            algorithm_results = {
+                'successful_windows': [],
+                'failed_windows': [],
+                'success_rate': 0.0,
+                'pattern_consistency': 'unknown'
+            }
+
+            successful_windows = 0
+
+            for window_idx in range(num_windows):
+                start_idx = window_idx * step_size
+                end_idx = min(start_idx + window_size, len(data))
+                window_data = data[start_idx:end_idx]
+
+                # Analyze this window
+                try:
+                    window_result = create_gap_aware_reconstruction_analysis(algorithm, window_data)
+
+                    if window_result.get('success', False):
+                        successful_windows += 1
+                        algorithm_results['successful_windows'].append({
+                            'window': f"window_{start_idx}-{end_idx-1}",
+                            'parameters': window_result.get('parameters', {}),
+                            'confidence': window_result.get('confidence', 0.0)
+                        })
+                    else:
+                        algorithm_results['failed_windows'].append(f"window_{start_idx}-{end_idx-1}")
+
+                except Exception as e:
+                    algorithm_results['failed_windows'].append(f"window_{start_idx}-{end_idx-1} (error: {str(e)})")
+
+            # Calculate success rate and pattern consistency
+            algorithm_results['success_rate'] = successful_windows / num_windows
+
+            if algorithm_results['success_rate'] > 0.8:
+                algorithm_results['pattern_consistency'] = 'consistent'
+            elif algorithm_results['success_rate'] > 0.2:
+                algorithm_results['pattern_consistency'] = 'inconsistent_potential_reseeding'
+                results['reseeding_indicators'].append({
+                    'algorithm': algorithm,
+                    'evidence': f'{algorithm.upper()} works in some windows but not others',
+                    'suggestion': 'Possible periodic reseeding detected'
+                })
+            else:
+                algorithm_results['pattern_consistency'] = 'no_pattern'
+
+            results['algorithm_results'][algorithm] = algorithm_results
+            results['windows_analyzed'] = num_windows
+
+        return results
+
+    def _display_rolling_window_results(self, results):
+        """Display rolling window analysis results"""
+        print(f"Rolling Window Analysis Results:")
+        print(f"Windows analyzed: {results['windows_analyzed']}")
+        print(f"Window size: {results['window_size']}")
+        print(f"Step size: {results['step_size']}")
+
+        for algorithm, alg_results in results['algorithm_results'].items():
+            print(f"\n{algorithm.upper()} Pattern Detection:")
+            print(f"  Success rate: {alg_results['success_rate']:.1%}")
+            print(f"  Successful windows: {len(alg_results['successful_windows'])}")
+            print(f"  Pattern consistency: {alg_results['pattern_consistency']}")
+
+            if alg_results['successful_windows']:
+                print(f"  Successful in windows: {', '.join([w['window'] for w in alg_results['successful_windows'][:5]])}")
+                if len(alg_results['successful_windows']) > 5:
+                    print(f"    ... and {len(alg_results['successful_windows']) - 5} more")
+
+        # Reseeding indicators
+        if results['reseeding_indicators']:
+            print(f"\n⚠️  RESEEDING DETECTION ALERTS:")
+            for indicator in results['reseeding_indicators']:
+                print(f"  • {indicator['algorithm'].upper()}: {indicator['evidence']}")
+                print(f"    {indicator['suggestion']}")
+        else:
+            print(f"\n✓ No reseeding patterns detected")
+
+    def _display_gap_aware_results(self, results):
+        """Display standard gap-aware analysis results"""
+        if isinstance(results, dict) and 'algorithm_results' in results:
+            # Multiple algorithm results
+            print("Gap-Aware Analysis Results:")
+            for algorithm, result in results['algorithm_results'].items():
+                print(f"\n{algorithm.upper()}:")
+                print(f"  Success: {result.get('success', False)}")
+                if result.get('success'):
+                    params = result.get('parameters', {})
+                    for param, value in params.items():
+                        print(f"  {param}: {value}")
+
+                    confidence = result.get('confidence', 0.0)
+                    print(f"  Confidence: {confidence:.3f}")
+        else:
+            # Single algorithm result
+            print("Gap-Aware Analysis Results:")
+            print(f"Success: {results.get('success', False)}")
+            if results.get('success'):
+                params = results.get('parameters', {})
+                for param, value in params.items():
+                    print(f"{param}: {value}")
+
+                confidence = results.get('confidence', 0.0)
+                print(f"Confidence: {confidence:.3f}")
+
+    def exhaustive_seed_search(self):
+        """Create exhaustive seed search"""
+        print("\nExhaustive Seed Search")
+        print("=" * 40)
+
+        # Get PRNG type
+        print("Select PRNG type:")
+        print("1. Mersenne Twister (mt)")
+        print("2. Xorshift")
+        print("3. Linear Congruential Generator (lcg)")
+        prng_choice = input("Select (1-3): ").strip()
+        prng_map = {'1': 'mt', '2': 'xorshift', '3': 'lcg'}
+        prng_type = prng_map.get(prng_choice, 'mt')
+
+        # Get mapping type
+        print("\nSelect mapping type:")
+        print("1. Modulo (mod)")
+        print("2. Scale")
+        mapping_choice = input("Select (1-2): ").strip()
+        mapping_type = 'mod' if mapping_choice == '1' else 'scale'
+
+        # Get target sequence
+        print("\nTarget sequence options:")
+        print("1. Manual entry")
+        print("2. Load from file")
+        seq_choice = input("Select (1-2): ").strip()
+
+        if seq_choice == '1':
+            seq_input = input("Enter target sequence (comma-separated): ").strip()
+            target_sequence = [int(x.strip()) for x in seq_input.split(',')]
+        else:
+            file_path = input("Enter file path: ").strip()
+            try:
+                with open(file_path, 'r') as f:
+                    target_sequence = json.load(f)
+            except Exception as e:
+                print(f"Error loading file: {e}")
+                return
+
+        # Get search parameters
+        try:
+            samples = int(input("Samples per seed (default 10000): ") or "10000")
+            chunk_size = int(input("Chunk size (default 1000000): ") or "1000000")
+            max_seeds = int(input("Max seeds to test (default 4294967296): ") or "4294967296")
+        except ValueError:
+            print("Invalid input. Using defaults.")
+            samples, chunk_size, max_seeds = 10000, 1000000, 4294967296
+
+        # Create search
+        config = ExhaustiveSearchConfig(
+            prng_type=prng_type,
+            mapping_type=mapping_type,
+            target_sequence=target_sequence,
+            samples_per_seed=samples,
+            seed_chunk_size=chunk_size,
+            max_seeds=max_seeds
+        )
+
+        search_id = self.search_manager.create_exhaustive_search(config)
+        print(f"\nExhaustive search created: {search_id}")
+        input("Press Enter to continue...")
+
+    def parameter_sweep_analysis(self):
+        """Create parameter sweep analysis"""
+        print("\nParameter Sweep Analysis")
+        print("=" * 40)
+        print("This creates multiple analysis jobs with different PRNG parameters")
+
+        # Get base PRNG
+        print("\nSelect base PRNG:")
+        print("1. Linear Congruential Generator (lcg)")
+        print("2. Custom PRNG")
+        prng_choice = input("Select (1-2): ").strip()
+        base_prng = 'lcg' if prng_choice == '1' else 'custom'
+
+        # Get parameter ranges
+        print("\nParameter configuration:")
+        print("1. Standard LCG parameters")
+        print("2. Custom parameter file")
+        param_choice = input("Select (1-2): ").strip()
+
+        if param_choice == '1':
+            # Standard LCG parameters
+            parameter_ranges = {
+                'multiplier': [1664525, 1103515245, 16807, 134775813],
+                'increment': [1, 12345, 0, 1013904223],
+                'modulus': [2**32, 2**31-1]
+            }
+        else:
+            param_file = input("Enter parameter file path: ").strip()
+            try:
+                with open(param_file, 'r') as f:
+                    parameter_ranges = json.load(f)
+            except Exception as e:
+                print(f"Error loading parameter file: {e}")
+                return
+
+        # Get target sequence
+        seq_input = input("Enter target sequence (comma-separated): ").strip()
+        target_sequence = [int(x.strip()) for x in seq_input.split(',')]
+
+        # Create sweep
+        config = ParameterSweepConfig(
+            base_prng=base_prng,
+            parameter_ranges=parameter_ranges,
+            target_sequence=target_sequence
+        )
+
+        search_id = self.search_manager.create_parameter_sweep(config)
+        print(f"\nParameter sweep created: {search_id}")
+        input("Press Enter to continue...")
+
+    def state_reconstruction(self):
+        """State reconstruction with lottery data conversion"""
+        print("\nState Reconstruction")
+        print("=" * 40)
+
+        # Get PRNG type
+        print("Select PRNG type:")
+        print("1. Mersenne Twister (mt)")
+        print("2. Linear Congruential Generator (lcg)")
+        print("3. Xorshift")
+        prng_choice = input("Select (1-3): ").strip()
+        prng_map = {'1': 'mt', '2': 'lcg', '3': 'xorshift'}
+        prng_type = prng_map.get(prng_choice, 'mt')
+
+        # Get reconstruction method
+        print("\nSelect reconstruction method:")
+        print("1. Algebraic (fast, algorithm-specific)")
+        print("2. Brute force (slow, universal)")
+        print("3. Differential (experimental)")
+        method_choice = input("Select (1-3): ").strip()
+        method_map = {'1': 'algebraic', '2': 'bruteforce', '3': 'differential'}
+        method = method_map.get(method_choice, 'algebraic')
+
+        # Get known sequence
+        print("\nKnown sequence options:")
+        print("1. Use daily3.json lottery data (with conversion)")
+        print("2. Manual entry")
+        print("3. Load from file")
+        seq_choice = input("Select (1-3): ").strip()
+
+        if seq_choice == '1':
+            # Use lottery data with conversion
+            try:
+                # Load lottery data
+                with open(self.core.data_file, 'r') as f:
+                    lottery_data = json.load(f)
+
+                # Extract draw numbers
+                draws = [entry.get('draw') for entry in lottery_data if entry.get('draw') is not None]
+                if not draws:
+                    print("No draw data found in lottery file")
+                    return
+
+                # Convert using analyze_my_lottery_data
+                try:
+                    from analyze_my_lottery_data import convert_lottery_to_32bit
+
+                    # MT19937 requires 624 outputs for full state reconstruction
+                    required_outputs = 624 if prng_type == 'mt' else min(len(draws), 100)
+                    if len(draws) < required_outputs:
+                        print(f"Warning: Only {len(draws)} draws available, but {prng_type.upper()} reconstruction may need {required_outputs}")
+                        known_sequence = convert_lottery_to_32bit(draws)
+                    else:
+                        known_sequence = convert_lottery_to_32bit(draws[:required_outputs])
+
+                    print(f"Converted {len(known_sequence)} lottery draws to 32-bit sequence for {prng_type.upper()} reconstruction")
+                    print(f"Sample converted values: {known_sequence[:5]}...")
+                except ImportError:
+                    print("Error: analyze_my_lottery_data module not found")
+                    return
+                except Exception as e:
+                    print(f"Error converting lottery data: {e}")
+                    return
+
+            except Exception as e:
+                print(f"Error loading lottery data: {e}")
+                return
+
+        elif seq_choice == '2':
+            # Manual entry
+            seq_input = input("Enter known sequence (comma-separated): ").strip()
+            try:
+                known_sequence = [int(x.strip()) for x in seq_input.split(',')]
+            except ValueError:
+                print("Invalid sequence format")
+                return
+
+        else:
+            # Load from file
+            file_path = input("Enter file path: ").strip()
+            try:
+                with open(file_path, 'r') as f:
+                    known_sequence = json.load(f)
+            except Exception as e:
+                print(f"Error loading file: {e}")
+                return
+
+        if len(known_sequence) < 2:
+            print("Need at least 2 values in known sequence")
+            return
+
+        # Create reconstruction
+        config = StateReconstructionConfig(
+            prng_type=prng_type,
+            known_sequence=known_sequence,
+            sequence_length=len(known_sequence),
+            reconstruction_method=method
+        )
+
+        search_id = self.search_manager.create_state_reconstruction(config)
+        print(f"\nState reconstruction created: {search_id}")
+        print(f"Analyzing {len(known_sequence)} values using {method} method")
+        input("Press Enter to continue...")
+
+    def specific_draw_analysis(self):
+        """Analyze specific lottery draw"""
+        print("\nSpecific Draw Analysis")
+        print("=" * 40)
+
+        # Get target draw
+        print("Target draw options:")
+        print("1. Manual entry")
+        print("2. Select from daily3.json")
+        draw_choice = input("Select (1-2): ").strip()
+
+        if draw_choice == '1':
+            draw_input = input("Enter draw numbers (comma-separated): ").strip()
+            try:
+                target_draw = [int(x.strip()) for x in draw_input.split(',')]
+            except ValueError:
+                print("Invalid draw format")
+                return
+        else:
+            # Load from daily3.json and let user select
+            try:
+                with open(self.core.data_file, 'r') as f:
+                    lottery_data = json.load(f)
+
+                recent_draws = [(i, entry.get('draw', []), entry.get('date', 'Unknown'))
+                              for i, entry in enumerate(lottery_data[-20:], 1)]
+
+                print("\nRecent draws:")
+                for i, draw, date in recent_draws:
+                    print(f"{i:2d}. {draw} ({date})")
+
+                choice_num = int(input("Select draw number: ")) - 1
+                if 0 <= choice_num < len(recent_draws):
+                    target_draw = recent_draws[choice_num][1]
+                else:
+                    print("Invalid selection")
+                    return
+
+            except Exception as e:
+                print(f"Error loading lottery data: {e}")
+                return
+
+        # Get search parameters
+        try:
+            search_depth = int(input("Search depth (default 100000): ") or "100000")
+        except ValueError:
+            search_depth = 100000
+
+        variant_analysis = input("Enable variant analysis? (y/n): ").lower().startswith('y')
+
+        # Create analysis
+        config = SpecificDrawAnalysisConfig(
+            target_draw=target_draw,
+            search_depth=search_depth,
+            variant_analysis=variant_analysis,
+            target_lottery="daily3"
+        )
+
+        search_id = self.search_manager.create_specific_draw_analysis(config)
+        print(f"\nSpecific draw analysis created: {search_id}")
+        print(f"Analyzing draw: {target_draw}")
+        input("Press Enter to continue...")
+
+    def historical_pattern_analysis(self):
+        """Historical pattern analysis"""
+        print("\nHistorical Pattern Analysis")
+        print("=" * 40)
+
+        # Get data file
+        data_file = input(f"Data file (default: {self.core.data_file}): ").strip()
+        if not data_file:
+            data_file = self.core.data_file
+
+        # Get output file
+        timestamp = int(time.time())
+        default_output = f"historical_analysis_{timestamp}.json"
+        output_file = input(f"Output file (default: {default_output}): ").strip()
+        if not output_file:
+            output_file = default_output
+
+        try:
+            search_id = self.search_manager.create_historical_analysis(data_file, output_file)
+            print(f"\nHistorical analysis completed: {search_id}")
+            print(f"Results saved to: {output_file}")
+        except Exception as e:
+            print(f"Error in historical analysis: {e}")
+
+        input("Press Enter to continue...")
+
+    def temporal_sequence_analysis(self):
+        """Temporal sequence analysis"""
+        print("\nTemporal Sequence Analysis")
+        print("=" * 40)
+
+        lottery_name = input("Lottery name (default: daily3): ").strip() or "daily3"
+
+        print("Date range:")
+        start_date = input("Start date (YYYY-MM-DD): ").strip()
+        end_date = input("End date (YYYY-MM-DD): ").strip()
+
+        if not start_date or not end_date:
+            print("Both start and end dates are required")
+            return
+
+        try:
+            search_id = self.search_manager.create_temporal_analysis(lottery_name, (start_date, end_date))
+            print(f"\nTemporal analysis created: {search_id}")
+        except Exception as e:
+            print(f"Error creating temporal analysis: {e}")
+
+        input("Press Enter to continue...")
+
+    def view_search_progress(self):
+        """View progress of running searches"""
+        print("\nSearch Progress")
+        print("=" * 40)
+
+        try:
+            searches = self.search_manager.get_all_searches()
+
+            if not searches:
+                print("No active searches found")
+            else:
+                print(f"{'Search ID':<30} {'Type':<20} {'Progress':<10}")
+                print("-" * 65)
+
+                for search in searches:
+                    search_id = search['search_id'][:29]
+                    search_type = search['search_type'][:19]
+                    progress = f"{search['progress']['completion_percentage']:.1f}%"
+                    print(f"{search_id:<30} {search_type:<20} {progress:<10}")
+
+                # Get detailed progress for specific search
+                specific_id = input("\nEnter search ID for detailed progress (or Enter to skip): ").strip()
+                if specific_id:
+                    progress = self.search_manager.get_search_progress(specific_id)
+                    print(f"\nDetailed progress for {specific_id}:")
+                    for key, value in progress.items():
+                        print(f"  {key}: {value}")
+
+        except Exception as e:
+            print(f"Error viewing progress: {e}")
+
+        input("Press Enter to continue...")
+
+    def cancel_running_search(self):
+        """Cancel a running search"""
+        print("\nCancel Running Search")
+        print("=" * 40)
+
+        try:
+            searches = self.search_manager.get_all_searches()
+
+            if not searches:
+                print("No active searches to cancel")
+                input("Press Enter to continue...")
+                return
+
+            print("Active searches:")
+            for i, search in enumerate(searches, 1):
+                print(f"{i}. {search['search_id']} ({search['search_type']})")
+
+            choice = input("Enter search number to cancel: ").strip()
+            try:
+                search_idx = int(choice) - 1
+                if 0 <= search_idx < len(searches):
+                    search_id = searches[search_idx]['search_id']
+                    cancelled = self.search_manager.cancel_search(search_id)
+                    print(f"Cancelled {cancelled} jobs for search {search_id}")
+                else:
+                    print("Invalid selection")
+            except ValueError:
+                print("Invalid input")
+
+        except Exception as e:
+            print(f"Error cancelling search: {e}")
+
+        input("Press Enter to continue...")
+
+    def export_search_results(self):
+        """Export search results"""
+        print("\nExport Search Results")
+        print("=" * 40)
+
+        search_id = input("Enter search ID to export: ").strip()
+        if not search_id:
+            print("Search ID required")
+            input("Press Enter to continue...")
+            return
+
+        timestamp = int(time.time())
+        default_file = f"search_results_{search_id}_{timestamp}.json"
+        output_file = input(f"Output file (default: {default_file}): ").strip()
+        if not output_file:
+            output_file = default_file
+
+        try:
+            success = self.search_manager.export_search_results(search_id, output_file)
+            if success:
+                print(f"Results exported to: {output_file}")
+            else:
+                print("Export failed - no results found")
+        except Exception as e:
+            print(f"Error exporting results: {e}")
+
+        input("Press Enter to continue...")
+
+    def lottery_mt19937_analysis(self):
+        """Lottery-specific MT19937 analysis with data conversion"""
+        print("\nLottery MT19937 Analysis")
+        print("=" * 40)
+        print("Specialized analysis for lottery data using MT19937 algorithms")
+
+        # Load and convert lottery data
+        try:
+            with open(self.core.data_file, 'r') as f:
+                lottery_data = json.load(f)
+
+            draws = [entry.get('draw') for entry in lottery_data if entry.get('draw') is not None]
+            if not draws:
+                print("No draw data found in lottery file")
+                return
+
+            print(f"Loaded {len(draws)} lottery draws")
+
+            # Convert using analyze_my_lottery_data
+            try:
+                from analyze_my_lottery_data import convert_lottery_to_32bit
+                converted_sequence = convert_lottery_to_32bit(draws)
+                print(f"Converted lottery data to 32-bit sequence: {len(converted_sequence)} values")
+                print(f"Sample converted values: {converted_sequence[:10]}...")
+            except ImportError:
+                print("Error: analyze_my_lottery_data module not found")
+                return
+            except Exception as e:
+                print(f"Error converting lottery data: {e}")
+                return
+
+        except Exception as e:
+            print(f"Error loading lottery data: {e}")
+            return
+
+        # Analysis options
+        print("\nAnalysis options:")
+        print("1. State reconstruction (find MT19937 internal state)")
+        print("2. Seed search (find seeds that produce this sequence)")
+        print("3. Parameter analysis (analyze MT19937 parameters)")
+        print("4. Temporal pattern analysis (analyze time-based patterns)")
+
+        analysis_choice = input("Select analysis (1-4): ").strip()
+
+        if analysis_choice == '1':
+            # State reconstruction
+            sequence_length = min(len(converted_sequence), 624)  # MT19937 state size
+            config = StateReconstructionConfig(
+                prng_type="mt",
+                known_sequence=converted_sequence[:sequence_length],
+                sequence_length=sequence_length,
+                reconstruction_method="algebraic"
+            )
+            search_id = self.search_manager.create_state_reconstruction(config)
+            print(f"MT19937 state reconstruction created: {search_id}")
+
+        elif analysis_choice == '2':
+            # Seed search
+            target_length = int(input("Target sequence length (default 10): ") or "10")
+            target_sequence = converted_sequence[:target_length]
+
+            config = ExhaustiveSearchConfig(
+                prng_type="mt",
+                mapping_type="mod",
+                target_sequence=target_sequence,
+                samples_per_seed=target_length,
+                max_seeds=10000000  # 10M seeds for MT19937
+            )
+            search_id = self.search_manager.create_exhaustive_search(config)
+            print(f"MT19937 seed search created: {search_id}")
+
+        elif analysis_choice == '3':
+            # Parameter analysis using specific draw analysis
+            recent_draws = draws[-10:]  # Last 10 draws
+            for i, draw in enumerate(recent_draws):
+                print(f"{i+1}. {draw}")
+
+            draw_choice = int(input("Select draw to analyze (1-10): ")) - 1
+            if 0 <= draw_choice < len(recent_draws):
+                target_draw = recent_draws[draw_choice]
+
+                config = SpecificDrawAnalysisConfig(
+                    target_draw=target_draw,
+                    search_depth=1000000,
+                    variant_analysis=True,
+                    target_lottery="daily3"
+                )
+                search_id = self.search_manager.create_specific_draw_analysis(config)
+                print(f"MT19937 parameter analysis created: {search_id}")
+            else:
+                print("Invalid selection")
+
+        elif analysis_choice == '4':
+            # Temporal analysis
+            print("Analyzing temporal patterns in lottery data...")
+            search_id = self.search_manager.create_temporal_analysis("daily3", ("2020-01-01", "2024-12-31"))
+            print(f"Temporal pattern analysis created: {search_id}")
+
+        else:
+            print("Invalid selection")
+            return
+
+        print(f"\nLottery MT19937 analysis initiated.")
+        print(f"Search ID: {search_id}")
+        print("Use 'View Search Progress' to monitor the analysis.")
+        input("Press Enter to continue...")
+
+    def shutdown(self):
+        """Cleanup on shutdown"""
+        pass

@@ -1,0 +1,208 @@
+#!/bin/bash
+# run_scorer_meta_optimizer.sh (v2 - Pull Architecture)
+# ============================
+# Runs the 26-GPU Scorer Meta-Optimization (Step 2.5).
+# This version uses the "PULL" method and does NOT require /shared storage.
+
+set -e
+# Explicitly activate virtual environment (non-interactive shell)
+source /home/michael/venvs/torch/bin/activate
+
+# --- Configurable ---
+TRIALS=${1:-100} # Run 100 trials by default
+STUDY_NAME="scorer_meta_opt_$(date +%s)"
+# --- End Configurable ---
+
+echo "================================================="
+echo "26-GPU SCORER META-OPTIMIZATION (Step 2.5) - PULL Mode"
+echo "================================================="
+echo "Trials: $TRIALS"
+echo "Study name: $STUDY_NAME"
+echo ""
+
+# Input files (must be present locally)
+SURVIVORS="bidirectional_survivors.json"
+TRAIN_HISTORY="train_history.json"
+HOLDOUT_HISTORY="holdout_history.json"
+
+# Check for data locally
+if [ ! -f "$SURVIVORS" ]; then
+    echo "ERROR: $SURVIVORS not found!"
+    exit 1
+fi
+if [ ! -f "$TRAIN_HISTORY" ]; then
+    echo "ERROR: $TRAIN_HISTORY not found!"
+    exit 1
+fi
+if [ ! -f "$HOLDOUT_HISTORY" ]; then
+    echo "ERROR: $HOLDOUT_HISTORY not found!"
+    exit 1
+fi
+echo "✅ Local data files found."
+
+# Create LOCAL Optuna study database
+mkdir -p ./optuna_studies
+STUDY_DB="sqlite:///./optuna_studies/${STUDY_NAME}.db"
+echo "Creating local Optuna study: $STUDY_DB"
+
+# Generate job specs AND pre-populate the Optuna study
+echo "Generating $TRIALS job specifications and pre-sampling parameters..."
+python3 generate_scorer_jobs.py \
+    --trials $TRIALS \
+    --survivors $SURVIVORS \
+    --train-history $TRAIN_HISTORY \
+    --holdout-history $HOLDOUT_HISTORY \
+    --study-name $STUDY_NAME \
+    --study-db "$STUDY_DB"
+
+echo "Generated scorer_jobs.json with $TRIALS pre-sampled jobs"
+echo ""
+
+# Copy input data to remote nodes
+echo "Copying input data to remote nodes..."
+for node in 192.168.3.120 192.168.3.154;
+do
+    echo "  → $node"
+    # Ensure the worker's home directory and results directory exist
+    ssh $node "mkdir -p ~/distributed_prng_analysis/scorer_trial_results" 2>/dev/null || true
+    # Copy data to the worker's analysis directory
+    scp $SURVIVORS $TRAIN_HISTORY $HOLDOUT_HISTORY \
+        $node:~/distributed_prng_analysis/
+done
+echo "✅ Data copied to remote nodes"
+
+# Launch via existing coordinator
+echo "Launching jobs via coordinator.py..."
+python3 coordinator.py \
+    --jobs-file scorer_jobs.json \
+    --config ml_coordinator_config.json \
+    --max-concurrent 26 \
+    --resume-policy restart
+
+echo ""
+echo "=========================================="
+echo "COLLECTING SCORER RESULTS FROM ALL NODES"
+echo "=========================================="
+
+# Collect results from all nodes (pull via SSH)
+# This requires coordinator.py to be modified
+echo "Pulling results from remote nodes..."
+python3 -c "
+import sys
+sys.path.insert(0, '.')
+from coordinator import MultiGPUCoordinator
+import json
+
+try:
+    # Assumes coordinator.py has the new 'collect_scorer_results' method
+    coord = MultiGPUCoordinator('ml_coordinator_config.json')
+    # The '1' is a dummy value, the method should be smarter
+    results = coord.collect_scorer_results($TRIALS) 
+
+    print(f'✅ Collected {len(results)} trial results from all nodes')
+
+    # Save aggregated results
+    with open('aggregated_scorer_results.json', 'w') as f:
+        json.dump(results, f, indent=2)
+except AttributeError as e:
+    print(f'FATAL ERROR: coordinator.py is missing the collect_scorer_results() method.')
+    print(f'Error: {e}')
+    print('Please apply the modifications to coordinator.py')
+    sys.exit(1)
+except Exception as e:
+    print(f'FATAL ERROR during result collection: {e}')
+    sys.exit(1)
+"
+
+# Report results back to LOCAL Optuna study
+echo "Updating local Optuna study with results..."
+python3 -c "
+import optuna
+import json
+import sys
+
+try:
+    with open('aggregated_scorer_results.json', 'r') as f:
+        results = json.load(f)
+except Exception as e:
+    print(f'FATAL ERROR: Could not read aggregated_scorer_results.json: {e}')
+    sys.exit(1)
+
+study = optuna.load_study(
+    study_name='$STUDY_NAME',
+    storage='$STUDY_DB'
+)
+
+reported_count = 0
+for result in results:
+    try:
+        if result.get('state') == 'COMPLETE':
+            # Find the original trial in Optuna and tell it the result
+            study.tell(
+                trial=result['optuna_trial_number'], 
+                state=optuna.trial.TrialState.COMPLETE, 
+                values=result['accuracy']
+            )
+            reported_count += 1
+        else:
+            # Tell Optuna the trial failed
+            study.tell(
+                trial=result['optuna_trial_number'], 
+                state=optuna.trial.TrialState.FAIL
+            )
+    except Exception as e:
+        print(f'Warning: Could not report trial {result.get(\"optuna_trial_number\")} to Optuna: {e}')
+
+print(f'✅ Reported {reported_count} / {len(results)} trials to Optuna')
+"
+
+# Get best trial from LOCAL Optuna study
+echo ""
+echo "Finding best trial..."
+BEST_TRIAL_JSON=$(python3 -c "
+import optuna
+import json
+import sys
+try:
+    study = optuna.load_study(
+        study_name='$STUDY_NAME',
+        storage='$STUDY_DB'
+    )
+    if not study.trials:
+        print('ERROR: No trials found in study', file=sys.stderr)
+        exit(1)
+    best = study.best_trial
+    print(json.dumps({
+        'trial_number': best.number,
+        'accuracy': best.value,
+        'params': best.params
+    }, indent=2))
+except Exception as e:
+    print(f'ERROR: Could not load study to find best trial: {e}', file=sys.stderr)
+    exit(1)
+")
+
+echo "Best trial:"
+echo "$BEST_TRIAL_JSON"
+
+# Save best parameters
+echo "$BEST_TRIAL_JSON" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    with open('optimal_scorer_config.json', 'w') as f:
+        json.dump(data['params'], f, indent=2)
+except Exception:
+    print('Error saving best parameters, file may be empty', file=sys.stderr)
+    exit(1)
+"
+
+echo ""
+echo "✅ SUCCESS: Best parameters saved to optimal_scorer_config.json"
+echo ""
+echo "=========================================="
+echo "SCORER META-OPTIMIZATION COMPLETE"
+echo "=========================================="
+echo "Best config: optimal_scorer_config.json"
+echo "Study DB: $STUDY_DB"
+echo ""

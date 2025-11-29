@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""
+SSH Connection Management Module
+Handles SSH connection pooling, lifecycle management, and network operations
+"""
+
+import time
+import queue
+import threading
+import paramiko
+
+class SSHConnectionPool:
+    """Enhanced SSH connection pool with resource management and reuse"""
+    def __init__(self, max_concurrent_per_node: int = 4, max_connections_per_node: int = 6,
+                 connection_timeout: int = 20, keepalive_interval: int = 30):
+        self.max_concurrent_per_node = max_concurrent_per_node
+        self.max_connections_per_node = max_connections_per_node
+        self.connection_timeout = connection_timeout
+        self.keepalive_interval = keepalive_interval
+        # Concurrency control
+        self.node_semaphores = {}
+        self.connection_counts = {}
+        # Connection pool for reuse
+        self.connection_pools = {}
+        self.pool_locks = {}
+        # Cleanup tracking
+        self.last_cleanup = time.time()
+        self.cleanup_interval = 300 # 5 minutes
+        
+    def get_semaphore(self, hostname: str):
+        if hostname not in self.node_semaphores:
+            self.node_semaphores[hostname] = threading.Semaphore(self.max_concurrent_per_node)
+            self.connection_counts[hostname] = 0
+            self.connection_pools[hostname] = queue.Queue(maxsize=self.max_connections_per_node)
+            self.pool_locks[hostname] = threading.Lock()
+        return self.node_semaphores[hostname]
+        
+    def get_connection(self, hostname: str, username: str, password: str) -> paramiko.SSHClient:
+        """Get a reusable SSH connection from the pool"""
+        self._cleanup_stale_connections()
+        if hostname not in self.connection_pools:
+            self.get_semaphore(hostname) # Initialize pool
+        # Try to get existing connection
+        try:
+            with self.pool_locks[hostname]:
+                if not self.connection_pools[hostname].empty():
+                    ssh = self.connection_pools[hostname].get_nowait()
+                    # Test if connection is still alive
+                    try:
+                        ssh.exec_command('echo test', timeout=5)
+                        return ssh
+                    except:
+                        ssh.close()
+        except:
+            pass
+        # Create new connection
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname, username=username, password=password,
+                    timeout=self.connection_timeout)
+        # Enable keepalive
+        ssh.get_transport().set_keepalive(self.keepalive_interval)
+        return ssh
+        
+    def return_connection(self, hostname: str, ssh: paramiko.SSHClient):
+        """Return a connection to the pool for reuse"""
+        if hostname not in self.connection_pools:
+            ssh.close()
+            return
+        try:
+            with self.pool_locks[hostname]:
+                if not self.connection_pools[hostname].full():
+                    self.connection_pools[hostname].put_nowait(ssh)
+                else:
+                    ssh.close()
+        except:
+            ssh.close()
+            
+    def _cleanup_stale_connections(self):
+        """Periodic cleanup of stale connections"""
+        now = time.time()
+        if now - self.last_cleanup > self.cleanup_interval:
+            self.last_cleanup = now
+            for hostname in list(self.connection_pools.keys()):
+                try:
+                    with self.pool_locks[hostname]:
+                        temp_connections = []
+                        while not self.connection_pools[hostname].empty():
+                            try:
+                                ssh = self.connection_pools[hostname].get_nowait()
+                                # Test connection
+                                ssh.exec_command('echo test', timeout=2)
+                                temp_connections.append(ssh)
+                            except:
+                                try:
+                                    ssh.close()
+                                except:
+                                    pass
+                        # Return working connections
+                        for ssh in temp_connections:
+                            if not self.connection_pools[hostname].full():
+                                self.connection_pools[hostname].put_nowait(ssh)
+                            else:
+                                ssh.close()
+                except:
+                    pass
+                    
+    def acquire(self, hostname: str):
+        semaphore = self.get_semaphore(hostname)
+        semaphore.acquire()
+        self.connection_counts[hostname] = self.connection_counts.get(hostname, 0) + 1
+        
+    def release(self, hostname: str):
+        if hostname in self.node_semaphores:
+            self.node_semaphores[hostname].release()
+            self.connection_counts[hostname] = max(0, self.connection_counts.get(hostname, 0) - 1)
+            
+    def cleanup_all(self):
+        """Clean up all connections"""
+        for hostname in list(self.connection_pools.keys()):
+            try:
+                with self.pool_locks[hostname]:
+                    while not self.connection_pools[hostname].empty():
+                        try:
+                            ssh = self.connection_pools[hostname].get_nowait()
+                            ssh.close()
+                        except:
+                            pass
+            except:
+                pass

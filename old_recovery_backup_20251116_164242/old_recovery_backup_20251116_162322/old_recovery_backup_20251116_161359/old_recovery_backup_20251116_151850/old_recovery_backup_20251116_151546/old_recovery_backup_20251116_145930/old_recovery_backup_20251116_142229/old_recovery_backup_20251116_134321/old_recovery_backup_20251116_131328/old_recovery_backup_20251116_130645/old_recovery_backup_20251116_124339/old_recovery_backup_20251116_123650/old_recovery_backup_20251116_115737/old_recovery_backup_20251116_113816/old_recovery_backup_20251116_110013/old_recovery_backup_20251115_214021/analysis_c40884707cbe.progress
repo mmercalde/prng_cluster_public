@@ -1,0 +1,486 @@
+{
+  "analysis_id": "analysis_c40884707cbe",
+  "total_jobs": 26,
+  "completed_jobs": {
+    "sieve_002": {
+      "analysis_type": "gpu_correlation",
+      "gpu_id": 0,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "device_info": {
+        "name": "AMD Radeon RX 6600 XT",
+        "memory": 8573157376,
+        "compute_capability": 10
+      },
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600",
+        "gpu_id": 0,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.7183432579040527
+    },
+    "sieve_003": {
+      "job_id": "sieve_003",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 1,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.992778778076172
+    },
+    "sieve_005": {
+      "job_id": "sieve_005",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 3,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.921257257461548
+    },
+    "sieve_004": {
+      "job_id": "sieve_004",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 2,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.2009851932525635
+    },
+    "sieve_010": {
+      "job_id": "sieve_010",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 8,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.83790922164917
+    },
+    "sieve_011": {
+      "job_id": "sieve_011",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 9,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.950672149658203
+    },
+    "sieve_012": {
+      "job_id": "sieve_012",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 10,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.607945442199707
+    },
+    "sieve_013": {
+      "job_id": "sieve_013",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 11,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.4232959747314453
+    },
+    "sieve_014": {
+      "analysis_type": "gpu_correlation",
+      "gpu_id": 0,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "device_info": {
+        "name": "AMD Radeon RX 6600",
+        "memory": 8573157376,
+        "compute_capability": 10
+      },
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 0,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.278533458709717
+    },
+    "sieve_015": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 1,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.4313430786132812
+    },
+    "sieve_006": {
+      "job_id": "sieve_006",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 4,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 2.7551403045654297
+    },
+    "sieve_017": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 3,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.456556558609009
+    },
+    "sieve_016": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 2,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.491872787475586
+    },
+    "sieve_007": {
+      "job_id": "sieve_007",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 5,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.32143235206604
+    },
+    "sieve_009": {
+      "job_id": "sieve_009",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 7,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.4788966178894043
+    },
+    "sieve_008": {
+      "job_id": "sieve_008",
+      "success": false,
+      "error": "Analysis execution failed: hipErrorInvalidDevice: invalid device ordinal",
+      "worker_info": {
+        "hostname": "rig-6600",
+        "gpu_id": 6,
+        "error": "execution_failed"
+      },
+      "worker_runtime": 3.5051755905151367
+    },
+    "sieve_018": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 4,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.5771820545196533
+    },
+    "sieve_019": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 5,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.5007874965667725
+    },
+    "sieve_022": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 8,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.488920211791992
+    },
+    "sieve_021": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 7,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.503594398498535
+    },
+    "sieve_020": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 6,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.579529047012329
+    },
+    "sieve_023": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 9,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.559821844100952
+    },
+    "sieve_024": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 4.76837158203125e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 10,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.5232949256896973
+    },
+    "sieve_025": {
+      "analysis_type": "cpu_correlation",
+      "gpu_id": null,
+      "samples": 10000,
+      "seeds_analyzed": 0,
+      "prng_type": "mt",
+      "lmax": 20,
+      "grid_size": 8,
+      "correlations": [],
+      "execution_time": 2.384185791015625e-07,
+      "samples_per_second": 0.0,
+      "execution_info": {
+        "worker_hostname": "rig-6600b",
+        "gpu_id": 11,
+        "hardware_type": "AMD",
+        "mining_mode": false,
+        "execution_method": "in_process",
+        "analysis_type": "statistical"
+      },
+      "worker_runtime": 2.5022342205047607
+    }
+  },
+  "failed_jobs": {
+    "sieve_001": "Local execution failed (rc=1).\nSTDOUT tail:\n{\"job_id\": \"sieve_001\", \"success\": false, \"error\": \"[Errno 2] No such file or directory: 'lotto_649_draws.csv'\", \"traceback\": \"Traceback (most recent call last):\\n  File \\\"/home/michael/distributed_prng_analysis/sieve_filter.py\\\", line 235, in execute_sieve_job\\n    draws = load_draws_from_daily3(dataset_path, window_size, sessions)\\n  File \\\"/home/michael/distributed_prng_analysis/sieve_filter.py\\\", line 55, in load_draws_from_daily3\\n    with open(path, 'r') as f:\\nFileNotFoundError: [Errno 2] No such file or directory: 'lotto_649_draws.csv'\\n\", \"seeds_analyzed\": 0}\n\nSTDERR tail:\n",
+    "sieve_000": "Local execution failed (rc=1).\nSTDOUT tail:\n{\"job_id\": \"sieve_000\", \"success\": false, \"error\": \"[Errno 2] No such file or directory: 'lotto_649_draws.csv'\", \"traceback\": \"Traceback (most recent call last):\\n  File \\\"/home/michael/distributed_prng_analysis/sieve_filter.py\\\", line 235, in execute_sieve_job\\n    draws = load_draws_from_daily3(dataset_path, window_size, sessions)\\n  File \\\"/home/michael/distributed_prng_analysis/sieve_filter.py\\\", line 55, in load_draws_from_daily3\\n    with open(path, 'r') as f:\\nFileNotFoundError: [Errno 2] No such file or directory: 'lotto_649_draws.csv'\\n\", \"seeds_analyzed\": 0}\n\nSTDERR tail:\n"
+  },
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "sieve_000",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          0,
+          38
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_001",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          38,
+          76
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    }
+  ],
+  "retry_count": {
+    "sieve_001": 1,
+    "sieve_000": 1
+  },
+  "start_time": 1759705771.6769242,
+  "last_update": 1759705817.8396363
+}

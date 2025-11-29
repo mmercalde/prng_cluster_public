@@ -1,0 +1,9 @@
+--- coordinator.py.orig
++++ coordinator.py
+@@ -684,6 +684,7 @@
+                 job_data = {
+                     'job_id': job.job_id,
++                    'search_type': 'residue_sieve',
+                     'dataset_path': self.current_target_file or 'test_known.json',
+                     'seed_start': seed_start,
+                     'seed_end': seed_end,

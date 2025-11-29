@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""
+Window Optimizer Integration - ACCUMULATES ALL BIDIRECTIONAL SURVIVORS
+Saves ALL survivors from ALL trials with window metadata for temporal diversity
+"""
+
+from typing import Dict, Any, List
+import json
+from window_optimizer import WindowConfig, TestResult
+
+def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
+    """Extract survivor seeds from coordinator result"""
+    survivors = []
+
+    if 'results' in result:
+        for job_result in result['results']:
+            if 'survivors' in job_result:
+                for survivor in job_result['survivors']:
+                    seed = survivor.get('seed', survivor.get('id'))
+                    if seed is not None:
+                        survivors.append(seed)
+
+            if 'per_family' in job_result:
+                for family, family_data in job_result['per_family'].items():
+                    if 'survivors' in family_data:
+                        for survivor in family_data['survivors']:
+                            seed = survivor.get('seed', survivor.get('id'))
+                            if seed is not None:
+                                survivors.append(seed)
+
+    return list(set(survivors))
+
+def run_bidirectional_test(coordinator,
+                          config: WindowConfig,
+                          dataset_path: str,
+                          seed_start: int,
+                          seed_count: int,
+                          prng_base: str = 'java_lcg',
+                          threshold: float = 0.01,
+                          trial_number: int = 0,
+                          accumulator: Dict[str, List] = None) -> TestResult:
+    """
+    Run forward + reverse sieve and ACCUMULATE survivors
+    
+    NEW: Accumulates ALL bidirectional survivors with metadata across ALL trials
+    Args:
+        accumulator: Dict with keys 'forward', 'reverse', 'bidirectional' to accumulate survivors
+        trial_number: Current trial number for metadata tracking
+    """
+
+    class Args:
+        def __init__(self):
+            self.target_file = dataset_path
+            self.method = 'residue_sieve'
+            self.seed_start = seed_start
+            self.seeds = seed_count
+            self.window_size = config.window_size
+            self.offset = config.offset
+            self.skip_min = config.skip_min
+            self.skip_max = config.skip_max
+            self.threshold = threshold
+            self.resume_policy = 'restart'
+            self.max_concurrent = 26
+            self.analysis_type = 'statistical'
+            self.draw_match = None
+
+            if set(config.sessions) == {'midday', 'evening'}:
+                self.session_filter = 'both'
+            elif 'midday' in config.sessions:
+                self.session_filter = 'midday'
+            else:
+                self.session_filter = 'evening'
+
+    print(f"\n  Testing: {config.description()}")
+
+    # FORWARD
+    print(f"    Running FORWARD sieve ({prng_base})...")
+    forward_args = Args()
+    forward_args.prng_type = prng_base
+
+    forward_result = coordinator.execute_distributed_analysis(
+        forward_args.target_file,
+        f'results/window_opt_forward_{config.window_size}_{config.offset}.json',
+        forward_args,
+        forward_args.seeds,
+        1000,  # samples
+        8,     # lmax
+        50     # grid_size
+    )
+
+    forward_survivors = extract_survivors_from_result(forward_result)
+    print(f"      Forward: {len(forward_survivors):,} survivors")
+
+    # REVERSE
+    reverse_prng = prng_base
+    print(f"    Running REVERSE sieve ({reverse_prng})...")
+    reverse_args = Args()
+    reverse_args.prng_type = reverse_prng
+
+    reverse_result = coordinator.execute_distributed_analysis(
+        reverse_args.target_file,
+        f'results/window_opt_reverse_{config.window_size}_{config.offset}.json',
+        reverse_args,
+        reverse_args.seeds,
+        1000,
+        8,
+        50
+    )
+
+    reverse_survivors = extract_survivors_from_result(reverse_result)
+    print(f"      Reverse: {len(reverse_survivors):,} survivors")
+
+    # INTERSECTION
+    forward_set = set(forward_survivors)
+    reverse_set = set(reverse_survivors)
+    bidirectional = forward_set & reverse_set
+
+    print(f"      ✨ Bidirectional: {len(bidirectional):,} survivors")
+
+    # === ACCUMULATE survivors with metadata (NO file writing here) ===
+    if accumulator is not None:
+        # Prepare metadata for this trial
+        metadata = {
+            'window_size': config.window_size,
+            'offset': config.offset,
+            'skip_min': config.skip_min,
+            'skip_max': config.skip_max,
+            'skip_range': config.skip_max - config.skip_min,
+            'sessions': config.sessions,
+            'forward_count': len(forward_survivors),
+            'reverse_count': len(reverse_survivors),
+            'bidirectional_count': len(bidirectional),
+            'bidirectional_selectivity': len(forward_survivors) / max(len(reverse_survivors), 1),
+            'trial_number': trial_number,
+            'score': len(bidirectional)
+        }
+        
+        # Accumulate survivors with metadata
+        for seed in forward_survivors:
+            accumulator['forward'].append({'seed': seed, **metadata})
+        
+        for seed in reverse_survivors:
+            accumulator['reverse'].append({'seed': seed, **metadata})
+        
+        for seed in bidirectional:
+            accumulator['bidirectional'].append({'seed': seed, **metadata})
+        
+        print(f"      📊 Accumulated totals:")
+        print(f"         Forward: {len(accumulator['forward'])} total")
+        print(f"         Reverse: {len(accumulator['reverse'])} total")
+        print(f"         Bidirectional: {len(accumulator['bidirectional'])} total")
+
+    return TestResult(
+        config=config,
+        forward_count=len(forward_survivors),
+        reverse_count=len(reverse_survivors),
+        bidirectional_count=len(bidirectional),
+        iteration=trial_number
+    )
+
+def add_window_optimizer_to_coordinator():
+    """Add window optimization to coordinator"""
+    from coordinator import MultiGPUCoordinator
+    from window_optimizer import (WindowOptimizer, SearchBounds,
+                                  RandomSearch, GridSearch,
+                                  BayesianOptimization, EvolutionarySearch,
+                                  BidirectionalCountScorer)
+
+    def optimize_window(self,
+                       dataset_path: str,
+                       seed_start: int = 0,
+                       seed_count: int = 10_000_000,
+                       prng_base: str = 'java_lcg',
+                       strategy_name: str = 'bayesian',
+                       max_iterations: int = 50,
+                       output_file: str = 'window_optimization.json'):
+
+        print(f"\n{'='*80}")
+        print(f"WINDOW OPTIMIZATION WITH SURVIVOR ACCUMULATION")
+        print(f"Dataset: {dataset_path}")
+        print(f"PRNG: {prng_base} + {prng_base}_reverse")
+        print(f"Seed range: {seed_start:,} → {seed_start + seed_count:,}")
+        print(f"Strategy: {strategy_name}")
+        print(f"Max iterations: {max_iterations}")
+        print(f"{'='*80}\n")
+
+        # === NEW: Create accumulator for ALL survivors across ALL trials ===
+        survivor_accumulator = {
+            'forward': [],
+            'reverse': [],
+            'bidirectional': []
+        }
+
+        optimizer = WindowOptimizer(self, dataset_path)
+
+        # Track trial number
+        trial_counter = {'count': 0}
+
+        def test_config(config, ss=seed_start, sc=seed_count, th=0.01):
+            trial_counter['count'] += 1
+            return run_bidirectional_test(
+                coordinator=self,
+                config=config,
+                dataset_path=dataset_path,
+                seed_start=ss,
+                seed_count=sc,
+                prng_base=prng_base,
+                threshold=th,
+                trial_number=trial_counter['count'],
+                accumulator=survivor_accumulator  # Pass accumulator
+            )
+
+        optimizer.test_configuration = test_config
+
+        strategy_map = {
+            'random': RandomSearch(),
+            'grid': GridSearch(
+                window_sizes=[512, 768, 1024],
+                offsets=[0, 100],
+                skip_ranges=[(0, 20), (0, 50)]
+            ),
+            'bayesian': BayesianOptimization(n_initial=3),
+            'evolutionary': EvolutionarySearch(population_size=10)
+        }
+
+        strategy = strategy_map.get(strategy_name, RandomSearch())
+
+        bounds = SearchBounds(
+            min_window_size=1,
+            max_window_size=4096,
+            min_offset=0,
+            max_offset=500,
+            min_skip_min=0,
+            max_skip_min=50,
+            min_skip_max=20,
+            max_skip_max=200
+        )
+
+        results = optimizer.optimize(
+            strategy=strategy,
+            bounds=bounds,
+            max_iterations=max_iterations,
+            scorer=BidirectionalCountScorer(),
+            seed_start=seed_start,
+            seed_count=seed_count
+        )
+
+        optimizer.save_results(results, output_file)
+
+        print(f"\n{'='*80}")
+        print("OPTIMIZATION COMPLETE")
+        print(f"Best configuration:")
+        best = results['best_config']
+        print(f"  Window size: {best['window_size']}")
+        print(f"  Offset: {best['offset']}")
+        print(f"  Sessions: {', '.join(best['sessions'])}")
+        print(f"  Skip range: [{best['skip_min']}, {best['skip_max']}]")
+        print(f"\nBest result:")
+        print(f"  Bidirectional survivors: {results['best_result']['bidirectional_count']:,}")
+        print(f"  Score: {results['best_score']:.2f}")
+        print(f"{'='*80}\n")
+
+        # === NEW: Save ALL accumulated survivors with metadata ===
+        print(f"\n{'='*80}")
+        print("SAVING ALL ACCUMULATED SURVIVORS WITH METADATA")
+        print(f"{'='*80}")
+        
+        try:
+            # Remove duplicates while preserving metadata from best trial for each seed
+            def deduplicate_survivors(survivor_list):
+                """Keep survivor with highest score for each unique seed"""
+                seed_map = {}
+                for survivor in survivor_list:
+                    seed = survivor['seed']
+                    if seed not in seed_map or survivor['score'] > seed_map[seed]['score']:
+                        seed_map[seed] = survivor
+                return list(seed_map.values())
+            
+            # Deduplicate
+            forward_deduped = deduplicate_survivors(survivor_accumulator['forward'])
+            reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
+            bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
+            
+            # Save forward survivors with metadata
+            with open('forward_survivors.json', 'w') as f:
+                json.dump(sorted(forward_deduped, key=lambda x: x['seed']), f, indent=2)
+            print(f"✅ Saved forward_survivors.json:")
+            print(f"   Total: {len(forward_deduped)} unique seeds with metadata")
+            print(f"   (Accumulated from {len(survivor_accumulator['forward'])} total across trials)")
+            
+            # Save reverse survivors with metadata
+            with open('reverse_survivors.json', 'w') as f:
+                json.dump(sorted(reverse_deduped, key=lambda x: x['seed']), f, indent=2)
+            print(f"✅ Saved reverse_survivors.json:")
+            print(f"   Total: {len(reverse_deduped)} unique seeds with metadata")
+            print(f"   (Accumulated from {len(survivor_accumulator['reverse'])} total across trials)")
+            
+            # Save bidirectional survivors with metadata
+            with open('bidirectional_survivors.json', 'w') as f:
+                json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f, indent=2)
+            print(f"✅ Saved bidirectional_survivors.json:")
+            print(f"   Total: {len(bidirectional_deduped)} unique seeds with metadata")
+            print(f"   (Accumulated from {len(survivor_accumulator['bidirectional'])} total across trials)")
+            
+            # Print metadata sample
+            if bidirectional_deduped:
+                print(f"\n📊 Sample survivor with metadata:")
+                sample = bidirectional_deduped[0]
+                print(f"   Seed: {sample['seed']}")
+                print(f"   Window: {sample['window_size']}, Offset: {sample['offset']}")
+                print(f"   Skip range: [{sample['skip_min']}, {sample['skip_max']}]")
+                print(f"   Sessions: {sample['sessions']}")
+                print(f"   Trial: {sample['trial_number']}, Score: {sample['score']}")
+            
+            print(f"{'='*80}\n")
+            
+        except Exception as e:
+            print(f"⚠️  Error saving survivors with metadata: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # === Keep existing new format save ===
+        try:
+            from integration.sieve_integration import save_bidirectional_sieve_results
+            save_bidirectional_sieve_results(
+                forward_survivors=[],
+                reverse_survivors=[],
+                intersection=[],
+                config={
+                    'prng_type': prng_base,
+                    'seed_start': seed_start,
+                    'seed_end': seed_start + seed_count,
+                    'total_seeds': seed_count,
+                    'window_size': best.get('window_size', 0),
+                    'offset': best.get('offset', 0),
+                    'skip_min': best.get('skip_min', 0),
+                    'skip_max': best.get('skip_max', 0),
+                    'threshold': 0.01,
+                    'dataset': dataset_path,
+                    'sessions': best.get('sessions', [])
+                },
+                run_id=f"window_opt_{prng_base}_{strategy_name}"
+            )
+        except Exception as e:
+            print(f"Note: New results format unavailable: {e}")
+
+        return results
+
+    MultiGPUCoordinator.optimize_window = optimize_window
+    print("✅ Window optimizer integrated into MultiGPUCoordinator")

@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+Complete Whitepaper Workflow Orchestrator - (v3.1 - Corrected 7-Step)
+======================================================================
+This script orchestrates the full, distributed ML pipeline in the correct order:
+
+1.  (Local)   Runs Bayesian Meta-Optimizer to find the BEST SIEVE parameters.
+2.  (Local)   Runs the Sieves with optimal params to get survivors.
+3.  (DISTRIB) Runs the 26-GPU Scorer Meta-Optimizer to find the BEST SCORER parameters.
+3.5 (DISTRIB) Runs a 26-GPU Full Scoring Run to score all survivors.
+4.  (Local)   Runs Adaptive Optimizer to derive the BEST MODEL architecture.
+5.  (DISTRIB) Runs the 26-GPU Anti-Overfit Optimizer to train the FINAL MODEL.
+6.  (Local)   Loads the final model for prediction.
+"""
+
+import subprocess
+import sys
+import json
+from pathlib import Path
+import time
+import argparse
+import os
+
+def run_command(cmd, description):
+    """Run a shell command, stream output, and check return code."""
+    print("\n" + "="*70)
+    print(f"🚀 STARTING: {description}")
+    print("="*70)
+    print(f"Command: {' '.join(cmd)}\n")
+    
+    try:
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(output.strip())
+        returncode = process.poll()
+        if returncode != 0:
+            print(f"\n❌ FAILED (Code {returncode}): {description}")
+            return False
+        print(f"\n✅ COMPLETE: {description}")
+        return True
+    except Exception as e:
+        print(f"\n❌ FAILED (Exception): {description}\n{e}")
+        return False
+
+def main(args):
+    start_time = time.time()
+    print("="*70)
+    print("COMPLETE WHITEPAPER WORKFLOW (v3.1 - Corrected 7-Step)")
+    print("="*70)
+    print("\nOrchestrating full, distributed pipeline:")
+    print("  1. Meta Window Optimizer (Bayesian)")
+    print("  2. Run Sieves (Get Survivors)")
+    print("  3. Scorer Meta-Optimizer (Distributed, 26 GPUs)")
+    print("  3.5. Full Distributed Scoring (Distributed, 26 GPUs)")
+    print("  4. Adaptive Meta-Optimizer (Local)")
+    print("  5. Anti-Overfit Optimizer (Distributed, 26 GPUs)")
+    print("  6. Final Model Prediction (Local)")
+    print("="*70)
+
+    # --- PREREQUISITES ---
+    print("\n" + "="*70)
+    print("CHECKING PREREQUISITES")
+    print("="*70)
+
+    # Define paths
+    survivor_file = "bidirectional_survivors.json"
+    train_history_file = "train_history.json"
+    holdout_history_file = "holdout_history.json"
+    optimal_window_config = "optimal_window_config.json"
+    optimal_scorer_config = "optimal_scorer_config.json"
+    scored_survivor_file = "survivors_with_scores.json" # <-- NEW FILE
+    optimal_training_config = "reinforcement_engine_config.json"
+    final_model_path = "models/anti_overfit/best_model.pth"
+    
+    required_files = [
+        # Step 1
+        'window_optimizer_bayesian.py', # This is just a module
+        args.lottery_file,
+
+        # Step 2
+        'window_optimizer.py',
+
+        # Step 3 (Scorer Meta-Optimizer)
+        'run_scorer_meta_optimizer.sh',
+        'generate_scorer_jobs.py',
+        'scorer_trial_worker.py',
+        'coordinator.py',
+        'ml_coordinator_config.json',
+        
+        # Step 3.5 (Full Scoring)
+        'run_full_scoring.sh', # <-- NEW SCRIPT
+        'generate_full_scoring_jobs.py', # <-- NEW SCRIPT
+        
+        # Step 4
+        'adaptive_meta_optimizer.py',
+
+        # Step 5 (Anti-Overfit Optimizer)
+        'meta_prediction_optimizer_anti_overfit.py',
+        'run_ml_distributed.sh',
+        'anti_overfit_trial_worker.py',
+        
+        # Core Dependencies
+        'reinforcement_engine.py',
+        'survivor_scorer.py'
+    ]
+
+    missing = []
+    for f in required_files:
+        if Path(f).exists():
+            print(f"  [✅] {f}")
+        else:
+            print(f"  [❌] {f} (MISSING)")
+            missing.append(f)
+
+    if missing:
+        print(f"\n❌ Missing required files: {missing}")
+        return 1
+    else:
+        print("\n✅ All prerequisites found.")
+
+    # --- STEP 1: Meta Window Optimizer (Bayesian) ---
+    print("\n\n" + "="*70)
+    print("STEP 1: META WINDOW OPTIMIZER (Bayesian)")
+    print("="*70)
+    print(f"\nLaunching {args.window_opt_trials} trials to find optimal sieve parameters...")
+    if not run_command(
+        ['python3', 'window_optimizer.py', # <-- FIXED: Call the correct script
+         '--strategy', 'bayesian',         # <-- FIXED: Use the bayesian strategy
+         '--lottery-file', args.lottery_file,
+         '--trials', str(args.window_opt_trials), # Assumes window_optimizer.py accepts --trials
+         '--output', optimal_window_config # <-- FIXED: Use the right argument name
+        ],
+        "Running: Bayesian Optimization for Sieves"
+    ):
+        return 1
+    
+    if not Path(optimal_window_config).exists():
+        print(f"\n❌ {optimal_window_config} was not created by Step 1.")
+        return 1
+    else:
+        print(f"\n✅ Optimal sieve config saved to {optimal_window_config}")
+
+    # --- STEP 2: Window Optimizer (Generates survivors) ---
+    print("\n\n" + "="*70)
+    print("STEP 2: RUN SIEVES (Generate Survivors)")
+    print("="*70)
+    print(f"\nRunning sieves with optimal parameters from {optimal_window_config}...")
+    if not run_command(
+        ['python3', 'window_optimizer.py',
+         '--lottery-file', args.lottery_file,
+         '--max-seeds', str(args.seed_count),
+         '--iterations', str(args.window_iterations),
+         '--config-file', optimal_window_config, # <-- Use optimal config
+         '--output-survivors', survivor_file,
+         '--output-train', train_history_file,
+         '--output-holdout', holdout_history_file
+        ],
+        "Running: Window Optimization (Forward/Reverse Sieves)"
+    ):
+        return 1
+    
+    if not Path(survivor_file).exists():
+        print(f"\n❌ {survivor_file} was not created by Step 2.")
+        return 1
+
+    # --- STEP 3: Scorer Meta-Optimizer (Distributed) ---
+    print("\n\n" + "="*70)
+    print("STEP 3: SCORER META-OPTIMIZER (Distributed, 26 GPUs)")
+    print("="*70)
+    print(f"\nLaunching {args.scorer_trials} distributed trials to find optimal scorer parameters...")
+    
+    if not run_command(
+        ['bash', 'run_scorer_meta_optimizer.sh', str(args.scorer_trials)],
+        "Running: 26-GPU Scorer Meta-Optimization"
+    ):
+        return 1
+
+    if not Path(optimal_scorer_config).exists():
+        print(f"\n❌ {optimal_scorer_config} was not created by Step 3.")
+        return 1
+    else:
+        print(f"\n✅ Optimal scorer config saved to {optimal_scorer_config}")
+
+    # --- NEW STEP 3.5: Full Distributed Scoring ---
+    print("\n\n" + "="*70)
+    print("STEP 3.5: FULL DISTRIBUTED SCORING (Distributed, 26 GPUs)")
+    print("="*70)
+    print(f"\nLaunching distributed run to score all {args.seed_count} survivors...")
+    
+    if not run_command(
+        ['bash', 'run_full_scoring.sh'], # <-- NEW SCRIPT
+        "Running: 26-GPU Full Scoring Run"
+    ):
+        return 1
+
+    if not Path(scored_survivor_file).exists():
+        print(f"\n❌ {scored_survivor_file} was not created by Step 3.5.")
+        return 1
+    else:
+        print(f"\n✅ All survivors scored and aggregated into {scored_survivor_file}")
+
+
+    # --- STEP 4: Adaptive Meta-Optimizer (Derive Training Params) ---
+    print("\n\n" + "="*70)
+    print("STEP 4: ADAPTIVE META-OPTIMIZER (Parameter Derivation)")
+    print("="*70)
+    print("\nDeriving optimal training parameters (network architecture, epochs, etc.)...")
+
+    if not run_command(
+        ['python3', 'adaptive_meta_optimizer.py',
+         '--mode', 'full',
+         '--lottery-data', train_history_file,
+         '--survivor-data', scored_survivor_file, # <-- FIXED: Use new scored file
+         '--apply'],
+        "Running: Adaptive Meta-Optimizer"
+    ):
+        print("\n⚠️  Meta-optimizer failed, training will use default parameters...")
+    else:
+        print(f"\n✅ Optimal training config saved to {optimal_training_config}")
+
+
+    # --- STEP 5: Anti-Overfit Optimizer (Distributed Final Training) ---
+    print("\n\n" + "="*70)
+    print("STEP 5: ANTI-OVERFIT OPTIMIZER (Distributed, 26 GPUs)")
+    print("="*70)
+    print(f"\nLaunching {args.anti_overfit_trials} distributed K-Fold trials to train final model...")
+    
+    if not run_command(
+        ['python3', 'meta_prediction_optimizer_anti_overfit.py',
+         '--survivors', scored_survivor_file, # <-- FIXED: Use new scored file
+         '--lottery-data', train_history_file,
+         '--trials', str(args.anti_overfit_trials),
+         '--k-folds', str(args.k_folds),
+         '--study-name', 'final_model_anti_overfit',
+         '--distributed'],
+        "Running: 26-GPU Anti-Overfit Final Model Training"
+    ):
+        return 1
+
+    if not Path(final_model_path).exists():
+        print(f"\n❌ Final model {final_model_path} was not created by Step 5.")
+        return 1
+    else:
+        print(f"\n✅ Final trained model saved to {final_model_path}")
+
+
+    # --- STEP 6: Quality Prediction (Local Test) ---
+    print("\n\n" + "="*70)
+    print("STEP 6: FINAL MODEL PREDICTION (Local Test)")
+    print("="*70)
+    print(f"\nLoading final model from {final_model_path} to make predictions...")
+
+    try:
+        from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
+        from survivor_scorer import SurvivorScorer
+
+        with open(holdout_history_file, 'r') as f:
+            data = json.load(f)
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                holdout_history = [d['draw'] for d in data]
+            else:
+                holdout_history = data
+            
+            if not holdout_history:
+                print("⚠️ Holdout history is empty, using train history for prediction test.")
+                with open(train_history_file, 'r') as f_train:
+                    train_data = json.load(f_train)
+                    if isinstance(train_data, list) and len(train_data) > 0 and isinstance(train_data[0], dict):
+                         holdout_history = [d['draw'] for d in train_data]
+                    else:
+                        holdout_history = train_data
+
+        engine = ReinforcementEngine(
+            config=ReinforcementConfig(),
+            lottery_history=holdout_history
+        )
+        
+        engine.load_model(final_model_path)
+        print("✅ Final model loaded successfully.")
+
+        import random
+        test_survivors = [random.randint(0, 1000000) for _ in range(20)]
+        print("✅ Predicting quality for 20 random survivors...")
+
+        predictions = engine.predict_quality_batch(
+            survivors=test_survivors,
+            lottery_history=holdout_history
+        )
+        
+        print("\n--- Sample Predictions ---")
+        for seed, quality in zip(test_survivors[:5], predictions[:5]):
+            print(f"  Seed {seed:<10} -> Quality: {quality:.4f}")
+        print("--------------------------\n")
+
+    except Exception as e:
+        print(f"\n❌ Error during Step 6 (Prediction): {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+    # --- SUCCESS! ---
+    elapsed = time.time() - start_time
+    print("\n" + "="*70)
+    print("✅✅✅ COMPLETE DISTRIBUTED WORKFLOW PASSED ✅✅✅")
+    print("="*70)
+    print("\nWorkflow Summary:")
+    print(f"  1. ✅ Meta Window Optimizer: Ran {args.window_opt_trials} trials.")
+    print(f"  2. ✅ Sieves: Ran successfully with optimal params.")
+    print(f"  3. ✅ Scorer Meta-Optimizer: Ran {args.scorer_trials} distributed trials.")
+    print(f"  3.5 ✅ Full Scoring Run: Ran successfully.")
+    print(f"  4. ✅ Adaptive Optimizer: Ran successfully.")
+    print(f"  5. ✅ Anti-Overfit Optimizer: Ran {args.anti_overfit_trials} distributed trials.")
+    print(f"  6. ✅ Final Prediction: Ran successfully.")
+    print(f"\nTest completed in {elapsed / 60:.1f} minutes")
+    print("="*70 + "\n")
+
+    return 0
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Complete Whitepaper Workflow Orchestrator (v3.1 - 7-Step)')
+    
+    # --- General ---
+    parser.add_argument('--lottery-file', type=str, default='synthetic_lottery.json', help='Initial lottery data file')
+
+    # --- Step 1 ---
+    parser.add_argument('--window-opt-trials', type=int, default=50, help='Number of trials for Bayesian Window Optimizer (Step 1)')
+
+    # --- Step 2 ---
+    parser.add_argument('--seed-count', type=int, default=10000, help='Max seeds for Sieve run (Step 2)')
+    parser.add_argument('--window-iterations', type=int, default=2, help='Iterations for Sieve run (Step 2)')
+
+    # --- Step 3 ---
+    parser.add_argument('--scorer-trials', type=int, default=100, help='Number of trials for Scorer Meta-Optimizer (Step 3)')
+
+    # --- Step 5 ---
+    parser.add_argument('--anti-overfit-trials', type=int, default=50, help='Number of trials for Anti-Overfit Optimizer (Step 5)')
+    parser.add_argument('--k-folds', type=int, default=5, help='Number of K-Folds for Anti-Overfit Optimizer (Step 5)')
+    
+    parsed_args = parser.parse_args()
+    
+    os.environ["DISTRIBUTED_WORKFLOW"] = "true"
+    sys.exit(main(parsed_args))

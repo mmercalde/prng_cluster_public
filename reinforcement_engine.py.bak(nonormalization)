@@ -1,0 +1,1053 @@
+#!/usr/bin/env python3
+"""
+Reinforcement Engine - ML Training Orchestrator
+================================================
+
+Whitepaper-Compliant Implementation:
+- Section 2: Reinforcement mechanism for continuous learning
+- Section 4: Machine learning integration (46 features)
+- Section 4.1: Global statistical state vector
+- Section 5: Forward-reverse-ML ensemble
+
+Features:
+- GlobalStateTracker: System-wide pattern detection
+- PyTorch neural network: Survivor quality prediction
+- Automatic regime change detection
+- Intelligent caching for performance
+- GPU-accelerated training
+- Distributed training ready
+
+Author: Distributed PRNG Analysis System
+Date: November 7, 2025
+Version: 1.0
+"""
+
+import sys
+import os
+import json
+import logging
+import pickle
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Any
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from collections import Counter, deque
+import hashlib
+
+import numpy as np
+from scipy.stats import entropy
+
+# PyTorch for neural network
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("ERROR: PyTorch not available! Install with: pip install torch")
+    sys.exit(1)
+
+# GPU acceleration
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    cp = np
+    GPU_AVAILABLE = False
+
+# Import from pipeline
+try:
+    from survivor_scorer import SurvivorScorer
+    SURVIVOR_SCORER_AVAILABLE = True
+except ImportError:
+    print("ERROR: Cannot import survivor_scorer.py!")
+    print("Make sure survivor_scorer.py is in the same directory")
+    sys.exit(1)
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+@dataclass
+class ReinforcementConfig:
+    """
+    Configuration for reinforcement engine
+    
+    Whitepaper Section 4: ML Integration Parameters
+    """
+    # Model architecture
+    model: Dict[str, Any] = field(default_factory=lambda: {
+        'input_features': 46,  # From survivor_scorer.py
+        'hidden_layers': [128, 64, 32],
+        'dropout': 0.3,
+        'activation': 'relu',
+        'output_activation': 'sigmoid'
+    })
+    
+    # Training parameters
+    training: Dict[str, Any] = field(default_factory=lambda: {
+        'learning_rate': 0.001,
+        'batch_size': 256,
+        'epochs': 100,
+        'optimizer': 'adam',
+        'loss_function': 'mse',
+        'early_stopping_patience': 10,
+        'validation_split': 0.2
+    })
+    
+    # PRNG parameters
+    prng: Dict[str, Any] = field(default_factory=lambda: {
+        'prng_type': 'java_lcg',
+        'mod': 1000,
+        'skip': 0
+    })
+    
+    # Global state tracking (Whitepaper Section 4.1)
+    global_state: Dict[str, Any] = field(default_factory=lambda: {
+        'window_size': 1000,
+        'anomaly_threshold': 3.0,  # Standard deviations
+        'regime_change_threshold': 0.15,
+        'marker_numbers': [390, 804, 575],  # From discovery
+        'variance_threshold': 1.0,
+        'gap_threshold': 500,
+        'frequency_bias_threshold': 3.0
+    })
+    
+    # Survivor management
+    survivor_pool: Dict[str, Any] = field(default_factory=lambda: {
+        'max_pool_size': 10000,
+        'prune_threshold': 0.3,  # Keep top 30%
+        'min_confidence': 0.5,
+        'update_frequency': 10  # Retrain every N draws
+    })
+    
+    # Output and persistence
+    output: Dict[str, Any] = field(default_factory=lambda: {
+        'models_dir': 'models/reinforcement',
+        'logs_dir': 'logs/reinforcement',
+        'save_frequency': 100,  # Save every N epochs
+        'log_level': 'INFO'
+    })
+    
+    @classmethod
+    def from_json(cls, path: str) -> 'ReinforcementConfig':
+        """Load configuration from JSON file"""
+        with open(path, 'r') as f:
+            data = json.load(f)
+        
+        return cls(
+            model=data.get('model', {}),
+            training=data.get('training', {}),
+            prng=data.get('prng', {}),
+            global_state=data.get('global_state', {}),
+            survivor_pool=data.get('survivor_pool', {}),
+            output=data.get('output', {})
+        )
+    
+    def to_json(self, path: str):
+        """Save configuration to JSON file"""
+        with open(path, 'w') as f:
+            json.dump(asdict(self), f, indent=2)
+
+
+# ============================================================================
+# GLOBAL STATE TRACKER
+# ============================================================================
+
+class GlobalStateTracker:
+    """
+    Track system-wide statistical patterns
+    
+    Whitepaper Section 4.1: Global Statistical State Vector
+    
+    Tracks:
+    - Residue distributions (%8, %125, %1000)
+    - Power-of-two biases
+    - Draw-frequency anomalies (4.12x bias from discovery)
+    - Regime-change indicators (3.5-year gap from discovery)
+    - Marker number behavior (390, 804, 575)
+    """
+    
+    def __init__(self, lottery_history: List[int], config: Dict[str, Any]):
+        """
+        Initialize global state tracker
+        
+        Args:
+            lottery_history: Complete lottery draw history
+            config: Global state configuration from ReinforcementConfig
+        """
+        self.lottery_history = lottery_history
+        self.config = config
+        
+        # Smart caching
+        self._cache = {}
+        self._history_hash = self._compute_hash(lottery_history)
+        
+        # Regime tracking
+        self.current_regime_start = 0
+        self.regime_history = []
+        
+        # Initialize on first access
+        self._initialized = False
+    
+    def _compute_hash(self, data: List[int]) -> str:
+        """Compute hash of lottery history for cache invalidation"""
+        return hashlib.md5(str(data).encode()).hexdigest()
+    
+    def get_global_state(self) -> Dict[str, float]:
+        """
+        Get or compute global statistical state
+        
+        Returns:
+            Dictionary with global metrics for ML model
+        """
+        current_hash = self._compute_hash(self.lottery_history)
+        
+        # Smart caching - only recalculate if data changed
+        if current_hash != self._history_hash or not self._cache:
+            self._cache = self._compute_global_state()
+            self._history_hash = current_hash
+        
+        return self._cache
+    
+    def _compute_global_state(self) -> Dict[str, float]:
+        """
+        Compute all global statistical metrics
+        
+        Whitepaper Section 4.1 implementation
+        """
+        if len(self.lottery_history) < 100:
+            # Not enough data
+            return self._default_state()
+        
+        state = {}
+        
+        # 1. Residue distributions (%8, %125, %1000)
+        residue_metrics = self._compute_residue_distributions()
+        state.update(residue_metrics)
+        
+        # 2. Power-of-two biases
+        power_two_metrics = self._detect_power_of_two_bias()
+        state.update(power_two_metrics)
+        
+        # 3. Draw-frequency anomalies (Discovery: 4.12x bias)
+        frequency_metrics = self._detect_frequency_anomalies()
+        state.update(frequency_metrics)
+        
+        # 4. Regime-change indicators (Discovery: 3.5-year gap)
+        regime_metrics = self._detect_regime_changes()
+        state.update(regime_metrics)
+        
+        # 5. Marker number behavior (390, 804, 575 from discovery)
+        marker_metrics = self._track_marker_numbers()
+        state.update(marker_metrics)
+        
+        # 6. Temporal stability
+        temporal_metrics = self._compute_temporal_stability()
+        state.update(temporal_metrics)
+        
+        return state
+    
+    def _default_state(self) -> Dict[str, float]:
+        """Return default state when insufficient data"""
+        return {
+            'residue_8_entropy': 0.0,
+            'residue_125_entropy': 0.0,
+            'residue_1000_entropy': 0.0,
+            'power_of_two_bias': 0.0,
+            'frequency_bias_ratio': 1.0,
+            'suspicious_gap_percentage': 0.0,
+            'regime_change_detected': 0.0,
+            'regime_age': 0.0,
+            'high_variance_count': 0.0,
+            'marker_390_variance': 0.0,
+            'marker_804_variance': 0.0,
+            'marker_575_variance': 0.0,
+            'reseed_probability': 0.0,
+            'temporal_stability': 1.0
+        }
+    
+    def _compute_residue_distributions(self) -> Dict[str, float]:
+        """
+        Compute residue distribution entropy for %8, %125, %1000
+        
+        Higher entropy = more uniform = healthier PRNG
+        Lower entropy = biased = exploitable
+        """
+        residues = {}
+        
+        for mod in [8, 125, 1000]:
+            residue_counts = Counter([x % mod for x in self.lottery_history])
+            
+            # Compute entropy
+            total = len(self.lottery_history)
+            probs = [count / total for count in residue_counts.values()]
+            ent = entropy(probs)
+            
+            # Normalize to 0-1 scale
+            max_entropy = np.log(mod)
+            normalized_entropy = ent / max_entropy if max_entropy > 0 else 0
+            
+            residues[f'residue_{mod}_entropy'] = float(normalized_entropy)
+        
+        return residues
+    
+    def _detect_power_of_two_bias(self) -> Dict[str, float]:
+        """
+        Detect bias toward power-of-two numbers
+        
+        Flawed PRNGs often show power-of-two bias
+        """
+        powers_of_two = [2**i for i in range(10) if 2**i < 1000]
+        
+        power_two_count = sum(1 for x in self.lottery_history if x in powers_of_two)
+        expected_rate = len(powers_of_two) / 1000.0
+        actual_rate = power_two_count / len(self.lottery_history)
+        
+        # Bias ratio (1.0 = no bias, >1.0 = bias toward, <1.0 = bias away)
+        bias = actual_rate / expected_rate if expected_rate > 0 else 1.0
+        
+        return {'power_of_two_bias': float(bias)}
+    
+    def _detect_frequency_anomalies(self) -> Dict[str, float]:
+        """
+        Detect frequency anomalies
+        
+        From discovery: 4.12x bias between most/least frequent
+        40% of numbers have suspicious gaps
+        """
+        freq_counter = Counter(self.lottery_history)
+        
+        if not freq_counter:
+            return {
+                'frequency_bias_ratio': 1.0,
+                'suspicious_gap_percentage': 0.0
+            }
+        
+        # Max/min frequency ratio
+        max_freq = max(freq_counter.values())
+        min_freq = min(freq_counter.values())
+        ratio = max_freq / min_freq if min_freq > 0 else 1.0
+        
+        # Suspicious gaps (numbers that haven't appeared in a while)
+        gap_threshold = self.config.get('gap_threshold', 500)
+        last_seen = {}
+        suspicious_count = 0
+        
+        for i, num in enumerate(self.lottery_history):
+            last_seen[num] = i
+        
+        current_index = len(self.lottery_history) - 1
+        for num in range(1000):
+            if num not in last_seen:
+                suspicious_count += 1
+            elif current_index - last_seen[num] > gap_threshold:
+                suspicious_count += 1
+        
+        suspicious_pct = suspicious_count / 1000.0
+        
+        return {
+            'frequency_bias_ratio': float(ratio),
+            'suspicious_gap_percentage': float(suspicious_pct)
+        }
+    
+    def _detect_regime_changes(self) -> Dict[str, float]:
+        """
+        Detect regime changes (system restarts, reseeding)
+        
+        From discovery: 3.5-year gap where all top numbers disappeared
+        """
+        window_size = self.config.get('window_size', 1000)
+        threshold = self.config.get('regime_change_threshold', 0.15)
+        
+        if len(self.lottery_history) < window_size * 2:
+            return {
+                'regime_change_detected': 0.0,
+                'regime_age': 0.0
+            }
+        
+        # Compare recent window to historical baseline
+        recent = self.lottery_history[-window_size:]
+        historical = self.lottery_history[-2*window_size:-window_size]
+        
+        recent_dist = Counter(recent)
+        historical_dist = Counter(historical)
+        
+        # KL divergence between distributions
+        divergence = 0.0
+        for num in range(1000):
+            p = (recent_dist.get(num, 0) + 1) / (window_size + 1000)
+            q = (historical_dist.get(num, 0) + 1) / (window_size + 1000)
+            divergence += p * np.log(p / q)
+        
+        # Regime change if divergence exceeds threshold
+        regime_changed = 1.0 if divergence > threshold else 0.0
+        
+        # Regime age (draws since last detected change)
+        if regime_changed > 0.5:
+            self.current_regime_start = len(self.lottery_history)
+        
+        regime_age = len(self.lottery_history) - self.current_regime_start
+        
+        return {
+            'regime_change_detected': float(regime_changed),
+            'regime_age': float(regime_age)
+        }
+    
+    def _track_marker_numbers(self) -> Dict[str, float]:
+        """
+        Track marker numbers from discovery
+        
+        Numbers 390, 804, 575 show system event correlation
+        High variance = irregular spacing = system events
+        Low variance = uniform spacing = natural PRNG
+        """
+        marker_numbers = self.config.get('marker_numbers', [390, 804, 575])
+        metrics = {}
+        
+        for marker in marker_numbers:
+            # Find all appearances
+            appearances = [i for i, x in enumerate(self.lottery_history) if x == marker]
+            
+            if len(appearances) < 2:
+                metrics[f'marker_{marker}_variance'] = 0.0
+                continue
+            
+            # Calculate gaps between appearances
+            gaps = [appearances[i+1] - appearances[i] for i in range(len(appearances)-1)]
+            
+            if not gaps:
+                metrics[f'marker_{marker}_variance'] = 0.0
+                continue
+            
+            # Coefficient of variation
+            mean_gap = np.mean(gaps)
+            std_gap = np.std(gaps)
+            cv = std_gap / mean_gap if mean_gap > 0 else 0.0
+            
+            metrics[f'marker_{marker}_variance'] = float(cv)
+        
+        # Reseed probability (high variance on markers suggests recent reseed)
+        high_variance_count = sum(1 for v in metrics.values() if v > 1.0)
+        reseed_prob = high_variance_count / len(marker_numbers) if marker_numbers else 0.0
+        
+        metrics['reseed_probability'] = float(reseed_prob)
+        metrics['high_variance_count'] = float(high_variance_count)
+        
+        return metrics
+    
+    def _compute_temporal_stability(self) -> Dict[str, float]:
+        """
+        Compute temporal stability of recent draws
+        
+        Stable = consistent patterns
+        Unstable = regime change or drift
+        """
+        window_size = min(100, len(self.lottery_history) // 4)
+        
+        if len(self.lottery_history) < window_size * 2:
+            return {'temporal_stability': 1.0}
+        
+        # Compare consecutive windows
+        windows = []
+        for i in range(4):
+            start = len(self.lottery_history) - (i+1) * window_size
+            end = len(self.lottery_history) - i * window_size
+            if start >= 0:
+                windows.append(Counter(self.lottery_history[start:end]))
+        
+        if len(windows) < 2:
+            return {'temporal_stability': 1.0}
+        
+        # Compute stability as average overlap between consecutive windows
+        overlaps = []
+        for i in range(len(windows)-1):
+            common = set(windows[i].keys()) & set(windows[i+1].keys())
+            overlap = len(common) / 1000.0
+            overlaps.append(overlap)
+        
+        stability = np.mean(overlaps) if overlaps else 1.0
+        
+        return {'temporal_stability': float(stability)}
+    
+    def update_history(self, new_draws: List[int]):
+        """
+        Add new draws and invalidate cache
+        
+        Args:
+            new_draws: List of new lottery draws
+        """
+        self.lottery_history.extend(new_draws)
+        # Cache will auto-invalidate on next get_global_state()
+
+
+# ============================================================================
+# PYTORCH NEURAL NETWORK
+# ============================================================================
+
+class SurvivorQualityNet(nn.Module):
+    """
+    PyTorch neural network for survivor quality prediction
+    
+    Whitepaper Section 4: ML model architecture
+    
+    Input: 46 features (per-seed) + ~14 global state features
+    Output: Quality score (0-1) predicting survivor success
+    """
+    
+    def __init__(self, input_size: int = 60, hidden_layers: List[int] = [128, 64, 32], 
+                 dropout: float = 0.3):
+        """
+        Initialize network
+        
+        Args:
+            input_size: Number of input features (46 per-seed + global)
+            hidden_layers: List of hidden layer sizes
+            dropout: Dropout probability
+        """
+        super(SurvivorQualityNet, self).__init__()
+        
+        layers = []
+        prev_size = input_size
+        
+        for hidden_size in hidden_layers:
+            layers.append(nn.Linear(prev_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            prev_size = hidden_size
+        
+        # Output layer
+        layers.append(nn.Linear(prev_size, 1))
+        layers.append(nn.Sigmoid())
+        
+        self.network = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        """Forward pass"""
+        return self.network(x)
+
+
+# ============================================================================
+# REINFORCEMENT ENGINE
+# ============================================================================
+
+class ReinforcementEngine:
+    """
+    Main ML training orchestrator
+    
+    Whitepaper Section 2: Reinforcement mechanism
+    Whitepaper Section 5: Forward-reverse-ML ensemble
+    
+    Integrates:
+    - survivor_scorer.py (46 per-seed features)
+    - GlobalStateTracker (global statistical state)
+    - PyTorch neural network (quality prediction)
+    - Continuous learning loop
+    """
+    
+    def __init__(self, config: ReinforcementConfig, lottery_history: List[int],
+                 logger: Optional[logging.Logger] = None):
+        """
+        Initialize reinforcement engine
+        
+        Args:
+            config: ReinforcementConfig instance
+            lottery_history: Complete lottery draw history
+            logger: Optional logger instance
+        """
+        self.config = config
+        self.lottery_history = lottery_history
+        self.logger = logger or self._setup_logger()
+        
+        # Initialize components
+        self.logger.info("Initializing ReinforcementEngine...")
+        
+        # Survivor scorer (46 features)
+        self.scorer = SurvivorScorer(
+            prng_type=config.prng['prng_type'],
+            mod=config.prng['mod']
+        )
+        self.logger.info(f"  Survivor scorer: {config.prng['prng_type']}, mod={config.prng['mod']}")
+        
+        # Global state tracker
+        self.global_tracker = GlobalStateTracker(
+            lottery_history=lottery_history,
+            config=config.global_state
+        )
+        self.logger.info(f"  Global state tracker: {len(lottery_history)} draws")
+        
+        # PyTorch model
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Calculate total input size (46 per-seed + global features)
+        global_state = self.global_tracker.get_global_state()
+        total_input_size = 46 + len(global_state)
+        
+        self.model = SurvivorQualityNet(
+            input_size=total_input_size,
+            hidden_layers=config.model['hidden_layers'],
+            dropout=config.model['dropout']
+        ).to(self.device)
+        
+        self.logger.info(f"  Neural network: {total_input_size} inputs → {config.model['hidden_layers']}")
+        self.logger.info(f"  Device: {self.device}")
+        
+        # Optimizer
+        self.optimizer = optim.Adam(
+            self.model.parameters(),
+            lr=config.training['learning_rate']
+        )
+        
+        # Loss function
+        self.criterion = nn.MSELoss()
+        
+        # Training history
+        self.training_history = {
+            'epoch': [],
+            'loss': [],
+            'val_loss': []
+        }
+        
+        # Create output directories
+        Path(config.output['models_dir']).mkdir(parents=True, exist_ok=True)
+        Path(config.output['logs_dir']).mkdir(parents=True, exist_ok=True)
+        
+        self.logger.info("ReinforcementEngine initialized successfully!")
+    
+    def _setup_logger(self) -> logging.Logger:
+        """Setup logging"""
+        log_level = self.config.output.get('log_level', 'INFO')
+        logging.basicConfig(
+            level=getattr(logging, log_level),
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        return logging.getLogger(__name__)
+    
+    def extract_combined_features(self, seed: int, 
+                                  forward_survivors: Optional[List[int]] = None,
+                                  reverse_survivors: Optional[List[int]] = None) -> np.ndarray:
+        """
+        Extract combined features (per-seed + global state)
+        
+        Whitepaper Section 4: Feature integration
+        
+        Args:
+            seed: Seed to score
+            forward_survivors: Forward sieve survivors
+            reverse_survivors: Reverse sieve survivors
+        
+        Returns:
+            Combined feature vector (46 + global)
+        """
+        # Per-seed features (46)
+        per_seed_features = self.scorer.extract_ml_features(
+            seed=seed,
+            lottery_history=self.lottery_history,
+            forward_survivors=forward_survivors,
+            reverse_survivors=reverse_survivors
+        )
+        
+        # Global state features
+        global_state = self.global_tracker.get_global_state()
+        
+        # Combine in consistent order
+        feature_names = sorted(per_seed_features.keys())
+        per_seed_values = [per_seed_features[k] for k in feature_names]
+        
+        global_names = sorted(global_state.keys())
+        global_values = [global_state[k] for k in global_names]
+        
+        combined = np.array(per_seed_values + global_values, dtype=np.float32)
+        
+        return combined
+    
+    def train(self, survivors: List[int], 
+             actual_results: List[float],
+             forward_survivors: Optional[List[int]] = None,
+             reverse_survivors: Optional[List[int]] = None,
+             epochs: Optional[int] = None):
+        """
+        Train model on survivors with actual results
+        
+        Whitepaper Section 2: "High-quality prediction pools act as reinforcement signals"
+        
+        Args:
+            survivors: List of survivor seeds
+            actual_results: Actual hit rates/quality scores for each survivor
+            forward_survivors: Forward sieve survivors
+            reverse_survivors: Reverse sieve survivors
+            epochs: Number of training epochs (default: from config)
+        """
+        if len(survivors) == 0 or len(actual_results) == 0:
+            self.logger.warning("No training data provided")
+            return
+        
+        if len(survivors) != len(actual_results):
+            raise ValueError("survivors and actual_results must have same length")
+        
+        epochs = epochs or self.config.training['epochs']
+        batch_size = self.config.training['batch_size']
+        
+        self.logger.info(f"Training on {len(survivors)} survivors for {epochs} epochs...")
+        
+        # Extract features for all survivors
+        self.logger.info("Extracting features...")
+        X = []
+        for seed in survivors:
+            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors)
+            X.append(features)
+        
+        X = np.array(X, dtype=np.float32)
+        y = np.array(actual_results, dtype=np.float32).reshape(-1, 1)
+        
+        # Train/validation split
+        val_split = self.config.training['validation_split']
+        n_val = int(len(X) * val_split)
+        
+        indices = np.random.permutation(len(X))
+        train_idx = indices[n_val:]
+        val_idx = indices[:n_val]
+        
+        X_train, y_train = X[train_idx], y[train_idx]
+        X_val, y_val = X[val_idx], y[val_idx]
+        
+        # Convert to PyTorch tensors
+        X_train_t = torch.tensor(X_train).to(self.device)
+        y_train_t = torch.tensor(y_train).to(self.device)
+        X_val_t = torch.tensor(X_val).to(self.device)
+        y_val_t = torch.tensor(y_val).to(self.device)
+        
+        # Training loop
+        best_val_loss = float('inf')
+        patience_counter = 0
+        
+        for epoch in range(epochs):
+            self.model.train()
+            
+            # Mini-batch training
+            n_batches = len(X_train) // batch_size + (1 if len(X_train) % batch_size else 0)
+            epoch_loss = 0.0
+            
+            for i in range(n_batches):
+                start_idx = i * batch_size
+                end_idx = min((i + 1) * batch_size, len(X_train))
+                
+                batch_X = X_train_t[start_idx:end_idx]
+                batch_y = y_train_t[start_idx:end_idx]
+                
+                # Forward pass
+                self.optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = self.criterion(outputs, batch_y)
+                
+                # Backward pass
+                loss.backward()
+                self.optimizer.step()
+                
+                epoch_loss += loss.item()
+            
+            # Validation
+            self.model.eval()
+            with torch.no_grad():
+                val_outputs = self.model(X_val_t)
+                val_loss = self.criterion(val_outputs, y_val_t).item()
+            
+            # Log progress
+            avg_loss = epoch_loss / n_batches
+            self.training_history['epoch'].append(epoch)
+            self.training_history['loss'].append(avg_loss)
+            self.training_history['val_loss'].append(val_loss)
+            
+            if (epoch + 1) % 10 == 0:
+                self.logger.info(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}, Val Loss: {val_loss:.4f}")
+            
+            # Early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                self.save_model(f"best_model_epoch_{epoch+1}.pth")
+            else:
+                patience_counter += 1
+                if patience_counter >= self.config.training['early_stopping_patience']:
+                    self.logger.info(f"Early stopping at epoch {epoch+1}")
+                    break
+        
+        self.logger.info(f"Training complete! Best val loss: {best_val_loss:.4f}")
+    
+    def predict_quality(self, seed: int,
+                       forward_survivors: Optional[List[int]] = None,
+                       reverse_survivors: Optional[List[int]] = None) -> float:
+        """
+        Predict quality score for a single survivor
+        
+        Args:
+            seed: Seed to evaluate
+            forward_survivors: Forward sieve survivors
+            reverse_survivors: Reverse sieve survivors
+        
+        Returns:
+            Quality score (0-1)
+        """
+        self.model.eval()
+        
+        with torch.no_grad():
+            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors)
+            features_t = torch.tensor(features).unsqueeze(0).to(self.device)
+            quality = self.model(features_t).item()
+        
+        return quality
+    
+    def predict_quality_batch(self, survivors: List[int],
+                              forward_survivors: Optional[List[int]] = None,
+                              reverse_survivors: Optional[List[int]] = None) -> List[float]:
+        """
+        Predict quality scores for batch of survivors
+        
+        Args:
+            survivors: List of seeds to evaluate
+            forward_survivors: Forward sieve survivors
+            reverse_survivors: Reverse sieve survivors
+        
+        Returns:
+            List of quality scores (0-1)
+        """
+        if not survivors:
+            return []
+        
+        self.model.eval()
+        
+        # Extract features
+        X = []
+        for seed in survivors:
+            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors)
+            X.append(features)
+        
+        X = np.array(X, dtype=np.float32)
+        X_t = torch.tensor(X).to(self.device)
+        
+        with torch.no_grad():
+            qualities = self.model(X_t).cpu().numpy().flatten()
+        
+        return qualities.tolist()
+    
+    def prune_survivors(self, survivors: List[int], 
+                       keep_top_n: Optional[int] = None,
+                       forward_survivors: Optional[List[int]] = None,
+                       reverse_survivors: Optional[List[int]] = None) -> List[int]:
+        """
+        Prune survivor pool to keep only top performers
+        
+        Whitepaper Section 2: "Prune weak survivors"
+        
+        Args:
+            survivors: List of all survivors
+            keep_top_n: Number to keep (default: from config)
+            forward_survivors: Forward sieve survivors
+            reverse_survivors: Reverse sieve survivors
+        
+        Returns:
+            List of top survivors
+        """
+        if not survivors:
+            return []
+        
+        keep_top_n = keep_top_n or int(len(survivors) * self.config.survivor_pool['prune_threshold'])
+        keep_top_n = max(1, min(keep_top_n, len(survivors)))
+        
+        self.logger.info(f"Pruning {len(survivors)} survivors to top {keep_top_n}...")
+        
+        # Predict quality for all
+        qualities = self.predict_quality_batch(survivors, forward_survivors, reverse_survivors)
+        
+        # Sort by quality (descending)
+        ranked = sorted(zip(survivors, qualities), key=lambda x: x[1], reverse=True)
+        
+        # Keep top N
+        top_survivors = [seed for seed, _ in ranked[:keep_top_n]]
+        
+        self.logger.info(f"Kept top {len(top_survivors)} survivors")
+        
+        return top_survivors
+    
+    def save_model(self, filename: Optional[str] = None):
+        """
+        Save model state
+        
+        Args:
+            filename: Optional filename (default: timestamped)
+        """
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"reinforcement_model_{timestamp}.pth"
+        
+        filepath = Path(self.config.output['models_dir']) / filename
+        
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'training_history': self.training_history,
+            'config': asdict(self.config),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        torch.save(checkpoint, filepath)
+        self.logger.info(f"Model saved to {filepath}")
+    
+    def load_model(self, filepath: str):
+        """
+        Load model state
+        
+        Args:
+            filepath: Path to saved model
+        """
+        checkpoint = torch.load(filepath, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.training_history = checkpoint.get('training_history', {})
+        
+        self.logger.info(f"Model loaded from {filepath}")
+    
+    def continuous_learning_loop(self, new_draw: int, 
+                                 survivors: List[int],
+                                 forward_survivors: Optional[List[int]] = None,
+                                 reverse_survivors: Optional[List[int]] = None):
+        """
+        Continuous learning loop - update model with new draw
+        
+        Whitepaper Section 2: "Continuous reinforcement loop"
+        
+        Args:
+            new_draw: Latest lottery draw
+            survivors: Current survivor pool
+            forward_survivors: Forward sieve survivors
+            reverse_survivors: Reverse sieve survivors
+        """
+        # Update lottery history
+        self.lottery_history.append(new_draw)
+        self.global_tracker.update_history([new_draw])
+        
+        # Check if survivors predicted correctly
+        actual_results = []
+        for seed in survivors:
+            # Generate next prediction from seed
+            predicted = self.scorer.score_survivor(seed, [new_draw], skip=self.config.prng['skip'])
+            hit_rate = predicted['match_rate']
+            actual_results.append(hit_rate)
+        
+        # Retrain if update frequency reached
+        if len(self.lottery_history) % self.config.survivor_pool['update_frequency'] == 0:
+            self.logger.info("Retraining model with new data...")
+            self.train(
+                survivors=survivors,
+                actual_results=actual_results,
+                forward_survivors=forward_survivors,
+                reverse_survivors=reverse_survivors,
+                epochs=10  # Quick update
+            )
+
+
+# ============================================================================
+# CLI INTERFACE
+# ============================================================================
+
+def main():
+    """CLI interface for testing"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Reinforcement Engine - ML Training Orchestrator'
+    )
+    parser.add_argument('--config', type=str, 
+                       default='reinforcement_engine_config.json',
+                       help='Configuration file')
+    parser.add_argument('--lottery-data', type=str,
+                       help='Lottery history JSON file')
+    parser.add_argument('--test', action='store_true',
+                       help='Run self-test')
+    
+    args = parser.parse_args()
+    
+    # Test mode
+    if args.test:
+        print("="*70)
+        print("REINFORCEMENT ENGINE - SELF TEST")
+        print("="*70)
+        
+        config = ReinforcementConfig()
+        
+        # Generate synthetic lottery data
+        np.random.seed(42)
+        lottery_history = np.random.randint(0, 1000, 5000).tolist()
+        
+        try:
+            engine = ReinforcementEngine(config, lottery_history)
+            print("✅ Engine initialized successfully")
+            print(f"   Device: {engine.device}")
+            print(f"   Model input size: 46 + global features")
+            print(f"   GPU available: {GPU_AVAILABLE}")
+            
+            # Test global state
+            global_state = engine.global_tracker.get_global_state()
+            print(f"✅ Global state computed: {len(global_state)} features")
+            
+            # Test feature extraction
+            features = engine.extract_combined_features(12345)
+            print(f"✅ Feature extraction: {len(features)} features")
+            
+            # Test prediction
+            quality = engine.predict_quality(12345)
+            print(f"✅ Prediction: quality={quality:.4f}")
+            
+            print("\n✅ All tests passed!")
+            return 0
+            
+        except Exception as e:
+            print(f"❌ Test failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+    
+    # Normal mode
+    if not args.lottery_data:
+        parser.error("--lottery-data required (or use --test)")
+    
+    # Load config
+    try:
+        config = ReinforcementConfig.from_json(args.config)
+        print(f"✅ Config loaded from {args.config}")
+    except Exception as e:
+        print(f"Warning: Could not load config: {e}")
+        print("Using default config")
+        config = ReinforcementConfig()
+    
+    # Load lottery data
+    with open(args.lottery_data, 'r') as f:
+        data = json.load(f)
+        if isinstance(data, list):
+            lottery_history = [d['draw'] if isinstance(d, dict) else d for d in data]
+        else:
+            lottery_history = data.get('draws', [])
+    
+    print(f"✅ Loaded {len(lottery_history)} lottery draws")
+    
+    # Initialize engine
+    engine = ReinforcementEngine(config, lottery_history)
+    print("✅ ReinforcementEngine initialized")
+    print(f"   Device: {engine.device}")
+    print(f"   Model: {sum(p.numel() for p in engine.model.parameters())} parameters")
+    
+    # Display global state
+    global_state = engine.global_tracker.get_global_state()
+    print("\n=== Global Statistical State ===")
+    for key, value in sorted(global_state.items()):
+        print(f"  {key}: {value:.4f}")
+    
+    print("\n=== Ready for Training ===")
+    print("Use engine.train(survivors, actual_results) to begin")
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

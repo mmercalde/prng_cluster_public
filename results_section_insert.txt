@@ -1,0 +1,95 @@
+
+## Results System (Integrated Output)
+
+### Overview
+**Status: PRODUCTION READY - Integrated November 2025**
+
+All sieve analysis automatically creates three output formats:
+- Human-readable summaries (`.txt`)
+- Excel-compatible spreadsheets (`.csv`)
+- Machine-readable JSON for AI/ML (`.json`)
+
+### Integrated Scripts
+✅ `sieve_filter.py` - Forward sieve  
+✅ `reverse_sieve_filter.py` - Reverse sieve  
+✅ `window_optimizer_integration_final.py` - Bidirectional analysis
+
+**NO CHANGES NEEDED** - Just run your analysis normally!
+
+### Output Locations
+```
+results/
+├── summaries/          # Human-readable text summaries
+├── csv/                # Excel-compatible data
+├── json/               # Machine-readable structured data
+├── detailed/           # Complete raw data (optional)
+├── configs/            # Run configurations
+└── *.json             # Old format (backward compatible)
+```
+
+### Quick Usage
+
+**Running 100K bidirectional test:**
+```bash
+python3 test_100k_bidirectional_CORRECT.py
+```
+
+**Running 1B seed test:**
+1. Edit `test_100k_bidirectional_CORRECT.py`
+2. Change: `seed_count=1_000_000_000`
+3. Run: `python3 test_100k_bidirectional_CORRECT.py`
+
+Results automatically appear in `results/` subdirectories.
+
+### Viewing Results
+
+**Quick summary:**
+```bash
+ls -lht results/summaries/*.txt | head -5
+cat results/summaries/forward_sieve_java_lcg_TIMESTAMP_summary.txt
+```
+
+**CSV analysis:**
+```bash
+libreoffice results/csv/forward_sieve_java_lcg_TIMESTAMP.csv
+```
+
+**Machine-readable JSON:**
+```bash
+cat results/json/forward_sieve_java_lcg_TIMESTAMP_top100.json | jq
+```
+
+### Result File Naming
+Format: `{analysis_type}_{prng_type}_{timestamp}_{suffix}`
+
+Examples:
+- `forward_sieve_java_lcg_20251105_081127_summary.txt`
+- `bidirectional_java_lcg_20251105_120000.csv`
+- `reverse_sieve_xorshift32_20251105_150000_top100.json`
+
+### Technical Details
+
+**Schema-Driven System:**
+- `schemas/results_schema_v1.json` - Data definitions
+- `schemas/output_templates.json` - Display formats
+- `schemas/field_mappings.json` - Field mappings
+
+**Core Engine:**
+- `core/results_manager.py` - Results generation engine
+- `integration/sieve_integration.py` - Adapter for sieves
+
+**Zero Hardcoding:**
+- All parameters defined in schemas
+- Easy to extend with new fields
+- No code changes needed for new parameters
+
+### Backward Compatibility
+✅ Old format files STILL CREATED for backward compatibility
+- `window_opt_forward_244_139.json` (2.3MB files)
+- NEW format is ADDITIVE - nothing breaks!
+
+### Documentation
+- `RESULTS_SYSTEM_QUICKSTART.txt` - Quick reference guide
+- `INTEGRATION_STATUS_REPORT.txt` - Integration status
+- `INTEGRATION_DISCOVERY_NOTES.txt` - Technical notes
+

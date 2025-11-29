@@ -1,0 +1,1017 @@
+{
+  "analysis_id": "analysis_540de47d9896",
+  "total_jobs": 25,
+  "completed_jobs": {
+    "scoring_chunk_0001": {
+      "status": "success",
+      "trial_id": 1,
+      "accuracy": -5.268146196613088e-06
+    },
+    "scoring_chunk_0000": {
+      "status": "success",
+      "trial_id": 0,
+      "accuracy": -0.992641806602478
+    },
+    "scoring_chunk_0003": {
+      "status": "success",
+      "trial_id": 3,
+      "accuracy": -9.542232874082401e-06
+    }
+  },
+  "failed_jobs": {},
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "scoring_chunk_0002",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0002",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0002.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "2",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0002.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0002.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0004",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0004",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0004.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "4",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0004.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0004.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.120_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0005",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0005",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0005.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "5",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0005.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0005.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.120_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0006",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0006",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0006.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "6",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0006.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0006.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.120_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0007",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0007",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0007.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "7",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0007.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0007.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.120_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0008",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0008",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0008.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "8",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0008.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0008.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.120_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0009",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0009",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0009.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "9",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0009.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0009.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.120_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0010",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0010",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0010.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "10",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0010.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0010.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.120_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0011",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0011",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0011.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "11",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0011.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0011.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.120_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0012",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0012",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0012.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "12",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0012.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0012.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.120_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0013",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0013",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0013.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "13",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0013.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0013.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.120_gpu11"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0014",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0014",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0014.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "14",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0014.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0014.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.154_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0015",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0015",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0015.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "15",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0015.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0015.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.154_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0016",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0016",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0016.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "16",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0016.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0016.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.154_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0017",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0017",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0017.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "17",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0017.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0017.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.154_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0018",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0018",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0018.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "18",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0018.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0018.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.154_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0019",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0019",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0019.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "19",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0019.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0019.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.154_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0020",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0020",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0020.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "20",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0020.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0020.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.154_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0021",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0021",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0021.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "21",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0021.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0021.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.154_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0022",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0022",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0022.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "22",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0022.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0022.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.154_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0023",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0023",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0023.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "23",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0023.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0023.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.154_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scoring_chunk_0024",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scoring_chunk_0024",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0024.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "24",
+            "{\"residue_mod_1\": 13, \"residue_mod_2\": 125, \"residue_mod_3\": 1157, \"max_offset\": 3, \"temporal_window_size\": 150, \"temporal_num_windows\": 8, \"min_confidence_threshold\": 0.21038443331641843, \"hidden_layers\": \"256_128_64\", \"dropout\": 0.33170162059581776, \"learning_rate\": 0.00011561707675215386, \"batch_size\": 128}"
+          ],
+          "expected_output": "scorer_trial_results/trial_0024.json",
+          "timeout": 3600,
+          "cleanup_files": [
+            "/home/michael/distributed_prng_analysis/chunk_scoring_seeds_0024.json"
+          ]
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.154_gpu10"
+      }
+    }
+  ],
+  "retry_count": {},
+  "start_time": 1763875820.416771,
+  "last_update": 1763875855.3574286
+}

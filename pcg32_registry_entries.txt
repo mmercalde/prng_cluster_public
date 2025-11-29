@@ -1,0 +1,11 @@
+    'pcg32_reverse': {
+        'kernel_source': PCG32_REVERSE_KERNEL,
+        'kernel_name': 'pcg32_reverse_sieve',
+        'description': 'pcg32 reverse sieve - fixed skip backward validation'
+    },
+    'pcg32_hybrid_reverse': {
+        'kernel_source': PCG32_HYBRID_REVERSE_KERNEL,
+        'kernel_name': 'pcg32_hybrid_reverse_sieve',
+        'description': 'pcg32 hybrid reverse - variable skip backward validation',
+        'variable_skip': True
+    },

@@ -1,0 +1,11 @@
+    'minstd_reverse': {
+        'kernel_source': MINSTD_REVERSE_KERNEL,
+        'kernel_name': 'minstd_reverse_sieve',
+        'description': 'minstd reverse sieve - fixed skip backward validation'
+    },
+    'minstd_hybrid_reverse': {
+        'kernel_source': MINSTD_HYBRID_REVERSE_KERNEL,
+        'kernel_name': 'minstd_hybrid_reverse_sieve',
+        'description': 'minstd hybrid reverse - variable skip backward validation',
+        'variable_skip': True
+    },

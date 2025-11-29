@@ -1,0 +1,2585 @@
+{
+  "analysis_id": "analysis_d869726ceeec",
+  "total_jobs": 26,
+  "completed_jobs": {},
+  "failed_jobs": {},
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "sieve_000",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          0,
+          39
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_000",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 0,
+          "seed_end": 39,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_001",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          39,
+          78
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_001",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 39,
+          "seed_end": 78,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/tf/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_002",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          78,
+          117
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_002",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 78,
+          "seed_end": 117,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.120_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_003",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          117,
+          156
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_003",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 117,
+          "seed_end": 156,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.120_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_004",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          156,
+          195
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_004",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 156,
+          "seed_end": 195,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.120_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_005",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          195,
+          234
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_005",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 195,
+          "seed_end": 234,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.120_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_006",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          234,
+          273
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_006",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 234,
+          "seed_end": 273,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.120_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_007",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          273,
+          312
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_007",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 273,
+          "seed_end": 312,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.120_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_008",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          312,
+          351
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_008",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 312,
+          "seed_end": 351,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.120_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_009",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          351,
+          390
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_009",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 351,
+          "seed_end": 390,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.120_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_010",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          390,
+          429
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_010",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 390,
+          "seed_end": 429,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.120_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_011",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          429,
+          468
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_011",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 429,
+          "seed_end": 468,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.120_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_012",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          468,
+          507
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_012",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 468,
+          "seed_end": 507,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.120_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_013",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          507,
+          546
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_013",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 507,
+          "seed_end": 546,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.120",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.120_gpu11"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_014",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          546,
+          585
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_014",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 546,
+          "seed_end": 585,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "192.168.3.154_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_015",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          585,
+          624
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_015",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 585,
+          "seed_end": 624,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "192.168.3.154_gpu1"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_016",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          624,
+          663
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_016",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 624,
+          "seed_end": 663,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 2,
+        "worker_id": "192.168.3.154_gpu2"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_017",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          663,
+          702
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_017",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 663,
+          "seed_end": 702,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 3,
+        "worker_id": "192.168.3.154_gpu3"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_018",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          702,
+          741
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_018",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 702,
+          "seed_end": 741,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 4,
+        "worker_id": "192.168.3.154_gpu4"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_019",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          741,
+          780
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_019",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 741,
+          "seed_end": 780,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 5,
+        "worker_id": "192.168.3.154_gpu5"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_020",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          780,
+          819
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_020",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 780,
+          "seed_end": 819,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 6,
+        "worker_id": "192.168.3.154_gpu6"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_021",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          819,
+          858
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_021",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 819,
+          "seed_end": 858,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 7,
+        "worker_id": "192.168.3.154_gpu7"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_022",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          858,
+          897
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_022",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 858,
+          "seed_end": 897,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 8,
+        "worker_id": "192.168.3.154_gpu8"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_023",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          897,
+          936
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_023",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 897,
+          "seed_end": 936,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 9,
+        "worker_id": "192.168.3.154_gpu9"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_024",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          936,
+          975
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_024",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 936,
+          "seed_end": 975,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 10,
+        "worker_id": "192.168.3.154_gpu10"
+      }
+    },
+    {
+      "job": {
+        "job_id": "sieve_025",
+        "prng_type": "sieve",
+        "mapping_type": "sieve",
+        "seeds": [
+          975,
+          1000
+        ],
+        "samples": 1,
+        "lmax": 1,
+        "grid_size": 1,
+        "mining_mode": false,
+        "search_type": "residue_sieve",
+        "target_draw": null,
+        "payload": {
+          "analysis_type": "sieve",
+          "job_id": "sieve_025",
+          "dataset_path": "test_xorshift32_hybrid.json",
+          "seed_start": 975,
+          "seed_end": 1000,
+          "window_size": 512,
+          "min_match_threshold": 0.5,
+          "skip_range": [
+            0,
+            20
+          ],
+          "prng_families": [
+            "xorshift32_hybrid"
+          ],
+          "sessions": [
+            "midday",
+            "evening"
+          ],
+          "offset": 0,
+          "hybrid": true,
+          "phase1_threshold": 0.01,
+          "search_type": "residue_sieve",
+          "phase2_threshold": 0.01,
+          "strategies": [
+            {
+              "name": "Strict Continuous (No Reseed)",
+              "max_consecutive_misses": 3,
+              "skip_tolerance": 5,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.3,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Lenient Continuous (Large Gaps OK)",
+              "max_consecutive_misses": 10,
+              "skip_tolerance": 20,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.5,
+              "breakpoint_threshold": 0.3
+            },
+            {
+              "name": "Aggressive Reseed Detection",
+              "max_consecutive_misses": 5,
+              "skip_tolerance": 5,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.2,
+              "breakpoint_threshold": 0.6
+            },
+            {
+              "name": "Balanced Hybrid (Recommended)",
+              "max_consecutive_misses": 7,
+              "skip_tolerance": 10,
+              "enable_reseed_search": true,
+              "skip_learning_rate": 0.4,
+              "breakpoint_threshold": 0.5
+            },
+            {
+              "name": "Extreme Tolerance (Catch Everything)",
+              "max_consecutive_misses": 20,
+              "skip_tolerance": 50,
+              "enable_reseed_search": false,
+              "skip_learning_rate": 0.7,
+              "breakpoint_threshold": 0.2
+            }
+          ]
+        },
+        "analysis_type": "sieve",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "192.168.3.154",
+          "username": "michael",
+          "gpu_count": 12,
+          "gpu_type": "RX 6600",
+          "python_env": "/home/michael/rocm_env/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 11,
+        "worker_id": "192.168.3.154_gpu11"
+      }
+    }
+  ],
+  "retry_count": {},
+  "start_time": 1760847863.7568886,
+  "last_update": 1760847863.7569408
+}

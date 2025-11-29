@@ -1,0 +1,31 @@
+                                result.append(outputs[idx] % 1000)
+                                idx += 1
+                            return result
+
+                        est_p1, est_p2 = estimate_background_thresholds(
+                            draws=draws,
+                            generate_sequence_func=generate_seq,
+                            seed_start=seed_start,
+                            seed_end=seed_end,
+                            skip_range=skip_range,
+                            k=window_size,
+                            max_pilot_seeds=128,
+                            pilot_duration = (time.time() - pilot_start_time) * 1000
+                        pilot_info = {
+                            'duration_ms': round(pilot_duration, 2),
+                            'seed_range': [seed_start, seed_end],
+                            'sample_size': min(128, seed_end - seed_start),
+                            'estimated_phase1': est_p1,
+                            'estimated_phase2': est_p2
+                        }
+
+                        if phase1_threshold == 'auto':
+                            phase1_threshold = est_p1
+                            print(f"  Auto Phase 1 threshold: {phase1_threshold:.3f} ({phase1_threshold:.1%})", file=sys.stderr)
+                        if phase2_threshold == 'auto':
+                            phase2_threshold = est_p2
+                            print(f"  Auto Phase 2 threshold: {phase2_threshold:.3f} ({phase2_threshold:.1%})", file=sys.stderr)
+                    
+                        # Safety clamps (defense in depth)
+                        # Only clamp auto-estimated thresholds, respect explicit config values
+                        if phase1_in == 'auto':

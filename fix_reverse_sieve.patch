@@ -1,0 +1,53 @@
+--- reverse_sieve_filter.py.orig
++++ reverse_sieve_filter.py
+@@ -115,7 +115,7 @@
+     def run_reverse_sieve(self,
+-                          candidate_seeds: List[int],
++                          candidate_seeds: List[Dict],
+                           prng_family: str,
+                           draws: List[int],
+-                          skip_range: Tuple[int, int] = (0, 20),
++                          skip_range: Tuple[int, int] = (0, 20),  # Ignored
+                           min_match_threshold: float = 0.01,
+                           offset: int = 0) -> Dict[str, Any]:
+         """
+-        Run fixed skip reverse sieve on candidate seeds.
++        Run reverse sieve using each candidate's EXACT skip value.
+         """
+         start_time = time.time()
+@@ -128,9 +128,15 @@
+             print(f"Reverse sieve: {n_candidates} candidates, {k} draws", file=sys.stderr)
+             
++            # Extract seeds and their specific skip values
++            seeds_array = [c['seed'] if isinstance(c, dict) else c for c in candidate_seeds]
++            skips_array = [c.get('skip', 0) if isinstance(c, dict) else 0 for c in candidate_seeds]
++            
+             # Prepare GPU arrays
+-            candidate_seeds_gpu = cp.array(candidate_seeds, dtype=cp.uint32)
++            candidate_seeds_gpu = cp.array(seeds_array, dtype=cp.uint32)
++            candidate_skips_gpu = cp.array(skips_array, dtype=cp.uint8)
+             residues = cp.array(draws, dtype=cp.uint32)
+             survivors = cp.zeros(n_candidates, dtype=cp.uint32)
+             match_rates = cp.zeros(n_candidates, dtype=cp.float32)
+-            best_skips = cp.zeros(n_candidates, dtype=cp.uint8)
+             survivor_count = cp.zeros(1, dtype=cp.uint32)
+@@ -145,10 +151,10 @@
+             kernel(
+                 (blocks,), (threads_per_block,),
+-                (candidate_seeds_gpu, residues, survivors, match_rates, best_skips,
+-                 survivor_count, cp.int32(n_candidates), cp.int32(k),
+-                 cp.int32(skip_range[0]), cp.int32(skip_range[1]),
+-                 cp.float32(min_match_threshold), cp.int32(offset))
++                (candidate_seeds_gpu, candidate_skips_gpu, residues, survivors, 
++                 match_rates, survivor_count, cp.int32(n_candidates), cp.int32(k),
++                 cp.float32(min_match_threshold), cp.int32(offset))
+             )
+             
+@@ -161,7 +167,7 @@
+                 for i in range(count):
+                     survivor_records.append({
+                         'seed': int(surv_cpu[i]),
+-                        'skip': int(best_skips[surv_cpu[i]].get()),
++                        'skip': int(skips_array[i]),
+                         'match_rate': float(rates_cpu[i])
+                     })

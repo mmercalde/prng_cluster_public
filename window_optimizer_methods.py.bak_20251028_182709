@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""
+Window optimizer methods - FINAL CORRECTED VERSION
+"""
+import json
+from dataclasses import dataclass
+from typing import List, Any, Dict
+from argparse import Namespace
+
+# === CONFIG & RESULT CLASSES ===
+@dataclass
+class WindowConfig:
+    window_size: int
+    offset: int
+    sessions: List[str]
+    skip_min: int
+    skip_max: int
+   
+    def description(self) -> str:
+        sess = '+'.join(self.sessions)
+        return f"W{self.window_size}_O{self.offset}_{sess}_S{self.skip_min}-{self.skip_max}"
+
+@dataclass
+class TestResult:
+    forward_count: int
+    reverse_count: int
+    bidirectional_count: int
+    config: WindowConfig
+    iteration: int = 0
+   
+    @property
+    def precision(self) -> float:
+        return self.bidirectional_count / self.forward_count if self.forward_count > 0 else 0
+   
+    @property
+    def recall(self) -> float:
+        return self.bidirectional_count / self.reverse_count if self.reverse_count > 0 else 0
+   
+    def to_dict(self) -> Dict:
+        return {
+            'config': {
+                'window_size': self.config.window_size,
+                'offset': self.config.offset,
+                'sessions': self.config.sessions,
+                'skip_min': self.config.skip_min,
+                'skip_max': self.config.skip_max
+            },
+            'forward_count': self.forward_count,
+            'reverse_count': self.reverse_count,
+            'bidirectional_count': self.bidirectional_count,
+            'precision': self.precision,
+            'recall': self.recall,
+            'iteration': self.iteration
+        }
+
+# === ARGS CLASS ===
+class Args(Namespace):
+    def __init__(self):
+        pass
+
+# === SURVIVOR EXTRACTION ===
+def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
+    survivors = []
+    if 'results' in result:
+        for job_result in result['results']:
+            if 'survivors' in job_result:
+                for survivor in job_result['survivors']:
+                    seed = survivor.get('seed', survivor.get('id'))
+                    if seed is not None:
+                        survivors.append(seed)
+            if 'per_family' in job_result:
+                for family_data in job_result['per_family'].values():
+                    if 'survivors' in family_data:
+                        for survivor in family_data['survivors']:
+                            seed = survivor.get('seed', survivor.get('id'))
+                            if seed is not None:
+                                survivors.append(seed)
+    elif 'survivors' in result:
+        for survivor in result['survivors']:
+            seed = survivor.get('seed', survivor.get('id'))
+            if seed is not None:
+                survivors.append(seed)
+    return list(set(survivors))
+
+# === MAIN BIDIRECTIONAL FUNCTION ===
+def run_bidirectional_test(coordinator, config: WindowConfig, dataset_path: str,
+                          seed_start: int, seed_count: int, prng_base: str,
+                          threshold: float) -> TestResult:
+    print(f"\n Testing: {config.description()}")
+   
+    # === FORWARD SIEVE ===
+    print(f" Forward sieve ({prng_base})...")
+    forward_args = Args()
+    forward_args.target_file = dataset_path
+    forward_args.method = 'residue_sieve'
+    forward_args.seed_start = seed_start
+    forward_args.seeds = seed_count
+    forward_args.window_size = config.window_size
+    forward_args.offset = config.offset
+    forward_args.skip_min = config.skip_min
+    forward_args.skip_max = config.skip_max
+    forward_args.threshold = threshold
+    forward_args.resume_policy = 'restart'
+    forward_args.max_concurrent = 26
+    forward_args.prng_type = prng_base
+    forward_args.session_filter = 'both' if set(config.sessions) == {'midday', 'evening'} else config.sessions[0]
+   
+    forward_result = coordinator.execute_distributed_analysis(
+        dataset_path,
+        'results/opt_fwd.json',
+        forward_args,
+        seed_count,
+        1000,
+        8,
+        50
+    )
+   
+    forward_survivors = extract_survivors_from_result(forward_result)
+    print(f" → {len(forward_survivors):,} survivors")
+   
+    # === REVERSE SIEVE ===
+    reverse_prng = f"{prng_base}_reverse"
+    print(f" Reverse sieve ({reverse_prng})...")
+    reverse_args = Args()
+    reverse_args.target_file = dataset_path
+    reverse_args.method = 'residue_sieve'
+    reverse_args.seed_start = seed_start
+    reverse_args.seeds = seed_count
+    reverse_args.window_size = config.window_size
+    reverse_args.offset = config.offset
+    reverse_args.skip_min = config.skip_min
+    reverse_args.skip_max = config.skip_max
+    reverse_args.threshold = threshold
+    reverse_args.resume_policy = 'restart'
+    reverse_args.max_concurrent = 26
+    reverse_args.prng_type = reverse_prng
+    reverse_args.session_filter = 'both' if set(config.sessions) == {'midday', 'evening'} else config.sessions[0]
+   
+    reverse_result = coordinator.execute_distributed_analysis(
+        dataset_path,
+        'results/opt_rev.json',
+        reverse_args,
+        seed_count,
+        1000,
+        8,
+        50
+    )
+   
+    reverse_survivors = extract_survivors_from_result(reverse_result)
+    print(f" → {len(reverse_survivors):,} survivors")
+   
+    # === INTERSECTION ===
+    bidirectional = set(forward_survivors) & set(reverse_survivors)
+    print(f" Bidirectional: {len(bidirectional):,}")
+   
+    return TestResult(
+        forward_count=len(forward_survivors),
+        reverse_count=len(reverse_survivors),
+        bidirectional_count=len(bidirectional),
+        config=config
+    )
+
+# === OPTIMIZER METHOD ===
+def optimize_window_method(self, dataset_path, seed_start=0, seed_count=10_000_000,
+                          prng_base='java_lcg', strategy_name='random',
+                          max_iterations=50, output_file='window_optimization_results.json'):
+    from window_optimizer import (WindowOptimizer, SearchBounds,
+                                  RandomSearch, GridSearch,
+                                  BayesianOptimization, EvolutionarySearch,
+                                  BidirectionalCountScorer)
+   
+    print(f"\n{'='*80}")
+    print(f"WINDOW OPTIMIZATION")
+    print(f"PRNG: {prng_base} (forward) + {prng_base}_reverse (reverse)")
+    print(f"Seed range: {seed_start:,} → {seed_start + seed_count:,}")
+    print(f"Strategy: {strategy_name}")
+    print(f"{'='*80}\n")
+   
+    optimizer = WindowOptimizer(self, dataset_path)
+   
+    def test_config(config, ss=seed_start, sc=seed_count, th=0.01):
+        return run_bidirectional_test(self, config, dataset_path, ss, sc, prng_base, th)
+   
+    optimizer.test_configuration = test_config
+   
+    strategies = {
+        'random': RandomSearch(),
+        'grid': GridSearch(window_sizes=[512, 768, 1024], offsets=[0, 100],
+                          skip_ranges=[(0, 20), (0, 50)]),
+        'bayesian': BayesianOptimization(n_initial=3),
+        'evolutionary': EvolutionarySearch()
+    }
+    strategy = strategies.get(strategy_name, RandomSearch())
+   
+    bounds = SearchBounds(
+        min_window_size=256, max_window_size=2048,
+        min_offset=0, max_offset=500,
+        min_skip_min=0, max_skip_min=50,
+        min_skip_max=20, max_skip_max=200
+    )
+   
+    results = optimizer.optimize(
+        strategy, bounds, max_iterations,
+        BidirectionalCountScorer(), seed_start, seed_count
+    )
+   
+    optimizer.save_results(results, output_file)
+   
+    print(f"\n{'='*80}")
+    print(f"BEST: W{results['best_config']['window_size']} "
+          f"O{results['best_config']['offset']} "
+          f"→ {results['best_result']['bidirectional_count']} survivors")
+    print(f"{'='*80}\n")
+   
+    return results
+
+print("GOLD VERSION: window_optimizer_methods.py")

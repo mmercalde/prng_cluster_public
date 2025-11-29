@@ -1,0 +1,20 @@
+=== MAJOR FIX: xorshift64 Output Bug Fixed ===
+Date: October 20, 2025
+Timestamp: ${TIMESTAMP}
+
+BUG FOUND AND FIXED:
+- xorshift64 kernel was using (state & 0xFFFFFFFF) % 1000 (32-bit truncation)
+- Test data was using state % 1000 (full 64-bit)
+- This caused 0% match rate
+
+FIXES APPLIED:
+✅ Changed kernel output to: unsigned long long output = state;
+✅ xorshift64 forward now finds seed 1234 with 100% match
+✅ All dtype issues resolved (uint32 → uint64)
+✅ sieve_filter.py hybrid section fixed
+
+VERIFIED WORKING:
+✅ philox4x32_reverse: 100% match
+✅ xorshift64 forward: 100% match
+
+NEXT: Test xorshift64_reverse and check java_lcg for same bug

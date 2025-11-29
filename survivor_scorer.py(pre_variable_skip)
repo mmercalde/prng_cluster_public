@@ -1,0 +1,776 @@
+#!/usr/bin/env python3
+"""
+SurvivorScorer - Advanced ML Feature Extractor
+==============================================
+
+Calculates 56 advanced ML features for a given survivor seed.
+This version is optimized for CuPy (GPU) acceleration and includes
+batch processing capabilities.
+
+IMPROVEMENTS (v1.9 - AMD NumPy Fix):
+- AMD SYSTEMS: Force NumPy instead of CuPy to avoid kernel compilation issues
+- NVIDIA SYSTEMS: Continue using CuPy GPU acceleration
+- PRESERVED: All original methods and features from v1.6
+- FIXED: Added prng_type and mod parameters for compatibility
+"""
+
+import sys
+import os
+import json
+import logging
+import time
+import math
+import argparse
+
+# --- ADDED: ROCm environment setup - MUST BE FIRST ---
+import socket
+HOST = socket.gethostname()
+
+# Apply ROCm overrides for AMD systems
+if HOST in ["rig-6600", "rig-6600b"]:
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+
+# ROCm paths
+os.environ.setdefault("ROCM_PATH", "/opt/rocm")
+os.environ.setdefault("HIP_PATH", "/opt/rocm")
+
+# Harden environment (matching distributed_worker.py)
+os.environ.setdefault('CUPY_CUDA_MEMORY_POOL_TYPE', 'none')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('CUDA_CACHE_MAXSIZE', '536870912')
+# --- END ADDED SECTION ---
+
+
+# MODIFIED: Added Dict, Optional
+from typing import List, Tuple, Any, Dict, Optional
+# MODIFIED: Removed multiprocessing, added ThreadPoolExecutor
+import concurrent.futures
+from queue import Empty
+import numpy as np
+
+# GPU Acceleration
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    cp = np
+    GPU_AVAILABLE = False
+    print("WARNING: CuPy not found. Falling back to NumPy (CPU).")
+
+# --- ADDED: Import torch for device count ---
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+# --- END ADDED SECTION ---
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Constants
+DEFAULT_MOD = 1000
+DEFAULT_RESIDUE_MODS = [8, 125, 1000]
+DEFAULT_MAX_OFFSET = 5
+DEFAULT_TEMPORAL_WINDOW = 100
+DEFAULT_TEMPORAL_WINDOWS = 5
+DEFAULT_MIN_CONFIDENCE = 0.1
+
+# ============================================================================
+# UTILITY FUNCTIONS (PRNG)
+# ============================================================================
+
+def java_lcg_sequence(seed: int, n: int, mod: int) -> np.ndarray:
+    """Generates a sequence using Java's LCG (NumPy)"""
+    arr = np.empty(n, dtype=np.int64)
+    state = (seed ^ 0x5DEECE66D) & ((1 << 48) - 1)
+    for i in range(n):
+        state = (state * 0x5DEECE66D + 0xB) & ((1 << 48) - 1)
+        arr[i] = (state >> 16) % mod
+    return arr
+
+def java_lcg_sequence_gpu(seed: int, n: int, mod: int) -> cp.ndarray:
+    """Generates a sequence using Java's LCG (CuPy) - NVIDIA only"""
+    # Use pure NumPy version - avoids RawKernel compilation issues
+    result = java_lcg_sequence(seed, n, mod)
+    # Transfer to GPU if CuPy is available
+    if GPU_AVAILABLE and cp != np:
+        return cp.array(result)
+    return result
+
+# ============================================================================
+# SURVIVOR SCORER CLASS
+# ============================================================================
+
+class SurvivorScorer:
+    def __init__(
+        self,
+        prng_type: str = 'java_lcg',
+        mod: int = 1000,
+        residue_mods: List[int] = None,
+        config_dict: Optional[Dict] = None
+    ):
+        """
+        Initialize the SurvivorScorer.
+
+        Args:
+            prng_type (str): The PRNG type to use.
+            mod (int): The modulo for PRNG generation.
+            residue_mods (List[int], optional): Base residue mods.
+            config_dict (Optional[Dict], optional): A dictionary of parameters to
+                override hardcoded defaults (e.g., from an optimizer).
+        """
+        if config_dict is None:
+            config_dict = {}
+
+        self.prng_type = prng_type
+        self.mod = mod
+
+        # Use dict, then arg, then default
+        self.residue_mods = config_dict.get(
+            "residue_mods",
+            residue_mods or DEFAULT_RESIDUE_MODS
+        )
+
+        # --- ADDED: Store all tunable params from config ---
+        self.max_offset = config_dict.get("max_offset", DEFAULT_MAX_OFFSET)
+        self.temporal_window_size = config_dict.get("temporal_window_size", DEFAULT_TEMPORAL_WINDOW)
+        self.temporal_num_windows = config_dict.get("temporal_num_windows", DEFAULT_TEMPORAL_WINDOWS)
+        self.min_confidence_threshold = config_dict.get("min_confidence_threshold", DEFAULT_MIN_CONFIDENCE)
+        # --- End Added Section ---
+
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # Caching for residue coherence
+        self._residue_cache = {}
+
+        # Bind the correct PRNG function
+        if prng_type == 'java_lcg':
+            # CRITICAL AMD FIX: Force NumPy on AMD systems
+            force_numpy = HOST in ["rig-6600", "rig-6600b"]
+            
+            if force_numpy:
+                self.generate_sequence = java_lcg_sequence
+                self.xp = np
+                self.logger.info(f"🔧 AMD system ({HOST}) - using NumPy (GPU still used for PyTorch)")
+            elif GPU_AVAILABLE:
+                self.generate_sequence = java_lcg_sequence_gpu
+                self.xp = cp
+                self.logger.info(f"✅ SurvivorScorer initialized with GPU acceleration (CuPy)")
+            else:
+                self.generate_sequence = java_lcg_sequence
+                self.xp = np
+                self.logger.warning(f"ℹ️  SurvivorScorer initialized with CPU (NumPy)")
+        else:
+            raise ValueError(f"Unsupported PRNG type: {prng_type}")
+
+    def dual_sieve(self, seed: int, lottery_history: List[int],
+                      min_confidence: float = None,
+                      forward_offset: int = 0,
+                      reverse_offset: int = 0
+                      ) -> Dict:
+        """
+        Performs a dual-sieve (forward/reverse) match check for a seed.
+        """
+
+        if min_confidence is None:
+            min_confidence = self.min_confidence_threshold
+
+        history_len = len(lottery_history)
+        if history_len < 10:
+            return {'forward': 0, 'reverse': 0, 'bidirectional': 0, 'confidence': 0}
+
+        # Forward Sieve
+        n_forward = history_len - forward_offset
+        if n_forward < 1:
+            return {'forward': 0, 'reverse': 0, 'bidirectional': 0, 'confidence': 0}
+
+        forward_preds = self.generate_sequence(seed, n_forward, self.mod)
+        forward_history = self.xp.array(lottery_history[forward_offset:])
+
+        forward_matches = self.xp.sum(forward_preds == forward_history)
+        forward_rate = float(forward_matches / n_forward)
+
+        # Reverse Sieve
+        n_reverse = history_len - reverse_offset
+        if n_reverse < 1:
+            return {'forward': 0, 'reverse': 0, 'bidirectional': 0, 'confidence': 0}
+
+        reverse_preds = self.generate_sequence(seed, n_reverse, self.mod)
+        reverse_history = self.xp.array(list(reversed(lottery_history))[:n_reverse])
+
+        reverse_matches = self.xp.sum(reverse_preds == reverse_history)
+        reverse_rate = float(reverse_matches / n_reverse)
+
+        # Calculate confidence
+        confidence = math.sqrt(forward_rate * reverse_rate)
+
+        bidirectional = 1 if confidence >= min_confidence else 0
+        forward = 1 if forward_rate >= (min_confidence / 2) else 0
+        reverse = 1 if reverse_rate >= (min_confidence / 2) else 0
+
+        return {
+            'forward': int(forward),
+            'reverse': int(reverse),
+            'bidirectional': int(bidirectional),
+            'confidence': float(confidence)
+        }
+
+    def score_survivor(self, seed: int, lottery_history: List[int],
+                           max_offset: int = None,
+                           skip_min: int = 0,
+                           skip_max: int = 0,
+                           session_midday: bool = True,
+                           session_evening: bool = True
+                           ) -> Dict:
+        """
+        Calculates a simple score for a survivor based on offset matching.
+        This is a lightweight version, extract_ml_features is the heavy one.
+        """
+        if not lottery_history:
+            return {'score': 0, 'confidence': 0, 'best_offset': 0}
+
+        if max_offset is None:
+            max_offset = self.max_offset
+
+        best_score = 0
+        best_offset = 0
+
+        history_len = len(lottery_history)
+        history_gpu = self.xp.array(lottery_history)
+
+        # Calculate total predictions needed
+        n_preds = history_len + max_offset
+
+        try:
+            # Generate one sequence covering all offsets
+            preds = self.generate_sequence(seed, n_preds, self.mod)
+
+            for offset in range(-max_offset, max_offset + 1):
+                start_idx = max(0, offset)
+                end_idx = min(n_preds, history_len + offset)
+
+                pred_slice = preds[start_idx:end_idx]
+
+                hist_start = max(0, -offset)
+                hist_end = min(history_len, history_len - offset)
+
+                hist_slice = history_gpu[hist_start:hist_end]
+
+                # Ensure slices are equal length
+                match_len = min(len(pred_slice), len(hist_slice))
+                if match_len == 0:
+                    continue
+
+                matches = self.xp.sum(pred_slice[:match_len] == hist_slice[:match_len])
+                score = float(matches) / match_len
+
+                if score > best_score:
+                    best_score = score
+                    best_offset = offset
+
+        except Exception as e:
+            self.logger.error(f"Error scoring seed {seed}: {e}")
+            return {'score': 0, 'confidence': 0, 'best_offset': 0, 'error': str(e)}
+
+        return {
+            'score': float(best_score),
+            'confidence': float(best_score),
+            'best_offset': int(best_offset)
+        }
+
+    def _kl_divergence(self, p: np.ndarray, q: np.ndarray) -> float:
+        """Calculate KL divergence with smoothing."""
+        epsilon = 1e-10
+        p_smooth = p + epsilon
+        q_smooth = q + epsilon
+        p_norm = p_smooth / np.sum(p_smooth)
+        q_norm = q_smooth / np.sum(q_smooth)
+        return float(np.sum(p_norm * np.log(p_norm / q_norm)))
+
+    def _residue_coherence(self, seed: int, lottery_history: List[int]) -> Dict:
+        """
+        Calculate residue coherence features.
+        (Whitepaper Section 3: Forward Sieve)
+        """
+        if not lottery_history:
+            return {}
+
+        history_len = len(lottery_history)
+        preds = self.generate_sequence(seed, history_len, self.mod)
+
+        # Use CPU for statistical analysis
+        preds_cpu = cp.asnumpy(preds) if (GPU_AVAILABLE and self.xp == cp) else preds
+        history_cpu = np.array(lottery_history)
+
+        features = {}
+        for mod in self.residue_mods:
+            cache_key = (mod, tuple(lottery_history))
+            if cache_key in self._residue_cache:
+                hist_counts = self._residue_cache[cache_key]
+            else:
+                hist_residues = history_cpu % mod
+                hist_counts = np.bincount(hist_residues, minlength=mod)
+                self._residue_cache[cache_key] = hist_counts
+
+            pred_residues = preds_cpu % mod
+            pred_counts = np.bincount(pred_residues, minlength=mod)
+
+            # 1. Match Rate
+            matches = np.sum(pred_residues == (history_cpu % mod))
+            features[f'residue_{mod}_match_rate'] = float(matches / history_len)
+
+            # 2. Coherence (KL Divergence)
+            kl_div = self._kl_divergence(pred_counts, hist_counts)
+            features[f'residue_{mod}_coherence'] = float(kl_div)
+
+            # 3. KL Divergence (normalized)
+            max_kl = np.log(mod)
+            features[f'residue_{mod}_kl_divergence'] = float(kl_div / max_kl) if max_kl > 0 else 0.0
+
+        return features
+
+    def _skip_entropy(self, seed: int, lottery_history: List[int]) -> Dict:
+        """
+        Calculate skip entropy features.
+        (Whitepaper Section 4: Feature sets)
+        """
+        if len(lottery_history) < 2:
+            return {'skip_entropy': 0, 'skip_mean': 0, 'skip_std': 0, 'skip_range': 0}
+
+        preds = self.generate_sequence(seed, len(lottery_history), self.mod)
+        preds_cpu = cp.asnumpy(preds) if (GPU_AVAILABLE and self.xp == cp) else preds
+        history_cpu = np.array(lottery_history)
+
+        matches = np.where(preds_cpu == history_cpu)[0]
+
+        if len(matches) < 2:
+            return {'skip_entropy': 0, 'skip_mean': 0, 'skip_std': 0, 'skip_range': 0}
+
+        skips = np.diff(matches)
+
+        if len(skips) == 0:
+            return {'skip_entropy': 0, 'skip_mean': 0, 'skip_std': 0, 'skip_range': 0}
+
+        # Entropy of skip distribution
+        skip_counts = np.bincount(skips)
+        skip_probs = skip_counts[skip_counts > 0] / len(skips)
+        entropy_val = -np.sum(skip_probs * np.log2(skip_probs))
+
+        # Statistics of skips
+        mean_skip = np.mean(skips)
+        std_skip = np.std(skips)
+        range_skip = np.max(skips) - np.min(skips)
+
+        return {
+            'skip_entropy': float(entropy_val),
+            'skip_mean': float(mean_skip),
+            'skip_std': float(std_skip),
+            'skip_range': float(range_skip)
+        }
+
+    def _temporal_stability(self, seed: int, lottery_history: List[int]) -> Dict:
+        """
+        Analyzes the temporal stability of a seed's predictions over time.
+        Splits history into windows and checks score consistency.
+        """
+        window_size = self.temporal_window_size
+        num_windows = self.temporal_num_windows
+
+        if len(lottery_history) < window_size * num_windows:
+            # Not enough data, return neutral values
+            return {
+                'temp_mean': 0.0,
+                'temp_std': 0.0,
+                'temp_min': 0.0,
+                'temp_max': 0.0,
+                'temp_trend': 0.0
+            }
+
+        window_scores = []
+        for i in range(num_windows):
+            start = len(lottery_history) - (i + 1) * window_size
+            end = len(lottery_history) - i * window_size
+            history_window = lottery_history[start:end]
+
+            # Score this window
+            score_data = self.score_survivor(seed, history_window, max_offset=self.max_offset)
+            window_scores.append(score_data['score'])
+
+        # Reverse scores to be in chronological order
+        window_scores.reverse()
+
+        scores_arr = np.array(window_scores)
+
+        mean_score = np.mean(scores_arr)
+        std_score = np.std(scores_arr)
+        min_score = np.min(scores_arr)
+        max_score = np.max(scores_arr)
+
+        # Calculate trend (simple linear regression slope)
+        x = np.arange(num_windows)
+        A = np.vstack([x, np.ones(len(x))]).T
+        try:
+            slope, _ = np.linalg.lstsq(A, scores_arr, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            slope = 0.0
+
+        return {
+            'temp_mean': float(mean_score),
+            'temp_std': float(std_score),
+            'temp_min': float(min_score),
+            'temp_max': float(max_score),
+            'temp_trend': float(slope)
+        }
+
+    def _survivor_velocity(self, seed: int, lottery_history: List[int],
+                               forward_survivors: Optional[List[int]],
+                               reverse_survivors: Optional[List[int]]) -> Dict:
+        """
+        Calculate survivor velocity and acceleration.
+        (Whitepaper Section 4: Feature sets)
+        """
+        if len(lottery_history) < 200:
+            return {'survivor_velocity': 0.0, 'survivor_acceleration': 0.0}
+
+        history_t1 = lottery_history[-100:]
+        history_t0 = lottery_history[-200:-100]
+
+        score_t1 = self.score_survivor(seed, history_t1, max_offset=self.max_offset)['score']
+        score_t0 = self.score_survivor(seed, history_t0, max_offset=self.max_offset)['score']
+
+        velocity = score_t1 - score_t0
+        acceleration = 0.0  # Placeholder
+
+        return {
+            'survivor_velocity': float(velocity),
+            'survivor_acceleration': float(acceleration)
+        }
+
+    def _intersection_weights(self, seed: int,
+                                   forward_survivors: Optional[List[int]],
+                                   reverse_survivors: Optional[List[int]]) -> Dict:
+        """
+        Calculate intersection and overlap features.
+        (Whitepaper Section 4.1: Survivor overlap ratios)
+        """
+        if forward_survivors is None or reverse_survivors is None:
+            return {
+                'intersection_weight': 0.0,
+                'survivor_overlap_ratio': 0.0,
+                'is_forward_survivor': 0.0,
+                'is_reverse_survivor': 0.0,
+                'is_bidirectional': 0.0
+            }
+
+        is_f = 1.0 if seed in forward_survivors else 0.0
+        is_r = 1.0 if seed in reverse_survivors else 0.0
+        is_b = 1.0 if is_f and is_r else 0.0
+
+        # Simple count-based weight
+        weight = (is_f * 0.3) + (is_r * 0.3) + (is_b * 0.4)
+        overlap_ratio = 0.0
+
+        return {
+            'intersection_weight': float(weight),
+            'survivor_overlap_ratio': float(overlap_ratio),
+            'is_forward_survivor': is_f,
+            'is_reverse_survivor': is_r,
+            'is_bidirectional': is_b
+        }
+
+    # ============================================================================
+    # MAIN FEATURE EXTRACTOR
+    # ============================================================================
+
+    def extract_ml_features(self, seed: int, lottery_history: List[int],
+                                forward_survivors: Optional[List[int]] = None,
+                                reverse_survivors: Optional[List[int]] = None,
+                                window_metadata: Optional[Dict] = None
+                                ) -> Dict[str, float]:
+        """
+        Extract all 56 ML features for a single survivor seed.
+        """
+        if not lottery_history:
+            self.logger.warning(f"No lottery history for seed {seed}, returning empty features")
+            return {}
+
+        features = {}
+
+        # 1. Basic Scoring (5 features)
+        score_data = self.score_survivor(seed, lottery_history, max_offset=self.max_offset)
+        features['score'] = score_data['score']
+        features['confidence'] = score_data['confidence']
+        features['best_offset'] = float(score_data['best_offset'])
+        features['exact_matches'] = score_data['score'] * len(lottery_history)
+        features['total_predictions'] = float(len(lottery_history))
+
+        # 2. Residue Coherence (9 features)
+        features.update(self._residue_coherence(seed, lottery_history))
+
+        # 3. Skip Entropy (4 features)
+        features.update(self._skip_entropy(seed, lottery_history))
+
+        # 4. Temporal Stability (5 features)
+        features.update(self._temporal_stability(seed, lottery_history))
+
+        # 5. Survivor Velocity (2 features)
+        features.update(self._survivor_velocity(seed, lottery_history,
+                                                forward_survivors, reverse_survivors))
+
+        # 6. Intersection Weights (5 features)
+        features.update(self._intersection_weights(seed,
+                                                   forward_survivors, reverse_survivors))
+
+        # 7. Lane Agreement (3 features)
+        features['lane_agreement_8'] = 0.0
+        features['lane_agreement_125'] = 0.0
+        features['lane_consistency'] = 0.0
+
+        # 8. Statistical Features (12 features)
+        preds = self.generate_sequence(seed, len(lottery_history), self.mod)
+        preds_cpu = cp.asnumpy(preds) if (GPU_AVAILABLE and self.xp == cp) else preds
+        history_cpu = np.array(lottery_history)
+
+        features['pred_mean'] = float(np.mean(preds_cpu))
+        features['pred_std'] = float(np.std(preds_cpu))
+        features['pred_min'] = float(np.min(preds_cpu))
+        features['pred_max'] = float(np.max(preds_cpu))
+
+        features['actual_mean'] = float(np.mean(history_cpu))
+        features['actual_std'] = float(np.std(history_cpu))
+        features['actual_min'] = float(np.min(history_cpu))
+        features['actual_max'] = float(np.max(history_cpu))
+
+        residuals = preds_cpu - history_cpu
+        features['residual_mean'] = float(np.mean(residuals))
+        features['residual_std'] = float(np.std(residuals))
+        features['residual_abs_mean'] = float(np.mean(np.abs(residuals)))
+        features['forward_only_count'] = features.get('is_forward_survivor', 0.0)
+
+        # 9. Window Metadata (10 features)
+        if window_metadata:
+            features['window_size'] = float(window_metadata.get('window_size', 512))
+            features['window_offset'] = float(window_metadata.get('offset', 0))
+            features['skip_min'] = float(window_metadata.get('skip_min', 0))
+            features['skip_max'] = float(window_metadata.get('skip_max', 0))
+            features['skip_range'] = features['skip_max'] - features['skip_min']
+            features['session_midday'] = 1.0 if window_metadata.get('session_midday', True) else 0.0
+            features['session_evening'] = 1.0 if window_metadata.get('session_evening', True) else 0.0
+            features['trial_forward_count'] = float(window_metadata.get('forward_count', 0))
+            features['trial_reverse_count'] = float(window_metadata.get('reverse_count', 0))
+            features['trial_bidirectional_count'] = float(window_metadata.get('bidirectional_count', 0))
+        else:
+            features.update({
+                'window_size': 512.0, 'window_offset': 0.0,
+                'skip_min': 0.0, 'skip_max': 0.0, 'skip_range': 0.0,
+                'session_midday': 1.0, 'session_evening': 1.0,
+                'trial_forward_count': 0.0, 'trial_reverse_count': 0.0,
+                'trial_bidirectional_count': 0.0
+            })
+
+        return features
+
+    # ============================================================================
+    # BATCH SCORING (DUAL GPU)
+    # ============================================================================
+
+    def batch_score(self, seeds: List[int],
+                         lottery_history: List[int],
+                         use_dual_gpu: bool = False,
+                         window_metadata: Optional[List[Dict]] = None
+                         ) -> List[Dict]:
+        """
+        Scores a large batch of seeds, optionally using dual GPUs.
+        """
+        if not seeds:
+            return []
+
+        if window_metadata and len(window_metadata) != len(seeds):
+            self.logger.warning("Window metadata length mismatch, ignoring metadata.")
+            window_metadata = None
+
+        if use_dual_gpu and GPU_AVAILABLE and TORCH_AVAILABLE and torch.cuda.device_count() >= 2:
+            self.logger.info("Using DUAL GPU batch scoring (Threading)...")
+            results = self._batch_score_dual_gpu(seeds, lottery_history, window_metadata)
+        else:
+            if use_dual_gpu:
+                self.logger.warning("Dual GPU requested but not available.")
+            self.logger.info("Using SINGLE GPU batch scoring...")
+            results = self._batch_score_on_gpu(0, seeds, lottery_history, window_metadata)
+
+        return results
+
+    def _batch_score_on_gpu(self, gpu_id: int,
+                                 seeds: List[int],
+                                 lottery_history: List[int],
+                                 window_metadata: Optional[List[Dict]] = None
+                                 ) -> List[Dict]:
+        """Worker function that runs on a single GPU."""
+        all_results = []
+        
+        for i, seed in enumerate(seeds):
+            meta = window_metadata[i] if window_metadata else None
+            features = self.extract_ml_features(seed, lottery_history, window_metadata=meta)
+            all_results.append({
+                'seed': seed,
+                'features': features,
+                'score': features.get('score', 0.0)
+            })
+
+        return all_results
+
+    def _score_gpu_shard(self, gpu_id: int,
+                             seeds_shard: List[int],
+                             lottery_history: List[int],
+                             metadata_shard: Optional[List[Dict]] = None
+                             ) -> List[Dict]:
+        """Internal helper for ThreadPoolExecutor."""
+        try:
+            if GPU_AVAILABLE and self.xp == cp:
+                cp.cuda.Device(gpu_id).use()
+                self.logger.info(f"Thread worker: Switched to GPU {gpu_id}")
+
+            return self._batch_score_on_gpu(
+                gpu_id=gpu_id,
+                seeds=seeds_shard,
+                lottery_history=lottery_history,
+                window_metadata=metadata_shard
+            )
+        except Exception as e:
+            self.logger.error(f"FATAL ERROR in thread for GPU {gpu_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return [{'seed': s, 'features': {}, 'score': 0.0, 'error': str(e)} for s in seeds_shard]
+
+    def _batch_score_dual_gpu(self, seeds: List[int],
+                                   lottery_history: List[int],
+                                   window_metadata: Optional[List[Dict]] = None
+                                   ) -> List[Dict]:
+        """Performs batch scoring using two GPUs via THREADING."""
+        midpoint = len(seeds) // 2
+        seeds_gpu0 = seeds[:midpoint]
+        seeds_gpu1 = seeds[midpoint:]
+
+        meta_gpu0 = window_metadata[:midpoint] if window_metadata else None
+        meta_gpu1 = window_metadata[midpoint:] if window_metadata else None
+
+        self.logger.info(f"🚀 Using DUAL GPU mode (ThreadPoolExecutor) for {len(seeds)} seeds")
+
+        results_gpu0 = []
+        results_gpu1 = []
+        timeout = 1800
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future0 = executor.submit(self._score_gpu_shard, 0, seeds_gpu0, lottery_history, meta_gpu0)
+                future1 = executor.submit(self._score_gpu_shard, 1, seeds_gpu1, lottery_history, meta_gpu1)
+
+                results_gpu0 = future0.result(timeout=timeout)
+                results_gpu1 = future1.result(timeout=timeout)
+
+        except concurrent.futures.TimeoutError:
+            self.logger.error(f"❌ DUAL GPU SCORING TIMED OUT")
+            if not results_gpu0:
+                results_gpu0 = [{'seed': s, 'features': {}, 'score': 0.0, 'error': 'Timeout'} for s in seeds_gpu0]
+            if not results_gpu1:
+                results_gpu1 = [{'seed': s, 'features': {}, 'score': 0.0, 'error': 'Timeout'} for s in seeds_gpu1]
+
+        return results_gpu0 + results_gpu1
+
+# ============================================================================
+# CLI INTERFACE
+# ============================================================================
+
+def main():
+    """CLI for testing the scorer"""
+    parser = argparse.ArgumentParser(description='SurvivorScorer CLI Test')
+    
+    # --- FIXED: ADDED ALL MISSING ARGUMENTS ---
+    parser.add_argument('--count', type=int, default=1000, help='Number of seeds for batch test')
+    parser.add_argument('--seed', type=int, default=12345, help='Test seed')
+    parser.add_argument('--history-file', type=str, default='synthetic_lottery.json', help='Lottery history JSON')
+    parser.add_argument('--test-batch', action='store_true', help='Run a batch test')
+    parser.add_argument('--dual-gpu', action='store_true', help='Use dual GPU for batch test')
+    # --- END FIX ---
+
+    args = parser.parse_args()
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 0
+
+    try:
+        with open(args.history_file, 'r') as f:
+            data = json.load(f)
+            if isinstance(data, list) and len(data) > 0:
+                if 'draw' in data[0]:
+                    lottery_history = [d['draw'] for d in data]
+                elif 'number' in data[0]:
+                    lottery_history = [d['number'] for d in data]
+                else:
+                    lottery_history = data
+            else:
+                lottery_history = data
+
+        print(f"Loaded {len(lottery_history)} lottery draws from {args.history_file}")
+
+    except Exception as e:
+        print(f"Error loading {args.history_file}: {e}")
+        return 1
+
+    # Initialize scorer
+    scorer = SurvivorScorer(prng_type='java_lcg', mod=1000)
+
+    if args.test_batch:
+        print(f"\n--- Testing Batch Score ---")
+        print(f"Seeds: {args.count}")
+        print(f"Dual GPU: {args.dual_gpu}")
+
+        test_seeds = list(range(args.count))
+
+        start_time = time.time()
+        results = scorer.batch_score(
+            test_seeds,
+            lottery_history,
+            use_dual_gpu=args.dual_gpu
+        )
+        end_time = time.time()
+
+        print(f"\nBatch scoring complete in {end_time - start_time:.2f}s")
+        print(f"Results: {len(results)}")
+        if results:
+            print("Sample result:")
+            print(json.dumps(results[0], indent=2, default=str))
+
+            errors = [r for r in results if 'error' in r]
+            if errors:
+                print(f"\nWARNING: {len(errors)} errors found in batch")
+                print(f"Sample error: {errors[0]['error']}")
+
+    else:
+        print(f"\n--- Testing Single Seed ---")
+        print(f"Seed: {args.seed}")
+
+        start_time = time.time()
+        features = scorer.extract_ml_features(args.seed, lottery_history)
+        end_time = time.time()
+
+        print(f"Feature extraction complete in {end_time - start_time:.4f}s")
+        print(f"Total features: {len(features)}")
+        print("\nSample features:")
+        sample_keys = list(features.keys())[:5]
+        for key in sample_keys:
+            print(f"  {key}: {features[key]}")
+
+        print("\n...")
+        sample_keys = list(features.keys())[-5:]
+        for key in sample_keys:
+            print(f"  {key}: {features[key]}")
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

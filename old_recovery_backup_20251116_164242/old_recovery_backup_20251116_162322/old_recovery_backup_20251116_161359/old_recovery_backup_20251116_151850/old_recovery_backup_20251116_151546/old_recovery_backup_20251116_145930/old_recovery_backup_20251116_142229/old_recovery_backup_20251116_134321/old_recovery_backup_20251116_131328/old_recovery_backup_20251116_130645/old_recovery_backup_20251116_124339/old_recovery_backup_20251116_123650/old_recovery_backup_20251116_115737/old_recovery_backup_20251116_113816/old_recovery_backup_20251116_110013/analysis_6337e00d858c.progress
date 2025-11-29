@@ -1,0 +1,109 @@
+{
+  "analysis_id": "analysis_6337e00d858c",
+  "total_jobs": 3,
+  "completed_jobs": {
+    "scorer_trial_2": {
+      "status": "error",
+      "trial_id": 2,
+      "error": "'list' object has no attribute 'tolist'"
+    }
+  },
+  "failed_jobs": {},
+  "pending_jobs": [
+    {
+      "job": {
+        "job_id": "scorer_trial_0",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_0",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/bidirectional_survivors.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "0",
+            "{\"residue_mod_1\": 11, \"residue_mod_2\": 123, \"residue_mod_3\": 1372, \"max_offset\": 10, \"temporal_window_size\": 50, \"temporal_num_windows\": 10, \"min_confidence_threshold\": 0.29617128917943947, \"hidden_layers\": \"128_64\", \"dropout\": 0.2715562683332131, \"learning_rate\": 0.00013912142955787004, \"batch_size\": 256, \"optuna_trial_number\": 0}",
+            "--optuna-study-name",
+            "scorer_meta_opt_1763272691",
+            "--optuna-study-db",
+            "sqlite:///./optuna_studies/scorer_meta_opt_1763272691.db"
+          ],
+          "expected_output": "scorer_trial_results/trial_0000.json",
+          "timeout": 3600
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/torch/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 0,
+        "worker_id": "localhost_gpu0"
+      }
+    },
+    {
+      "job": {
+        "job_id": "scorer_trial_1",
+        "prng_type": "script",
+        "mapping_type": "script",
+        "seeds": [],
+        "samples": 0,
+        "lmax": 0,
+        "grid_size": 0,
+        "mining_mode": false,
+        "search_type": "script",
+        "target_draw": null,
+        "payload": {
+          "job_id": "scorer_trial_1",
+          "script": "scorer_trial_worker.py",
+          "args": [
+            "/home/michael/distributed_prng_analysis/bidirectional_survivors.json",
+            "/home/michael/distributed_prng_analysis/train_history.json",
+            "/home/michael/distributed_prng_analysis/holdout_history.json",
+            "1",
+            "{\"residue_mod_1\": 8, \"residue_mod_2\": 143, \"residue_mod_3\": 740, \"max_offset\": 14, \"temporal_window_size\": 200, \"temporal_num_windows\": 10, \"min_confidence_threshold\": 0.051587519098447485, \"hidden_layers\": \"128_64\", \"dropout\": 0.4253615461678941, \"learning_rate\": 0.0024942643852468565, \"batch_size\": 128, \"optuna_trial_number\": 1}",
+            "--optuna-study-name",
+            "scorer_meta_opt_1763272691",
+            "--optuna-study-db",
+            "sqlite:///./optuna_studies/scorer_meta_opt_1763272691.db"
+          ],
+          "expected_output": "scorer_trial_results/trial_0001.json",
+          "timeout": 3600
+        },
+        "analysis_type": "script",
+        "attempt": 0
+      },
+      "worker": {
+        "node": {
+          "hostname": "localhost",
+          "username": "michael",
+          "gpu_count": 2,
+          "gpu_type": "RTX 3080 Ti",
+          "python_env": "/home/michael/venvs/torch/bin/python",
+          "script_path": "/home/michael/distributed_prng_analysis",
+          "password": null
+        },
+        "gpu_id": 1,
+        "worker_id": "localhost_gpu1"
+      }
+    }
+  ],
+  "retry_count": {},
+  "start_time": 1763272788.045931,
+  "last_update": 1763272854.6022694
+}

@@ -1,0 +1,14 @@
+{
+  "window_size": 108,
+  "offset": 8,
+  "skip_min": 0,
+  "skip_max": 129,
+  "sessions": [
+    "midday",
+    "evening"
+  ],
+  "prng_type": "java_lcg",
+  "test_both_modes": false,
+  "seed_count": 1000000,
+  "optimization_score": 505544.0
+}

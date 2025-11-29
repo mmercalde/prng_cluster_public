@@ -1,0 +1,11 @@
+    'xorshift128_reverse': {
+        'kernel_source': XORSHIFT128_REVERSE_KERNEL,
+        'kernel_name': 'xorshift128_reverse_sieve',
+        'description': 'xorshift128 reverse sieve - fixed skip backward validation'
+    },
+    'xorshift128_hybrid_reverse': {
+        'kernel_source': XORSHIFT128_HYBRID_REVERSE_KERNEL,
+        'kernel_name': 'xorshift128_hybrid_reverse_sieve',
+        'description': 'xorshift128 hybrid reverse - variable skip backward validation',
+        'variable_skip': True
+    },

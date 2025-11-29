@@ -1,0 +1,11 @@
+    'mt19937_hybrid': {
+        'kernel_source': MT19937_HYBRID_KERNEL,
+        'kernel_name': 'mt19937_hybrid_multi_strategy_sieve',
+        'cpu_reference': mt19937_cpu_simple,
+        'default_params': {},
+        'description': 'MT19937 with hybrid variable skip detection (multi-strategy)',
+        'seed_type': 'uint32',
+        'state_size': 2496,  # 624 * 4 bytes
+        'variable_skip': True,
+        'multi_strategy': True,
+    },

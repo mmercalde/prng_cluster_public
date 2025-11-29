@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""
+GPU Residue Sieve - Main Engine
+Flexible, modular, standalone sieve for PRNG seed discovery
+
+Usage: python3 sieve_filter.py --job-file job.json --gpu-id 0
+
+Compatible with coordinator.py and unified_system.py
+"""
+
+import argparse
+import json
+import time
+import os
+import sys
+from typing import List, Dict, Any, Optional, Tuple
+
+# ROCm environment setup - MUST BE FIRST
+import socket
+HOST = socket.gethostname()
+if HOST in ["rig-6600", "rig-6600b"]:
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+os.environ.setdefault("ROCM_PATH", "/opt/rocm")
+os.environ.setdefault("HIP_PATH", "/opt/rocm")
+
+# Import PRNG registry
+try:
+    from prng_registry import KERNEL_REGISTRY, get_kernel_info, list_available_prngs
+except ImportError:
+    print("ERROR: prng_registry.py not found - must be in same directory", file=sys.stderr)
+    sys.exit(1)
+
+# GPU backend
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    print("ERROR: CuPy not available - GPU required for sieve", file=sys.stderr)
+    sys.exit(1)
+
+import numpy as np
+
+
+# ============================================================================
+# DATASET LOADING
+# ============================================================================
+
+def load_draws_from_daily3(
+    path: str,
+    window_size: int = 30,
+    sessions: Optional[List[str]] = None
+) -> List[int]:
+    """Load draws from daily3.json format"""
+    with open(path, 'r') as f:
+        data = json.load(f)
+    
+    # Filter by session
+    if sessions:
+        data = [entry for entry in data if entry.get('session') in sessions]
+    
+    # Sort chronologically by date then session
+    # Don't sort - data is already chronological
+    
+    draws = [int(entry.get("full_state", entry["draw"])) for entry in data[-window_size:]]
+    
+    return draws
+
+
+# ============================================================================
+# GPU SIEVE ENGINE
+# ============================================================================
+
+class GPUSieve:
+    """GPU-accelerated flexible residue sieve"""
+    
+    def __init__(self, gpu_id: int = 0):
+        if not GPU_AVAILABLE:
+            raise RuntimeError("CuPy not available")
+        
+        self.gpu_id = gpu_id
+        self.device = cp.cuda.Device(gpu_id)
+        self.compiled_kernels = {}
+        
+    def _get_kernel(self, prng_family: str, custom_params: Optional[Dict] = None):
+        """Get or compile kernel for PRNG family"""
+        cache_key = f"{prng_family}_{hash(frozenset(custom_params.items()) if custom_params else 0)}"
+        
+        if cache_key in self.compiled_kernels:
+            return self.compiled_kernels[cache_key]
+        
+        config = get_kernel_info(prng_family)
+        kernel = cp.RawKernel(config['kernel_source'], config['kernel_name'])
+        self.compiled_kernels[cache_key] = (kernel, config)
+        
+        return kernel, config
+    
+    def run_sieve(
+        self,
+        prng_family: str,
+        seed_start: int,
+        seed_end: int,
+        residues: List[int],
+        skip_range: Tuple[int, int] = (0, 16),
+        min_match_threshold: float = 0.5,
+        custom_params: Optional[Dict] = None,
+        chunk_size: int = 1_000_000,
+        offset: int = 0
+
+    def run_hybrid_sieve(
+        self,
+        prng_family: str,
+        seed_start: int,
+        seed_end: int,
+        residues: List[int],
+        strategies: List[Dict[str, Any]],
+        min_match_threshold: float = 0.5,
+        chunk_size: int = 100_000,
+        offset: int = 0
+    ) -> Dict[str, Any]:
