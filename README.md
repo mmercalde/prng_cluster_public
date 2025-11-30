@@ -9,7 +9,7 @@ Complete README.md (Markdown Format)
 
 This repository contains a fully distributed analysis system designed to:
 
-🧠 Reverse-engineer PRNG behavior used in lottery draw simulations  
+🧠 Reverse-engineer PRNG behavior.  
 ⚙️ Brute-force and sieve candidate seeds using GPU-accelerated forward/reverse filtering  
 📊 Score survivors using statistical and ML-based probability matching  
 🧪 Optimize parameters using Optuna (Bayesian TPE Meta-Optimizer, Step 2.5)  
