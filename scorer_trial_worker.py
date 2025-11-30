@@ -48,18 +48,32 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 
 # =============================================================================
-# GPU ID INJECTION - Must be FIRST before any CUDA imports
+# GPU ID INJECTION - Must be FIRST before any CUDA/ROCm imports
 # =============================================================================
 gpu_id = None
+hostname = socket.gethostname()
+
+# Extract gpu_id from CLI args
 for i, arg in enumerate(sys.argv):
-    if arg == '--gpu-id' and i + 1 < len(sys.argv):
-        gpu_id = sys.argv[i + 1]
+    if arg in ("--gpu-id", "--gpu", "-g") and i + 1 < len(sys.argv):
+        gpu_id = int(sys.argv[i + 1])
         break
 
-if gpu_id is not None and os.environ.get('CUDA_VISIBLE_DEVICES') is None:
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    os.environ['HIP_VISIBLE_DEVICES'] = str(gpu_id)
-    print(f"[Worker Init] {socket.gethostname()} bound to GPU {gpu_id} via CUDA_VISIBLE_DEVICES={gpu_id}")
+if gpu_id is not None:
+    # AMD ROCm nodes: rig-6600, rig-6600b, rig-6600xt
+    if any(x in hostname for x in ["rig-6600", "rig-6600b", "rig-6600xt"]):
+        # On ROCm, ALWAYS set HIP from gpu_id, independent of CUDA env
+        os.environ["HIP_VISIBLE_DEVICES"] = str(gpu_id)
+        if os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        print(f"[Worker Init] {hostname} (ROCm) bound to GPU {gpu_id} via HIP_VISIBLE_DEVICES={gpu_id}")
+    else:
+        # CUDA host (Zeus): only set CUDA if parent didn't already isolate it
+        if os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            print(f"[Worker Init] {hostname} (CUDA) bound to GPU {gpu_id} via CUDA_VISIBLE_DEVICES={gpu_id}")
+        else:
+            print(f"[Worker Init] {hostname} inheriting parent mapping: CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, HIP_VISIBLE_DEVICES={os.environ.get('HIP_VISIBLE_DEVICES')}")
 
 # =============================================================================
 # Now safe to import CUDA-dependent modules

@@ -291,7 +291,7 @@ def execute_analysis_job(job_data: Dict[str, Any], args) -> Dict[str, Any]:
                 cmd = f"python3 reverse_sieve_filter.py --job-file {job_file} --gpu-id {args.gpu_id}"
                 proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
                 output = proc.stdout
-                stderr = proc.stderr
+                # stderr assigned via communicate()
                 returncode = proc.returncode
 
                 # Parse result from last non-empty line
@@ -336,23 +336,48 @@ def execute_analysis_job(job_data: Dict[str, Any], args) -> Dict[str, Any]:
                         if '--gpu-id' not in script_args and args.gpu_id is not None:
                             cmd.extend(['--gpu-id', str(args.gpu_id)])
 
-                        proc = subprocess.run(
+                        
+                        # Inject GPU env directly to ensure scorer_trial_worker gets it
+                        proc_env = os.environ.copy()
+                        if args.gpu_id is not None:
+                            hostname = socket.gethostname()
+                            # ROCm remotes: ALWAYS set HIP (required for AMD GPUs)
+                            if hostname in ["rig-6600", "rig-6600b", "rig-6600xt"]:
+                                proc_env['HIP_VISIBLE_DEVICES'] = str(args.gpu_id)
+                                proc_env['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
+                            else:
+                                # Localhost (Zeus): only set if parent didn't already isolate
+                                if os.environ.get('CUDA_VISIBLE_DEVICES') is None:
+                                    proc_env['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
+                                # else: inherit parent's CUDA_VISIBLE_DEVICES
+                        print(f'[DEBUG distributed_worker] Passing env: CUDA={proc_env.get("CUDA_VISIBLE_DEVICES")}, HIP={proc_env.get("HIP_VISIBLE_DEVICES")}, gpu_id={args.gpu_id}')
+                        
+                        proc = subprocess.Popen(
                             cmd,
-                            capture_output=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
                             text=True,
-                            timeout=timeout,
                             cwd=os.getcwd(),
+                            env=proc_env,
+                            start_new_session=True,  # CRITICAL: isolates GPU context for CUDA
                         )
 
+                        try:
+                            stdout, stderr = proc.communicate(timeout=timeout)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                            raise
+
                         # Parse JSON result from last non-empty line of stdout
-                        output_lines = [l for l in proc.stdout.splitlines() if l.strip()]
+                        output_lines = [l for l in stdout.splitlines() if l.strip()]
                         if output_lines:
                             return json.loads(output_lines[-1])
                         else:
                             return {
                                 'job_id': job_data.get('job_id', 'unknown'),
                                 'success': False,
-                                'error': f"No output from script. stderr: {proc.stderr[-500:] if proc.stderr else 'none'}"
+                                'error': f"No output from script. stderr: {stderr[-500:] if stderr else 'none'}"
                             }
                     except subprocess.TimeoutExpired:
                         return {

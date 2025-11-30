@@ -6,7 +6,7 @@
       "gpu_count": 2,
       "gpu_type": "RTX 3080 Ti",
       "script_path": "/home/michael/distributed_prng_analysis",
-      "python_env": "/home/michael/venvs/tf/bin/python"
+      "python_env": "/home/michael/venvs/torch/bin/python"
     },
     {
       "hostname": "192.168.3.120",

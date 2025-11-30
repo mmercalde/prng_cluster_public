@@ -180,6 +180,8 @@ class MultiGPUCoordinator:
     def _is_rocm(self, node: WorkerNode) -> bool:
         """Check if node uses ROCm (AMD GPU) - FROM WORKING VERSION"""
         gt = (node.gpu_type or "").lower()
+        # DEBUG: Print full SSH command
+
         return ("rx" in gt) or ("amd" in gt) or ("rocm" in gt)
     # adaptive timeout calculator (doubles per attempt, cap 1200s)
     def _effective_timeout(self, base: int, attempt: int, hostname: str) -> int:
@@ -240,6 +242,10 @@ class MultiGPUCoordinator:
             f"else {env_prefix}{cmd_body}; fi"
         )
         # Run, then cleanup job file only (results collected via PULL)
+        # DEBUG: Print full SSH command
+
+        # DEBUG: Print full SSH command
+        
         return (
             f"cd '{node.script_path}' && "
             f"cat > {payload_filename} <<'JSON'\n{j}\nJSON\n"
