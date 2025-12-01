@@ -48,6 +48,35 @@ from connection_manager import SSHConnectionPool
 import json
 import sys
 import subprocess
+
+
+# Suppress noisy paramiko logging
+import logging
+logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+# Import progress writer for monitoring
+try:
+    from progress_display import ProgressWriter
+    PROGRESS_WRITER_AVAILABLE = True
+except ImportError:
+    PROGRESS_WRITER_AVAILABLE = False
+
+
+# Import progress display module
+try:
+    from progress_display import ClusterProgress
+    PROGRESS_DISPLAY_AVAILABLE = True
+except ImportError:
+    PROGRESS_DISPLAY_AVAILABLE = False
+
+
+# Helper function to get actual seed count from job.seeds
+def get_seed_count(seeds):
+    """Get actual seed count - handles both [start, end] range and list of seeds"""
+    if isinstance(seeds, list) and len(seeds) == 2 and isinstance(seeds[0], int) and isinstance(seeds[1], int) and seeds[1] > seeds[0]:
+        return seeds[1] - seeds[0]
+    return len(seeds) if seeds else 0
+
 import time
 import argparse
 import itertools
@@ -895,11 +924,11 @@ class MultiGPUCoordinator:
                 result = self.execute_remote_job(job, worker)
 
             # Track performance for GPU optimization
-            if result.success and job.search_type != 'residue_sieve' and hasattr(job, 'seeds') and len(job.seeds) > 0:
+            if result.success and job.search_type != 'residue_sieve' and hasattr(job, 'seeds') and get_seed_count(job.seeds) > 0:
                 self.gpu_optimizer.update_performance(
                     worker.node.gpu_type,
                     worker.node.hostname,
-                    len(job.seeds),
+                    get_seed_count(job.seeds),
                     result.runtime
                 )
 
@@ -1030,10 +1059,10 @@ class MultiGPUCoordinator:
                 job_queue.complete_job(job_spec, result)
                 # Visual feedback (PRESERVED)
                 if result.success:
-                    seeds_per_sec = len(job.seeds) / result.runtime if result.runtime > 0 else 0
+                    seeds_per_sec = get_seed_count(job.seeds) / result.runtime if result.runtime > 0 else 0
                     gpu_info = f"{worker.node.gpu_type}@{worker.node.hostname}"
                     scaling_factor = self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)["scaling_factor"]
-                    print(f"âœ… Dynamic | {gpu_info} | {len(job.seeds):,} seeds | {result.runtime:.1f}s | {seeds_per_sec:.0f} seeds/sec | [{scaling_factor:.1f}x scaling]")
+                    print(f"âœ… Dynamic | {gpu_info} | {get_seed_count(job.seeds):,} seeds | {result.runtime:.1f}s | {seeds_per_sec:.0f} seeds/sec | [{scaling_factor:.1f}x scaling]")
                 else:
                     print(f"âŒ Dynamic | {worker.node.gpu_type}@{worker.node.hostname} | FAILED: {result.error[:100] if result.error else 'Unknown error'}")
                 # Check if all work is done
@@ -1124,6 +1153,16 @@ class MultiGPUCoordinator:
                                       total_seeds: int, samples: int, lmax: int,
                                       grid_size: int) -> Dict[str, Any]:
         """Execute with true parallel dynamic distribution - no sequential waiting"""
+        # Initialize progress writer for external monitoring
+        if PROGRESS_WRITER_AVAILABLE:
+            self._progress_writer = ProgressWriter("Distributed GPU Processing", total_jobs=100, total_seeds=total_seeds)
+            self._progress_writer.register_node("localhost", "RTX 3080 Ti", 2)
+            for node in self.nodes:
+                if node.hostname != "localhost":
+                    self._progress_writer.register_node(node.hostname, node.gpu_type, node.gpu_count)
+        else:
+            self._progress_writer = None
+        
         print("ðŸš€ True Parallel Dynamic Distribution Mode")
         print(f"Target: {total_seeds:,} seeds across {len(self.gpu_workers or self.create_gpu_workers())} GPUs")
         self.current_target_file = target_file
@@ -1162,31 +1201,41 @@ class MultiGPUCoordinator:
 
             # Put script jobs directly into work queue
             for job_spec, worker in script_jobs:
-                # Extract trial_id from job_id (e.g., "scorer_trial_7" -> "7")
-                trial_id = job_spec.job_id.split('_')[-1]
                 original_args = job_spec.payload.get('args')
-
-                # Convert JobSpec to dict format for work queue with shortened args
-                # SSH command length fix: pass --params-file instead of inline JSON (834→450 chars)
-                work_item = {
-                    'job_id': job_spec.job_id,
-                    'analysis_type': 'script',
-                    'script': job_spec.payload.get('script'),
-                    'args': [
-                        original_args[0],  # survivors file
-                        original_args[1],  # train_history file
-                        original_args[2],  # holdout_history file
-                        trial_id,          # trial_id only (not full JSON!)
-                        '--params-file',   # NEW: read params from file
-                        'scorer_jobs.json',
-                        '--optuna-study-name',
-                        original_args[6],  # study name
-                        '--optuna-study-db',
-                        original_args[8]   # study db path
-                    ],
-                    'expected_output': job_spec.payload.get('expected_output'),
-                    'timeout': job_spec.payload.get('timeout', 3600)
-                }
+                
+                # Check job type and format args accordingly
+                if 'scorer_trial' in job_spec.job_id and len(original_args) >= 9:
+                    # Step 2.5: Scorer Meta-Optimizer jobs - reformat args
+                    trial_id = job_spec.job_id.split('_')[-1]
+                    work_item = {
+                        'job_id': job_spec.job_id,
+                        'analysis_type': 'script',
+                        'script': job_spec.payload.get('script'),
+                        'args': [
+                            original_args[0],  # survivors file
+                            original_args[1],  # train_history file
+                            original_args[2],  # holdout_history file
+                            trial_id,          # trial_id only (not full JSON!)
+                            '--params-file',   # NEW: read params from file
+                            'scorer_jobs.json',
+                            '--optuna-study-name',
+                            original_args[6],  # study name
+                            '--optuna-study-db',
+                            original_args[8]   # study db path
+                        ],
+                        'expected_output': job_spec.payload.get('expected_output'),
+                        'timeout': job_spec.payload.get('timeout', 3600)
+                    }
+                else:
+                    # Step 3 and other jobs - pass args as-is
+                    work_item = {
+                        'job_id': job_spec.job_id,
+                        'analysis_type': 'script',
+                        'script': job_spec.payload.get('script'),
+                        'args': original_args,
+                        'expected_output': job_spec.payload.get('expected_output'),
+                        'timeout': job_spec.payload.get('timeout', 3600)
+                    }
                 work_queue.put(work_item)
         else:
             # Original seed-based job creation
@@ -1307,8 +1356,9 @@ class MultiGPUCoordinator:
                         jobs_completed += 1
                         # Visual feedback
                         if result.success:
-                            print(f"✅ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
-                                  f"{job.job_id} | {result.runtime:.1f}s")
+#                             print(f"✅ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
+                            pass  # Script job success - no output needed
+#                                   f"{job.job_id} | {result.runtime:.1f}s")
                         else:
                             print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname} | "
                                   f"{job.job_id} | FAILED: {result.error[:80] if result.error else 'Unknown error'}")
@@ -1365,15 +1415,23 @@ class MultiGPUCoordinator:
                         my_results.append(result)
                         jobs_completed += 1
                         if result.success:
-                            sps = len(job.seeds) / result.runtime if result.runtime > 0 else 0
+                            sps = get_seed_count(job.seeds) / result.runtime if result.runtime > 0 else 0
                             profile = self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)
                             scaling = profile["scaling_factor"]
-                            print(f"✅ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
-                                  f"{len(job.seeds):,} seeds | {result.runtime:.1f}s | {sps:.0f} seeds/sec | [{scaling:.1f}x scaling]")
+                            # Progress display (ClusterProgress handles this if available)
+                            if not hasattr(self, '_cluster_progress') or self._cluster_progress is None:
+                                print(f"✅ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
+                                      f"{get_seed_count(job.seeds):,} seeds | {result.runtime:.1f}s | {sps:.0f} seeds/sec | [{scaling:.1f}x scaling]")
+                                # Log to progress writer for external monitor
+                                if self._progress_writer:
+                                    self._progress_writer.log_gpu_result(
+                                        worker.node.hostname, worker.gpu_id, worker.node.gpu_type,
+                                        get_seed_count(job.seeds), result.runtime, success=True
+                                    )
                             # Update performance tracking
                             self.gpu_optimizer.update_performance(
                                 worker.node.gpu_type, worker.node.hostname,
-                                len(job.seeds), result.runtime
+                                get_seed_count(job.seeds), result.runtime
                             )
                         else:
                             print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname} | "
@@ -1390,9 +1448,9 @@ class MultiGPUCoordinator:
                     work_queue.task_done()
 
             # Return results for this worker
-            print(f"DEBUG: Worker {worker.node.hostname}(gpu{worker.gpu_id}) putting {len(my_results)} results in queue")
+#             print(f"DEBUG: Worker {worker.node.hostname}(gpu{worker.gpu_id}) putting {len(my_results)} results in queue")
             results_queue.put(my_results)
-            print(f"DEBUG: Worker {worker.node.hostname}(gpu{worker.gpu_id}) - put complete")
+#             print(f"DEBUG: Worker {worker.node.hostname}(gpu{worker.gpu_id}) - put complete")
             if jobs_completed > 0:
                 print(f"🏁 {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) completed {jobs_completed} jobs")
         # Launch all workers in parallel - NO SEQUENTIAL WAITING
@@ -1403,7 +1461,7 @@ class MultiGPUCoordinator:
             thread = threading.Thread(target=worker_loop, args=(worker,))
             thread.daemon = False # Wait for all threads to complete properly
             thread.start()
-            threads.append(thread)
+#                 #             threads.append(thread)
         # Monitor progress without blocking
         completed_chunks = 0
         while completed_chunks < total_chunks:
@@ -1412,6 +1470,9 @@ class MultiGPUCoordinator:
             if completed_chunks > 0:
                 progress_pct = (completed_chunks / total_chunks) * 100
                 print(f"ðŸ”„ Parallel Progress: {progress_pct:.1f}% | {completed_chunks}/{total_chunks} chunks completed")
+                # Update progress writer for external monitor
+                if self._progress_writer:
+                    self._progress_writer.update_progress(jobs_done=completed_chunks, chunks_total=total_chunks)
         print("All work distributed! Waiting for final workers to finish...")
         # Wait for all work to be marked as done
         work_queue.join()
@@ -1424,22 +1485,22 @@ class MultiGPUCoordinator:
 
         # Collect all results - IMMEDIATE, NO SEQUENTIAL WAITING
         all_results = []
-        print(f"DEBUG: Starting collection, queue size: {results_queue.qsize()}")
+#         print(f"DEBUG: Starting collection, queue size: {results_queue.qsize()}")
         collected_count = 0
         while not results_queue.empty():
             try:
                 worker_results = results_queue.get_nowait()
                 all_results.extend(worker_results)
                 collected_count += 1
-                print(f"DEBUG: Collected batch {collected_count}, total results now: {len(all_results)}")
+#                 print(f"DEBUG: Collected batch {collected_count}, total results now: {len(all_results)}")
             except queue.Empty:
                 break
-        print(f"DEBUG: Collection complete, total results: {len(all_results)}")
+#         print(f"DEBUG: Collection complete, total results: {len(all_results)}")
 
         # Debug: Show failed job info
         failed_jobs = [r for r in all_results if not r.success]
         if failed_jobs:
-            print(f"\nDEBUG: {len(failed_jobs)} FAILED jobs found:")
+#             print(f"\nDEBUG: {len(failed_jobs)} FAILED jobs found:")
             for i, job in enumerate(failed_jobs[:3]):  # Show first 3
                 print(f"  Failed job {i+1}:")
                 print(f"    Error: {getattr(job, 'error', 'No error message')}")
@@ -1448,6 +1509,10 @@ class MultiGPUCoordinator:
         # Compile results
         successful_results = [r for r in all_results if r.success]
         failed_results = [r for r in all_results if not r.success]
+        # Finish progress writer
+        if self._progress_writer:
+            self._progress_writer.finish()
+        
         print(f"\n{'='*60}")
         print("PARALLEL DYNAMIC DISTRIBUTION COMPLETED")
         print(f"{'='*60}")
@@ -1749,7 +1814,7 @@ class MultiGPUCoordinator:
                                 else:
                                     print(f"âœ… {worker.node.hostname} GPU{worker.gpu_id} | {job.job_id} | {result.runtime:.1f}s")
                             else:
-                                print(f"âœ… {worker.node.hostname} GPU{worker.gpu_id} | {job.prng_type}-{job.mapping_type} | {result.runtime:.1f}s | {len(job.seeds)} seeds")
+                                print(f"âœ… {worker.node.hostname} GPU{worker.gpu_id} | {job.prng_type}-{job.mapping_type} | {result.runtime:.1f}s | {get_seed_count(job.seeds)} seeds")
                             # --- END MODIFIED ---
                         else:
                             with self._progress_lock:

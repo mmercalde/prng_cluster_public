@@ -497,6 +497,28 @@ def run_bayesian_optimization(
 
     print(f"\n✅ Optimal configuration saved to: {output_config}")
 
+    # Create train/holdout split from lottery data
+    print("\n📊 Splitting lottery data for train/holdout...")
+    with open(lottery_file, "r") as f:
+        lottery_data = json.load(f)
+        if isinstance(lottery_data, list) and len(lottery_data) > 0:
+            if isinstance(lottery_data[0], dict) and "draw" in lottery_data[0]:
+                full_history = [d["draw"] for d in lottery_data]
+            else:
+                full_history = lottery_data
+        else:
+            full_history = lottery_data
+    split_point = int(len(full_history) * 0.8)
+    train_data = full_history[:split_point]
+    holdout_data = full_history[split_point:]
+    with open("train_history.json", "w") as f:
+        json.dump(train_data, f, indent=2)
+    with open("holdout_history.json", "w") as f:
+        json.dump(holdout_data, f, indent=2)
+    print(f"✅ Saved {len(train_data)} training draws to train_history.json")
+    print(f"✅ Saved {len(holdout_data)} holdout draws to holdout_history.json")
+
+
     return results
 
 

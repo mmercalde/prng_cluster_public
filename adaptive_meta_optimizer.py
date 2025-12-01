@@ -72,12 +72,12 @@ class MetaOptimizerConfig:
     # Data sources (weighted importance)
     sources: Dict[str, Any] = field(default_factory=lambda: {
         'window_optimizer_results': {
-            'path': 'optimization_results/window_optimizer_results.json',
+            'path': 'optimal_window_config.json',  # Updated to match Step 1 output
             'weight': 0.60,
             'required': True
         },
         'lottery_history': {
-            'path': 'daily3.json',
+            'path': 'lottery_data.json',  # Override via --lottery-data or config
             'weight': 0.35,
             'required': True
         },
@@ -616,7 +616,7 @@ class AdaptiveMetaOptimizer:
 
         # PRIMARY (60%): Window optimizer
         window_range = self.window_analyzer.get_survivor_count_range()
-        self.logger.info(f"\nPRIMARY SOURCE (60% weight): Window Optimizer")
+        self.logger.info(f"\nPRIMARY SOURCE ({self.config.sources['window_optimizer_results']['weight']:.0%} weight): Window Optimizer")
         self.logger.info(f"  Min: {window_range['min']}")
         self.logger.info(f"  Optimal: {window_range['optimal']}")
         self.logger.info(f"  Max: {window_range['max']}")
@@ -625,7 +625,7 @@ class AdaptiveMetaOptimizer:
         # SECONDARY (35%): Historical patterns
         pattern_min = self.pattern_analyzer.estimate_min_survivor_count()
         pattern_optimal = self.pattern_analyzer.estimate_optimal_survivor_count()
-        self.logger.info(f"\nSECONDARY SOURCE (35% weight): Historical Patterns")
+        self.logger.info(f"\nSECONDARY SOURCE ({self.config.sources['lottery_history']['weight']:.0%} weight): Historical Patterns")
         self.logger.info(f"  Min (complexity-based): {pattern_min}")
         self.logger.info(f"  Optimal (stability-based): {pattern_optimal}")
 
@@ -649,15 +649,21 @@ class AdaptiveMetaOptimizer:
             self.logger.info(f"\nCONTINUOUS SOURCE: No feedback yet (will grow from 5% to 25%)")
 
         # WEIGHTED COMBINATION
+        # Read base weights from config (ML/AI configurable)
+        base_w_window = self.config.sources['window_optimizer_results']['weight']
+        base_w_pattern = self.config.sources['lottery_history']['weight']
+        base_w_feedback = self.config.sources['reinforcement_feedback']['weight']
+        
         # Adjust weights based on feedback availability
         if feedback_optimal:
-            w_window = 0.60 - feedback_weight / 2
-            w_pattern = 0.35 - feedback_weight / 2
+            # Redistribute some weight to feedback as it grows
+            w_window = base_w_window - feedback_weight / 2
+            w_pattern = base_w_pattern - feedback_weight / 2
             w_feedback = feedback_weight
         else:
-            w_window = 0.60
-            w_pattern = 0.35
-            w_feedback = 0.05
+            w_window = base_w_window
+            w_pattern = base_w_pattern
+            w_feedback = base_w_feedback
 
         # Calculate weighted optimal
         optimal_values = [

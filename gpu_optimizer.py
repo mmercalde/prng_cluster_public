@@ -14,8 +14,8 @@ class GPUOptimizer:
         # Performance profiles based on actual benchmarking data
         self.gpu_performance_profiles = {
             "RTX 3080 Ti": {
-                "seeds_per_second": 580,
-                "scaling_factor": 25.0, # 25x larger jobs
+                "seeds_per_second": 29000,
+                "scaling_factor": 6.0, # 6x larger jobs than RX 6600
                 "architecture": "CUDA",
                 "base_completion_time": 3.3
             },
@@ -32,10 +32,10 @@ class GPUOptimizer:
                 "base_completion_time": 3.5
             },
             "RX 6600": {
-                "seeds_per_second": 10,
+                "seeds_per_second": 5000,
                 "scaling_factor": 1.0, # Baseline
                 "architecture": "ROCm",
-                "base_completion_time": 192.0
+                "base_completion_time": 20.0
             },
             "RX 7900 XTX": {
                 "seeds_per_second": 25,

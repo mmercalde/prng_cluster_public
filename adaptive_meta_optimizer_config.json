@@ -1,13 +1,13 @@
 {
   "sources": {
     "window_optimizer_results": {
-      "path": "optimization_results/window_optimizer_results.json",
-      "weight": 0.60,
+      "path": "optimal_window_config.json",
+      "weight": 0.6,
       "required": true,
       "description": "PRIMARY SOURCE - Empirical survivor counts from window optimization"
     },
     "lottery_history": {
-      "path": "daily3.json",
+      "path": "lottery_data.json",
       "weight": 0.35,
       "required": true,
       "description": "SECONDARY SOURCE - Historical pattern characteristics"
@@ -19,16 +19,17 @@
       "description": "CONTINUOUS SOURCE - Performance feedback (grows from 5% to 25%)"
     }
   },
-
   "modes": {
     "initialization": true,
     "continuous": true,
     "regime_response": true
   },
-
   "optimization": {
     "survivor_count": {
-      "derive_from": ["window_optimizer", "historical_patterns"],
+      "derive_from": [
+        "window_optimizer",
+        "historical_patterns"
+      ],
       "min_multiplier": 0.5,
       "max_multiplier": 2.0,
       "step": "logarithmic",
@@ -37,12 +38,28 @@
     "network_architecture": {
       "search_space": "adaptive",
       "options": [
-        [32],
-        [64, 32],
-        [128, 64, 32],
-        [256, 128, 64]
+        [
+          32
+        ],
+        [
+          64,
+          32
+        ],
+        [
+          128,
+          64,
+          32
+        ],
+        [
+          256,
+          128,
+          64
+        ]
       ],
-      "selection_criteria": ["training_stability", "prediction_variance"],
+      "selection_criteria": [
+        "training_stability",
+        "prediction_variance"
+      ],
       "description": "Network architecture selection based on complexity vs performance"
     },
     "training_epochs": {
@@ -53,16 +70,14 @@
       "description": "Epochs based on convergence speed from window optimizer"
     }
   },
-
   "continuous_optimization": {
     "enabled": true,
     "adjustment_threshold": 0.05,
     "feedback_window": 100,
     "adjustment_frequency": "per_epoch",
-    "min_confidence": 0.70,
+    "min_confidence": 0.7,
     "description": "Micro-adjustments triggered by performance changes >5%"
   },
-
   "regime_change": {
     "detection_source": "global_state_tracker",
     "trigger_full_recalibration": true,
@@ -71,7 +86,6 @@
     "validation_period": 50,
     "description": "Full re-optimization on regime changes detected by GlobalStateTracker"
   },
-
   "output": {
     "target_file": "reinforcement_engine_config.json",
     "update_strategy": "merge_preserving_user_overrides",

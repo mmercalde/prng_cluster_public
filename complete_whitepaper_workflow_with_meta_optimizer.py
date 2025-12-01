@@ -30,6 +30,46 @@ import time
 import argparse
 import os
 
+def launch_progress_monitor():
+    """Launch progress monitor - auto-starts tmux if needed"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    try:
+        # Check if monitor was already launched (to prevent duplicates)
+        if os.environ.get('PRNG_MONITOR_LAUNCHED'):
+            return True
+        
+        # Check if we're already in tmux
+        if os.environ.get('TMUX'):
+            # Already in tmux but monitor not launched yet - don't split
+            # (tmux command already created the split)
+            return True
+        else:
+            # Not in tmux - start tmux with both workflow and monitor
+            print("📊 Starting tmux session with progress monitor...")
+            
+            # Re-launch this script inside tmux with the same arguments
+            args_str = ' '.join(sys.argv)
+            
+            # Set env var to prevent duplicate monitor launch
+            # Create tmux session, run workflow, split and run monitor
+            tmux_cmd = (
+                f'tmux new-session -d -s prng -c {script_dir} '
+                f'"PRNG_MONITOR_LAUNCHED=1 python3 {args_str}; read -p Press_Enter_to_close" \\; '
+                f'split-window -h -p 40 "python3 progress_monitor.py" \\; '
+                f'select-pane -t 0 \\; '
+                f'attach'
+            )
+            
+            os.execvp('bash', ['bash', '-c', tmux_cmd])
+            # Note: execvp replaces current process, so we won't return here
+            
+    except Exception as e:
+        print(f"⚠️  Could not auto-launch monitor: {e}")
+        print("   Run manually in another terminal: python3 progress_monitor.py")
+        return False
+import os
+
 def run_command(cmd, description):
     """Run a shell command, stream output, and check return code."""
     print("\n" + "="*70)
@@ -60,6 +100,10 @@ def run_command(cmd, description):
 
 def main(args):
     start_time = time.time()
+    
+    # Auto-launch progress monitor if in tmux
+    launch_progress_monitor()
+
 
     print("="*70)
     print("COMPLETE WHITEPAPER WORKFLOW V2.0 (WITH SKIP MODE SUPPORT)")

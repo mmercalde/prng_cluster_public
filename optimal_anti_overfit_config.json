@@ -1,0 +1,12 @@
+{
+  "trial_number": 0,
+  "score": 100.0,
+  "hidden_layers": "[128, 64]",
+  "dropout": 0.47644012964168414,
+  "learning_rate": 5.188995772235168e-05,
+  "batch_size": 64,
+  "epochs": 106,
+  "optimizer": "adamw",
+  "early_stopping_patience": 28,
+  "weight_decay": 2.8995926102568364e-05
+}

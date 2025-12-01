@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""
+anti_overfit_trial_worker.py (v1.0)
+===================================
+Runs ONE pre-defined anti-overfit trial on a remote worker with K-fold CV.
+
+Based on scorer_trial_worker.py pattern from Step 2.5.
+
+PULL ARCHITECTURE:
+- Workers do NOT access Optuna database
+- Results written to local filesystem
+- Coordinator pulls results via SCP
+
+CHANGELOG:
+---------
+v1.0 (2025-11-30):
+- Initial version based on scorer_trial_worker.py
+- K-fold cross-validation per trial
+- GPU-accelerated training via ReinforcementEngine
+"""
+# =============================================================================
+# PULL ARCHITECTURE MODIFICATION
+# =============================================================================
+# Workers run trials and write JSON results locally.
+# Coordinator (zeus) pulls results from all nodes.
+# No Optuna pruning - all trials run to completion.
+# =============================================================================
+
+import os
+import sys
+import json
+import time
+import socket
+import logging
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+import numpy as np
+
+# =============================================================================
+# GPU ID INJECTION - Must be FIRST before any CUDA/ROCm imports
+# =============================================================================
+gpu_id = None
+hostname = socket.gethostname()
+
+# Extract gpu_id from CLI args
+for i, arg in enumerate(sys.argv):
+    if arg in ("--gpu-id", "--gpu", "-g") and i + 1 < len(sys.argv):
+        gpu_id = int(sys.argv[i + 1])
+        break
+
+if gpu_id is not None:
+    # AMD ROCm nodes: rig-6600, rig-6600b, rig-6600xt
+    if any(x in hostname for x in ["rig-6600", "rig-6600b", "rig-6600xt"]):
+        # On ROCm, ALWAYS set HIP from gpu_id, independent of CUDA env
+        os.environ["HIP_VISIBLE_DEVICES"] = str(gpu_id)
+        if os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        print(f"[Worker Init] {hostname} (ROCm) bound to GPU {gpu_id} via HIP_VISIBLE_DEVICES={gpu_id}")
+    else:
+        # CUDA host (Zeus): only set CUDA if parent didn't already isolate it
+        if os.environ.get("CUDA_VISIBLE_DEVICES") is None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            print(f"[Worker Init] {hostname} (CUDA) bound to GPU {gpu_id} via CUDA_VISIBLE_DEVICES={gpu_id}")
+        else:
+            print(f"[Worker Init] {hostname} inheriting parent mapping: CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, HIP_VISIBLE_DEVICES={os.environ.get('HIP_VISIBLE_DEVICES')}")
+
+# =============================================================================
+# Now safe to import CUDA-dependent modules
+# =============================================================================
+from sklearn.model_selection import KFold
+from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def load_data(survivors_file: str, lottery_file: str):
+    """Load survivors and lottery data."""
+    logger.info(f"Loading survivors from {survivors_file}")
+    with open(survivors_file, 'r') as f:
+        data = json.load(f)
+        survivors = [s['seed'] if isinstance(s, dict) else s for s in data]
+    
+    logger.info(f"Loading lottery data from {lottery_file}")
+    with open(lottery_file, 'r') as f:
+        lottery_data = json.load(f)
+        lottery_history = [d['draw'] if isinstance(d, dict) else d for d in lottery_data]
+    
+    logger.info(f"Loaded {len(survivors)} survivors, {len(lottery_history)} lottery draws")
+    return survivors, lottery_history
+
+
+def run_single_fold(
+    fold_idx: int,
+    train_survivors: np.ndarray,
+    train_quality: np.ndarray,
+    val_survivors: np.ndarray,
+    val_quality: np.ndarray,
+    lottery_history: List[int],
+    config: Dict[str, Any]
+) -> Dict[str, float]:
+    """
+    Run training and validation for a single fold.
+    
+    Returns metrics dict with train_mae, val_mae, overfit_ratio.
+    """
+    logger.info(f"  Fold {fold_idx + 1}: train={len(train_survivors)}, val={len(val_survivors)}")
+    
+    # Parse hidden_layers from string if needed
+    hidden_layers = config['hidden_layers']
+    if isinstance(hidden_layers, str):
+        hidden_layers = json.loads(hidden_layers)
+    
+    # Create ReinforcementConfig
+    re_config = ReinforcementConfig(
+        hidden_layers=hidden_layers,
+        dropout=config['dropout'],
+        learning_rate=config['learning_rate'],
+        batch_size=config['batch_size'],
+        epochs=config['epochs'],
+        early_stopping_patience=config['early_stopping_patience'],
+    )
+    
+    # Initialize engine
+    engine = ReinforcementEngine(config=re_config)
+    
+    # Train on this fold
+    try:
+        # Simple training - engine handles GPU internally
+        train_predictions = []
+        val_predictions = []
+        
+        # For now, use a simplified scoring approach
+        # The engine's train method will handle the actual GPU work
+        engine.train(
+            survivors=train_survivors.tolist(),
+            lottery_history=lottery_history,
+            actual_quality=train_quality.tolist()
+        )
+        
+        # Get predictions
+        train_pred = engine.predict(train_survivors.tolist())
+        val_pred = engine.predict(val_survivors.tolist())
+        
+        # Calculate MAE
+        train_mae = np.mean(np.abs(np.array(train_pred) - train_quality))
+        val_mae = np.mean(np.abs(np.array(val_pred) - val_quality))
+        
+        # Overfit ratio
+        overfit_ratio = val_mae / (train_mae + 1e-8)
+        
+        return {
+            'train_mae': float(train_mae),
+            'val_mae': float(val_mae),
+            'overfit_ratio': float(overfit_ratio)
+        }
+        
+    except Exception as e:
+        logger.error(f"  Fold {fold_idx + 1} failed: {e}")
+        return {
+            'train_mae': 999.0,
+            'val_mae': 999.0,
+            'overfit_ratio': 999.0,
+            'error': str(e)
+        }
+
+
+def run_trial(
+    trial_id: int,
+    survivors: List[int],
+    lottery_history: List[int],
+    params: Dict[str, Any],
+    k_folds: int,
+    test_holdout: float
+) -> Dict[str, Any]:
+    """
+    Run a single trial with K-fold cross-validation.
+    
+    Returns trial results dict.
+    """
+    trial_start = time.time()
+    
+    logger.info(f"="*70)
+    logger.info(f"TRIAL {trial_id} - Anti-Overfit K-Fold CV")
+    logger.info(f"="*70)
+    logger.info(f"  Architecture: {params['hidden_layers']}")
+    logger.info(f"  Dropout: {params['dropout']:.3f}")
+    logger.info(f"  Learning Rate: {params['learning_rate']:.6f}")
+    logger.info(f"  Batch Size: {params['batch_size']}")
+    logger.info(f"  Epochs: {params['epochs']}")
+    logger.info(f"  K-Folds: {k_folds}")
+    
+    # Convert to numpy
+    survivors_arr = np.array(survivors)
+    n_total = len(survivors_arr)
+    
+    # Create synthetic quality scores (same as original)
+    np.random.seed(42)
+    actual_quality = np.random.uniform(0.2, 0.8, n_total)
+    
+    # Hold out test set
+    n_test = int(n_total * test_holdout)
+    indices = np.random.permutation(n_total)
+    
+    test_indices = indices[:n_test]
+    train_val_indices = indices[n_test:]
+    
+    train_val_survivors = survivors_arr[train_val_indices]
+    train_val_quality = actual_quality[train_val_indices]
+    
+    test_survivors = survivors_arr[test_indices]
+    test_quality = actual_quality[test_indices]
+    
+    logger.info(f"  Train+Val: {len(train_val_survivors)}, Test holdout: {len(test_survivors)}")
+    
+    # K-fold cross-validation
+    kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+    fold_metrics = []
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(train_val_survivors)):
+        fold_train_survivors = train_val_survivors[train_idx]
+        fold_train_quality = train_val_quality[train_idx]
+        fold_val_survivors = train_val_survivors[val_idx]
+        fold_val_quality = train_val_quality[val_idx]
+        
+        metrics = run_single_fold(
+            fold_idx=fold_idx,
+            train_survivors=fold_train_survivors,
+            train_quality=fold_train_quality,
+            val_survivors=fold_val_survivors,
+            val_quality=fold_val_quality,
+            lottery_history=lottery_history,
+            config=params
+        )
+        fold_metrics.append(metrics)
+        
+        logger.info(f"    Fold {fold_idx + 1}: train_mae={metrics['train_mae']:.4f}, val_mae={metrics['val_mae']:.4f}, overfit={metrics['overfit_ratio']:.2f}")
+    
+    # Aggregate metrics across folds
+    avg_train_mae = np.mean([m['train_mae'] for m in fold_metrics])
+    avg_val_mae = np.mean([m['val_mae'] for m in fold_metrics])
+    avg_overfit = np.mean([m['overfit_ratio'] for m in fold_metrics])
+    std_val_mae = np.std([m['val_mae'] for m in fold_metrics])
+    
+    # Composite score (higher is better)
+    # Penalize high MAE, high overfit ratio, and high variance
+    score = 1.0 / (avg_val_mae + 0.01) * (1.0 / (avg_overfit + 0.1)) * (1.0 / (std_val_mae + 0.01))
+    
+    # Normalize to reasonable range
+    score = min(score, 100.0)
+    
+    trial_time = time.time() - trial_start
+    
+    logger.info(f"")
+    logger.info(f"  TRIAL {trial_id} COMPLETE")
+    logger.info(f"  Avg Val MAE: {avg_val_mae:.4f} (+/- {std_val_mae:.4f})")
+    logger.info(f"  Avg Overfit Ratio: {avg_overfit:.2f}")
+    logger.info(f"  Score: {score:.4f}")
+    logger.info(f"  Time: {trial_time:.1f}s")
+    logger.info(f"="*70)
+    
+    return {
+        'trial_id': trial_id,
+        'status': 'success',
+        'score': float(score),
+        'accuracy': float(score),  # For Optuna compatibility
+        'avg_val_mae': float(avg_val_mae),
+        'std_val_mae': float(std_val_mae),
+        'avg_train_mae': float(avg_train_mae),
+        'avg_overfit_ratio': float(avg_overfit),
+        'fold_metrics': fold_metrics,
+        'params': params,
+        'duration_seconds': float(trial_time),
+        'hostname': hostname,
+        'gpu_id': gpu_id
+    }
+
+
+def save_result(result: Dict[str, Any], trial_id: int):
+    """Save result to local filesystem for coordinator to pull."""
+    results_dir = Path("anti_overfit_results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    
+    result_file = results_dir / f"trial_{trial_id:04d}.json"
+    
+    with open(result_file, 'w') as f:
+        json.dump(result, f, indent=2)
+    
+    logger.info(f"✅ Result saved to {result_file}")
+    return str(result_file)
+
+
+def main():
+    """
+    CLI entry point.
+    
+    Args (positional):
+        survivors_file: Path to survivors JSON
+        lottery_file: Path to lottery data JSON
+        trial_id: Trial number
+        params_json: JSON string of hyperparameters
+        k_folds: Number of CV folds
+        test_holdout: Test holdout percentage
+        study_name: Optuna study name (for reference)
+        study_db: Optuna DB path (for reference)
+    """
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Anti-Overfit Trial Worker (Step 5)')
+    parser.add_argument('survivors_file', type=str, help='Path to survivors JSON')
+    parser.add_argument('lottery_file', type=str, help='Path to lottery data JSON')
+    parser.add_argument('trial_id', type=int, help='Trial number')
+    parser.add_argument('params_json', type=str, help='JSON string of hyperparameters')
+    parser.add_argument('k_folds', type=int, help='Number of CV folds')
+    parser.add_argument('test_holdout', type=float, help='Test holdout percentage')
+    parser.add_argument('study_name', type=str, help='Optuna study name')
+    parser.add_argument('study_db', type=str, help='Optuna DB path')
+    parser.add_argument('--gpu-id', type=int, help='GPU ID (injected by coordinator)')
+    
+    args = parser.parse_args()
+    
+    # Load data
+    survivors, lottery_history = load_data(args.survivors_file, args.lottery_file)
+    
+    # Parse params
+    params = json.loads(args.params_json)
+    
+    # Run trial
+    result = run_trial(
+        trial_id=args.trial_id,
+        survivors=survivors,
+        lottery_history=lottery_history,
+        params=params,
+        k_folds=args.k_folds,
+        test_holdout=args.test_holdout
+    )
+    
+    # Save result locally
+    save_result(result, args.trial_id)
+    
+    # Print JSON result to stdout (for distributed_worker.py to capture)
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()
