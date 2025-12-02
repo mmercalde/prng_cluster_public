@@ -1,0 +1,940 @@
+{
+  "_schema_info": {
+    "version": "1.0.3",
+    "created": "2025-11-03",
+    "last_modified": "2025-12-01",
+    "purpose": "Master schema defining all possible fields for PRNG analysis results",
+    "author": "Distributed PRNG Analysis System",
+    "modification_log": [
+      {
+        "date": "2025-11-03",
+        "version": "1.0.0",
+        "changes": "Initial schema creation",
+        "author": "System"
+      },
+      {
+        "date": "2025-11-03",
+        "version": "1.0.1",
+        "changes": "Added 11 missing analysis types found in codebase",
+        "author": "System"
+      },
+      {
+        "date": "2025-11-03",
+        "version": "1.0.2",
+        "changes": "Added ML/RL analysis types and metrics for future fusion layer",
+        "author": "System"
+      },
+      {
+        "date": "2025-12-01",
+        "version": "1.0.3",
+        "changes": "Added agent_metadata section for AI agent orchestration. Enables autonomous pipeline chaining, input/output validation, run lineage tracking, and AI decision support. All new fields are optional for backward compatibility. Team refinements: relative paths for files, null for no follow-up agent, 0.8 confidence threshold documented, SHA256 for hashes.",
+        "author": "Claude + Michael + Team Review"
+      }
+    ],
+    "usage": "This schema defines the contract for all analysis results. Add new fields here to extend functionality without code changes."
+  },
+  "_field_types": {
+    "string": "Text values",
+    "integer": "Whole numbers",
+    "float": "Decimal numbers",
+    "boolean": "true/false",
+    "datetime": "ISO 8601 timestamp",
+    "array": "List of values",
+    "object": "Nested structure",
+    "null": "Explicit absence of value"
+  },
+  "run_metadata": {
+    "_description": "Information about the analysis run itself",
+    "fields": {
+      "run_id": {
+        "type": "string",
+        "required": true,
+        "description": "Unique identifier for this analysis run",
+        "example": "1B_java_lcg_20251103_172508"
+      },
+      "analysis_type": {
+        "type": "string",
+        "required": true,
+        "description": "Type of analysis performed",
+        "allowed_values": [
+          "bidirectional_sieve",
+          "forward_sieve",
+          "reverse_sieve",
+          "window_optimization",
+          "prng_sweep",
+          "pattern_analysis",
+          "pool_building",
+          "pool_evaluation",
+          "pool_backtest",
+          "exhaustive_search",
+          "parameter_sweep",
+          "state_reconstruction",
+          "specific_draw_analysis",
+          "statistical_analysis",
+          "dataset_correlation",
+          "historical_analysis",
+          "temporal_analysis",
+          "custom",
+          "ml_reinforcement",
+          "feature_extraction",
+          "model_training",
+          "pool_construction",
+          "survivor_overlap_analysis",
+          "temporal_stability_analysis",
+          "scorer_meta_optimization",
+          "anti_overfit_training",
+          "prediction_generation"
+        ],
+        "example": "bidirectional_sieve"
+      },
+      "timestamp_start": {
+        "type": "datetime",
+        "required": true,
+        "description": "When analysis started (ISO 8601)",
+        "example": "2025-11-03T17:25:08-08:00"
+      },
+      "timestamp_end": {
+        "type": "datetime",
+        "required": false,
+        "description": "When analysis completed",
+        "example": "2025-11-03T18:30:15-08:00"
+      },
+      "execution_time_seconds": {
+        "type": "float",
+        "required": false,
+        "description": "Total execution time in seconds",
+        "example": 3907.5
+      },
+      "hostname": {
+        "type": "string",
+        "required": false,
+        "description": "Machine where analysis ran",
+        "example": "zeus"
+      },
+      "python_version": {
+        "type": "string",
+        "required": false,
+        "description": "Python version used",
+        "example": "3.10.12"
+      },
+      "schema_version": {
+        "type": "string",
+        "required": true,
+        "description": "Schema version used for this result",
+        "example": "1.0.3"
+      }
+    }
+  },
+  "analysis_parameters": {
+    "_description": "Configuration and parameters used for the analysis",
+    "fields": {
+      "prng_type": {
+        "type": "string",
+        "required": true,
+        "description": "PRNG algorithm used",
+        "allowed_values": [
+          "java_lcg",
+          "java_lcg_hybrid",
+          "java_lcg_reverse",
+          "java_lcg_hybrid_reverse",
+          "mt19937",
+          "mt19937_hybrid",
+          "mt19937_reverse",
+          "mt19937_hybrid_reverse",
+          "xorshift32",
+          "xorshift32_hybrid",
+          "xorshift32_reverse",
+          "xorshift32_hybrid_reverse",
+          "xorshift64",
+          "xorshift64_hybrid",
+          "xorshift64_reverse",
+          "xorshift64_hybrid_reverse",
+          "xorshift128",
+          "xorshift128_hybrid",
+          "xorshift128_reverse",
+          "xorshift128_hybrid_reverse",
+          "pcg32",
+          "pcg32_hybrid",
+          "pcg32_reverse",
+          "pcg32_hybrid_reverse",
+          "lcg32",
+          "lcg32_hybrid",
+          "lcg32_reverse",
+          "lcg32_hybrid_reverse",
+          "minstd",
+          "minstd_hybrid",
+          "minstd_reverse",
+          "minstd_hybrid_reverse",
+          "philox4x32",
+          "philox4x32_hybrid",
+          "philox4x32_reverse",
+          "philox4x32_hybrid_reverse",
+          "xoshiro256pp",
+          "xoshiro256pp_hybrid",
+          "xoshiro256pp_reverse",
+          "xoshiro256pp_hybrid_reverse",
+          "sfc64",
+          "sfc64_hybrid",
+          "sfc64_reverse",
+          "sfc64_hybrid_reverse",
+          "lcg_parkmiller",
+          "lcg_numerical",
+          "custom"
+        ],
+        "example": "java_lcg"
+      },
+      "seed_start": {
+        "type": "integer",
+        "required": true,
+        "description": "Starting seed value",
+        "example": 0
+      },
+      "seed_end": {
+        "type": "integer",
+        "required": true,
+        "description": "Ending seed value (exclusive)",
+        "example": 1000000000
+      },
+      "total_seeds_tested": {
+        "type": "integer",
+        "required": true,
+        "description": "Total number of seeds tested",
+        "example": 1000000000
+      },
+      "window_size": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of draws in analysis window",
+        "example": 244
+      },
+      "window_offset": {
+        "type": "integer",
+        "required": false,
+        "description": "Draw offset for window start",
+        "example": 139
+      },
+      "skip_min": {
+        "type": "integer",
+        "required": false,
+        "description": "Minimum skip length tested",
+        "example": 3
+      },
+      "skip_max": {
+        "type": "integer",
+        "required": false,
+        "description": "Maximum skip length tested",
+        "example": 29
+      },
+      "threshold": {
+        "type": "float",
+        "required": false,
+        "description": "Match threshold (as decimal percentage)",
+        "example": 0.012
+      },
+      "dataset_file": {
+        "type": "string",
+        "required": true,
+        "description": "Source data file used",
+        "example": "daily3.json"
+      },
+      "sessions_analyzed": {
+        "type": "array",
+        "required": false,
+        "description": "List of session types analyzed",
+        "example": ["evening", "midday"]
+      },
+      "gpu_devices": {
+        "type": "array",
+        "required": false,
+        "description": "GPU devices used",
+        "example": [0, 1, 2, 3]
+      },
+      "batch_size": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds processed per batch",
+        "example": 10000000
+      },
+      "k_folds": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of cross-validation folds",
+        "example": 5
+      },
+      "optuna_trials": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of Optuna optimization trials",
+        "example": 100
+      },
+      "training_sample_size": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of samples used for training",
+        "example": 50000
+      },
+      "custom_parameters": {
+        "type": "object",
+        "required": false,
+        "description": "Any additional parameters not in schema",
+        "example": {
+          "temperature_limit": 80,
+          "fan_speed": "auto"
+        }
+      }
+    }
+  },
+  "results_summary": {
+    "_description": "High-level summary of analysis results",
+    "fields": {
+      "total_survivors": {
+        "type": "integer",
+        "required": true,
+        "description": "Total seeds that passed filters",
+        "example": 278
+      },
+      "survival_rate": {
+        "type": "float",
+        "required": true,
+        "description": "Percentage of seeds that survived",
+        "example": 2.78e-05
+      },
+      "forward_survivors": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds passing forward sieve",
+        "example": 52341
+      },
+      "reverse_survivors": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds passing reverse sieve",
+        "example": 51892
+      },
+      "bidirectional_survivors": {
+        "type": "integer",
+        "required": false,
+        "description": "Seeds passing both directions",
+        "example": 278
+      },
+      "best_match_count": {
+        "type": "integer",
+        "required": false,
+        "description": "Highest number of matches found",
+        "example": 10
+      },
+      "best_match_rate": {
+        "type": "float",
+        "required": false,
+        "description": "Best match rate achieved",
+        "example": 0.041
+      },
+      "best_seed": {
+        "type": "integer",
+        "required": false,
+        "description": "Seed with best performance",
+        "example": 47774590
+      },
+      "analysis_complete": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether analysis completed successfully",
+        "example": true
+      },
+      "error_message": {
+        "type": "string",
+        "required": false,
+        "description": "Error message if analysis failed",
+        "example": null
+      }
+    }
+  },
+  "survivor_details": {
+    "_description": "Detailed information about each surviving seed",
+    "fields": {
+      "seed": {
+        "type": "integer",
+        "required": true,
+        "description": "The seed value",
+        "example": 47774590
+      },
+      "matches": {
+        "type": "integer",
+        "required": true,
+        "description": "Number of matches found",
+        "example": 10
+      },
+      "total_draws": {
+        "type": "integer",
+        "required": true,
+        "description": "Total draws in window",
+        "example": 244
+      },
+      "match_rate": {
+        "type": "float",
+        "required": true,
+        "description": "Percentage of matches",
+        "example": 0.041
+      },
+      "skip_length": {
+        "type": "integer",
+        "required": false,
+        "description": "Skip pattern length",
+        "example": 7
+      },
+      "direction": {
+        "type": "string",
+        "required": false,
+        "description": "Analysis direction",
+        "allowed_values": ["forward", "reverse", "bidirectional"],
+        "example": "bidirectional"
+      },
+      "matched_numbers": {
+        "type": "array",
+        "required": false,
+        "description": "List of matched numbers",
+        "example": [7, 23, 45, 12, 33, 8, 19, 42, 31, 16]
+      },
+      "match_positions": {
+        "type": "array",
+        "required": false,
+        "description": "Positions of matches in window",
+        "example": [12, 34, 67, 89, 112, 145, 178, 201, 223, 240]
+      },
+      "confidence_score": {
+        "type": "float",
+        "required": false,
+        "description": "Statistical confidence (if calculated)",
+        "example": 0.95
+      },
+      "custom_metrics": {
+        "type": "object",
+        "required": false,
+        "description": "Additional metrics not in schema",
+        "example": {
+          "entropy": 3.45,
+          "autocorrelation": 0.02
+        }
+      }
+    }
+  },
+  "performance_metrics": {
+    "_description": "Performance and resource usage statistics",
+    "fields": {
+      "seeds_per_second": {
+        "type": "float",
+        "required": false,
+        "description": "Processing rate",
+        "example": 256000.5
+      },
+      "gpu_utilization_avg": {
+        "type": "float",
+        "required": false,
+        "description": "Average GPU utilization (0-100%)",
+        "example": 87.3
+      },
+      "memory_peak_gb": {
+        "type": "float",
+        "required": false,
+        "description": "Peak memory usage in GB",
+        "example": 14.2
+      },
+      "cpu_utilization_avg": {
+        "type": "float",
+        "required": false,
+        "description": "Average CPU utilization (0-100%)",
+        "example": 45.6
+      },
+      "temperature_max_celsius": {
+        "type": "float",
+        "required": false,
+        "description": "Maximum GPU temperature",
+        "example": 78.5
+      },
+      "batches_processed": {
+        "type": "integer",
+        "required": false,
+        "description": "Total batches processed",
+        "example": 100
+      },
+      "batches_failed": {
+        "type": "integer",
+        "required": false,
+        "description": "Batches that failed/retried",
+        "example": 2
+      },
+      "cluster_nodes_used": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of cluster nodes utilized",
+        "example": 3
+      },
+      "total_gpu_count": {
+        "type": "integer",
+        "required": false,
+        "description": "Total GPUs used across cluster",
+        "example": 26
+      }
+    }
+  },
+  "data_sources": {
+    "_description": "Information about data sources used",
+    "fields": {
+      "dataset_name": {
+        "type": "string",
+        "required": true,
+        "description": "Name of dataset",
+        "example": "daily3.json"
+      },
+      "dataset_path": {
+        "type": "string",
+        "required": false,
+        "description": "Full path to dataset",
+        "example": "/home/michael/distributed_prng_analysis/daily3.json"
+      },
+      "dataset_size_bytes": {
+        "type": "integer",
+        "required": false,
+        "description": "File size in bytes",
+        "example": 1048576
+      },
+      "dataset_hash": {
+        "type": "string",
+        "required": false,
+        "description": "SHA256 hash for verification (preferred)",
+        "example": "sha256:a1b2c3d4e5f6..."
+      },
+      "dataset_md5": {
+        "type": "string",
+        "required": false,
+        "description": "MD5 hash for verification (legacy, use dataset_hash for new code)",
+        "example": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "total_draws": {
+        "type": "integer",
+        "required": false,
+        "description": "Total draws in dataset",
+        "example": 5000
+      },
+      "date_range_start": {
+        "type": "string",
+        "required": false,
+        "description": "First draw date",
+        "example": "2020-01-01"
+      },
+      "date_range_end": {
+        "type": "string",
+        "required": false,
+        "description": "Last draw date",
+        "example": "2025-11-03"
+      }
+    }
+  },
+  "ml_metrics": {
+    "_description": "Machine learning and reinforcement metrics",
+    "_note": "Fields for dual-sieve reinforcement and functional mimicry framework",
+    "fields": {
+      "survivor_overlap_ratio": {
+        "type": "float",
+        "required": false,
+        "description": "Forward vs reverse survivor overlap ratio",
+        "example": 0.67
+      },
+      "skip_entropy": {
+        "type": "float",
+        "required": false,
+        "description": "Shannon entropy of skip pattern distribution",
+        "example": 2.34
+      },
+      "residue_coherence": {
+        "type": "float",
+        "required": false,
+        "description": "Coherence score for residue relationships (%8, %125, %1000)",
+        "example": 0.82
+      },
+      "temporal_stability": {
+        "type": "float",
+        "required": false,
+        "description": "Temporal stability score of survivor set",
+        "example": 0.91
+      },
+      "survivor_velocity": {
+        "type": "float",
+        "required": false,
+        "description": "Rate of change in survivor population",
+        "example": 0.15
+      },
+      "intersection_weight": {
+        "type": "float",
+        "required": false,
+        "description": "Weight of forward/reverse intersections",
+        "example": 0.73
+      },
+      "lane_agreement": {
+        "type": "float",
+        "required": false,
+        "description": "Agreement metric across residue lanes",
+        "example": 0.88
+      },
+      "hit_at_k": {
+        "type": "object",
+        "required": false,
+        "description": "Hit@K metrics for various K values",
+        "example": {
+          "k5": 0.12,
+          "k10": 0.23,
+          "k20": 0.41
+        }
+      },
+      "model_type": {
+        "type": "string",
+        "required": false,
+        "description": "ML model used",
+        "allowed_values": ["xgboost", "random_forest", "neural_network", "rl_agent", "ensemble", "custom"],
+        "example": "xgboost"
+      },
+      "feature_importance": {
+        "type": "object",
+        "required": false,
+        "description": "Feature importance scores from ML model",
+        "example": {
+          "overlap": 0.32,
+          "entropy": 0.28,
+          "stability": 0.21
+        }
+      },
+      "pool_confidence": {
+        "type": "float",
+        "required": false,
+        "description": "Confidence score for prediction pool",
+        "example": 0.85
+      },
+      "reinforcement_iterations": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of reinforcement iterations performed",
+        "example": 100
+      },
+      "convergence_score": {
+        "type": "float",
+        "required": false,
+        "description": "Convergence score of reinforcement process",
+        "example": 0.94
+      },
+      "validation_loss": {
+        "type": "float",
+        "required": false,
+        "description": "Final validation loss from training",
+        "example": 0.0234
+      },
+      "overfit_ratio": {
+        "type": "float",
+        "required": false,
+        "description": "Ratio of train to validation performance (>1.0 indicates overfit)",
+        "example": 1.05
+      },
+      "k_fold_scores": {
+        "type": "array",
+        "required": false,
+        "description": "Scores from each cross-validation fold",
+        "example": [0.847, 0.852, 0.839, 0.861, 0.844]
+      }
+    }
+  },
+  "agent_metadata": {
+    "_description": "AI agent orchestration metadata for autonomous pipeline execution",
+    "_version_added": "1.0.3",
+    "_purpose": "Enables Watcher Agent to monitor outputs and automatically trigger subsequent pipeline steps",
+    "_all_fields_optional": "All fields are optional for backward compatibility with existing code",
+    "_path_convention": "All file paths should be RELATIVE to the shared output directory (e.g., 'bidirectional_survivors.json' not '/full/path/to/file')",
+    "_auto_chain_threshold": "Default confidence threshold for automatic pipeline continuation is 0.8. Below this threshold, human review is requested.",
+    "fields": {
+      "inputs": {
+        "type": "array",
+        "required": false,
+        "description": "Input files consumed by this step. Use RELATIVE paths. Each entry can be a string (filename only) or an object with file, hash, and required fields.",
+        "example": [
+          {
+            "file": "bidirectional_survivors.json",
+            "hash": "sha256:a1b2c3d4e5f6...",
+            "required": true
+          },
+          {
+            "file": "optimal_window_config.json",
+            "hash": "sha256:f6e5d4c3b2a1...",
+            "required": true
+          }
+        ],
+        "simple_example": ["bidirectional_survivors.json", "optimal_window_config.json"],
+        "object_fields": {
+          "file": "Relative path to input file (required)",
+          "hash": "SHA256 hash for verification (optional but recommended)",
+          "required": "Boolean - true if step cannot proceed without this file (default: true)"
+        }
+      },
+      "outputs": {
+        "type": "array",
+        "required": false,
+        "description": "Output files produced by this step. Use RELATIVE paths. Used by Watcher Agent to verify step completion.",
+        "example": ["optimal_scorer_config.json", "scorer_meta_results.json"]
+      },
+      "parent_run_id": {
+        "type": ["string", "null"],
+        "required": false,
+        "description": "Run ID of the parent/previous step for lineage tracking. Use null for pipeline step 1 (Window Optimizer). Required for steps 2-6.",
+        "example": "step1_20251201_143022_abc123",
+        "note": "Set to null for the first pipeline step (no parent exists)"
+      },
+      "pipeline_step": {
+        "type": "integer",
+        "required": false,
+        "description": "Position in the 6-step pipeline",
+        "allowed_values": [1, 2, 3, 4, 5, 6],
+        "example": 2,
+        "step_mapping": {
+          "1": "Window Optimizer",
+          "2": "Scorer Meta-Optimizer",
+          "3": "Full Scoring",
+          "4": "ML Meta-Optimizer",
+          "5": "Anti-Overfit Training",
+          "6": "Prediction"
+        }
+      },
+      "pipeline_step_name": {
+        "type": "string",
+        "required": false,
+        "description": "Human-readable name of the pipeline step",
+        "allowed_values": [
+          "window_optimizer",
+          "scorer_meta_optimizer",
+          "full_scoring",
+          "ml_meta_optimizer",
+          "anti_overfit_training",
+          "prediction"
+        ],
+        "example": "scorer_meta_optimizer"
+      },
+      "follow_up_agent": {
+        "type": ["string", "null"],
+        "required": false,
+        "description": "Recommended next agent to execute. Use null (JSON null, not string 'none') when no follow-up is needed (e.g., after final prediction step).",
+        "allowed_values": [
+          "window_optimizer_agent",
+          "scorer_meta_agent",
+          "full_scoring_agent",
+          "ml_meta_agent",
+          "reinforcement_agent",
+          "prediction_agent",
+          null
+        ],
+        "example": "full_scoring_agent",
+        "note": "Use JSON null (not string 'none') for final step or when pipeline should stop"
+      },
+      "confidence": {
+        "type": "float",
+        "required": false,
+        "description": "AI confidence in results and recommendation (0.0 to 1.0). Watcher Agent uses this to decide auto-proceed vs human review.",
+        "example": 0.87,
+        "range": "0.0 to 1.0",
+        "thresholds": {
+          "auto_proceed": ">= 0.8 - Watcher Agent automatically triggers next step",
+          "human_review": "< 0.8 - Watcher Agent requests human review before proceeding",
+          "low_confidence": "< 0.5 - Consider investigation or parameter adjustment"
+        }
+      },
+      "suggested_params": {
+        "type": "object",
+        "required": false,
+        "description": "Suggested parameters for the next step based on this run's results. Flexible object structure allows cross-step parameter passing.",
+        "example": {
+          "threshold": 0.015,
+          "k_folds": 5,
+          "training_sample_size": 50000
+        }
+      },
+      "reasoning": {
+        "type": "string",
+        "required": false,
+        "description": "Human-readable explanation of results and recommendations. Useful for audit trail and debugging.",
+        "example": "High survivor overlap (0.67) suggests strong PRNG signal. Recommend proceeding to full scoring with optimized threshold."
+      },
+      "success_criteria_met": {
+        "type": "boolean",
+        "required": false,
+        "description": "Whether this step met its defined success criteria. Watcher Agent will not proceed if false.",
+        "example": true
+      },
+      "retry_count": {
+        "type": "integer",
+        "required": false,
+        "description": "Number of retry attempts for this step. Watcher Agent tracks this to enforce max retry limits.",
+        "example": 0
+      },
+      "cluster_resources": {
+        "type": "object",
+        "required": false,
+        "description": "Cluster resources used for this run. Minimal but extensible.",
+        "example": {
+          "nodes": ["zeus", "rig-6600", "rig-6600b"],
+          "total_gpus": 26,
+          "total_tflops": 285.69,
+          "platform": "Mixed CUDA/ROCm"
+        }
+      }
+    }
+  },
+  "extensibility": {
+    "_description": "How to extend this schema",
+    "_instructions": [
+      "1. Add new fields to appropriate section",
+      "2. Specify type, required, description, example",
+      "3. For new analysis types, add to 'allowed_values'",
+      "4. Use 'custom_parameters' or 'custom_metrics' for temporary additions",
+      "5. Increment schema version for breaking changes",
+      "6. Document changes in modification_log",
+      "7. Update output_templates.json if display format changes"
+    ],
+    "_example_new_field": {
+      "field_name": {
+        "type": "string",
+        "required": false,
+        "description": "What this field represents",
+        "example": "Example value"
+      }
+    }
+  },
+  "_examples": {
+    "minimal_valid_output": {
+      "description": "Minimum required fields for a valid output (backward compatible)",
+      "example": {
+        "run_metadata": {
+          "run_id": "test_20251201",
+          "analysis_type": "bidirectional_sieve",
+          "timestamp_start": "2025-12-01T10:00:00-08:00",
+          "schema_version": "1.0.3"
+        },
+        "analysis_parameters": {
+          "prng_type": "java_lcg",
+          "seed_start": 0,
+          "seed_end": 1000000,
+          "total_seeds_tested": 1000000,
+          "dataset_file": "daily3.json"
+        },
+        "results_summary": {
+          "total_survivors": 100,
+          "survival_rate": 0.0001,
+          "analysis_complete": true
+        },
+        "data_sources": {
+          "dataset_name": "daily3.json"
+        }
+      }
+    },
+    "with_agent_metadata": {
+      "description": "Output with agent_metadata for autonomous pipeline operation",
+      "example": {
+        "run_metadata": {
+          "run_id": "step2_20251201_150000_def456",
+          "analysis_type": "scorer_meta_optimization",
+          "timestamp_start": "2025-12-01T15:00:00-08:00",
+          "timestamp_end": "2025-12-01T15:45:23-08:00",
+          "execution_time_seconds": 2723.4,
+          "hostname": "zeus",
+          "schema_version": "1.0.3"
+        },
+        "analysis_parameters": {
+          "prng_type": "java_lcg",
+          "seed_start": 0,
+          "seed_end": 1000000000,
+          "total_seeds_tested": 742846,
+          "threshold": 0.012,
+          "dataset_file": "daily3.json",
+          "optuna_trials": 100,
+          "k_folds": 5
+        },
+        "results_summary": {
+          "total_survivors": 278,
+          "survival_rate": 0.0000278,
+          "best_match_rate": 0.041,
+          "best_seed": 47774590,
+          "analysis_complete": true
+        },
+        "data_sources": {
+          "dataset_name": "daily3.json",
+          "dataset_hash": "sha256:a1b2c3d4e5f6..."
+        },
+        "performance_metrics": {
+          "seeds_per_second": 245000.5,
+          "gpu_utilization_avg": 87.3,
+          "total_gpu_count": 26
+        },
+        "ml_metrics": {
+          "survivor_overlap_ratio": 0.67,
+          "convergence_score": 0.94,
+          "k_fold_scores": [0.847, 0.852, 0.839, 0.861, 0.844]
+        },
+        "agent_metadata": {
+          "inputs": [
+            {"file": "bidirectional_survivors.json", "hash": "sha256:a1b2c3d4e5f6", "required": true},
+            {"file": "optimal_window_config.json", "hash": "sha256:f6e5d4c3b2a1", "required": true}
+          ],
+          "outputs": [
+            "optimal_scorer_config.json",
+            "scorer_meta_results.json"
+          ],
+          "parent_run_id": "step1_20251201_143022_abc123",
+          "pipeline_step": 2,
+          "pipeline_step_name": "scorer_meta_optimizer",
+          "follow_up_agent": "full_scoring_agent",
+          "confidence": 0.92,
+          "suggested_params": {
+            "threshold": 0.012,
+            "k_folds": 5,
+            "training_sample_size": 50000
+          },
+          "reasoning": "Scorer optimization converged with 94% score. High survivor overlap (0.67) and consistent k-fold performance suggest strong PRNG signal. Recommend proceeding to full scoring.",
+          "success_criteria_met": true,
+          "retry_count": 0,
+          "cluster_resources": {
+            "nodes": ["zeus", "rig-6600", "rig-6600b"],
+            "total_gpus": 26,
+            "total_tflops": 285.69,
+            "platform": "Mixed CUDA/ROCm"
+          }
+        }
+      }
+    },
+    "first_step_no_parent": {
+      "description": "First pipeline step with null parent_run_id",
+      "example": {
+        "agent_metadata": {
+          "inputs": [{"file": "daily3.json", "required": true}],
+          "outputs": ["bidirectional_survivors.json", "optimal_window_config.json"],
+          "parent_run_id": null,
+          "pipeline_step": 1,
+          "pipeline_step_name": "window_optimizer",
+          "follow_up_agent": "scorer_meta_agent",
+          "confidence": 0.89,
+          "reasoning": "Window optimization complete. Strong bidirectional signal detected.",
+          "success_criteria_met": true
+        }
+      }
+    },
+    "final_step_no_followup": {
+      "description": "Final pipeline step with null follow_up_agent",
+      "example": {
+        "agent_metadata": {
+          "inputs": [{"file": "trained_model.pth", "required": true}],
+          "outputs": ["prediction_pool.json"],
+          "parent_run_id": "step5_20251201_180000_ghi789",
+          "pipeline_step": 6,
+          "pipeline_step_name": "prediction",
+          "follow_up_agent": null,
+          "confidence": 0.88,
+          "reasoning": "Prediction pool generated with 88% confidence. Pipeline complete.",
+          "success_criteria_met": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,577 @@
+{
+  "_template_info": {
+    "version": "1.0.1",
+    "created": "2025-11-03",
+    "last_modified": "2025-12-01",
+    "purpose": "Define how results are formatted for different output types (txt, csv, json)",
+    "usage": "Modify these templates to change display format without touching code",
+    "documentation": {
+      "file": "output_templates.json",
+      "purpose": "Define how results are formatted for different output types (txt, csv, json)",
+      "author": "Distributed PRNG Analysis System",
+      "created": "2025-11-03",
+      "last_modified": "2025-12-01",
+      "version": "1.0.1",
+      "usage": [
+        "Controls the display format of all result outputs",
+        "Modify templates to change format WITHOUT touching code",
+        "Supports: text summaries, CSV exports, JSON structure",
+        "Used by output_formatter.py to generate human/machine readable outputs"
+      ],
+      "how_to_modify": [
+        "1. Edit summary_txt_template to change text output layout",
+        "2. Edit csv_export_template to change CSV columns/order",
+        "3. Edit format_functions to change how data is displayed",
+        "4. Add analysis_type_templates for custom layouts per analysis type",
+        "5. Changes take effect immediately (no code restart needed)"
+      ],
+      "examples": [
+        "To add a new section to text summary: Add to summary_txt_template.sections",
+        "To change CSV columns: Modify csv_export_template.survivor_columns",
+        "To add new format function: Add to format_functions with description"
+      ]
+    }
+  },
+  "summary_txt_template": {
+    "_description": "Human-readable text summary format",
+    "header": [
+      "================================================================================",
+      "PRNG ANALYSIS RESULTS",
+      "================================================================================"
+    ],
+    "sections": {
+      "run_info": {
+        "title": "RUN INFORMATION",
+        "fields": [
+          {
+            "label": "Analysis Type",
+            "field": "run_metadata.analysis_type",
+            "format": "uppercase"
+          },
+          {
+            "label": "Run ID",
+            "field": "run_metadata.run_id"
+          },
+          {
+            "label": "Started",
+            "field": "run_metadata.timestamp_start",
+            "format": "datetime"
+          },
+          {
+            "label": "Completed",
+            "field": "run_metadata.timestamp_end",
+            "format": "datetime"
+          },
+          {
+            "label": "Execution Time",
+            "field": "run_metadata.execution_time_seconds",
+            "format": "duration"
+          }
+        ]
+      },
+      "parameters": {
+        "title": "ANALYSIS PARAMETERS",
+        "fields": [
+          {
+            "label": "PRNG Type",
+            "field": "analysis_parameters.prng_type"
+          },
+          {
+            "label": "Dataset",
+            "field": "analysis_parameters.dataset_file"
+          },
+          {
+            "label": "Seeds Tested",
+            "field": "analysis_parameters.total_seeds_tested",
+            "format": "comma"
+          },
+          {
+            "label": "Seed Range",
+            "field": "seed_range",
+            "computed": true
+          },
+          {
+            "label": "Window Size",
+            "field": "analysis_parameters.window_size"
+          },
+          {
+            "label": "Window Offset",
+            "field": "analysis_parameters.window_offset"
+          },
+          {
+            "label": "Skip Range",
+            "field": "skip_range",
+            "computed": true
+          },
+          {
+            "label": "Threshold",
+            "field": "analysis_parameters.threshold",
+            "format": "percentage"
+          },
+          {
+            "label": "Sessions",
+            "field": "analysis_parameters.sessions_analyzed",
+            "format": "list"
+          }
+        ]
+      },
+      "results": {
+        "title": "RESULTS SUMMARY",
+        "fields": [
+          {
+            "label": "Total Survivors",
+            "field": "results_summary.total_survivors",
+            "format": "comma",
+            "highlight": true
+          },
+          {
+            "label": "Survival Rate",
+            "field": "results_summary.survival_rate",
+            "format": "percentage_sci"
+          },
+          {
+            "label": "Forward Survivors",
+            "field": "results_summary.forward_survivors",
+            "format": "comma"
+          },
+          {
+            "label": "Reverse Survivors",
+            "field": "results_summary.reverse_survivors",
+            "format": "comma"
+          },
+          {
+            "label": "Bidirectional",
+            "field": "results_summary.bidirectional_survivors",
+            "format": "comma",
+            "highlight": true
+          },
+          {
+            "label": "Best Seed",
+            "field": "results_summary.best_seed"
+          },
+          {
+            "label": "Best Match Rate",
+            "field": "results_summary.best_match_rate",
+            "format": "percentage"
+          },
+          {
+            "label": "Best Match Count",
+            "field": "results_summary.best_match_count"
+          }
+        ]
+      },
+      "performance": {
+        "title": "PERFORMANCE METRICS",
+        "fields": [
+          {
+            "label": "Seeds/Second",
+            "field": "performance_metrics.seeds_per_second",
+            "format": "comma_float"
+          },
+          {
+            "label": "GPU Utilization",
+            "field": "performance_metrics.gpu_utilization_avg",
+            "format": "percentage"
+          },
+          {
+            "label": "Memory Peak",
+            "field": "performance_metrics.memory_peak_gb",
+            "format": "memory"
+          },
+          {
+            "label": "Max Temperature",
+            "field": "performance_metrics.temperature_max_celsius",
+            "format": "temperature"
+          },
+          {
+            "label": "Batches Processed",
+            "field": "performance_metrics.batches_processed",
+            "format": "comma"
+          },
+          {
+            "label": "Batches Failed",
+            "field": "performance_metrics.batches_failed"
+          }
+        ]
+      },
+      "agent_info": {
+        "title": "AGENT METADATA",
+        "fields": [
+          {
+            "label": "Pipeline Step",
+            "field": "agent_metadata.pipeline_step"
+          },
+          {
+            "label": "Step Name",
+            "field": "agent_metadata.pipeline_step_name"
+          },
+          {
+            "label": "Confidence",
+            "field": "agent_metadata.confidence",
+            "format": "percentage"
+          },
+          {
+            "label": "Follow-up Agent",
+            "field": "agent_metadata.follow_up_agent"
+          },
+          {
+            "label": "Success Criteria Met",
+            "field": "agent_metadata.success_criteria_met"
+          },
+          {
+            "label": "Parent Run ID",
+            "field": "agent_metadata.parent_run_id"
+          }
+        ]
+      },
+      "top_survivors": {
+        "title": "TOP 10 SURVIVORS",
+        "table": true,
+        "columns": [
+          {
+            "header": "Rank",
+            "field": "rank",
+            "width": 6,
+            "align": "right"
+          },
+          {
+            "header": "Seed",
+            "field": "seed",
+            "width": 12,
+            "align": "right"
+          },
+          {
+            "header": "Matches",
+            "field": "matches",
+            "width": 8,
+            "align": "right"
+          },
+          {
+            "header": "Rate",
+            "field": "match_rate",
+            "width": 8,
+            "format": "percentage",
+            "align": "right"
+          },
+          {
+            "header": "Skip",
+            "field": "skip_length",
+            "width": 6,
+            "align": "right"
+          },
+          {
+            "header": "Direction",
+            "field": "direction",
+            "width": 14,
+            "align": "left"
+          }
+        ],
+        "max_rows": 10
+      }
+    },
+    "footer": [
+      "================================================================================",
+      "Output files:",
+      "  - Summary: {summary_file}",
+      "  - CSV: {csv_file}",
+      "  - JSON: {json_file}",
+      "  - Detailed: {detailed_file}",
+      "================================================================================"
+    ]
+  },
+  "csv_export_template": {
+    "_description": "CSV column definitions and ordering",
+    "survivor_columns": [
+      {
+        "name": "seed",
+        "header": "Seed",
+        "type": "integer"
+      },
+      {
+        "name": "matches",
+        "header": "Matches",
+        "type": "integer"
+      },
+      {
+        "name": "total_draws",
+        "header": "Total_Draws",
+        "type": "integer"
+      },
+      {
+        "name": "match_rate",
+        "header": "Match_Rate",
+        "type": "float",
+        "precision": 6
+      },
+      {
+        "name": "skip_length",
+        "header": "Skip_Length",
+        "type": "integer"
+      },
+      {
+        "name": "direction",
+        "header": "Direction",
+        "type": "string"
+      },
+      {
+        "name": "confidence_score",
+        "header": "Confidence",
+        "type": "float",
+        "precision": 4
+      }
+    ],
+    "metadata_rows": {
+      "enabled": true,
+      "rows": [
+        {
+          "key": "Analysis Type",
+          "value_field": "run_metadata.analysis_type"
+        },
+        {
+          "key": "Run ID",
+          "value_field": "run_metadata.run_id"
+        },
+        {
+          "key": "PRNG Type",
+          "value_field": "analysis_parameters.prng_type"
+        },
+        {
+          "key": "Seeds Tested",
+          "value_field": "analysis_parameters.total_seeds_tested"
+        },
+        {
+          "key": "Threshold",
+          "value_field": "analysis_parameters.threshold"
+        },
+        {
+          "key": "Total Survivors",
+          "value_field": "results_summary.total_survivors"
+        },
+        {
+          "key": "Survival Rate",
+          "value_field": "results_summary.survival_rate"
+        },
+        {
+          "separator": true
+        }
+      ]
+    }
+  },
+  "json_export_template": {
+    "_description": "JSON structure for machine-readable output",
+    "structure": {
+      "schema_version": "1.0.3",
+      "metadata": {
+        "include": [
+          "run_metadata",
+          "analysis_parameters",
+          "data_sources"
+        ]
+      },
+      "results": {
+        "include": [
+          "results_summary",
+          "performance_metrics",
+          "agent_metadata"
+        ]
+      },
+      "survivors": {
+        "format": "array",
+        "max_in_summary": 100,
+        "full_in_detailed": true,
+        "fields": [
+          "seed",
+          "matches",
+          "match_rate",
+          "skip_length",
+          "direction"
+        ]
+      }
+    },
+    "formatting": {
+      "indent": 2,
+      "sort_keys": false,
+      "ensure_ascii": false
+    }
+  },
+  "format_functions": {
+    "_description": "How to format different data types",
+    "comma": {
+      "description": "Format integers with comma separators",
+      "example": "1000000 -> 1,000,000"
+    },
+    "comma_float": {
+      "description": "Format floats with comma separators",
+      "example": "1000000.5 -> 1,000,000.5"
+    },
+    "percentage": {
+      "description": "Format as percentage with 2 decimals",
+      "example": "0.041 -> 4.10%"
+    },
+    "percentage_sci": {
+      "description": "Format small percentages in scientific notation",
+      "example": "0.0000278 -> 2.78e-3%"
+    },
+    "duration": {
+      "description": "Format seconds as human-readable duration",
+      "example": "3907.5 -> 1h 5m 7.5s"
+    },
+    "datetime": {
+      "description": "Format ISO datetime as readable string",
+      "example": "2025-11-03T17:25:08-08:00 -> Nov 3, 2025 5:25 PM PST"
+    },
+    "memory": {
+      "description": "Format GB with unit",
+      "example": "14.2 -> 14.2 GB"
+    },
+    "temperature": {
+      "description": "Format temperature with unit",
+      "example": "78.5 -> 78.5°C"
+    },
+    "uppercase": {
+      "description": "Convert to uppercase",
+      "example": "bidirectional_sieve -> BIDIRECTIONAL_SIEVE"
+    },
+    "list": {
+      "description": "Format array as comma-separated string",
+      "example": "['evening', 'midday'] -> evening, midday"
+    }
+  },
+  "computed_fields": {
+    "_description": "Fields computed from other fields",
+    "seed_range": {
+      "format": "{seed_start:,} to {seed_end:,}",
+      "fields": [
+        "analysis_parameters.seed_start",
+        "analysis_parameters.seed_end"
+      ]
+    },
+    "skip_range": {
+      "format": "{skip_min} to {skip_max}",
+      "fields": [
+        "analysis_parameters.skip_min",
+        "analysis_parameters.skip_max"
+      ]
+    }
+  },
+  "analysis_type_templates": {
+    "_description": "Custom templates for specific analysis types",
+    "bidirectional_sieve": {
+      "include_sections": [
+        "run_info",
+        "parameters",
+        "results",
+        "performance",
+        "agent_info",
+        "top_survivors"
+      ],
+      "highlight_fields": [
+        "bidirectional_survivors",
+        "best_seed"
+      ]
+    },
+    "forward_sieve": {
+      "include_sections": [
+        "run_info",
+        "parameters",
+        "results",
+        "performance",
+        "agent_info",
+        "top_survivors"
+      ],
+      "highlight_fields": [
+        "forward_survivors",
+        "best_seed"
+      ]
+    },
+    "reverse_sieve": {
+      "include_sections": [
+        "run_info",
+        "parameters",
+        "results",
+        "performance",
+        "agent_info",
+        "top_survivors"
+      ],
+      "highlight_fields": [
+        "reverse_survivors",
+        "best_seed"
+      ]
+    },
+    "window_optimization": {
+      "include_sections": [
+        "run_info",
+        "parameters",
+        "results",
+        "performance",
+        "agent_info"
+      ],
+      "additional_section": {
+        "title": "OPTIMIZATION RESULTS",
+        "fields": [
+          {
+            "label": "Optimal Window Size",
+            "field": "custom.optimal_window_size"
+          },
+          {
+            "label": "Optimal Offset",
+            "field": "custom.optimal_offset"
+          },
+          {
+            "label": "Optimization Method",
+            "field": "custom.optimization_method"
+          }
+        ]
+      }
+    },
+    "dataset_correlation": {
+      "include_sections": [
+        "run_info",
+        "parameters",
+        "results",
+        "performance",
+        "agent_info"
+      ],
+      "highlight_fields": [
+        "total_survivors"
+      ]
+    },
+    "scorer_meta_optimization": {
+      "include_sections": [
+        "run_info",
+        "parameters",
+        "results",
+        "performance",
+        "agent_info",
+        "top_survivors"
+      ],
+      "highlight_fields": [
+        "total_survivors",
+        "confidence"
+      ]
+    }
+  },
+  "output_file_naming": {
+    "_description": "How to name output files",
+    "pattern": "{analysis_type}_{prng_type}_{run_id}",
+    "summary_suffix": "_summary.txt",
+    "csv_suffix": ".csv",
+    "json_suffix": "_top100.json",
+    "detailed_suffix": "_detailed.json",
+    "sanitize_characters": true
+  },
+  "_revision_history": [
+    {
+      "version": "1.0.0",
+      "date": "2025-11-03",
+      "changes": "Initial template creation with support for all 24 analysis types",
+      "author": "System"
+    },
+    {
+      "version": "1.0.1",
+      "date": "2025-12-01",
+      "changes": "Added agent_metadata to JSON export structure. Added agent_info section for text summaries. Updated schema_version to 1.0.3. Added dataset_correlation and scorer_meta_optimization analysis type templates.",
+      "author": "Claude + Michael"
+    }
+  ]
+}
