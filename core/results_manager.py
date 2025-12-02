@@ -498,6 +498,7 @@ class ResultsManager:
             'analysis_parameters': data.get('analysis_parameters', {}),
             'results_summary': data.get('results_summary', {}),
             'performance_metrics': data.get('performance_metrics', {}),
+            'agent_metadata': data.get('agent_metadata', {}),
         }
         
         # Add survivors (limited or full)
