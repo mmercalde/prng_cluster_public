@@ -399,7 +399,8 @@ def run_bayesian_optimization(
     output_config: str,
     seed_count: int = 10_000_000,
     prng_type: str = 'java_lcg',
-    test_both_modes: bool = False  # NEW PARAMETER!
+    test_both_modes: bool = False,
+    strategy_name: str = 'bayesian'  # 'bayesian' or 'random'
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -472,7 +473,7 @@ def run_bayesian_optimization(
         seed_count=seed_count,
         prng_base=prng_type,
         test_both_modes=test_both_modes,  # NEW: Pass through to integration layer
-        strategy_name='bayesian',
+        strategy_name=strategy_name,
         max_iterations=trials,
         output_file='window_optimization_results.json'
     )
@@ -694,8 +695,8 @@ def main():
     )
 
     # Mode selection
-    parser.add_argument('--strategy', type=str, choices=['bayesian'],
-                       help='Optimization strategy (currently only bayesian supported)')
+    parser.add_argument('--strategy', type=str, choices=['bayesian', 'random', 'grid', 'evolutionary'],
+                       help='Optimization strategy: bayesian (recommended), random, grid, evolutionary')
     parser.add_argument('--config-file', type=str,
                        help='Run with existing optimal config (skips optimization)')
 
@@ -755,6 +756,61 @@ def main():
         else:
             print(f"   Survivors generated for constant skip only")
 
+    elif args.strategy == 'random':
+        # RANDOM SEARCH MODE
+        print("\n🎲 Running Random Search optimization...")
+        print(f"   Trials: {args.trials}")
+        print(f"   PRNG: {args.prng_type}")
+        
+        # Use same infrastructure as bayesian but with RandomSearch strategy
+        results = run_bayesian_optimization(
+            lottery_file=args.lottery_file,
+            trials=args.trials,
+            output_config=args.output,
+            seed_count=args.max_seeds if args.max_seeds else 10_000_000,
+            prng_type=args.prng_type,
+            test_both_modes=args.test_both_modes,
+            strategy_name='random'  # Override to use RandomSearch
+        )
+        print("\n✅ Random search complete!")
+        print(f"   Best score: {results['best_score']:.2f}")
+    
+    elif args.strategy == 'grid':
+        # GRID SEARCH MODE
+        print("\n📊 Running Grid Search optimization...")
+        print(f"   Trials: {args.trials}")
+        print(f"   PRNG: {args.prng_type}")
+        
+        results = run_bayesian_optimization(
+            lottery_file=args.lottery_file,
+            trials=args.trials,
+            output_config=args.output,
+            seed_count=args.max_seeds if args.max_seeds else 10_000_000,
+            prng_type=args.prng_type,
+            test_both_modes=args.test_both_modes,
+            strategy_name='grid'
+        )
+        print("\n✅ Grid search complete!")
+        print(f"   Best score: {results['best_score']:.2f}")
+    
+    elif args.strategy == 'evolutionary':
+        # EVOLUTIONARY SEARCH MODE
+        print("\n🧬 Running Evolutionary Search optimization...")
+        print(f"   Trials: {args.trials}")
+        print(f"   PRNG: {args.prng_type}")
+        
+        results = run_bayesian_optimization(
+            lottery_file=args.lottery_file,
+            trials=args.trials,
+            output_config=args.output,
+            seed_count=args.max_seeds if args.max_seeds else 10_000_000,
+            prng_type=args.prng_type,
+            test_both_modes=args.test_both_modes,
+            strategy_name='evolutionary'
+        )
+        print("\n✅ Evolutionary search complete!")
+        print(f"   Best score: {results['best_score']:.2f}")
+        
     elif args.config_file:
         # RUN WITH EXISTING CONFIG MODE
         if not Path(args.config_file).exists():

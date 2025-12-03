@@ -2416,7 +2416,7 @@ def main():
          'philox4x32', 'philox4x32_hybrid',
          'sfc64', 'sfc64_hybrid', 'sfc64_reverse', 'sfc64_hybrid_reverse'],
                         help='PRNG type for sieve analysis')
-    parser.add_argument('--window-size', type=int, choices=[512, 768, 1024], default=512,
+    parser.add_argument('--window-size', type=int, default=512,
                         help='Sieve window size (512/768/1024 draws)')
     parser.add_argument('--k-sigma', type=float, default=6.0,
                         help='Statistical threshold (k-sigma)')

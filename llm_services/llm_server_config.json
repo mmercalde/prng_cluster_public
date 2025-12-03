@@ -1,0 +1,144 @@
+{
+    "orchestrator": {
+        "model": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+        "port": 8080,
+        "gpu_id": 0,
+        "context_length": 16384,
+        "max_tokens": 2048,
+        "batch_size": 512,
+        "threads": 8,
+        "n_gpu_layers": 99,
+        "description": "Code generation, planning, JSON manipulation, result synthesis",
+        "vram_estimate_gb": 8.5,
+        "expected_speed_tps": 25,
+        "capabilities": [
+            "code_generation",
+            "json_manipulation",
+            "planning",
+            "orchestration",
+            "result_synthesis",
+            "config_generation"
+        ]
+    },
+    "math": {
+        "model": "Qwen2.5-Math-7B-Instruct-Q5_K_M.gguf",
+        "port": 8081,
+        "gpu_id": 1,
+        "context_length": 8192,
+        "max_tokens": 512,
+        "batch_size": 512,
+        "threads": 8,
+        "n_gpu_layers": 99,
+        "description": "PRNG calculations, modular arithmetic, statistical analysis, residue computations",
+        "vram_estimate_gb": 5.5,
+        "expected_speed_tps": 45,
+        "capabilities": [
+            "modular_arithmetic",
+            "prng_state_calculations",
+            "statistical_analysis",
+            "residue_computations",
+            "probability_calculations",
+            "confidence_scoring"
+        ]
+    },
+    "routing": {
+        "math_keywords": [
+            "residue",
+            "modulo",
+            "modular",
+            "state =",
+            "seed",
+            "probability",
+            "calculate",
+            "compute",
+            "lcg",
+            "xorshift",
+            "prng",
+            "xorshifted",
+            "statistical",
+            "confidence",
+            "threshold",
+            "entropy",
+            "bitwise",
+            "survivor",
+            "match_rate",
+            "skip",
+            "pcg",
+            "mersenne",
+            "mt19937",
+            "chi-squared",
+            "distribution",
+            "variance",
+            "standard deviation",
+            "correlation",
+            "randomness",
+            "forward sieve",
+            "reverse sieve",
+            "bidirectional",
+            "skip interval",
+            "gap-aware",
+            "state reconstruction",
+            "temper",
+            "twist",
+            "pcg output",
+            "xoroshiro",
+            "lcg step",
+            "survivor scoring",
+            "residue filter",
+            "window size",
+            "survival rate",
+            "hybrid sieve"
+        ],
+        "default_temperature": 0.7,
+        "request_timeout_seconds": 120,
+        "auto_retry_on_timeout": true,
+        "max_retries": 2,
+        "context_reset_threshold": 14000
+    },
+    "delegation": {
+        "enabled": true,
+        "trigger": "[MATH_DELEGATE]",
+        "description": "Orchestrator can delegate math-heavy tasks to Math Specialist"
+    },
+    "human_override": {
+        "enabled": true,
+        "triggers": [
+            "HUMAN_REVIEW_REQUIRED",
+            "FLAG_FOR_REVIEW",
+            "REQUIRES_HUMAN_VERIFICATION",
+            "UNCERTAIN_RESULT",
+            "LOW_CONFIDENCE_WARNING"
+        ],
+        "action": "halt_autonomous_execution"
+    },
+    "logging": {
+        "enabled": true,
+        "rotating_logs": true,
+        "max_file_size_mb": 10,
+        "backup_count": 5,
+        "log_prompts": true,
+        "log_responses": true,
+        "log_latency": true,
+        "log_agent_identity": true
+    },
+    "health": {
+        "check_interval_seconds": 60,
+        "restart_on_failure": true,
+        "max_restart_attempts": 3,
+        "alert_on_failure": true
+    },
+    "paths": {
+        "model_directory": "models",
+        "log_directory": "logs/llm",
+        "llama_cpp_path": "~/llama.cpp"
+    },
+    "resource_limits": {
+        "max_concurrent_requests_per_server": 4,
+        "max_queue_depth": 10,
+        "memory_warning_threshold_gb": 11.0
+    },
+    "schema_version": "1.0.5",
+    "config_version": "1.0.5",
+    "last_updated": "2025-12-01",
+    "review_status": "Team Beta approved with 7 fixes implemented"
+}

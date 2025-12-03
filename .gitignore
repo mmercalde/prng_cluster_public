@@ -71,3 +71,5 @@ logs/
 # --- OS / Misc ---
 .DS_Store
 Thumbs.db
+models/*.gguf
+*.gguf
