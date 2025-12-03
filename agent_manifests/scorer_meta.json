@@ -1,0 +1,43 @@
+{
+  "agent_name": "scorer_meta_agent",
+  "version": "1.0.0",
+  "pipeline_step": 2,
+  "description": "Optimizes scorer parameters via distributed Optuna (26 GPUs, PULL architecture)",
+  
+  "inputs": {
+    "required": [
+      "bidirectional_survivors.json",
+      "train_history.json",
+      "holdout_history.json"
+    ],
+    "optional": []
+  },
+  
+  "actions": [
+    {
+      "name": "run_scorer_meta_optimization",
+      "type": "subprocess",
+      "command_template": "bash run_scorer_meta_optimizer.sh {trials}"
+    }
+  ],
+  
+  "default_params": {
+    "trials": 100
+  },
+  
+  "parameter_options": {
+    "trials": "Number of Optuna trials (2 for quick test, 100 for production)"
+  },
+  
+  "outputs": [
+    "optimal_scorer_config.json"
+  ],
+  
+  "follow_up_agents": ["full_scoring_agent"],
+  
+  "cluster_resources": {
+    "nodes": ["zeus", "rig-6600", "rig-6600b"],
+    "total_gpus": 26,
+    "architecture": "PULL (no shared storage)"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "agent_name": "window_optimizer_agent",
+  "version": "1.2.1",
+  "pipeline_step": 1,
+  "description": "Optimizes window parameters using configurable search strategies",
+  "inputs": {
+    "required": [],
+    "optional": [
+      "lottery_file",
+      "trials",
+      "prng_type",
+      "strategy",
+      "max_seeds"
+    ]
+  },
+  "actions": [
+    {
+      "name": "run_window_optimization",
+      "type": "subprocess",
+      "command_template": "python3 window_optimizer.py --strategy {strategy} --lottery-file {lottery_file} --trials {trials} --output {output_file} --prng-type {prng_type} --max-seeds {max_seeds} --test-both-modes"
+    }
+  ],
+  "default_params": {
+    "strategy": "bayesian",
+    "lottery_file": "synthetic_lottery.json",
+    "trials": 20,
+    "output_file": "optimal_window_config.json",
+    "prng_type": "java_lcg",
+    "max_seeds": 10000000
+  },
+  "parameter_options": {
+    "strategy": {
+      "bayesian": "Optuna TPE - learns from previous tests, most efficient (RECOMMENDED)",
+      "random": "Random sampling - good baseline, explores widely",
+      "grid": "Exhaustive grid search - tests predefined configurations",
+      "evolutionary": "Genetic algorithm - evolves configurations over generations"
+    },
+    "prng_type": "See prng_registry.py for full list (46 algorithms)"
+  },
+  "outputs": [
+    "optimal_window_config.json",
+    "bidirectional_survivors.json",
+    "train_history.json",
+    "holdout_history.json"
+  ],
+  "follow_up_agents": [
+    "scorer_meta_agent"
+  ],
+  "cluster_resources": {
+    "nodes": [
+      "zeus",
+      "rig-6600",
+      "rig-6600b"
+    ],
+    "total_gpus": 26,
+    "total_tflops": 285.69
+  }
+}

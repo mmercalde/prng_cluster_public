@@ -1,0 +1,43 @@
+{
+  "agent_name": "prediction_agent",
+  "description": "Generate prediction pools from trained model",
+  "pipeline_step": 6,
+  "pipeline_step_name": "prediction",
+  
+  "inputs": [
+    {"file": "models/anti_overfit/best_model.pth", "required": true},
+    {"file": "survivors_with_scores.json", "required": true}
+  ],
+  
+  "outputs": [
+    "prediction_pool.json",
+    "prediction_confidence_map.json"
+  ],
+  
+  "actions": [
+    {
+      "type": "run_script",
+      "script": "prediction_generator.py",
+      "args_map": {
+        "model": "model_path",
+        "survivors": "survivors_file",
+        "output": "output_file",
+        "top-k": "pool_size",
+        "min-confidence": "min_confidence"
+      },
+      "timeout": 1800
+    }
+  ],
+  
+  "default_params": {
+    "model_path": "models/anti_overfit/best_model.pth",
+    "survivors_file": "survivors_with_scores.json",
+    "output_file": "prediction_pool.json",
+    "pool_size": 100,
+    "min_confidence": 0.7
+  },
+  
+  "follow_up_agents": [],
+  "success_condition": "prediction_pool.json exists",
+  "retry": 2
+}

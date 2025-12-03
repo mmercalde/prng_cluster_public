@@ -1,0 +1,38 @@
+{
+  "agent_name": "full_scoring_agent",
+  "description": "Score all survivors with optimized parameters",
+  "pipeline_step": 3,
+  "pipeline_step_name": "full_scoring",
+  
+  "inputs": [
+    {"file": "bidirectional_survivors.json", "required": true},
+    {"file": "optimal_scorer_config.json", "required": true}
+  ],
+  
+  "outputs": ["survivors_with_scores.json"],
+  
+  "actions": [
+    {
+      "type": "run_script",
+      "script": "survivor_scorer.py",
+      "args_map": {
+        "survivors": "survivors_file",
+        "config": "scorer_config_file",
+        "output": "output_file",
+        "prng-type": "prng_type"
+      },
+      "timeout": 3600
+    }
+  ],
+  
+  "default_params": {
+    "survivors_file": "bidirectional_survivors.json",
+    "scorer_config_file": "optimal_scorer_config.json",
+    "output_file": "survivors_with_scores.json",
+    "prng_type": "java_lcg"
+  },
+  
+  "follow_up_agents": ["ml_meta_agent"],
+  "success_condition": "survivors_with_scores.json exists",
+  "retry": 2
+}

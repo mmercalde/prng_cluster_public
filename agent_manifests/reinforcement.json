@@ -1,0 +1,59 @@
+{
+  "agent_name": "reinforcement_agent",
+  "description": "Train ML model with anti-overfit K-fold validation",
+  "pipeline_step": 5,
+  "pipeline_step_name": "anti_overfit_training",
+  
+  "inputs": [
+    {"file": "survivors_with_scores.json", "required": true},
+    {"file": "reinforcement_engine_config.json", "required": true}
+  ],
+  
+  "outputs": [
+    "models/anti_overfit/best_model.pth",
+    "training_metrics.json"
+  ],
+  
+  "actions": [
+    {
+      "type": "run_script",
+      "script": "reinforcement_engine.py",
+      "args_map": {
+        "config": "config_file",
+        "lottery-data": "lottery_data_file",
+        "distributed": "distributed_mode"
+      },
+      "timeout": 14400
+    }
+  ],
+  
+  "default_params": {
+    "config_file": "reinforcement_engine_config.json",
+    "lottery_data_file": "daily3.json",
+    "distributed_mode": false,
+    "model": {
+      "hidden_layers": [256, 128, 64],
+      "dropout": 0.3,
+      "activation": "relu",
+      "batch_norm": true
+    },
+    "training": {
+      "epochs": 100,
+      "batch_size": 64,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "early_stopping_patience": 10,
+      "validation_split": 0.2
+    },
+    "global_state": {
+      "gap_threshold": 500,
+      "window_size": 1000,
+      "regime_change_threshold": 0.15,
+      "marker_numbers": [390, 804, 575]
+    }
+  },
+  
+  "follow_up_agents": ["prediction_agent"],
+  "success_condition": "models/anti_overfit/best_model.pth exists",
+  "retry": 1
+}

@@ -1,0 +1,41 @@
+{
+  "agent_name": "ml_meta_agent",
+  "description": "Optimize ML model architecture via Optuna",
+  "pipeline_step": 4,
+  "pipeline_step_name": "ml_meta_optimizer",
+  
+  "inputs": [
+    {"file": "survivors_with_scores.json", "required": true}
+  ],
+  
+  "outputs": [
+    "reinforcement_engine_config.json",
+    "best_model_architecture.json"
+  ],
+  
+  "actions": [
+    {
+      "type": "run_script",
+      "script": "meta_prediction_optimizer_anti_overfit.py",
+      "args_map": {
+        "survivors": "survivors_file",
+        "trials": "ml_trials",
+        "output": "ml_config_output"
+      },
+      "timeout": 7200
+    }
+  ],
+  
+  "default_params": {
+    "survivors_file": "survivors_with_scores.json",
+    "ml_trials": 50,
+    "ml_config_output": "reinforcement_engine_config.json",
+    "hidden_layers_options": ["128_64", "256_128", "256_128_64", "512_256_128"],
+    "dropout_range": [0.1, 0.5],
+    "learning_rate_range": [0.0001, 0.01]
+  },
+  
+  "follow_up_agents": ["reinforcement_agent"],
+  "success_condition": "reinforcement_engine_config.json exists",
+  "retry": 1
+}
