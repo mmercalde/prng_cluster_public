@@ -54,5 +54,12 @@
     ],
     "total_gpus": 26,
     "total_tflops": 285.69
+  },
+  "success_condition": {
+    "type": "file_exists",
+    "files": [
+      "optimal_window_config.json",
+      "bidirectional_survivors.json"
+    ]
   }
 }
