@@ -105,6 +105,67 @@ try:
 except ImportError:
     HYBRID_AVAILABLE = False
     print("Note: hybrid_strategy module not available. Hybrid mode disabled.")
+import atexit
+
+# Progress monitor auto-launch
+_progress_monitor_process = None
+_progress_monitor_tmux_pane = None
+
+def start_progress_monitor():
+    """Auto-start progress_monitor.py in a tmux split pane."""
+    global _progress_monitor_tmux_pane
+    import os, subprocess
+    
+    monitor_script = os.path.expanduser('~/distributed_prng_analysis/progress_monitor.py')
+    
+    if not os.path.exists(monitor_script):
+        print("⚠️  progress_monitor.py not found - progress display disabled")
+        return False
+    
+    # Check if monitor already running (avoid duplicates)
+    result = subprocess.run(['pgrep', '-f', 'progress_monitor.py'], capture_output=True)
+    if result.returncode == 0:
+        print("📊 Progress monitor already running")
+        return True
+    
+    in_tmux = os.environ.get('TMUX') is not None
+    
+    try:
+        if in_tmux:
+            result = subprocess.run(
+                ['tmux', 'split-window', '-h', '-p', '35', 'python3', monitor_script],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print("📊 Progress monitor started in tmux pane")
+                _progress_monitor_tmux_pane = True
+                return True
+        else:
+            subprocess.run(['tmux', 'kill-session', '-t', 'prng_monitor'], capture_output=True)
+            result = subprocess.run(
+                ['tmux', 'new-session', '-d', '-s', 'prng_monitor', 'python3', monitor_script],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print("📊 Progress monitor started - attach with: tmux attach -t prng_monitor")
+                _progress_monitor_tmux_pane = False
+                return True
+    except Exception as e:
+        print(f"⚠️  Could not start progress monitor: {e}")
+    return False
+
+def stop_progress_monitor():
+    """Stop the progress monitor gracefully."""
+    global _progress_monitor_tmux_pane
+    try:
+        if _progress_monitor_tmux_pane is False:
+            import subprocess
+            subprocess.run(['tmux', 'kill-session', '-t', 'prng_monitor'], capture_output=True)
+    except:
+        pass
+
+atexit.register(stop_progress_monitor)
+
 
 @dataclass
 class MultiGPUCoordinator:
@@ -152,6 +213,7 @@ class MultiGPUCoordinator:
         # --- END ADDED ---
 
         self.load_configuration()
+        self._progress_monitor_started = False  # Progress monitor state
 
     def load_configuration(self):
         """Load node configuration from JSON file"""
@@ -1153,6 +1215,11 @@ class MultiGPUCoordinator:
                                       total_seeds: int, samples: int, lmax: int,
                                       grid_size: int) -> Dict[str, Any]:
         """Execute with true parallel dynamic distribution - no sequential waiting"""
+        # Auto-start progress monitor in second terminal
+        if not self._progress_monitor_started:
+            if start_progress_monitor():
+                self._progress_monitor_started = True
+
         # Initialize progress writer for external monitoring
         if PROGRESS_WRITER_AVAILABLE:
             self._progress_writer = ProgressWriter("Distributed GPU Processing", total_jobs=100, total_seeds=total_seeds)
