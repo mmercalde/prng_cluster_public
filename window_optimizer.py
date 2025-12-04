@@ -24,6 +24,7 @@ The key feature: This runs REAL sieves on all 26 GPUs!
 """
 
 import json
+from datetime import datetime
 import sys
 import argparse
 import random
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, asdict
 from abc import ABC, abstractmethod
+from integration.metadata_writer import inject_agent_metadata
 
 # ============================================================================
 # DATA STRUCTURES (Required by window_optimizer_integration_final.py)
@@ -492,6 +494,25 @@ def run_bayesian_optimization(
         'seed_count': seed_count,
         'optimization_score': results['best_score']
     }
+
+    # Inject agent_metadata for pipeline chaining
+    run_id = f"step1_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(str(results)) % 100000:05d}"
+    optimal_config = inject_agent_metadata(
+        optimal_config,
+        inputs=[{"file": lottery_file, "required": True}],
+        outputs=["optimal_window_config.json", "bidirectional_survivors.json",
+                 "train_history.json", "holdout_history.json"],
+        pipeline_step=1,
+        follow_up_agent="scorer_meta_agent",
+        confidence=min(0.95, results['best_score'] * 10) if results['best_score'] > 0 else 0.5,
+        suggested_params={
+            "window_size": best_config['window_size'],
+            "threshold": 0.01,
+            "k_folds": 5
+        },
+        reasoning=f"Optimization found {results.get('survivors_count', 'N/A')} survivors with score {results['best_score']:.4f}"
+    )
+    optimal_config["run_id"] = run_id
 
     with open(output_config, 'w') as f:
         json.dump(optimal_config, f, indent=2)
