@@ -22,6 +22,8 @@ import subprocess
 import time
 import argparse
 from pathlib import Path
+from datetime import datetime
+from integration.metadata_writer import inject_agent_metadata
 import optuna
 
 # --- Configuration ---
@@ -191,11 +193,30 @@ def main():
     print(json.dumps(study.best_params, indent=2))
     print("="*80)
 
-    # Save the winning parameters to the file
-    with open(FINAL_CONFIG_FILE, 'w') as f:
-        json.dump(study.best_params, f, indent=2)
+    # Save the winning parameters with agent_metadata
+    run_id = f"step2_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(str(study.best_params)) % 100000:05d}"
+    output_config = dict(study.best_params)
+    output_config = inject_agent_metadata(
+        output_config,
+        inputs=[
+            {"file": "bidirectional_survivors.json", "required": True},
+            {"file": "train_history.json", "required": True},
+            {"file": "holdout_history.json", "required": True}
+        ],
+        outputs=["optimal_scorer_config.json"],
+        pipeline_step=2,
+        follow_up_agent="full_scoring_agent",
+        confidence=min(0.95, study.best_value) if study.best_value else 0.5,
+        suggested_params={"best_accuracy": study.best_value},
+        reasoning=f"Scorer meta-optimization found best accuracy {study.best_value:.4f} after {len(study.trials)} trials"
+    )
+    output_config["run_id"] = run_id
     
+    with open(FINAL_CONFIG_FILE, 'w') as f:
+        json.dump(output_config, f, indent=2)
     print(f"Saved best configuration to {FINAL_CONFIG_FILE}")
+    print(f"   Run ID: {run_id}")
+    print(f"   agent_metadata: injected ✓")
 
 if __name__ == "__main__":
     main()
