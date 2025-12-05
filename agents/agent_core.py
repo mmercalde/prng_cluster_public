@@ -299,20 +299,19 @@ Your response must be valid JSON only, no markdown or explanation.
         if success and outputs_exist:
             confidence = 0.85  # Base confidence
             
-            # Boost confidence if LLM validates
+            # Boost confidence if LLM validates (graceful degradation if servers down)
             if self.llm:
-                validation = self.think(f"""
-                Agent {self.manifest['agent_name']} completed with outputs: {self.manifest.get('outputs', [])}
-                Success condition '{success_condition}' evaluated to: {success}
-                
-                On a scale of 0.0 to 1.0, what confidence should we have in these results?
-                Reply with just a number between 0.0 and 1.0.
-                """)
                 try:
+                    validation = self.think(f"""
+                    Agent {self.manifest['agent_name']} completed with outputs: {self.manifest.get('outputs', [])}
+                    Success condition '{success_condition}' evaluated to: {success}
+                    On a scale of 0.0 to 1.0, what confidence should we have in these results?
+                    Reply with just a number between 0.0 and 1.0.
+                    """)
                     llm_confidence = float(validation.strip())
                     confidence = (confidence + llm_confidence) / 2
-                except ValueError:
-                    pass
+                except (ConnectionError, ValueError, Exception) as e:
+                    logger.warning(f"LLM evaluation skipped (servers not running): {type(e).__name__}")
         
         # Build reasoning
         reasoning = f"Agent completed. Success: {success}, Outputs exist: {outputs_exist}"

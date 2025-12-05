@@ -461,7 +461,7 @@ def run_bayesian_optimization(
 
     # Initialize coordinator
     print("🔧 Initializing 26-GPU coordinator...")
-    coordinator = MultiGPUCoordinator(resume_policy="restart")
+    coordinator = MultiGPUCoordinator(config_file="distributed_config.json", resume_policy="restart")
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -605,7 +605,7 @@ def run_with_config(
 
     # Initialize coordinator
     print("🔧 Initializing coordinator...")
-    coordinator = MultiGPUCoordinator(resume_policy="restart")
+    coordinator = MultiGPUCoordinator(config_file="distributed_config.json", resume_policy="restart")
 
     # Add integration
     add_window_optimizer_to_coordinator()
