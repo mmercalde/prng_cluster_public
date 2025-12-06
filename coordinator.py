@@ -1306,7 +1306,7 @@ class MultiGPUCoordinator:
                 work_queue.put(work_item)
         else:
             # Original seed-based job creation
-            base_chunk_size = max(500, total_seeds // 100) # Dynamic chunk sizing
+            base_chunk_size = max(19000, total_seeds // 100) # Dynamic chunk sizing
             current_seed = 0 # <-- CORRECTED: Start from 0
             job_id = 0
             print(f"Creating work chunks (base size: {base_chunk_size:,})...")

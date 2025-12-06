@@ -196,7 +196,7 @@ class ClusterProgress:
         
         return table
     
-    def _make_progress_panel(self) -> Panel:
+    def _make_progress_panel(self) -> "Panel":
         """Create progress panel."""
         elapsed = time.time() - self.start_time
         pct = (self.completed_jobs / self.total_jobs * 100) if self.total_jobs > 0 else 0
@@ -223,7 +223,7 @@ class ClusterProgress:
         
         return Panel(text, title="Progress", border_style="green")
     
-    def _render(self) -> Layout:
+    def _render(self) -> "Layout":
         """Render full display."""
         layout = Layout()
         layout.split_column(
