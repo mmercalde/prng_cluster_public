@@ -1,6 +1,6 @@
 {
   "agent_name": "window_optimizer_agent",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "pipeline_step": 1,
   "description": "Optimizes window parameters using configurable search strategies",
   "inputs": {
@@ -10,14 +10,16 @@
       "trials",
       "prng_type",
       "strategy",
-      "max_seeds"
+      "max_seeds",
+      "forward_threshold",
+      "reverse_threshold"
     ]
   },
   "actions": [
     {
       "name": "run_window_optimization",
       "type": "subprocess",
-      "command_template": "python3 window_optimizer.py --strategy {strategy} --lottery-file {lottery_file} --trials {trials} --output {output_file} --prng-type {prng_type} --max-seeds {max_seeds} --test-both-modes"
+      "command_template": "python3 window_optimizer.py --strategy {strategy} --lottery-file {lottery_file} --trials {trials} --output {output_file} --prng-type {prng_type} --max-seeds {max_seeds} --forward-threshold {forward_threshold} --reverse-threshold {reverse_threshold} --test-both-modes"
     }
   ],
   "default_params": {
@@ -26,7 +28,9 @@
     "trials": 20,
     "output_file": "optimal_window_config.json",
     "prng_type": "java_lcg",
-    "max_seeds": 10000000
+    "max_seeds": 10000000,
+    "forward_threshold": 0.72,
+    "reverse_threshold": 0.81
   },
   "parameter_options": {
     "strategy": {
@@ -61,5 +65,57 @@
       "optimal_window_config.json",
       "bidirectional_survivors.json"
     ]
+  },
+  "parameter_bounds": {
+    "forward_threshold": {
+      "type": "float",
+      "min": 0.5,
+      "max": 0.95,
+      "default": 0.72,
+      "description": "Forward sieve match threshold. Higher = stricter filtering, fewer false positives.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Controls false positive rate in forward sieve. Values 0.70-0.85 typical."
+    },
+    "reverse_threshold": {
+      "type": "float",
+      "min": 0.6,
+      "max": 0.98,
+      "default": 0.81,
+      "description": "Reverse sieve match threshold. Should be >= forward_threshold for stricter validation.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Controls historical consistency check. Values 0.75-0.90 typical."
+    },
+    "window_size": {
+      "type": "int",
+      "min": 128,
+      "max": 4096,
+      "default": 512,
+      "description": "Number of draws in the analysis window.",
+      "optimized_by": "Optuna TPE"
+    },
+    "offset": {
+      "type": "int",
+      "min": 0,
+      "max": 2000,
+      "default": 0,
+      "description": "Starting position offset in the draw history.",
+      "optimized_by": "Optuna TPE"
+    },
+    "skip_min": {
+      "type": "int",
+      "min": 0,
+      "max": 3,
+      "default": 0,
+      "description": "Minimum skip value for PRNG advancement.",
+      "optimized_by": "Optuna TPE"
+    },
+    "skip_max": {
+      "type": "int",
+      "min": 0,
+      "max": 500,
+      "default": 50,
+      "description": "Maximum skip value for PRNG advancement.",
+      "optimized_by": "Optuna TPE"
+    }
   }
 }

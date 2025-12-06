@@ -55,16 +55,18 @@ class WindowConfig:
     sessions: List[str]
     skip_min: int
     skip_max: int
+    forward_threshold: float = 0.72
+    reverse_threshold: float = 0.81
 
     def __hash__(self):
         """Make config hashable for use in sets/dicts"""
         return hash((self.window_size, self.offset, tuple(self.sessions),
-                    self.skip_min, self.skip_max))
+                    self.skip_min, self.skip_max, self.forward_threshold, self.reverse_threshold))
 
     def description(self) -> str:
         """Human-readable description of config"""
         sess = '+'.join(self.sessions)
-        return f"W{self.window_size}_O{self.offset}_{sess}_S{self.skip_min}-{self.skip_max}"
+        return f"W{self.window_size}_O{self.offset}_{sess}_S{self.skip_min}-{self.skip_max}_FT{self.forward_threshold}_RT{self.reverse_threshold}"
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization"""
@@ -85,6 +87,14 @@ class SearchBounds:
     max_skip_min: int = 3
     min_skip_max: int = 0
     max_skip_max: int = 500
+    # Threshold bounds for Optuna optimization
+    min_forward_threshold: float = 0.50
+    max_forward_threshold: float = 0.95
+    min_reverse_threshold: float = 0.60
+    max_reverse_threshold: float = 0.98
+    # Optimized defaults (from prior Optuna runs)
+    default_forward_threshold: float = 0.72
+    default_reverse_threshold: float = 0.81
     session_options: List[List[str]] = None
 
     def __post_init__(self):
@@ -106,7 +116,9 @@ class SearchBounds:
             offset=random.randint(self.min_offset, self.max_offset),
             sessions=random.choice(self.session_options),
             skip_min=skip_min,
-            skip_max=skip_max
+            skip_max=skip_max,
+            forward_threshold=round(random.uniform(self.min_forward_threshold, self.max_forward_threshold), 2),
+            reverse_threshold=round(random.uniform(self.min_reverse_threshold, self.max_reverse_threshold), 2)
         )
 
     def is_valid(self, config: WindowConfig) -> bool:
@@ -115,6 +127,8 @@ class SearchBounds:
                 self.min_offset <= config.offset <= self.max_offset and
                 self.min_skip_min <= config.skip_min <= self.max_skip_min and
                 config.skip_min <= config.skip_max <= self.max_skip_max and
+                self.min_forward_threshold <= config.forward_threshold <= self.max_forward_threshold and
+                self.min_reverse_threshold <= config.reverse_threshold <= self.max_reverse_threshold and
                 config.sessions in self.session_options)
 
 @dataclass
@@ -324,13 +338,14 @@ class WindowOptimizer:
         self.test_configuration_func = None
 
     def test_configuration(self, config: WindowConfig, seed_start: int = 0,
-                          seed_count: int = 10_000_000, threshold: float = 0.01) -> TestResult:
+                          seed_count: int = 10_000_000) -> TestResult:
         """
         Test a configuration.
         This will be overridden by the integration layer to run real sieves.
+        Thresholds are now taken from config.forward_threshold and config.reverse_threshold.
         """
         if self.test_configuration_func:
-            return self.test_configuration_func(config, seed_start, seed_count, threshold)
+            return self.test_configuration_func(config, seed_start, seed_count)
 
         # Fallback placeholder (should never be called in integrated mode)
         return TestResult(
@@ -343,8 +358,7 @@ class WindowOptimizer:
 
     def optimize(self, strategy: SearchStrategy, bounds: SearchBounds,
                 max_iterations: int = 50, scorer: ScoringFunction = None,
-                seed_start: int = 0, seed_count: int = 10_000_000,
-                threshold: float = 0.01) -> Dict[str, Any]:
+                seed_start: int = 0, seed_count: int = 10_000_000) -> Dict[str, Any]:
         """
         Run optimization using the provided strategy.
         
@@ -355,7 +369,7 @@ class WindowOptimizer:
             scorer = BidirectionalCountScorer()
 
         def objective(config: WindowConfig) -> TestResult:
-            return self.test_configuration(config, seed_start, seed_count, threshold)
+            return self.test_configuration(config, seed_start, seed_count)
 
         return strategy.search(objective, bounds, max_iterations, scorer)
 
@@ -507,7 +521,8 @@ def run_bayesian_optimization(
         confidence=min(0.95, results['best_score'] * 10) if results['best_score'] > 0 else 0.5,
         suggested_params={
             "window_size": best_config['window_size'],
-            "threshold": 0.01,
+            "forward_threshold": best_config.get('forward_threshold', 0.72),
+            "reverse_threshold": best_config.get('reverse_threshold', 0.81),
             "k_folds": 5
         },
         reasoning=f"Optimization found {results.get('survivors_count', 'N/A')} survivors with score {results['best_score']:.4f}"
@@ -639,7 +654,8 @@ def run_with_config(
             seed_count=max_seeds,
             prng_base=config.get('prng_type', 'java_lcg'),
             test_both_modes=test_both_modes,  # NEW: Pass through from config
-            threshold=0.01,
+            forward_threshold=config.get('forward_threshold', 0.72),
+            reverse_threshold=config.get('reverse_threshold', 0.81),
             trial_number=iteration,
             accumulator=accumulator
         )
@@ -746,6 +762,12 @@ def main():
     # PRNG type
     parser.add_argument('--prng-type', type=str, default='java_lcg',
                        help='PRNG type to use (any from prng_registry)')
+
+    # Threshold parameters (overrides Optuna optimization for thresholds)
+    parser.add_argument('--forward-threshold', type=float, default=None,
+                       help='Forward sieve threshold (0.5-0.95). If not set, Optuna optimizes it.')
+    parser.add_argument('--reverse-threshold', type=float, default=None,
+                       help='Reverse sieve threshold (0.6-0.98). If not set, Optuna optimizes it.')
 
     # NEW: Variable skip testing flag
     parser.add_argument('--test-both-modes', action='store_true',

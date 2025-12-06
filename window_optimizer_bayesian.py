@@ -41,14 +41,16 @@ class WindowConfig:
     sessions: List[str]
     skip_min: int
     skip_max: int
+    forward_threshold: float = 0.72
+    reverse_threshold: float = 0.81
     
     def __hash__(self):
         return hash((self.window_size, self.offset, tuple(self.sessions), 
-                    self.skip_min, self.skip_max))
+                    self.skip_min, self.skip_max, self.forward_threshold, self.reverse_threshold))
     
     def description(self) -> str:
         sess = '+'.join(self.sessions)
-        return f"W{self.window_size}_O{self.offset}_{sess}_S{self.skip_min}-{self.skip_max}"
+        return f"W{self.window_size}_O{self.offset}_{sess}_S{self.skip_min}-{self.skip_max}_FT{self.forward_threshold}_RT{self.reverse_threshold}"
     
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -203,6 +205,14 @@ class OptunaBayesianSearch:
             skip_max = trial.suggest_int('skip_max', 
                                         max(skip_min, bounds.min_skip_max),
                                         bounds.max_skip_max)
+
+            # Suggest thresholds (Optuna optimizes these!)
+            forward_threshold = trial.suggest_float('forward_threshold',
+                                                   bounds.min_forward_threshold,
+                                                   bounds.max_forward_threshold)
+            reverse_threshold = trial.suggest_float('reverse_threshold',
+                                                   bounds.min_reverse_threshold,
+                                                   bounds.max_reverse_threshold)
             
             # Create configuration
             config = WindowConfig(
@@ -210,7 +220,9 @@ class OptunaBayesianSearch:
                 offset=offset,
                 sessions=bounds.session_options[session_idx],
                 skip_min=skip_min,
-                skip_max=skip_max
+                skip_max=skip_max,
+                forward_threshold=round(forward_threshold, 2),
+                reverse_threshold=round(reverse_threshold, 2)
             )
             
             # Evaluate configuration
@@ -254,6 +266,9 @@ class OptunaBayesianSearch:
         print(f"   Best score: {best_score:.2f}")
         print(f"   Best config: {best_result.config.description()}")
         print(f"   Bidirectional survivors: {best_result.bidirectional_count}")
+        print(f"   📊 Optuna-optimized thresholds:")
+        print(f"      Forward threshold: {best_result.config.forward_threshold}")
+        print(f"      Reverse threshold: {best_result.config.reverse_threshold}")
         print(f"{'='*80}\n")
         
         return {
@@ -342,7 +357,9 @@ class GaussianProcessBayesianSearch:
             offset=offset,
             sessions=bounds.session_options[session_idx],
             skip_min=skip_min,
-            skip_max=skip_max
+            skip_max=skip_max,
+            forward_threshold=bounds.default_forward_threshold,
+            reverse_threshold=bounds.default_reverse_threshold
         )
     
     def _acquisition_function(self, gp, X_train, y_train, X_new, kappa=2.0):
@@ -390,7 +407,9 @@ class GaussianProcessBayesianSearch:
                 offset=random.randint(bounds.min_offset, bounds.max_offset),
                 sessions=random.choice(bounds.session_options),
                 skip_min=random.randint(bounds.min_skip_min, bounds.max_skip_min),
-                skip_max=random.randint(bounds.min_skip_max, bounds.max_skip_max)
+                skip_max=random.randint(bounds.min_skip_max, bounds.max_skip_max),
+                forward_threshold=round(random.uniform(bounds.min_forward_threshold, bounds.max_forward_threshold), 2),
+                reverse_threshold=round(random.uniform(bounds.min_reverse_threshold, bounds.max_reverse_threshold), 2)
             )
             config.skip_max = max(config.skip_max, config.skip_min)
             

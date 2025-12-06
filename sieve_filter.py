@@ -111,12 +111,15 @@ class GPUSieve:
             kernel, config = self._get_kernel(prng_family, custom_params)
             # Prepare inputs
             k = len(residues)
+            # Determine dtype based on PRNG seed_type (uint64 for java_lcg, etc.)
+            seed_type = config.get("seed_type", "uint32")
+            residue_dtype = cp.uint32  # Residues are always 32-bit output values
             # TEMPORAL REVERSAL: Reverse residues for _reverse kernels
             if '_reverse' in prng_family:
                 residues_reversed = residues[::-1]
-                residues_gpu = cp.array(residues_reversed, dtype=cp.uint32)
+                residues_gpu = cp.array(residues_reversed, dtype=residue_dtype)
             else:
-                residues_gpu = cp.array(residues, dtype=cp.uint32)
+                residues_gpu = cp.array(residues, dtype=residue_dtype)
             skip_min, skip_max = skip_range
             # Result containers
             all_survivors = []
@@ -260,12 +263,15 @@ class GPUSieve:
             # Get kernel and config
             kernel, config = self._get_kernel(prng_family, None)
             k = len(residues)
+            # Determine dtype based on PRNG seed_type (uint64 for java_lcg, etc.)
+            seed_type = config.get("seed_type", "uint32")
+            residue_dtype = cp.uint32  # Residues are always 32-bit output values
             # TEMPORAL REVERSAL: Reverse residues for _reverse kernels
             if '_reverse' in prng_family:
                 residues_reversed = residues[::-1]
-                residues_gpu = cp.array(residues_reversed, dtype=cp.uint32)
+                residues_gpu = cp.array(residues_reversed, dtype=residue_dtype)
             else:
-                residues_gpu = cp.array(residues, dtype=cp.uint32)
+                residues_gpu = cp.array(residues, dtype=residue_dtype)
             # Prepare strategy parameters
             n_strategies = len(strategies)
             strategy_max_misses = cp.array([

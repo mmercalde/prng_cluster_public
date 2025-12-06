@@ -63,7 +63,8 @@ def run_bidirectional_test(coordinator,
                           seed_count: int,
                           prng_base: str = 'java_lcg',
                           test_both_modes: bool = False,
-                          threshold: float = 0.01,
+                          forward_threshold: float = 0.72,
+                          reverse_threshold: float = 0.81,
                           trial_number: int = 0,
                           accumulator: Dict[str, List] = None) -> TestResult:
     """
@@ -399,7 +400,7 @@ def add_window_optimizer_to_coordinator():
         # Track trial number for metadata
         trial_counter = {'count': 0}
 
-        def test_config(config, ss=seed_start, sc=seed_count, th=0.01):
+        def test_config(config, ss=seed_start, sc=seed_count, ft=0.72, rt=0.81):
             """
             Wrapper function that Optuna calls for each trial.
             This passes through to run_bidirectional_test with test_both_modes.
@@ -413,7 +414,8 @@ def add_window_optimizer_to_coordinator():
                 seed_count=sc,
                 prng_base=prng_base,
                 test_both_modes=test_both_modes,  # NEW: Pass through
-                threshold=th,
+                forward_threshold=ft,
+                reverse_threshold=rt,
                 trial_number=trial_counter['count'],
                 accumulator=survivor_accumulator
             )
@@ -573,7 +575,8 @@ def add_window_optimizer_to_coordinator():
                     'offset': best.get('offset', 0),
                     'skip_min': best.get('skip_min', 0),
                     'skip_max': best.get('skip_max', 0),
-                    'threshold': 0.01,
+                    'forward_threshold': best.get('forward_threshold', 0.72),
+                    'reverse_threshold': best.get('reverse_threshold', 0.81),
                     'dataset': dataset_path,
                     'sessions': best.get('sessions', [])
                 },
