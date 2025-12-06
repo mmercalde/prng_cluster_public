@@ -1,0 +1,15 @@
+root ::= "{" ws success-kv "," ws confidence-kv "," ws reasoning-kv "," ws action-kv ws "}"
+
+success-kv ::= "\"success_condition_met\"" ws ":" ws boolean
+confidence-kv ::= "\"confidence\"" ws ":" ws number
+reasoning-kv ::= "\"reasoning\"" ws ":" ws string
+action-kv ::= "\"recommended_action\"" ws ":" ws action-enum
+
+action-enum ::= "\"proceed\"" | "\"retry\"" | "\"escalate\""
+boolean ::= "true" | "false"
+number ::= [0-9] "." [0-9] [0-9]
+string ::= "\"" chars "\""
+chars ::= char*
+char ::= [^"\\] | "\\" escape
+escape ::= ["\\/bfnrt]
+ws ::= [ \t\n]*

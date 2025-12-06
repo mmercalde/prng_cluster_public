@@ -1,0 +1,19 @@
+root ::= "{" ws step-kv "," ws name-kv "," ws adj-kv "," ws rationale-kv ws "}"
+
+step-kv ::= "\"pipeline_step\"" ws ":" ws step-num
+name-kv ::= "\"step_name\"" ws ":" ws string
+adj-kv ::= "\"adjustments\"" ws ":" ws object
+rationale-kv ::= "\"rationale\"" ws ":" ws string
+
+step-num ::= [1-6]
+object ::= "{" ws "}" | "{" ws pair (ws "," ws pair)* ws "}"
+pair ::= string ws ":" ws value
+value ::= number | string | boolean | "null"
+
+number ::= "-"? [0-9]+ ("." [0-9]+)?
+boolean ::= "true" | "false"
+string ::= "\"" chars "\""
+chars ::= char*
+char ::= [^"\\] | "\\" escape
+escape ::= ["\\/bfnrt]
+ws ::= [ \t\n]*

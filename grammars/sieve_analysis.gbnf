@@ -1,0 +1,23 @@
+root ::= "{" ws type-kv "," ws prng-kv "," ws assessment-kv "," ws fwd-kv "," ws rev-kv "," ws bidir-kv "," ws rate-kv "," ws interpretation-kv "," ws next-kv ws "}"
+
+type-kv ::= "\"analysis_type\"" ws ":" ws type-enum
+prng-kv ::= "\"prng_type\"" ws ":" ws string
+assessment-kv ::= "\"survivor_assessment\"" ws ":" ws assessment-enum
+fwd-kv ::= "\"forward_survivors\"" ws ":" ws integer
+rev-kv ::= "\"reverse_survivors\"" ws ":" ws integer
+bidir-kv ::= "\"bidirectional_survivors\"" ws ":" ws integer
+rate-kv ::= "\"match_rate\"" ws ":" ws number
+interpretation-kv ::= "\"interpretation\"" ws ":" ws string
+next-kv ::= "\"next_step\"" ws ":" ws next-enum
+
+type-enum ::= "\"forward\"" | "\"reverse\"" | "\"bidirectional\"" | "\"hybrid\""
+assessment-enum ::= "\"high_confidence\"" | "\"medium_confidence\"" | "\"low_confidence\"" | "\"no_signal\"" | "\"needs_retry\""
+next-enum ::= "\"proceed_to_scoring\"" | "\"retry_with_adjustments\"" | "\"expand_search\"" | "\"reduce_threshold\"" | "\"escalate\"" | "\"complete\""
+
+integer ::= [0-9]+
+number ::= [0-9]+ ("." [0-9]+)?
+string ::= "\"" chars "\""
+chars ::= char*
+char ::= [^"\\] | "\\" escape
+escape ::= ["\\/bfnrt]
+ws ::= [ \t\n]*
