@@ -1,48 +1,109 @@
 {
   "agent_name": "scorer_meta_agent",
-  "version": "1.0.0",
+  "description": "Step 2.5: Distributed Optuna TPE meta-optimizer for scoring parameters. Finds optimal chunk_size, scoring weights, and threshold configurations across 26 GPUs.",
   "pipeline_step": 2,
-  "description": "Optimizes scorer parameters via distributed Optuna (26 GPUs, PULL architecture)",
-  "inputs": {
-    "required": [
-      "bidirectional_survivors.json",
-      "train_history.json",
-      "holdout_history.json"
-    ],
-    "optional": []
-  },
+  "version": "1.3.0",
+  
+  "inputs": [
+    "bidirectional_survivors.json",
+    "optimal_window_config.json",
+    "lottery_file"
+  ],
+  
+  "outputs": [
+    "optimal_scorer_config.json",
+    "scorer_meta_results.json"
+  ],
+  
   "actions": [
     {
-      "name": "run_scorer_meta_optimization",
-      "type": "subprocess",
-      "command_template": "bash run_scorer_meta_optimizer.sh {trials}"
+      "type": "run_script",
+      "script": "generate_scorer_jobs.py",
+      "args_map": {
+        "study": "study_name",
+        "num-trials": "scorer_trials",
+        "survivors-file": "bidirectional_survivors_file",
+        "chunk-size": "chunk_size"
+      },
+      "distributed": false,
+      "timeout_minutes": 10
+    },
+    {
+      "type": "run_distributed",
+      "script": "scorer_trial_worker.py",
+      "args_map": {
+        "job-file": "job_file",
+        "gpu-id": "gpu_id"
+      },
+      "distributed": true,
+      "timeout_minutes": 120
     }
   ],
-  "default_params": {
-    "trials": 100
+  
+  "follow_up_agents": ["full_scoring_agent"],
+  "success_condition": "optimal_scorer_config.json exists AND scorer_meta_results.json has trials >= min_required_trials",
+  "retry": 2,
+  
+  "parameter_bounds": {
+    "chunk_size": {
+      "type": "int",
+      "min": 100,
+      "max": 10000,
+      "default": 1000,
+      "description": "Number of survivors processed per GPU job. Affects memory usage and parallelization efficiency.",
+      "optimized_by": "Manual tuning",
+      "effect": "Smaller chunks = more parallelism but higher overhead. Larger chunks = better GPU utilization but may OOM. Typical range 500-2000."
+    },
+    "scorer_trials": {
+      "type": "int",
+      "min": 10,
+      "max": 500,
+      "default": 100,
+      "description": "Number of Optuna trials for scorer parameter optimization.",
+      "optimized_by": "Optuna TPE",
+      "effect": "More trials = better parameter discovery but longer runtime. 50-200 typical for production."
+    },
+    "match_weight": {
+      "type": "float",
+      "min": 0.1,
+      "max": 2.0,
+      "default": 1.0,
+      "description": "Weight for exact match scoring component.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher values emphasize exact matches over statistical similarity."
+    },
+    "residue_weight": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.5,
+      "default": 0.5,
+      "description": "Weight for residue coherence (mod 8, mod 125) scoring component.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher values emphasize lane agreement patterns."
+    },
+    "temporal_weight": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.5,
+      "default": 0.3,
+      "description": "Weight for temporal stability scoring component.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher values favor survivors with consistent historical performance."
+    },
+    "min_score_threshold": {
+      "type": "float",
+      "min": 0.01,
+      "max": 0.50,
+      "default": 0.10,
+      "description": "Minimum score threshold to retain survivor for next stage.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher = stricter filtering, fewer survivors passed to ML stage."
+    }
   },
-  "parameter_options": {
-    "trials": "Number of Optuna trials (2 for quick test, 100 for production)"
-  },
-  "outputs": [
-    "optimal_scorer_config.json"
-  ],
-  "follow_up_agents": [
-    "full_scoring_agent"
-  ],
-  "cluster_resources": {
-    "nodes": [
-      "zeus",
-      "rig-6600",
-      "rig-6600b"
-    ],
-    "total_gpus": 26,
-    "architecture": "PULL (no shared storage)"
-  },
-  "success_condition": {
-    "type": "file_exists",
-    "files": [
-      "optimal_scorer_config.json"
-    ]
+  
+  "success_metrics": {
+    "min_valid_trials": 10,
+    "expected_completion_rate": 0.95,
+    "max_trial_failures": 5
   }
 }

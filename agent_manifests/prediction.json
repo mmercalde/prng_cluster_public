@@ -1,43 +1,147 @@
 {
   "agent_name": "prediction_agent",
-  "description": "Generate prediction pools from trained model",
+  "description": "Step 6: Final prediction generation using trained ML model. Produces high-confidence prediction pools with statistical explanations and confidence maps.",
   "pipeline_step": 6,
-  "pipeline_step_name": "prediction",
+  "version": "1.3.0",
   
   "inputs": [
-    {"file": "models/anti_overfit/best_model.pth", "required": true},
-    {"file": "survivors_with_scores.json", "required": true}
+    "models/anti_overfit/best_model.pth",
+    "survivors_with_scores.json",
+    "lottery_file",
+    "optimal_window_config.json"
   ],
   
   "outputs": [
     "prediction_pool.json",
-    "prediction_confidence_map.json"
+    "confidence_map.json",
+    "statistical_explanation.json",
+    "next_draw_recommendations.json"
   ],
   
   "actions": [
     {
       "type": "run_script",
-      "script": "prediction_generator.py",
+      "script": "generate_predictions.py",
       "args_map": {
-        "model": "model_path",
-        "survivors": "survivors_file",
-        "output": "output_file",
-        "top-k": "pool_size",
-        "min-confidence": "min_confidence"
+        "model-file": "best_model_file",
+        "survivors-file": "survivors_with_scores_file",
+        "lottery-file": "lottery_file",
+        "window-config": "optimal_window_config_file",
+        "pool-size": "pool_size",
+        "confidence-threshold": "confidence_threshold",
+        "ensemble-mode": "ensemble_mode"
       },
-      "timeout": 1800
+      "distributed": false,
+      "timeout_minutes": 60
     }
   ],
   
-  "default_params": {
-    "model_path": "models/anti_overfit/best_model.pth",
-    "survivors_file": "survivors_with_scores.json",
-    "output_file": "prediction_pool.json",
-    "pool_size": 100,
-    "min_confidence": 0.7
+  "follow_up_agents": [],
+  "success_condition": "prediction_pool.json exists AND prediction_pool has entries >= min_pool_size",
+  "retry": 2,
+  
+  "parameter_bounds": {
+    "pool_size": {
+      "type": "int",
+      "min": 5,
+      "max": 100,
+      "default": 20,
+      "description": "Number of top candidates to include in prediction pool.",
+      "optimized_by": "Manual",
+      "effect": "Larger pool = more coverage but lower average confidence."
+    },
+    "confidence_threshold": {
+      "type": "float",
+      "min": 0.50,
+      "max": 0.95,
+      "default": 0.70,
+      "description": "Minimum confidence score to include in prediction pool.",
+      "optimized_by": "Optuna TPE from Step 5",
+      "effect": "Higher = fewer but more confident predictions."
+    },
+    "ensemble_mode": {
+      "type": "choice",
+      "choices": ["single", "weighted", "voting", "stacking"],
+      "default": "weighted",
+      "description": "Method for combining multiple survivor predictions.",
+      "optimized_by": "Manual",
+      "effect": "weighted = best for continuous scores. voting = best for discrete."
+    },
+    "temporal_decay": {
+      "type": "float",
+      "min": 0.90,
+      "max": 1.0,
+      "default": 0.98,
+      "description": "Decay factor for older survivor scores in prediction.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Lower decay = more weight on recent patterns. 0.98 typical."
+    },
+    "drift_sensitivity": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.3,
+      "description": "Sensitivity to PRNG drift detection signals from GlobalStateTracker.",
+      "optimized_by": "Manual",
+      "effect": "Higher = more responsive to regime changes but less stable."
+    },
+    "forward_weight": {
+      "type": "float",
+      "min": 0.3,
+      "max": 0.7,
+      "default": 0.5,
+      "description": "Weight for forward sieve survivors vs reverse in ensemble.",
+      "optimized_by": "Optuna TPE",
+      "effect": "0.5 = equal weight. Higher = favor forward sieve predictions."
+    },
+    "bidirectional_bonus": {
+      "type": "float",
+      "min": 1.0,
+      "max": 3.0,
+      "default": 1.5,
+      "description": "Multiplier for survivors that appear in BOTH forward and reverse sieves.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher = strongly favor bidirectional consensus survivors."
+    },
+    "recency_window": {
+      "type": "int",
+      "min": 10,
+      "max": 100,
+      "default": 30,
+      "description": "Number of recent draws to emphasize in prediction.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Smaller = focus on very recent patterns. 20-50 typical."
+    },
+    "min_survivor_history": {
+      "type": "int",
+      "min": 5,
+      "max": 50,
+      "default": 10,
+      "description": "Minimum historical matches required to include survivor in pool.",
+      "optimized_by": "Manual",
+      "effect": "Higher = more vetted survivors but smaller pool."
+    },
+    "skip_mode_preference": {
+      "type": "choice",
+      "choices": ["constant", "variable", "adaptive", "both"],
+      "default": "adaptive",
+      "description": "Which skip mode survivors to prefer in predictions.",
+      "optimized_by": "ML from Step 5",
+      "effect": "adaptive = use ML-learned preference. both = no preference."
+    },
+    "explanation_verbosity": {
+      "type": "choice",
+      "choices": ["minimal", "standard", "detailed", "debug"],
+      "default": "standard",
+      "description": "Level of detail in statistical explanation output.",
+      "optimized_by": "Manual",
+      "effect": "debug = full feature dumps for analysis."
+    }
   },
   
-  "follow_up_agents": [],
-  "success_condition": "prediction_pool.json exists",
-  "retry": 2
+  "success_metrics": {
+    "min_pool_size": 5,
+    "min_average_confidence": 0.60,
+    "max_pool_variance": 0.20
+  }
 }

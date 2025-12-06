@@ -1,38 +1,111 @@
 {
   "agent_name": "full_scoring_agent",
-  "description": "Score all survivors with optimized parameters",
+  "description": "Step 3: Applies optimized scoring parameters from Step 2.5 to ALL survivors. Produces fully-scored survivor dataset for ML training.",
   "pipeline_step": 3,
-  "pipeline_step_name": "full_scoring",
+  "version": "1.3.0",
   
   "inputs": [
-    {"file": "bidirectional_survivors.json", "required": true},
-    {"file": "optimal_scorer_config.json", "required": true}
+    "bidirectional_survivors.json",
+    "optimal_scorer_config.json",
+    "lottery_file"
   ],
   
-  "outputs": ["survivors_with_scores.json"],
+  "outputs": [
+    "survivors_with_scores.json",
+    "scoring_statistics.json"
+  ],
   
   "actions": [
     {
       "type": "run_script",
-      "script": "survivor_scorer.py",
+      "script": "generate_full_scoring_jobs.py",
       "args_map": {
-        "survivors": "survivors_file",
-        "config": "scorer_config_file",
-        "output": "output_file",
-        "prng-type": "prng_type"
+        "survivors-file": "bidirectional_survivors_file",
+        "config-file": "optimal_scorer_config_file",
+        "chunk-size": "chunk_size",
+        "output-dir": "scoring_output_dir"
       },
-      "timeout": 3600
+      "distributed": false,
+      "timeout_minutes": 10
+    },
+    {
+      "type": "run_distributed",
+      "script": "full_scoring_worker.py",
+      "args_map": {
+        "job-file": "job_file",
+        "gpu-id": "gpu_id",
+        "lottery-file": "lottery_file"
+      },
+      "distributed": true,
+      "timeout_minutes": 180
+    },
+    {
+      "type": "aggregate",
+      "script": "aggregate_scoring_results.py",
+      "args_map": {
+        "input-dir": "scoring_output_dir",
+        "output-file": "survivors_with_scores_file"
+      },
+      "distributed": false,
+      "timeout_minutes": 30
     }
   ],
   
-  "default_params": {
-    "survivors_file": "bidirectional_survivors.json",
-    "scorer_config_file": "optimal_scorer_config.json",
-    "output_file": "survivors_with_scores.json",
-    "prng_type": "java_lcg"
+  "follow_up_agents": ["ml_meta_agent"],
+  "success_condition": "survivors_with_scores.json exists AND scoring_statistics.json shows valid_survivors > 0",
+  "retry": 2,
+  
+  "parameter_bounds": {
+    "chunk_size": {
+      "type": "int",
+      "min": 500,
+      "max": 20000,
+      "default": 5000,
+      "description": "Number of survivors per scoring job. Larger than Step 2.5 since using pre-optimized parameters.",
+      "optimized_by": "Manual tuning",
+      "effect": "Larger chunks improve throughput since parameters are fixed. Typical 2000-10000 for production."
+    },
+    "batch_size": {
+      "type": "int",
+      "min": 64,
+      "max": 1024,
+      "default": 256,
+      "description": "GPU batch size for vectorized scoring operations.",
+      "optimized_by": "Manual tuning",
+      "effect": "Larger = faster but more VRAM. RX 6600 (8GB): use 256. RTX 3080 Ti (12GB): use 512."
+    },
+    "feature_extraction_depth": {
+      "type": "int",
+      "min": 46,
+      "max": 128,
+      "default": 64,
+      "description": "Number of ML features to extract per survivor (46 base + skip mode features).",
+      "optimized_by": "Manual tuning",
+      "effect": "More features = richer ML input but slower extraction. 64 includes all skip mode features."
+    },
+    "score_precision": {
+      "type": "int",
+      "min": 4,
+      "max": 8,
+      "default": 6,
+      "description": "Decimal precision for score storage.",
+      "optimized_by": "Fixed",
+      "effect": "6 decimals provides sufficient precision for ML ranking."
+    },
+    "parallel_workers": {
+      "type": "int",
+      "min": 1,
+      "max": 26,
+      "default": 26,
+      "description": "Number of parallel GPU workers across cluster.",
+      "optimized_by": "Hardware",
+      "effect": "Use full cluster (26 GPUs) for maximum throughput."
+    }
   },
   
-  "follow_up_agents": ["ml_meta_agent"],
-  "success_condition": "survivors_with_scores.json exists",
-  "retry": 2
+  "success_metrics": {
+    "min_scored_survivors": 100,
+    "expected_scoring_rate": 0.99,
+    "max_scoring_failures": 10
+  }
 }

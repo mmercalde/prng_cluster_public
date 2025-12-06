@@ -1,41 +1,163 @@
 {
   "agent_name": "ml_meta_agent",
-  "description": "Optimize ML model architecture via Optuna",
+  "description": "Step 4: Adaptive ML meta-optimizer using Optuna TPE to find optimal neural network architecture, learning rates, and regularization for survivor prediction.",
   "pipeline_step": 4,
-  "pipeline_step_name": "ml_meta_optimizer",
+  "version": "1.3.0",
   
   "inputs": [
-    {"file": "survivors_with_scores.json", "required": true}
+    "survivors_with_scores.json",
+    "scoring_statistics.json"
   ],
   
   "outputs": [
     "reinforcement_engine_config.json",
-    "best_model_architecture.json"
+    "best_model_architecture.json",
+    "ml_meta_results.json"
   ],
   
   "actions": [
     {
       "type": "run_script",
-      "script": "meta_prediction_optimizer_anti_overfit.py",
+      "script": "adaptive_meta_optimizer.py",
       "args_map": {
-        "survivors": "survivors_file",
+        "input-file": "survivors_with_scores_file",
         "trials": "ml_trials",
-        "output": "ml_config_output"
+        "study-name": "study_name",
+        "timeout-hours": "timeout_hours",
+        "n-jobs": "parallel_jobs"
       },
-      "timeout": 7200
+      "distributed": false,
+      "timeout_minutes": 480
     }
   ],
   
-  "default_params": {
-    "survivors_file": "survivors_with_scores.json",
-    "ml_trials": 50,
-    "ml_config_output": "reinforcement_engine_config.json",
-    "hidden_layers_options": ["128_64", "256_128", "256_128_64", "512_256_128"],
-    "dropout_range": [0.1, 0.5],
-    "learning_rate_range": [0.0001, 0.01]
+  "follow_up_agents": ["reinforcement_agent"],
+  "success_condition": "reinforcement_engine_config.json exists AND best_model_architecture.json has valid layers",
+  "retry": 1,
+  
+  "parameter_bounds": {
+    "ml_trials": {
+      "type": "int",
+      "min": 20,
+      "max": 500,
+      "default": 100,
+      "description": "Number of Optuna trials for ML architecture search.",
+      "optimized_by": "Optuna TPE",
+      "effect": "More trials = better architecture discovery. 50-200 typical. Diminishing returns past 300."
+    },
+    "timeout_hours": {
+      "type": "float",
+      "min": 1.0,
+      "max": 48.0,
+      "default": 8.0,
+      "description": "Maximum hours for ML meta-optimization.",
+      "optimized_by": "Manual",
+      "effect": "Longer timeout allows more trials and better convergence."
+    },
+    "parallel_jobs": {
+      "type": "int",
+      "min": 1,
+      "max": 4,
+      "default": 2,
+      "description": "Number of parallel Optuna workers on Zeus (2x RTX 3080 Ti).",
+      "optimized_by": "Hardware",
+      "effect": "2 = one per GPU. Higher may cause memory contention."
+    },
+    "min_layers": {
+      "type": "int",
+      "min": 1,
+      "max": 5,
+      "default": 2,
+      "description": "Minimum hidden layers in neural network search space.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Shallow networks may underfit complex survivor patterns."
+    },
+    "max_layers": {
+      "type": "int",
+      "min": 3,
+      "max": 10,
+      "default": 6,
+      "description": "Maximum hidden layers in neural network search space.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Deeper networks may overfit. 4-6 layers typical for this domain."
+    },
+    "min_neurons": {
+      "type": "int",
+      "min": 16,
+      "max": 128,
+      "default": 32,
+      "description": "Minimum neurons per layer in search space.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Too few = underfitting. 32-64 minimum typical."
+    },
+    "max_neurons": {
+      "type": "int",
+      "min": 128,
+      "max": 1024,
+      "default": 512,
+      "description": "Maximum neurons per layer in search space.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Too many = overfitting and slow training. 256-512 typical."
+    },
+    "learning_rate_min": {
+      "type": "float",
+      "min": 1e-6,
+      "max": 1e-4,
+      "default": 1e-5,
+      "description": "Lower bound for learning rate search.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Very low LR = slow convergence but stable training."
+    },
+    "learning_rate_max": {
+      "type": "float",
+      "min": 1e-3,
+      "max": 1e-1,
+      "default": 1e-2,
+      "description": "Upper bound for learning rate search.",
+      "optimized_by": "Optuna TPE",
+      "effect": "High LR = fast but may diverge. Typical optimal: 1e-4 to 1e-3."
+    },
+    "dropout_min": {
+      "type": "float",
+      "min": 0.0,
+      "max": 0.3,
+      "default": 0.1,
+      "description": "Minimum dropout rate in search space.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Low dropout may cause overfitting."
+    },
+    "dropout_max": {
+      "type": "float",
+      "min": 0.3,
+      "max": 0.7,
+      "default": 0.5,
+      "description": "Maximum dropout rate in search space.",
+      "optimized_by": "Optuna TPE",
+      "effect": "High dropout prevents overfitting but may underfit."
+    },
+    "weight_decay_min": {
+      "type": "float",
+      "min": 1e-7,
+      "max": 1e-5,
+      "default": 1e-6,
+      "description": "Minimum L2 regularization weight decay.",
+      "optimized_by": "Optuna TPE",
+      "effect": "L2 regularization prevents large weights."
+    },
+    "weight_decay_max": {
+      "type": "float",
+      "min": 1e-4,
+      "max": 1e-2,
+      "default": 1e-3,
+      "description": "Maximum L2 regularization weight decay.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher decay = stronger regularization."
+    }
   },
   
-  "follow_up_agents": ["reinforcement_agent"],
-  "success_condition": "reinforcement_engine_config.json exists",
-  "retry": 1
+  "success_metrics": {
+    "min_valid_trials": 20,
+    "target_validation_loss": 0.5,
+    "max_trial_failures": 10
+  }
 }
