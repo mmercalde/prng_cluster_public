@@ -6,18 +6,24 @@ The Watcher Agent monitors pipeline outputs, evaluates results using
 the Pydantic Context Framework, and automatically triggers next steps
 or escalates to human review.
 
-Version: 1.0.0
+Version: 1.1.0 (Grammar-Constrained LLM Integration)
+
+Changes in v1.1.0:
+- Integrated LLMRouter v1.1.0 with grammar-constrained decoding
+- Uses router.evaluate_decision() for guaranteed JSON structure
+- Fallback to direct HTTP if router unavailable
+- Better error handling for LLM responses
 
 Usage:
     # Start watcher daemon
     python3 watcher_agent.py --daemon
-    
+
     # Evaluate a single result file
     python3 watcher_agent.py --evaluate /path/to/results.json
-    
+
     # Run full pipeline from step 1
     python3 watcher_agent.py --run-pipeline --start-step 1
-    
+
     # Check status
     python3 watcher_agent.py --status
 """
@@ -41,6 +47,14 @@ try:
 except ImportError:
     PROGRESS_DISPLAY_AVAILABLE = False
     WatcherProgress = None
+
+# Try to import LLM Router v1.1.0 (preferred)
+try:
+    from llm_services.llm_router import LLMRouter, get_router, GrammarType
+    LLM_ROUTER_AVAILABLE = True
+except ImportError:
+    LLM_ROUTER_AVAILABLE = False
+    LLMRouter = None
 
 # Pydantic Context Framework imports - use direct submodule imports to avoid circular dependency
 from agents.full_agent_context import FullAgentContext, build_full_context
@@ -66,33 +80,34 @@ logger = logging.getLogger("WatcherAgent")
 @dataclass
 class WatcherConfig:
     """Configuration for the Watcher Agent."""
-    
+
     # Thresholds
     auto_proceed_threshold: float = 0.70  # Minimum confidence to auto-proceed
     escalate_threshold: float = 0.50      # Below this, always escalate
-    
+
     # Retry limits
     max_retries_per_step: int = 3
     max_total_retries: int = 10
-    
+
     # Timing
     poll_interval_seconds: int = 30
     step_timeout_minutes: int = 120
-    
+
     # Paths
     results_dir: str = "results"
     manifests_dir: str = "agent_manifests"
     history_file: str = "watcher_history.json"
     log_file: str = "watcher_decisions.jsonl"
-    
+
     # LLM settings
     llm_endpoint: str = "http://localhost:8080/completion"
     llm_timeout: int = 60
     use_llm: bool = True
-    
+    use_grammar: bool = True  # v1.1.0: Enable grammar-constrained decoding
+
     # Safety
     halt_file: str = "/tmp/agent_halt"
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict."""
         return {
@@ -102,7 +117,8 @@ class WatcherConfig:
             "max_total_retries": self.max_total_retries,
             "poll_interval_seconds": self.poll_interval_seconds,
             "step_timeout_minutes": self.step_timeout_minutes,
-            "use_llm": self.use_llm
+            "use_llm": self.use_llm,
+            "use_grammar": self.use_grammar
         }
 
 
@@ -144,15 +160,17 @@ STEP_NAMES = {
 class WatcherAgent:
     """
     Autonomous pipeline monitoring and orchestration agent.
-    
+
     The Watcher Agent:
     1. Monitors for completed pipeline steps
     2. Builds context using FullAgentContext
     3. Evaluates results (LLM or heuristic)
     4. Decides: proceed, retry, or escalate
     5. Triggers next step or alerts human
+
+    v1.1.0: Now uses grammar-constrained LLM evaluation via LLMRouter
     """
-    
+
     def __init__(self, config: WatcherConfig = None):
         self.config = config or WatcherConfig()
         self.history = self._load_history()
@@ -160,55 +178,64 @@ class WatcherAgent:
             halt_file_path=self.config.halt_file,
             max_retries_per_step=self.config.max_retries_per_step
         )
-        
+
         # Runtime state
         self.current_step = 0
         self.retry_counts: Dict[int, int] = {}
         self.total_retries = 0
         self.running = False
-        
-        logger.info(f"WatcherAgent initialized with config: {self.config.to_dict()}")
-    
+
+        # v1.1.0: Initialize LLM Router if available
+        self.llm_router = None
+        if LLM_ROUTER_AVAILABLE and self.config.use_llm:
+            try:
+                self.llm_router = get_router()
+                logger.info("LLMRouter v1.1.0 initialized with grammar support")
+            except Exception as e:
+                logger.warning(f"Could not initialize LLMRouter: {e}")
+
+        logger.info(f"WatcherAgent v1.1.0 initialized with config: {self.config.to_dict()}")
+
     def _load_history(self) -> AnalysisHistory:
         """Load or create analysis history."""
         if os.path.exists(self.config.history_file):
             return load_history(self.config.history_file)
         return AnalysisHistory()
-    
+
     def _save_history(self):
         """Save analysis history."""
         self.history.save(self.config.history_file)
-    
+
     def _log_decision(self, decision_record: Dict[str, Any]):
         """Append decision to JSONL log."""
         decision_record["timestamp"] = datetime.utcnow().isoformat()
-        
+
         with open(self.config.log_file, 'a') as f:
             f.write(json.dumps(decision_record, default=str) + "\n")
-    
+
     # ════════════════════════════════════════════════════════════════════════
     # CORE EVALUATION
     # ════════════════════════════════════════════════════════════════════════
-    
+
     def evaluate_results(
-        self, 
-        step: int, 
+        self,
+        step: int,
         results: Dict[str, Any],
         run_number: int = 1
     ) -> Tuple[AgentDecision, FullAgentContext]:
         """
         Evaluate results for a pipeline step.
-        
+
         Args:
             step: Pipeline step (1-6)
             results: Results dict to evaluate
             run_number: Current run number for this step
-            
+
         Returns:
             (AgentDecision, FullAgentContext) tuple
         """
         logger.info(f"Evaluating Step {step} ({STEP_NAMES.get(step, 'Unknown')})")
-        
+
         # Get manifest path
         manifest_name = STEP_MANIFESTS.get(step)
         manifest_path = None
@@ -217,7 +244,7 @@ class WatcherAgent:
             if not os.path.exists(manifest_path):
                 manifest_path = None
                 logger.warning(f"Manifest not found: {manifest_path}")
-        
+
         # Build full context
         context = build_full_context(
             step=step,
@@ -225,10 +252,10 @@ class WatcherAgent:
             run_number=run_number,
             manifest_path=manifest_path
         )
-        
+
         # Set history
         context.history = self.history
-        
+
         # Check safety first
         if not context.is_safe():
             logger.warning("Safety check failed - forcing escalate")
@@ -240,72 +267,146 @@ class WatcherAgent:
                 warnings=["Kill switch activated"]
             )
             return decision, context
-        
+
         # Try LLM evaluation
         if self.config.use_llm:
             decision = self._evaluate_with_llm(context)
             if decision:
                 return decision, context
-        
+
         # Fallback to heuristic evaluation
         decision = self._evaluate_heuristic(context)
         return decision, context
-    
+
     def _evaluate_with_llm(self, context: FullAgentContext) -> Optional[AgentDecision]:
         """
-        Evaluate using LLM.
-        
+        Evaluate using LLM with grammar-constrained decoding.
+
+        v1.1.0: Uses LLMRouter.evaluate_decision() for guaranteed JSON structure.
+
         Returns AgentDecision or None if LLM unavailable.
+        """
+        # v1.1.0: Try grammar-constrained evaluation via LLMRouter
+        if self.llm_router and self.config.use_grammar:
+            try:
+                decision = self._evaluate_with_router(context)
+                if decision:
+                    return decision
+            except Exception as e:
+                logger.warning(f"Router evaluation failed: {e}, trying direct HTTP")
+
+        # Fallback: Direct HTTP request (legacy method)
+        return self._evaluate_with_http(context)
+
+    def _evaluate_with_router(self, context: FullAgentContext) -> Optional[AgentDecision]:
+        """
+        Evaluate using LLMRouter v1.1.0 with grammar-constrained decoding.
+
+        This method guarantees valid JSON output structure via GBNF grammar.
+        """
+        prompt = context.to_llm_prompt()
+
+        # Set agent identity for logging
+        agent_name = f"watcher_step{context.step}"
+
+        try:
+            # Use grammar-constrained evaluation
+            # Returns Dict with guaranteed structure:
+            # {
+            #   "success_condition_met": bool,
+            #   "confidence": float,
+            #   "reasoning": str,
+            #   "recommended_action": "proceed"|"retry"|"escalate"
+            # }
+            decision_dict = self.llm_router.evaluate_decision(
+                prompt,
+                agent=agent_name,
+                temperature=0.1
+            )
+
+            # Convert to AgentDecision
+            decision = AgentDecision(
+                success_condition_met=decision_dict.get("success_condition_met", False),
+                confidence=float(decision_dict.get("confidence", 0.5)),
+                reasoning=decision_dict.get("reasoning", "No reasoning provided"),
+                recommended_action=decision_dict.get("recommended_action", "escalate"),
+                suggested_param_adjustments=decision_dict.get("suggested_param_adjustments", {}),
+                warnings=decision_dict.get("warnings", [])
+            )
+            decision.parse_method = "llm_router_grammar"
+
+            logger.info(
+                f"LLM Router decision: {decision.recommended_action} "
+                f"(confidence={decision.confidence:.2f}, grammar-enforced)"
+            )
+            return decision
+
+        except json.JSONDecodeError as e:
+            # Should not happen with grammar, but handle gracefully
+            logger.error(f"JSON decode error (grammar may have failed): {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Router evaluation error: {e}")
+            return None
+
+    def _evaluate_with_http(self, context: FullAgentContext) -> Optional[AgentDecision]:
+        """
+        Evaluate using direct HTTP request (legacy fallback).
+
+        Used when LLMRouter is not available or grammar evaluation fails.
         """
         try:
             import requests
-            
+
             prompt = context.to_llm_prompt()
-            
+
             payload = {
                 "prompt": prompt,
-                "max_tokens": 500,
+                "n_predict": 500,
                 "temperature": 0.1,
-                "stop": ["\n\n"]
+                "stop": ["</s>", "<|im_end|>", "<|endoftext|>"]
             }
-            
+
             response = requests.post(
                 self.config.llm_endpoint,
                 json=payload,
                 timeout=self.config.llm_timeout
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
                 llm_response = result.get("content", result.get("response", ""))
-                
+
                 decision = parse_llm_response(llm_response)
-                decision.parse_method = f"llm_{decision.parse_method}"
-                
-                logger.info(f"LLM decision: {decision.recommended_action} (confidence={decision.confidence:.2f})")
+                decision.parse_method = f"llm_http_{decision.parse_method}"
+
+                logger.info(
+                    f"LLM HTTP decision: {decision.recommended_action} "
+                    f"(confidence={decision.confidence:.2f})"
+                )
                 return decision
             else:
                 logger.warning(f"LLM request failed: {response.status_code}")
                 return None
-                
+
         except Exception as e:
-            logger.warning(f"LLM evaluation failed: {e}")
+            logger.warning(f"LLM HTTP evaluation failed: {e}")
             return None
-    
+
     def _evaluate_heuristic(self, context: FullAgentContext) -> AgentDecision:
         """
         Evaluate using heuristic rules (no LLM).
-        
+
         Uses the specialized agent context's built-in evaluation.
         """
         logger.info("Using heuristic evaluation (LLM unavailable)")
-        
+
         # Get evaluation from context
         summary = context.get_evaluation_summary()
         success = summary.get("success", False)
         confidence = summary.get("confidence", 0.5)
         interpretation = summary.get("interpretation", "No interpretation")
-        
+
         # Determine action based on thresholds
         if success and confidence >= self.config.auto_proceed_threshold:
             action = "proceed"
@@ -315,14 +416,14 @@ class WatcherAgent:
             action = "retry"
         else:
             action = "escalate"
-        
+
         # Get retry suggestions if needed
         suggested_adjustments = {}
         if action == "retry" and context.agent_context:
             suggestions = context.agent_context.get_retry_suggestions()
             for s in suggestions[:3]:  # Take top 3
                 suggested_adjustments[s["param"]] = s["suggestion"]
-        
+
         decision = AgentDecision(
             success_condition_met=success,
             confidence=confidence,
@@ -332,35 +433,35 @@ class WatcherAgent:
             warnings=[]
         )
         decision.parse_method = "heuristic"
-        
+
         logger.info(f"Heuristic decision: {action} (confidence={confidence:.2f})")
         return decision
-    
+
     # ════════════════════════════════════════════════════════════════════════
     # ACTION EXECUTION
     # ════════════════════════════════════════════════════════════════════════
-    
+
     def execute_decision(
-        self, 
-        decision: AgentDecision, 
+        self,
+        decision: AgentDecision,
         context: FullAgentContext
     ) -> bool:
         """
         Execute the decision.
-        
+
         Args:
             decision: The AgentDecision to execute
             context: The FullAgentContext used
-            
+
         Returns:
             True if pipeline should continue, False to stop
         """
         step = context.step
-        
+
         # Record to history
         context.record_to_history(decision.model_dump())
         self._save_history()
-        
+
         # Log decision
         self._log_decision({
             "step": step,
@@ -373,90 +474,90 @@ class WatcherAgent:
             "warnings": decision.warnings,
             "parse_method": decision.parse_method
         })
-        
+
         # Execute based on action
         if decision.recommended_action == "proceed":
             return self._handle_proceed(step, context)
-            
+
         elif decision.recommended_action == "retry":
             return self._handle_retry(step, decision, context)
-            
+
         else:  # escalate
             return self._handle_escalate(step, decision, context)
-    
+
     def _handle_proceed(self, step: int, context: FullAgentContext) -> bool:
         """Handle proceed action - advance to next step."""
         logger.info(f"✅ Step {step} PASSED - proceeding to next step")
-        
+
         # Reset retry count for this step
         self.retry_counts[step] = 0
-        
+
         # Check if pipeline complete
         if step >= 6:
             logger.info("🎉 PIPELINE COMPLETE - all 6 steps finished!")
             self._notify_complete(context)
             return False
-        
+
         # Trigger next step
         next_step = step + 1
         self.current_step = next_step
-        
+
         logger.info(f"Triggering Step {next_step}: {STEP_NAMES.get(next_step, 'Unknown')}")
         return True
-    
+
     def _handle_retry(
-        self, 
-        step: int, 
+        self,
+        step: int,
         decision: AgentDecision,
         context: FullAgentContext
     ) -> bool:
         """Handle retry action - re-run step with adjustments."""
         self.retry_counts[step] = self.retry_counts.get(step, 0) + 1
         self.total_retries += 1
-        
+
         logger.warning(
             f"⚠️ Step {step} needs RETRY ({self.retry_counts[step]}/{self.config.max_retries_per_step})"
         )
-        
+
         # Check retry limits
         if self.retry_counts[step] >= self.config.max_retries_per_step:
             logger.error(f"Max retries reached for step {step} - escalating")
             return self._handle_escalate(step, decision, context)
-        
+
         if self.total_retries >= self.config.max_total_retries:
             logger.error(f"Max total retries ({self.config.max_total_retries}) reached - escalating")
             return self._handle_escalate(step, decision, context)
-        
+
         # Log suggested adjustments
         if decision.suggested_param_adjustments:
             logger.info(f"Suggested adjustments: {decision.suggested_param_adjustments}")
-        
+
         # Will re-run the same step
         return True
-    
+
     def _handle_escalate(
-        self, 
-        step: int, 
+        self,
+        step: int,
         decision: AgentDecision,
         context: FullAgentContext
     ) -> bool:
         """Handle escalate action - stop and alert human."""
         logger.error(f"❌ Step {step} ESCALATED - human review required")
         logger.error(f"   Reason: {decision.reasoning}")
-        
+
         if decision.warnings:
             logger.error(f"   Warnings: {decision.warnings}")
-        
+
         # Create halt file
         self.kill_switch.create_halt_file(
             f"Escalated at step {step}: {decision.reasoning[:100]}"
         )
-        
+
         # Notify human
         self._notify_escalation(step, decision, context)
-        
+
         return False
-    
+
     def _notify_complete(self, context: FullAgentContext):
         """Notify that pipeline completed successfully."""
         print("\n" + "=" * 60)
@@ -465,9 +566,9 @@ class WatcherAgent:
         print(f"Total runs in history: {len(self.history.runs)}")
         print(f"Success rate: {self.history.get_success_rate():.1%}")
         print("=" * 60 + "\n")
-    
+
     def _notify_escalation(
-        self, 
+        self,
         step: int,
         decision: AgentDecision,
         context: FullAgentContext
@@ -485,23 +586,23 @@ class WatcherAgent:
         print("To resume after review:")
         print(f"  python3 watcher_agent.py --clear-halt --run-pipeline --start-step {step}")
         print("=" * 60 + "\n")
-    
+
     # ════════════════════════════════════════════════════════════════════════
     # STEP EXECUTION
     # ════════════════════════════════════════════════════════════════════════
-    
+
     def run_step(
-        self, 
-        step: int, 
+        self,
+        step: int,
         params: Dict[str, Any] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Run a pipeline step and return results.
-        
+
         Args:
             step: Step number (1-6)
             params: Optional parameters to pass (overrides defaults)
-            
+
         Returns:
             Results dict or None if failed
         """
@@ -509,9 +610,9 @@ class WatcherAgent:
         if not script:
             logger.error(f"No script defined for step {step}")
             return None
-        
+
         logger.info(f"Running Step {step}: {script}")
-        
+
         # Try to load default params from manifest
         default_params = {}
         manifest_name = STEP_MANIFESTS.get(step)
@@ -525,24 +626,24 @@ class WatcherAgent:
                     logger.debug(f"Loaded default params: {list(default_params.keys())}")
                 except Exception as e:
                     logger.warning(f"Could not load manifest defaults: {e}")
-        
+
         # Merge params: user params override defaults
         final_params = {**default_params}
         if params:
             final_params.update(params)
-        
+
         # Remove output_file if present (use script default)
         final_params.pop("output_file", None)
-        
+
         # Build command
         cmd = ["python3", script]
         for key, value in final_params.items():
             # Convert underscores to dashes for CLI args
             cli_key = key.replace("_", "-")
             cmd.extend([f"--{cli_key}", str(value)])
-        
+
         logger.debug(f"Command: {' '.join(cmd)}")
-        
+
         try:
             # Run the script
             result = subprocess.run(
@@ -551,7 +652,7 @@ class WatcherAgent:
                 text=True,
                 timeout=self.config.step_timeout_minutes * 60
             )
-            
+
             if result.returncode != 0:
                 logger.error(f"Step {step} failed with code {result.returncode}")
                 logger.error(f"stderr: {result.stderr[:500]}")
@@ -560,19 +661,19 @@ class WatcherAgent:
                     "return_code": result.returncode,
                     "error": result.stderr[:500]
                 }
-            
+
             # Try to find and load results file
             results = self._find_results(step)
             if results:
                 return results
-            
+
             # Return basic success
             return {
                 "success": True,
                 "return_code": 0,
                 "stdout": result.stdout[:500]
             }
-            
+
         except subprocess.TimeoutExpired:
             logger.error(f"Step {step} timed out after {self.config.step_timeout_minutes} minutes")
             return {
@@ -585,7 +686,7 @@ class WatcherAgent:
                 "success": False,
                 "error": str(e)
             }
-    
+
     def _find_results(self, step: int) -> Optional[Dict[str, Any]]:
         """Find and load results file for a step."""
         # Common result file patterns
@@ -594,11 +695,11 @@ class WatcherAgent:
             f"*_results.json",
             "results.json"
         ]
-        
+
         results_path = Path(self.config.results_dir)
         if not results_path.exists():
             return None
-        
+
         # Find most recent result file
         for pattern in patterns:
             files = sorted(results_path.glob(pattern), key=os.path.getmtime, reverse=True)
@@ -608,133 +709,133 @@ class WatcherAgent:
                         return json.load(f)
                 except Exception as e:
                     logger.warning(f"Could not load {files[0]}: {e}")
-        
+
         return None
-    
+
     # ════════════════════════════════════════════════════════════════════════
     # PIPELINE EXECUTION
     # ════════════════════════════════════════════════════════════════════════
-    
+
     def run_pipeline(self, start_step: int = 1, end_step: int = 6):
         """
         Run the full pipeline from start_step to end_step.
-        
+
         Args:
             start_step: First step to run (1-6)
             end_step: Last step to run (1-6)
         """
         logger.info(f"Starting pipeline from step {start_step} to {end_step}")
-        
+
         self.running = True
         self.current_step = start_step
-        
+
         # Use progress display if available
         progress = None
         if PROGRESS_DISPLAY_AVAILABLE:
             progress = WatcherProgress()
             progress.__enter__()
-        
+
         try:
             while self.running and self.current_step <= end_step:
                 # Safety check
                 if not check_safety():
                     logger.error("Safety halt detected - stopping pipeline")
                     break
-                
+
                 step = self.current_step
                 run_number = self.retry_counts.get(step, 0) + 1
-                
+
                 # Update progress display
                 if progress:
                     # Get total trials from manifest if available
                     total_trials = self._get_step_trials(step)
                     progress.start_step(step, total_trials=total_trials)
-                
+
                 logger.info(f"\n{'='*60}")
                 logger.info(f"STEP {step}: {STEP_NAMES.get(step, 'Unknown')} (run #{run_number})")
                 logger.info(f"{'='*60}")
-                
+
                 # Run the step
                 results = self.run_step(step)
-                
+
                 if results is None:
                     results = {"success": False, "error": "No results returned"}
-                
+
                 # Update progress with results
                 if progress:
                     best_score = results.get("best_score", results.get("confidence", 0))
                     progress.update_step(step, best_score=best_score)
-                
+
                 # Evaluate results
                 decision, context = self.evaluate_results(step, results, run_number)
-                
+
                 # Update progress display with decision
                 if progress:
                     success = decision.recommended_action == "proceed"
                     progress.complete_step(step, success=success, score=decision.confidence)
-                
+
                 # Execute decision
                 should_continue = self.execute_decision(decision, context)
-                
+
                 if not should_continue:
                     break
-                
+
                 # If retry, stay on same step; if proceed, move to next
                 if decision.recommended_action == "proceed":
                     self.current_step += 1
-                
+
                 # Small delay between steps
                 time.sleep(1)
-        
+
         finally:
             # Clean up progress display
             if progress:
                 progress.__exit__(None, None, None)
-        
+
         self.running = False
         logger.info("Pipeline execution finished")
-    
+
     def _get_step_trials(self, step: int) -> int:
         """Get expected number of trials for a step from manifest."""
         manifest_name = STEP_MANIFESTS.get(step)
         if not manifest_name:
             return 0
-        
+
         manifest_path = os.path.join(self.config.manifests_dir, manifest_name)
         if not os.path.exists(manifest_path):
             return 0
-        
+
         try:
             with open(manifest_path) as f:
                 data = json.load(f)
             return data.get("default_params", {}).get("trials", 20)
         except Exception:
             return 20  # Default
-    
+
     # ════════════════════════════════════════════════════════════════════════
     # DAEMON MODE
     # ════════════════════════════════════════════════════════════════════════
-    
+
     def run_daemon(self, watch_dir: str = None):
         """
         Run as a daemon, watching for new result files.
-        
+
         Args:
             watch_dir: Directory to watch for results
         """
         watch_dir = watch_dir or self.config.results_dir
         logger.info(f"Starting daemon mode, watching: {watch_dir}")
-        
+
         processed_files = set()
         self.running = True
-        
+
         while self.running:
             # Safety check
             if not check_safety():
                 logger.warning("Safety halt detected - pausing daemon")
                 time.sleep(self.config.poll_interval_seconds)
                 continue
-            
+
             # Scan for new result files
             results_path = Path(watch_dir)
             if results_path.exists():
@@ -742,32 +843,32 @@ class WatcherAgent:
                     if str(result_file) not in processed_files:
                         self._process_result_file(result_file)
                         processed_files.add(str(result_file))
-            
+
             time.sleep(self.config.poll_interval_seconds)
-    
+
     def _process_result_file(self, result_file: Path):
         """Process a new result file."""
         logger.info(f"Processing new result file: {result_file}")
-        
+
         try:
             with open(result_file) as f:
                 results = json.load(f)
-            
+
             # Try to determine step from file or content
-            step = results.get("pipeline_step", 
+            step = results.get("pipeline_step",
                    results.get("agent_metadata", {}).get("pipeline_step", 1))
-            
+
             run_number = self.retry_counts.get(step, 0) + 1
-            
+
             # Evaluate
             decision, context = self.evaluate_results(step, results, run_number)
-            
+
             # Execute
             self.execute_decision(decision, context)
-            
+
         except Exception as e:
             logger.error(f"Error processing {result_file}: {e}")
-    
+
     def stop(self):
         """Stop the watcher."""
         self.running = False
@@ -780,11 +881,11 @@ class WatcherAgent:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Watcher Agent - Autonomous pipeline monitoring"
+        description="Watcher Agent v1.1.0 - Autonomous pipeline monitoring with grammar-constrained LLM"
     )
-    
+
     parser.add_argument(
-        "--daemon", 
+        "--daemon",
         action="store_true",
         help="Run as daemon, watching for results"
     )
@@ -833,75 +934,84 @@ def main():
         help="Disable LLM evaluation, use heuristics only"
     )
     parser.add_argument(
+        "--no-grammar",
+        action="store_true",
+        help="Disable grammar-constrained decoding (v1.1.0)"
+    )
+    parser.add_argument(
         "--threshold",
         type=float,
         default=0.70,
         help="Auto-proceed confidence threshold (default: 0.70)"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Create config
     config = WatcherConfig(
         auto_proceed_threshold=args.threshold,
-        use_llm=not args.no_llm
+        use_llm=not args.no_llm,
+        use_grammar=not args.no_grammar
     )
-    
+
     # Handle halt commands
     if args.clear_halt:
         clear_halt()
         print("Halt file cleared")
-    
+
     if args.halt:
         create_halt(args.halt)
         print(f"Halt file created: {args.halt}")
         return
-    
+
     # Create watcher
     watcher = WatcherAgent(config)
-    
+
     # Execute command
     if args.status:
-        print("\n=== Watcher Agent Status ===")
+        print("\n=== Watcher Agent Status (v1.1.0) ===")
         print(f"Safety: {'SAFE' if check_safety() else 'HALTED'}")
         print(f"History runs: {len(watcher.history.runs)}")
         print(f"Success rate: {watcher.history.get_success_rate():.1%}")
         print(f"LLM enabled: {config.use_llm}")
+        print(f"Grammar enabled: {config.use_grammar}")
+        print(f"LLM Router: {'Available' if watcher.llm_router else 'Not available'}")
         print(f"Threshold: {config.auto_proceed_threshold}")
-        print("===========================\n")
-        
+        print("======================================\n")
+
     elif args.evaluate:
         # Evaluate single file
         with open(args.evaluate) as f:
             results = json.load(f)
-        
-        step = results.get("pipeline_step", 
+
+        step = results.get("pipeline_step",
                results.get("agent_metadata", {}).get("pipeline_step", 1))
-        
+
         decision, context = watcher.evaluate_results(step, results)
-        
+
         print("\n=== Evaluation Result ===")
         print(f"Step: {step} - {STEP_NAMES.get(step, 'Unknown')}")
         print(f"Success: {decision.success_condition_met}")
         print(f"Confidence: {decision.confidence:.2f}")
         print(f"Action: {decision.recommended_action}")
         print(f"Reasoning: {decision.reasoning}")
+        print(f"Parse method: {decision.parse_method}")
         if decision.suggested_param_adjustments:
             print(f"Adjustments: {decision.suggested_param_adjustments}")
         if decision.warnings:
             print(f"Warnings: {decision.warnings}")
         print("=========================\n")
-        
+
     elif args.run_pipeline:
         watcher.run_pipeline(args.start_step, args.end_step)
-        
+
     elif args.daemon:
         try:
             watcher.run_daemon()
         except KeyboardInterrupt:
             watcher.stop()
             print("\nDaemon stopped")
-    
+
     else:
         parser.print_help()
 
