@@ -112,7 +112,7 @@ def run_bidirectional_test(coordinator,
             self.offset = config.offset
             self.skip_min = config.skip_min
             self.skip_max = config.skip_max
-            self.threshold = threshold
+            self.threshold = forward_threshold  # Use forward threshold for forward sieve
             self.resume_policy = 'restart'
             self.max_concurrent = 26  # Use all 26 GPUs
             self.analysis_type = 'statistical'
@@ -135,6 +135,7 @@ def run_bidirectional_test(coordinator,
     
     print(f"    Running FORWARD sieve ({prng_base}) [CONSTANT SKIP]...")
     forward_args = Args()
+    forward_args.step_name = f"Forward Sieve ({prng_base})"
     forward_args.prng_type = prng_base  # e.g., 'java_lcg'
 
     # Execute distributed sieve across all 26 GPUs
@@ -157,7 +158,9 @@ def run_bidirectional_test(coordinator,
     print(f"    Running REVERSE sieve ({reverse_prng}) [CONSTANT SKIP]...")
     reverse_args = Args()
     reverse_args.prng_type = reverse_prng
+    reverse_args.threshold = reverse_threshold  # Use reverse threshold for reverse sieve
 
+    reverse_args.step_name = f"Reverse Sieve ({reverse_prng})"
     reverse_result = coordinator.execute_distributed_analysis(
         reverse_args.target_file,
         f'results/window_opt_reverse_{config.window_size}_{config.offset}.json',
@@ -177,6 +180,21 @@ def run_bidirectional_test(coordinator,
     bidirectional_constant = forward_set & reverse_set
 
     print(f"      ✨ Bidirectional (constant): {len(bidirectional_constant):,} survivors")
+    
+    # Update dashboard with live trial stats
+    if hasattr(coordinator, "_progress_writer") and coordinator._progress_writer:
+        best_so_far = getattr(coordinator, "_best_bidirectional", 0)
+        if len(bidirectional_constant) > best_so_far:
+            coordinator._best_bidirectional = len(bidirectional_constant)
+            best_so_far = len(bidirectional_constant)
+        coordinator._progress_writer.update_trial_stats(
+            trial_num=trial_number,
+            forward_survivors=len(forward_survivors),
+            reverse_survivors=len(reverse_survivors),
+            bidirectional=len(bidirectional_constant),
+            best_bidirectional=best_so_far,
+            config_desc=config.description()
+        )
 
     # ========================================================================
     # ACCUMULATE CONSTANT SKIP SURVIVORS WITH METADATA
@@ -235,6 +253,7 @@ def run_bidirectional_test(coordinator,
         
         forward_args_hybrid = Args()
         forward_args_hybrid.prng_type = prng_hybrid  # e.g., 'java_lcg_hybrid'
+        forward_args_hybrid.step_name = f"Forward Sieve ({prng_hybrid}) [VARIABLE]"
 
         forward_result_hybrid = coordinator.execute_distributed_analysis(
             forward_args_hybrid.target_file,
@@ -252,6 +271,8 @@ def run_bidirectional_test(coordinator,
         # REVERSE SIEVE (variable skip)
         print(f"    Running REVERSE sieve ({prng_hybrid}) [VARIABLE SKIP]...")
         reverse_args_hybrid = Args()
+        reverse_args_hybrid.threshold = reverse_threshold  # Use reverse threshold for reverse sieve
+        reverse_args_hybrid.step_name = f"Reverse Sieve ({prng_hybrid}) [VARIABLE]"
         reverse_args_hybrid.prng_type = prng_hybrid
 
         reverse_result_hybrid = coordinator.execute_distributed_analysis(

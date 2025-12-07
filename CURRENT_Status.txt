@@ -1,544 +1,301 @@
-CURRENT_Status.txt
-# CURRENT STATUS - Updated December 5, 2025 (Session 2)
+# CURRENT STATUS - Updated December 7, 2025 (Session 5)
 
-## 🔴 CRITICAL FIX APPLIED THIS SESSION
-**BUG FOUND & FIXED:** `window_optimizer.py` was passing `resume_policy="restart"` as the first positional argument to `MultiGPUCoordinator()`, which Python interpreted as `config_file="restart"`. This caused the coordinator to only use localhost (2 GPUs) instead of the full 26-GPU cluster.
-
-**FIX APPLIED:**
-```python
-# Before (BROKEN - only used 2 local GPUs):
-coordinator = MultiGPUCoordinator(resume_policy="restart")
-
-# After (FIXED - uses all 26 GPUs):
-coordinator = MultiGPUCoordinator(config_file="distributed_config.json", resume_policy="restart")
+## Timeline Summary
+```
+Session 1: Dec 3-4, 2025   - Schema v1.0.3/v1.0.4, Dual-LLM, Universal Agent v1.0
+Session 2: Dec 4-5, 2025   - Watcher Agent, Progress Display, 26-GPU fix
+Session 3: Dec 5-6, 2025   - Configurable thresholds, chunk sizing fix
+Session 4: Dec 6, 2025     - Manifests v1.3.0 (Steps 2-6), PROPOSAL Addendum B
+Session 5: Dec 6-7, 2025   - Web Dashboard, Interactive Plots, Live Trial Data
 ```
 
-Lines 464 and 608 in `window_optimizer.py` were patched.
+---
 
-## Implementation Status
+## Session 5 Accomplishments (Dec 6-7, 2025) - WEB DASHBOARD COMPLETE
+
+### ✅ TODO #2 COMPLETE: Progress Display & Visualization
+
+**Problem Solved:**
+- Tmux-based monitoring was difficult to use (required manual attach)
+- No real-time visualization of Optuna optimization
+- No live display of bidirectional survivors
+- GPU utilization not tracked
+
+**Solution:** HiveOS-inspired Flask web dashboard with interactive Plotly charts
+
+### Web Dashboard Implementation
+
+**File:** `~/distributed_prng_analysis/web_dashboard.py` (~1650 lines)
+**Access:** `http://192.168.3.127:5000`
+
+| Route | Purpose | Features |
+|-------|---------|----------|
+| `/` | Overview | Progress bar, worker table, live trial data |
+| `/workers` | GPU Details | Per-GPU clock speeds, seeds/sec |
+| `/stats` | Statistics | Hardware summary, cluster totals |
+| `/plots` | Visualizations | Interactive Optuna charts |
+| `/settings` | Configuration | Dashboard settings (UI) |
+
+### Interactive Plotly Charts
+
+| Chart | Description | Requirements |
+|-------|-------------|--------------|
+| Parameter Optimization Scatter | X/Y params with score coloring | 2+ trials |
+| Trial Convergence | Score over trials with best line | 2+ trials |
+| Score Distribution | Histogram of scores | 2+ trials |
+| Parameter Importance | Influence of each parameter | 4+ trials |
+
+**Features:**
+- Hover tooltips with detailed trial data
+- Zoom/pan/reset capabilities
+- Full-screen view for each chart
+- Study selector dropdown
+- Auto-refresh disabled on Plots page (preserves selection)
+
+### Live Trial Data Card
+
+Real-time display on Overview page showing:
+- Current trial number
+- Forward survivors count
+- Reverse survivors count
+- Bidirectional survivors count
+- Best bidirectional so far
+- Configuration description
+
+### GPU Clock Speed Monitoring
+
+**File:** `~/distributed_prng_analysis/gpu_monitor.py`
+
+| Node | Method | Data Retrieved |
+|------|--------|----------------|
+| Zeus | nvidia-smi | Clock MHz, Temp, Util, Power |
+| rig-6600 | rocm-smi --showclocks | SCLK (shader clock) |
+| rig-6600b | rocm-smi --showclocks | SCLK (shader clock) |
+
+**Display:**
+- Overview: Average clock per worker with color coding
+- Workers: Per-GPU clock speeds
+- Color: Green (>1000 MHz), Orange (>100 MHz), Gray (idle)
+
+### Optuna Study Persistence
+
+**Problem:** Window optimizer studies were in-memory only, lost after run
+
+**Fix in** `window_optimizer_bayesian.py`:
+```python
+study_name = f"window_opt_{int(time.time())}"
+storage_path = f"sqlite:///optuna_studies/{study_name}.db"
+study = optuna.create_study(
+    study_name=study_name,
+    storage=storage_path,
+    direction='maximize',
+    sampler=sampler
+)
+```
+
+### Files Created/Modified
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `web_dashboard.py` | Created | Flask dashboard |
+| `gpu_monitor.py` | Created | GPU stats collection |
+| `progress_display.py` | Modified | Added `update_trial_stats()` |
+| `window_optimizer_integration_final.py` | Modified | Trial stats integration |
+| `window_optimizer_bayesian.py` | Modified | Study persistence |
+| `coordinator.py` | Modified | Auto-start dashboard |
+
+### Documentation Updated
+
+- `PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md` - Added Addendum D
+- `CURRENT_Status.txt` - This file
+
+---
+
+## Implementation Status (Updated)
 
 | Component | Status | Evidence |
 |-----------|--------|----------|
-| Schema v1.0.3 (agent_metadata) | ✅ DONE | metadata_writer.py created, integrated |
-| Schema v1.0.4 (Dual-LLM) | ✅ DONE | llm_metadata fields added |
-| Dual-LLM Servers | ✅ DONE | Qwen2.5-Coder-14B + Qwen2.5-Math-7B via llama.cpp Vulkan |
-| LLM Router | ✅ DONE | Intelligent routing, context reset triggers |
-| Universal Agent v1.0 (BaseAgent) | ✅ DONE | agents/agent_core.py implemented |
-| Window Optimizer Agent (Step 1) | ✅ DONE | agent_manifests/window_optimizer.json v1.2.1 |
-| Scorer Meta Agent (Step 2.5) | ✅ DONE | agent_manifests/scorer_meta.json v1.0.0 |
-| Full Scoring Agent (Step 3) | ✅ DONE | agent_manifests/full_scoring.json v1.0.0 |
-| ML Meta Agent (Step 4) | ✅ DONE | agent_manifests/ml_meta.json v1.0.0 |
-| Reinforcement Agent (Step 5) | ✅ DONE | agent_manifests/reinforcement.json v1.0.0 |
-| Prediction Agent (Step 6) | ✅ DONE | agent_manifests/prediction.json v1.0.0 |
-| Progress Monitor Auto-Launch | ✅ DONE | coordinator.py patched |
-| agent_metadata Injection (Step 1) | ✅ DONE | window_optimizer.py patched |
-| agent_metadata Injection (Step 2.5) | ✅ DONE | run_scorer_meta_optimizer.py patched |
-| LLM Graceful Degradation | ✅ DONE | agent_core.py - handles missing LLM servers |
-| BaseAgent Lifecycle Test | ✅ DONE | prepare → run → evaluate → next working |
-| **Pydantic Context Framework v3.2.0** | ✅ COMPLETE | All 4 sub-phases deployed and tested |
-| **Phase 6: Watcher Agent** | ✅ COMPLETE | watcher_agent.py deployed and tested |
-| **Progress Display Module** | ✅ COMPLETE | progress_display.py (616 lines) |
-| **26-GPU Cluster Fix** | ✅ COMPLETE | window_optimizer.py config_file fix |
+| Schema v1.0.3 (agent_metadata) | ✅ DONE | metadata_writer.py |
+| Schema v1.0.4 (Dual-LLM) | ✅ DONE | llm_metadata fields |
+| Dual-LLM Servers | ✅ DONE | Qwen2.5-Coder-14B + Math-7B |
+| LLM Router | ✅ DONE | Intelligent routing |
+| Universal Agent v1.0 | ✅ DONE | agents/agent_core.py |
+| All 6 Manifests v1.3.0 | ✅ DONE | 58 parameters |
+| Configurable Thresholds | ✅ DONE | Optuna + CLI + manifest |
+| Pydantic Context Framework | ✅ DONE | v3.2.0 + Addendums A-D |
+| Watcher Agent | ✅ DONE | watcher_agent.py |
+| **Web Dashboard** | ✅ DONE | **web_dashboard.py** |
+| **Interactive Plots** | ✅ DONE | **Plotly integration** |
+| **Live Trial Data** | ✅ DONE | **ProgressWriter.update_trial_stats()** |
+| **GPU Clock Monitoring** | ✅ DONE | **gpu_monitor.py** |
+| **Optuna Study Persistence** | ✅ DONE | **SQLite storage** |
+| 26-GPU Cluster Fix | ✅ DONE | config_file fix |
+| Chunk Sizing Fix | ✅ DONE | 19K minimum |
+
+---
 
 ## Phase Progress
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    IMPLEMENTATION STATUS                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Phase 1: Schema v1.0.3              ✅ DONE                    │
-│  └─ metadata_writer.py deployed                                  │
-│                                                                  │
-│  Phase 2: Dual-LLM Infrastructure    ✅ DONE                    │
-│  ├─ Qwen2.5-Coder-14B (GPU0, port 8080)                         │
-│  ├─ Qwen2.5-Math-7B (GPU1, port 8081)                           │
-│  └─ LLM Router deployed                                          │
-│                                                                  │
-│  Phase 3: Universal Agent v1.0       ✅ DONE                    │
-│  ├─ BaseAgent class (agents/agent_core.py)                      │
-│  ├─ agent_manifests/ directory                                   │
-│  ├─ Step 1: window_optimizer_agent ✅                           │
-│  ├─ Step 2.5: scorer_meta_agent ✅                              │
-│  ├─ Step 3: full_scoring_agent ✅                               │
-│  ├─ Step 4: ml_meta_agent ✅                                    │
-│  ├─ Step 5: reinforcement_agent ✅                              │
-│  └─ Step 6: prediction_agent ✅                                 │
-│                                                                  │
-│  Phase 3.5: agent_metadata Injection ⏳ IN PROGRESS             │
-│  ├─ Step 1: window_optimizer.py ✅                              │
-│  ├─ Step 2.5: run_scorer_meta_optimizer.py ✅                   │
-│  ├─ Step 3: generate_full_scoring_jobs.py 📝 PENDING            │
-│  ├─ Step 4: adaptive_meta_optimizer.py 📝 PENDING               │
-│  ├─ Step 5: meta_prediction_optimizer_anti_overfit.py 📝 PENDING│
-│  └─ Step 6: reinforcement_engine.py 📝 PENDING                  │
-│                                                                  │
-│  Phase 4: Agent Manager              📝 PENDING                 │
-│  └─ agent_manager.py (chains all 6 agents)                      │
-│                                                                  │
-│  Phase 5: Pydantic Context Framework ✅ COMPLETE                │
-│  │                                                               │
-│  │  v3.2.0 Unified Proposal (All Teams Integrated)              │
-│  │  ├─ Team Alpha: Schema v1.0.4, agent_metadata ✅             │
-│  │  ├─ Team Beta: History, Runtime, Safety ✅                   │
-│  │  ├─ Team Charlie: Unified doctrine ✅                        │
-│  │  └─ Claude: 6 specialized agent contexts ✅                  │
-│  │                                                               │
-│  │  Sub-Phase 1: Core Infrastructure     ✅ COMPLETE            │
-│  │  ├─ agent_manifest.py             ✅ to_context_dict()       │
-│  │  ├─ agent_decision.py             ✅ output_schema()         │
-│  │  ├─ parameter_registry.py         ✅ to_context_dict()       │
-│  │  ├─ parameter_context.py          ✅ to_context_dict()       │
-│  │  └─ prompt_builder.py             ✅ hybrid JSON builder     │
-│  │                                                               │
-│  │  Sub-Phase 2: Team Beta Infrastructure ✅ COMPLETE           │
-│  │  ├─ analysis_history.py           ✅ Trends, anomaly detect  │
-│  │  ├─ runtime_context.py            ✅ nvidia-smi/rocm-smi     │
-│  │  ├─ kill_switch.py                ✅ Safety controls         │
-│  │  └─ pipeline_step_context.py      ✅ I/O expectations        │
-│  │                                                               │
-│  │  Sub-Phase 3: Specialized Agent Contexts ✅ COMPLETE         │
-│  │  ├─ base_agent_context.py         ✅ Abstract base class     │
-│  │  ├─ window_optimizer_context.py   ✅ Step 1 expertise        │
-│  │  ├─ scorer_meta_context.py        ✅ Step 2 expertise        │
-│  │  ├─ full_scoring_context.py       ✅ Step 3 expertise        │
-│  │  ├─ ml_meta_context.py            ✅ Step 4 expertise        │
-│  │  ├─ anti_overfit_context.py       ✅ Step 5 expertise        │
-│  │  └─ prediction_context.py         ✅ Step 6 expertise        │
-│  │                                                               │
-│  │  Sub-Phase 4: Integration             ✅ COMPLETE            │
-│  │  ├─ doctrine.py                   ✅ Decision rules          │
-│  │  ├─ full_agent_context.py         ✅ Complete assembly       │
-│  │  └─ Updated __init__.py           ✅ All exports             │
-│  │                                                               │
-│  └───────────────────────────────────────────────────────────────│
-│                                                                  │
-│  Phase 6: Watcher Agent              ✅ COMPLETE                │
-│  ├─ watcher_agent.py                 ✅ Autonomous monitoring   │
-│  ├─ progress_display.py              ✅ Rich terminal display   │
-│  ├─ Manifest compatibility fixes     ✅ Field validators        │
-│  ├─ Default params loading           ✅ From manifest JSON      │
-│  ├─ Heuristic evaluation             ✅ --no-llm mode working   │
-│  └─ 26-GPU cluster integration       ✅ config_file fix applied │
-│                                                                  │
-│  ◄── WATCHER AGENT DEPLOYED - Pipeline Running on 26 GPUs      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                    IMPLEMENTATION STATUS                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Phase 1: Schema v1.0.3              ✅ DONE                        │
+│  Phase 2: Dual-LLM Infrastructure    ✅ DONE                        │
+│  Phase 3: Universal Agent v1.0       ✅ DONE                        │
+│  Phase 3.5: agent_metadata Injection ⏳ IN PROGRESS                 │
+│  Phase 4: Agent Manager              📝 PENDING                     │
+│  Phase 5: Pydantic Context Framework ✅ COMPLETE (v3.2.0 + A-D)    │
+│  Phase 6: Watcher Agent              ✅ COMPLETE                    │
+│  Phase 7: Web Dashboard              ✅ COMPLETE                    │
+│                                                                      │
+│  ◄── TODO #2 COMPLETE: Web Dashboard & Visualizations               │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Tonight's Session Accomplishments (Dec 4-5, 2025 Evening)
+---
 
-### Phase 6: Watcher Agent - COMPLETE ✅
+## TODO List (Updated Priority)
 
-#### Watcher Agent Core (`watcher_agent.py`)
-- ✅ Full 6-step pipeline orchestration
-- ✅ Heuristic evaluation mode (`--no-llm` flag)
-- ✅ LLM evaluation mode (when servers available)
-- ✅ Confidence thresholds: proceed (≥0.70), escalate (<0.50)
-- ✅ Retry logic with max retries per step (3) and total (10)
-- ✅ Halt file integration (`/tmp/agent_halt`)
-- ✅ Decision logging (JSONL format)
-- ✅ Default parameters loading from manifests
+### ✅ COMPLETED
+- [x] TODO #1: Add `parameter_bounds` to manifests Steps 2-6
+- [x] TODO #2: Progress Display & Visualization
+  - [x] Web dashboard (replaced tmux)
+  - [x] Live GPU clock speeds
+  - [x] Optuna trial progress (interactive Plotly)
+  - [x] Survivor counts live updates
+  - [x] ETA estimation
+  - [x] Parameter Importance chart
 
-#### Progress Display Module (`progress_display.py`)
-- ✅ 616 lines of rich terminal display code
-- ✅ `WatcherProgress` class - 6-step pipeline table with live status
-- ✅ `ClusterProgress` class - per-node GPU status
-- ✅ `PipelineProgress` class - Optuna trial progress
-- ✅ Graceful fallback when `rich` unavailable
-- ✅ TTY detection for subprocess compatibility
+### 🔧 IN PROGRESS
+- [ ] TODO #2 Polish:
+  - [ ] Settings page functionality
+  - [ ] Historical data persistence
+  - [ ] AMD rocm-smi parsing improvements
 
-#### Manifest Compatibility Fixes (`agent_manifest.py`)
-- ✅ Added `SUBPROCESS = "subprocess"` to ActionType enum
-- ✅ Added `@field_validator('inputs')` to normalize dict→list
-- ✅ Added `@field_validator('success_condition')` to convert dict→str
-- ✅ Added `name` field to AgentAction
-- ✅ Added `model_config = {"extra": "allow"}` for flexibility
+### 📝 PENDING
+- [ ] TODO #3: End-to-end pipeline test with full 26-GPU cluster
+  - [ ] Run watcher_agent.py --run-pipeline --start-step 1
+  - [ ] Verify all 6 steps execute and chain correctly
+  - [ ] Confirm 26 GPUs utilized throughout
 
-#### Critical Bug Fix: 26-GPU Cluster
-- 🔴 **FOUND:** `window_optimizer.py` only used 2 local GPUs (not 26!)
-- 🔴 **CAUSE:** `MultiGPUCoordinator(resume_policy="restart")` interpreted as `config_file="restart"`
-- ✅ **FIXED:** Changed to `MultiGPUCoordinator(config_file="distributed_config.json", resume_policy="restart")`
-- ✅ **VERIFIED:** All 26 GPUs now receiving jobs (14 on rig-6600, 8 on rig-6600b, 2 on Zeus)
+---
 
-### Test Results on Zeus
+## Hardware Configuration
 
-```
-✅ Watcher imports successful
-✅ Config initialization working
-✅ Heuristic evaluation: proceed (0.73) vs escalate (0.20)
-✅ All 6 pipeline steps evaluated
-✅ Retry logic enforced
-✅ Safety integration (halt file)
-✅ Decision logging (JSONL)
-✅ 26-GPU cluster distribution VERIFIED
-✅ Progress display table rendering
-```
-
-### Pipeline Run Status (Currently Executing)
-```
-Started: 2025-12-04 20:05:31
-Step: 1 - Window Optimizer
-Trials: 20 Bayesian trials × 10M seeds
-GPUs: 26 (2× RTX 3080 Ti + 24× RX 6600)
-Status: Running on full cluster ✅
-```
-
-## 🔧 TODO: Fix Live Display Updates
-
-**Issue:** The progress display table shows correctly but doesn't update live during step execution. It currently only updates at step boundaries (when a step completes), not during trial progress.
-
-**Current Behavior:**
-- Display shows "0/20 (0%)" and "0:00:00" 
-- Updates only when Step 1 completes entirely
-- No live trial-by-trial progress
-
-**Desired Behavior:**
-- Display updates every few seconds showing trial progress
-- Shows current trial number (e.g., "5/20 (25%)")
-- Shows elapsed time updating in real-time
-
-**Potential Solutions:**
-1. Run subprocess in a thread, poll for progress in main thread
-2. Have window_optimizer.py write progress to a file, watcher polls it
-3. Use subprocess PIPE and parse stdout for trial updates
-4. Implement IPC (inter-process communication) for progress events
-
-**Priority:** Medium - functional but not visually optimal
-
-## Pydantic Context Framework v3.2.0 - COMPLETE ✅
-
-### Framework Summary
-
-| Module | Files | Purpose |
-|--------|-------|---------|
-| **manifest/** | `agent_manifest.py` | Pydantic manifest models, attribute access |
-| **parameters/** | `parameter_context.py` | AI parameter awareness with bounds |
-| **registry/** | `parameter_registry.py` | Script parameter bounds (46+ PRNGs) |
-| **history/** | `analysis_history.py` | Multi-run trends, anomaly detection |
-| **runtime/** | `runtime_context.py` | GPU detection (nvidia-smi/rocm-smi) |
-| **safety/** | `kill_switch.py` | Emergency halt, failure limits |
-| **pipeline/** | `pipeline_step_context.py` | 6-step pipeline I/O expectations |
-| **contexts/** | 7 files | Specialized contexts for each step |
-| **root** | `doctrine.py` | Decision rules (proceed/retry/escalate) |
-| **root** | `full_agent_context.py` | Complete context assembly |
-| **root** | `prompt_builder.py` | Hybrid JSON prompt builder |
-| **root** | `agent_decision.py` | LLM response validation + JSON repair |
-
-### Entry Points
-
-```python
-from agents import build_full_context, FullAgentContext
-
-# Build complete context for any step
-ctx = build_full_context(
-    step=1,
-    results={"bidirectional_count": 47, "optimization_score": 0.85},
-    run_number=1
-)
-
-# Get LLM-ready prompt (~9KB structured context)
-prompt = ctx.to_llm_prompt()
-
-# Or get structured dict for processing
-context_dict = ctx.to_context_dict()
-
-# Evaluate results
-summary = ctx.get_evaluation_summary()
-# Returns: {"step": 1, "success": True, "confidence": 0.85, "interpretation": "..."}
-```
-
-### All 6 Steps Tested
-
-| Step | Agent | Test Confidence | Interpretation Sample |
-|------|-------|-----------------|----------------------|
-| 1 | Window Optimizer | 0.85 | "47 bidirectional survivors - manageable for ML" |
-| 2 | Scorer Meta | 0.85 | "Good validation score (0.920)" |
-| 3 | Full Scoring | 0.93 | "Near-complete scoring: 998/1000 (99.8%)" |
-| 4 | ML Meta | 0.93 | "Optimal depth (3 layers)" |
-| 5 | Anti-Overfit | 0.85 | "Good generalization (overfit_ratio=1.080)" |
-| 6 | Prediction | 0.93 | "Optimal pool size (200 predictions)" |
-
-### Unified Proposal (All Teams)
-
-| Team | Contribution | Status |
-|------|--------------|--------|
-| Team Alpha | Schema v1.0.4, agent_metadata, LLM fields | ✅ Integrated |
-| Team Beta | AnalysisHistory, RuntimeContext, KillSwitch, ParameterRegistry | ✅ Integrated |
-| Team Charlie | Unified doctrine file, minimal field duplication | ✅ Integrated |
-| Claude | Six specialized agent contexts with domain expertise | ✅ Integrated |
-
-### Key Design Decisions
-
-1. **Hybrid JSON approach** - Clean `to_context_dict()` instead of prose (reduced hallucination)
-2. **Six specialized agent contexts** - Domain expertise per step
-3. **Doctrine validation** - Ensures AI follows decision rules
-4. **JSON repair fallback** - Handles malformed LLM output
-5. **Graceful degradation** - Works without LLM servers
-
-## File Structure
-
-### Agents Framework (deployed to Zeus)
-```
-agents/
-├── __init__.py                    # All exports
-├── agent_decision.py              # LLM response validation
-├── doctrine.py                    # Decision rules
-├── full_agent_context.py          # Complete assembly
-├── prompt_builder.py              # Hybrid JSON builder
-├── watcher_agent.py               # ✅ NEW - Autonomous monitoring
-├── progress_display.py            # ✅ NEW - Rich terminal display
-├── contexts/
-│   ├── __init__.py
-│   ├── base_agent_context.py      # Abstract base
-│   ├── window_optimizer_context.py
-│   ├── scorer_meta_context.py
-│   ├── full_scoring_context.py
-│   ├── ml_meta_context.py
-│   ├── anti_overfit_context.py
-│   └── prediction_context.py
-├── history/
-│   ├── __init__.py
-│   └── analysis_history.py        # Trends, anomalies
-├── manifest/
-│   ├── __init__.py
-│   └── agent_manifest.py          # Pydantic manifest
-├── parameters/
-│   ├── __init__.py
-│   └── parameter_context.py       # AI parameter awareness
-├── pipeline/
-│   ├── __init__.py
-│   └── pipeline_step_context.py   # Pipeline I/O
-├── registry/
-│   ├── __init__.py
-│   └── parameter_registry.py      # Parameter bounds
-├── runtime/
-│   ├── __init__.py
-│   └── runtime_context.py         # GPU detection
-└── safety/
-    ├── __init__.py
-    └── kill_switch.py             # Safety controls
-```
-
-## Previous Session Accomplishments (Still Valid)
-
-### agent_metadata Injection
-- ✅ Patched window_optimizer.py - injects agent_metadata to output JSON
-- ✅ Patched run_scorer_meta_optimizer.py - injects agent_metadata
-- ✅ Tested metadata injection - confirmed working with test run
-
-### BaseAgent Lifecycle Testing
-- ✅ Tested full agent lifecycle: prepare() → run() → evaluate() → next()
-- ✅ Agent correctly executes window_optimizer.py
-- ✅ Agent correctly identifies follow-up: scorer_meta_agent
-
-### LLM Integration
-- ✅ Added graceful degradation - agents work without LLM servers
-- ✅ Default confidence (0.85) used when LLM unavailable
-
-### Test Results
-```
-Agent: window_optimizer_agent
-Run ID: step1_20251204_040354_67f814d9
-Return code: 0
-Success: True
-Confidence: 0.85 (default, LLM not running)
-Follow-up: scorer_meta_agent
-agent_metadata: injected ✓
-```
-
-## Script/Manifest Mapping
-
-| Step | Manifest | Primary Script | Metadata Injected |
-|------|----------|----------------|-------------------|
-| 1 | window_optimizer.json | window_optimizer.py | ✅ YES |
-| 2.5 | scorer_meta.json | run_scorer_meta_optimizer.py | ✅ YES |
-| 3 | full_scoring.json | generate_full_scoring_jobs.py | 📝 PENDING |
-| 4 | ml_meta.json | adaptive_meta_optimizer.py | 📝 PENDING |
-| 5 | reinforcement.json | meta_prediction_optimizer_anti_overfit.py | 📝 PENDING |
-| 6 | prediction.json | reinforcement_engine.py | 📝 PENDING |
-
-## Files Reference
-
-### Proposals (in outputs/)
-- PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md
-
-### Pydantic Framework v3.2.0 (deployed to Zeus)
-- agents/ directory with 22 Python files across 8 subdirectories
-- test_subphase1.py, test_subphase2.py, test_subphase3.py, test_subphase4.py
-- test_watcher_agent.py
-
-### Deployment Tarball
-- agents_phase6_watcher.tar.gz (includes progress_display.py)
-
-### Existing Agent Infrastructure
-- agents/agent_core.py (BaseAgent v1.0)
-- agent_manifests/window_optimizer.json (v1.2.1)
-- agent_manifests/scorer_meta.json (v1.0.0)
-- agent_manifests/full_scoring.json (v1.0.0)
-- agent_manifests/ml_meta.json (v1.0.0)
-- agent_manifests/reinforcement.json (v1.0.0)
-- agent_manifests/prediction.json (v1.0.0)
-
-### LLM Infrastructure
-- llm_services/llm_router.py
-- Qwen2.5-Coder-14B on GPU0:8080
-- Qwen2.5-Math-7B on GPU1:8081
-
-## Hardware Reference
-
-### Zeus (Primary)
+### Zeus (Primary/Coordinator)
 - 2× RTX 3080 Ti (CUDA)
-- 59.6 TFLOPS estimated
-- Coordinator node
+- ~59.69 TFLOPS
+- Runs: Coordinator, LLM servers, Optuna, Web Dashboard
 
 ### Mining Rigs (Workers)
-- rig-6600: 12× RX 6600 (ROCm)
-- rig-6600b: 12× RX 6600 (ROCm)
+- rig-6600: 12× RX 6600 (ROCm) @ 192.168.3.120
+- rig-6600b: 12× RX 6600 (ROCm) @ 192.168.3.154
 - ~226 TFLOPS combined
 
 ### Total Cluster
 - 26 GPUs
 - ~285 TFLOPS
 
-## Next Steps
+---
 
-### Immediate
-1. 🔧 Fix live display updates (progress_display.py)
-2. Wait for current pipeline run to complete
-3. Evaluate results and verify Step 2 auto-proceeds
+## Key Files Reference
 
-### Short-term
-- Complete agent_metadata injection (Steps 3-6)
-- Create `agent_manager.py` (chains all 6 agents)
-- End-to-end pipeline test with LLM evaluation
-
-### Medium-term
-- Implement IPC for real-time progress display
-- Add web dashboard for remote monitoring
-- Production deployment with systemd service
-
-
-## Session 3 Accomplishments (Dec 5-6, 2025 Night) - CONFIGURABLE THRESHOLDS
-
-### 🔴 CRITICAL BUGS FOUND & FIXED
-
-#### 1. Chunk Sizing Bug (coordinator.py)
-- **BUG:** `base_chunk_size = max(500, total_seeds // 100)` created 500-seed chunks
-- **IMPACT:** SSH setup overhead (~16-22s) exceeded actual work time (<1s), causing timeouts
-- **FIX:** Changed to `max(19000, total_seeds // 100)`
-- **RESULT:** 100K seeds completes in ~49s (was timing out)
-
-#### 2. Hardcoded Threshold Bug (window_optimizer.py)
-- **BUG:** Forward/reverse thresholds hardcoded to 0.01 (1%)
-- **IMPACT:** 50,000 false positive survivors (should be ~1-10)
-- **ROOT CAUSE:** 0.01 threshold means "match 1% of window" = allow almost anything
-- **CORRECT VALUES:** Forward=0.72, Reverse=0.81 (from prior Optuna tuning)
-
-#### 3. Java LCG Test Data Mismatch
-- **BUG:** synthetic_lottery.json wasn't generated by any reversible PRNG
-- **BUG:** Test data used `>> 17` but kernel uses `>> 16` for output extraction
-- **FIX:** Generated proper test data with correct bit shift matching kernel
-
-### ✅ MAJOR FEATURE: Configurable Thresholds for ML/AI Autonomy
-
-**Problem Solved:**
-- Hardcoded thresholds blocked AI agent optimization
-- Agents couldn't adjust filter sensitivity
-- Forward/reverse sieves used same threshold (should differ)
-
-**Architecture Change (Per Team Beta Validation):**
-
-| Component | Change |
-|-----------|--------|
-| `SearchBounds` dataclass | Added `min/max_forward_threshold` (0.50-0.95), `min/max_reverse_threshold` (0.60-0.98), `default_forward_threshold` (0.72), `default_reverse_threshold` (0.81) |
-| `WindowConfig` dataclass | Added `forward_threshold`, `reverse_threshold` fields with defaults |
-| Optuna Integration | `trial.suggest_float('forward_threshold', ...)` and `trial.suggest_float('reverse_threshold', ...)` |
-| CLI Arguments | `--forward-threshold` and `--reverse-threshold` for manual override |
-| Agent Manifest | `parameter_bounds` section with types, ranges, descriptions for AI awareness |
-| Integration Layer | Pass separate thresholds downstream to sieves |
-
-**Files Modified:**
-- `window_optimizer.py` - SearchBounds, WindowConfig, CLI args, removed hardcoded 0.01
-- `window_optimizer_bayesian.py` - suggest_float(), updated WindowConfig class
-- `window_optimizer_integration_final.py` - pass forward/reverse thresholds downstream
-- `sieve_filter.py` - dtype handling for residues
-- `agent_manifests/window_optimizer.json` - v1.3.0 with parameter_bounds
-
-### ✅ Test Results
-
-**Before (0.01 threshold):**
-- 50,000 survivors out of 50,000 seeds (100% false positive rate)
-- Seed 12345 buried in noise
-
-**After (Optuna-optimized thresholds):**
-- 1,639 survivors (97% reduction in false positives)
-- Seed 12345 FOUND with proper metadata
-- Optuna suggested FT=0.85, RT=0.96 (within expected ranges)
-
-**Sample Output:**
+### Web Dashboard
 ```
-🏆 OPTIMIZATION COMPLETE
-   Best score: 1638.00
-   Best config: W313_O288_midday_S1-149_FT0.85_RT0.96
-   Bidirectional survivors: 1638
-   📊 Optuna-optimized thresholds:
-      Forward threshold: 0.85
-      Reverse threshold: 0.96
+web_dashboard.py       # Main Flask dashboard (~1650 lines)
+gpu_monitor.py         # GPU clock/stats monitoring
+progress_display.py    # ProgressWriter with trial_stats
 ```
 
-### ✅ Git Commits
-
-1. `bd95d6a` - Make thresholds configurable for ML/AI optimization
-2. `eec22ea` - Fix chunk sizing (19K min) and progress display type hints
-
-### Implementation Status Update
-
-| Component | Status | Evidence |
-|-----------|--------|----------|
-| Window Optimizer Agent (Step 1) | ✅ DONE | agent_manifests/window_optimizer.json **v1.3.0** |
-| Configurable Thresholds | ✅ DONE | Optuna-optimized, CLI override, agent manifest bounds |
-| Chunk Sizing Fix | ✅ DONE | coordinator.py line 1309 |
-| 26-GPU Cluster | ✅ WORKING | All GPUs receiving jobs, ~13s per 50K-seed sieve |
-
-### Architecture Validation
-
-**Team Beta Assessment (ChatGPT o1):**
-> "Your proposal is correct, necessary, and perfectly aligned with your end goal: fully autonomous AI agents capable of adjusting every part of the PRNG pipeline. Hardcoded thresholds are a hard blocker to autonomy. Your redesign solves that."
-
-**Key Principle Enforced:**
-> "Nothing should be hardcoded - all parameters must remain adjustable for ML and AI applications."
-
-### Threshold Configuration Flow (New Architecture)
+### Agent Manifests (v1.3.0)
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                 THRESHOLD CONFIGURATION FLOW                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. Optuna Suggests (PRIMARY)                                   │
-│     └─ trial.suggest_float('forward_threshold', 0.50, 0.95)    │
-│     └─ trial.suggest_float('reverse_threshold', 0.60, 0.98)    │
-│                                                                  │
-│  2. CLI Override (MANUAL)                                        │
-│     └─ --forward-threshold 0.72                                 │
-│     └─ --reverse-threshold 0.81                                 │
-│                                                                  │
-│  3. Config File (STORED DEFAULTS)                               │
-│     └─ optimal_window_config.json                               │
-│         ├─ forward_threshold: 0.85 (from Optuna)               │
-│         └─ reverse_threshold: 0.96 (from Optuna)               │
-│                                                                  │
-│  4. Agent Manifest (AI AWARENESS)                               │
-│     └─ parameter_bounds:                                        │
-│         ├─ forward_threshold: {min: 0.50, max: 0.95}           │
-│         └─ reverse_threshold: {min: 0.60, max: 0.98}           │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+agent_manifests/
+├── window_optimizer.json   # Step 1 - 10 params
+├── scorer_meta.json        # Step 2 - 6 params
+├── full_scoring.json       # Step 3 - 5 params
+├── ml_meta.json            # Step 4 - 13 params
+├── reinforcement.json      # Step 5 - 13 params
+└── prediction.json         # Step 6 - 11 params
 ```
 
-### Next Steps
+### Documentation
+```
+PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md  # Main spec + Addendums A-D
+CURRENT_Status.txt                                   # This file
+```
 
-1. **Immediate:** Run full optimization with more trials (20+) to let Optuna converge
-2. **Short-term:** Verify thresholds propagate correctly through pipeline Steps 2-6
-3. **Medium-term:** Add threshold parameters to remaining agent manifests
-4. **Long-term:** Implement adaptive threshold adjustment based on survivor counts
+---
 
+## Session History
+
+### Session 1 (Dec 3-4, 2025)
+- Schema v1.0.3 and v1.0.4 implemented
+- Dual-LLM infrastructure deployed
+- Universal Agent v1.0 created
+- 6 agent manifests v1.0.0 created
+
+### Session 2 (Dec 4-5, 2025)
+- Watcher Agent deployed and tested
+- Progress Display module created
+- 26-GPU cluster fix applied
+- Manifest compatibility fixes
+
+### Session 3 (Dec 5-6, 2025)
+- Configurable thresholds implemented
+- Chunk sizing bug fixed (19K minimum)
+- window_optimizer.json upgraded to v1.3.0
+- PROPOSAL Addendum A added
+
+### Session 4 (Dec 6, 2025)
+- All manifests upgraded to v1.3.0
+- 58 total configurable parameters
+- PROPOSAL Addendum B added
+- Git commits: 9f9c606, 1953cca
+
+### Session 5 (Dec 6-7, 2025)
+- **TODO #2 COMPLETE:** Web Dashboard
+- HiveOS-inspired Flask dashboard
+- Interactive Plotly charts (4 types)
+- Live Trial Data card
+- GPU clock speed monitoring
+- Optuna study persistence fix
+- Parameter Importance implementation
+- PROPOSAL Addendum D added
+- **NEXT:** TODO #3 - End-to-end pipeline test
+
+---
+
+## Dashboard Quick Reference
+
+### Start Dashboard
+```bash
+python3 ~/distributed_prng_analysis/web_dashboard.py &
+```
+
+### Access
+- Local: http://localhost:5000
+- Network: http://192.168.3.127:5000
+
+### Run Test with Dashboard
+```bash
+python3 window_optimizer.py --strategy bayesian --trials 15 \
+    --max-seeds 1000000 --prng-type java_lcg \
+    --lottery-file synthetic_lottery.json
+```
+
+### Dashboard Features
+- Overview: Progress, workers, live trial data
+- Workers: Per-GPU clock speeds
+- Plots: Interactive Optuna visualizations
+- Full-screen charts with download option
+
+---
+
+## Next Session Goals
+
+1. **TODO #2 Polish:** Settings functionality, historical data
+2. **TODO #3:** End-to-end pipeline test with 26 GPUs
+3. Continue agent_metadata injection (Steps 3-6)
+4. Test Parameter Importance with more trials

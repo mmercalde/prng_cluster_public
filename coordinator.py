@@ -112,9 +112,9 @@ _progress_monitor_process = None
 _progress_monitor_tmux_pane = None
 
 def start_progress_monitor():
-    """Auto-start progress_monitor.py in a tmux split pane."""
+    """Auto-start progress_monitor.py in a tmux split pane or new session."""
     global _progress_monitor_tmux_pane
-    import os, subprocess
+    import os, subprocess, sys
     
     monitor_script = os.path.expanduser('~/distributed_prng_analysis/progress_monitor.py')
     
@@ -126,12 +126,17 @@ def start_progress_monitor():
     result = subprocess.run(['pgrep', '-f', 'progress_monitor.py'], capture_output=True)
     if result.returncode == 0:
         print("📊 Progress monitor already running")
+        # Check if we can attach to existing session
+        check = subprocess.run(['tmux', 'has-session', '-t', 'prng_monitor'], capture_output=True)
+        if check.returncode == 0:
+            print("   └─ Attach with: tmux attach -t prng_monitor")
         return True
     
     in_tmux = os.environ.get('TMUX') is not None
     
     try:
         if in_tmux:
+            # Already in tmux - split pane (best experience)
             result = subprocess.run(
                 ['tmux', 'split-window', '-h', '-p', '35', 'python3', monitor_script],
                 capture_output=True, text=True
@@ -141,18 +146,28 @@ def start_progress_monitor():
                 _progress_monitor_tmux_pane = True
                 return True
         else:
+            # Not in tmux - create new session
             subprocess.run(['tmux', 'kill-session', '-t', 'prng_monitor'], capture_output=True)
             result = subprocess.run(
                 ['tmux', 'new-session', '-d', '-s', 'prng_monitor', 'python3', monitor_script],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
-                print("📊 Progress monitor started - attach with: tmux attach -t prng_monitor")
                 _progress_monitor_tmux_pane = False
+                print("╔════════════════════════════════════════════════════════════╗")
+                print("║  📊 Progress monitor started in background tmux session    ║")
+                print("║                                                            ║")
+                print("║  To view progress, run in another terminal:                ║")
+                print("║    tmux attach -t prng_monitor                             ║")
+                print("║                                                            ║")
+                print("║  Or run this command now to split your terminal:           ║")
+                print("║    ~/distributed_prng_analysis/start_monitor.sh            ║")
+                print("╚════════════════════════════════════════════════════════════╝")
                 return True
     except Exception as e:
         print(f"⚠️  Could not start progress monitor: {e}")
     return False
+
 
 def stop_progress_monitor():
     """Stop the progress monitor gracefully."""
@@ -165,6 +180,51 @@ def stop_progress_monitor():
         pass
 
 atexit.register(stop_progress_monitor)
+
+# Web dashboard auto-launch
+_web_dashboard_process = None
+
+def start_web_dashboard():
+    """Auto-start web_dashboard.py in background."""
+    global _web_dashboard_process
+    import os, subprocess
+    
+    dashboard_script = os.path.expanduser("~/distributed_prng_analysis/web_dashboard.py")
+    
+    if not os.path.exists(dashboard_script):
+        print("⚠️  web_dashboard.py not found - web dashboard disabled")
+        return False
+    
+    # Check if already running on port 5000
+    result = subprocess.run(["lsof", "-i", ":5000"], capture_output=True)
+    if result.returncode == 0:
+        print("📊 Web dashboard already running at http://192.168.3.127:5000")
+        return True
+    
+    try:
+        # Start in background, redirect output to /dev/null
+        _web_dashboard_process = subprocess.Popen(
+            ["python3", dashboard_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        print("╔════════════════════════════════════════════════════════════╗")
+        print("║  📊 Web Dashboard started: http://192.168.3.127:5000       ║")
+        print("╚════════════════════════════════════════════════════════════╝")
+        return True
+    except Exception as e:
+        print(f"⚠️  Could not start web dashboard: {e}")
+    return False
+
+def stop_web_dashboard():
+    """Stop the web dashboard gracefully."""
+    global _web_dashboard_process
+    if _web_dashboard_process:
+        _web_dashboard_process.terminate()
+        _web_dashboard_process = None
+
+# atexit.register(stop_web_dashboard)  # Keep dashboard running after script ends
 
 
 @dataclass
@@ -1220,15 +1280,22 @@ class MultiGPUCoordinator:
             if start_progress_monitor():
                 self._progress_monitor_started = True
 
+            start_web_dashboard()  # Auto-start web dashboard
         # Initialize progress writer for external monitoring
-        if PROGRESS_WRITER_AVAILABLE:
+        if PROGRESS_WRITER_AVAILABLE and (not hasattr(self, "_progress_writer") or self._progress_writer is None):
             self._progress_writer = ProgressWriter("Distributed GPU Processing", total_jobs=100, total_seeds=total_seeds)
             self._progress_writer.register_node("localhost", "RTX 3080 Ti", 2)
             for node in self.nodes:
                 if node.hostname != "localhost":
                     self._progress_writer.register_node(node.hostname, node.gpu_type, node.gpu_count)
-        else:
-            self._progress_writer = None
+        # Reset progress for new sieve run
+        if hasattr(self, "_progress_writer") and self._progress_writer:
+            step_name = getattr(args, "step_name", "Distributed GPU Processing")
+            self._progress_writer.step_name = step_name
+            self._progress_writer.seeds_completed = 0
+            self._progress_writer.jobs_completed = 0
+            self._progress_writer.total_seeds = total_seeds
+            self._progress_writer._write()
         
         print("ðŸš€ True Parallel Dynamic Distribution Mode")
         print(f"Target: {total_seeds:,} seeds across {len(self.gpu_workers or self.create_gpu_workers())} GPUs")

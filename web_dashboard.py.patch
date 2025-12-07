@@ -1,0 +1,5 @@
+
+# Add this near the top after imports, before app = Flask(__name__)
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)  # Only show errors, not every request

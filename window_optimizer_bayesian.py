@@ -252,10 +252,19 @@ class OptunaBayesianSearch:
             seed=self.seed
         )
         
+        # Create persistent storage for the study
+        import time
+        study_name = f"window_opt_{int(time.time())}"
+        storage_path = f"sqlite:////home/michael/distributed_prng_analysis/optuna_studies/{study_name}.db"
+        
         study = optuna.create_study(
+            study_name=study_name,
+            storage=storage_path,
             direction='maximize',
-            sampler=sampler
+            sampler=sampler,
+            load_if_exists=False
         )
+        print(f"   📊 Optuna study saved to: optuna_studies/{study_name}.db")
         
         # Run optimization
         study.optimize(optuna_objective, n_trials=max_iterations)

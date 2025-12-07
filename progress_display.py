@@ -614,3 +614,106 @@ if __name__ == "__main__":
             watcher.complete_step(step, success=True, score=0.9)
     
     print("\n✅ All tests complete!")
+
+
+# ============================================================================
+# ProgressWriter - Writes progress to JSON for web dashboard
+# ============================================================================
+
+PROGRESS_FILE = "/tmp/cluster_progress.json"
+
+class ProgressWriter:
+    """Writes cluster progress to JSON file for web dashboard and tmux monitor."""
+    
+    def __init__(self, step_name: str, total_jobs: int = 100, total_seeds: int = 0):
+        self.step_name = step_name
+        self.total_jobs = total_jobs
+        self.total_seeds = total_seeds
+        self.jobs_completed = 0
+        self.seeds_completed = 0
+        self.start_time = time.time()
+        self.nodes = {}
+        self.finished = False
+        self._write()
+    
+    def register_node(self, hostname: str, gpu_type: str, gpu_count: int):
+        """Register a cluster node."""
+        self.nodes[hostname] = {
+            "total_gpus": gpu_count,
+            "gpu_type": gpu_type,
+            "jobs_completed": 0,
+            "current_seeds_per_sec": 0,
+            "last_update": time.time()
+        }
+        self._write()
+    
+    def log_gpu_result(self, hostname: str, gpu_id: int, gpu_type: str, seeds_processed: int, duration: float, success: bool = True):
+        """Log a completed GPU job result."""
+        if hostname in self.nodes:
+            self.nodes[hostname]["jobs_completed"] += 1
+            if duration > 0:
+                self.nodes[hostname]["current_seeds_per_sec"] = seeds_processed / duration
+            self.nodes[hostname]["last_update"] = time.time()
+        self.seeds_completed += seeds_processed
+        self._write()
+    
+    def update_step(self, step_name: str, total_seeds: int = None):
+        """Update the current step name without resetting progress."""
+        self.step_name = step_name
+        if total_seeds:
+            self.total_seeds = total_seeds
+            self.seeds_completed = 0
+        self.jobs_completed = 0
+        self._write()
+
+    def update_progress(self, jobs_done: int = None, chunks_total: int = None, 
+                       seeds_done: int = None, message: str = ""):
+        """Update overall progress."""
+        if jobs_done is not None:
+            self.jobs_completed = jobs_done
+        if chunks_total is not None:
+            self.total_jobs = chunks_total
+        if seeds_done is not None:
+            self.seeds_completed = seeds_done
+        self._write()
+    
+    def finish(self):
+        """Mark the job as finished."""
+        self.finished = True
+        self._write()
+    
+
+    def update_trial_stats(self, trial_num: int = 0, forward_survivors: int = 0, 
+                          reverse_survivors: int = 0, bidirectional: int = 0,
+                          best_bidirectional: int = 0, config_desc: str = ""):
+        """Update current trial statistics."""
+        self.trial_stats = {
+            "trial_num": trial_num,
+            "forward_survivors": forward_survivors,
+            "reverse_survivors": reverse_survivors,
+            "bidirectional": bidirectional,
+            "best_bidirectional": best_bidirectional,
+            "config_desc": config_desc
+        }
+        self._write()
+
+    def _write(self):
+        """Write current state to JSON file."""
+        import json
+        state = {
+            "step_name": self.step_name,
+            "total_jobs": self.total_jobs,
+            "jobs_completed": self.jobs_completed,
+            "seeds_completed": self.seeds_completed,
+            "total_seeds": self.total_seeds,
+            "elapsed_seconds": time.time() - self.start_time,
+            "updated_at": time.time(),
+            "finished": self.finished,
+            "nodes": self.nodes,
+            "trial_stats": getattr(self, 'trial_stats', {})
+        }
+        try:
+            with open(PROGRESS_FILE, 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            pass  # Silently fail if can't write
