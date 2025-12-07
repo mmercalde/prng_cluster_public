@@ -106,7 +106,7 @@ study = optuna.create_study(
 
 ### Documentation Updated
 
-- `PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md` - Added Addendum D
+- `PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md` - Added Phase Roadmap + Addendum D
 - `CURRENT_Status.txt` - This file
 
 ---
@@ -123,7 +123,7 @@ study = optuna.create_study(
 | All 6 Manifests v1.3.0 | ✅ DONE | 58 parameters |
 | Configurable Thresholds | ✅ DONE | Optuna + CLI + manifest |
 | Pydantic Context Framework | ✅ DONE | v3.2.0 + Addendums A-D |
-| Watcher Agent | ✅ DONE | watcher_agent.py |
+| Watcher Agent (Pipeline Mgr) | ✅ DONE | watcher_agent.py |
 | **Web Dashboard** | ✅ DONE | **web_dashboard.py** |
 | **Interactive Plots** | ✅ DONE | **Plotly integration** |
 | **Live Trial Data** | ✅ DONE | **ProgressWriter.update_trial_stats()** |
@@ -134,25 +134,43 @@ study = optuna.create_study(
 
 ---
 
-## Phase Progress
+## Project Implementation Phases
+
+*Reference: PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md*
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    IMPLEMENTATION STATUS                             │
+│                    PROJECT PHASES                                    │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  Phase 1: Schema v1.0.3              ✅ DONE                        │
-│  Phase 2: Dual-LLM Infrastructure    ✅ DONE                        │
-│  Phase 3: Universal Agent v1.0       ✅ DONE                        │
-│  Phase 3.5: agent_metadata Injection ⏳ IN PROGRESS                 │
-│  Phase 4: Agent Manager              📝 PENDING                     │
-│  Phase 5: Pydantic Context Framework ✅ COMPLETE (v3.2.0 + A-D)    │
-│  Phase 6: Watcher Agent              ✅ COMPLETE                    │
-│  Phase 7: Web Dashboard              ✅ COMPLETE                    │
+│  Phase 1: Schema v1.0.3/v1.0.4           ✅ DONE (Session 1)        │
+│  Phase 2: Dual-LLM Infrastructure        ✅ DONE (Session 1)        │
+│  Phase 3: Universal Agent v1.0           ✅ DONE (Session 1)        │
+│  Phase 4: Watcher Agent (Pipeline Mgr)   ✅ DONE (Session 2)        │
+│  Phase 5: Pydantic Context Framework     ✅ DONE (Sessions 1-4)     │
+│  Phase 6: Web Dashboard                  ✅ DONE (Session 5)        │
 │                                                                      │
-│  ◄── TODO #2 COMPLETE: Web Dashboard & Visualizations               │
+├─────────────────────────────────────────────────────────────────────┤
+│                    ONGOING WORK                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  agent_metadata Injection (Steps 3-6)    ⏳ IN PROGRESS             │
+│  GBNF Phase 2: Supervisory LLM           📝 PENDING                 │
+│  End-to-end Pipeline Test                📝 PENDING                 │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### GBNF Two-Phase LLM Solution
+
+| LLM Phase | Component | Status |
+|-----------|-----------|--------|
+| Phase 1 | GBNF Grammar (Structural) | ✅ COMPLETE |
+| Phase 2 | Supervisory Model (Semantic) | 📝 PENDING |
+
+**Options for Phase 2:**
+- Option A: Phi-4 14B locally (zero cost)
+- Option B: Claude API integration (~$6/month)
 
 ---
 
@@ -173,12 +191,14 @@ study = optuna.create_study(
   - [ ] Settings page functionality
   - [ ] Historical data persistence
   - [ ] AMD rocm-smi parsing improvements
+- [ ] agent_metadata injection (Steps 3-6)
 
 ### 📝 PENDING
 - [ ] TODO #3: End-to-end pipeline test with full 26-GPU cluster
   - [ ] Run watcher_agent.py --run-pipeline --start-step 1
   - [ ] Verify all 6 steps execute and chain correctly
   - [ ] Confirm 26 GPUs utilized throughout
+- [ ] GBNF Phase 2: Supervisory LLM implementation
 
 ---
 
@@ -209,20 +229,23 @@ gpu_monitor.py         # GPU clock/stats monitoring
 progress_display.py    # ProgressWriter with trial_stats
 ```
 
-### Agent Manifests (v1.3.0)
+### Agent System
 ```
-agent_manifests/
-├── window_optimizer.json   # Step 1 - 10 params
-├── scorer_meta.json        # Step 2 - 6 params
-├── full_scoring.json       # Step 3 - 5 params
-├── ml_meta.json            # Step 4 - 13 params
-├── reinforcement.json      # Step 5 - 13 params
-└── prediction.json         # Step 6 - 11 params
+agents/
+├── agent_core.py           # BaseAgent class
+├── watcher_agent.py        # Pipeline manager (Phase 4)
+└── manifest/               # Agent manifests v1.3.0
+    ├── window_optimizer.json   # Step 1 - 10 params
+    ├── scorer_meta.json        # Step 2 - 6 params
+    ├── full_scoring.json       # Step 3 - 5 params
+    ├── ml_meta.json            # Step 4 - 13 params
+    ├── reinforcement.json      # Step 5 - 13 params
+    └── prediction.json         # Step 6 - 11 params
 ```
 
 ### Documentation
 ```
-PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md  # Main spec + Addendums A-D
+PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md  # Master spec + Phase Roadmap + Addendums A-D
 CURRENT_Status.txt                                   # This file
 ```
 
@@ -231,13 +254,13 @@ CURRENT_Status.txt                                   # This file
 ## Session History
 
 ### Session 1 (Dec 3-4, 2025)
-- Schema v1.0.3 and v1.0.4 implemented
-- Dual-LLM infrastructure deployed
-- Universal Agent v1.0 created
+- Phase 1: Schema v1.0.3 and v1.0.4 implemented
+- Phase 2: Dual-LLM infrastructure deployed
+- Phase 3: Universal Agent v1.0 created
 - 6 agent manifests v1.0.0 created
 
 ### Session 2 (Dec 4-5, 2025)
-- Watcher Agent deployed and tested
+- Phase 4: Watcher Agent deployed and tested
 - Progress Display module created
 - 26-GPU cluster fix applied
 - Manifest compatibility fixes
@@ -255,14 +278,15 @@ CURRENT_Status.txt                                   # This file
 - Git commits: 9f9c606, 1953cca
 
 ### Session 5 (Dec 6-7, 2025)
-- **TODO #2 COMPLETE:** Web Dashboard
+- Phase 6: Web Dashboard complete
 - HiveOS-inspired Flask dashboard
 - Interactive Plotly charts (4 types)
 - Live Trial Data card
 - GPU clock speed monitoring
 - Optuna study persistence fix
 - Parameter Importance implementation
-- PROPOSAL Addendum D added
+- PROPOSAL: Added Phase Roadmap + Addendum D
+- Git commit: 2b15002
 - **NEXT:** TODO #3 - End-to-end pipeline test
 
 ---
@@ -295,7 +319,7 @@ python3 window_optimizer.py --strategy bayesian --trials 15 \
 
 ## Next Session Goals
 
-1. **TODO #2 Polish:** Settings functionality, historical data
-2. **TODO #3:** End-to-end pipeline test with 26 GPUs
+1. **TODO #3:** End-to-end pipeline test with 26 GPUs
+2. **GBNF Phase 2:** Choose Phi-4 or Claude API for supervisory LLM
 3. Continue agent_metadata injection (Steps 3-6)
 4. Test Parameter Importance with more trials

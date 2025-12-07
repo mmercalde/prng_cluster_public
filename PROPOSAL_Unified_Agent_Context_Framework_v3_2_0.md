@@ -1,3 +1,4 @@
+PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md
 PROPOSAL_Unified_Agent_Context_Framework
 _v3_2_0.md
 # Unified Agent Context Framework v3.2.0
@@ -655,6 +656,79 @@ def handle_decision(self, decision: AgentDecision, context: FullAgentContext):
 ---
 
 **End of v3.2.0 Specification**
+
+---
+
+## Project Implementation Phases
+
+This section defines the overall implementation roadmap for the PRNG Analysis Agent System.
+
+### Phase Overview
+
+| Phase | Component | Status | Session | Evidence |
+|-------|-----------|--------|---------|----------|
+| 1 | Schema v1.0.3/v1.0.4 | ✅ DONE | 1 | metadata_writer.py, llm_metadata fields |
+| 2 | Dual-LLM Infrastructure | ✅ DONE | 1 | Qwen2.5-Coder-14B + Qwen2.5-Math-7B |
+| 3 | Universal Agent v1.0 (BaseAgent) | ✅ DONE | 1 | agents/agent_core.py |
+| 4 | Watcher Agent (Pipeline Manager) | ✅ DONE | 2 | agents/watcher_agent.py |
+| 5 | Pydantic Context Framework | ✅ DONE | 1-4 | v3.2.0 + Addendums A-D |
+| 6 | Web Dashboard | ✅ DONE | 5 | web_dashboard.py, gpu_monitor.py |
+
+### Ongoing Work
+
+| Item | Status | Description |
+|------|--------|-------------|
+| agent_metadata Injection | ⏳ IN PROGRESS | Injecting metadata into pipeline steps 3-6 |
+| GBNF Phase 2: Supervisory LLM | 📝 PENDING | Semantic validation (Phi-4 or Claude API) |
+| End-to-end Pipeline Test | 📝 PENDING | Full 26-GPU cluster validation |
+
+### Phase Details
+
+**Phase 1: Schema v1.0.3/v1.0.4**
+- Extended JSON schema with `agent_metadata` block
+- Added `llm_metadata` for dual-LLM routing
+- Implemented metadata_writer.py for injection
+
+**Phase 2: Dual-LLM Infrastructure**
+- Deployed Qwen2.5-Coder-14B (port 8080) for code/technical tasks
+- Deployed Qwen2.5-Math-7B (port 8081) for mathematical analysis
+- Created LLM Router for intelligent task routing
+
+**Phase 3: Universal Agent v1.0**
+- Created BaseAgent class in agents/agent_core.py
+- 6 specialized agent classes inheriting from BaseAgent
+- Consistent interface across all pipeline steps
+
+**Phase 4: Watcher Agent (Pipeline Manager)**
+- Orchestrates full 6-step pipeline via `run_pipeline()`
+- Evaluates results and makes proceed/retry/escalate decisions
+- Supports daemon mode for continuous monitoring
+- Integrates with LLM Router for decision-making
+
+**Phase 5: Pydantic Context Framework**
+- v3.2.0 specification with parameter introspection
+- Addendum A: Step 1 threshold implementation
+- Addendum B: Steps 2-6 manifest implementation (58 parameters)
+- Addendum C: GBNF grammar for structural constraints
+- Addendum D: Web dashboard implementation
+
+**Phase 6: Web Dashboard**
+- HiveOS-inspired Flask dashboard
+- Interactive Plotly charts (scatter, convergence, distribution, importance)
+- Live trial data with survivor counts
+- GPU clock speed monitoring (NVIDIA + AMD)
+- Optuna study persistence and visualization
+
+### GBNF Two-Phase LLM Solution
+
+Separate from the project phases, the LLM terminology drift issue is being addressed in two phases:
+
+| LLM Phase | Component | Status |
+|-----------|-----------|--------|
+| Phase 1 | GBNF Grammar (Structural) | ✅ COMPLETE |
+| Phase 2 | Supervisory Model (Semantic) | 📝 PENDING |
+
+**Phase 1** ensures JSON structure is valid. **Phase 2** will add semantic validation via Phi-4 14B locally or Claude API.
 
 ---
 ---

@@ -278,12 +278,12 @@ body {
 /* Charts */
 .charts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-    gap: 16px;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
 }
 
 .chart-wrapper {
-    height: 350px;
+    height: 450px;
     overflow: hidden;
 }
 
@@ -1359,10 +1359,14 @@ def generate_heatmap_plotly(study_name=None, param_x=None, param_y=None):
                        line=dict(width=1, color="white")),
             text=hover_texts, hoverinfo="text", hovertemplate="%{text}<extra></extra>"
         ))
+        # Calculate axis ranges with padding (start from 0, add 10% margin on top)
+        x_max = max(x_values) * 1.1 if x_values else 100
+        y_max = max(y_values) * 1.1 if y_values else 100
+        
         fig.update_layout(autosize=True,
             title=dict(text=f"Optuna Study: {study_name}", font=dict(color="#e8e8e8")),
-            xaxis=dict(title=param_x, color="#8a9099", gridcolor="#3a3f45"),
-            yaxis=dict(title=param_y, color="#8a9099", gridcolor="#3a3f45"),
+            xaxis=dict(title=param_x, color="#8a9099", gridcolor="#3a3f45", range=[0, x_max]),
+            yaxis=dict(title=param_y, color="#8a9099", gridcolor="#3a3f45", range=[0, y_max]),
             plot_bgcolor="#2a2e33", paper_bgcolor="#1a1d21", font=dict(color="#e8e8e8"),
             hovermode="closest", margin=dict(l=60, r=40, t=60, b=60)
         )
