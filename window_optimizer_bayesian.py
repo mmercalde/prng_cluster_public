@@ -8,7 +8,17 @@ import json
 import numpy as np
 from typing import Callable, Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
+from typing import TYPE_CHECKING
 import random
+
+# Type checking import (no runtime circular dependency)
+if TYPE_CHECKING:
+    from window_optimizer import SearchBounds
+
+# Runtime import function for when we actually need the classes
+def _get_search_bounds():
+    from window_optimizer import SearchBounds, load_search_bounds_from_config
+    return SearchBounds, load_search_bounds_from_config
 
 # Try importing Optuna (preferred)
 try:
@@ -72,27 +82,8 @@ class WindowConfig:
         ], dtype=float)
 
 
-@dataclass
-class SearchBounds:
-    """Search space boundaries"""
-    min_window_size: int = 256
-    max_window_size: int = 2048
-    min_offset: int = 0
-    max_offset: int = 500
-    min_skip_min: int = 0
-    max_skip_min: int = 3
-    min_skip_max: int = 10
-    max_skip_max: int = 200
-    session_options: List[List[str]] = None
-    
-    def __post_init__(self):
-        if self.session_options is None:
-            self.session_options = [
-                ['midday', 'evening'],
-                ['midday'],
-                ['evening']
-            ]
 
+# SearchBounds imported from window_optimizer.py (single source of truth)
 
 @dataclass
 class OptimizationResult:
@@ -123,20 +114,20 @@ class ResultScorer:
         """Score a result (higher is better)"""
         if self.strategy == 'bidirectional':
             # Primary: bidirectional survivors
-            return result.bidirectional_count
+            return result.bidirectional_count if result.bidirectional_count > 0 else -1000
         elif self.strategy == 'balanced':
             # Balance between forward, reverse, and bidirectional
             return (result.forward_count * 0.3 + 
                    result.reverse_count * 0.3 + 
-                   result.bidirectional_count * 0.4)
+                   result.bidirectional_count * 0.4) if result.bidirectional_count > 0 else -1000
         elif self.strategy == 'conservative':
             # Prefer configurations with consistent forward/reverse
             if result.forward_count == 0 or result.reverse_count == 0:
-                return 0
+                return -1000
             ratio = min(result.forward_count, result.reverse_count) / max(result.forward_count, result.reverse_count)
-            return result.bidirectional_count * ratio
+            return result.bidirectional_count * ratio if result.bidirectional_count > 0 else -1000
         else:
-            return result.bidirectional_count
+            return result.bidirectional_count if result.bidirectional_count > 0 else -1000
 
 
 # ============================================================================
@@ -161,7 +152,7 @@ class OptunaBayesianSearch:
     
     def search(self, 
                objective_function: Callable,
-               bounds: SearchBounds,
+               bounds: 'SearchBounds',
                max_iterations: int,
                scorer: ResultScorer) -> Dict:
         """
@@ -319,7 +310,7 @@ class GaussianProcessBayesianSearch:
             np.random.seed(seed)
             random.seed(seed)
     
-    def _config_to_vector(self, config: WindowConfig, bounds: SearchBounds) -> np.ndarray:
+    def _config_to_vector(self, config: WindowConfig, bounds: 'SearchBounds') -> np.ndarray:
         """Convert config to normalized vector [0, 1]"""
         session_idx = bounds.session_options.index(config.sessions)
         return np.array([
@@ -330,7 +321,7 @@ class GaussianProcessBayesianSearch:
             (config.skip_max - bounds.min_skip_max) / max(1, bounds.max_skip_max - bounds.min_skip_max)
         ])
     
-    def _vector_to_config(self, vec: np.ndarray, bounds: SearchBounds) -> WindowConfig:
+    def _vector_to_config(self, vec: np.ndarray, bounds: 'SearchBounds') -> WindowConfig:
         """Convert normalized vector to config"""
         window_size = int(np.clip(
             vec[0] * (bounds.max_window_size - bounds.min_window_size) + bounds.min_window_size,
@@ -390,7 +381,7 @@ class GaussianProcessBayesianSearch:
     
     def search(self,
                objective_function: Callable,
-               bounds: SearchBounds,
+               bounds: 'SearchBounds',
                max_iterations: int,
                scorer: ResultScorer) -> Dict:
         """Run Gaussian Process Bayesian optimization"""

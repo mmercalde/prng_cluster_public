@@ -685,7 +685,9 @@ class ProgressWriter:
 
     def update_trial_stats(self, trial_num: int = 0, forward_survivors: int = 0, 
                           reverse_survivors: int = 0, bidirectional: int = 0,
-                          best_bidirectional: int = 0, config_desc: str = ""):
+                          best_bidirectional: int = 0, config_desc: str = "",
+                          accumulated_forward: int = 0, accumulated_reverse: int = 0,
+                          accumulated_bidirectional: int = 0):
         """Update current trial statistics."""
         self.trial_stats = {
             "trial_num": trial_num,
@@ -693,7 +695,10 @@ class ProgressWriter:
             "reverse_survivors": reverse_survivors,
             "bidirectional": bidirectional,
             "best_bidirectional": best_bidirectional,
-            "config_desc": config_desc
+            "config_desc": config_desc,
+            "accumulated_forward": accumulated_forward,
+            "accumulated_reverse": accumulated_reverse,
+            "accumulated_bidirectional": accumulated_bidirectional
         }
         self._write()
 

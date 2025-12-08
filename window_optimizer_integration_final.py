@@ -63,8 +63,8 @@ def run_bidirectional_test(coordinator,
                           seed_count: int,
                           prng_base: str = 'java_lcg',
                           test_both_modes: bool = False,
-                          forward_threshold: float = 0.72,
-                          reverse_threshold: float = 0.81,
+                          forward_threshold: float = 0.01,
+                          reverse_threshold: float = 0.01,
                           trial_number: int = 0,
                           accumulator: Dict[str, List] = None) -> TestResult:
     """
@@ -187,13 +187,20 @@ def run_bidirectional_test(coordinator,
         if len(bidirectional_constant) > best_so_far:
             coordinator._best_bidirectional = len(bidirectional_constant)
             best_so_far = len(bidirectional_constant)
+        # Get accumulated totals if available
+        acc_fwd = len(accumulator['forward']) if accumulator else 0
+        acc_rev = len(accumulator['reverse']) if accumulator else 0
+        acc_bid = len(accumulator['bidirectional']) if accumulator else 0
         coordinator._progress_writer.update_trial_stats(
             trial_num=trial_number,
             forward_survivors=len(forward_survivors),
             reverse_survivors=len(reverse_survivors),
             bidirectional=len(bidirectional_constant),
             best_bidirectional=best_so_far,
-            config_desc=config.description()
+            config_desc=config.description(),
+            accumulated_forward=acc_fwd,
+            accumulated_reverse=acc_rev,
+            accumulated_bidirectional=acc_bid
         )
 
     # ========================================================================
@@ -417,11 +424,13 @@ def add_window_optimizer_to_coordinator():
         }
 
         optimizer = WindowOptimizer(self, dataset_path)
+        # Define search bounds - loaded from distributed_config.json
+        bounds = SearchBounds.from_config()
 
         # Track trial number for metadata
         trial_counter = {'count': 0}
 
-        def test_config(config, ss=seed_start, sc=seed_count, ft=0.72, rt=0.81):
+        def test_config(config, ss=seed_start, sc=seed_count, ft=bounds.default_forward_threshold, rt=bounds.default_reverse_threshold):
             """
             Wrapper function that Optuna calls for each trial.
             This passes through to run_bidirectional_test with test_both_modes.
@@ -457,17 +466,6 @@ def add_window_optimizer_to_coordinator():
 
         strategy = strategy_map.get(strategy_name, RandomSearch())
 
-        # Define search bounds
-        bounds = SearchBounds(
-            min_window_size=1,
-            max_window_size=4096,
-            min_offset=0,
-            max_offset=500,
-            min_skip_min=0,
-            max_skip_min=3,
-            min_skip_max=20,
-            max_skip_max=200
-        )
 
         # ====================================================================
         # RUN OPTIMIZATION
@@ -596,8 +594,8 @@ def add_window_optimizer_to_coordinator():
                     'offset': best.get('offset', 0),
                     'skip_min': best.get('skip_min', 0),
                     'skip_max': best.get('skip_max', 0),
-                    'forward_threshold': best.get('forward_threshold', 0.72),
-                    'reverse_threshold': best.get('reverse_threshold', 0.81),
+                    'forward_threshold': best.get('forward_threshold', 0.01),
+                    'reverse_threshold': best.get('reverse_threshold', 0.01),
                     'dataset': dataset_path,
                     'sessions': best.get('sessions', [])
                 },

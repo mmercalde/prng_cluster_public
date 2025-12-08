@@ -35,6 +35,37 @@ from abc import ABC, abstractmethod
 from integration.metadata_writer import inject_agent_metadata
 
 # ============================================================================
+# CONFIG LOADER - Single Source of Truth for Search Bounds
+# ============================================================================
+def load_search_bounds_from_config(config_path: str = "distributed_config.json") -> dict:
+    """
+    Load search bounds from distributed_config.json.
+    Returns dict with all bounds, using safe defaults if config missing.
+    """
+    defaults = {
+        "window_size": {"min": 2, "max": 500},
+        "offset": {"min": 0, "max": 100},
+        "skip_min": {"min": 0, "max": 10},
+        "skip_max": {"min": 10, "max": 500},
+        "forward_threshold": {"min": 0.001, "max": 0.10, "default": 0.01},
+        "reverse_threshold": {"min": 0.001, "max": 0.10, "default": 0.01}
+    }
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        bounds = config.get("search_bounds", {})
+        # Merge with defaults (config values override defaults)
+        for key in defaults:
+            if key in bounds:
+                defaults[key].update(bounds[key])
+        return defaults
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"⚠️  Could not load search_bounds from {config_path}: {e}")
+        print(f"   Using default bounds")
+        return defaults
+
+
+# ============================================================================
 # DATA STRUCTURES (Required by window_optimizer_integration_final.py)
 # ============================================================================
 
@@ -55,8 +86,8 @@ class WindowConfig:
     sessions: List[str]
     skip_min: int
     skip_max: int
-    forward_threshold: float = 0.72
-    reverse_threshold: float = 0.81
+    forward_threshold: float = 0.40
+    reverse_threshold: float = 0.45
 
     def __hash__(self):
         """Make config hashable for use in sets/dicts"""
@@ -76,26 +107,47 @@ class WindowConfig:
 class SearchBounds:
     """
     Search space boundaries for optimization.
-    
-    These define the valid ranges for each parameter that Optuna can explore.
+    Values loaded from distributed_config.json via from_config() classmethod.
     """
-    min_window_size: int = 128
-    max_window_size: int = 4096
+    # Defaults (overridden by from_config)
+    min_window_size: int = 2
+    max_window_size: int = 500
     min_offset: int = 0
-    max_offset: int = 2000
+    max_offset: int = 100
     min_skip_min: int = 0
-    max_skip_min: int = 3
-    min_skip_max: int = 0
+    max_skip_min: int = 10
+    min_skip_max: int = 10
     max_skip_max: int = 500
-    # Threshold bounds for Optuna optimization
-    min_forward_threshold: float = 0.50
-    max_forward_threshold: float = 0.95
-    min_reverse_threshold: float = 0.60
-    max_reverse_threshold: float = 0.98
-    # Optimized defaults (from prior Optuna runs)
-    default_forward_threshold: float = 0.72
-    default_reverse_threshold: float = 0.81
+    # Threshold bounds - LOW for discovery, not filtering
+    min_forward_threshold: float = 0.001
+    max_forward_threshold: float = 0.10
+    min_reverse_threshold: float = 0.001
+    max_reverse_threshold: float = 0.10
+    # Defaults
+    default_forward_threshold: float = 0.01
+    default_reverse_threshold: float = 0.01
     session_options: List[List[str]] = None
+    
+    @classmethod
+    def from_config(cls, config_path: str = "distributed_config.json") -> 'SearchBounds':
+        """Create SearchBounds from config file."""
+        cfg = load_search_bounds_from_config(config_path)
+        return cls(
+            min_window_size=cfg["window_size"]["min"],
+            max_window_size=cfg["window_size"]["max"],
+            min_offset=cfg["offset"]["min"],
+            max_offset=cfg["offset"]["max"],
+            min_skip_min=cfg["skip_min"]["min"],
+            max_skip_min=cfg["skip_min"]["max"],
+            min_skip_max=cfg["skip_max"]["min"],
+            max_skip_max=cfg["skip_max"]["max"],
+            min_forward_threshold=cfg["forward_threshold"]["min"],
+            max_forward_threshold=cfg["forward_threshold"]["max"],
+            min_reverse_threshold=cfg["reverse_threshold"]["min"],
+            max_reverse_threshold=cfg["reverse_threshold"]["max"],
+            default_forward_threshold=cfg["forward_threshold"].get("default", 0.01),
+            default_reverse_threshold=cfg["reverse_threshold"].get("default", 0.01)
+        )
 
     def __post_init__(self):
         """Initialize session options if not provided"""

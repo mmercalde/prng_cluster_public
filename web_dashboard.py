@@ -39,6 +39,66 @@ except ImportError:
 app = Flask(__name__)
 
 PROGRESS_FILE = "/tmp/cluster_progress.json"
+SETTINGS_FILE = "/tmp/dashboard_settings.json"
+
+DEFAULT_SETTINGS = {
+    "refresh_interval": 2,
+    "theme": "dark",
+    "show_offline_workers": True,
+    "plot_height": 380,
+    "max_history_entries": 100
+}
+
+def load_settings():
+    """Load settings from file, return defaults if not found"""
+    try:
+        with open(SETTINGS_FILE, 'r') as f:
+            saved = json.load(f)
+            return {**DEFAULT_SETTINGS, **saved}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return DEFAULT_SETTINGS.copy()
+
+def save_settings(settings):
+    """Save settings to file"""
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f, indent=2)
+    return True
+
+HISTORY_FILE_PATH = "/tmp/cluster_run_history.json"
+
+def load_run_history():
+    """Load run history from file"""
+    try:
+        with open(HISTORY_FILE_PATH, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def save_run_history(history):
+    """Save run history to file"""
+    settings = load_settings()
+    max_entries = settings.get('max_history_entries', 100)
+    # Trim to max entries
+    history = history[:max_entries]
+    with open(HISTORY_FILE_PATH, 'w') as f:
+        json.dump(history, f, indent=2)
+
+def add_run_to_history(run_data):
+    """Add a completed run to history"""
+    history = load_run_history()
+    history.insert(0, {
+        'timestamp': datetime.now().isoformat(),
+        'step_name': run_data.get('step_name', 'Unknown'),
+        'total_seeds': run_data.get('total_seeds', 0),
+        'duration_seconds': run_data.get('elapsed_seconds', 0),
+        'final_sps': run_data.get('final_sps', 0)
+    })
+    save_run_history(history)
+    return history
+
+
+
+
 PLOTS_DIR = "/tmp/prng_plots"
 HISTORY_FILE = "/tmp/cluster_history.json"
 
@@ -64,6 +124,52 @@ BASE_CSS = """
     --accent-red: #ef4444;
     --accent-purple: #8b5cf6;
     --border-color: #3a3f45;
+}
+
+/* Light theme overrides */
+body.light-theme {
+    --bg-primary: #f5f5f7;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-hover: #e8e8ed;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-muted: #86868b;
+    --accent-green: #00a854;
+    --accent-blue: #0071e3;
+    --accent-orange: #f56300;
+    --accent-red: #ff3b30;
+    --accent-purple: #af52de;
+    --border-color: #d2d2d7;
+}
+
+body.light-theme .card {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+body.light-theme .summary-bar,
+body.light-theme .summary-item {
+    background: #ffffff;
+    border-color: #d2d2d7;
+}
+
+body.light-theme .nav-tab {
+    color: #6e6e73;
+}
+
+body.light-theme .nav-tab:hover,
+body.light-theme .nav-tab.active {
+    color: #1d1d1f;
+}
+
+body.light-theme .form-select,
+body.light-theme .form-input {
+    background: #f5f5f7;
+    color: #1d1d1f;
+}
+
+
+:root {
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -257,7 +363,7 @@ body {
 
 /* Mini Chart */
 .mini-chart {
-    width: 80px;
+    width: 140px;
     height: 24px;
     background: var(--bg-primary);
     border-radius: 2px;
@@ -473,6 +579,21 @@ def base_template(content, active_tab="overview", auto_refresh=True):
     <style>{BASE_CSS}</style>
 </head>
 <body>
+    <script>
+    (function() {{
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/settings', false);
+        try {{
+            xhr.send();
+            if (xhr.status === 200) {{
+                var settings = JSON.parse(xhr.responseText);
+                if (settings.theme === 'light') {{
+                    document.body.classList.add('light-theme');
+                }}
+            }}
+        }} catch(e) {{}}
+    }})();
+    </script>
     {{{{ summary_bar | safe }}}}
 
     <div class="nav-tabs">
@@ -586,7 +707,7 @@ OVERVIEW_CONTENT = """
                 <td>
                     <div class="mini-chart">
                         {% set gpu_data = gpu_stats.get(hostname, []) %}
-                        {% for i in range(8) %}
+                        {% for i in range(node.total_gpus) %}
                             {% if gpu_data and i < gpu_data|length %}
                                 {% set clock_pct = (gpu_data[i].get('clock', 0) / 2000 * 100)|int %}
                                 <div class="mini-bar" style="height: {{ clock_pct if clock_pct > 5 else 5 }}%; background: {% if clock_pct > 50 %}var(--accent-green){% elif clock_pct > 10 %}var(--accent-orange){% else %}var(--text-muted){% endif %};"></div>
@@ -627,6 +748,24 @@ OVERVIEW_CONTENT = """
         <div class="stat-item">
             <div class="stat-value" style="color: var(--accent-orange);">{{ "{:,}".format(state.trial_stats.best_bidirectional) }}</div>
             <div class="stat-label">Best So Far</div>
+        </div>
+    </div>
+    <!-- Accumulated Totals -->
+    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+        <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">📊 Accumulated Across All Trials</div>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-value" style="color: var(--accent-blue); font-size: 16px;">{{ "{:,}".format(state.trial_stats.accumulated_forward|default(0)) }}</div>
+                <div class="stat-label">Total Forward</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" style="color: var(--accent-purple); font-size: 16px;">{{ "{:,}".format(state.trial_stats.accumulated_reverse|default(0)) }}</div>
+                <div class="stat-label">Total Reverse</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" style="color: var(--accent-green); font-size: 16px;">{{ "{:,}".format(state.trial_stats.accumulated_bidirectional|default(0)) }}</div>
+                <div class="stat-label">Total Bidirectional</div>
+            </div>
         </div>
     </div>
 </div>
@@ -680,15 +819,9 @@ WORKERS_CONTENT = """
                         <div class="gpu-stat-label">Seeds/s</div>
                     </div>
                     <div>
-                        {% set gpu_data = gpu_stats.get(hostname, []) %}
-                        {% set gpu_clock = 0 %}
-                        {% if gpu_data %}
-                            {% for g in gpu_data %}
-                                {% if g.index == i and g.clock is defined %}
-                                    {% set gpu_clock = g.clock %}
-                                {% endif %}
-                            {% endfor %}
-                        {% endif %}
+                        {% set gpu_list = gpu_stats.get(hostname, []) %}
+                        {% set gpu_info = gpu_list[i] if i < gpu_list|length else {} %}
+                        {% set gpu_clock = gpu_info.get('clock', 0) if gpu_info else 0 %}
                         <div class="gpu-stat-value" style="color: {% if gpu_clock > 1000 %}var(--accent-green){% elif gpu_clock > 0 %}var(--accent-orange){% else %}var(--text-secondary){% endif %};">{{ gpu_clock }} MHz</div>
                         <div class="gpu-stat-label">Clock</div>
                     </div>
@@ -912,31 +1045,60 @@ SETTINGS_CONTENT = """
         <div class="card-title">Dashboard Settings</div>
     </div>
 
-    <div class="form-group">
-        <label class="form-label">Auto-refresh Interval</label>
-        <select class="form-select">
-            <option value="1">1 second</option>
-            <option value="2" selected>2 seconds</option>
-            <option value="5">5 seconds</option>
-            <option value="10">10 seconds</option>
-        </select>
-    </div>
+    <form id="settings-form">
+        <div class="form-group">
+            <label class="form-label">Auto-refresh Interval</label>
+            <select class="form-select" name="refresh_interval" id="refresh_interval">
+                <option value="1" {{ 'selected' if settings.refresh_interval == 1 else '' }}>1 second</option>
+                <option value="2" {{ 'selected' if settings.refresh_interval == 2 else '' }}>2 seconds</option>
+                <option value="5" {{ 'selected' if settings.refresh_interval == 5 else '' }}>5 seconds</option>
+                <option value="10" {{ 'selected' if settings.refresh_interval == 10 else '' }}>10 seconds</option>
+                <option value="30" {{ 'selected' if settings.refresh_interval == 30 else '' }}>30 seconds</option>
+                <option value="0" {{ 'selected' if settings.refresh_interval == 0 else '' }}>Disabled</option>
+            </select>
+            <small style="color: var(--text-muted);">How often the dashboard auto-refreshes</small>
+        </div>
 
-    <div class="form-group">
-        <label class="form-label">Theme</label>
-        <select class="form-select">
-            <option value="dark" selected>Dark (HiveOS)</option>
-            <option value="light">Light</option>
-        </select>
-    </div>
+        <div class="form-group">
+            <label class="form-label">Theme</label>
+            <select class="form-select" name="theme" id="theme">
+                <option value="dark" {{ 'selected' if settings.theme == 'dark' else '' }}>Dark (HiveOS)</option>
+                <option value="light" {{ 'selected' if settings.theme == 'light' else '' }}>Light</option>
+            </select>
+        </div>
 
-    <div class="form-group">
-        <label class="form-label">Show Offline Workers</label>
-        <select class="form-select">
-            <option value="yes" selected>Yes</option>
-            <option value="no">No</option>
-        </select>
-    </div>
+        <div class="form-group">
+            <label class="form-label">Show Offline Workers</label>
+            <select class="form-select" name="show_offline_workers" id="show_offline_workers">
+                <option value="true" {{ 'selected' if settings.show_offline_workers else '' }}>Yes</option>
+                <option value="false" {{ 'selected' if not settings.show_offline_workers else '' }}>No</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Plot Height (pixels)</label>
+            <input type="number" class="form-input" name="plot_height" id="plot_height"
+                   value="{{ settings.plot_height }}" min="200" max="800" step="10">
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Max History Entries</label>
+            <input type="number" class="form-input" name="max_history_entries" id="max_history_entries"
+                   value="{{ settings.max_history_entries }}" min="10" max="1000" step="10">
+            <small style="color: var(--text-muted);">Number of completed runs to keep in history</small>
+        </div>
+
+        <div style="margin-top: 20px; display: flex; gap: 10px;">
+            <button type="submit" class="btn btn-primary" id="save-btn">
+                💾 Save Settings
+            </button>
+            <button type="button" class="btn btn-secondary" id="reset-btn">
+                🔄 Reset to Defaults
+            </button>
+        </div>
+
+        <div id="save-status" style="margin-top: 10px; display: none;"></div>
+    </form>
 </div>
 
 <div class="card">
@@ -950,9 +1112,31 @@ SETTINGS_CONTENT = """
     </div>
 
     <div class="form-group">
-        <label class="form-label">Plots Directory</label>
-        <input type="text" class="form-input" value="/tmp/prng_plots" readonly>
+        <label class="form-label">Optuna Studies Directory</label>
+        <input type="text" class="form-input" value="{{ studies_dir }}" readonly>
     </div>
+
+    <div class="form-group">
+        <label class="form-label">Settings File</label>
+        <input type="text" class="form-input" value="/tmp/dashboard_settings.json" readonly>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">Data Management</div>
+    </div>
+
+    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <button type="button" class="btn btn-secondary" onclick="clearProgress()">
+            🗑️ Clear Progress Data
+        </button>
+        <button type="button" class="btn btn-secondary" onclick="exportHistory()">
+            📤 Export Run History
+        </button>
+    </div>
+
+    <div id="data-status" style="margin-top: 10px; display: none;"></div>
 </div>
 
 <div class="card">
@@ -960,11 +1144,90 @@ SETTINGS_CONTENT = """
         <div class="card-title">About</div>
     </div>
     <p style="color: var(--text-secondary); font-size: 12px;">
-        PRNG Cluster Dashboard v2.0<br>
+        PRNG Cluster Dashboard v2.1<br>
         HiveOS-inspired interface for distributed PRNG analysis<br>
-        26 GPUs • 3 Nodes • ~285 TFLOPS
+        26 GPUs • 3 Nodes • ~285 TFLOPS<br><br>
+        <span style="color: var(--text-muted);">
+            Session 6: Functional settings with persistence</span><br><br>
+        <button type="button" class="btn btn-secondary" onclick="shutdownServer()" style="background: var(--accent-red);">
+            ⏻ Shutdown Dashboard</button>
+        <script>
+        function shutdownServer() {
+            if (confirm('Shutdown the dashboard server?')) {
+                fetch('/shutdown', {method: 'POST'})
+                .then(() => { document.body.innerHTML = '<h1 style="color:#e8e8e8;text-align:center;margin-top:100px;">Dashboard stopped.</h1>'; });
+            }
+        }
+        </script>
+        <span style="color: var(--text-muted);">
+        </span>
     </p>
 </div>
+
+<script>
+document.getElementById('settings-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    const formData = {
+        refresh_interval: parseInt(document.getElementById('refresh_interval').value),
+        theme: document.getElementById('theme').value,
+        show_offline_workers: document.getElementById('show_offline_workers').value === 'true',
+        plot_height: parseInt(document.getElementById('plot_height').value),
+        max_history_entries: parseInt(document.getElementById('max_history_entries').value)
+    };
+
+    fetch('/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(formData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        const status = document.getElementById('save-status');
+        if (data.success) {
+            status.innerHTML = '<span style="color: var(--accent-green);">✓ Settings saved!</span>';
+            // Apply theme immediately
+            if (formData.theme === 'light') {
+                document.body.classList.add('light-theme');
+            } else {
+                document.body.classList.remove('light-theme');
+            }
+            status.style.display = 'block';
+        } else {
+            status.innerHTML = '<span style="color: var(--accent-red);">✗ Error: ' + data.error + '</span>';
+            status.style.display = 'block';
+        }
+        setTimeout(() => { status.style.display = 'none'; }, 3000);
+    });
+});
+
+document.getElementById('reset-btn').addEventListener('click', function() {
+    if (confirm('Reset all settings to defaults?')) {
+        fetch('/api/settings/reset', {method: 'POST'})
+        .then(r => r.json())
+        .then(d => { if (d.success) location.reload(); });
+    }
+});
+
+function clearProgress() {
+    if (confirm('Clear all progress data?')) {
+        fetch('/api/clear-progress', {method: 'POST'})
+        .then(r => r.json())
+        .then(d => {
+            const status = document.getElementById('data-status');
+            status.innerHTML = d.success ?
+                '<span style="color: var(--accent-green);">✓ Cleared</span>' :
+                '<span style="color: var(--accent-red);">✗ Error</span>';
+            status.style.display = 'block';
+            setTimeout(() => { status.style.display = 'none'; }, 3000);
+        });
+    }
+}
+
+function exportHistory() {
+    window.location.href = '/api/export-history';
+}
+</script>
 """
 
 # ============================================================================
@@ -1017,6 +1280,11 @@ def get_common_context():
         eta_str = "--:--"
         elapsed_str = "0:00:00"
 
+    # Filter offline workers if setting disabled
+    settings_data = load_settings()
+    if not settings_data.get('show_offline_workers', True) and nodes:
+        nodes = {k: v for k, v in nodes.items() if v.get('current_seeds_per_sec', 0) > 0}
+
     # Summary bar HTML
     summary_bar = f"""
     <div class="summary-bar">
@@ -1062,7 +1330,9 @@ def get_common_context():
         'eta_str': eta_str,
         'elapsed_str': elapsed_str,
         'summary_bar': summary_bar,
-        'gpu_stats': gpu_stats if GPU_MONITOR_AVAILABLE else {}
+        'gpu_stats': gpu_stats if GPU_MONITOR_AVAILABLE else {},
+        'settings': load_settings(),
+        'studies_dir': '/home/michael/distributed_prng_analysis/optuna_studies/'
     }
 
 
@@ -1304,6 +1574,8 @@ def generate_distribution_chart(study_name=None):
 # ============================================================================
 
 def generate_heatmap_plotly(study_name=None, param_x=None, param_y=None):
+    plot_settings = load_settings()
+    plot_height = plot_settings.get('plot_height', 380)
     """Generate interactive parameter optimization scatter plot using Plotly"""
     try:
         import plotly.graph_objects as go
@@ -1362,8 +1634,8 @@ def generate_heatmap_plotly(study_name=None, param_x=None, param_y=None):
         # Calculate axis ranges with padding (start from 0, add 10% margin on top)
         x_max = max(x_values) * 1.1 if x_values else 100
         y_max = max(y_values) * 1.1 if y_values else 100
-        
-        fig.update_layout(autosize=True,
+
+        fig.update_layout(autosize=True, height=plot_height,
             title=dict(text=f"Optuna Study: {study_name}", font=dict(color="#e8e8e8")),
             xaxis=dict(title=param_x, color="#8a9099", gridcolor="#3a3f45", range=[0, x_max]),
             yaxis=dict(title=param_y, color="#8a9099", gridcolor="#3a3f45", range=[0, y_max]),
@@ -1376,6 +1648,8 @@ def generate_heatmap_plotly(study_name=None, param_x=None, param_y=None):
 
 
 def generate_convergence_plotly(study_name=None):
+    plot_settings = load_settings()
+    plot_height = plot_settings.get('plot_height', 380)
     """Generate interactive trial convergence chart using Plotly"""
     try:
         import plotly.graph_objects as go
@@ -1402,7 +1676,7 @@ def generate_convergence_plotly(study_name=None):
             line=dict(color="#3b82f6"), marker=dict(size=8), hovertemplate="Trial %{x}<br>Score: %{y:.4f}<extra></extra>"))
         fig.add_trace(go.Scatter(x=trial_nums, y=running_best, mode="lines", name="Best So Far",
             line=dict(color="#02e079", width=3), hovertemplate="Trial %{x}<br>Best: %{y:.4f}<extra></extra>"))
-        fig.update_layout(autosize=True, title=dict(text="Trial Convergence", font=dict(color="#e8e8e8")),
+        fig.update_layout(autosize=True, height=plot_height, title=dict(text="Trial Convergence", font=dict(color="#e8e8e8")),
             xaxis=dict(title="Trial Number", color="#8a9099", gridcolor="#3a3f45"),
             yaxis=dict(title="Score", color="#8a9099", gridcolor="#3a3f45"),
             plot_bgcolor="#2a2e33", paper_bgcolor="#1a1d21", font=dict(color="#e8e8e8"),
@@ -1412,6 +1686,8 @@ def generate_convergence_plotly(study_name=None):
 
 
 def generate_distribution_plotly(study_name=None):
+    plot_settings = load_settings()
+    plot_height = plot_settings.get('plot_height', 380)
     """Generate interactive score distribution histogram using Plotly"""
     try:
         import plotly.graph_objects as go
@@ -1430,7 +1706,7 @@ def generate_distribution_plotly(study_name=None):
         fig = go.Figure()
         fig.add_trace(go.Histogram(x=scores, nbinsx=20, marker=dict(color="#3b82f6", line=dict(color="#1a1d21", width=1)),
             hovertemplate="Score range: %{x}<br>Count: %{y}<extra></extra>"))
-        fig.update_layout(autosize=True, title=dict(text="Score Distribution", font=dict(color="#e8e8e8")),
+        fig.update_layout(autosize=True, height=plot_height, title=dict(text="Score Distribution", font=dict(color="#e8e8e8")),
             xaxis=dict(title="Score", color="#8a9099", gridcolor="#3a3f45"),
             yaxis=dict(title="Count", color="#8a9099", gridcolor="#3a3f45"),
             plot_bgcolor="#2a2e33", paper_bgcolor="#1a1d21", font=dict(color="#e8e8e8"),
@@ -1440,6 +1716,8 @@ def generate_distribution_plotly(study_name=None):
         return None
 
 def generate_importance_plotly(study_name=None):
+    plot_settings = load_settings()
+    plot_height = plot_settings.get('plot_height', 380)
     """Generate parameter importance bar chart using Plotly"""
     try:
         import plotly.graph_objects as go
@@ -1578,7 +1856,7 @@ def plots():
 @app.route('/settings')
 def settings():
     ctx = get_common_context()
-    html = base_template(SETTINGS_CONTENT, "settings")
+    html = base_template(SETTINGS_CONTENT, "settings", auto_refresh=False)
     return render_template_string(html, **ctx)
 
 
@@ -1642,7 +1920,92 @@ def full_plot(plot_type):
 </html>"""
 
 
+
+
+# ============================================================================
+# Settings API Routes (Added Session 6)
+# ============================================================================
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+def api_settings():
+    """Get or update settings"""
+    if request.method == 'GET':
+        return jsonify(load_settings())
+    elif request.method == 'POST':
+        try:
+            new_settings = request.get_json()
+            current = load_settings()
+            if 'refresh_interval' in new_settings:
+                current['refresh_interval'] = max(0, min(60, int(new_settings['refresh_interval'])))
+            if 'theme' in new_settings:
+                current['theme'] = new_settings['theme'] if new_settings['theme'] in ['dark', 'light'] else 'dark'
+            if 'show_offline_workers' in new_settings:
+                current['show_offline_workers'] = bool(new_settings['show_offline_workers'])
+            if 'plot_height' in new_settings:
+                current['plot_height'] = max(200, min(800, int(new_settings['plot_height'])))
+            if 'max_history_entries' in new_settings:
+                current['max_history_entries'] = max(10, min(1000, int(new_settings['max_history_entries'])))
+            save_settings(current)
+            return jsonify({"success": True, "settings": current})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/settings/reset', methods=['POST'])
+def api_settings_reset():
+    """Reset settings to defaults"""
+    try:
+        save_settings(DEFAULT_SETTINGS.copy())
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/clear-progress', methods=['POST'])
+def api_clear_progress():
+    """Clear the progress file"""
+    try:
+        if os.path.exists(PROGRESS_FILE):
+            os.remove(PROGRESS_FILE)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/export-history')
+def api_export_history():
+    """Export run history as JSON download"""
+    try:
+        history_file = "/tmp/cluster_history.json"
+        if os.path.exists(history_file):
+            with open(history_file, 'r') as f:
+                data = f.read()
+            response = app.response_class(response=data, status=200, mimetype='application/json')
+            response.headers['Content-Disposition'] = 'attachment; filename=cluster_history.json'
+            return response
+        return jsonify({"error": "No history file found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Shutdown the dashboard server"""
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func is None:
+        # For newer Flask/Werkzeug, use os._exit
+        import os
+        os._exit(0)
+    func()
+    return 'Server shutting down...'
+
 if __name__ == '__main__':
+    # Kill any existing process on port 5000
+    import subprocess
+    subprocess.run(['fuser', '-k', '5000/tcp'], capture_output=True)
+    import time
+    time.sleep(1)
+
     print("╔════════════════════════════════════════════════════════════╗")
     print("║  PRNG Cluster Dashboard v2.0                               ║")
     print("║                                                            ║")
