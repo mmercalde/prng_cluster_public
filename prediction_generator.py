@@ -24,6 +24,7 @@ import json
 from datetime import datetime
 
 import numpy as np
+from integration.metadata_writer import inject_agent_metadata
 
 # GPU acceleration
 try:
@@ -309,6 +310,28 @@ class PredictionGenerator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"predictions_{timestamp}.json"
         filepath = output_dir / filename
+
+        # Inject agent_metadata for pipeline tracking
+        avg_conf = 0.5
+        if result.get('confidence_scores'):
+            avg_conf = sum(result['confidence_scores']) / len(result['confidence_scores'])
+
+        num_predictions = len(result.get('predictions', []))
+
+        result = inject_agent_metadata(
+            result,
+            inputs=[
+                {"file": "models/anti_overfit/best_model.pth", "required": True},
+                {"file": "survivors_with_scores.json", "required": True}
+            ],
+            outputs=[str(filepath)],
+            pipeline_step=6,
+            pipeline_step_name="prediction",
+            follow_up_agent=None,
+            confidence=avg_conf,
+            suggested_params=None,
+            reasoning=f"Generated {num_predictions} predictions with avg confidence {avg_conf:.4f}"
+        )
 
         with open(filepath, 'w') as f:
             json.dump(result, f, indent=2)
