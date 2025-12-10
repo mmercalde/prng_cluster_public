@@ -29,6 +29,7 @@ from sklearn.model_selection import KFold, TimeSeriesSplit
 import time
 from datetime import datetime
 
+from integration.metadata_writer import inject_agent_metadata
 from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
 
 
@@ -580,6 +581,35 @@ class AntiOverfitMetaOptimizer:
             'timestamp': datetime.now().isoformat()
         }
 
+
+        # Inject agent_metadata for pipeline tracking
+        confidence_score = 0.5
+        reasoning_text = "Anti-overfit training complete"
+        if self.best_metrics:
+            confidence_score = max(0.1, min(0.95, 1.0 - (self.best_metrics.overfit_ratio - 1.0) * 0.5))
+            reasoning_text = (
+                f"Anti-overfit training complete: "
+                f"test_mae={self.best_metrics.test_mae:.4f}, "
+                f"train_mae={self.best_metrics.train_mae:.4f}, "
+                f"overfit_ratio={self.best_metrics.overfit_ratio:.2f}, "
+                f"is_overfitting={self.best_metrics.is_overfitting()}"
+            )
+
+        results = inject_agent_metadata(
+            results,
+            inputs=[
+                {"file": "survivors_with_scores.json", "required": True},
+                {"file": "train_history.json", "required": True},
+                {"file": self.base_config_path, "required": True}
+            ],
+            outputs=[str(results_file), "models/anti_overfit/best_model.pth"],
+            pipeline_step=5,
+            pipeline_step_name="anti_overfit_training",
+            follow_up_agent="prediction_agent",
+            confidence=confidence_score,
+            suggested_params=self.best_config,
+            reasoning=reasoning_text
+        )
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
 
