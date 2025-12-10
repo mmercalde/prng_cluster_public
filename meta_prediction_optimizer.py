@@ -30,6 +30,7 @@ import logging
 # Assume these are available
 from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
 from survivor_scorer import SurvivorScorer
+from integration.metadata_writer import inject_agent_metadata
 
 
 @dataclass
@@ -385,6 +386,33 @@ class MetaPredictionOptimizer:
             'best_metrics': asdict(self.best_metrics) if self.best_metrics else None,
             'optimization_history': self.optimization_history
         }
+
+        # Inject agent_metadata for pipeline tracking
+        confidence_score = 0.5
+        reasoning_text = "Meta-optimization complete"
+        if self.best_metrics:
+            confidence_score = min(0.95, max(0.1, self.best_metrics.composite_score() / 100.0))
+            reasoning_text = (
+                f"Meta-optimization complete: {len(self.optimization_history)} trials, "
+                f"composite_score={self.best_metrics.composite_score():.4f}, "
+                f"variance={self.best_metrics.variance:.4f}, "
+                f"MAE={self.best_metrics.mean_absolute_error:.4f}"
+            )
+
+        results = inject_agent_metadata(
+            results,
+            inputs=[
+                {"file": "survivors_with_scores.json", "required": True},
+                {"file": "train_history.json", "required": True}
+            ],
+            outputs=[output_path],
+            pipeline_step=4,
+            pipeline_step_name="ml_meta_optimizer",
+            follow_up_agent="reinforcement_agent",
+            confidence=confidence_score,
+            suggested_params=self.best_config,
+            reasoning=reasoning_text
+        )
         
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
