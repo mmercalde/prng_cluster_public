@@ -16,6 +16,7 @@ Goal: Maximize prediction variance, accuracy, and discrimination power
 
 Author: Distributed PRNG Analysis System
 Date: November 8, 2025
+Version: 1.1.0 - WITH FEATURE IMPORTANCE (Phase 2 Integration)
 """
 
 import json
@@ -26,11 +27,18 @@ from dataclasses import dataclass, asdict
 import optuna
 from optuna.samplers import TPESampler
 import logging
+from datetime import datetime
 
 # Assume these are available
 from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
 from survivor_scorer import SurvivorScorer
 from integration.metadata_writer import inject_agent_metadata
+
+# =============================================================================
+# FEATURE IMPORTANCE (Model-Agnostic - Addendum G)
+# Works with Neural Network today, XGBoost tomorrow - no changes needed
+# =============================================================================
+from feature_importance import get_feature_importance, get_importance_summary_for_agent
 
 
 @dataclass
@@ -41,11 +49,11 @@ class PredictionMetrics:
     discrimination_power: float  # Ability to separate good/bad
     calibration_error: float     # How well calibrated predictions are
     feature_importance: Dict[str, float]
-    
+
     def composite_score(self) -> float:
         """
         Composite score for optimization
-        
+
         Higher is better:
         - High variance = good discrimination
         - Low MAE = accurate
@@ -63,22 +71,22 @@ class PredictionMetrics:
 class MetaPredictionOptimizer:
     """
     Meta-optimizer that tunes the ML prediction model
-    
+
     Uses Bayesian optimization to find optimal:
     - Network architecture
     - Training parameters
     - Feature selection
     - Normalization methods
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  survivors: List[int],
                  lottery_history: List[int],
                  actual_quality: List[float],
                  base_config_path: str = 'reinforcement_engine_config.json'):
         """
         Initialize meta-optimizer
-        
+
         Args:
             survivors: List of survivor seeds
             lottery_history: Historical lottery draws
@@ -89,35 +97,132 @@ class MetaPredictionOptimizer:
         self.lottery_history = lottery_history
         self.actual_quality = actual_quality
         self.base_config_path = base_config_path
-        
+
         # Load base config
         self.base_config = ReinforcementConfig.from_json(base_config_path)
-        
+
         # Setup logging
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
-        
+
         # Best configuration found
         self.best_config = None
         self.best_metrics = None
         self.optimization_history = []
         
+        # Feature importance tracking (NEW)
+        self.best_feature_importance = {}
+        self.feature_importance_history = []
+
+    # =========================================================================
+    # FEATURE IMPORTANCE HELPERS (Model-Agnostic - Addendum G)
+    # =========================================================================
+
+    def _get_feature_names(self) -> List[str]:
+        """
+        Get ordered list of feature names matching model input dimensions.
+        
+        Returns 60 feature names: 46 statistical + 14 global state
+        """
+        # Statistical features from survivor_scorer.py
+        statistical_features = [
+            'score', 'confidence', 'exact_matches', 'total_predictions', 'best_offset',
+            'residue_8_match_rate', 'residue_8_coherence', 'residue_8_kl_divergence',
+            'residue_125_match_rate', 'residue_125_coherence', 'residue_125_kl_divergence',
+            'residue_1000_match_rate', 'residue_1000_coherence', 'residue_1000_kl_divergence',
+            'temporal_stability_mean', 'temporal_stability_std', 'temporal_stability_min',
+            'temporal_stability_max', 'temporal_stability_trend',
+            'pred_mean', 'pred_std', 'actual_mean', 'actual_std',
+            'lane_agreement_8', 'lane_agreement_125', 'lane_consistency',
+            'skip_entropy', 'skip_mean', 'skip_std', 'skip_range',
+            'survivor_velocity', 'velocity_acceleration',
+            'intersection_weight', 'survivor_overlap_ratio',
+            'forward_count', 'reverse_count', 'intersection_count', 'intersection_ratio',
+            'pred_min', 'pred_max',
+            'residual_mean', 'residual_std', 'residual_abs_mean', 'residual_max_abs',
+            'forward_only_count', 'reverse_only_count'
+        ]
+        
+        # Global state features from GlobalStateTracker
+        global_state_features = [
+            'residue_8_entropy', 'residue_125_entropy', 'residue_1000_entropy',
+            'power_of_two_bias', 'frequency_bias_ratio', 'suspicious_gap_percentage',
+            'regime_change_detected', 'regime_age', 'high_variance_count',
+            'marker_390_variance', 'marker_804_variance', 'marker_575_variance',
+            'reseed_probability', 'temporal_stability'
+        ]
+        
+        return statistical_features + global_state_features
+
+    def _extract_feature_importance(
+        self,
+        engine: ReinforcementEngine,
+        test_survivors: List[int],
+        test_quality: List[float]
+    ) -> Dict[str, float]:
+        """
+        Extract feature importance from trained model (MODEL-AGNOSTIC).
+        
+        Design Principle (Addendum G):
+            This method works with ANY model type. Model detection
+            is encapsulated in feature_importance.py, not here.
+        
+        Args:
+            engine: ReinforcementEngine with trained model
+            test_survivors: Test survivor seeds
+            test_quality: Test quality values
+            
+        Returns:
+            Dict mapping feature names to importance scores
+        """
+        feature_names = self._get_feature_names()
+        
+        # Prepare feature matrix
+        X_test = []
+        for seed in test_survivors:
+            features = engine.extract_combined_features(
+                seed=seed,
+                lottery_history=self.lottery_history
+            )
+            X_test.append(features)
+        
+        X_test = np.array(X_test, dtype=np.float32)
+        y_test = np.array(test_quality, dtype=np.float32)
+        
+        # MODEL-AGNOSTIC CALL
+        # Works with: Neural Network, XGBoost, RandomForest, etc.
+        # NO model type checks here - that's in feature_importance.py
+        importance = get_feature_importance(
+            model=engine.model,
+            X=X_test,
+            y=y_test,
+            feature_names=feature_names,
+            method='auto',
+            device=str(engine.device)
+        )
+        
+        return importance
+
+    # =========================================================================
+    # ORIGINAL METHODS (with feature importance integration)
+    # =========================================================================
+
     def objective(self, trial: optuna.Trial) -> float:
         """
         Optuna objective function - try a configuration
-        
+
         Args:
             trial: Optuna trial object
-            
+
         Returns:
             Composite score (higher = better)
         """
         # Sample hyperparameters
         config = self._sample_config(trial)
-        
+
         # Train model with this configuration
-        metrics = self._evaluate_config(config)
-        
+        metrics = self._evaluate_config(config, trial)
+
         # Store results
         self.optimization_history.append({
             'trial': trial.number,
@@ -125,20 +230,20 @@ class MetaPredictionOptimizer:
             'metrics': asdict(metrics),
             'score': metrics.composite_score()
         })
-        
+
         self.logger.info(f"Trial {trial.number}: Score={metrics.composite_score():.4f}, "
                         f"Variance={metrics.variance:.4f}, "
                         f"MAE={metrics.mean_absolute_error:.4f}")
-        
+
         return metrics.composite_score()
-    
+
     def _sample_config(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
         Sample a configuration to test
-        
+
         Args:
             trial: Optuna trial
-            
+
         Returns:
             Configuration dictionary
         """
@@ -146,47 +251,47 @@ class MetaPredictionOptimizer:
             # Network architecture
             'hidden_layers': self._sample_architecture(trial),
             'dropout': trial.suggest_float('dropout', 0.1, 0.5),
-            
+
             # Training parameters
             'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True),
             'batch_size': trial.suggest_categorical('batch_size', [32, 64, 128, 256, 512]),
             'epochs': trial.suggest_int('epochs', 50, 300),
             'early_stopping_patience': trial.suggest_int('patience', 5, 20),
-            
+
             # Optimizer
             'optimizer_type': trial.suggest_categorical('optimizer', ['adam', 'adamw', 'sgd']),
             'weight_decay': trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True),
-            
+
             # Loss function
             'loss_function': trial.suggest_categorical('loss', ['mse', 'mae', 'huber', 'smooth_l1']),
-            
+
             # Normalization
             'normalization_method': trial.suggest_categorical('norm_method', ['standard', 'minmax', 'robust', 'none']),
-            
+
             # Feature engineering
             'feature_selection_threshold': trial.suggest_float('feat_threshold', 0.0, 0.5),
             'use_feature_interactions': trial.suggest_categorical('feat_interact', [True, False]),
-            
+
             # Advanced techniques
             'use_batch_norm': trial.suggest_categorical('batch_norm', [True, False]),
             'use_layer_norm': trial.suggest_categorical('layer_norm', [True, False]),
             'gradient_clip': trial.suggest_float('grad_clip', 0.1, 10.0),
         }
-        
+
         return config
-    
+
     def _sample_architecture(self, trial: optuna.Trial) -> List[int]:
         """
         Sample neural network architecture
-        
+
         Args:
             trial: Optuna trial
-            
+
         Returns:
             List of layer sizes
         """
         n_layers = trial.suggest_int('n_layers', 2, 5)
-        
+
         layers = []
         for i in range(n_layers):
             # Each layer progressively smaller
@@ -195,24 +300,25 @@ class MetaPredictionOptimizer:
             else:
                 prev_size = layers[-1]
                 size = trial.suggest_int(f'layer_{i}_size', 32, prev_size)
-            
+
             layers.append(size)
-        
+
         return layers
-    
-    def _evaluate_config(self, config: Dict[str, Any]) -> PredictionMetrics:
+
+    def _evaluate_config(self, config: Dict[str, Any], trial: optuna.Trial = None) -> PredictionMetrics:
         """
         Train model with config and evaluate prediction quality
-        
+
         Args:
             config: Configuration to test
-            
+            trial: Optuna trial (optional, for tracking)
+
         Returns:
             Prediction metrics
         """
         # Create modified config
         test_config = ReinforcementConfig.from_json(self.base_config_path)
-        
+
         # Apply sampled parameters
         test_config.model['hidden_layers'] = config['hidden_layers']
         test_config.model['dropout'] = config['dropout']
@@ -220,17 +326,17 @@ class MetaPredictionOptimizer:
         test_config.training['batch_size'] = config['batch_size']
         test_config.training['epochs'] = config['epochs']
         test_config.training['early_stopping_patience'] = config['early_stopping_patience']
-        
+
         # Initialize engine
         engine = ReinforcementEngine(test_config, self.lottery_history)
-        
+
         # Train/test split
         n_train = int(len(self.survivors) * 0.8)
         train_survivors = self.survivors[:n_train]
         train_quality = self.actual_quality[:n_train]
         test_survivors = self.survivors[n_train:]
         test_quality = self.actual_quality[n_train:]
-        
+
         # Train model
         try:
             engine.train(
@@ -238,103 +344,145 @@ class MetaPredictionOptimizer:
                 actual_results=train_quality,
                 epochs=config['epochs']
             )
-            
+
             # Predict on test set
             predictions = engine.predict_quality_batch(test_survivors)
-            
+
             # Calculate metrics
             metrics = self._calculate_metrics(predictions, test_quality)
             
+            # =================================================================
+            # FEATURE IMPORTANCE EXTRACTION (Model-Agnostic - Addendum G)
+            # =================================================================
+            try:
+                feature_importance = self._extract_feature_importance(
+                    engine=engine,
+                    test_survivors=test_survivors,
+                    test_quality=test_quality
+                )
+                
+                # Log top features
+                top_3 = list(feature_importance.keys())[:3]
+                self.logger.info(f"  Top 3 features: {top_3}")
+                
+                # Track importance history
+                self.feature_importance_history.append({
+                    'trial': trial.number if trial else -1,
+                    'importance': feature_importance,
+                    'top_5': list(feature_importance.keys())[:5]
+                })
+                
+            except Exception as e:
+                self.logger.warning(f"  Feature importance extraction failed: {e}")
+                feature_importance = {}
+            
+            # Return metrics with feature importance (no longer empty!)
+            return PredictionMetrics(
+                variance=metrics.variance,
+                mean_absolute_error=metrics.mean_absolute_error,
+                discrimination_power=metrics.discrimination_power,
+                calibration_error=metrics.calibration_error,
+                feature_importance=feature_importance
+            )
+
         except Exception as e:
             self.logger.warning(f"Config failed: {e}")
             # Return poor metrics on failure
-            metrics = PredictionMetrics(
+            return PredictionMetrics(
                 variance=0.0,
                 mean_absolute_error=1.0,
                 discrimination_power=0.0,
                 calibration_error=1.0,
                 feature_importance={}
             )
-        
-        return metrics
-    
-    def _calculate_metrics(self, 
-                          predictions: List[float], 
+
+    def _calculate_metrics(self,
+                          predictions: List[float],
                           actual: List[float]) -> PredictionMetrics:
         """
         Calculate prediction quality metrics
-        
+
         Args:
             predictions: Predicted quality scores
             actual: Actual quality scores
-            
+
         Returns:
             Prediction metrics
         """
         predictions = np.array(predictions)
         actual = np.array(actual)
-        
+
         # Variance (spread of predictions)
         variance = float(np.var(predictions))
-        
+
         # Mean Absolute Error
         mae = float(np.mean(np.abs(predictions - actual)))
-        
+
         # Discrimination power (ability to separate high/low quality)
         # Split into top/bottom quartiles and measure separation
         if len(predictions) >= 4:
             sorted_idx = np.argsort(actual)
             q1_idx = sorted_idx[:len(sorted_idx)//4]
             q4_idx = sorted_idx[-len(sorted_idx)//4:]
-            
+
             q1_pred = predictions[q1_idx]
             q4_pred = predictions[q4_idx]
-            
+
             # Discrimination = difference in mean predictions between quartiles
             discrimination = float(abs(np.mean(q4_pred) - np.mean(q1_pred)))
         else:
             discrimination = 0.0
-        
+
         # Calibration error (how well predictions match actual distribution)
         pred_bins = np.histogram(predictions, bins=10)[0]
         actual_bins = np.histogram(actual, bins=10)[0]
-        calibration = float(np.mean(np.abs(pred_bins / len(predictions) - 
+        calibration = float(np.mean(np.abs(pred_bins / len(predictions) -
                                            actual_bins / len(actual))))
-        
+
+        # Note: feature_importance is added in _evaluate_config after this call
         return PredictionMetrics(
             variance=variance,
             mean_absolute_error=mae,
             discrimination_power=discrimination,
             calibration_error=calibration,
-            feature_importance={}  # TODO: Extract from model
+            feature_importance={}  # Will be replaced in _evaluate_config
         )
-    
+
     def optimize(self, n_trials: int = 50) -> Tuple[Dict[str, Any], PredictionMetrics]:
         """
         Run meta-optimization
-        
+
         Args:
             n_trials: Number of configurations to try
-            
+
         Returns:
             (best_config, best_metrics)
         """
         self.logger.info(f"Starting meta-optimization with {n_trials} trials...")
         self.logger.info(f"Training set: {len(self.survivors)} survivors")
-        
+
         # Create Optuna study
         study = optuna.create_study(
             direction='maximize',
             sampler=TPESampler(seed=42)
         )
-        
+
         # Optimize
         study.optimize(self.objective, n_trials=n_trials)
-        
+
         # Get best configuration
         self.best_config = self.optimization_history[study.best_trial.number]['config']
         self.best_metrics = PredictionMetrics(**self.optimization_history[study.best_trial.number]['metrics'])
         
+        # Get best feature importance
+        if self.feature_importance_history:
+            best_trial_importance = next(
+                (h for h in self.feature_importance_history if h['trial'] == study.best_trial.number),
+                None
+            )
+            if best_trial_importance:
+                self.best_feature_importance = best_trial_importance['importance']
+
         self.logger.info("="*70)
         self.logger.info("META-OPTIMIZATION COMPLETE!")
         self.logger.info("="*70)
@@ -347,21 +495,28 @@ class MetaPredictionOptimizer:
         for key, value in self.best_config.items():
             self.logger.info(f"  {key}: {value}")
         
+        # Log feature importance
+        if self.best_feature_importance:
+            self.logger.info("")
+            self.logger.info("Top 10 Feature Importance:")
+            for i, (name, imp) in enumerate(list(self.best_feature_importance.items())[:10], 1):
+                self.logger.info(f"  {i}. {name}: {imp:.4f}")
+
         return self.best_config, self.best_metrics
-    
+
     def apply_best_config(self, output_path: str = 'reinforcement_engine_config_optimized.json'):
         """
         Apply best configuration to config file
-        
+
         Args:
             output_path: Where to save optimized config
         """
         if self.best_config is None:
             raise ValueError("Must run optimize() first!")
-        
+
         # Load base config
         config = ReinforcementConfig.from_json(self.base_config_path)
-        
+
         # Apply best parameters
         config.model['hidden_layers'] = self.best_config['hidden_layers']
         config.model['dropout'] = self.best_config['dropout']
@@ -369,22 +524,28 @@ class MetaPredictionOptimizer:
         config.training['batch_size'] = self.best_config['batch_size']
         config.training['epochs'] = self.best_config['epochs']
         config.training['early_stopping_patience'] = self.best_config['early_stopping_patience']
-        
+
         # Save
         config.to_json(output_path)
         self.logger.info(f"✅ Optimized config saved to: {output_path}")
-    
+
     def save_results(self, output_path: str = 'meta_optimization_results.json'):
         """
         Save optimization results
-        
+
         Args:
             output_path: Where to save results
         """
         results = {
             'best_config': self.best_config,
             'best_metrics': asdict(self.best_metrics) if self.best_metrics else None,
-            'optimization_history': self.optimization_history
+            'optimization_history': self.optimization_history,
+            # NEW: Feature importance data
+            'feature_importance': {
+                'importance_by_feature': self.best_feature_importance,
+                'top_10': list(self.best_feature_importance.keys())[:10] if self.best_feature_importance else [],
+                'summary': get_importance_summary_for_agent(self.best_feature_importance) if self.best_feature_importance else {}
+            }
         }
 
         # Inject agent_metadata for pipeline tracking
@@ -405,7 +566,7 @@ class MetaPredictionOptimizer:
                 {"file": "survivors_with_scores.json", "required": True},
                 {"file": "train_history.json", "required": True}
             ],
-            outputs=[output_path],
+            outputs=[output_path, 'feature_importance_step4.json'],
             pipeline_step=4,
             pipeline_step_name="ml_meta_optimizer",
             follow_up_agent="reinforcement_agent",
@@ -413,11 +574,24 @@ class MetaPredictionOptimizer:
             suggested_params=self.best_config,
             reasoning=reasoning_text
         )
-        
+
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
-        
+
         self.logger.info(f"✅ Optimization results saved to: {output_path}")
+        
+        # Save feature importance separately
+        if self.best_feature_importance:
+            importance_file = Path('feature_importance_step4.json')
+            with open(importance_file, 'w') as f:
+                json.dump({
+                    'feature_importance': self.best_feature_importance,
+                    'model_version': 'step4_best_trial',
+                    'timestamp': datetime.now().isoformat(),
+                    'top_10': list(self.best_feature_importance.keys())[:10],
+                    'summary': get_importance_summary_for_agent(self.best_feature_importance)
+                }, f, indent=2)
+            self.logger.info(f"✅ Feature importance saved to: {importance_file}")
 
 
 # ============================================================================
@@ -427,7 +601,7 @@ class MetaPredictionOptimizer:
 def main():
     """CLI for meta-prediction optimization"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description='Meta-Prediction Optimizer - Tune ML for better predictions'
     )
@@ -440,17 +614,17 @@ def main():
     parser.add_argument('--config', type=str,
                        default='reinforcement_engine_config.json',
                        help='Base config file')
-    
+
     args = parser.parse_args()
-    
+
     print("="*70)
-    print("META-PREDICTION OPTIMIZER")
+    print("META-PREDICTION OPTIMIZER (with Feature Importance)")
     print("="*70)
     print(f"Survivors: {args.survivors}")
     print(f"Lottery data: {args.lottery_data}")
     print(f"Optimization trials: {args.trials}")
     print("="*70)
-    
+
     # Load data
     with open(args.survivors) as f:
         survivor_data = json.load(f)
@@ -459,26 +633,26 @@ def main():
             survivors = [s['seed'] for s in survivor_data]
         else:
             survivors = survivor_data
-    
+
     with open(args.lottery_data) as f:
         lottery_data = json.load(f)
         if isinstance(lottery_data, list) and isinstance(lottery_data[0], dict):
             lottery_history = [d['draw'] for d in lottery_data]
         else:
             lottery_history = lottery_data
-    
+
     print(f"✅ Loaded {len(survivors)} survivors")
     print(f"✅ Loaded {len(lottery_history)} lottery draws")
-    
+
     # Generate synthetic quality scores for demonstration
     # In production, use actual quality scores from testing
     np.random.seed(42)
     actual_quality = np.random.uniform(0.2, 0.8, len(survivors)).tolist()
-    
+
     print("⚠️  Using synthetic quality scores for demonstration")
     print("    In production, use actual survivor performance data")
     print()
-    
+
     # Initialize optimizer
     optimizer = MetaPredictionOptimizer(
         survivors=survivors,
@@ -486,22 +660,23 @@ def main():
         actual_quality=actual_quality,
         base_config_path=args.config
     )
-    
+
     # Run optimization
     best_config, best_metrics = optimizer.optimize(n_trials=args.trials)
-    
+
     # Save results
     optimizer.apply_best_config('reinforcement_engine_config_optimized.json')
     optimizer.save_results('meta_prediction_optimization_results.json')
-    
+
     print()
     print("="*70)
     print("✅ OPTIMIZATION COMPLETE!")
     print("="*70)
     print("Next steps:")
     print("  1. Review: meta_prediction_optimization_results.json")
-    print("  2. Use optimized config: reinforcement_engine_config_optimized.json")
-    print("  3. Re-run workflow with optimized settings")
+    print("  2. Review: feature_importance_step4.json")
+    print("  3. Use optimized config: reinforcement_engine_config_optimized.json")
+    print("  4. Re-run workflow with optimized settings")
     print("="*70)
 
 

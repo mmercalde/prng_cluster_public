@@ -11,10 +11,11 @@ IMPROVEMENTS:
 ✅ 5. Early CUDA initialization (fixes warnings)
 ✅ 6. Better progress tracking and ETA
 ✅ 7. FIXED: Optuna study n_trials attribute error
+✅ 8. NEW: Feature importance extraction (Phase 2 Integration)
 
 Author: Distributed PRNG Analysis System
 Date: November 9, 2025
-Version: 1.2 - FIXED
+Version: 1.3.0 - WITH FEATURE IMPORTANCE (Phase 2 Integration)
 """
 
 import json
@@ -29,8 +30,13 @@ from sklearn.model_selection import KFold, TimeSeriesSplit
 import time
 from datetime import datetime
 
-from integration.metadata_writer import inject_agent_metadata
 from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
+
+# =============================================================================
+# FEATURE IMPORTANCE (Model-Agnostic - Addendum G)
+# Works with Neural Network today, XGBoost tomorrow - no changes needed
+# =============================================================================
+from feature_importance import get_feature_importance, get_importance_summary_for_agent
 
 
 # ============================================================================
@@ -115,6 +121,7 @@ class AntiOverfitMetaOptimizer:
     ✅ Detailed trial logging
     ✅ Comprehensive test set evaluation
     ✅ Trial comparison table
+    ✅ Feature importance extraction (NEW)
     """
 
     def __init__(self,
@@ -165,6 +172,103 @@ class AntiOverfitMetaOptimizer:
         self.optimization_history = []
         self.trial_times = []  # NEW: Track trial durations
         self.n_trials_total = None  # FIXED: Store total trials for ETA
+        
+        # Feature importance tracking (NEW - Phase 2)
+        self.best_feature_importance = {}
+        self.feature_importance_history = []
+
+    # =========================================================================
+    # FEATURE IMPORTANCE HELPERS (Model-Agnostic - Addendum G)
+    # =========================================================================
+
+    def _get_feature_names(self) -> List[str]:
+        """
+        Get ordered list of feature names matching model input dimensions.
+        
+        Returns 60 feature names: 46 statistical + 14 global state
+        """
+        # Statistical features from survivor_scorer.py
+        statistical_features = [
+            'score', 'confidence', 'exact_matches', 'total_predictions', 'best_offset',
+            'residue_8_match_rate', 'residue_8_coherence', 'residue_8_kl_divergence',
+            'residue_125_match_rate', 'residue_125_coherence', 'residue_125_kl_divergence',
+            'residue_1000_match_rate', 'residue_1000_coherence', 'residue_1000_kl_divergence',
+            'temporal_stability_mean', 'temporal_stability_std', 'temporal_stability_min',
+            'temporal_stability_max', 'temporal_stability_trend',
+            'pred_mean', 'pred_std', 'actual_mean', 'actual_std',
+            'lane_agreement_8', 'lane_agreement_125', 'lane_consistency',
+            'skip_entropy', 'skip_mean', 'skip_std', 'skip_range',
+            'survivor_velocity', 'velocity_acceleration',
+            'intersection_weight', 'survivor_overlap_ratio',
+            'forward_count', 'reverse_count', 'intersection_count', 'intersection_ratio',
+            'pred_min', 'pred_max',
+            'residual_mean', 'residual_std', 'residual_abs_mean', 'residual_max_abs',
+            'forward_only_count', 'reverse_only_count'
+        ]
+        
+        # Global state features from GlobalStateTracker
+        global_state_features = [
+            'residue_8_entropy', 'residue_125_entropy', 'residue_1000_entropy',
+            'power_of_two_bias', 'frequency_bias_ratio', 'suspicious_gap_percentage',
+            'regime_change_detected', 'regime_age', 'high_variance_count',
+            'marker_390_variance', 'marker_804_variance', 'marker_575_variance',
+            'reseed_probability', 'temporal_stability'
+        ]
+        
+        return statistical_features + global_state_features
+
+    def _extract_feature_importance(
+        self,
+        engine: ReinforcementEngine,
+        survivors: np.ndarray,
+        quality: np.ndarray
+    ) -> Dict[str, float]:
+        """
+        Extract feature importance from trained model (MODEL-AGNOSTIC).
+        
+        Design Principle (Addendum G):
+            This method works with ANY model type. Model detection
+            is encapsulated in feature_importance.py, not here.
+        
+        Args:
+            engine: ReinforcementEngine with trained model
+            survivors: Survivor seeds
+            quality: Quality values
+            
+        Returns:
+            Dict mapping feature names to importance scores
+        """
+        feature_names = self._get_feature_names()
+        
+        # Prepare feature matrix
+        X = []
+        for seed in survivors.tolist():
+            features = engine.extract_combined_features(
+                seed=seed,
+                lottery_history=self.lottery_history
+            )
+            X.append(features)
+        
+        X = np.array(X, dtype=np.float32)
+        y = np.array(quality, dtype=np.float32)
+        
+        # MODEL-AGNOSTIC CALL
+        # Works with: Neural Network, XGBoost, RandomForest, etc.
+        # NO model type checks here - that's in feature_importance.py
+        importance = get_feature_importance(
+            model=engine.model,
+            X=X,
+            y=y,
+            feature_names=feature_names,
+            method='auto',
+            device=str(engine.device)
+        )
+        
+        return importance
+
+    # =========================================================================
+    # ORIGINAL METHODS
+    # =========================================================================
 
     def _create_splits(self, test_pct: float):
         """Create proper train/val/test splits"""
@@ -387,6 +491,7 @@ class AntiOverfitMetaOptimizer:
         FINAL evaluation on TRUE holdout test set
 
         IMPROVED: More comprehensive metrics and reporting
+        NEW: Feature importance extraction
         """
         self.logger.info("\n" + "="*70)
         self.logger.info("FINAL EVALUATION ON HOLDOUT TEST SET")
@@ -446,6 +551,45 @@ class AntiOverfitMetaOptimizer:
             self.logger.warning("\n⚠️  Slight overfitting detected")
         else:
             self.logger.info("\n✅ Model generalizes well")
+
+        # =====================================================================
+        # FEATURE IMPORTANCE EXTRACTION (Model-Agnostic - Addendum G)
+        # =====================================================================
+        try:
+            self.logger.info("\n" + "-"*70)
+            self.logger.info("FEATURE IMPORTANCE EXTRACTION")
+            self.logger.info("-"*70)
+            
+            feature_importance = self._extract_feature_importance(
+                engine=engine,
+                survivors=self.test_survivors,
+                quality=self.test_quality
+            )
+            
+            # Store for later
+            self.best_feature_importance = feature_importance
+            
+            # Log top features
+            top_10 = list(feature_importance.items())[:10]
+            self.logger.info("\nTop 10 Features:")
+            for i, (name, imp) in enumerate(top_10, 1):
+                self.logger.info(f"  {i}. {name}: {imp:.4f}")
+            
+            # Save to file
+            importance_file = Path('feature_importance_step5.json')
+            with open(importance_file, 'w') as f:
+                json.dump({
+                    'feature_importance': feature_importance,
+                    'model_version': f'step5_{self.study_name}',
+                    'timestamp': datetime.now().isoformat(),
+                    'top_10': list(feature_importance.keys())[:10],
+                    'summary': get_importance_summary_for_agent(feature_importance)
+                }, f, indent=2)
+            self.logger.info(f"\n✅ Feature importance saved to: {importance_file}")
+            
+        except Exception as e:
+            self.logger.warning(f"\n⚠️ Feature importance extraction failed: {e}")
+            self.best_feature_importance = {}
 
         return ValidationMetrics(
             train_variance=train_variance,
@@ -512,7 +656,7 @@ class AntiOverfitMetaOptimizer:
         """
         # FIXED: Store total trials for ETA calculation in objective
         self.n_trials_total = n_trials
-        
+
         self.logger.info(f"\nStarting anti-overfit meta-optimization...")
         self.logger.info(f"Study name: {self.study_name}")
         self.logger.info(f"Storage: {self.storage}")
@@ -538,7 +682,7 @@ class AntiOverfitMetaOptimizer:
         # NEW: Print trial comparison
         self.print_trial_comparison()
 
-        # FINAL evaluation on test set
+        # FINAL evaluation on test set (includes feature importance extraction)
         self.best_metrics = self.final_evaluation(self.best_config)
 
         # NEW: Save detailed results
@@ -575,41 +719,18 @@ class AntiOverfitMetaOptimizer:
                 'overfit_ratio': self.best_metrics.overfit_ratio,
                 'is_overfitting': self.best_metrics.is_overfitting()
             },
+            # NEW: Feature importance data
+            'feature_importance': {
+                'importance_by_feature': self.best_feature_importance,
+                'top_10': list(self.best_feature_importance.keys())[:10] if self.best_feature_importance else [],
+                'summary': get_importance_summary_for_agent(self.best_feature_importance) if self.best_feature_importance else {}
+            },
             'all_trials': self.optimization_history,
             'total_time_seconds': sum(self.trial_times),
             'avg_trial_time_seconds': np.mean(self.trial_times),
             'timestamp': datetime.now().isoformat()
         }
 
-
-        # Inject agent_metadata for pipeline tracking
-        confidence_score = 0.5
-        reasoning_text = "Anti-overfit training complete"
-        if self.best_metrics:
-            confidence_score = max(0.1, min(0.95, 1.0 - (self.best_metrics.overfit_ratio - 1.0) * 0.5))
-            reasoning_text = (
-                f"Anti-overfit training complete: "
-                f"test_mae={self.best_metrics.test_mae:.4f}, "
-                f"train_mae={self.best_metrics.train_mae:.4f}, "
-                f"overfit_ratio={self.best_metrics.overfit_ratio:.2f}, "
-                f"is_overfitting={self.best_metrics.is_overfitting()}"
-            )
-
-        results = inject_agent_metadata(
-            results,
-            inputs=[
-                {"file": "survivors_with_scores.json", "required": True},
-                {"file": "train_history.json", "required": True},
-                {"file": self.base_config_path, "required": True}
-            ],
-            outputs=[str(results_file), "models/anti_overfit/best_model.pth"],
-            pipeline_step=5,
-            pipeline_step_name="anti_overfit_training",
-            follow_up_agent="prediction_agent",
-            confidence=confidence_score,
-            suggested_params=self.best_config,
-            reasoning=reasoning_text
-        )
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
 
@@ -624,7 +745,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Anti-Overfit Meta-Prediction Optimizer (IMPROVED)'
+        description='Anti-Overfit Meta-Prediction Optimizer (with Feature Importance)'
     )
     parser.add_argument('--survivors', required=True)
     parser.add_argument('--lottery-data', required=True)
@@ -638,7 +759,7 @@ def main():
     args = parser.parse_args()
 
     print("="*70)
-    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER (IMPROVED)")
+    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER (with Feature Importance)")
     print("="*70)
     print(f"✅ CUDA initialized: {CUDA_INITIALIZED}")
     print("="*70)
@@ -691,6 +812,13 @@ def main():
     print(f"  MAE: {metrics.test_mae:.4f}")
     print(f"  Variance: {metrics.test_variance:.4f}")
     print(f"  Overfit Ratio: {metrics.overfit_ratio:.2f}")
+    
+    # NEW: Show feature importance summary
+    if optimizer.best_feature_importance:
+        print(f"\nTop 5 Features:")
+        for i, (name, imp) in enumerate(list(optimizer.best_feature_importance.items())[:5], 1):
+            print(f"  {i}. {name}: {imp:.4f}")
+    
     print("="*70)
 
 
