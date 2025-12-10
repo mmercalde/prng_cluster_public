@@ -1,113 +1,44 @@
-# CURRENT STATUS - Updated December 7, 2025 (Session 5)
+# CURRENT STATUS - Updated December 9, 2025 (Session 9 COMPLETE)
 
 ## Timeline Summary
 ```
-Session 1: Dec 3-4, 2025   - Schema v1.0.3/v1.0.4, Dual-LLM, Universal Agent v1.0
-Session 2: Dec 4-5, 2025   - Watcher Agent, Progress Display, 26-GPU fix
-Session 3: Dec 5-6, 2025   - Configurable thresholds, chunk sizing fix
-Session 4: Dec 6, 2025     - Manifests v1.3.0 (Steps 2-6), PROPOSAL Addendum B
-Session 5: Dec 6-7, 2025   - Web Dashboard, Interactive Plots, Live Trial Data
+Session 1:  Dec 3-4, 2025  - Schema v1.0.3/v1.0.4, Dual-LLM, Universal Agent v1.0
+Session 2:  Dec 4-5, 2025  - Watcher Agent, Progress Display, 26-GPU fix
+Session 3:  Dec 5-6, 2025  - Configurable thresholds, chunk sizing fix
+Session 4:  Dec 6, 2025    - Manifests v1.3.0 (Steps 2-6), PROPOSAL Addendum B
+Session 5:  Dec 6-7, 2025  - Web Dashboard, Interactive Plots, Live Trial Data
+Session 6:  Dec 7, 2025    - AMD GPU monitoring, Settings UI, Dashboard polish
+Session 7:  Dec 7, 2025    - Java LCG sieve debugging, triple-modulo fix, threshold tuning
+Session 8:  Dec 7, 2025    - Centralized search bounds, threshold philosophy fix, Optuna working
+Session 9:  Dec 8-9, 2025  - agent_metadata injection COMPLETE (Steps 4, 5, 6)
 ```
 
 ---
 
-## Session 5 Accomplishments (Dec 6-7, 2025) - WEB DASHBOARD COMPLETE
+## Session 9 Result: agent_metadata Injection COMPLETE ✅
 
-### ✅ TODO #2 COMPLETE: Progress Display & Visualization
+### All Zeus Pipeline Scripts Now Have Injection
 
-**Problem Solved:**
-- Tmux-based monitoring was difficult to use (required manual attach)
-- No real-time visualization of Optuna optimization
-- No live display of bidirectional survivors
-- GPU utilization not tracked
+| Step | Script | Commit | Status |
+|------|--------|--------|--------|
+| 1 | `window_optimizer.py` | (prior) | ✅ DONE |
+| 2.5 | `run_scorer_meta_optimizer.py` | (prior) | ✅ DONE |
+| 4 | `meta_prediction_optimizer.py` | ea399e7 | ✅ DONE |
+| 5 | `meta_prediction_optimizer_anti_overfit.py` | 97aaa4d | ✅ DONE |
+| 6 | `prediction_generator.py` | 9d94204 | ✅ DONE |
 
-**Solution:** HiveOS-inspired Flask web dashboard with interactive Plotly charts
+### Intentionally Excluded (Remote Workers)
+- `scorer_trial_worker.py` - Runs on remote nodes, no `integration/` folder
 
-### Web Dashboard Implementation
+### Team Beta Review - All Caveats Resolved ✅
 
-**File:** `~/distributed_prng_analysis/web_dashboard.py` (~1650 lines)
-**Access:** `http://192.168.3.127:5000`
-
-| Route | Purpose | Features |
-|-------|---------|----------|
-| `/` | Overview | Progress bar, worker table, live trial data |
-| `/workers` | GPU Details | Per-GPU clock speeds, seeds/sec |
-| `/stats` | Statistics | Hardware summary, cluster totals |
-| `/plots` | Visualizations | Interactive Optuna charts |
-| `/settings` | Configuration | Dashboard settings (UI) |
-
-### Interactive Plotly Charts
-
-| Chart | Description | Requirements |
-|-------|-------------|--------------|
-| Parameter Optimization Scatter | X/Y params with score coloring | 2+ trials |
-| Trial Convergence | Score over trials with best line | 2+ trials |
-| Score Distribution | Histogram of scores | 2+ trials |
-| Parameter Importance | Influence of each parameter | 4+ trials |
-
-**Features:**
-- Hover tooltips with detailed trial data
-- Zoom/pan/reset capabilities
-- Full-screen view for each chart
-- Study selector dropdown
-- Auto-refresh disabled on Plots page (preserves selection)
-
-### Live Trial Data Card
-
-Real-time display on Overview page showing:
-- Current trial number
-- Forward survivors count
-- Reverse survivors count
-- Bidirectional survivors count
-- Best bidirectional so far
-- Configuration description
-
-### GPU Clock Speed Monitoring
-
-**File:** `~/distributed_prng_analysis/gpu_monitor.py`
-
-| Node | Method | Data Retrieved |
-|------|--------|----------------|
-| Zeus | nvidia-smi | Clock MHz, Temp, Util, Power |
-| rig-6600 | rocm-smi --showclocks | SCLK (shader clock) |
-| rig-6600b | rocm-smi --showclocks | SCLK (shader clock) |
-
-**Display:**
-- Overview: Average clock per worker with color coding
-- Workers: Per-GPU clock speeds
-- Color: Green (>1000 MHz), Orange (>100 MHz), Gray (idle)
-
-### Optuna Study Persistence
-
-**Problem:** Window optimizer studies were in-memory only, lost after run
-
-**Fix in** `window_optimizer_bayesian.py`:
-```python
-study_name = f"window_opt_{int(time.time())}"
-storage_path = f"sqlite:///optuna_studies/{study_name}.db"
-study = optuna.create_study(
-    study_name=study_name,
-    storage=storage_path,
-    direction='maximize',
-    sampler=sampler
-)
-```
-
-### Files Created/Modified
-
-| File | Action | Purpose |
-|------|--------|---------|
-| `web_dashboard.py` | Created | Flask dashboard |
-| `gpu_monitor.py` | Created | GPU stats collection |
-| `progress_display.py` | Modified | Added `update_trial_stats()` |
-| `window_optimizer_integration_final.py` | Modified | Trial stats integration |
-| `window_optimizer_bayesian.py` | Modified | Study persistence |
-| `coordinator.py` | Modified | Auto-start dashboard |
-
-### Documentation Updated
-
-- `PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md` - Added Phase Roadmap + Addendum D
-- `CURRENT_Status.txt` - This file
+| Caveat | Issue | Resolution |
+|--------|-------|------------|
+| 1 | `self.best_metrics.accuracy` doesn't exist | Changed to `composite_score()` |
+| 2 | Verify `overfit_ratio` / `is_overfitting()` | Verified (lines 74, 82) |
+| 3 | Verify `self.base_config_path` | Verified (line 144) |
+| 4 | Verify agent manifest names | Verified - names match exactly |
+| 5 | Verify prediction result keys | Corrected to `confidence_scores` |
 
 ---
 
@@ -118,25 +49,18 @@ study = optuna.create_study(
 | Schema v1.0.3 (agent_metadata) | ✅ DONE | metadata_writer.py |
 | Schema v1.0.4 (Dual-LLM) | ✅ DONE | llm_metadata fields |
 | Dual-LLM Servers | ✅ DONE | Qwen2.5-Coder-14B + Math-7B |
-| LLM Router | ✅ DONE | Intelligent routing |
 | Universal Agent v1.0 | ✅ DONE | agents/agent_core.py |
 | All 6 Manifests v1.3.0 | ✅ DONE | 58 parameters |
-| Configurable Thresholds | ✅ DONE | Optuna + CLI + manifest |
-| Pydantic Context Framework | ✅ DONE | v3.2.0 + Addendums A-D |
+| Pydantic Context Framework | ✅ DONE | v3.2.0 + Addendums A-F |
 | Watcher Agent (Pipeline Mgr) | ✅ DONE | watcher_agent.py |
-| **Web Dashboard** | ✅ DONE | **web_dashboard.py** |
-| **Interactive Plots** | ✅ DONE | **Plotly integration** |
-| **Live Trial Data** | ✅ DONE | **ProgressWriter.update_trial_stats()** |
-| **GPU Clock Monitoring** | ✅ DONE | **gpu_monitor.py** |
-| **Optuna Study Persistence** | ✅ DONE | **SQLite storage** |
-| 26-GPU Cluster Fix | ✅ DONE | config_file fix |
-| Chunk Sizing Fix | ✅ DONE | 19K minimum |
+| Web Dashboard | ✅ DONE | web_dashboard.py |
+| Centralized Search Bounds | ✅ DONE | distributed_config.json |
+| **agent_metadata: All Steps** | ✅ DONE | Steps 1, 2.5, 4, 5, 6 |
+| **Feature Importance Module** | 📝 PROPOSED | Pending approval |
 
 ---
 
 ## Project Implementation Phases
-
-*Reference: PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md*
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -149,56 +73,63 @@ study = optuna.create_study(
 │  Phase 4: Watcher Agent (Pipeline Mgr)   ✅ DONE (Session 2)        │
 │  Phase 5: Pydantic Context Framework     ✅ DONE (Sessions 1-4)     │
 │  Phase 6: Web Dashboard                  ✅ DONE (Session 5)        │
+│  Phase 7: Centralized Configuration      ✅ DONE (Session 8)        │
+│  Phase 8: agent_metadata Injection       ✅ DONE (Session 9)        │
 │                                                                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│                    ONGOING WORK                                      │
+│                    NEXT STEPS                                        │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  agent_metadata Injection (Steps 3-6)    ⏳ IN PROGRESS             │
-│  GBNF Phase 2: Supervisory LLM           📝 PENDING                 │
-│  End-to-end Pipeline Test                📝 PENDING                 │
+│  Phase 9: Feature Importance Module      📝 PROPOSED                │
+│  Phase 10: Complete Operating Guide      📝 PROPOSED                │
+│  Phase 11: End-to-end Pipeline Test      📝 PENDING                 │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### GBNF Two-Phase LLM Solution
+---
 
-| LLM Phase | Component | Status |
-|-----------|-----------|--------|
-| Phase 1 | GBNF Grammar (Structural) | ✅ COMPLETE |
-| Phase 2 | Supervisory Model (Semantic) | 📝 PENDING |
+## PROPOSAL Documents
 
-**Options for Phase 2:**
-- Option A: Phi-4 14B locally (zero cost)
-- Option B: Claude API integration (~$6/month)
+| Document | Version | Status |
+|----------|---------|--------|
+| PROPOSAL_Unified_Agent_Context_Framework | v3.2.0 | ✅ APPROVED |
+| ├── Addendum A: BaseAgent Pattern | v1.0 | ✅ APPROVED |
+| ├── Addendum B: Manifest v1.3.0 | v1.0 | ✅ APPROVED |
+| ├── Addendum C: Centralized Config | v1.0 | ✅ APPROVED |
+| ├── Addendum D: Threshold Philosophy | v1.0 | ✅ APPROVED |
+| ├── Addendum E: SearchBounds Pattern | v1.0 | ✅ APPROVED |
+| └── Addendum F: agent_metadata Injection | v1.1.0 | ✅ IMPLEMENTED |
+| PROPOSAL_Feature_Importance_Implementation | v1.0.0 | 📝 PROPOSED |
+| PROPOSAL_Complete_Operating_Guide | v1.0.0 | 📝 PROPOSED |
 
 ---
 
-## TODO List (Updated Priority)
+## TODO List
 
-### ✅ COMPLETED
-- [x] TODO #1: Add `parameter_bounds` to manifests Steps 2-6
-- [x] TODO #2: Progress Display & Visualization
-  - [x] Web dashboard (replaced tmux)
-  - [x] Live GPU clock speeds
-  - [x] Optuna trial progress (interactive Plotly)
-  - [x] Survivor counts live updates
-  - [x] ETA estimation
-  - [x] Parameter Importance chart
+### ✅ COMPLETED (Sessions 1-9)
+- [x] Schema v1.0.3/v1.0.4 implementation
+- [x] Dual-LLM infrastructure
+- [x] Universal Agent v1.0
+- [x] All 6 Manifests v1.3.0 with 58 parameters
+- [x] Watcher Agent implementation
+- [x] Web Dashboard with interactive plots
+- [x] Centralized search bounds (distributed_config.json)
+- [x] agent_metadata injection: Step 1 (window_optimizer.py)
+- [x] agent_metadata injection: Step 2.5 (run_scorer_meta_optimizer.py)
+- [x] agent_metadata injection: Step 4 (meta_prediction_optimizer.py) ← Session 9
+- [x] agent_metadata injection: Step 5 (meta_prediction_optimizer_anti_overfit.py) ← Session 9
+- [x] agent_metadata injection: Step 6 (prediction_generator.py) ← Session 9
+- [x] Team Beta review and caveat resolution
 
-### 🔧 IN PROGRESS
-- [ ] TODO #2 Polish:
-  - [ ] Settings page functionality
-  - [ ] Historical data persistence
-  - [ ] AMD rocm-smi parsing improvements
-- [ ] agent_metadata injection (Steps 3-6)
+### 📝 PROPOSED (Next Priority)
+- [ ] Feature Importance Module (6 phases)
+- [ ] Complete Operating Guide documentation
 
-### 📝 PENDING
-- [ ] TODO #3: End-to-end pipeline test with full 26-GPU cluster
-  - [ ] Run watcher_agent.py --run-pipeline --start-step 1
-  - [ ] Verify all 6 steps execute and chain correctly
-  - [ ] Confirm 26 GPUs utilized throughout
-- [ ] GBNF Phase 2: Supervisory LLM implementation
+### 📋 FOLLOW-UP TASKS
+- [ ] Manifest cleanup: Remove `scoring_statistics.json` references
+- [ ] GBNF Phase 2: Supervisory LLM
+- [ ] End-to-end pipeline test with 26-GPU cluster
 
 ---
 
@@ -220,106 +151,20 @@ study = optuna.create_study(
 
 ---
 
-## Key Files Reference
+## Session 9 Git Commits
 
-### Web Dashboard
 ```
-web_dashboard.py       # Main Flask dashboard (~1650 lines)
-gpu_monitor.py         # GPU clock/stats monitoring
-progress_display.py    # ProgressWriter with trial_stats
-```
-
-### Agent System
-```
-agents/
-├── agent_core.py           # BaseAgent class
-├── watcher_agent.py        # Pipeline manager (Phase 4)
-└── manifest/               # Agent manifests v1.3.0
-    ├── window_optimizer.json   # Step 1 - 10 params
-    ├── scorer_meta.json        # Step 2 - 6 params
-    ├── full_scoring.json       # Step 3 - 5 params
-    ├── ml_meta.json            # Step 4 - 13 params
-    ├── reinforcement.json      # Step 5 - 13 params
-    └── prediction.json         # Step 6 - 11 params
-```
-
-### Documentation
-```
-PROPOSAL_Unified_Agent_Context_Framework_v3_2_0.md  # Master spec + Phase Roadmap + Addendums A-D
-CURRENT_Status.txt                                   # This file
+9d94204 - Session 9: agent_metadata injection for prediction_generator.py (Step 6)
+97aaa4d - Session 9: agent_metadata injection for meta_prediction_optimizer_anti_overfit.py (Step 5)
+ea399e7 - Session 9: agent_metadata injection for meta_prediction_optimizer.py (Step 4)
 ```
 
 ---
 
-## Session History
+## Key Files Modified (Session 9)
 
-### Session 1 (Dec 3-4, 2025)
-- Phase 1: Schema v1.0.3 and v1.0.4 implemented
-- Phase 2: Dual-LLM infrastructure deployed
-- Phase 3: Universal Agent v1.0 created
-- 6 agent manifests v1.0.0 created
-
-### Session 2 (Dec 4-5, 2025)
-- Phase 4: Watcher Agent deployed and tested
-- Progress Display module created
-- 26-GPU cluster fix applied
-- Manifest compatibility fixes
-
-### Session 3 (Dec 5-6, 2025)
-- Configurable thresholds implemented
-- Chunk sizing bug fixed (19K minimum)
-- window_optimizer.json upgraded to v1.3.0
-- PROPOSAL Addendum A added
-
-### Session 4 (Dec 6, 2025)
-- All manifests upgraded to v1.3.0
-- 58 total configurable parameters
-- PROPOSAL Addendum B added
-- Git commits: 9f9c606, 1953cca
-
-### Session 5 (Dec 6-7, 2025)
-- Phase 6: Web Dashboard complete
-- HiveOS-inspired Flask dashboard
-- Interactive Plotly charts (4 types)
-- Live Trial Data card
-- GPU clock speed monitoring
-- Optuna study persistence fix
-- Parameter Importance implementation
-- PROPOSAL: Added Phase Roadmap + Addendum D
-- Git commit: 2b15002
-- **NEXT:** TODO #3 - End-to-end pipeline test
-
----
-
-## Dashboard Quick Reference
-
-### Start Dashboard
-```bash
-python3 ~/distributed_prng_analysis/web_dashboard.py &
-```
-
-### Access
-- Local: http://localhost:5000
-- Network: http://192.168.3.127:5000
-
-### Run Test with Dashboard
-```bash
-python3 window_optimizer.py --strategy bayesian --trials 15 \
-    --max-seeds 1000000 --prng-type java_lcg \
-    --lottery-file synthetic_lottery.json
-```
-
-### Dashboard Features
-- Overview: Progress, workers, live trial data
-- Workers: Per-GPU clock speeds
-- Plots: Interactive Optuna visualizations
-- Full-screen charts with download option
-
----
-
-## Next Session Goals
-
-1. **TODO #3:** End-to-end pipeline test with 26 GPUs
-2. **GBNF Phase 2:** Choose Phi-4 or Claude API for supervisory LLM
-3. Continue agent_metadata injection (Steps 3-6)
-4. Test Parameter Importance with more trials
+| File | Changes |
+|------|---------|
+| `prediction_generator.py` | +import, +injection (23 lines) |
+| `meta_prediction_optimizer_anti_overfit.py` | +import, +injection (30 lines) |
+| `meta_prediction_optimizer.py` | +import, +injection (28 lines) |
