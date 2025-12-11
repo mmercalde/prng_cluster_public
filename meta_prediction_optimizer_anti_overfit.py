@@ -16,7 +16,7 @@ IMPROVEMENTS:
 
 Author: Distributed PRNG Analysis System
 Date: November 9, 2025
-Version: 1.4.0 - WITH DRIFT TRACKING (Phase 3 Integration)
+Version: 1.5.0 - WITH AGENT INTEGRATION (Phase 4)
 """
 
 import json
@@ -43,6 +43,7 @@ from feature_importance import get_feature_importance, get_importance_summary_fo
 # DRIFT TRACKING (Phase 3)
 # =============================================================================
 from feature_drift_tracker import FeatureDriftTracker, quick_drift_check, get_drift_summary_for_agent
+from integration.metadata_writer import inject_agent_metadata
 
 
 # ============================================================================
@@ -792,6 +793,36 @@ class AntiOverfitMetaOptimizer:
             'avg_trial_time_seconds': np.mean(self.trial_times),
             'timestamp': datetime.now().isoformat()
         }
+
+        # Phase 4: Inject agent_metadata with feature importance + drift
+        confidence_score = 0.5
+        reasoning_parts = ["Anti-overfit training complete"]
+        if self.best_metrics:
+            confidence_score = max(0.1, min(0.95, 1.0 - (self.best_metrics.overfit_ratio - 1.0) * 0.5))
+            reasoning_parts.append(f"overfit_ratio={self.best_metrics.overfit_ratio:.2f}")
+        if self.best_feature_importance:
+            top_3 = list(self.best_feature_importance.keys())[:3]
+            reasoning_parts.append(f"top_features={top_3}")
+        if self.drift_summary:
+            reasoning_parts.append(f"drift_status={self.drift_summary.get('status', 'unknown')}")
+        
+        results = inject_agent_metadata(
+            results,
+            inputs=[
+                {"file": "survivors_with_scores.json", "required": True},
+                {"file": "train_history.json", "required": True}
+            ],
+            outputs=[str(results_file), "models/anti_overfit/best_model.pth"],
+            pipeline_step=5,
+            follow_up_agent="prediction_agent",
+            confidence=confidence_score,
+            suggested_params={
+                "best_config": self.best_config,
+                "feature_importance_summary": get_importance_summary_for_agent(self.best_feature_importance) if self.best_feature_importance else {},
+                "drift_summary": self.drift_summary if self.drift_summary else {"status": "no_baseline"}
+            },
+            reasoning="; ".join(reasoning_parts)
+        )
 
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
