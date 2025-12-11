@@ -33,8 +33,31 @@ try:
     GPU_MONITOR_AVAILABLE = True
 except ImportError:
     GPU_MONITOR_AVAILABLE = False
-    def get_cluster_gpu_stats():
-        return {}
+
+# Feature Importance Visualization (Phase 5)
+try:
+    from feature_visualizer import (
+        generate_feature_importance_chart,
+        generate_drift_comparison_chart,
+        generate_drift_indicator_chart,
+        generate_top_movers_chart,
+        generate_category_breakdown_chart,
+        generate_importance_scatter_chart,
+        generate_importance_treemap,
+        generate_radar_chart,
+        generate_dual_radar_chart,
+        generate_importance_heatmap,
+        generate_distribution_histogram,
+        generate_waterfall_chart,
+        generate_sunburst_chart,
+        get_feature_summary_html
+    )
+    FEATURE_VIZ_AVAILABLE = True
+except ImportError:
+    FEATURE_VIZ_AVAILABLE = False
+
+def get_cluster_gpu_stats():
+    return {}
 
 app = Flask(__name__)
 
@@ -602,6 +625,7 @@ def base_template(content, active_tab="overview", auto_refresh=True):
         <a href="/stats" class="nav-tab {'active' if active_tab == 'stats' else ''}">Stats</a>
         <a href="/plots" class="nav-tab {'active' if active_tab == 'plots' else ''}">Plots</a>
         <a href="/settings" class="nav-tab {'active' if active_tab == 'settings' else ''}">Settings</a>
+        <a href="/features" class="nav-tab {'active' if active_tab == 'features' else ''}">🎯 Features</a>
     </div>
 
     <div class="main-content">
@@ -1852,6 +1876,64 @@ def plots():
     html = base_template(PLOTS_CONTENT, "plots", auto_refresh=False)
     return render_template_string(html, **ctx)
 
+
+
+@app.route('/features')
+def features():
+    """Feature importance visualization page"""
+    plot_settings = load_settings()
+    plot_height = plot_settings.get('plot_height', 450)
+    
+    if not FEATURE_VIZ_AVAILABLE:
+        content = '<div class="card"><h3 style="color: #ef4444;">⚠️ Feature Visualizer Not Available</h3><p>Make sure feature_visualizer.py is in the same directory.</p></div>'
+        return base_template(content, active_tab="features", auto_refresh=False)
+    
+    step4_exists = os.path.exists('feature_importance_step4.json')
+    step5_exists = os.path.exists('feature_importance_step5.json')
+    drift_exists = os.path.exists('feature_drift_step4_to_step5.json')
+    
+    content = '<style>.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(450px,1fr));gap:20px;margin-top:20px}.chart-card{background:var(--card-bg);border-radius:8px;padding:15px;border:1px solid var(--border-color)}.chart-card.full-width{grid-column:1/-1}.chart-title{color:var(--text-secondary);font-size:13px;margin-bottom:10px}.status-bar{display:flex;gap:20px;padding:15px;background:var(--card-bg);border-radius:8px;margin-bottom:20px;border:1px solid var(--border-color)}.status-item{display:flex;align-items:center;gap:8px}.status-dot{width:10px;height:10px;border-radius:50%}.status-dot.available{background:#22c55e}.status-dot.missing{background:#ef4444}</style>'
+    content += '<h2 style="color:var(--text-primary);margin-bottom:20px">🎯 Feature Importance Analysis</h2>'
+    content += '<div class="status-bar">'
+    content += '<div class="status-item"><div class="status-dot ' + ("available" if step4_exists else "missing") + '"></div><span>Step 4' + (" ✓" if step4_exists else " ✗") + '</span></div>'
+    content += '<div class="status-item"><div class="status-dot ' + ("available" if step5_exists else "missing") + '"></div><span>Step 5' + (" ✓" if step5_exists else " ✗") + '</span></div>'
+    content += '<div class="status-item"><div class="status-dot ' + ("available" if drift_exists else "missing") + '"></div><span>Drift' + (" ✓" if drift_exists else " ✗") + '</span></div>'
+    content += '</div>'
+    
+    if not step4_exists and not step5_exists:
+        content += '<div style="color:var(--text-secondary);padding:40px;text-align:center"><h3>No Feature Importance Data</h3><p>Run Step 4 or Step 5 to generate data.</p></div>'
+        return base_template(content, active_tab="features", auto_refresh=False)
+    
+    content += '<div class="chart-grid">'
+    chart = generate_feature_importance_chart(top_n=20, plot_height=plot_height)
+    if chart: content += f'<div class="chart-card"><div class="chart-title">Top 20 Features</div>{chart}</div>'
+    chart = generate_category_breakdown_chart(plot_height=300)
+    if chart: content += f'<div class="chart-card"><div class="chart-title">Category Breakdown</div>{chart}</div>'
+    if drift_exists:
+        chart = generate_drift_indicator_chart(plot_height=280)
+        if chart: content += f'<div class="chart-card"><div class="chart-title">Drift Score</div>{chart}</div>'
+        chart = generate_top_movers_chart(top_n=10, plot_height=350)
+        if chart: content += f'<div class="chart-card"><div class="chart-title">Top Changes</div>{chart}</div>'
+    if step4_exists and step5_exists:
+        chart = generate_drift_comparison_chart(top_n=15, plot_height=plot_height)
+        if chart: content += f'<div class="chart-card full-width"><div class="chart-title">Step 4 vs Step 5</div>{chart}</div>'
+        chart = generate_importance_scatter_chart(plot_height=450)
+        if chart: content += f'<div class="chart-card"><div class="chart-title">Scatter Plot</div>{chart}</div>'
+        chart = generate_dual_radar_chart(top_n=10, plot_height=450)
+        if chart: content += f'<div class="chart-card"><div class="chart-title">Radar Comparison</div>{chart}</div>'
+    chart = generate_importance_treemap(plot_height=450)
+    if chart: content += f'<div class="chart-card full-width"><div class="chart-title">Treemap</div>{chart}</div>'
+    chart = generate_sunburst_chart(plot_height=450)
+    if chart: content += f'<div class="chart-card"><div class="chart-title">Sunburst</div>{chart}</div>'
+    chart = generate_distribution_histogram(plot_height=350)
+    if chart: content += f'<div class="chart-card"><div class="chart-title">Distribution</div>{chart}</div>'
+    if drift_exists:
+        chart = generate_waterfall_chart(top_n=15, plot_height=400)
+        if chart: content += f'<div class="chart-card full-width"><div class="chart-title">Waterfall</div>{chart}</div>'
+    chart = generate_importance_heatmap(top_n=20, plot_height=500)
+    if chart: content += f'<div class="chart-card full-width"><div class="chart-title">Heatmap</div>{chart}</div>'
+    content += '</div>'
+    return base_template(content, active_tab="features", auto_refresh=False)
 
 @app.route('/settings')
 def settings():
