@@ -11,11 +11,12 @@ IMPROVEMENTS:
 ✅ 5. Early CUDA initialization (fixes warnings)
 ✅ 6. Better progress tracking and ETA
 ✅ 7. FIXED: Optuna study n_trials attribute error
-✅ 8. NEW: Feature importance extraction (Phase 2 Integration)
+✅ 8. Feature importance extraction (Phase 2 Integration)
+✅ 9. NEW: Drift tracking between Step 4 and Step 5 (Phase 3)
 
 Author: Distributed PRNG Analysis System
 Date: November 9, 2025
-Version: 1.3.0 - WITH FEATURE IMPORTANCE (Phase 2 Integration)
+Version: 1.4.0 - WITH DRIFT TRACKING (Phase 3 Integration)
 """
 
 import json
@@ -37,6 +38,11 @@ from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
 # Works with Neural Network today, XGBoost tomorrow - no changes needed
 # =============================================================================
 from feature_importance import get_feature_importance, get_importance_summary_for_agent
+
+# =============================================================================
+# DRIFT TRACKING (Phase 3)
+# =============================================================================
+from feature_drift_tracker import FeatureDriftTracker, quick_drift_check, get_drift_summary_for_agent
 
 
 # ============================================================================
@@ -176,6 +182,10 @@ class AntiOverfitMetaOptimizer:
         # Feature importance tracking (NEW - Phase 2)
         self.best_feature_importance = {}
         self.feature_importance_history = []
+        
+        # Drift tracking (NEW - Phase 3)
+        self.drift_analysis = None
+        self.drift_summary = {}
 
     # =========================================================================
     # FEATURE IMPORTANCE HELPERS (Model-Agnostic - Addendum G)
@@ -587,6 +597,53 @@ class AntiOverfitMetaOptimizer:
                 }, f, indent=2)
             self.logger.info(f"\n✅ Feature importance saved to: {importance_file}")
             
+            # =================================================================
+            # DRIFT TRACKING (Phase 3) - Compare with Step 4
+            # =================================================================
+            step4_file = Path('feature_importance_step4.json')
+            if step4_file.exists():
+                self.logger.info("\n" + "-"*70)
+                self.logger.info("DRIFT ANALYSIS (Step 4 → Step 5)")
+                self.logger.info("-"*70)
+                
+                try:
+                    drift_analysis = quick_drift_check(
+                        step4_path=str(step4_file),
+                        step5_path=str(importance_file),
+                        threshold=0.15
+                    )
+                    
+                    # Store drift info
+                    self.drift_analysis = drift_analysis
+                    self.drift_summary = get_drift_summary_for_agent(drift_analysis)
+                    
+                    # Log drift results
+                    self.logger.info(f"\nDrift Score: {drift_analysis.drift_score:.4f}")
+                    self.logger.info(f"Max Change: {drift_analysis.max_drift_feature} ({drift_analysis.max_drift_value:+.4f})")
+                    
+                    if drift_analysis.drift_alert:
+                        self.logger.warning("\n⚠️ DRIFT ALERT: Feature importance shifted significantly!")
+                        self.logger.warning("   This may indicate PRNG behavior change or model instability")
+                        self.logger.warning(f"   Top gainers: {[f for f, _ in drift_analysis.top_gainers[:3]]}")
+                        self.logger.warning(f"   Top losers: {[f for f, _ in drift_analysis.top_losers[:3]]}")
+                    else:
+                        self.logger.info("\n✅ Feature importance stable (no significant drift)")
+                    
+                    # Save drift analysis
+                    drift_file = Path('feature_drift_step4_to_step5.json')
+                    with open(drift_file, 'w') as f:
+                        json.dump(drift_analysis.to_dict(), f, indent=2)
+                    self.logger.info(f"✅ Drift analysis saved to: {drift_file}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Drift analysis failed: {e}")
+                    self.drift_analysis = None
+                    self.drift_summary = {}
+            else:
+                self.logger.info("\nℹ️ No Step 4 importance file found - skipping drift analysis")
+                self.drift_analysis = None
+                self.drift_summary = {}
+            
         except Exception as e:
             self.logger.warning(f"\n⚠️ Feature importance extraction failed: {e}")
             self.best_feature_importance = {}
@@ -719,11 +776,16 @@ class AntiOverfitMetaOptimizer:
                 'overfit_ratio': self.best_metrics.overfit_ratio,
                 'is_overfitting': self.best_metrics.is_overfitting()
             },
-            # NEW: Feature importance data
+            # Feature importance data (Phase 2)
             'feature_importance': {
                 'importance_by_feature': self.best_feature_importance,
                 'top_10': list(self.best_feature_importance.keys())[:10] if self.best_feature_importance else [],
                 'summary': get_importance_summary_for_agent(self.best_feature_importance) if self.best_feature_importance else {}
+            },
+            # Drift tracking data (Phase 3)
+            'drift_analysis': self.drift_summary if self.drift_summary else {
+                'status': 'no_baseline',
+                'message': 'No Step 4 importance file found for comparison'
             },
             'all_trials': self.optimization_history,
             'total_time_seconds': sum(self.trial_times),
