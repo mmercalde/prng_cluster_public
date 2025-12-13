@@ -1,0 +1,453 @@
+
+COMPLETE OPERATING GUIDE
+Distributed PRNG Analysis System
+Version 1.0.0
+December 2025
+26-GPU Cluster Architecture
+Zeus (2× RTX 3080 Ti) + rig-6600 (12× RX 6600) + rig-6600b (12× RX 6600)
+~285 TFLOPS Combined Computing Power
+
+Table of Contents
+
+
+
+PART 1: SYSTEM OVERVIEW
+1.1 Architecture Overview
+The Distributed PRNG Analysis System is a sophisticated GPU-accelerated platform for analyzing pseudo-random number generator patterns in lottery data. The system combines statistical sieving, machine learning, and Bayesian optimization across a 26-GPU cluster.
+Core Architecture Components
+Coordinator (coordinator.py): Central job distribution and fault tolerance manager
+Distributed Workers (distributed_worker.py): GPU-bound execution agents on each node
+GPU Sieve (sieve_filter.py): CuPy-based residue sieve for seed filtering
+PRNG Registry (prng_registry.py): 46 PRNG algorithm implementations (CuPy kernels + PyTorch GPU)
+Survivor Scorer (survivor_scorer.py): 46-feature ML scoring engine
+Reinforcement Engine (reinforcement_engine.py): Neural network for survivor quality prediction
+1.2 Hardware Configuration
+Node
+GPU Type
+Count
+Backend
+Zeus (localhost)
+RTX 3080 Ti (12GB)
+2
+CUDA / PyTorch
+rig-6600
+RX 6600 (8GB)
+12
+ROCm / HIP
+rig-6600b
+RX 6600 (8GB)
+12
+ROCm / HIP
+
+Network: All nodes connected via SSH with key-based authentication. IP addresses: rig-6600 (192.168.3.120), rig-6600b (192.168.3.154).
+1.3 Software Dependencies
+Python 3.10+ with PyTorch, CuPy, NumPy, SciPy, Optuna, scikit-learn
+CUDA 12.x on Zeus for NVIDIA GPUs
+ROCm 5.7+ on mining rigs for AMD GPUs
+Paramiko for SSH connection pooling
+1.4 Data Flow Overview
+The system processes lottery data through a multi-stage pipeline: raw draws → GPU sieve filtering → survivor scoring → ML training → prediction generation. Each stage can run distributed across all 26 GPUs with automatic fault tolerance and job recovery.
+
+PART 2: PIPELINE STEPS
+The complete prediction pipeline consists of 6 major steps, each building on the previous results.
+2.1 Step 1: Window Optimizer
+Purpose
+Find optimal sieve parameters (window_size, offset, skip_range, thresholds) using Bayesian optimization with Optuna's Tree-Parzen Estimator algorithm.
+Primary Script
+window_optimizer.py
+Key Classes & Functions
+Class/Function
+Purpose
+WindowConfig
+Dataclass holding window_size, offset, skip_min, skip_max, thresholds
+SearchBounds
+Defines parameter ranges from distributed_config.json
+BayesianOptimization
+Search strategy using Optuna TPE sampler
+run_bayesian_optimization()
+Main entry point for distributed optimization
+
+Configuration
+Search bounds are loaded from distributed_config.json → search_bounds section. Key parameters: window_size (2-500), offset (0-100), skip_min (0-10), skip_max (10-500), forward_threshold (0.001-0.1), reverse_threshold (0.001-0.1).
+Output
+optimal_window_config.json
+Example Usage
+python3 window_optimizer.py --strategy bayesian --lottery-file daily3.json --trials 50
+python3 window_optimizer.py --strategy bayesian --lottery-file daily3.json --trials 50 --test-both-modes
+2.2 Step 2.5: Scorer Meta-Optimizer
+Purpose
+Optimize the survivor_scorer.py hyperparameters (residue_mods, max_offset, temporal windows) using distributed Bayesian optimization across all 26 GPUs.
+Primary Scripts
+run_scorer_meta_optimizer.py: Orchestrator that batches trials across GPUs
+generate_scorer_jobs.py: Creates job JSON files for each trial
+scorer_trial_worker.py: Executes single trial on remote GPU
+Architecture: Pull Model
+Workers do NOT access the Optuna database directly. Instead, they write JSON results to local filesystem, and the coordinator (Zeus) pulls results via SCP. This prevents database contention with 26 concurrent workers.
+Search Space
+Parameter
+Range
+Purpose
+residue_mod_1
+5-20
+Small residue modulus
+residue_mod_2
+50-150
+Medium residue modulus
+residue_mod_3
+500-1500
+Large residue modulus
+max_offset
+1-15
+Temporal alignment offset
+temporal_window_size
+[50,100,150,200]
+Stability analysis window
+
+Output
+optimal_scorer_config.json
+2.3 Step 3: Full Distributed Scoring
+Purpose
+Apply the optimal scorer configuration to ALL survivors from Step 1, extracting 46 ML features per seed for downstream model training.
+Primary Scripts
+generate_full_scoring_jobs.py: Creates chunked jobs (1000 survivors/job)
+run_full_scoring.sh: Orchestrates distributed execution and aggregation
+survivor_scorer.py: Core scoring engine (46 features)
+46 ML Features Extracted
+Features fall into 4 categories: Residue features (match_rate, coherence, kl_divergence per modulus), Temporal features (mean, std, min, max, trend over sliding windows), Lane features (agreement_8, agreement_125, lane_consistency), and Skip features (entropy, mean, std, range).
+Output
+survivors_with_scores.json
+2.4 Step 4: ML Meta-Optimizer
+Purpose
+Optimize the neural network architecture and training hyperparameters for the reinforcement_engine.py model using Bayesian optimization.
+Primary Script
+meta_prediction_optimizer.py
+Key Classes
+PredictionMetrics: Dataclass with variance, MAE, discrimination_power, calibration_error
+MetaPredictionOptimizer: Main optimizer class with Optuna integration
+Composite Score Formula
+score = variance * 10.0 + discrimination_power * 5.0 + (1/(MAE+0.01)) * 2.0 + (1/(calibration_error+0.01)) * 1.0
+Output
+reinforcement_engine_config_optimized.json
+2.5 Step 5: Anti-Overfit Training
+Purpose
+Train the final prediction model with K-fold cross-validation and anti-overfitting measures to ensure generalization.
+Primary Scripts
+meta_prediction_optimizer_anti_overfit.py: Orchestrator with overfit detection
+anti_overfit_trial_worker.py: Distributed K-fold CV worker
+generate_anti_overfit_jobs.py: Job generation for Step 5
+Anti-Overfit Metrics
+overfit_ratio: train_score / validation_score (target: close to 1.0)
+is_overfitting(): Returns True if overfit_ratio > threshold
+2.6 Step 6: Prediction Generation
+Purpose
+Generate final predictions using the trained model, producing ranked survivor seeds with confidence scores.
+Primary Script
+prediction_generator.py
+Output Structure
+The prediction output includes: ranked survivors by predicted quality, confidence scores per seed, predicted next draws, and feature importance rankings.
+
+PART 3: CORE MODULES
+3.1 survivor_scorer.py — Scoring Engine
+Purpose
+Computes similarity scores between PRNG-generated sequences and actual lottery draws. Extracts 46 ML features per survivor seed for downstream model training.
+Key Class: SurvivorScorer
+Method
+Purpose
+__init__(prng_type, mod, residue_mods, config_dict)
+Initialize scorer with PRNG config
+extract_ml_features(seed, lottery_history, skip)
+Extract 46 ML features for single seed
+batch_score_vectorized(seeds, lottery_history)
+GPU-accelerated batch scoring
+
+ROCm Compatibility
+The scorer includes critical VRAM management for RX 6600 rigs: PYTORCH_HIP_ALLOC_CONF for memory pooling, 80% VRAM limit via torch.cuda.set_per_process_memory_fraction(0.8), and explicit two-step NumPy→GPU tensor transfer for ROCm stability.
+3.2 reinforcement_engine.py — ML Model
+Purpose
+Neural network for survivor quality prediction. Uses extracted features to predict which seeds are most likely to generate accurate lottery predictions.
+Network Architecture: SurvivorQualityNet
+Input (60 features) → Dense(128) → Dense(64) → Dense(32) → Output(1)
+All layers use ReLU activation except output (linear for regression).
+Key Classes
+ReinforcementConfig: Dataclass with all training hyperparameters
+GlobalStateTracker: Computes global lottery history statistics
+SurvivorQualityNet: PyTorch nn.Module implementing the network
+ReinforcementEngine: Main class orchestrating training and prediction
+Distributed Training Support
+Supports PyTorch DistributedDataParallel (DDP) for multi-GPU training via --distributed flag. Compatible with both CUDA (Zeus) and ROCm (mining rigs).
+3.3 prng_registry.py — PRNG Algorithms
+Purpose
+Central registry of 46 PRNG algorithm implementations. Provides both CuPy GPU kernels for high-throughput sieving and PyTorch GPU functions for ML scoring.
+Supported PRNGs (Partial List)
+LCG Family: java_lcg, java_lcg_hybrid, minstd, lcg32, lcg32_hybrid
+XorShift Family: xorshift32, xorshift64, xorshift128, xorshift32_hybrid
+PCG Family: pcg32, pcg32_hybrid
+Mersenne Twister: mt19937, mt19937_simple (624-word state)
+Modern PRNGs: xoshiro256++, philox4x32, sfc64
+API Functions
+get_kernel_info(prng_family)     # Returns kernel code and metadata
+get_cpu_reference(prng_family)   # Returns CPU reference implementation
+get_pytorch_gpu_reference(prng)  # Returns PyTorch GPU function
+has_pytorch_gpu(prng_family)     # Check if PyTorch version exists
+list_available_prngs()           # List all registered PRNGs
+3.4 sieve_filter.py — GPU Sieve
+Purpose
+GPU-accelerated residue sieve for filtering candidate seeds. Uses CuPy kernels to test millions of seeds per second against lottery patterns.
+Key Class: GPUSieve
+Method
+Purpose
+__init__(gpu_id)
+Bind to specific GPU
+run_sieve(seeds, draws, prng_family, ...)
+Standard constant-skip sieve
+run_hybrid_sieve(seeds, draws, ...)
+Variable skip pattern search
+
+Window Size Limits
+v2.3+ supports window sizes up to 2048 draws (previously 512). All hardcoded buffer sizes were replaced with dynamic sizing to prevent GPU crashes with large windows.
+3.5 coordinator.py — Distributed Job Management
+Purpose
+Central coordinator managing job distribution, SSH connection pooling, fault tolerance, and result aggregation across the 26-GPU cluster.
+Key Class: MultiGPUCoordinator
+Version 1.7.4.1 with per-node concurrency limits for script jobs to prevent CPU overload on mining rig CPUs.
+Key Methods
+execute_truly_parallel_dynamic(): Main distributed execution with work queue pattern
+execute_local_job(): Execute job on Zeus GPUs
+execute_remote_job(): Execute job via SSH on mining rigs
+collect_scorer_results(): Pull architecture result aggregation
+Fault Tolerance
+Automatic job recovery with progress persistence. Failed jobs are retried on alternate workers. Per-node concurrency limits prevent SSH connection overload (max 26 concurrent connections via work queue pattern).
+
+PART 4: DISTRIBUTED WORKERS
+4.1 distributed_worker.py
+Purpose
+GPU-bound execution agent that runs on each node. Handles job deserialization, GPU binding, environment setup, and result serialization.
+Key Features
+ROCm Environment Setup: Sets HSA_OVERRIDE_GFX_VERSION, HSA_ENABLE_SDMA before GPU imports
+Lazy CuPy Import: _ensure_cupy() for environment-safe GPU initialization
+Script Job Support: v1.8.0 restored GPU init skip for script jobs (they handle own setup)
+4.2 scorer_trial_worker.py
+Purpose
+Executes single scorer meta-optimization trial on remote GPU. Part of the 'pull architecture' where workers write results locally.
+Version History
+v3.4: CRITICAL FIX - Holdout evaluation uses sampled seeds
+v3.3: GPU-vectorized scoring with adaptive memory batching
+v3.2: --params-file support for shorter SSH commands
+4.3 anti_overfit_trial_worker.py
+Purpose
+Executes single anti-overfit trial with K-fold cross-validation on remote GPU. Uses ReinforcementEngine for model training.
+Key Functions
+run_single_fold(): Execute one fold of K-fold CV
+run_trial(): Execute complete trial with all folds
+save_result(): Write JSON result for coordinator pull
+4.4 GPU Binding & Memory Management
+CUDA (Zeus)
+CUDA_VISIBLE_DEVICES=0 python3 distributed_worker.py --gpu-id 0
+Workers use logical device ID 0 after CUDA_VISIBLE_DEVICES isolation.
+ROCm (Mining Rigs)
+HIP_VISIBLE_DEVICES=5 python3 distributed_worker.py --gpu-id 5
+ROCm workers set both HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES for PyTorch compatibility. Critical environment variables: HSA_OVERRIDE_GFX_VERSION=10.3.0, HSA_ENABLE_SDMA=0.
+VRAM Management for RX 6600
+8GB VRAM requires careful management. Workers use: PYTORCH_HIP_ALLOC_CONF=garbage_collection_threshold:0.8,max_split_size_mb:128 and torch.cuda.set_per_process_memory_fraction(0.8) to prevent OOM kills.
+
+PART 5: CONFIGURATION SYSTEM
+5.1 distributed_config.json
+Purpose
+Central configuration file defining cluster topology, sieve defaults, and search bounds. Single source of truth for all scripts.
+Structure
+nodes: [{hostname, username, gpu_count, gpu_type, script_path, python_env}, ...]
+sieve_defaults: {min_match_threshold, window_size, skip_range, sessions, prng_families}
+search_bounds: {window_size: {min, max}, offset: {min, max}, skip_min, skip_max, ...}
+Node Configuration
+Field
+Description
+hostname
+'localhost' for Zeus, IP address for remote nodes
+gpu_count
+Number of GPUs on this node (2 for Zeus, 12 for rigs)
+python_env
+Full path to Python interpreter (venv/torch or rocm_env)
+script_path
+Working directory for scripts (/home/michael/distributed_prng_analysis)
+
+5.2 Search Bounds
+All optimizer scripts load bounds from distributed_config.json via load_search_bounds_from_config(). This ensures consistent parameter ranges across window_optimizer.py, run_scorer_meta_optimizer.py, and meta_prediction_optimizer.py.
+5.3 Centralized vs Hardcoded Parameters
+Design principle: NO hardcoded magic numbers. All tunable parameters should be in configuration files. When adding new parameters, add them to distributed_config.json and update the load function.
+
+PART 6: OPERATIONAL PROCEDURES
+6.1 Starting the Cluster
+Prerequisites
+SSH keys configured for passwordless access to rig-6600 and rig-6600b
+ROCm drivers installed and working on mining rigs
+Python environments activated (torch on Zeus, rocm_env on rigs)
+Shared filesystem or synchronized code across nodes
+Connectivity Test
+python3 coordinator.py --test-connectivity
+6.2 Running a Full Pipeline
+Step-by-Step
+# Step 1: Window Optimization
+python3 window_optimizer.py --strategy bayesian --lottery-file daily3.json --trials 100
+
+# Step 2.5: Scorer Meta-Optimization
+python3 run_scorer_meta_optimizer.py --batches 10
+
+# Step 3: Full Distributed Scoring
+python3 generate_full_scoring_jobs.py --survivors bidirectional_survivors.json
+bash run_full_scoring.sh
+
+# Step 4: ML Meta-Optimization
+python3 meta_prediction_optimizer.py --trials 50
+
+# Step 5: Anti-Overfit Training
+python3 meta_prediction_optimizer_anti_overfit.py --trials 50 --folds 5
+
+# Step 6: Generate Predictions
+python3 prediction_generator.py --model reinforcement_model.pt
+6.3 Recovering from Failures
+Automatic Recovery
+The coordinator automatically retries failed jobs on alternate workers. Progress is persisted to disk, so interrupted runs can be resumed.
+Manual Intervention
+Check GPU status: nvidia-smi (Zeus), rocm-smi (rigs)
+Check SSH connectivity: ssh michael@192.168.3.120 'echo ok'
+Check Python environments: ssh michael@192.168.3.120 '~/rocm_env/bin/python --version'
+Review coordinator logs for error patterns
+6.4 Unified System Interface
+Purpose
+unified_system_working.py provides a menu-driven interface for manual analysis, monitoring, and cluster management.
+Launch
+python3 unified_system_working.py
+Menu Options
+1-3: Analysis & Execution (Direct Analysis, Advanced Research, DB Jobs)
+4-8: Monitoring & Management (Job Queue, Results, System Status, DB, Visualization)
+9-12: Maintenance & Utilities (File Management, Performance, Diagnostics, Web Server)
+
+PART 7: MONITORING & DEBUGGING
+7.1 GPU Monitoring
+NVIDIA (Zeus)
+nvidia-smi --loop=1  # Continuous monitoring
+nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv -l 1
+AMD (Mining Rigs)
+rocm-smi --showuse  # GPU utilization
+rocm-smi --showmeminfo vram  # VRAM usage
+watch -n1 rocm-smi  # Continuous monitoring
+7.2 Common Errors & Solutions
+Error
+Solution
+CUDA OOM on RTX 3080 Ti
+Reduce batch size, increase empty_cache() calls
+ROCm OOM on RX 6600
+Check PYTORCH_HIP_ALLOC_CONF, verify 80% VRAM limit
+SSH connection refused
+Check SSH keys, verify sshd running on target
+NoneType is not iterable
+Check payload checks: 'if job.payload and ...'
+cuBLAS no CUDA context
+Call initialize_cuda() before any CUDA operations
+HSA memory allocation failed
+Set HSA_OVERRIDE_GFX_VERSION=10.3.0 for RX 6600
+
+7.3 Logging System
+All scripts use Python's logging module. Default level is DEBUG for development. Log format includes timestamp, module name, level, and message.
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+APPENDIX A: DATA MODELS
+models.py — Core Data Structures
+WorkerNode
+Represents a compute node in the cluster.
+@dataclass
+class WorkerNode:
+    hostname: str
+    username: str
+    gpu_count: int
+    gpu_type: str
+    python_env: str
+    script_path: str
+JobSpec
+Specifies a single job to be executed.
+@dataclass
+class JobSpec:
+    job_id: str
+    prng_type: str
+    mapping_type: str
+    seeds: List[int]
+    samples: int
+    payload: Optional[Dict[str, Any]] = None
+    analysis_type: str = 'statistical'
+    attempt: int = 0
+GPUWorker
+Represents a single GPU on a node.
+@dataclass
+class GPUWorker:
+    node: WorkerNode
+    gpu_id: int
+    worker_id: str  # Auto-generated: '{hostname}_gpu{id}'
+JobResult
+Result returned from job execution.
+@dataclass
+class JobResult:
+    job_id: str
+    node: str
+    success: bool
+    results: Optional[Dict]
+    error: Optional[str]
+    runtime: float
+ProgressState
+Internal progress tracking for fault tolerance.
+@dataclass
+class ProgressState:
+    analysis_id: str
+    total_jobs: int
+    completed_jobs: Dict[str, Dict]
+    failed_jobs: Dict[str, str]
+    pending_jobs: List[Dict]
+    retry_count: Dict[str, int]
+
+APPENDIX B: FILE INVENTORY
+Core Pipeline Scripts
+File
+Purpose
+window_optimizer.py
+Step 1: Bayesian window optimization
+run_scorer_meta_optimizer.py
+Step 2.5: Scorer hyperparameter tuning
+generate_full_scoring_jobs.py
+Step 3: Job generation for full scoring
+meta_prediction_optimizer.py
+Step 4: ML architecture optimization
+meta_prediction_optimizer_anti_overfit.py
+Step 5: Anti-overfit training
+prediction_generator.py
+Step 6: Final prediction generation
+
+Core Modules
+File
+Purpose
+coordinator.py
+Distributed job coordination (v1.7.4.1)
+distributed_worker.py
+GPU-bound execution agent (v1.8.0)
+sieve_filter.py
+GPU residue sieve engine (v2.3.1)
+prng_registry.py
+46 PRNG implementations (v2.4)
+survivor_scorer.py
+46-feature ML scoring engine
+reinforcement_engine.py
+Neural network model (v1.4.0)
+models.py
+Core dataclasses
+
+Configuration Files
+File
+Purpose
+distributed_config.json
+Cluster topology and search bounds
+optimal_window_config.json
+Output from Step 1
+optimal_scorer_config.json
+Output from Step 2.5
+reinforcement_engine_config_optimized.json
+Output from Step 4
+
+— End of Document —

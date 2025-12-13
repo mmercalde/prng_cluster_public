@@ -6,7 +6,8 @@
       "gpu_count": 2,
       "gpu_type": "RTX 3080 Ti",
       "script_path": "/home/michael/distributed_prng_analysis",
-      "python_env": "/home/michael/venvs/torch/bin/python"
+      "python_env": "/home/michael/venvs/torch/bin/python",
+      "max_concurrent_script_jobs": 2
     },
     {
       "hostname": "192.168.3.120",
@@ -14,7 +15,8 @@
       "gpu_count": 12,
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
-      "python_env": "/home/michael/rocm_env/bin/python"
+      "python_env": "/home/michael/rocm_env/bin/python",
+      "max_concurrent_script_jobs": 12
     },
     {
       "hostname": "192.168.3.154",
@@ -22,7 +24,8 @@
       "gpu_count": 12,
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
-      "python_env": "/home/michael/rocm_env/bin/python"
+      "python_env": "/home/michael/rocm_env/bin/python",
+      "max_concurrent_script_jobs": 12
     }
   ],
   "sieve_defaults": {
