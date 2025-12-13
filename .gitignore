@@ -81,3 +81,4 @@ optuna_studies/*.db-journal
 
 # --- Process ID files ---
 run/*.pid
+*.pth
