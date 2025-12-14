@@ -3,6 +3,7 @@
   "description": "Step 4: Adaptive ML meta-optimizer using Optuna TPE to find optimal neural network architecture, learning rates, and regularization for survivor prediction.",
   "pipeline_step": 4,
   "version": "1.3.0",
+  "feature_registry": "config_manifests/feature_registry.json",
   
   "inputs": [
     "survivors_with_scores.json",

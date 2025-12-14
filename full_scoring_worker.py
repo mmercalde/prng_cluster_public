@@ -119,6 +119,32 @@ def load_seeds(seeds_file: str) -> List[int]:
         return [int(s) for s in data]
 
 
+
+def load_survivors_with_metadata(seeds_file: str) -> List[Dict]:
+    """
+    Load survivors preserving full metadata (forward_count, reverse_count, etc.)
+    Returns list of dicts, each with at least 'seed' key.
+    """
+    with open(seeds_file, 'r') as f:
+        data = json.load(f)
+    
+    if not data:
+        return []
+    
+    # Handle different formats
+    if isinstance(data[0], dict):
+        # Object format: [{seed: 12345, forward_count: 100, ...}, ...]
+        result = []
+        for s in data:
+            obj = dict(s)  # Copy
+            if 'candidate_seed' in obj and 'seed' not in obj:
+                obj['seed'] = obj['candidate_seed']
+            result.append(obj)
+        return result
+    else:
+        # Flat format: [12345, 67890, ...] - convert to objects
+        return [{'seed': int(s)} for s in data]
+
 def load_lottery_history(history_file: str) -> List[int]:
     """
     Load lottery history from JSON file.
@@ -155,7 +181,8 @@ def score_survivors(
     batch_size: int = 100,
     forward_survivors: Optional[List[int]] = None,
     reverse_survivors: Optional[List[int]] = None,
-    scorer_class = None
+    scorer_class = None,
+    survivor_metadata: Dict[int, Dict] = None  # v1.8.2: seed -> metadata mapping
 ) -> List[Dict[str, Any]]:
     """
     Score all seeds with full 46-feature extraction.
@@ -194,6 +221,20 @@ def score_survivors(
                 reverse_survivors=reverse_survivors
             )
             
+            # v1.8.2: Merge survivor metadata into features (forward_count, reverse_count, etc.)
+            if survivor_metadata and seed in survivor_metadata:
+                meta = survivor_metadata[seed]
+                metadata_fields = [
+                    'forward_count', 'reverse_count', 'bidirectional_count',
+                    'intersection_count', 'intersection_ratio', 'survivor_overlap_ratio',
+                    'skip_min', 'skip_max', 'skip_range', 'skip_mean', 'skip_std', 'skip_entropy',
+                    'bidirectional_selectivity', 'survivor_velocity', 'velocity_acceleration',
+                    'intersection_weight', 'forward_only_count', 'reverse_only_count'
+                ]
+                for field in metadata_fields:
+                    if field in meta and meta[field] is not None:
+                        features[field] = float(meta[field])
+
             # Calculate composite score
             score = features.get('score', features.get('confidence', 0.0))
             
@@ -314,7 +355,10 @@ Example:
     # Load input data
     try:
         logger.info(f"Loading seeds from {args.seeds_file}...")
-        seeds = load_seeds(args.seeds_file)
+        # v1.8.2: Load with metadata for feature merging
+        survivors_full = load_survivors_with_metadata(args.seeds_file)
+        seeds = [s['seed'] for s in survivors_full]
+        survivor_metadata = {s['seed']: s for s in survivors_full}
         logger.info(f"Loaded {len(seeds)} seeds")
         
         logger.info(f"Loading training history from {args.train_history}...")
@@ -377,7 +421,8 @@ Example:
             batch_size=args.batch_size,
             forward_survivors=forward_survivors,
             reverse_survivors=reverse_survivors,
-            scorer_class=SurvivorScorer  # Pass the class imported after GPU setup
+            scorer_class=SurvivorScorer,  # Pass the class imported after GPU setup
+            survivor_metadata=survivor_metadata  # v1.8.2: pass metadata for merging
         )
         
         elapsed = time.time() - start_time

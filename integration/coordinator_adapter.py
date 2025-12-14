@@ -102,7 +102,7 @@ def save_coordinator_results(
             
             formatted = inject_agent_metadata(
                 formatted,
-                inputs=[config.get('target_file', 'unknown')],
+                inputs=[config.get("target_file") or "script_job"] if config.get("target_file") else [],
                 outputs=[output_file],
                 parent_run_id=parent_run_id,
                 pipeline_step=pipeline_step,

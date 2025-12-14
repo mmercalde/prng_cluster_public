@@ -82,3 +82,6 @@ optuna_studies/*.db-journal
 # --- Process ID files ---
 run/*.pid
 *.pth
+*.backup_*
+survivors_with_scores.json.backup_*
+fix_*.py

@@ -3,6 +3,7 @@
   "description": "Step 2.5: Distributed Optuna TPE meta-optimizer for scoring parameters. Finds optimal chunk_size, scoring weights, and threshold configurations across 26 GPUs.",
   "pipeline_step": 2,
   "version": "1.3.0",
+  "feature_registry": "config_manifests/feature_registry.json",
   
   "inputs": [
     "bidirectional_survivors.json",

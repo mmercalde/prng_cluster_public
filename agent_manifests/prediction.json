@@ -3,6 +3,7 @@
   "description": "Step 6: Final prediction generation using trained ML model. Produces high-confidence prediction pools with statistical explanations and confidence maps.",
   "pipeline_step": 6,
   "version": "1.3.0",
+  "feature_registry": "config_manifests/feature_registry.json",
   
   "inputs": [
     "models/anti_overfit/best_model.pth",

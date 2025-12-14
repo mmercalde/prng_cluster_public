@@ -150,7 +150,9 @@ def generate_jobs(
         print(f"  Using prng_type={prng_type}, mod={mod}")
     
     # Split seeds into chunks
-    seed_chunks = chunk_list(seeds, chunk_size)
+    # v1.8.2: Chunk full survivor objects to preserve metadata
+    survivor_chunks = chunk_list(survivors_data, chunk_size) if isinstance(survivors_data[0], dict) else [[{"seed": s} for s in chunk] for chunk in chunk_list(seeds, chunk_size)]
+    seed_chunks = survivor_chunks  # Keep variable name for compatibility
     num_chunks = len(seed_chunks)
     print(f"Split {len(seeds)} seeds into {num_chunks} chunks of ~{chunk_size} each")
     

@@ -3,6 +3,7 @@
   "description": "Step 5: Distributed K-fold anti-overfit training using reinforcement learning. Trains final production model across 26 GPUs with cross-validation.",
   "pipeline_step": 5,
   "version": "1.3.0",
+  "feature_registry": "config_manifests/feature_registry.json",
   
   "inputs": [
     "survivors_with_scores.json",

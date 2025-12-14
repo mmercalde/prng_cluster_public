@@ -1,4 +1,4 @@
-# CURRENT STATUS - Updated December 10, 2025 (Session 11 COMPLETE)
+# CURRENT STATUS - Updated December 13, 2025 (Session 12 COMPLETE)
 
 ## Timeline Summary
 ```
@@ -13,113 +13,106 @@ Session 8:  Dec 7, 2025    - Centralized search bounds, threshold philosophy fix
 Session 9:  Dec 8-9, 2025  - agent_metadata injection COMPLETE (Steps 4, 5, 6)
 Session 10: Dec 9, 2025    - Feature Importance Phases 1, 2 & 3 COMPLETE
 Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualization)
+Session 12: Dec 13, 2025   - Step 3 Full Scoring COMPLETE + Feature Registry
 ```
 
 ---
 
-## Session 11 Result: Phases 4 & 5 COMPLETE ✅
+## Session 12 Result: Step 3 Full Scoring COMPLETE ✅
 
-### Feature Importance Module - ALL PHASES COMPLETE
+### Step 3 Distributed Full Scoring - WORKING
 
-| Phase | Description | Status | Evidence |
-|-------|-------------|--------|----------|
-| **Phase 1** | Core Module (`feature_importance.py`) | ✅ DONE | Tested on dual 3080 Ti |
-| **Phase 2** | Step 4 & 5 Integration | ✅ DONE | Patched, tested, deployed |
-| **Phase 3** | Drift Tracking | ✅ DONE | `feature_drift_tracker.py` + Step 5 v1.4.0 |
-| **Phase 4** | Agent Integration | ✅ DONE | Step 5 v1.5.0 with agent_metadata |
-| **Phase 5** | Visualization | ✅ DONE | 13 chart types + AI interpreter |
+| Task | Status | Evidence |
+|------|--------|----------|
+| **SSH Connection Pool Fix** | ✅ DONE | MaxSessions 50, pool matches concurrency |
+| **Metadata Merge Fix** | ✅ DONE | 50 features per survivor (was 46) |
+| **Job Generator Fix** | ✅ DONE | Chunks preserve full survivor objects |
+| **File-Based Result Checking** | ✅ DONE | Stdout parsing disabled |
+| **Shell Script Update** | ✅ DONE | --forward-survivors, --reverse-survivors |
+| **Feature Registry** | ✅ DONE | 64 features documented (50 per-seed + 14 global) |
+| **Agent Manifests Updated** | ✅ DONE | All 6 reference feature_registry.json |
 
-### Session 11 Accomplishments
+### Session 12 Accomplishments
 
-**Phase 4: Agent Integration**
-- Added `inject_agent_metadata` to Step 5 with feature importance + drift summary
-- Dynamic confidence based on overfit_ratio
-- Reasoning includes top features and drift status
+**1. SSH Infrastructure Fixes**
+- Increased MaxSessions from 10 to 50 on both mining rigs
+- Fixed SSH connection pool mismatch (was allowing 12 concurrent but only pooling 6)
+- Added retry logic to worker_loop path
 
-**Phase 5: Visualization (13 Chart Types)**
-- `feature_visualizer.py` - Standalone module with Plotly charts
-- Web dashboard `/features` route with all charts
-- 🎯 Features tab added to navigation
+**2. Step 3 Metadata Integration**
+- Fixed `generate_step3_scoring_jobs.py` to preserve full survivor objects in chunks
+- Fixed `full_scoring_worker.py` to merge Step 2 metadata into features
+- Features now include: forward_count, reverse_count, bidirectional_count, skip_min, skip_max, skip_range, bidirectional_selectivity
 
-| Chart Type | Description |
-|------------|-------------|
-| importance_bar | Horizontal bar chart of top features |
-| category_pie | Statistical vs Global feature weights |
-| histogram | Distribution of importance values |
-| radar | Spider chart of top 10 features |
-| treemap | Hierarchical view by category |
-| sunburst | Sunburst chart by category |
-| drift_comparison | Side-by-side Step 4 vs Step 5 |
-| scatter | Scatter plot Step 4 vs Step 5 |
-| dual_radar | Overlaid radar comparison |
-| top_movers | Features with biggest changes |
-| waterfall | Cumulative change waterfall |
-| drift_gauge | Gauge showing drift score |
-| heatmap | Importance over multiple runs |
+**3. File-Based Result Checking (v1.8.1)**
+- Disabled unreliable stdout JSON parsing in coordinator.py
+- Primary method is now checking expected_output file on remote nodes
+- Eliminates 2-4 failures per run that required retries
 
-**AI Interpretation**
-- `feature_importance_interpreter.py` - Hardcoded explanations
-- `feature_importance_ai_interpreter.py` - Uses Qwen2.5-Math-7B for analysis
+**4. Feature Registry Created**
+- New file: `config_manifests/feature_registry.json`
+- Documents all 64 ML features (50 per-seed + 14 global)
+- Includes: type, range, higher_is_better, description for each feature
+- All 6 agent manifests now reference feature_registry
 
-### Session 11 Test Results
+**5. Shell Script Updated**
+- `run_step3_full_scoring.sh` now supports:
+  - `--forward-survivors FILE`
+  - `--reverse-survivors FILE`
+
+### Session 12 Test Results
 
 | Test | Result |
 |------|--------|
-| Phase 1: Feature importance module | ✅ Pass |
-| Phase 2: Step 4/5 imports | ✅ Pass |
-| Phase 3: Drift tracking | ✅ Pass (drift_score=0.02, status=stable) |
-| Phase 4: Agent metadata injection | ✅ Pass |
-| Phase 5: Web dashboard /features | ✅ Pass |
-| Phase 5: All 13 chart types | ✅ Pass |
-| Phase 5: AI interpreter (Qwen2.5-Math) | ✅ Pass |
-| All syntax checks | ✅ Pass |
-| All import checks | ✅ Pass |
+| SSH connection pool | ✅ Pass (36/36 jobs) |
+| Metadata merge (50 features) | ✅ Pass |
+| File-based result checking | ✅ Pass (5/5 jobs, 0 retries needed) |
+| Feature registry syntax | ✅ Pass |
+| Agent manifests syntax | ✅ Pass (all 6) |
+| Shell script syntax | ✅ Pass |
+| Coordinator syntax | ✅ Pass |
 
-### Key Files Created/Modified (Session 11)
+### Key Files Created/Modified (Session 12)
 
 | File | Purpose | Version | Status |
 |------|---------|---------|--------|
-| `meta_prediction_optimizer_anti_overfit.py` | Step 5 with full integration | v1.5.0 | ✅ Deployed |
-| `feature_visualizer.py` | **NEW** 13 Plotly chart types | v1.0.0 | ✅ Deployed |
-| `feature_importance_interpreter.py` | **NEW** Hardcoded interpreter | v1.0.0 | ✅ Deployed |
-| `feature_importance_ai_interpreter.py` | **NEW** AI-powered interpreter | v1.0.0 | ✅ Deployed |
-| `web_dashboard.py` | Added /features route + tab | Updated | ✅ Deployed |
+| `config_manifests/feature_registry.json` | **NEW** 64 feature definitions | v1.0.0 | ✅ Deployed |
+| `generate_step3_scoring_jobs.py` | Preserve full objects in chunks | v1.8.2 | ✅ Deployed |
+| `full_scoring_worker.py` | Merge Step 2 metadata | Updated | ✅ Deployed |
+| `coordinator.py` | File-based result checking | v1.8.1 | ✅ Deployed |
+| `run_step3_full_scoring.sh` | Forward/reverse args | Updated | ✅ Deployed |
+| `agent_manifests/*.json` | Reference feature_registry | All 6 | ✅ Deployed |
+| `integration/coordinator_adapter.py` | Fix None input warning | Updated | ✅ Deployed |
 
-### What agent_metadata Now Contains (Step 5)
+### Feature Count Evolution
 
-```json
-{
-  "agent_metadata": {
-    "pipeline_step": 5,
-    "pipeline_step_name": "anti_overfit_training",
-    "follow_up_agent": "prediction_agent",
-    "confidence": 0.85,
-    "suggested_params": {
-      "best_config": {...},
-      "feature_importance_summary": {
-        "top_features": [...],
-        "statistical_weight": 0.72,
-        "global_weight": 0.28
-      },
-      "drift_summary": {
-        "status": "stable",
-        "drift_score": 0.02
-      }
-    },
-    "reasoning": "Anti-overfit complete; overfit_ratio=1.05; top_features=[...]; drift_status=stable"
-  }
-}
+| Stage | Features | Notes |
+|-------|----------|-------|
+| Original Step 3 | 46 | Per-seed scoring features |
+| + Step 2 metadata | 50 | +forward_count, reverse_count, bidirectional_count, bidirectional_selectivity |
+| + Global features | 64 | +14 from GlobalStateTracker (at ML training time) |
+
+### survivors_with_scores.json
+
+```
+Total survivors: 395,211
+Features per survivor: 50
+Top features include:
+- score, confidence, exact_matches
+- residue_{8,125,1000}_{match_rate,coherence,kl_divergence}
+- temporal_stability_{mean,std,min,max,trend}
+- lane_agreement_{8,125}, lane_consistency
+- forward_count, reverse_count, bidirectional_count (NEW!)
+- skip_min, skip_max, skip_range (NEW!)
 ```
 
 ---
 
-## Git Commits (Session 11)
+## Git Commits (Session 12)
 
 | Commit | Description |
 |--------|-------------|
-| `e619310` | Fix: Deploy Step 5 v1.4.0 with Phase 3 drift tracking |
-| `3c02236` | Phase 4: Agent Integration - Step 5 v1.5.0 |
-| `392eadb` | Phase 5: Feature Visualization + AI Interpreter |
+| TBD | Step 3 Full Scoring Complete + Feature Registry |
 
 ---
 
@@ -132,16 +125,15 @@ Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualiz
 | Dual-LLM Servers | ✅ DONE | Qwen2.5-Coder-14B + Math-7B |
 | Universal Agent v1.0 | ✅ DONE | agents/agent_core.py |
 | All 6 Manifests v1.3.0 | ✅ DONE | 58 parameters |
-| Pydantic Context Framework | ✅ DONE | v3.2.2 + Addendums A-I |
+| Pydantic Context Framework | ✅ DONE | v3.2.3 + Addendums A-J |
 | Watcher Agent (Pipeline Mgr) | ✅ DONE | watcher_agent.py |
 | Web Dashboard | ✅ DONE | web_dashboard.py |
 | Centralized Search Bounds | ✅ DONE | distributed_config.json |
 | agent_metadata: All Steps | ✅ DONE | Steps 1, 2.5, 4, 5, 6 |
-| **Feature Importance: Phase 1** | ✅ DONE | feature_importance.py v1.1 |
-| **Feature Importance: Phase 2** | ✅ DONE | Steps 4 & 5 patched |
-| **Feature Importance: Phase 3** | ✅ DONE | feature_drift_tracker.py v1.0 |
-| **Feature Importance: Phase 4** | ✅ DONE | Step 5 v1.5.0 with agent_metadata |
-| **Feature Importance: Phase 5** | ✅ DONE | 13 charts + AI interpreter |
+| Feature Importance Module | ✅ DONE | All 5 phases complete |
+| **Step 3 Full Scoring** | ✅ DONE | 395,211 survivors, 50 features |
+| **Feature Registry** | ✅ DONE | 64 features documented |
+| **File-Based Checking** | ✅ DONE | Coordinator v1.8.1 |
 
 ---
 
@@ -161,19 +153,19 @@ Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualiz
 │  Phase 7: Centralized Configuration      ✅ DONE (Session 8)        │
 │  Phase 8: agent_metadata Injection       ✅ DONE (Session 9)        │
 │  Phase 9: Feature Importance Module      ✅ DONE (Sessions 10-11)   │
-│           └─ Phase 1: Core Module        ✅ DONE                    │
-│           └─ Phase 2: Step 4/5 Integrate ✅ DONE                    │
-│           └─ Phase 3: Drift Tracking     ✅ DONE                    │
-│           └─ Phase 4: Agent Integration  ✅ DONE                    │
-│           └─ Phase 5: Visualization      ✅ DONE                    │
+│  Phase 10: Step 3 Full Scoring           ✅ DONE (Session 12)       │
+│           └─ SSH Pool Fix                ✅ DONE                    │
+│           └─ Metadata Merge              ✅ DONE                    │
+│           └─ File-Based Checking         ✅ DONE                    │
+│           └─ Feature Registry            ✅ DONE                    │
 │                                                                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    NEXT STEPS                                        │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  Phase 10: Complete Operating Guide      📝 PROPOSED                │
-│  Phase 11: End-to-end Pipeline Test      📝 PENDING                 │
-│  Phase 12: XGBoost Integration           📝 PROPOSED (optional)     │
+│  Phase 11: End-to-end Pipeline Test      📋 PENDING                 │
+│  Phase 12: Complete Operating Guide      📋 PROPOSED                │
+│  Phase 13: XGBoost Integration           📋 PROPOSED (optional)     │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -182,7 +174,7 @@ Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualiz
 
 ## TODO List
 
-### ✅ COMPLETED (Sessions 1-11)
+### ✅ COMPLETED (Sessions 1-12)
 - [x] Schema v1.0.3/v1.0.4 implementation
 - [x] Dual-LLM infrastructure
 - [x] Universal Agent v1.0
@@ -191,25 +183,20 @@ Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualiz
 - [x] Web Dashboard with interactive plots
 - [x] Centralized search bounds (distributed_config.json)
 - [x] agent_metadata injection: All Steps (1, 2.5, 4, 5, 6)
-- [x] Team Beta review and caveat resolution
-- [x] **Feature Importance Phase 1: Core Module** ← Session 10
-- [x] **Feature Importance Phase 2: Step 4/5 Integration** ← Session 10
-- [x] **Feature Importance Phase 3: Drift Tracking** ← Session 10/11
-- [x] **Feature Importance Phase 4: Agent Integration** ← Session 11
-- [x] **Feature Importance Phase 5: Visualization** ← Session 11
-- [x] **Addendum G: Model-Agnostic Interface** ← Session 10
-- [x] **Addendum H: Integration Documentation** ← Session 10
-- [x] **Addendum I: Phase 4 Agent Integration** ← Session 11
+- [x] Feature Importance: All 5 Phases
+- [x] **Step 3 Full Scoring with 50 features** ← Session 12
+- [x] **Feature Registry (64 features)** ← Session 12
+- [x] **File-based result checking** ← Session 12
+- [x] **Agent manifests reference feature_registry** ← Session 12
 
 ### 📋 NEXT SESSION
-- [ ] End-to-end pipeline test with real data
-- [ ] Update PROPOSAL doc with Addendum J (Phase 5 Visualization)
+- [ ] End-to-end pipeline test (Steps 1-6)
+- [ ] Step 4 ML Meta-Optimization run
+- [ ] Step 5 Anti-Overfit training
 
 ### 📋 FUTURE
 - [ ] Complete Operating Guide documentation
-- [ ] End-to-end pipeline test with 26-GPU cluster
 - [ ] XGBoost Integration (optional, deferred)
-- [ ] Manifest cleanup: Remove `scoring_statistics.json` references
 - [ ] GBNF Phase 2: Supervisory LLM
 
 ---
@@ -225,6 +212,7 @@ Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualiz
 - rig-6600: 12× RX 6600 (ROCm) @ 192.168.3.120
 - rig-6600b: 12× RX 6600 (ROCm) @ 192.168.3.154
 - ~226 TFLOPS combined
+- SSH config: MaxSessions 50, MaxStartups 50:30:100
 
 ### Total Cluster
 - 26 GPUs
@@ -232,46 +220,41 @@ Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualiz
 
 ---
 
-## Session 11 Summary
+## Session 12 Summary
 
-**Completed Phases 4 & 5: Agent Integration + Visualization**
+**Step 3 Full Scoring Complete with Feature Registry**
 
-### What Was Built
+### What Was Fixed
 
-**Phase 4 - Agent Integration:**
-- Step 5 v1.5.0 now injects feature importance and drift summary into `agent_metadata`
-- Downstream agents can reason about which features matter and stability
+1. **SSH Connection Pool** - Pool now matches max concurrent jobs
+2. **Metadata Merge** - Step 2 metadata (forward_count, etc.) now in features
+3. **Job Generator** - Preserves full survivor objects in chunks
+4. **Result Checking** - File-based checking instead of stdout parsing
+5. **Shell Script** - Supports --forward-survivors and --reverse-survivors
 
-**Phase 5 - Visualization:**
-- `feature_visualizer.py` with 13 Plotly chart types
-- Web dashboard `/features` route with all charts
-- 🎯 Features tab in navigation
-- AI interpreter using Qwen2.5-Math-7B
+### What Was Created
 
-### What's Now Working
+1. **Feature Registry** (`config_manifests/feature_registry.json`)
+   - 64 features documented (50 per-seed + 14 global)
+   - Type, range, higher_is_better, description for each
+   - Categories: score_metrics, residue_analysis, temporal_stability, etc.
+   - Agent usage notes for ML interpretation
 
-When Step 5 runs:
-1. Extracts feature importance → `feature_importance_step5.json`
-2. Compares with Step 4 → `feature_drift_step4_to_step5.json`
-3. Injects into `agent_metadata`:
-   - `feature_importance_summary`
-   - `drift_summary`
-   - Dynamic confidence
-4. Web dashboard displays 13 interactive charts
-5. AI interpreter analyzes and explains results
+2. **Updated Agent Manifests**
+   - All 6 manifests now include: `"feature_registry": "config_manifests/feature_registry.json"`
+   - AI agents can now understand what each feature means
 
-### Dashboard URL
+### Production Results
+
 ```
-http://192.168.3.127:5000/features
+Step 3 Full Scoring:
+- 36/36 jobs successful
+- 395,211 survivors scored
+- 50 features per survivor
+- Runtime: ~1500s (25 minutes)
+- Zero failures with file-based checking
 ```
-
-### Model-Agnostic Design (Addendum G)
-
-All feature importance code follows Addendum G:
-- Single entry point: `get_feature_importance()`
-- NO model type checks in pipeline scripts
-- Works with NN today, XGBoost tomorrow with ZERO changes
 
 ---
 
-**End of Session 11 - Feature Importance Module 100% COMPLETE! 🎉**
+**End of Session 12 - Step 3 Full Scoring COMPLETE! 🎉**

@@ -15,6 +15,8 @@
 #   --train-history FILE  Training history JSON (required)
 #   --config FILE         Optimal scorer config (optional)
 #   --chunk-size N        Seeds per chunk (default: 5000)
+#   --forward-survivors FILE  Forward sieve survivors for metadata merge
+#   --reverse-survivors FILE  Reverse sieve survivors for metadata merge
 #   --dry-run             Generate jobs only, don't execute
 #
 # ============================================================================
@@ -26,6 +28,8 @@ SURVIVORS_FILE="bidirectional_survivors.json"
 TRAIN_HISTORY="train_history.json"
 CONFIG_FILE="optimal_scorer_config.json"
 CHUNK_SIZE=auto
+FORWARD_SURVIVORS=""
+REVERSE_SURVIVORS=""
 DRY_RUN=false
 REMOTE_NODES="192.168.3.120 192.168.3.154"
 REMOTE_USER="michael"
@@ -48,6 +52,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --chunk-size)
             CHUNK_SIZE="$2"
+            shift 2
+            ;;
+        --forward-survivors)
+            FORWARD_SURVIVORS="$2"
+            shift 2
+            ;;
+        --reverse-survivors)
+            REVERSE_SURVIVORS="$2"
             shift 2
             ;;
         --dry-run)
@@ -102,6 +114,12 @@ GEN_CMD="python3 generate_step3_scoring_jobs.py \
 
 if [[ -f "$CONFIG_FILE" ]]; then
     GEN_CMD="$GEN_CMD --config $CONFIG_FILE"
+fi
+if [[ -n "$FORWARD_SURVIVORS" ]]; then
+    GEN_CMD="$GEN_CMD --forward-survivors $FORWARD_SURVIVORS"
+fi
+if [[ -n "$REVERSE_SURVIVORS" ]]; then
+    GEN_CMD="$GEN_CMD --reverse-survivors $REVERSE_SURVIVORS"
 fi
 
 echo "Running: $GEN_CMD"

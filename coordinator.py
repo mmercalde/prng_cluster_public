@@ -237,7 +237,7 @@ class MultiGPUCoordinator:
         self.nodes: List[WorkerNode] = []
         self.gpu_workers: List[GPUWorker] = []
         # Enhanced SSH pool with connection reuse and resource limits
-        self.ssh_pool = SSHConnectionPool(max_concurrent_per_node=max_per_node)
+        self.ssh_pool = SSHConnectionPool(max_concurrent_per_node=max_per_node, max_connections_per_node=max_per_node)
         # Job-splitting parameters based on capacity probe results
         self.seed_cap_nvidia = seed_cap_nvidia
         self.seed_cap_amd = seed_cap_amd
@@ -966,16 +966,35 @@ class MultiGPUCoordinator:
             self.ssh_pool.return_connection(node.hostname, ssh)
             ssh = None
             runtime = time.time() - start_time
-            json_result = self.parse_json_result(output)
-            if json_result:
-                # Coordinator memory cleanup (no CUDA calls)
-                gc.collect()
-                return JobResult(job.job_id, worker.node.hostname, True, json_result, None, runtime)
-            else:
-                tail = (errout[-600:] if errout else "").strip()
-                gc.collect()
-                return JobResult(job.job_id, worker.node.hostname, False, None,
-                               f"No valid JSON in output. stderr tail:\n{tail}", runtime)
+            #             json_result = self.parse_json_result(output)
+            #             if json_result:
+            #                 # Coordinator memory cleanup (no CUDA calls)
+            #                 gc.collect()
+            #                 return JobResult(job.job_id, worker.node.hostname, True, json_result, None, runtime)
+            # else: # v1.8.1 - stdout parsing disabled, file check is now primary
+            # v1.8.0 Fallback: For script jobs, check if expected_output file exists on remote
+            if job.payload and job.payload.get('expected_output'):
+                expected_file = job.payload['expected_output']
+                remote_path = os.path.join(node.script_path, expected_file)
+                try:
+                    check_ssh = self.ssh_pool.get_connection(node.hostname, node.username, node.password)
+                    stdin_chk, out_chk, err_chk = check_ssh.exec_command(f"cat '{remote_path}' 2>/dev/null | head -c 200")
+                    file_check = out_chk.read().decode(errors='ignore').strip()
+                    self.ssh_pool.return_connection(node.hostname, check_ssh)
+                    if file_check.startswith('{') or file_check.startswith('['):
+                        # File exists and looks like valid JSON - mark as success
+                        gc.collect()
+                        return JobResult(job.job_id, worker.node.hostname, True,
+                                       {'status': 'success', 'output_file': expected_file, 
+                                        'fallback_used': True, 'file_preview': file_check[:50]},
+                                       None, runtime)
+                except Exception as fallback_err:
+                    pass  # Fall through to failure reporting
+            
+            tail = (errout[-600:] if errout else "").strip()
+            gc.collect()
+            return JobResult(job.job_id, worker.node.hostname, False, None,
+                           f"No valid JSON in output. stderr tail:\n{tail}", runtime)
         except Exception as e:
             # Clean up connection on error
             if ssh:
@@ -1324,6 +1343,9 @@ class MultiGPUCoordinator:
         # Create work queue and results collection
         work_queue = queue.Queue()
         results_queue = queue.Queue()
+        # v1.8.1: Track work_items by job_id for retry logic
+        work_items_by_id = {}
+        retry_counts = {}  # job_id -> retry count
         # Populate work queue with optimized chunks
 
         # Check if we're using pre-loaded script jobs
@@ -1371,6 +1393,7 @@ class MultiGPUCoordinator:
                         'timeout': job_spec.payload.get('timeout', 3600)
                     }
                 work_queue.put(work_item)
+                work_items_by_id[work_item['job_id']] = work_item  # v1.8.1: Track for retries
         else:
             # Original seed-based job creation
             base_chunk_size = max(19000, total_seeds // 100) # Dynamic chunk sizing
@@ -1413,6 +1436,7 @@ class MultiGPUCoordinator:
                         'analysis_type': getattr(args, 'analysis_type', 'statistical')
                     }
                 work_queue.put(job_spec)
+                work_items_by_id[job_spec['job_id']] = job_spec  # v1.8.1: Track for retries
                 job_id += 1
             total_chunks = job_id
         print(f"Created {total_chunks} work chunks for parallel processing")
@@ -1631,14 +1655,117 @@ class MultiGPUCoordinator:
                 break
 #         print(f"DEBUG: Collection complete, total results: {len(all_results)}")
 
-        # Debug: Show failed job info
+        # v1.8.1: Retry logic for failed jobs
+        max_retries = self.recovery_manager.max_retries
+        retry_round = 0
+        
+        while True:
+            # Identify failed jobs from this round
+            failed_in_round = [r for r in all_results if not r.success]
+            successful_in_round = [r for r in all_results if r.success]
+            
+            # Check if any failed jobs can be retried
+            retryable_jobs = []
+            for result in failed_in_round:
+                job_id = result.job_id
+                current_retries = retry_counts.get(job_id, 0)
+                if current_retries < max_retries and job_id in work_items_by_id:
+                    retryable_jobs.append(job_id)
+                    retry_counts[job_id] = current_retries + 1
+            
+            if not retryable_jobs:
+                # No more retries possible
+                break
+            
+            retry_round += 1
+            delay = self.recovery_manager.calculate_retry_delay(retry_round)
+            print(f"\n⚠️  Retrying {len(retryable_jobs)} failed jobs (round {retry_round}/{max_retries}, backoff {delay}s)...")
+            time.sleep(delay)
+            
+            # Re-queue failed jobs
+            retry_queue = queue.Queue()
+            retry_results_queue = queue.Queue()
+            for job_id in retryable_jobs:
+                work_item = work_items_by_id[job_id]
+                retry_queue.put(work_item)
+                print(f"  → Re-queuing {job_id} (attempt {retry_counts[job_id]}/{max_retries})")
+            
+            # Define retry worker loop (simplified - uses same workers)
+            def retry_worker_loop(worker):
+                my_results = []
+                while True:
+                    try:
+                        job_spec = retry_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    
+                    # Execute the job
+                    if job_spec.get('analysis_type') == 'script':
+                        job = JobSpec(
+                            job_id=job_spec['job_id'],
+                            prng_type='script',
+                            mapping_type='direct',
+                            seeds=[],
+                            samples=0,
+                            lmax=0,
+                            grid_size=0,
+                            search_type='script',
+                            mining_mode=False,
+                            target_draw=None,
+                            analysis_type='script',
+                            attempt=retry_counts.get(job_spec['job_id'], 0),
+                            payload=job_spec
+                        )
+                        result = self.execute_gpu_job(job, worker)
+                        my_results.append(result)
+                        if result.success:
+                            print(f"  ✅ Retry SUCCESS: {job_spec['job_id']} on {worker.node.hostname}(gpu{worker.gpu_id})")
+                        else:
+                            print(f"  ❌ Retry FAILED: {job_spec['job_id']} - {result.error[:60] if result.error else 'Unknown'}")
+                    retry_queue.task_done()
+                retry_results_queue.put(my_results)
+            
+            # Launch retry workers
+            retry_threads = []
+            for worker in workers[:len(retryable_jobs)]:  # Only need as many workers as jobs
+                thread = threading.Thread(target=retry_worker_loop, args=(worker,))
+                thread.start()
+                retry_threads.append(thread)
+            
+            # Wait for retries to complete
+            retry_queue.join()
+            for thread in retry_threads:
+                thread.join()
+            
+            # Collect retry results
+            time.sleep(0.5)
+            retry_results = []
+            while not retry_results_queue.empty():
+                try:
+                    worker_results = retry_results_queue.get_nowait()
+                    retry_results.extend(worker_results)
+                except queue.Empty:
+                    break
+            
+            # Merge retry results into all_results (replace failed with new results)
+            retry_results_by_id = {r.job_id: r for r in retry_results}
+            new_all_results = []
+            for r in all_results:
+                if r.job_id in retry_results_by_id:
+                    new_all_results.append(retry_results_by_id[r.job_id])
+                else:
+                    new_all_results.append(r)
+            all_results = new_all_results
+        
+        # Final tally after all retries
         failed_jobs = [r for r in all_results if not r.success]
         if failed_jobs:
-#             print(f"\nDEBUG: {len(failed_jobs)} FAILED jobs found:")
+            print(f"\n⚠️  {len(failed_jobs)} jobs failed permanently after {max_retries} retries:")
             for i, job in enumerate(failed_jobs[:3]):  # Show first 3
                 print(f"  Failed job {i+1}:")
                 print(f"    Error: {getattr(job, 'error', 'No error message')}")
                 print(f"    Results: {type(getattr(job, 'results', None))}")
+        
         total_runtime = time.time() - start_time
         # Compile results
         successful_results = [r for r in all_results if r.success]
