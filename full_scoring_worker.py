@@ -211,34 +211,27 @@ def score_survivors(
     total = len(seeds)
     start_time = time.time()
     
-    for i, seed in enumerate(seeds):
-        try:
-            # Extract full ML features (46+ features)
-            features = scorer.extract_ml_features(
-                seed=seed,
-                lottery_history=train_history,
-                forward_survivors=forward_survivors,
-                reverse_survivors=reverse_survivors
-            )
-            
-            # v1.8.2: Merge survivor metadata into features (forward_count, reverse_count, etc.)
-            if survivor_metadata and seed in survivor_metadata:
-                meta = survivor_metadata[seed]
-                metadata_fields = [
-                    'forward_count', 'reverse_count', 'bidirectional_count',
-                    'intersection_count', 'intersection_ratio', 'survivor_overlap_ratio',
-                    'skip_min', 'skip_max', 'skip_range', 'skip_mean', 'skip_std', 'skip_entropy',
-                    'bidirectional_selectivity', 'survivor_velocity', 'velocity_acceleration',
-                    'intersection_weight', 'forward_only_count', 'reverse_only_count'
-                ]
-                for field in metadata_fields:
-                    if field in meta and meta[field] is not None:
-                        features[field] = float(meta[field])
-
-            # Calculate composite score
+    # v1.9.0: GPU-BATCHED scoring - crypto miner style!
+    # Process ALL seeds in parallel on GPU, single CPU transfer at end
+    logger.info(f"[BATCH-GPU] Starting batched feature extraction for {total} seeds...")
+    
+    try:
+        # Call the new batched method - processes all seeds on GPU in parallel
+        all_features = scorer.extract_ml_features_batch(
+            seeds=seeds,
+            lottery_history=train_history,
+            forward_survivors=forward_survivors,
+            reverse_survivors=reverse_survivors,
+            survivor_metadata=survivor_metadata
+        )
+        
+        # Build result objects from batch results
+        gpu_id = int((os.environ.get('CUDA_VISIBLE_DEVICES') or 
+                     os.environ.get('HIP_VISIBLE_DEVICES') or 
+                     '0').split(',')[0])
+        
+        for i, (seed, features) in enumerate(zip(seeds, all_features)):
             score = features.get('score', features.get('confidence', 0.0))
-            
-            # Build result object
             result = {
                 'seed': seed,
                 'score': float(score),
@@ -248,39 +241,54 @@ def score_survivors(
                     'prng_type': prng_type,
                     'mod': mod,
                     'worker_hostname': HOST,
-                    'worker_gpu': int((os.environ.get('CUDA_VISIBLE_DEVICES') or 
-                                      os.environ.get('HIP_VISIBLE_DEVICES') or 
-                                      '0').split(',')[0]),
+                    'worker_gpu': gpu_id,
                     'timestamp': time.time()
                 }
             }
             results.append(result)
-            
-        except Exception as e:
-            logger.warning(f"Failed to score seed {seed}: {e}")
-            # Include failed seed with error info
-            results.append({
-                'seed': seed,
-                'score': 0.0,
-                'features': {},
-                'error': str(e),
-                'metadata': {
-                    'prng_type': prng_type,
-                    'mod': mod,
-                    'worker_hostname': HOST,
-                    'timestamp': time.time()
-                }
-            })
         
-        # Progress reporting
-        if (i + 1) % batch_size == 0 or (i + 1) == total:
-            elapsed = time.time() - start_time
-            rate = (i + 1) / elapsed if elapsed > 0 else 0
-            remaining = (total - i - 1) / rate if rate > 0 else 0
-            logger.info(f"Progress: {i+1}/{total} ({100*(i+1)/total:.1f}%) "
-                       f"| {rate:.1f} seeds/sec | ETA: {remaining:.0f}s")
+        elapsed = time.time() - start_time
+        rate = total / elapsed if elapsed > 0 else 0
+        logger.info(f"[BATCH-GPU] Complete: {total} seeds in {elapsed:.1f}s ({rate:.0f} seeds/sec)")
+        
+    except Exception as e:
+        logger.error(f"[BATCH-GPU] Batch processing failed: {e}, falling back to sequential")
+        import traceback
+        traceback.print_exc()
+        # Fallback to sequential processing if batch fails
+        for i, seed in enumerate(seeds):
+            try:
+                features = scorer.extract_ml_features(
+                    seed=seed,
+                    lottery_history=train_history,
+                    forward_survivors=forward_survivors,
+                    reverse_survivors=reverse_survivors
+                )
+                if survivor_metadata and seed in survivor_metadata:
+                    meta = survivor_metadata[seed]
+                    for field in ['forward_count', 'reverse_count', 'bidirectional_count',
+                                 'skip_min', 'skip_max', 'skip_range']:
+                        if field in meta and meta[field] is not None:
+                            features[field] = float(meta[field])
+                score = features.get('score', features.get('confidence', 0.0))
+                results.append({
+                    'seed': seed,
+                    'score': float(score),
+                    'features': features,
+                    'metadata': {'prng_type': prng_type, 'mod': mod, 
+                                'worker_hostname': HOST, 'timestamp': time.time()}
+                })
+            except Exception as e2:
+                logger.warning(f"Failed to score seed {seed}: {e2}")
+                results.append({'seed': seed, 'score': 0.0, 'features': {}, 'error': str(e2)})
+            
+            if (i + 1) % 100 == 0:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                logger.info(f"[FALLBACK] Progress: {i+1}/{total} ({100*(i+1)/total:.1f}%) | {rate:.1f} seeds/sec")
     
     return results
+
 
 
 def main():

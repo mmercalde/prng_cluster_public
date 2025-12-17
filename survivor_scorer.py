@@ -65,7 +65,7 @@ if HOST in ["rig-6600", "rig-6600b"] and TORCH_AVAILABLE:
         torch.cuda.set_per_process_memory_fraction(0.8)
         # Disable benchmark mode to reduce memory fragmentation
         torch.backends.cudnn.benchmark = False
-        print(f"[MEMORY] RX 6600 detected ({HOST}): Limited to 80% VRAM (6.4GB usable)")
+        import sys; print(f"[MEMORY] RX 6600 detected ({HOST}): Limited to 80% VRAM (6.4GB usable)", file=__import__("sys").stderr)
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -271,3 +271,216 @@ class SurvivorScorer:
             features = self.extract_ml_features(seed, lottery_history)
             results.append({'seed': seed, 'features': features, 'score': features['score']})
         return results
+
+    def extract_ml_features_batch(self, seeds: List[int], lottery_history: List[int], 
+                                   forward_survivors=None, reverse_survivors=None, 
+                                   survivor_metadata=None) -> List[Dict[str, float]]:
+        """
+        GPU-BATCHED ML feature extraction - CRYPTO MINER STYLE
+        Processes ALL seeds in parallel on GPU, single CPU transfer at end.
+        
+        Returns: List of feature dicts, one per seed
+        """
+        if not lottery_history or not seeds:
+            return [self._empty_ml_features() for _ in seeds]
+        
+        batch_size = len(seeds)
+        n = len(lottery_history)
+        device = self.device
+        
+        self.logger.info(f"[BATCH-GPU] Extracting {batch_size} seeds × {len(self._empty_ml_features())} features on {device}")
+        
+        # ===== STEP 1: Generate ALL predictions on GPU =====
+        seeds_t = torch.tensor(seeds, dtype=torch.int64, device=device)
+        hist_t = torch.tensor(lottery_history, dtype=torch.int64, device=device)
+        
+        # Use existing vectorized kernel for PRNG generation
+        if has_pytorch_gpu(self.prng_type):
+            try:
+                prng_func = get_pytorch_gpu_reference(self.prng_type)
+                info = get_kernel_info(self.prng_type)
+                predictions = prng_func(seeds=seeds_t, n=n, mod=self.mod,
+                                       device=device, skip=0, **info.get('default_params', {}))
+            except Exception as e:
+                self.logger.warning(f"PyTorch GPU batch failed: {e}, using CPU fallback")
+                predictions = self._cpu_batch_generate(seeds, n)
+                predictions = torch.tensor(predictions, dtype=torch.int64, device=device)
+        else:
+            predictions = self._cpu_batch_generate(seeds, n)
+            predictions = torch.tensor(predictions, dtype=torch.int64, device=device)
+        
+        # predictions shape: (batch_size, n)
+        # hist_t shape: (n,) -> broadcast to (batch_size, n)
+        hist_expanded = hist_t.unsqueeze(0).expand(batch_size, -1)
+        
+        # ===== STEP 2: Compute ALL features on GPU =====
+        
+        # Base matching (batch_size,)
+        matches = (predictions == hist_expanded)  # (batch_size, n)
+        match_counts = matches.sum(dim=1).float()  # (batch_size,)
+        base_scores = match_counts / n  # (batch_size,)
+        
+        # Stats - all on GPU
+        pred_means = predictions.float().mean(dim=1)  # (batch_size,)
+        pred_stds = predictions.float().std(dim=1)    # (batch_size,)
+        act_mean = hist_t.float().mean()
+        act_std = hist_t.float().std()
+        
+        # Lane agreement - vectorized
+        lane_8 = ((predictions % 8) == (hist_expanded % 8)).float().mean(dim=1)
+        lane_125 = ((predictions % 125) == (hist_expanded % 125)).float().mean(dim=1)
+        lane_consistency = (lane_8 + lane_125) / 2
+        
+        # Residue features - batch compute for each mod
+        residue_features = {}
+        for mod in self.residue_mods:
+            p_res = predictions % mod  # (batch_size, n)
+            a_res = hist_expanded % mod  # (batch_size, n)
+            
+            # Match rate per seed
+            match_rate = (p_res == a_res).float().mean(dim=1)  # (batch_size,)
+            residue_features[f'residue_{mod}_match_rate'] = match_rate
+            
+            # KL divergence - computed on GPU using PyTorch
+            # VECTORIZED batch histogram using scatter_add - NO PYTHON LOOPS!
+            # Create batch indices: [0,0,0,...,1,1,1,...,2,2,2,...]
+            batch_idx = torch.arange(batch_size, device=device).unsqueeze(1).expand(-1, n)
+            
+            # Flatten for scatter: (batch_size * n,)
+            p_flat = p_res.reshape(-1)  # (batch_size * n,)
+            a_flat = a_res.reshape(-1)
+            batch_flat = batch_idx.reshape(-1)
+            
+            # Compute combined index for scatter: batch_idx * mod + residue_value
+            p_scatter_idx = batch_flat * mod + p_flat
+            a_scatter_idx = batch_flat * mod + a_flat
+            
+            # Scatter to build histograms: (batch_size * mod,)
+            p_hists = torch.zeros(batch_size * mod, device=device)
+            a_hists = torch.zeros(batch_size * mod, device=device)
+            ones = torch.ones_like(p_flat, dtype=torch.float32)
+            p_hists.scatter_add_(0, p_scatter_idx, ones)
+            a_hists.scatter_add_(0, a_scatter_idx, ones)
+            
+            # Reshape to (batch_size, mod)
+            p_hists = p_hists.reshape(batch_size, mod)
+            a_hists = a_hists.reshape(batch_size, mod)
+            
+            # Normalize to distributions
+            p_dist = (p_hists / p_hists.sum(dim=1, keepdim=True)).clamp(min=1e-10)
+            a_dist = (a_hists / a_hists.sum(dim=1, keepdim=True)).clamp(min=1e-10)
+            
+            # KL divergence: sum(p * log(p/q)) per batch - FULLY VECTORIZED
+            kl_vals = (p_dist * (p_dist / a_dist).log()).sum(dim=1)
+            coherence_vals = 1.0 / (1.0 + kl_vals)
+            
+            residue_features[f'residue_{mod}_kl_divergence'] = kl_vals
+            residue_features[f'residue_{mod}_coherence'] = coherence_vals
+        
+        # Temporal stability - batch compute
+        stride = max(1, (n - self.temporal_window_size) // self.temporal_num_windows)
+        window_scores = []
+        for w in range(self.temporal_num_windows):
+            s = w * stride
+            e = min(s + self.temporal_window_size, n)
+            if e - s < self.temporal_window_size // 2:
+                break
+            window_match = (predictions[:, s:e] == hist_expanded[:, s:e]).float().mean(dim=1)
+            window_scores.append(window_match)
+        
+        if window_scores:
+            # Stack: (num_windows, batch_size) -> transpose to (batch_size, num_windows)
+            ws_tensor = torch.stack(window_scores, dim=0).t()
+            temporal_mean = ws_tensor.mean(dim=1)
+            temporal_std = ws_tensor.std(dim=1)
+            temporal_min = ws_tensor.min(dim=1)[0]
+            temporal_max = ws_tensor.max(dim=1)[0]
+            # Trend: simple linear regression slope per seed
+            x = torch.arange(ws_tensor.shape[1], device=device, dtype=torch.float32)
+            x_mean = x.mean()
+            temporal_trend = ((ws_tensor - ws_tensor.mean(dim=1, keepdim=True)) * (x - x_mean)).sum(dim=1) / ((x - x_mean) ** 2).sum()
+        else:
+            temporal_mean = torch.zeros(batch_size, device=device)
+            temporal_std = torch.zeros(batch_size, device=device)
+            temporal_min = torch.zeros(batch_size, device=device)
+            temporal_max = torch.zeros(batch_size, device=device)
+            temporal_trend = torch.zeros(batch_size, device=device)
+        
+        # ===== STEP 3: SINGLE CPU TRANSFER =====
+        self.logger.info(f"[BATCH-GPU] Transferring results to CPU...")
+        
+        # Collect all tensors and transfer once
+        results_gpu = {
+            'score': base_scores * 100,
+            'confidence': torch.clamp(base_scores, min=self.min_confidence_threshold),
+            'exact_matches': match_counts,
+            'total_predictions': torch.full((batch_size,), float(n), device=device),
+            'best_offset': torch.zeros(batch_size, device=device),
+            'pred_mean': pred_means,
+            'pred_std': pred_stds,
+            'actual_mean': torch.full((batch_size,), float(act_mean), device=device),
+            'actual_std': torch.full((batch_size,), float(act_std), device=device),
+            'lane_agreement_8': lane_8,
+            'lane_agreement_125': lane_125,
+            'lane_consistency': lane_consistency,
+            'temporal_stability_mean': temporal_mean,
+            'temporal_stability_std': temporal_std,
+            'temporal_stability_min': temporal_min,
+            'temporal_stability_max': temporal_max,
+            'temporal_stability_trend': temporal_trend,
+        }
+        
+        # Add residue features
+        results_gpu.update(residue_features)
+        
+        # Single transfer: stack all into one tensor, transfer, unpack
+        keys = list(results_gpu.keys())
+        stacked = torch.stack([results_gpu[k] for k in keys], dim=1)  # (batch_size, num_features)
+        stacked_cpu = stacked.cpu().numpy()  # SINGLE TRANSFER!
+        
+        # Build result dicts
+        results = []
+        seeds_list = seeds if isinstance(seeds, list) else seeds_t.cpu().tolist()
+        
+        for i in range(batch_size):
+            features = {keys[j]: float(stacked_cpu[i, j]) for j in range(len(keys))}
+            
+            # Add metadata if available
+            seed = seeds_list[i]
+            if survivor_metadata and seed in survivor_metadata:
+                meta = survivor_metadata[seed]
+                for field in ['forward_count', 'reverse_count', 'bidirectional_count',
+                             'intersection_count', 'intersection_ratio', 'survivor_overlap_ratio',
+                             'skip_min', 'skip_max', 'skip_range', 'skip_mean', 'skip_std', 
+                             'skip_entropy', 'bidirectional_selectivity', 'survivor_velocity',
+                             'velocity_acceleration', 'intersection_weight', 
+                             'forward_only_count', 'reverse_only_count']:
+                    if field in meta and meta[field] is not None:
+                        features[field] = float(meta[field])
+            
+            # Fill defaults for any missing keys
+            for k in ['skip_entropy','skip_mean','skip_std','skip_range',
+                      'survivor_velocity','velocity_acceleration',
+                      'intersection_weight','survivor_overlap_ratio','forward_count','reverse_count',
+                      'intersection_count','intersection_ratio','pred_min','pred_max',
+                      'residual_mean','residual_std','residual_abs_mean','residual_max_abs',
+                      'forward_only_count','reverse_only_count']:
+                features.setdefault(k, 0.0)
+            
+            results.append(features)
+        
+        # Clean VRAM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        self.logger.info(f"[BATCH-GPU] Complete: {batch_size} seeds, {len(keys)} features each")
+        return results
+
+    def _cpu_batch_generate(self, seeds: List[int], n: int) -> np.ndarray:
+        """CPU fallback for PRNG generation"""
+        cpu_func = get_cpu_reference(self.prng_type)
+        preds = np.zeros((len(seeds), n), dtype=np.int64)
+        for i, seed in enumerate(seeds):
+            seq = cpu_func(seed=int(seed), n=n, skip=0)
+            preds[i] = seq[:n]
+        return preds

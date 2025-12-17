@@ -1205,7 +1205,7 @@ class MultiGPUCoordinator:
                     scaling_factor = self.gpu_optimizer.get_gpu_profile(worker.node.gpu_type)["scaling_factor"]
                     print(f"âœ… Dynamic | {gpu_info} | {get_seed_count(job.seeds):,} seeds | {result.runtime:.1f}s | {seeds_per_sec:.0f} seeds/sec | [{scaling_factor:.1f}x scaling]")
                 else:
-                    print(f"âŒ Dynamic | {worker.node.gpu_type}@{worker.node.hostname} | FAILED: {result.error[:100] if result.error else 'Unknown error'}")
+                    print(f"âŒ Dynamic | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | FAILED: {result.error[:100] if result.error else 'Unknown error'}")
                 # Check if all work is done
                 stats = job_queue.get_stats()
                 if stats['jobs_remaining'] == 0:
@@ -1480,6 +1480,8 @@ class MultiGPUCoordinator:
 
                 # Step 4: Increment active job counter
                 self._increment_node_jobs(hostname, analysis_type)
+                # Log job assignment for visibility
+                print(f"→ {job_spec.get('job_id')} → {hostname}:GPU{worker.gpu_id}", flush=True)
 
                 # Step 4.5: Stagger localhost script jobs to prevent CUDA init collision
                 # GPU 0 starts immediately, GPU 1 waits 3s, etc.
@@ -1518,7 +1520,7 @@ class MultiGPUCoordinator:
                             pass  # Script job success - no output needed
 #                                   f"{job.job_id} | {result.runtime:.1f}s")
                         else:
-                            print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname} | "
+                            print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
                                   f"{job.job_id} | FAILED: {result.error[:80] if result.error else 'Unknown error'}")
 
                     else:
@@ -1592,7 +1594,7 @@ class MultiGPUCoordinator:
                                 get_seed_count(job.seeds), result.runtime
                             )
                         else:
-                            print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname} | "
+                            print(f"❌ Parallel | {worker.node.gpu_type}@{worker.node.hostname}(gpu{worker.gpu_id}) | "
                                   f"FAILED: {result.error[:80] if result.error else 'Unknown error'}")
 
                 except Exception as e:
