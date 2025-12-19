@@ -3,22 +3,18 @@
 # Run Full Scoring - Step 3 Orchestration Script
 # ============================================================================
 # 
-# Version: 2.0.0 - Uses scripts_coordinator.py (v1.3.0)
-#
-# CHANGES FROM v1.x:
-# - Phase 3 now uses scripts_coordinator.py instead of coordinator.py
-# - Run ID scoping: results in full_scoring_results/{run_id}/
-# - Manifest file for validation: scripts_run_manifest.json
-# - File-based success detection (no stdout parsing)
+# CRITICAL FIX: Previous version aggregated prediction floats from 
+# scorer_trial_worker.py. This version properly aggregates full 46-feature
+# survivor objects from full_scoring_worker.py.
 #
 # Usage:
-#   ./run_step3_full_scoring.sh [options]
+#   ./run_full_scoring.sh [options]
 #
 # Options:
 #   --survivors FILE      Bidirectional survivors JSON (required)
 #   --train-history FILE  Training history JSON (required)
 #   --config FILE         Optimal scorer config (optional)
-#   --chunk-size N        Seeds per chunk (default: auto)
+#   --chunk-size N        Seeds per chunk (default: 5000)
 #   --forward-survivors FILE  Forward sieve survivors for metadata merge
 #   --reverse-survivors FILE  Reverse sieve survivors for metadata merge
 #   --dry-run             Generate jobs only, don't execute
@@ -78,7 +74,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "============================================================"
-echo "STEP 3: FULL DISTRIBUTED SCORING (v2.0.0)"
+echo "STEP 3: FULL DISTRIBUTED SCORING"
 echo "============================================================"
 echo "  Survivors: $SURVIVORS_FILE"
 echo "  Train History: $TRAIN_HISTORY"
@@ -171,30 +167,19 @@ for NODE in $REMOTE_NODES; do
     echo "    Copying full_scoring_worker.py..."
     scp -q full_scoring_worker.py ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
     
-    # Copy forward/reverse survivors if provided
-    if [[ -n "$FORWARD_SURVIVORS" && -f "$FORWARD_SURVIVORS" ]]; then
-        echo "    Copying forward survivors..."
-        scp -q "$FORWARD_SURVIVORS" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    fi
-    if [[ -n "$REVERSE_SURVIVORS" && -f "$REVERSE_SURVIVORS" ]]; then
-        echo "    Copying reverse survivors..."
-        scp -q "$REVERSE_SURVIVORS" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    fi
-    
     echo "    ✓ Data distributed to $NODE"
 done
 
 echo "✓ Data distribution complete"
 
 # ============================================================================
-# Phase 3: Execute Distributed Jobs (UPDATED: uses scripts_coordinator.py)
+# Phase 3: Execute Distributed Jobs
 # ============================================================================
 echo ""
 echo "Phase 3: Executing distributed jobs..."
 echo "------------------------------------------------------------"
 
-# UPDATED: Use scripts_coordinator.py instead of coordinator.py
-python3 scripts_coordinator.py --jobs-file scoring_jobs.json --config distributed_config.json
+python3 coordinator.py --jobs-file scoring_jobs.json
 
 echo "✓ Job execution complete"
 
@@ -205,31 +190,19 @@ echo ""
 echo "Phase 4: Pulling results from remote nodes..."
 echo "------------------------------------------------------------"
 
-# Find the latest run directory (scripts_coordinator creates run-scoped dirs)
-LATEST_RUN=$(ls -td full_scoring_results/step3_* 2>/dev/null | head -1)
-
-if [[ -z "$LATEST_RUN" ]]; then
-    echo "ERROR: No run directory found in full_scoring_results/"
-    exit 1
-fi
-
-echo "  Latest run: $LATEST_RUN"
-RUN_NAME=$(basename "$LATEST_RUN")
-
 for NODE in $REMOTE_NODES; do
     echo "  ← $NODE"
     
-    # Create local run directory if not exists
-    mkdir -p "$LATEST_RUN"
+    # Pull result files
+    scp -q ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/full_scoring_results/*.json \
+        full_scoring_results/ 2>/dev/null || echo "    (no results from $NODE)"
     
-    # Pull result files from run-scoped directory
-    scp -q ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/full_scoring_results/${RUN_NAME}/*.json \
-        "$LATEST_RUN/" 2>/dev/null || echo "    (no results from $NODE)"
-    
+    # Clean up remote result files (optional)
+    # ssh ${REMOTE_USER}@${NODE} "rm -f ${REMOTE_BASE}/full_scoring_results/*.json" 2>/dev/null || true
 done
 
 # Also include local results (from zeus GPUs)
-if [[ -d "$LATEST_RUN" ]]; then
+if [[ -d "full_scoring_results" ]]; then
     echo "  ← localhost (already local)"
 fi
 
@@ -243,32 +216,15 @@ echo "Phase 5: Aggregating results..."
 echo "------------------------------------------------------------"
 
 # Aggregation script (Python inline for portability)
-python3 << AGGREGATE_EOF
+python3 << 'AGGREGATE_EOF'
 import json
 import sys
 from pathlib import Path
 
-# Find latest run directory
-run_dirs = sorted(Path("full_scoring_results").glob("step3_*"), reverse=True)
-if not run_dirs:
-    print("ERROR: No run directories found")
-    sys.exit(1)
-
-results_dir = run_dirs[0]
+results_dir = Path("full_scoring_results")
 output_file = Path("survivors_with_scores.json")
 
 print(f"Scanning {results_dir} for result files...")
-
-# Check manifest first
-manifest_path = results_dir / "scripts_run_manifest.json"
-if manifest_path.exists():
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-    print(f"  Run ID: {manifest.get('run_id', 'unknown')}")
-    print(f"  Jobs expected: {manifest.get('jobs_expected', '?')}")
-    print(f"  Jobs completed: {manifest.get('jobs_completed', '?')}")
-    if manifest.get('jobs_failed', 0) > 0:
-        print(f"  ⚠️  Jobs failed: {manifest.get('jobs_failed')}")
 
 all_survivors = []
 error_count = 0
@@ -280,11 +236,15 @@ for result_file in sorted(results_dir.glob("chunk_*.json")):
             chunk_results = json.load(f)
         
         if isinstance(chunk_results, list):
+            # FIXED: chunk_results are now full survivor objects, not floats
             for survivor in chunk_results:
                 if isinstance(survivor, dict) and 'seed' in survivor:
                     all_survivors.append(survivor)
                     if 'error' in survivor:
                         error_count += 1
+                else:
+                    # This should not happen with full_scoring_worker.py
+                    print(f"  WARNING: Unexpected format in {result_file.name}")
         
         files_processed += 1
         print(f"  ✓ {result_file.name}: {len(chunk_results)} survivors")
@@ -296,7 +256,7 @@ for result_file in sorted(results_dir.glob("chunk_*.json")):
 if not all_survivors:
     print("")
     print("❌ ERROR: No survivors aggregated!")
-    print("Check scripts_run_manifest.json for failure details")
+    print("Check that full_scoring_worker.py ran successfully on workers")
     sys.exit(1)
 
 # Sort by score (highest first)
@@ -310,7 +270,6 @@ print("")
 print("=" * 60)
 print("AGGREGATION COMPLETE")
 print("=" * 60)
-print(f"  Run directory: {results_dir}")
 print(f"  Files processed: {files_processed}")
 print(f"  Total survivors: {len(all_survivors)}")
 print(f"  Errors: {error_count}")
@@ -366,7 +325,7 @@ try:
         print(f"❌ VALIDATION FAILED: Missing keys: {missing_keys}")
         sys.exit(1)
     
-    # Check feature count (should be 50)
+    # Check feature count
     feature_count = len(sample.get('features', {}))
     if feature_count < 46:
         print(f"❌ VALIDATION FAILED: Only {feature_count} features found (expected 46+)")
