@@ -4,18 +4,15 @@
   "pipeline_step": 1,
   "version": "1.3.0",
   "feature_registry": "config_manifests/feature_registry.json",
-  
   "inputs": [
     "lottery_file",
     "seed_count",
     "prng_type"
   ],
-  
   "outputs": [
     "bidirectional_survivors.json",
     "optimal_window_config.json"
   ],
-  
   "actions": [
     {
       "type": "run_script",
@@ -34,11 +31,11 @@
       "timeout_minutes": 240
     }
   ],
-  
-  "follow_up_agents": ["scorer_meta_agent"],
+  "follow_up_agents": [
+    "scorer_meta_agent"
+  ],
   "success_condition": "optimal_window_config.json exists AND bidirectional_survivors.json has survivors > 0",
   "retry": 2,
-  
   "parameter_bounds": {
     "window_size": {
       "type": "int",
@@ -78,7 +75,7 @@
     },
     "forward_threshold": {
       "type": "float",
-      "min": 0.50,
+      "min": 0.5,
       "max": 0.95,
       "default": 0.72,
       "description": "Forward sieve match threshold. Higher = stricter filtering.",
@@ -87,7 +84,7 @@
     },
     "reverse_threshold": {
       "type": "float",
-      "min": 0.60,
+      "min": 0.6,
       "max": 0.98,
       "default": 0.81,
       "description": "Reverse sieve match threshold. Should be >= forward_threshold.",
@@ -114,7 +111,11 @@
     },
     "search_strategy": {
       "type": "choice",
-      "choices": ["bayesian", "random", "grid"],
+      "choices": [
+        "bayesian",
+        "random",
+        "grid"
+      ],
       "default": "bayesian",
       "description": "Optuna search strategy for parameter space exploration.",
       "optimized_by": "Fixed",
@@ -128,11 +129,25 @@
       "effect": "Doubles search space but discovers variable skip patterns."
     }
   },
-  
   "success_metrics": {
     "min_bidirectional_survivors": 1,
     "target_forward_survivors": 100,
     "target_reverse_survivors": 100,
     "max_false_positive_ratio": 0.1
+  },
+  "default_params": {
+    "lottery_file": "synthetic_lottery.json",
+    "strategy": "bayesian",
+    "trials": 5,
+    "max_seeds": 1000000,
+    "prng_type": "java_lcg",
+    "output": "optimal_window_config.json"
+  },
+  "evaluation_params": {
+    "confidence_formula": "bit_length",
+    "confidence_base": 0.7,
+    "confidence_divisor": 64.0,
+    "confidence_cap": 0.95,
+    "zero_survivors_confidence": 0.5
   }
 }

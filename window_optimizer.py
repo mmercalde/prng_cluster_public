@@ -549,6 +549,12 @@ def run_bayesian_optimization(
     # Save optimal config for downstream use
     best_config = results['best_config']
 
+    # Extract survivor counts from results (nested in best_result)
+    best_result = results.get('best_result', {})
+    forward_count = best_result.get('forward_count', 0)
+    reverse_count = best_result.get('reverse_count', 0)
+    bidirectional_count = best_result.get('bidirectional_count', 0)
+    
     optimal_config = {
         'window_size': best_config['window_size'],
         'offset': best_config['offset'],
@@ -558,7 +564,11 @@ def run_bayesian_optimization(
         'prng_type': prng_type,
         'test_both_modes': test_both_modes,  # NEW: Record whether we tested both modes
         'seed_count': seed_count,
-        'optimization_score': results['best_score']
+        'optimization_score': results['best_score'],
+        # Survivor counts for watcher evaluation
+        'forward_count': forward_count,
+        'reverse_count': reverse_count,
+        'bidirectional_count': bidirectional_count
     }
 
     # Inject agent_metadata for pipeline chaining

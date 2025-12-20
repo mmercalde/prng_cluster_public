@@ -8,7 +8,10 @@ including bidirectional survivor analysis and PRNG parameter tuning.
 Version: 3.2.0
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
+import math
+import json
+from pathlib import Path
 from agents.contexts.base_agent_context import BaseAgentContext, EvaluationResult
 
 
@@ -71,6 +74,62 @@ class WindowOptimizerContext(BaseAgentContext):
             }
         }
     
+
+    def get_overall_success(self) -> Tuple[bool, float]:
+        """
+        Determine overall success and confidence for Step 1.
+        
+        Reads evaluation_params from manifest for configurable confidence formula.
+        Returns (success, confidence) tuple.
+        """
+        # Extract survivor counts - check both top-level and nested locations
+        bi = self.results.get("bidirectional_count", 0)
+        if bi == 0:
+            # Try nested location (best_result)
+            best_result = self.results.get("best_result", {})
+            bi = best_result.get("bidirectional_count", 0)
+        
+        bi = int(bi or 0)
+        
+        # Load evaluation params from manifest (with defaults)
+        eval_params = {
+            "confidence_formula": "bit_length",
+            "confidence_base": 0.7,
+            "confidence_divisor": 64.0,
+            "confidence_cap": 0.95,
+            "zero_survivors_confidence": 0.5
+        }
+        
+        # Try to load from manifest
+        manifest_path = Path("agent_manifests/window_optimizer.json")
+        if manifest_path.exists():
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+                eval_params.update(manifest.get("evaluation_params", {}))
+            except Exception:
+                pass  # Use defaults
+        
+        # Zero survivors = failure
+        if bi == 0:
+            return False, eval_params["zero_survivors_confidence"]
+        
+        # Calculate confidence based on formula
+        formula = eval_params["confidence_formula"]
+        base = eval_params["confidence_base"]
+        cap = eval_params["confidence_cap"]
+        divisor = eval_params["confidence_divisor"]
+        
+        if formula == "bit_length":
+            confidence = min(cap, base + (bi.bit_length() / divisor))
+        elif formula == "log10":
+            confidence = min(cap, base + (math.log10(bi + 1) / 10.0))
+        else:
+            # Default to bit_length
+            confidence = min(cap, base + (bi.bit_length() / divisor))
+        
+        return True, confidence
+
     def interpret_results(self) -> str:
         """Interpret window optimization results."""
         bi_count = self.results.get("bidirectional_count", 0)

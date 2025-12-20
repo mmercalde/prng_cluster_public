@@ -689,17 +689,37 @@ class WatcherAgent:
 
     def _find_results(self, step: int) -> Optional[Dict[str, Any]]:
         """Find and load results file for a step."""
-        # Common result file patterns
+        # Step-specific output files (check main directory first)
+        step_files = {
+            1: "optimal_window_config.json",
+            2: "optimal_scorer_config.json",
+            3: "full_scoring_results.json",
+            4: "optimal_ml_config.json",
+            5: "anti_overfit_results.json",
+            6: "prediction_pool.json"
+        }
+        
+        # First, check for step-specific file in main directory
+        if step in step_files:
+            main_file = Path(step_files[step])
+            if main_file.exists():
+                try:
+                    with open(main_file) as f:
+                        logger.debug(f"Loaded results from {main_file}")
+                        return json.load(f)
+                except Exception as e:
+                    logger.warning(f"Could not load {main_file}: {e}")
+        
+        # Fallback: check results directory with patterns
         patterns = [
             f"step{step}_*.json",
             f"*_results.json",
             "results.json"
         ]
-
         results_path = Path(self.config.results_dir)
         if not results_path.exists():
             return None
-
+        
         # Find most recent result file
         for pattern in patterns:
             files = sorted(results_path.glob(pattern), key=os.path.getmtime, reverse=True)
@@ -709,7 +729,6 @@ class WatcherAgent:
                         return json.load(f)
                 except Exception as e:
                     logger.warning(f"Could not load {files[0]}: {e}")
-
         return None
 
     # ════════════════════════════════════════════════════════════════════════

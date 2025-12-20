@@ -297,11 +297,12 @@ NOTES:
         record = RunRecord(
             run_id=self.run_id,
             run_number=self.run_number,
-            agent_name=self.manifest.agent_name if self.manifest else f"step{self.step}_agent",
-            pipeline_step=self.step,
             timestamp=datetime.utcnow(),
+            agent_name=self.manifest.agent_name if self.manifest else f"step_{self.step}_agent",
+            pipeline_step=self.step,
             success=decision.get("success_condition_met", False),
             confidence=decision.get("confidence", 0.0),
+            execution_time_seconds=self.results.get("execution_time_seconds", 0),
             metrics={k: v for k, v in self.results.items() if isinstance(v, (int, float))},
             action_taken=decision.get("recommended_action", ""),
             param_adjustments=decision.get("suggested_param_adjustments", {})
@@ -311,10 +312,6 @@ NOTES:
     
     def get_evaluation_summary(self) -> Dict[str, Any]:
         """Get a quick summary of the evaluation."""
-        # Step-specific evaluation delegated to each context class.
-        # See: agents/contexts/window_optimizer_context.py for Step 1.
-
-        # Default behavior (Steps 2–6): delegate to specialized context.
         if self.agent_context:
             success, confidence = self.agent_context.get_overall_success()
             return {
@@ -323,7 +320,6 @@ NOTES:
                 "confidence": confidence,
                 "interpretation": self.agent_context.interpret_results()
             }
-
         return {
             "step": self.step,
             "success": None,
