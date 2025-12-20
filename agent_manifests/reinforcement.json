@@ -4,19 +4,16 @@
   "pipeline_step": 5,
   "version": "1.3.0",
   "feature_registry": "config_manifests/feature_registry.json",
-  
   "inputs": [
     "survivors_with_scores.json",
     "reinforcement_engine_config.json",
     "best_model_architecture.json"
   ],
-  
   "outputs": [
     "models/anti_overfit/best_model.pth",
     "models/anti_overfit/training_history.json",
     "anti_overfit_validation_results.json"
   ],
-  
   "actions": [
     {
       "type": "run_script",
@@ -53,11 +50,11 @@
       "timeout_minutes": 30
     }
   ],
-  
-  "follow_up_agents": ["prediction_agent"],
+  "follow_up_agents": [
+    "prediction_agent"
+  ],
   "success_condition": "best_model.pth exists AND anti_overfit_validation_results.json shows val_loss < threshold",
   "retry": 1,
-  
   "parameter_bounds": {
     "k_folds": {
       "type": "int",
@@ -115,9 +112,9 @@
     },
     "learning_rate": {
       "type": "float",
-      "min": 1e-5,
-      "max": 1e-2,
-      "default": 1e-3,
+      "min": 1e-05,
+      "max": 0.01,
+      "default": 0.001,
       "description": "Initial learning rate (uses scheduler).",
       "optimized_by": "Optuna TPE",
       "effect": "Discovered in Step 4, fine-tuned here."
@@ -151,9 +148,9 @@
     },
     "validation_split": {
       "type": "float",
-      "min": 0.10,
-      "max": 0.30,
-      "default": 0.20,
+      "min": 0.1,
+      "max": 0.3,
+      "default": 0.2,
       "description": "Fraction of fold data for validation (within each fold).",
       "optimized_by": "Manual",
       "effect": "20% provides reasonable validation signal."
@@ -177,11 +174,27 @@
       "effect": "Larger = more historical context but slower training."
     }
   },
-  
   "success_metrics": {
     "min_completed_folds": 3,
     "target_validation_loss": 0.3,
     "max_overfit_ratio": 1.5,
     "min_validation_accuracy": 0.6
+  },
+  "default_params": {
+    "survivors": "survivors_with_scores.json",
+    "lottery_data": "synthetic_lottery.json",
+    "trials": 50,
+    "k_folds": 5,
+    "test_holdout": 0.2,
+    "study_name": "anti_overfit_study",
+    "storage": "sqlite:///optuna_studies/anti_overfit.db"
+  },
+  "evaluation_params": {
+    "confidence_formula": "overfit_ratio",
+    "confidence_base": 0.7,
+    "confidence_cap": 0.95,
+    "max_overfit_ratio": 1.5,
+    "target_validation_loss": 0.3,
+    "min_completed_folds": 3
   }
 }

@@ -4,18 +4,15 @@
   "pipeline_step": 4,
   "version": "1.3.0",
   "feature_registry": "config_manifests/feature_registry.json",
-  
   "inputs": [
     "survivors_with_scores.json",
     "scoring_statistics.json"
   ],
-  
   "outputs": [
     "reinforcement_engine_config.json",
     "best_model_architecture.json",
     "ml_meta_results.json"
   ],
-  
   "actions": [
     {
       "type": "run_script",
@@ -31,11 +28,11 @@
       "timeout_minutes": 480
     }
   ],
-  
-  "follow_up_agents": ["reinforcement_agent"],
+  "follow_up_agents": [
+    "reinforcement_agent"
+  ],
   "success_condition": "reinforcement_engine_config.json exists AND best_model_architecture.json has valid layers",
   "retry": 1,
-  
   "parameter_bounds": {
     "ml_trials": {
       "type": "int",
@@ -102,18 +99,18 @@
     },
     "learning_rate_min": {
       "type": "float",
-      "min": 1e-6,
-      "max": 1e-4,
-      "default": 1e-5,
+      "min": 1e-06,
+      "max": 0.0001,
+      "default": 1e-05,
       "description": "Lower bound for learning rate search.",
       "optimized_by": "Optuna TPE",
       "effect": "Very low LR = slow convergence but stable training."
     },
     "learning_rate_max": {
       "type": "float",
-      "min": 1e-3,
-      "max": 1e-1,
-      "default": 1e-2,
+      "min": 0.001,
+      "max": 0.1,
+      "default": 0.01,
       "description": "Upper bound for learning rate search.",
       "optimized_by": "Optuna TPE",
       "effect": "High LR = fast but may diverge. Typical optimal: 1e-4 to 1e-3."
@@ -138,27 +135,41 @@
     },
     "weight_decay_min": {
       "type": "float",
-      "min": 1e-7,
-      "max": 1e-5,
-      "default": 1e-6,
+      "min": 1e-07,
+      "max": 1e-05,
+      "default": 1e-06,
       "description": "Minimum L2 regularization weight decay.",
       "optimized_by": "Optuna TPE",
       "effect": "L2 regularization prevents large weights."
     },
     "weight_decay_max": {
       "type": "float",
-      "min": 1e-4,
-      "max": 1e-2,
-      "default": 1e-3,
+      "min": 0.0001,
+      "max": 0.01,
+      "default": 0.001,
       "description": "Maximum L2 regularization weight decay.",
       "optimized_by": "Optuna TPE",
       "effect": "Higher decay = stronger regularization."
     }
   },
-  
   "success_metrics": {
     "min_valid_trials": 20,
     "target_validation_loss": 0.5,
     "max_trial_failures": 10
+  },
+  "default_params": {
+    "survivors": "survivors_with_scores.json",
+    "lottery_data": "synthetic_lottery.json",
+    "trials": 100,
+    "config": "reinforcement_engine_config.json",
+    "timeout_hours": 8.0,
+    "parallel_jobs": 2
+  },
+  "evaluation_params": {
+    "confidence_formula": "validation_loss",
+    "confidence_base": 0.7,
+    "confidence_cap": 0.95,
+    "target_validation_loss": 0.5,
+    "min_successful_trials": 20
   }
 }

@@ -4,18 +4,15 @@
   "pipeline_step": 3,
   "version": "1.3.0",
   "feature_registry": "config_manifests/feature_registry.json",
-  
   "inputs": [
     "bidirectional_survivors.json",
     "optimal_scorer_config.json",
     "lottery_file"
   ],
-  
   "outputs": [
     "survivors_with_scores.json",
     "scoring_statistics.json"
   ],
-  
   "actions": [
     {
       "type": "run_script",
@@ -51,11 +48,11 @@
       "timeout_minutes": 30
     }
   ],
-  
-  "follow_up_agents": ["ml_meta_agent"],
+  "follow_up_agents": [
+    "ml_meta_agent"
+  ],
   "success_condition": "survivors_with_scores.json exists AND scoring_statistics.json shows valid_survivors > 0",
   "retry": 2,
-  
   "parameter_bounds": {
     "chunk_size": {
       "type": "int",
@@ -103,10 +100,29 @@
       "effect": "Use full cluster (26 GPUs) for maximum throughput."
     }
   },
-  
   "success_metrics": {
     "min_scored_survivors": 100,
     "expected_scoring_rate": 0.99,
     "max_scoring_failures": 10
+  },
+  "default_params": {
+    "survivors": "bidirectional_survivors.json",
+    "config": "optimal_scorer_config.json",
+    "train_history": "train_history.json",
+    "holdout_history": "holdout_history.json",
+    "chunk_size": 5000,
+    "jobs_file": "scoring_jobs.json",
+    "prng_type": "java_lcg",
+    "mod": 1000,
+    "batch_size": 100,
+    "output_file": "survivors_with_scores.json"
+  },
+  "evaluation_params": {
+    "confidence_formula": "bit_length",
+    "confidence_base": 0.7,
+    "confidence_divisor": 64.0,
+    "confidence_cap": 0.95,
+    "zero_scored_confidence": 0.5,
+    "min_scored_survivors": 100
   }
 }

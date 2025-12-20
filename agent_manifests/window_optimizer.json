@@ -138,8 +138,8 @@
   "default_params": {
     "lottery_file": "synthetic_lottery.json",
     "strategy": "bayesian",
-    "trials": 5,
-    "max_seeds": 1000000,
+    "trials": 50,
+    "max_seeds": 10000000,
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json"
   },
