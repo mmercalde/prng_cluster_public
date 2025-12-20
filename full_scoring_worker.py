@@ -2,14 +2,14 @@
 """
 Full Scoring Worker - Step 3 Distributed Scoring
 =================================================
-Scores survivor seeds and extracts full 46-feature vectors for ML pipeline.
+Scores survivor seeds and extracts full 50-feature vectors for ML pipeline.
 
 This script is designed for Step 3 of the whitepaper pipeline.
 Uses SurvivorScorer.extract_ml_features() for complete feature extraction.
 
 CRITICAL FIX: scorer_trial_worker.py was designed for Step 2.5 meta-optimization
 and only returns prediction floats. This worker returns full survivor objects
-with all 46 features required by Steps 4-6 (Reinforcement Engine).
+with all 50 features required by Steps 4-6 (Reinforcement Engine).
 
 PULL Architecture:
 - Reads seeds from local file (pre-copied by coordinator)
@@ -24,7 +24,7 @@ Output Format:
     "features": {
       "lane_agreement_8": 0.75,
       "residue_8_match_rate": 0.91,
-      ... // all 46 features
+      ... // all 50 features
     },
     "metadata": {
       "prng_type": "java_lcg",
@@ -185,7 +185,7 @@ def score_survivors(
     survivor_metadata: Dict[int, Dict] = None  # v1.8.2: seed -> metadata mapping
 ) -> List[Dict[str, Any]]:
     """
-    Score all seeds with full 46-feature extraction.
+    Score all seeds with full 50-feature extraction.
     
     Args:
         seeds: List of survivor seeds to score
@@ -293,7 +293,7 @@ def score_survivors(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Full Scoring Worker (Step 3) - Extracts 46 ML features per survivor',
+        description='Full Scoring Worker (Step 3) - Extracts 50 ML features per survivor',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:

@@ -133,7 +133,7 @@ class ReinforcementConfig:
     """
     # Model architecture
     model: Dict[str, Any] = field(default_factory=lambda: {
-        'input_features': 46,  # From survivor_scorer.py
+        'input_features': 50,  # 50 features from survivors_with_scores.json (Step 3)
         'hidden_layers': [128, 64, 32],
         'dropout': 0.3,
         'activation': 'relu',
@@ -495,8 +495,8 @@ class ReinforcementEngine:
 
         # Calculate total input size (use known dimensions instead of extracting)
         global_state = self.global_tracker.get_global_state()
-        # Known: survivor_scorer extracts 46 features per seed
-        test_features_count = 46
+        # Known: Step 3 extracts 50 features per seed (46 base + 4 sieve metadata)
+        test_features_count = 50
         total_input_size = test_features_count + len(global_state)
 
         self.logger.info(f"  Feature dimensions: {test_features_count} per-seed + {len(global_state)} global = {total_input_size} total")
