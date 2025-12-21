@@ -3,27 +3,36 @@
 Reinforcement Engine - ML Training Orchestrator (DISTRIBUTED-READY)
 ====================================================================
 
-IMPROVEMENTS:
-âœ… 1. Smart model saving - only when validation improves
-âœ… 2. CUDA lazy initialization (FIX: no conflict with dual GPU scorer)
-âœ… 3. Better epoch logging with progress indicators
-âœ… 4. Training summary with best epoch info
-âœ… 5. Configurable save frequency
-âœ… 6. DISTRIBUTED MODE - DDP support with --distributed flag
-âœ… 7. ROCm SUPPORT - Compatible with AMD RX 6600 GPUs
-âœ… 8. STATELESS BUG FIX: train(), predict...() now accept lottery_history
-âœ… 9. META-OPTIMIZER HOOK: __init__ accepts scorer_config_dict
-âœ… 10. OPTUNA PRUNING SUPPORT: train() accepts epoch_callback for early stopping
+Version: 1.6.1 - CUDA WARMUP + LABEL LEAKAGE FIX + SAVE SPAM FIX
 
-Author: Distributed PRNG Analysis System
-Date: November 12, 2025
-Version: 1.4.0 - WITH OPTUNA PRUNING HOOKS
+Changes in v1.6.1:
+- Fixed save spam: now saves best_model.pth only ONCE at end of training
+- No more "Model saved" log spam during training loop
+
+Changes in v1.6.0:
+- CUDA warmup fix: torch.cuda.set_device() + tensor warmup before any ops
+- Updated default feature count: 48 per-seed (removed score, confidence)
+- Best model overwrite: saves to best_model.pth only (no epoch spam)
+- Added --save-all-epochs flag for explicit checkpoint snapshots
+- Improved startup logging (device, GPU count, feature dimensions)
+- Suppressed cuBLAS warning via proper initialization order
+
+Previous versions:
+- v1.5.0: Pre-computed feature support (dict detection)
+- v1.4.0: Optuna pruning hooks
+- v1.3.0: Stateless train/predict with lottery_history override
+- v1.2.0: ROCm support for AMD GPUs
+- v1.1.0: DDP distributed training
 """
 
 import sys
 import os
 import json
 import logging
+import warnings
+
+# Suppress cuBLAS warning (we handle CUDA init properly now)
+warnings.filterwarnings("ignore", message="Attempting to run cuBLAS")
 
 # ============================================================================
 # ROCm environment setup - MUST BE BEFORE TORCH IMPORT
@@ -39,7 +48,7 @@ os.environ.setdefault("HIP_PATH", "/opt/rocm")
 
 import pickle
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from collections import Counter, deque
@@ -60,7 +69,7 @@ except ImportError:
     print("ERROR: PyTorch not available! Install with: pip install torch")
     sys.exit(1)
 
-# DDP support (optional - only imported when distributed mode is enabled)
+# DDP support (optional)
 try:
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel as DDP
@@ -87,36 +96,63 @@ except ImportError:
 
 
 # ============================================================================
-# CUDA INITIALIZATION (FIXED - LAZY INITIALIZATION)
+# CUDA INITIALIZATION (v1.6.0 - PROPER WARMUP)
 # ============================================================================
 
-def initialize_cuda():
+def initialize_cuda(device: torch.device = None, logger: logging.Logger = None) -> bool:
     """
-    Initialize CUDA context early to prevent cuBLAS warnings
-
-    This fixes the warning:
-    "Attempting to run cuBLAS, but there was no current CUDA context!"
+    Initialize CUDA context with proper warmup.
     
-    IMPORTANT: Always use cuda:0 (the logical device). CUDA_VISIBLE_DEVICES
-    handles mapping to the correct physical GPU. Do NOT iterate over 
-    device_count() as that returns physical count, breaking isolation.
+    v1.6.0: Fixes "no current CUDA context" warning by:
+    1. Explicitly setting device before any CUDA ops
+    2. Allocating a small tensor to force context creation
+    3. Synchronizing to ensure context is fully initialized
+    
+    Args:
+        device: Target device (default: cuda:0)
+        logger: Optional logger for status messages
+        
+    Returns:
+        True if CUDA initialized successfully, False otherwise
     """
-    if torch.cuda.is_available():
-        try:
-            # Always use cuda:0 - CUDA_VISIBLE_DEVICES maps this correctly
+    if not torch.cuda.is_available():
+        return False
+    
+    try:
+        # Default to cuda:0 if not specified
+        if device is None:
             device = torch.device('cuda:0')
+        elif isinstance(device, str):
+            device = torch.device(device)
+        
+        # Step 1: Explicitly set device
+        if device.type == 'cuda':
             torch.cuda.set_device(device)
-            # Force CUDA context creation with a dummy operation
-            _ = torch.zeros(1).to(device)
+        
+        # Step 2: Force context creation with small allocation
+        _ = torch.empty(1, device=device)
+        
+        # Step 3: Synchronize to ensure context is ready
+        torch.cuda.synchronize(device)
+        
+        if logger:
+            logger.info(f"✅ CUDA context initialized on {device}")
+            logger.info(f"   Device: {torch.cuda.get_device_name(device)}")
+            logger.info(f"   Memory: {torch.cuda.get_device_properties(device).total_memory / 1e9:.1f} GB")
+        
+        return True
+        
+    except RuntimeError as e:
+        if "busy or unavailable" in str(e):
+            # CUDA already initialized - that's fine
             return True
-        except RuntimeError as e:
-            if "busy or unavailable" in str(e):
-                # CUDA already initialized by another process/thread - that's fine
-                return True
-            else:
-                raise
-    return False
+        else:
+            if logger:
+                logger.warning(f"CUDA initialization failed: {e}")
+            return False
 
+
+# Global flag - but we now init per-engine with proper device
 CUDA_INITIALIZED = False
 
 
@@ -128,12 +164,12 @@ CUDA_INITIALIZED = False
 class ReinforcementConfig:
     """
     Configuration for reinforcement engine
-
-    Whitepaper Section 4: ML Integration Parameters
+    
+    v1.6.0: Updated default input_features to 48 (removed score, confidence)
     """
     # Model architecture
     model: Dict[str, Any] = field(default_factory=lambda: {
-        'input_features': 50,  # 50 features from survivors_with_scores.json (Step 3)
+        'input_features': 48,  # v1.6.0: 48 features (removed score, confidence)
         'hidden_layers': [128, 64, 32],
         'dropout': 0.3,
         'activation': 'relu',
@@ -149,7 +185,8 @@ class ReinforcementConfig:
         'loss_function': 'mse',
         'early_stopping_patience': 10,
         'validation_split': 0.2,
-        'save_best_only': True,
+        'save_best_only': True,  # v1.6.0: Only save best model (no epoch spam)
+        'save_all_epochs': False,  # v1.6.0: Explicit flag for epoch snapshots
         'save_frequency': 10,
         'verbose_frequency': 10
     })
@@ -161,7 +198,7 @@ class ReinforcementConfig:
         'skip': 0
     })
 
-    # Global state tracking (Whitepaper Section 4.1)
+    # Global state tracking
     global_state: Dict[str, Any] = field(default_factory=lambda: {
         'window_size': 1000,
         'anomaly_threshold': 3.0,
@@ -238,11 +275,7 @@ class ReinforcementConfig:
 # ============================================================================
 
 class GlobalStateTracker:
-    """
-    Track system-wide statistical patterns
-
-    Whitepaper Section 4.1: Global Statistical State Vector
-    """
+    """Track system-wide statistical patterns (14 features)"""
 
     def __init__(self, lottery_history: List[int], config: Dict[str, Any]):
         self.lottery_history = lottery_history
@@ -323,10 +356,10 @@ class GlobalStateTracker:
         ratio = max_freq / min_freq if min_freq > 0 else 1.0
         gap_threshold = self.config.get('gap_threshold', 500)
         last_seen = {}
-        suspicious_count = 0
         for i, num in enumerate(self.lottery_history):
             last_seen[num] = i
         current_index = len(self.lottery_history) - 1
+        suspicious_count = 0
         for num in range(1000):
             if num not in last_seen:
                 suspicious_count += 1
@@ -414,7 +447,7 @@ class GlobalStateTracker:
 class SurvivorQualityNet(nn.Module):
     """PyTorch neural network for survivor quality prediction"""
 
-    def __init__(self, input_size: int = 60, hidden_layers: List[int] = [128, 64, 32],
+    def __init__(self, input_size: int = 62, hidden_layers: List[int] = [128, 64, 32],
                  dropout: float = 0.3):
         super(SurvivorQualityNet, self).__init__()
         layers = []
@@ -438,18 +471,35 @@ class SurvivorQualityNet(nn.Module):
 
 class ReinforcementEngine:
     """
-    Main ML training orchestrator - DISTRIBUTED-READY VERSION with ROCm Support
-    NOW WITH OPTUNA PRUNING HOOKS
+    Main ML training orchestrator
+    
+    v1.6.0: CUDA warmup fix, updated feature count, reduced checkpoint spam
     """
 
     def __init__(self, config: ReinforcementConfig, lottery_history: List[int],
                  logger: Optional[logging.Logger] = None,
-                 scorer_config_dict: Optional[Dict] = None):
+                 scorer_config_dict: Optional[Dict] = None,
+                 per_seed_feature_count: Optional[int] = None,
+                 excluded_features: Optional[List[str]] = None):
+        """
+        Initialize ReinforcementEngine.
+        
+        Args:
+            config: ReinforcementConfig instance
+            lottery_history: List of lottery draw integers
+            logger: Optional logger instance
+            scorer_config_dict: Optional custom scorer parameters
+            per_seed_feature_count: Override for per-seed feature count (default: 48)
+            excluded_features: Features excluded from training (for logging)
+        """
         self.config = config
         self.lottery_history = lottery_history
         self.logger = logger or self._setup_logger()
+        self.excluded_features = excluded_features or ['score', 'confidence']
 
-        self.logger.info("Initializing ReinforcementEngine...")
+        self.logger.info("="*60)
+        self.logger.info("Initializing ReinforcementEngine v1.6.0")
+        self.logger.info("="*60)
 
         # Distributed training state
         self.is_distributed = config.distributed.get('enabled', False)
@@ -457,21 +507,23 @@ class ReinforcementEngine:
         self.world_size = None
         self.local_rank = None
 
-        # Initialize distributed if enabled
         if self.is_distributed:
             self._init_distributed()
         else:
-            self.logger.info("  Mode: LOCAL (standard multi-GPU)")
+            self.logger.info("Mode: LOCAL (standard multi-GPU)")
 
-        # Initialize CUDA lazily
+        # Device selection (BEFORE CUDA init)
+        self.device = self._get_device()
+
+        # v1.6.0: CUDA warmup with proper initialization
         global CUDA_INITIALIZED
         if not CUDA_INITIALIZED and torch.cuda.is_available():
-            self.logger.info("Initializing CUDA context...")
-            CUDA_INITIALIZED = initialize_cuda()
-            if CUDA_INITIALIZED:
-                self.logger.info("âœ… CUDA initialized successfully")
+            CUDA_INITIALIZED = initialize_cuda(self.device, self.logger)
 
-        # Survivor scorer
+        # Log GPU info
+        self._log_gpu_info()
+
+        # Survivor scorer (for legacy mode)
         self.scorer = SurvivorScorer(
             prng_type=config.prng['prng_type'],
             mod=config.prng['mod'],
@@ -479,27 +531,38 @@ class ReinforcementEngine:
         )
 
         if scorer_config_dict:
-            self.logger.info(f"  Survivor scorer: Using custom trial parameters!")
+            self.logger.info(f"Survivor scorer: Custom trial parameters")
         else:
-            self.logger.info(f"  Survivor scorer: {config.prng['prng_type']}, mod={config.prng['mod']}")
+            self.logger.info(f"Survivor scorer: {config.prng['prng_type']}, mod={config.prng['mod']}")
 
         # Global state tracker
         self.global_tracker = GlobalStateTracker(
             lottery_history=lottery_history,
             config=config.global_state
         )
-        self.logger.info(f"  Global state tracker: {len(lottery_history)} draws")
+        self.logger.info(f"Global state tracker: {len(lottery_history)} draws")
 
-        # Device selection
-        self.device = self._get_device()
-
-        # Calculate total input size (use known dimensions instead of extracting)
+        # v1.6.0: Dynamic feature count (default 48 after label leakage fix)
         global_state = self.global_tracker.get_global_state()
-        # Known: Step 3 extracts 50 features per seed (46 base + 4 sieve metadata)
-        test_features_count = 50
-        total_input_size = test_features_count + len(global_state)
+        self.global_feature_count = len(global_state)
+        
+        if per_seed_feature_count is not None:
+            self.per_seed_feature_count = per_seed_feature_count
+        else:
+            self.per_seed_feature_count = config.model.get('input_features', 48)
+        
+        total_input_size = self.per_seed_feature_count + self.global_feature_count
 
-        self.logger.info(f"  Feature dimensions: {test_features_count} per-seed + {len(global_state)} global = {total_input_size} total")
+        # v1.6.0: Clear feature dimension logging
+        self.logger.info("-"*60)
+        self.logger.info("FEATURE CONFIGURATION")
+        self.logger.info("-"*60)
+        self.logger.info(f"  Feature mode: PRECOMPUTED")
+        self.logger.info(f"  Excluded features: {self.excluded_features}")
+        self.logger.info(f"  Per-seed features: {self.per_seed_feature_count}")
+        self.logger.info(f"  Global features: {self.global_feature_count}")
+        self.logger.info(f"  Total input dim: {total_input_size}")
+        self.logger.info("-"*60)
 
         # Create model
         self.model = SurvivorQualityNet(
@@ -511,8 +574,7 @@ class ReinforcementEngine:
         # Model wrapping
         self._wrap_model()
 
-        self.logger.info(f"  Neural network: {total_input_size} inputs â†’ {config.model['hidden_layers']}")
-        self.logger.info(f"  Device: {self.device}")
+        self.logger.info(f"Neural network: {total_input_size} → {config.model['hidden_layers']} → 1")
 
         # Optimizer
         self.optimizer = optim.Adam(
@@ -534,26 +596,37 @@ class ReinforcementEngine:
         self.feature_scaler = StandardScaler() if config.normalization.get('enabled', True) else None
         self.scaler_fitted = False
         self.normalization_enabled = config.normalization.get('enabled', True)
-        self.feature_stats = {
-            'means': None,
-            'stds': None,
-            'n_samples': 0
-        }
+        self.feature_stats = {'means': None, 'stds': None, 'n_samples': 0}
+        self.per_seed_feature_names: Optional[List[str]] = None
 
         if self.normalization_enabled:
-            self.logger.info("  Feature normalization: ENABLED")
-        else:
-            self.logger.warning("  Feature normalization: DISABLED (not recommended)")
+            self.logger.info("Feature normalization: ENABLED")
 
         Path(config.output['models_dir']).mkdir(parents=True, exist_ok=True)
         Path(config.output['logs_dir']).mkdir(parents=True, exist_ok=True)
 
+        self.logger.info("="*60)
         self.logger.info("ReinforcementEngine initialized successfully!")
+        self.logger.info("="*60)
+
+    def _log_gpu_info(self):
+        """Log GPU configuration details."""
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            self.logger.info(f"CUDA available: Yes")
+            self.logger.info(f"GPU count: {gpu_count}")
+            self.logger.info(f"Selected device: {self.device}")
+            for i in range(gpu_count):
+                name = torch.cuda.get_device_name(i)
+                mem = torch.cuda.get_device_properties(i).total_memory / 1e9
+                self.logger.info(f"  GPU {i}: {name} ({mem:.1f} GB)")
+        else:
+            self.logger.info("CUDA available: No (using CPU)")
 
     def _init_distributed(self):
         """Initialize distributed training"""
         if not DDP_AVAILABLE:
-            self.logger.error("âŒ DDP not available - install PyTorch with distributed support")
+            self.logger.error("DDP not available")
             raise RuntimeError("DDP not available")
 
         self.rank = int(os.environ.get('RANK', self.config.distributed.get('rank', 0)))
@@ -563,10 +636,10 @@ class ReinforcementEngine:
         backend = self.config.distributed.get('backend', 'nccl')
         init_method = self.config.distributed.get('init_method', 'env://')
 
-        self.logger.info(f"  Mode: DISTRIBUTED")
-        self.logger.info(f"    Rank: {self.rank}/{self.world_size}")
-        self.logger.info(f"    Local rank: {self.local_rank}")
-        self.logger.info(f"    Backend: {backend}")
+        self.logger.info(f"Mode: DISTRIBUTED")
+        self.logger.info(f"  Rank: {self.rank}/{self.world_size}")
+        self.logger.info(f"  Local rank: {self.local_rank}")
+        self.logger.info(f"  Backend: {backend}")
 
         try:
             dist.init_process_group(
@@ -575,43 +648,38 @@ class ReinforcementEngine:
                 rank=self.rank,
                 world_size=self.world_size
             )
-            self.logger.info("  âœ… DDP initialized successfully")
+            self.logger.info("✅ DDP initialized successfully")
         except Exception as e:
-            self.logger.error(f"âŒ DDP initialization failed: {e}")
+            self.logger.error(f"DDP initialization failed: {e}")
             raise
 
     def _get_device(self) -> torch.device:
-        """Get appropriate device for local or distributed mode"""
+        """Get appropriate device"""
         if not torch.cuda.is_available():
             return torch.device('cpu')
 
         if self.is_distributed:
-            device_id = self.local_rank
-            return torch.device(f'cuda:{device_id}')
+            return torch.device(f'cuda:{self.local_rank}')
         else:
             return torch.device('cuda:0')
 
     def _wrap_model(self):
         """Wrap model with DDP or DataParallel"""
         if self.is_distributed:
-            self.logger.info(f"  Wrapping model with DistributedDataParallel...")
+            self.logger.info(f"Wrapping model with DistributedDataParallel...")
             self.model = DDP(
                 self.model,
                 device_ids=[self.local_rank],
                 output_device=self.local_rank,
                 find_unused_parameters=self.config.distributed.get('find_unused_parameters', False)
             )
-            self.logger.info(f"  âœ… DDP wrapper active (rank {self.rank})")
+            self.logger.info(f"✅ DDP wrapper active (rank {self.rank})")
         elif torch.cuda.device_count() > 1 and os.environ.get('CUDA_VISIBLE_DEVICES') is None:
-            # Only use DataParallel when CUDA_VISIBLE_DEVICES is NOT set
-            # When set, we're running isolated single-GPU jobs
-            self.logger.info(f"  Using {torch.cuda.device_count()} GPUs for training!")
+            self.logger.info(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
             device_ids = list(range(torch.cuda.device_count()))
             self.model = nn.DataParallel(self.model, device_ids=device_ids)
-            for i in device_ids:
-                self.logger.info(f"     GPU {i}: {torch.cuda.get_device_name(i)}")
         else:
-            self.logger.info(f"  â„¹ï¸  Using single device: {self.device}")
+            self.logger.info(f"Using single device: {self.device}")
 
     def _setup_logger(self) -> logging.Logger:
         log_level = self.config.output.get('log_level', 'INFO')
@@ -621,28 +689,46 @@ class ReinforcementEngine:
         )
         return logging.getLogger(__name__)
 
-    def extract_combined_features(self, seed: int,
-                                  forward_survivors: Optional[List[int]] = None,
-                                  reverse_survivors: Optional[List[int]] = None,
-                                  lottery_history: Optional[List[int]] = None) -> np.ndarray:
+    def extract_combined_features(
+        self, 
+        survivor: Union[int, Dict[str, Any]],
+        forward_survivors: Optional[List[int]] = None,
+        reverse_survivors: Optional[List[int]] = None,
+        lottery_history: Optional[List[int]] = None
+    ) -> np.ndarray:
         """
-        Extract combined features (per-seed + global state)
-        MODIFIED: Accepts lottery_history override for stateless operation.
+        Extract combined features (per-seed + global state).
+        
+        Accepts either:
+        - int (seed): Legacy mode - extracts via SurvivorScorer
+        - dict with 'features': Uses pre-computed features directly
         """
-        history_to_use = lottery_history if lottery_history is not None else self.lottery_history
+        if isinstance(survivor, dict) and 'features' in survivor:
+            features_dict = survivor['features']
+            feature_names = sorted(features_dict.keys())
+            per_seed_values = [float(features_dict.get(k, 0.0)) for k in feature_names]
+            
+            if self.per_seed_feature_names is None:
+                self.per_seed_feature_names = feature_names
+                self.per_seed_feature_count = len(feature_names)
+        else:
+            seed = survivor if isinstance(survivor, int) else int(survivor.get('seed', survivor))
+            history_to_use = lottery_history if lottery_history is not None else self.lottery_history
 
-        per_seed_features = self.scorer.extract_ml_features(
-            seed=seed,
-            lottery_history=history_to_use,
-            forward_survivors=forward_survivors,
-            reverse_survivors=reverse_survivors
-        )
+            per_seed_features = self.scorer.extract_ml_features(
+                seed=seed,
+                lottery_history=history_to_use,
+                forward_survivors=forward_survivors,
+                reverse_survivors=reverse_survivors
+            )
+
+            feature_names = sorted(per_seed_features.keys())
+            per_seed_values = [per_seed_features[k] for k in feature_names]
+            
+            if self.per_seed_feature_names is None:
+                self.per_seed_feature_names = feature_names
 
         global_state = self.global_tracker.get_global_state()
-
-        feature_names = sorted(per_seed_features.keys())
-        per_seed_values = [per_seed_features[k] for k in feature_names]
-
         global_names = sorted(global_state.keys())
         global_values = [global_state[k] for k in global_names]
 
@@ -659,21 +745,20 @@ class ReinforcementEngine:
 
         return combined
 
-    def train(self, survivors: List[int],
-             actual_results: List[float],
-             forward_survivors: Optional[List[int]] = None,
-             reverse_survivors: Optional[List[int]] = None,
-             epochs: Optional[int] = None,
-             lottery_history: Optional[List[int]] = None,
-             epoch_callback: Optional[callable] = None):  # âœ… NEW: Pruning callback
+    def train(
+        self, 
+        survivors: List[Union[int, Dict[str, Any]]],
+        actual_results: List[float],
+        forward_survivors: Optional[List[int]] = None,
+        reverse_survivors: Optional[List[int]] = None,
+        epochs: Optional[int] = None,
+        lottery_history: Optional[List[int]] = None,
+        epoch_callback: Optional[callable] = None
+    ):
         """
-        Train model - DISTRIBUTED-READY VERSION WITH PRUNING SUPPORT
-        MODIFIED: Accepts lottery_history override for stateless operation.
-        NEW: Accepts epoch_callback for Optuna pruning support.
-
-        Args:
-            epoch_callback: Optional function(epoch: int, val_loss: float) -> bool
-                           Returns True to continue training, False to stop (prune)
+        Train model.
+        
+        v1.6.0: Only saves best_model.pth (no epoch spam)
         """
         if len(survivors) == 0 or len(actual_results) == 0:
             self.logger.warning("No training data provided")
@@ -682,31 +767,32 @@ class ReinforcementEngine:
         epochs = epochs or self.config.training['epochs']
         batch_size = self.config.training['batch_size']
         save_best_only = self.config.training.get('save_best_only', True)
+        save_all_epochs = self.config.training.get('save_all_epochs', False)
         verbose_freq = self.config.training.get('verbose_frequency', 10)
         should_log = not self.is_distributed or self.rank == 0
 
+        using_precomputed = isinstance(survivors[0], dict) and 'features' in survivors[0]
+        
         if should_log:
-            self.logger.info(f"Training on {len(survivors)} survivors for {epochs} epochs...")
+            mode = "pre-computed features" if using_precomputed else "scorer extraction"
+            self.logger.info(f"Training on {len(survivors)} survivors for {epochs} epochs ({mode})...")
 
         # Normalization
         if self.normalization_enabled:
             if not self.scaler_fitted:
-                 if should_log:
-                    self.logger.info("Fitting feature normalizer (first training)...")
-                 self._fit_normalizer(survivors, forward_survivors, reverse_survivors, lottery_history)
-            elif self.config.normalization.get('refit_on_drift', True):
-                 if self._check_distribution_drift(survivors, forward_survivors, reverse_survivors, lottery_history):
-                    if should_log:
-                        self.logger.warning("âš ï¸ Distribution drift detected - refitting normalizer")
-                    self._fit_normalizer(survivors, forward_survivors, reverse_survivors, lottery_history)
+                if should_log:
+                    self.logger.info("Fitting feature normalizer...")
+                self._fit_normalizer(survivors, forward_survivors, reverse_survivors, lottery_history)
 
         # Extract features
         if should_log:
             self.logger.info("Extracting features...")
         X = []
-        for seed in survivors:
-            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors,
-                                                    lottery_history=lottery_history)
+        for survivor in survivors:
+            features = self.extract_combined_features(
+                survivor, forward_survivors, reverse_survivors,
+                lottery_history=lottery_history
+            )
             X.append(features)
 
         X = np.array(X, dtype=np.float32)
@@ -730,7 +816,6 @@ class ReinforcementEngine:
         best_epoch = 0
         patience_counter = 0
 
-        # âœ… MODIFIED: Training loop with pruning callback support
         for epoch in range(epochs):
             self.model.train()
             n_batches = len(X_train) // batch_size + (1 if len(X_train) % batch_size else 0)
@@ -758,17 +843,16 @@ class ReinforcementEngine:
 
             avg_loss = epoch_loss / n_batches
 
-            # Update history
             self.training_history['epoch'].append(epoch)
             self.training_history['loss'].append(avg_loss)
             self.training_history['val_loss'].append(val_loss)
 
-            # âœ… NEW: Call pruning callback if provided
+            # Pruning callback
             if epoch_callback is not None:
                 should_continue = epoch_callback(epoch, val_loss)
                 if not should_continue:
                     if should_log:
-                        self.logger.info(f"âš¡ Training stopped by callback at epoch {epoch+1}")
+                        self.logger.info(f"⚡ Training stopped by callback at epoch {epoch+1}")
                     break
 
             # Logging
@@ -781,7 +865,12 @@ class ReinforcementEngine:
                 best_epoch = epoch + 1
                 patience_counter = 0
 
-                if save_best_only and should_log:
+                # v1.6.1: Mark for save at end (no spam during training)
+                if save_best_only:
+                    self._pending_best_save = True
+                    
+                # v1.6.0: Optional epoch snapshots (explicit flag)
+                if save_all_epochs and should_log:
                     self.save_model(f"best_model_epoch_{epoch+1}.pth")
             else:
                 patience_counter += 1
@@ -797,6 +886,11 @@ class ReinforcementEngine:
         self.best_val_loss = best_val_loss
         self.best_overfit_ratio = val_loss / avg_loss if avg_loss > 0 else float('inf')
 
+        # v1.6.1: Save best model ONCE at end of training (no spam)
+        if save_best_only and should_log and getattr(self, '_pending_best_save', False):
+            self.save_model("best_model.pth")
+            self._pending_best_save = False
+
         if should_log:
             self.logger.info(f"Training complete! Best val loss: {best_val_loss:.4f}")
             self.logger.info(f"  Best epoch: {best_epoch}/{epochs}")
@@ -804,41 +898,45 @@ class ReinforcementEngine:
             self.logger.info(f"  Final val loss: {val_loss:.4f}")
             self.logger.info(f"  Overfit ratio: {val_loss / avg_loss:.2f}")
 
-    def predict_quality(self, seed: int,
-                       forward_survivors: Optional[List[int]] = None,
-                       reverse_survivors: Optional[List[int]] = None,
-                       lottery_history: Optional[List[int]] = None) -> float:
-        """
-        Predict quality score for a single survivor
-        MODIFIED: Accepts lottery_history override for stateless operation.
-        """
+    def predict_quality(
+        self, 
+        survivor: Union[int, Dict[str, Any]],
+        forward_survivors: Optional[List[int]] = None,
+        reverse_survivors: Optional[List[int]] = None,
+        lottery_history: Optional[List[int]] = None
+    ) -> float:
+        """Predict quality score for a single survivor."""
         self.model.eval()
 
         with torch.no_grad():
-            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors,
-                                                    lottery_history=lottery_history)
+            features = self.extract_combined_features(
+                survivor, forward_survivors, reverse_survivors,
+                lottery_history=lottery_history
+            )
             features_t = torch.tensor(features).unsqueeze(0).to(self.device)
             quality = self.model(features_t).item()
 
         return quality
 
-    def predict_quality_batch(self, survivors: List[int],
-                              forward_survivors: Optional[List[int]] = None,
-                              reverse_survivors: Optional[List[int]] = None,
-                              lottery_history: Optional[List[int]] = None) -> List[float]:
-        """
-        Predict quality scores for batch of survivors
-        MODIFIED: Accepts lottery_history override for stateless operation.
-        """
+    def predict_quality_batch(
+        self, 
+        survivors: List[Union[int, Dict[str, Any]]],
+        forward_survivors: Optional[List[int]] = None,
+        reverse_survivors: Optional[List[int]] = None,
+        lottery_history: Optional[List[int]] = None
+    ) -> List[float]:
+        """Predict quality scores for batch of survivors."""
         if not survivors:
             return []
 
         self.model.eval()
 
         X = []
-        for seed in survivors:
-            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors,
-                                                    lottery_history=lottery_history)
+        for survivor in survivors:
+            features = self.extract_combined_features(
+                survivor, forward_survivors, reverse_survivors,
+                lottery_history=lottery_history
+            )
             X.append(features)
 
         X = np.array(X, dtype=np.float32)
@@ -849,10 +947,13 @@ class ReinforcementEngine:
 
         return qualities.tolist()
 
-    def prune_survivors(self, survivors: List[int],
-                       keep_top_n: Optional[int] = None,
-                       forward_survivors: Optional[List[int]] = None,
-                       reverse_survivors: Optional[List[int]] = None) -> List[int]:
+    def prune_survivors(
+        self, 
+        survivors: List[Union[int, Dict[str, Any]]],
+        keep_top_n: Optional[int] = None,
+        forward_survivors: Optional[List[int]] = None,
+        reverse_survivors: Optional[List[int]] = None
+    ) -> List[Union[int, Dict[str, Any]]]:
         """Prune survivor pool to keep only top performers"""
         if not survivors:
             return []
@@ -864,15 +965,18 @@ class ReinforcementEngine:
 
         qualities = self.predict_quality_batch(survivors, forward_survivors, reverse_survivors)
         ranked = sorted(zip(survivors, qualities), key=lambda x: x[1], reverse=True)
-        top_survivors = [seed for seed, _ in ranked[:keep_top_n]]
+        top_survivors = [s for s, _ in ranked[:keep_top_n]]
 
         self.logger.info(f"Kept top {len(top_survivors)} survivors")
         return top_survivors
 
-    def _fit_normalizer(self, survivors: List[int],
-                       forward_survivors: Optional[List[int]] = None,
-                       reverse_survivors: Optional[List[int]] = None,
-                       lottery_history: Optional[List[int]] = None):
+    def _fit_normalizer(
+        self, 
+        survivors: List[Union[int, Dict[str, Any]]],
+        forward_survivors: Optional[List[int]] = None,
+        reverse_survivors: Optional[List[int]] = None,
+        lottery_history: Optional[List[int]] = None
+    ):
         """Fit feature normalizer on survivor pool"""
         if not self.normalization_enabled:
             return
@@ -881,9 +985,11 @@ class ReinforcementEngine:
         self.scaler_fitted = False
 
         features_list = []
-        for seed in survivors:
-            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors,
-                                                    lottery_history=lottery_history)
+        for survivor in survivors:
+            features = self.extract_combined_features(
+                survivor, forward_survivors, reverse_survivors,
+                lottery_history=lottery_history
+            )
             features_list.append(features)
 
         features_array = np.array(features_list)
@@ -896,55 +1002,12 @@ class ReinforcementEngine:
         mean_range = [self.feature_stats['means'].min(), self.feature_stats['means'].max()]
         std_range = [self.feature_stats['stds'].min(), self.feature_stats['stds'].max()]
 
-        self.logger.info(f"âœ… Normalizer fitted on {len(survivors)} survivors")
+        self.logger.info(f"✅ Normalizer fitted on {len(survivors)} survivors")
         self.logger.info(f"   Feature mean range: [{mean_range[0]:.2f}, {mean_range[1]:.2f}]")
         self.logger.info(f"   Feature std range: [{std_range[0]:.2f}, {std_range[1]:.2f}]")
 
-    def _check_distribution_drift(self, survivors: List[int],
-                                  forward_survivors: Optional[List[int]] = None,
-                                  reverse_survivors: Optional[List[int]] = None,
-                                  lottery_history: Optional[List[int]] = None) -> bool:
-        """Check if feature distribution has drifted significantly"""
-        if not self.normalization_enabled or not self.scaler_fitted:
-            return False
-
-        sample_size = min(100, len(survivors))
-        if sample_size == 0:
-            return False
-
-        sample_survivors = np.random.choice(survivors, sample_size, replace=False).tolist()
-
-        temp_fitted = self.scaler_fitted
-        self.scaler_fitted = False
-
-        features_list = []
-        for seed in sample_survivors:
-            features = self.extract_combined_features(seed, forward_survivors, reverse_survivors,
-                                                    lottery_history=lottery_history)
-            features_list.append(features)
-
-        self.scaler_fitted = temp_fitted
-
-        current_features = np.array(features_list)
-        current_means = current_features.mean(axis=0)
-        old_means = self.feature_stats['means']
-        old_stds = self.feature_stats['stds']
-
-        if old_means is None or old_stds is None:
-            return False
-
-        mean_shift = np.abs((current_means - old_means) / (old_stds + 1e-8))
-        max_shift = mean_shift.max()
-        drift_threshold = self.config.normalization.get('drift_threshold', 0.3)
-
-        if max_shift > drift_threshold:
-            self.logger.warning(f"Distribution drift: max shift = {max_shift:.2f} std devs")
-            return True
-
-        return False
-
     def save_model(self, filename: Optional[str] = None):
-        """Save model state - DDP-aware"""
+        """Save model state"""
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"reinforcement_model_{timestamp}.pth"
@@ -969,6 +1032,12 @@ class ReinforcementEngine:
                     'n_samples_seen_': int(self.feature_scaler.n_samples_seen_) if self.scaler_fitted and self.normalization_enabled else 0
                 } if self.normalization_enabled else None
             },
+            'feature_schema': {
+                'per_seed_feature_count': self.per_seed_feature_count,
+                'global_feature_count': self.global_feature_count,
+                'per_seed_feature_names': self.per_seed_feature_names,
+                'excluded_features': self.excluded_features
+            },
             'distributed_info': {
                 'is_distributed': self.is_distributed,
                 'rank': self.rank,
@@ -980,7 +1049,7 @@ class ReinforcementEngine:
         self.logger.info(f"Model saved to {filepath}")
 
     def load_model(self, filepath: str):
-        """Load model state - DDP-aware"""
+        """Load model state"""
         checkpoint = torch.load(filepath, map_location=self.device)
 
         model_to_load = self.model.module if hasattr(self.model, 'module') else self.model
@@ -1003,39 +1072,21 @@ class ReinforcementEngine:
                     self.feature_scaler.n_samples_seen_ = scaler_params['n_samples_seen_']
                     self.logger.info("  Normalization scaler restored")
 
+        if 'feature_schema' in checkpoint:
+            schema = checkpoint['feature_schema']
+            self.per_seed_feature_count = schema.get('per_seed_feature_count', self.per_seed_feature_count)
+            self.global_feature_count = schema.get('global_feature_count', self.global_feature_count)
+            self.per_seed_feature_names = schema.get('per_seed_feature_names')
+            self.excluded_features = schema.get('excluded_features', self.excluded_features)
+
         self.logger.info(f"Model loaded from {filepath}")
-
-    def continuous_learning_loop(self, new_draw: int,
-                                 survivors: List[int],
-                                 forward_survivors: Optional[List[int]] = None,
-                                 reverse_survivors: Optional[List[int]] = None):
-        """Continuous learning loop - update model with new draw"""
-        self.lottery_history.append(new_draw)
-        self.global_tracker.update_history([new_draw])
-
-        actual_results = []
-        for seed in survivors:
-            predicted = self.scorer.score_survivor(seed, [new_draw], skip=self.config.prng['skip'])
-            hit_rate = predicted['score']
-            actual_results.append(hit_rate)
-
-        if len(self.lottery_history) % self.config.survivor_pool['update_frequency'] == 0:
-            self.logger.info("Retraining model with new data...")
-            self.train(
-                survivors=survivors,
-                actual_results=actual_results,
-                forward_survivors=forward_survivors,
-                reverse_survivors=reverse_survivors,
-                epochs=10,
-                lottery_history=self.lottery_history
-            )
 
     def cleanup_distributed(self):
         """Cleanup distributed resources"""
         if self.is_distributed and dist.is_initialized():
             self.logger.info("Cleaning up distributed resources...")
             dist.destroy_process_group()
-            self.logger.info("âœ… Distributed cleanup complete")
+            self.logger.info("✅ Distributed cleanup complete")
 
 
 # ============================================================================
@@ -1046,7 +1097,7 @@ def main():
     """CLI interface for testing"""
     import argparse
     parser = argparse.ArgumentParser(
-        description='Reinforcement Engine - ML Training Orchestrator (DISTRIBUTED-READY with ROCm Support)'
+        description='Reinforcement Engine v1.6.0 - ML Training Orchestrator'
     )
     parser.add_argument('--config', type=str,
                        default='reinforcement_engine_config.json',
@@ -1062,7 +1113,7 @@ def main():
 
     if args.test:
         print("="*70)
-        print("REINFORCEMENT ENGINE - SELF TEST (DISTRIBUTED-READY with ROCm)")
+        print("REINFORCEMENT ENGINE v1.6.0 - SELF TEST")
         print("="*70)
 
         config = ReinforcementConfig()
@@ -1077,30 +1128,42 @@ def main():
 
         try:
             engine = ReinforcementEngine(config, lottery_history)
-            print("âœ… Engine initialized successfully")
+            print("✅ Engine initialized successfully")
             print(f"   Device: {engine.device}")
             print(f"   Distributed: {engine.is_distributed}")
             print(f"   CUDA initialized: {CUDA_INITIALIZED}")
             print(f"   GPU available: {GPU_AVAILABLE}")
             print(f"   Hostname: {HOST}")
+            print(f"   Per-seed features: {engine.per_seed_feature_count}")
+            print(f"   Global features: {engine.global_feature_count}")
+            print(f"   Excluded features: {engine.excluded_features}")
 
             global_state = engine.global_tracker.get_global_state()
-            print(f"âœ… Global state computed: {len(global_state)} features")
+            print(f"✅ Global state computed: {len(global_state)} features")
 
+            # Test legacy mode
             features = engine.extract_combined_features(12345)
-            print(f"âœ… Feature extraction: {len(features)} features")
+            print(f"✅ Feature extraction (legacy): {len(features)} features")
+
+            # Test pre-computed mode
+            survivor_dict = {
+                'seed': 12345,
+                'features': {f'feature_{i}': float(i) for i in range(48)}
+            }
+            features_precomputed = engine.extract_combined_features(survivor_dict)
+            print(f"✅ Feature extraction (pre-computed): {len(features_precomputed)} features")
 
             quality = engine.predict_quality(12345)
-            print(f"âœ… Prediction: quality={quality:.4f}")
+            print(f"✅ Prediction: quality={quality:.4f}")
 
             if engine.is_distributed:
                 engine.cleanup_distributed()
 
-            print("\nâœ… All tests passed!")
+            print("\n✅ All tests passed!")
             return 0
 
         except Exception as e:
-            print(f"âŒ Test failed: {e}")
+            print(f"❌ Test failed: {e}")
             import traceback
             traceback.print_exc()
             return 1
@@ -1110,7 +1173,7 @@ def main():
 
     try:
         config = ReinforcementConfig.from_json(args.config)
-        print(f"âœ… Config loaded from {args.config}")
+        print(f"✅ Config loaded from {args.config}")
     except Exception as e:
         print(f"Warning: Could not load config: {e}")
         print("Using default config")
@@ -1127,10 +1190,10 @@ def main():
         else:
             lottery_history = data.get('draws', [])
 
-    print(f"âœ… Loaded {len(lottery_history)} lottery draws")
+    print(f"✅ Loaded {len(lottery_history)} lottery draws")
 
     engine = ReinforcementEngine(config, lottery_history)
-    print("âœ… ReinforcementEngine initialized")
+    print("✅ ReinforcementEngine initialized")
     print(f"   Device: {engine.device}")
     print(f"   Distributed: {engine.is_distributed}")
     print(f"   Model: {sum(p.numel() for p in engine.model.parameters())} parameters")
