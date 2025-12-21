@@ -85,3 +85,4 @@ run/*.pid
 *.backup_*
 survivors_with_scores.json.backup_*
 fix_*.py
+models/reinforcement/best_model_epoch_*.pth
