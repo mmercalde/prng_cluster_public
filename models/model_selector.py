@@ -1,0 +1,287 @@
+"""
+Model Selector (v3.1.2)
+
+Agent-callable interface for model comparison and selection.
+Allows training multiple model types and selecting the best performer.
+
+Usage:
+    from models import ModelSelector
+    
+    selector = ModelSelector(device='cuda:0')
+    selector.load_model('neural_net', 'models/reinforcement/nn_model.pth')
+    selector.load_model('xgboost', 'models/reinforcement/xgb_model.json')
+    
+    results = selector.evaluate_all(X_test, y_test)
+    print(f"Best model: {results['best_model']}")
+"""
+
+import logging
+from typing import Dict, Any, List, Optional
+import numpy as np
+
+from models.model_factory import create_model, load_model, AVAILABLE_MODELS
+
+logger = logging.getLogger(__name__)
+
+
+class ModelSelector:
+    """
+    Agent-callable model selection and comparison.
+    
+    Supports loading multiple trained models and comparing their
+    performance on validation data to select the best one.
+    """
+    
+    def __init__(self, device: str = 'cuda:0'):
+        """
+        Initialize model selector.
+        
+        Args:
+            device: Default device for model inference
+        """
+        self.device = device
+        self.models: Dict[str, Any] = {}
+        logger.info(f"ModelSelector initialized on {device}")
+    
+    def load_model(self, model_type: str, checkpoint_path: str) -> None:
+        """
+        Load a trained model.
+        
+        Args:
+            model_type: One of 'neural_net', 'xgboost', 'lightgbm', 'catboost'
+            checkpoint_path: Path to saved model file
+        """
+        model = load_model(model_type, checkpoint_path, device=self.device)
+        self.models[model_type] = model
+        logger.info(f"Loaded {model_type} from {checkpoint_path}")
+    
+    def add_model(self, model_type: str, model) -> None:
+        """
+        Add a trained model directly (without loading from file).
+        
+        Args:
+            model_type: Model type identifier
+            model: Trained model wrapper instance
+        """
+        self.models[model_type] = model
+        logger.info(f"Added {model_type} model")
+    
+    def predict(self, model_type: str, X: np.ndarray) -> np.ndarray:
+        """
+        Get predictions from a specific model.
+        
+        Args:
+            model_type: Model type to use
+            X: Features, shape (n_samples, n_features)
+            
+        Returns:
+            Predictions, shape (n_samples,)
+        """
+        if model_type not in self.models:
+            raise ValueError(f"Model {model_type} not loaded")
+        
+        # Set eval mode if available (PyTorch)
+        model = self.models[model_type]
+        if hasattr(model, 'eval_mode'):
+            model.eval_mode()
+        
+        return model.predict(X)
+    
+    def predict_all(self, X: np.ndarray) -> Dict[str, np.ndarray]:
+        """
+        Get predictions from all loaded models.
+        
+        Args:
+            X: Features, shape (n_samples, n_features)
+            
+        Returns:
+            Dict mapping model_type to predictions array
+        """
+        return {mt: self.predict(mt, X) for mt in self.models}
+    
+    def score_predictions(self, predictions: np.ndarray, 
+                         y_true: np.ndarray,
+                         metric: str = 'mse') -> float:
+        """
+        Score predictions against ground truth.
+        
+        Args:
+            predictions: Model predictions
+            y_true: Ground truth values
+            metric: Scoring metric ('mse', 'mae', 'rmse', 'r2')
+            
+        Returns:
+            Score value (lower is better for mse/mae/rmse, higher for r2)
+        """
+        if metric == 'mse':
+            return float(np.mean((predictions - y_true) ** 2))
+        elif metric == 'mae':
+            return float(np.mean(np.abs(predictions - y_true)))
+        elif metric == 'rmse':
+            return float(np.sqrt(np.mean((predictions - y_true) ** 2)))
+        elif metric == 'r2':
+            ss_res = np.sum((y_true - predictions) ** 2)
+            ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+            return float(1 - (ss_res / ss_tot)) if ss_tot > 0 else 0.0
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+    
+    def evaluate_all(self, X: np.ndarray, y_true: np.ndarray,
+                     metric: str = 'mse') -> Dict[str, Any]:
+        """
+        Evaluate all loaded models against ground truth.
+        
+        Args:
+            X: Features, shape (n_samples, n_features)
+            y_true: Ground truth values
+            metric: Scoring metric ('mse', 'mae', 'rmse', 'r2')
+            
+        Returns:
+            Dict with predictions, scores, rankings, best_model, best_score
+        """
+        predictions = self.predict_all(X)
+        
+        # Score each model
+        scores = {}
+        for mt, preds in predictions.items():
+            scores[mt] = self.score_predictions(preds, y_true, metric)
+        
+        # Determine if lower or higher is better
+        lower_is_better = metric in ['mse', 'mae', 'rmse']
+        
+        # Create rankings
+        sorted_models = sorted(
+            scores.items(),
+            key=lambda x: x[1],
+            reverse=not lower_is_better
+        )
+        
+        rankings = [
+            {'rank': i+1, 'model': m, 'score': s}
+            for i, (m, s) in enumerate(sorted_models)
+        ]
+        
+        best_model = rankings[0]['model']
+        best_score = rankings[0]['score']
+        
+        logger.info("Model comparison complete:")
+        for r in rankings:
+            marker = "→" if r['rank'] == 1 else " "
+            logger.info(f"  {marker} #{r['rank']}: {r['model']:12} = {r['score']:.6f}")
+        
+        return {
+            'predictions': predictions,
+            'scores': scores,
+            'rankings': rankings,
+            'best_model': best_model,
+            'best_score': best_score,
+            'metric': metric
+        }
+    
+    def select_best(self, scores: Dict[str, float], 
+                    lower_is_better: bool = True) -> str:
+        """
+        Select the best model based on scores.
+        
+        Args:
+            scores: Dict mapping model_type to score
+            lower_is_better: If True, lower scores are better
+            
+        Returns:
+            Model type of the best performer
+        """
+        if lower_is_better:
+            return min(scores, key=scores.get)
+        else:
+            return max(scores, key=scores.get)
+    
+    def get_comparison_summary(self, result: Dict[str, Any]) -> str:
+        """
+        Generate human-readable comparison summary.
+        
+        Args:
+            result: Result dict from evaluate_all()
+            
+        Returns:
+            Formatted summary string
+        """
+        lines = [
+            "=" * 60,
+            "MODEL COMPARISON RESULTS",
+            "=" * 60,
+            f"Metric: {result['metric']}",
+            "",
+            "Rankings:"
+        ]
+        
+        for r in result['rankings']:
+            marker = "→" if r['rank'] == 1 else " "
+            lines.append(f"  {marker} #{r['rank']}: {r['model']:12} = {r['score']:.6f}")
+        
+        lines.extend([
+            "",
+            f"Best: {result['best_model']} ({result['best_score']:.6f})",
+            "=" * 60
+        ])
+        
+        return "\n".join(lines)
+    
+    def to_agent_metadata(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Format comparison results for agent_metadata injection.
+        
+        Args:
+            result: Result dict from evaluate_all()
+            
+        Returns:
+            Dict suitable for agent_metadata
+        """
+        return {
+            'model_comparison': {
+                'evaluated_models': list(result['predictions'].keys()),
+                'best_model': result['best_model'],
+                'best_score': result['best_score'],
+                'metric': result['metric'],
+                'rankings': [
+                    {'model': r['model'], 'score': r['score']}
+                    for r in result['rankings']
+                ]
+            }
+        }
+    
+    def train_and_compare(self, X_train: np.ndarray, y_train: np.ndarray,
+                          X_val: np.ndarray, y_val: np.ndarray,
+                          model_types: Optional[List[str]] = None,
+                          configs: Optional[Dict[str, Dict]] = None,
+                          metric: str = 'mse') -> Dict[str, Any]:
+        """
+        Train multiple models and compare their performance.
+        
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            model_types: List of model types to train (default: all)
+            configs: Dict of model-specific configs
+            metric: Evaluation metric
+            
+        Returns:
+            Comparison results with trained models
+        """
+        model_types = model_types or AVAILABLE_MODELS
+        configs = configs or {}
+        
+        logger.info(f"Training and comparing {len(model_types)} models...")
+        
+        for mt in model_types:
+            try:
+                logger.info(f"Training {mt}...")
+                config = configs.get(mt, {})
+                model = create_model(mt, config=config, device=self.device)
+                model.fit(X_train, y_train, X_val, y_val)
+                self.add_model(mt, model)
+            except Exception as e:
+                logger.error(f"Failed to train {mt}: {e}")
+        
+        return self.evaluate_all(X_val, y_val, metric=metric)

@@ -848,6 +848,15 @@ def main():
     parser.add_argument('--study-name', type=str, help='Optuna study name')
     parser.add_argument('--storage', type=str, default='sqlite:///optuna_studies.db',
                        help='Optuna storage path')
+    
+    # Multi-Model Architecture v3.1.2 arguments
+    parser.add_argument('--model-type', type=str, default='neural_net',
+                       choices=['neural_net', 'xgboost', 'lightgbm', 'catboost'],
+                       help='ML model type for training (default: neural_net)')
+    parser.add_argument('--compare-models', action='store_true',
+                       help='Train all model types and select best')
+    parser.add_argument('--output-dir', type=str, default='models/reinforcement',
+                       help='Output directory for model and sidecar (default: models/reinforcement)')
 
     args = parser.parse_args()
 
@@ -857,18 +866,27 @@ def main():
     print(f"✅ CUDA initialized: {CUDA_INITIALIZED}")
     print("="*70)
 
-    # Load data
-    with open(args.survivors) as f:
-        data = json.load(f)
-        survivors = [s['seed'] if isinstance(s, dict) else s for s in data]
+    # Load data with real quality scores (v3.1.2)
+    from models.feature_schema import load_quality_from_survivors, get_feature_schema_with_hash
+    
+    # Load survivors and quality from Step 3 output
+    print(f"Loading survivors from {args.survivors}...")
+    survivors, actual_quality, y_label_metadata = load_quality_from_survivors(args.survivors)
+    print(f"  Loaded {len(survivors)} survivors")
+    print(f"  Score range: [{y_label_metadata['observed_min']:.4f}, {y_label_metadata['observed_max']:.4f}]")
+    print(f"  Normalization: {y_label_metadata['normalization_method']}")
+    if y_label_metadata.get('warnings'):
+        for w in y_label_metadata['warnings']:
+            print(f"  ⚠️ Warning: {w}")
+    
+    # Get feature schema with hash for sidecar
+    feature_schema = get_feature_schema_with_hash(args.survivors)
+    print(f"  Features: {feature_schema['feature_count']}")
+    print(f"  Schema hash: {feature_schema['feature_schema_hash']}")
 
     with open(args.lottery_data) as f:
         lottery_data = json.load(f)
         lottery_history = [d['draw'] if isinstance(d, dict) else d for d in lottery_data]
-
-    # Synthetic quality for demo
-    np.random.seed(42)
-    actual_quality = np.random.uniform(0.2, 0.8, len(survivors)).tolist()
 
     # Optimize
     optimizer = AntiOverfitMetaOptimizer(
@@ -911,6 +929,66 @@ def main():
         print(f"\nTop 5 Features:")
         for i, (name, imp) in enumerate(list(optimizer.best_feature_importance.items())[:5], 1):
             print(f"  {i}. {name}: {imp:.4f}")
+    
+    # v3.1.2: Save model with sidecar metadata
+    print(f"\nSaving model and metadata to {args.output_dir}...")
+    from models.model_factory import save_model_with_sidecar
+    from datetime import datetime
+    
+    # Get the best trained model from optimizer
+    # For now, we train a final model with best config
+    from models import create_model
+    
+    # Prepare training data (same split as optimizer used)
+    from sklearn.model_selection import train_test_split
+    X_features = []
+    for seed in survivors:
+        # Extract features using existing scorer
+        features = optimizer.scorer.extract_ml_features(seed, lottery_history)
+        X_features.append(list(features.values()))
+    
+    import numpy as np
+    X = np.array(X_features, dtype=np.float32)
+    y = np.array(actual_quality, dtype=np.float32)
+    
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=args.test_holdout, random_state=42
+    )
+    
+    # Create and train final model with best config
+    model = create_model(args.model_type, config=best_config)
+    model.fit(X_train, y_train, X_val, y_val)
+    
+    # Prepare training info
+    training_info = {
+        "started_at": datetime.utcnow().isoformat() + "Z",
+        "completed_at": datetime.utcnow().isoformat() + "Z",
+        "n_trials": args.trials,
+        "k_folds": args.k_folds,
+        "test_holdout": args.test_holdout,
+        "model_type": args.model_type
+    }
+    
+    # Prepare validation metrics
+    val_pred = model.predict(X_val)
+    validation_metrics = {
+        "mse": float(np.mean((val_pred - y_val) ** 2)),
+        "mae": float(np.mean(np.abs(val_pred - y_val))),
+        "rmse": float(np.sqrt(np.mean((val_pred - y_val) ** 2)))
+    }
+    
+    # Save with sidecar
+    checkpoint_path = save_model_with_sidecar(
+        model=model,
+        output_dir=args.output_dir,
+        feature_schema=feature_schema,
+        y_label_metadata=y_label_metadata,
+        training_info=training_info,
+        validation_metrics=validation_metrics
+    )
+    
+    print(f"✅ Model saved: {checkpoint_path}")
+    print(f"✅ Sidecar saved: {args.output_dir}/best_model.meta.json")
     
     print("="*70)
 

@@ -44,6 +44,14 @@ except ImportError as e:
     print("Make sure survivor_scorer.py is in the same directory!")
     sys.exit(1)
 
+# Multi-Model Architecture v3.1.2 imports
+try:
+    from models.model_factory import load_model_from_sidecar
+    from models.feature_schema import validate_feature_schema_hash, get_feature_schema_with_hash
+    MULTI_MODEL_AVAILABLE = True
+except ImportError:
+    MULTI_MODEL_AVAILABLE = False
+
 
 # ============================================================================
 # CONFIGURATION
@@ -321,7 +329,7 @@ class PredictionGenerator:
         result = inject_agent_metadata(
             result,
             inputs=[
-                {"file": "models/anti_overfit/best_model.pth", "required": True},
+                {"file": self.model_checkpoint_path or "models/reinforcement/best_model.meta.json", "required": True},
                 {"file": "survivors_with_scores.json", "required": True}
             ],
             outputs=[str(filepath)],
@@ -362,6 +370,9 @@ def main():
     parser.add_argument('--k', type=int)
     parser.add_argument('--test', action='store_true',
                        help='Run self-test')
+    # Multi-Model Architecture v3.1.2
+    parser.add_argument('--models-dir', type=str, default='models/reinforcement',
+                       help='Directory containing best_model.meta.json (default: models/reinforcement)')
 
     args = parser.parse_args()
 

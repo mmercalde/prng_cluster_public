@@ -2,7 +2,7 @@
   "agent_name": "reinforcement_agent",
   "description": "Step 5: Distributed K-fold anti-overfit training using reinforcement learning. Trains final production model across 26 GPUs with cross-validation.",
   "pipeline_step": 5,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "feature_registry": "config_manifests/feature_registry.json",
   "inputs": [
     "survivors_with_scores.json",
@@ -10,8 +10,9 @@
     "best_model_architecture.json"
   ],
   "outputs": [
-    "models/anti_overfit/best_model.pth",
-    "models/anti_overfit/training_history.json",
+    "models/reinforcement/best_model.pth",
+    "models/reinforcement/best_model.meta.json",
+    "models/reinforcement/training_history.json",
     "anti_overfit_validation_results.json"
   ],
   "actions": [
@@ -53,7 +54,7 @@
   "follow_up_agents": [
     "prediction_agent"
   ],
-  "success_condition": "best_model.pth exists AND anti_overfit_validation_results.json shows val_loss < threshold",
+  "success_condition": "best_model.meta.json exists AND validation_metrics show acceptable performance",
   "retry": 1,
   "parameter_bounds": {
     "k_folds": {
@@ -172,6 +173,33 @@
       "description": "Historical window for temporal features in reinforcement.",
       "optimized_by": "Optuna TPE",
       "effect": "Larger = more historical context but slower training."
+    },
+    "model_type": {
+      "type": "categorical",
+      "choices": [
+        "neural_net",
+        "xgboost",
+        "lightgbm",
+        "catboost"
+      ],
+      "default": "neural_net",
+      "description": "ML model type for training. neural_net runs on all 26 GPUs, others run on Zeus only.",
+      "optimized_by": "Manual or --compare-models",
+      "effect": "Different models may perform better on different data characteristics."
+    },
+    "compare_models": {
+      "type": "bool",
+      "default": false,
+      "description": "If true, train all 4 model types and select best performer.",
+      "optimized_by": "Manual",
+      "effect": "Finds optimal model type at cost of 4x training time."
+    },
+    "output_dir": {
+      "type": "string",
+      "default": "models/reinforcement",
+      "description": "Output directory for model checkpoint and sidecar metadata.",
+      "optimized_by": "Manual",
+      "effect": "Determines where best_model.* and best_model.meta.json are saved."
     }
   },
   "success_metrics": {
@@ -187,7 +215,10 @@
     "k_folds": 5,
     "test_holdout": 0.2,
     "study_name": "anti_overfit_study",
-    "storage": "sqlite:///optuna_studies/anti_overfit.db"
+    "storage": "sqlite:///optuna_studies/anti_overfit.db",
+    "model_type": "neural_net",
+    "compare_models": false,
+    "output_dir": "models/reinforcement"
   },
   "evaluation_params": {
     "confidence_formula": "overfit_ratio",
