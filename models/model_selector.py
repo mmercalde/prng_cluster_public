@@ -23,6 +23,19 @@ from models.model_factory import create_model, load_model, AVAILABLE_MODELS
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# CRITICAL: LightGBM/OpenCL Safe Ordering
+# =============================================================================
+# LightGBM uses OpenCL for GPU acceleration.
+# XGBoost, CatBoost, and Neural Net use CUDA.
+# If CUDA models run first, they claim the GPU context and block OpenCL.
+# This causes LightGBM to fail with "Unknown OpenCL Error (-9999)".
+#
+# SOLUTION: Always run LightGBM FIRST before any CUDA-based models.
+# This is a PERMANENT system constraint, not a temporary workaround.
+# =============================================================================
+SAFE_MODEL_ORDER = ["lightgbm", "neural_net", "xgboost", "catboost"]
+
 
 class ModelSelector:
     """
@@ -253,23 +266,42 @@ class ModelSelector:
                           X_val: np.ndarray, y_val: np.ndarray,
                           model_types: Optional[List[str]] = None,
                           configs: Optional[Dict[str, Dict]] = None,
-                          metric: str = 'mse') -> Dict[str, Any]:
+                          metric: str = "mse") -> Dict[str, Any]:
         """
         Train multiple models and compare their performance.
+        
+        CRITICAL: Models are trained in SAFE_MODEL_ORDER to prevent
+        OpenCL/CUDA context conflicts. LightGBM (OpenCL) must run first.
         
         Args:
             X_train: Training features
             y_train: Training targets
             X_val: Validation features
             y_val: Validation targets
-            model_types: List of model types to train (default: all)
+            model_types: List of model types to train (default: SAFE_MODEL_ORDER)
             configs: Dict of model-specific configs
             metric: Evaluation metric
-            
+        
         Returns:
             Comparison results with trained models
         """
-        model_types = model_types or AVAILABLE_MODELS
+        # Default to safe order
+        if model_types is None:
+            model_types = SAFE_MODEL_ORDER.copy()
+            logger.info(f"Using default SAFE_MODEL_ORDER: {model_types}")
+        else:
+            # Enforce safe ordering: LightGBM must be first
+            if "lightgbm" in model_types and model_types[0] != "lightgbm":
+                logger.warning(
+                    f"Reordering models to prevent OpenCL/CUDA conflict. "
+                    f"Original: {model_types}"
+                )
+                # Reorder: lightgbm first, then others in requested order
+                reordered = ["lightgbm"]
+                reordered.extend([m for m in model_types if m != "lightgbm"])
+                model_types = reordered
+                logger.warning(f"Safe order: {model_types}")
+        
         configs = configs or {}
         
         logger.info(f"Training and comparing {len(model_types)} models...")
@@ -279,7 +311,7 @@ class ModelSelector:
                 logger.info(f"Training {mt}...")
                 config = configs.get(mt, {})
                 model = create_model(mt, config=config, device=self.device)
-                model.fit(X_train, y_train, X_val, y_val)
+                model.fit(X_train, y_train, eval_set=(X_val, y_val))
                 self.add_model(mt, model)
             except Exception as e:
                 logger.error(f"Failed to train {mt}: {e}")

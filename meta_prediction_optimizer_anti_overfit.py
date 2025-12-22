@@ -25,6 +25,7 @@ Previous versions:
 """
 
 import json
+import hashlib
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Union
@@ -37,6 +38,16 @@ from sklearn.metrics import r2_score
 import time
 from datetime import datetime
 
+
+# Multi-Model Architecture (Team Beta Fix 1)
+try:
+    from models.model_selector import ModelSelector, SAFE_MODEL_ORDER
+    from models import MODEL_EXTENSIONS
+    MULTI_MODEL_AVAILABLE = True
+except ImportError:
+    MULTI_MODEL_AVAILABLE = False
+    SAFE_MODEL_ORDER = ["neural_net"]
+    MODEL_EXTENSIONS = {"neural_net": ".pth"}
 from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
 
 # Feature importance (optional)
@@ -47,6 +58,21 @@ except ImportError:
     FEATURE_IMPORTANCE_AVAILABLE = False
     def get_feature_importance(*args, **kwargs): return {}
     def get_importance_summary_for_agent(*args, **kwargs): return {}
+
+# Fix 3: Git commit helper for provenance
+def get_git_commit():
+    """Get current git commit hash for provenance tracking."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:12]  # Short hash
+    except Exception:
+        pass
+    return None
 
 # Drift tracking (optional)
 try:
@@ -497,6 +523,8 @@ def main():
     parser.add_argument('--model-type', type=str, default='neural_net',
                        choices=['neural_net', 'xgboost', 'lightgbm', 'catboost'])
     parser.add_argument('--output-dir', type=str, default='models/reinforcement', help='Output directory')
+    parser.add_argument("--compare-models", action="store_true",
+                       help="Compare all 4 model types and select best (runs after Optuna)")
     parser.add_argument('--log-level', type=str, default='INFO', 
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                        help='Logging level (default: INFO)')
@@ -571,6 +599,77 @@ def main():
 
     best_config, metrics = optimizer.optimize(n_trials=args.trials)
 
+    # =========================================================================
+    # Fix 1: --compare-models support (Team Beta requirement)
+    # =========================================================================
+    winning_model_type = args.model_type  # Default to CLI arg
+    comparison_results = None
+    winning_model = None
+    
+    if args.compare_models:
+        if not MULTI_MODEL_AVAILABLE:
+            print("⚠️ --compare-models requested but models package not available")
+            print("   Falling back to neural_net only")
+        else:
+            print()
+            print("="*70)
+            print("MULTI-MODEL COMPARISON (Team Beta Fix 1)")
+            print("="*70)
+            
+            # Extract X, y from survivors for ModelSelector
+            exclude_features = ["score", "confidence"]
+            first_features = survivors[0].get("features", {})
+            feature_names = sorted([k for k in first_features.keys() if k not in exclude_features])
+            
+            X = []
+            for s in survivors:
+                features = s.get("features", {})
+                row = [features.get(f, 0.0) for f in feature_names]
+                X.append(row)
+            
+            X = np.array(X, dtype=np.float32)
+            # FIX: Use actual_quality (already extracted) - score was excluded from features
+            y = np.array(actual_quality, dtype=np.float32)
+            print(f"  Prepared X: {X.shape}, y: {y.shape}")
+            print(f"  y range: [{y.min():.4f}, {y.max():.4f}]")
+            
+            # Train/val split (use same holdout as optimizer)
+            from sklearn.model_selection import train_test_split
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y, test_size=args.test_holdout, random_state=42
+            )
+            print(f"  Train: {X_train.shape[0]}, Val: {X_val.shape[0]}")
+            print()
+            
+            # Clear GPU memory before comparison (prevents CatBoost errors after Optuna)
+            import torch
+            import gc
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                gc.collect()
+                print("  GPU memory cleared before model comparison")
+
+            # Run comparison with SAFE order (LightGBM first)
+            selector = ModelSelector(device="cuda:0")
+            print(f"  Training models in safe order: {SAFE_MODEL_ORDER}")
+            comparison_results = selector.train_and_compare(
+                X_train, y_train, X_val, y_val,
+                model_types=SAFE_MODEL_ORDER,
+                metric="mse"
+            )
+            
+            # Display results
+            print()
+            print(selector.get_comparison_summary(comparison_results))
+            
+            # Select winner
+            winning_model_type = comparison_results["best_model"]
+            winning_model = selector.models[winning_model_type]
+            
+            print(f"\n🏆 WINNER: {winning_model_type} (MSE: {comparison_results['best_score']:.6f})")
+            print("="*70)
+
     # Final summary
     print()
     print("="*70)
@@ -602,64 +701,125 @@ def main():
     else:
         print(f"⚠️ R² ≤ 0: Model has no predictive value beyond baseline")
 
-    # Save model and sidecar
+    # =========================================================================
+    # Save model and sidecar (Fix 1: Multi-model aware)
+    # =========================================================================
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    if hasattr(optimizer, '_final_engine'):
-        optimizer._final_engine.save_model("best_model.pth")
-        
-        # v1.7.1: Enhanced sidecar with R² and improvement metrics
+    
+    # Determine model type and extension
+    model_ext = MODEL_EXTENSIONS.get(winning_model_type, ".pth")
+    checkpoint_filename = f"best_model{model_ext}"
+    checkpoint_path = output_dir / checkpoint_filename
+    
+    # Save the model
+    if winning_model is not None:
+        # --compare-models was used, save the winning model
+        print(f"\nSaving winning model: {winning_model_type}")
+        winning_model.save(str(checkpoint_path))
+        model_saved = True
+    elif hasattr(optimizer, "_final_engine"):
+        # Default: save neural_net from Optuna optimization
+        optimizer._final_engine.save_model(str(checkpoint_path))
+        model_saved = True
+    else:
+        print("⚠️ No model to save")
+        model_saved = False
+    
+    if model_saved:
+        # Build sidecar with all Team Beta requirements (Fix 3: Provenance)
         sidecar = {
-            "schema_version": "1.7.1",
-            "model_type": args.model_type,
-            "checkpoint_path": "best_model.pth",  # v1.7.0: Relative path
-            "checkpoint_path_absolute": str(output_dir / "best_model.pth"),  # For reference
+            "schema_version": "3.2.0",
+            "model_type": winning_model_type,
+            "checkpoint_path": checkpoint_filename,
+            "checkpoint_path_absolute": str(checkpoint_path),
+            
+            # Fix 4: Split feature schema
             "feature_schema": {
-                "per_seed_feature_count": feature_schema['feature_count'],
+                "per_seed_feature_count": feature_schema["feature_count"],
+                "per_seed_feature_names": feature_schema.get("feature_names", []),
+                "per_seed_hash": feature_schema.get("feature_schema_hash", ""),
                 "global_feature_count": 14,
-                "total_features": feature_schema['feature_count'] + 14,
-                "feature_schema_hash": feature_schema['feature_schema_hash'],
-                "feature_names": feature_schema.get('feature_names', []),
-                "excluded_features": excluded_features
+                "global_feature_names": [
+                    "frequency_bias_ratio", "high_variance_count", "marker_390_variance",
+                    "marker_575_variance", "marker_804_variance", "power_of_two_bias",
+                    "regime_age", "regime_change_detected", "reseed_probability",
+                    "residue_1000_entropy", "residue_125_entropy", "residue_8_entropy",
+                    "suspicious_gap_percentage", "temporal_stability"
+                ],
+                "global_hash": hashlib.sha256(",".join([
+                    "frequency_bias_ratio", "high_variance_count", "marker_390_variance",
+                    "marker_575_variance", "marker_804_variance", "power_of_two_bias",
+                    "regime_age", "regime_change_detected", "reseed_probability",
+                    "residue_1000_entropy", "residue_125_entropy", "residue_8_entropy",
+                    "suspicious_gap_percentage", "temporal_stability"
+                ]).encode()).hexdigest()[:16],
+                "total_features": feature_schema["feature_count"] + 14,
+                "combined_hash": feature_schema.get("feature_schema_hash", ""),
+                "excluded_features": excluded_features,
+                "ordering": "per_seed_first_then_global"
             },
+            
             "y_label_source": {
                 "field": "features.score",
-                "observed_min": float(y_label_metadata['observed_min']),
-                "observed_max": float(y_label_metadata['observed_max']),
-                "observed_range": float(y_label_metadata['observed_max'] - y_label_metadata['observed_min']),
-                "normalization_method": y_label_metadata['normalization_method'],
+                "observed_min": float(y_label_metadata["observed_min"]),
+                "observed_max": float(y_label_metadata["observed_max"]),
+                "observed_range": float(y_label_metadata["observed_max"] - y_label_metadata["observed_min"]),
+                "normalization_method": y_label_metadata["normalization_method"],
                 "baseline_prediction": optimizer._mean_quality
             },
+            
             "validation_metrics": {
                 "test_mae": metrics.test_mae,
                 "train_mae": metrics.train_mae,
                 "baseline_mae": metrics.baseline_mae,
                 "overfit_ratio": metrics.overfit_ratio,
-                # v1.7.1: New metrics
                 "r2_score": metrics.r2_score,
                 "sklearn_r2": optimizer._sklearn_r2,
                 "improvement_over_baseline_pct": metrics.improvement_over_baseline_pct,
                 "beats_baseline": metrics.test_mae < metrics.baseline_mae
             },
+            
+            # Fix 3: Real provenance
+            "provenance": {
+                "cli_args": vars(args),
+                "dataset_path": str(Path(args.survivors).resolve()),
+                "n_survivors_loaded": len(survivors),
+                "n_survivors_used": len(survivors),
+                "split_method": "random_stratified",
+                "k_folds_effective": args.k_folds,
+                "n_trials_effective": args.trials,
+                "git_commit": get_git_commit(),
+                "compare_models_used": args.compare_models,
+                "completed_at": datetime.now().isoformat() + "Z"
+            },
+            
             "training_info": {
                 "n_trials": args.trials,
                 "k_folds": args.k_folds,
-                "best_config": best_config,
-                "n_survivors": len(survivors),
-                "completed_at": datetime.now().isoformat() + "Z"
+                "best_config": best_config if winning_model_type == "neural_net" else {},
+                "n_survivors": len(survivors)
             }
         }
         
-        with open(output_dir / "best_model.meta.json", 'w') as f:
+        # Add comparison results if --compare-models was used
+        if comparison_results:
+            sidecar["model_comparison"] = {
+                "evaluated_models": list(comparison_results["predictions"].keys()),
+                "rankings": comparison_results["rankings"],
+                "metric": comparison_results["metric"]
+            }
+        
+        with open(output_dir / "best_model.meta.json", "w") as f:
             json.dump(sidecar, f, indent=2, default=str)
         
         print()
-        print(f"✅ Model saved: {output_dir}/best_model.pth")
+        print(f"✅ Model saved: {checkpoint_path}")
         print(f"✅ Sidecar saved: {output_dir}/best_model.meta.json")
-
+    
     print("="*70)
-
 
 if __name__ == "__main__":
     main()
+
+

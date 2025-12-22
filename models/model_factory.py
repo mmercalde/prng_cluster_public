@@ -256,25 +256,35 @@ def save_model_with_sidecar(model, output_dir: str,
     return str(checkpoint_path)
 
 
-def load_model_from_sidecar(models_dir: str, device: Optional[str] = None):
+def load_model_from_sidecar(models_dir: str, device: Optional[str] = None,
+                            survivors_file: Optional[str] = None,
+                            strict: bool = True):
     """
     Load model using sidecar metadata (Step 6 pattern).
     
-    CRITICAL: Model type is determined ONLY from best_model.meta.json.
-    File extensions are NEVER used for type inference.
+    CRITICAL (Team Beta Fix 2): Strict validation with FATAL errors.
+    - Model type from meta.json ONLY (never file extension)
+    - FATAL if meta.json missing
+    - FATAL if model_type field missing
+    - FATAL if schema hash mismatch (when survivors_file provided)
+    - FATAL if feature count mismatch
     
     Args:
         models_dir: Directory containing best_model.meta.json
         device: Device to load model to
-        
+        survivors_file: Optional path to survivors for schema validation
+        strict: If True, raise on validation failures (default: True)
+    
     Returns:
         Tuple of (model, metadata)
-        
+    
     Raises:
         FileNotFoundError: If sidecar or checkpoint missing
+        ValueError: If required fields missing or schema mismatch
     """
     meta_path = Path(models_dir) / "best_model.meta.json"
     
+    # FATAL: Missing sidecar
     if not meta_path.exists():
         raise FileNotFoundError(
             f"FATAL: Missing metadata sidecar: {meta_path}\n"
@@ -285,7 +295,22 @@ def load_model_from_sidecar(models_dir: str, device: Optional[str] = None):
     with open(meta_path) as f:
         meta = json.load(f)
     
+    # FATAL: model_type missing
+    if "model_type" not in meta:
+        raise ValueError(
+            f"FATAL: model_type field missing from {meta_path}\n"
+            "Sidecar is malformed. Re-run Step 5."
+        )
+    
     model_type = meta["model_type"]
+    
+    # FATAL: checkpoint_path missing
+    if "checkpoint_path" not in meta:
+        raise ValueError(
+            f"FATAL: checkpoint_path field missing from {meta_path}\n"
+            "Sidecar is malformed. Re-run Step 5."
+        )
+    
     checkpoint_path = meta["checkpoint_path"]
     
     # Validate checkpoint exists
@@ -296,10 +321,49 @@ def load_model_from_sidecar(models_dir: str, device: Optional[str] = None):
             checkpoint_path = str(alt_path)
         else:
             raise FileNotFoundError(
-                f"Checkpoint not found: {checkpoint_path}\n"
+                f"FATAL: Checkpoint not found: {checkpoint_path}\n"
                 f"Also tried: {alt_path}\n"
                 f"Referenced in: {meta_path}"
             )
+    
+    # Schema validation (if survivors_file provided)
+    if survivors_file and strict:
+        try:
+            from models.feature_schema import get_feature_schema_with_hash
+            
+            # Get runtime schema
+            runtime_schema = get_feature_schema_with_hash(survivors_file)
+            
+            # Get training schema from meta
+            training_schema = meta.get("feature_schema", {})
+            training_hash = training_schema.get("combined_hash") or training_schema.get("feature_schema_hash", "")
+            training_count = training_schema.get("total_features") or training_schema.get("per_seed_feature_count", 0)
+            
+            runtime_hash = runtime_schema.get("feature_schema_hash", "")
+            runtime_count = runtime_schema.get("feature_count", 0)
+            
+            # FATAL: Feature count mismatch
+            if training_count > 0 and runtime_count > 0 and training_count != runtime_count:
+                raise ValueError(
+                    f"FATAL: Feature count mismatch\n"
+                    f"  Training: {training_count} features\n"
+                    f"  Runtime:  {runtime_count} features\n"
+                    f"Model was trained on different feature set."
+                )
+            
+            # FATAL: Schema hash mismatch
+            if training_hash and runtime_hash and training_hash != runtime_hash:
+                raise ValueError(
+                    f"FATAL: Feature schema hash mismatch\n"
+                    f"  Training: {training_hash}\n"
+                    f"  Runtime:  {runtime_hash}\n"
+                    f"Features may have different ordering or names."
+                )
+            
+            logger.info(f"Schema validation passed: {runtime_count} features, hash={runtime_hash[:8]}...")
+            
+        except ImportError:
+            logger.warning("feature_schema module not available, skipping schema validation")
     
     # Load model
     model = load_model(model_type, checkpoint_path, device=device)
