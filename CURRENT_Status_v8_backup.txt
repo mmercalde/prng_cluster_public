@@ -1,0 +1,215 @@
+# CURRENT STATUS - Updated December 20, 2025 (Session 15 COMPLETE)
+
+## Timeline Summary
+```
+Session 1:  Dec 3-4, 2025  - Schema v1.0.3/v1.0.4, Dual-LLM, Universal Agent v1.0
+Session 2:  Dec 4-5, 2025  - Watcher Agent, Progress Display, 26-GPU fix
+Session 3:  Dec 5-6, 2025  - Configurable thresholds, chunk sizing fix
+Session 4:  Dec 6, 2025    - Manifests v1.3.0 (Steps 2-6), PROPOSAL Addendum B
+Session 5:  Dec 6-7, 2025  - Web Dashboard, Interactive Plots, Live Trial Data
+Session 6:  Dec 7, 2025    - AMD GPU monitoring, Settings UI, Dashboard polish
+Session 7:  Dec 7, 2025    - Java LCG sieve debugging, triple-modulo fix
+Session 8:  Dec 7, 2025    - Centralized search bounds, threshold philosophy fix
+Session 9:  Dec 8-9, 2025  - agent_metadata injection COMPLETE (Steps 4, 5, 6)
+Session 10: Dec 9, 2025    - Feature Importance Phases 1, 2 & 3 COMPLETE
+Session 11: Dec 10, 2025   - Phases 4 & 5 COMPLETE (Agent Integration + Visualization)
+Session 12: Dec 13, 2025   - Step 3 Full Scoring COMPLETE + Feature Registry
+Session 13: Dec 16-17, 2025 - GPU-Batched Scoring v1.9.0 (CRITICAL PERFORMANCE FIX)
+Session 14: Dec 17-18, 2025 - scripts_coordinator.py v1.4.0 (ARCHITECTURAL CORRECTION)
+Session 15: Dec 20, 2025   - Multi-Model ML Architecture v3.1.2 (CRITICAL Y-LABEL FIX)
+```
+
+---
+
+## Session 15 Final Result: Multi-Model ML Architecture v3.1.2 ✅
+
+### Problem
+1. **CRITICAL BUG:** `meta_prediction_optimizer_anti_overfit.py` was training on **synthetic random y-labels**:
+   ```python
+   # OLD (WRONG - training on random noise!)
+   actual_quality = np.random.uniform(0.2, 0.8, len(survivors)).tolist()
+   ```
+   This meant the ML model was learning nothing useful.
+
+2. Only neural_net model supported - no ability to compare model types
+3. No metadata sidecar for model identification in Step 6
+4. Hardcoded feature count (should derive from data)
+
+### Solution
+Implemented Multi-Model ML Architecture v3.1.2:
+- **FIXED y-labels**: Now loads real quality scores from `survivors_with_scores.json`
+- **4 model types**: neural_net, xgboost, lightgbm, catboost
+- **Sidecar metadata**: `best_model.meta.json` for model identification
+- **Feature schema hashing**: Validates training/prediction consistency
+- **Streaming parsing**: Handles 813MB survivor files without memory explosion
+
+### Files Created (11 new files)
+
+| File | Purpose |
+|------|---------|
+| `models/__init__.py` | Package exports |
+| `models/feature_schema.py` | Streaming schema derivation + hash validation |
+| `models/gpu_memory.py` | GPU memory reporting mixin |
+| `models/model_factory.py` | create_model(), load_model(), save_with_sidecar() |
+| `models/model_selector.py` | Model comparison and selection |
+| `models/wrappers/__init__.py` | Wrapper package exports |
+| `models/wrappers/base.py` | ModelInterface protocol |
+| `models/wrappers/neural_net_wrapper.py` | Wraps existing SurvivorQualityNet |
+| `models/wrappers/xgboost_wrapper.py` | XGBoost GPU wrapper (Zeus only) |
+| `models/wrappers/lightgbm_wrapper.py` | LightGBM GPU wrapper (Zeus only) |
+| `models/wrappers/catboost_wrapper.py` | CatBoost multi-GPU wrapper |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `meta_prediction_optimizer_anti_overfit.py` | +model-type, +compare-models, FIXED y-labels, +sidecar |
+| `prediction_generator.py` | +models-dir, +multi-model imports |
+| `agent_manifests/reinforcement.json` | v1.4.0 with model_type params |
+| `agent_manifests/prediction.json` | v1.4.0 with models_dir param |
+
+---
+
+## Multi-Model Architecture v3.1.2 Usage
+
+### Step 5 - Training (Default neural_net)
+```bash
+python3 meta_prediction_optimizer_anti_overfit.py \
+    --survivors survivors_with_scores.json \
+    --lottery-data synthetic_lottery.json \
+    --trials 50 --k-folds 5
+```
+
+### Step 5 - Training with specific model type
+```bash
+python3 meta_prediction_optimizer_anti_overfit.py \
+    --survivors survivors_with_scores.json \
+    --lottery-data synthetic_lottery.json \
+    --model-type xgboost \
+    --trials 50
+```
+
+### Step 5 - Compare all models
+```bash
+python3 meta_prediction_optimizer_anti_overfit.py \
+    --survivors survivors_with_scores.json \
+    --lottery-data synthetic_lottery.json \
+    --compare-models \
+    --trials 50
+```
+
+### Step 6 - Prediction (auto-loads from sidecar)
+```bash
+python3 prediction_generator.py \
+    --models-dir models/reinforcement \
+    --survivors-forward forward_survivors.json \
+    --lottery-history synthetic_lottery.json
+```
+
+### New Parameters
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `--model-type` | `neural_net` | Model type: neural_net, xgboost, lightgbm, catboost |
+| `--compare-models` | `False` | Train all 4 and select best |
+| `--output-dir` | `models/reinforcement` | Where to save model + sidecar |
+| `--models-dir` | `models/reinforcement` | Where to load model from (Step 6) |
+
+---
+
+## Model Type Hardware Deployment
+
+| Model Type | Hardware | Notes |
+|------------|----------|-------|
+| neural_net | All 26 GPUs (ROCm + CUDA) | Default, PyTorch DDP optional |
+| xgboost | Zeus 3080 Ti only | CUDA required (gpu_hist) |
+| lightgbm | Zeus 3080 Ti only | CUDA required |
+| catboost | Zeus both 3080 Ti's | Multi-GPU capable |
+
+---
+
+## Sidecar Metadata (best_model.meta.json)
+
+```json
+{
+  "schema_version": "3.1.2",
+  "model_type": "xgboost",
+  "checkpoint_path": "models/reinforcement/best_model.json",
+  "feature_schema": {
+    "feature_count": 50,
+    "feature_schema_hash": "5026d8e9d692e009",
+    "ordering": "lexicographic_by_key"
+  },
+  "y_label_source": {
+    "field": "features.score",
+    "observed_min": 0.275,
+    "observed_max": 0.375,
+    "normalization_method": "none"
+  },
+  "validation_metrics": {
+    "mse": 0.05,
+    "mae": 0.15
+  }
+}
+```
+
+---
+
+## Implementation Status
+
+| Component | Status |
+|-----------|--------|
+| Schema v1.0.3/v1.0.4 | ✅ DONE |
+| Dual-LLM Servers | ✅ DONE |
+| Universal Agent v1.0 | ✅ DONE |
+| All 6 Manifests v1.4.0 | ✅ DONE |
+| Web Dashboard | ✅ DONE |
+| agent_metadata Injection | ✅ DONE |
+| Feature Importance Module | ✅ DONE |
+| Step 3 Full Scoring | ✅ DONE |
+| GPU-Batched Scoring v1.9.0 | ✅ DONE |
+| scripts_coordinator.py v1.4.0 | ✅ DONE |
+| coordinator_adapter.py v2.0.0 | ✅ DONE |
+| **Multi-Model Architecture v3.1.2** | ✅ DONE |
+| **Y-Label Fix (CRITICAL)** | ✅ DONE |
+
+---
+
+## Hardware Configuration
+
+| Node | GPUs | Type | Role |
+|------|------|------|------|
+| Zeus | 2 | RTX 3080 Ti | Coordinator + XGBoost/LightGBM/CatBoost |
+| rig-6600 | 12 | RX 6600 | Worker (neural_net only) |
+| rig-6600b | 12 | RX 6600 | Worker (neural_net only) |
+| **Total** | **26** | | **~285 TFLOPS** |
+
+---
+
+## Next Steps
+
+- [x] Multi-Model Architecture v3.1.2 implemented
+- [x] Y-label fix applied (CRITICAL)
+- [ ] Run full training with real data using `--model-type neural_net`
+- [ ] Try `--compare-models` to find best model type
+- [ ] Full end-to-end pipeline test (Steps 1-6)
+
+---
+
+## Git Commit
+
+```
+Commit: 9994c42
+Message: Implement Multi-Model ML Architecture v3.1.2
+
+- Add 4 model types: neural_net, xgboost, lightgbm, catboost
+- CRITICAL FIX: Replace synthetic random y-labels with real quality scores
+- Add sidecar metadata (best_model.meta.json) for model type identification
+- Add feature schema hash validation for training/prediction consistency
+- 16 files changed, 2229 insertions
+- 100% backward compatible
+```
+
+---
+
+**End of Session 15 - Multi-Model ML Architecture v3.1.2 COMPLETE! 🎉**

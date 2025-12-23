@@ -384,7 +384,6 @@ def run_multi_model_comparison(X_train: np.ndarray,
     with SubprocessTrialCoordinator(
         X_train, y_train, X_val, y_val,
         worker_script='train_single_trial.py',
-        output_dir=output_dir,
         verbose=True
     ) as coordinator:
         
@@ -441,24 +440,14 @@ def run_multi_model_comparison(X_train: np.ndarray,
                 marker = "🏆" if mt == best_model_type else "  "
                 print(f"{marker} {mt:<10} {r['val_mse']:<12.6f} {r['trial_number']:<8}")
         
-        
-        # Save the winning model checkpoint
-        print("\n" + "-"*70)
-        print("SAVING BEST MODEL")
-        print("-"*70)
-        best_checkpoint = coordinator.save_best_model()
-        best_result = coordinator.get_best_result()
-
         return {
             'best_model_type': best_model_type,
             'best_trial_number': best_trial.number,
             'best_val_mse': best_trial.value,
             'best_params': best_trial.params,
-            'best_checkpoint_path': best_checkpoint,
             'model_results': model_results,
             'study_name': study.study_name,
-            'n_trials': len(study.trials),
-            'coordinator_best': best_result.to_dict() if best_result else None
+            'n_trials': len(study.trials)
         }
 
 
@@ -1028,7 +1017,7 @@ def main():
         best_model_type = results['best_model_type']
         
         meta_path = save_model_with_sidecar(
-            model_path=results.get('best_checkpoint_path', f"{args.output_dir}/best_model"),
+            model_path=f"{args.output_dir}/best_model",  # Placeholder
             model_type=best_model_type,
             feature_metadata=feature_metadata,
             training_params=results['best_params'],
