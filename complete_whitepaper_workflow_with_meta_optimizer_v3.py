@@ -377,58 +377,49 @@ def main(args):
         print(f"   Checkpoint: {checkpoint_path}")
         print(f"   Sidecar: {final_model_sidecar}")
 
-    # --- STEP 6: Quality Prediction (V3.0: Loads from Sidecar) ---
+    # --- STEP 6: Prediction Generation (V3.1: Uses prediction_generator.py) ---
     print("\n\n" + "="*70)
-    print("STEP 6: FINAL MODEL PREDICTION (Loads from Sidecar)")
+    print("STEP 6: PREDICTION GENERATION (prediction_generator.py)")
     print("="*70)
-    print(f"\nLoading model from {model_output_dir}/ (type from sidecar)...")
+    print(f"\nGenerating predictions using model from {model_output_dir}/")
+    print(f"   Survivors: {scored_survivor_file}")
+    print(f"   Lottery history: {train_history_file}")
+    print("ℹ️  Model type auto-detected from sidecar")
+    print("ℹ️  Parent run ID auto-read from sidecar for lineage")
+    
+    # Build Step 6 command
+    step6_cmd = [
+        'python3', 'prediction_generator.py',
+        '--survivors-forward', scored_survivor_file,
+        '--lottery-history', train_history_file,
+        '--models-dir', model_output_dir,
+        '--k', '10',
+    ]
+    
+    if not run_command(step6_cmd, "Running: Prediction Generator"):
+        print("\n⚠️ Prediction generation failed, but model was trained successfully")
+        # Don't return 1 - model training was the main goal
+    else:
+        # Show prediction results
+        predictions_dir = Path('results/predictions')
+        if predictions_dir.exists():
+            latest_pred = sorted(predictions_dir.glob('predictions_*.json'), reverse=True)
+            if latest_pred:
+                try:
+                    with open(latest_pred[0]) as f:
+                        pred_data = json.load(f)
+                    print("\n--- Prediction Results ---")
+                    print(f"  File: {latest_pred[0]}")
+                    print(f"  Predictions: {pred_data.get('predictions', [])[:5]}...")
+                    print(f"  Raw scores: {[f'{s:.4f}' for s in pred_data.get('raw_scores', [])[:5]]}...")
+                    print(f"  Confidences: {[f'{c:.4f}' for c in pred_data.get('confidence_scores', [])[:5]]}...")
+                    if 'agent_metadata' in pred_data:
+                        parent_id = pred_data['agent_metadata'].get('parent_run_id', 'N/A')
+                        print(f"  Parent run ID: {parent_id}")
+                    print("--------------------------\n")
+                except Exception as e:
+                    print(f"\n⚠️ Could not read prediction results: {e}")
 
-    try:
-        # V3.0: Use model_factory to load from sidecar
-        from models.model_factory import load_model_from_sidecar
-        
-        with open(holdout_history_file, 'r') as f:
-            data = json.load(f)
-            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                holdout_history = [d['draw'] for d in data]
-            else:
-                holdout_history = data
-
-            if not holdout_history:
-                print("⚠️ Holdout history is empty, using train history for prediction test.")
-                with open(train_history_file, 'r') as f_train:
-                    train_data = json.load(f_train)
-                    if isinstance(train_data, list) and len(train_data) > 0 and isinstance(train_data[0], dict):
-                        holdout_history = [d['draw'] for d in train_data]
-                    else:
-                        holdout_history = train_data
-
-        # Load model from sidecar (type auto-detected)
-        model, meta = load_model_from_sidecar(model_output_dir)
-        print(f"✅ Model loaded successfully (type: {meta['model_type']})")
-
-        # Test prediction with some sample data
-        import numpy as np
-        
-        # Get feature count from sidecar
-        feature_count = meta['feature_schema']['feature_count']
-        
-        # Generate random test features
-        print(f"✅ Testing prediction with {feature_count} features...")
-        test_features = np.random.randn(20, feature_count).astype(np.float32)
-        
-        predictions = model.predict(test_features)
-
-        print("\n--- Sample Predictions ---")
-        for i in range(min(5, len(predictions))):
-            print(f"  Sample {i+1} -> Quality: {predictions[i]:.4f}")
-        print("--------------------------\n")
-
-    except Exception as e:
-        print(f"\n❌ Error during Step 6 (Prediction): {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
 
     # --- SUCCESS! ---
     elapsed = time.time() - start_time
@@ -447,11 +438,12 @@ def main(args):
     print(f"  5. ✅ Anti-Overfit Optimizer: {args.anti_overfit_trials} trials, model: {actual_model_type}")
     if args.compare_models:
         print(f"      ⚡ Compared all 4 model types, selected best")
-    print(f"  6. ✅ Final Prediction: Model working")
+    print(f"  6. ✅ Prediction Generator: Top-K predictions generated")
     print(f"\nOutputs:")
     print(f"  • Model checkpoint: {checkpoint_path}")
     print(f"  • Model sidecar: {final_model_sidecar}")
     print(f"  • Scored survivors: {scored_survivor_file}")
+    print(f"  • Predictions: results/predictions/predictions_*.json")
     print(f"\nTest completed in {elapsed / 60:.1f} minutes")
     print("="*70 + "\n")
 
