@@ -392,7 +392,7 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         checkpoint = torch.load(path, map_location='cpu')
         
         # Get architecture info from checkpoint
-        feature_count = checkpoint.get('feature_count')
+        feature_count = checkpoint.get('feature_count') or checkpoint.get('input_dim')
         hidden_layers = checkpoint.get('hidden_layers', [256, 128, 64])
         dropout = checkpoint.get('dropout', 0.3)
         config = checkpoint.get('config', {})
@@ -417,7 +417,7 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         ).to(wrapper.device)
         
         # Load weights
-        wrapper.model.load_state_dict(checkpoint['state_dict'])
+        wrapper.model.load_state_dict(checkpoint.get('state_dict') or checkpoint.get('model_state_dict'))
         wrapper._fitted = True
         
         logger.info(f"Neural network loaded from {path} (features: {feature_count})")

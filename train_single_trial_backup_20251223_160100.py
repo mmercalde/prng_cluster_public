@@ -349,9 +349,9 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     
     # Convert to tensors
     X_train_t = torch.FloatTensor(X_train).to(device)
-    y_train_t = torch.FloatTensor(y_train).to(device)
+    y_train_t = torch.FloatTensor(y_train).unsqueeze(1).to(device)
     X_val_t = torch.FloatTensor(X_val).to(device)
-    y_val_t = torch.FloatTensor(y_val).to(device)
+    y_val_t = torch.FloatTensor(y_val).unsqueeze(1).to(device)
     
     # Architecture from params (matches SurvivorQualityNet style)
     input_dim = X_train.shape[1]
@@ -359,14 +359,19 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     dropout = params.get('dropout', 0.3)
     
     # Build model dynamically
-    # Import and use existing SurvivorQualityNet for compatibility
-    from models.wrappers.neural_net_wrapper import SurvivorQualityNet
+    layers = []
+    prev_dim = input_dim
+    for hidden_dim in hidden_layers:
+        layers.extend([
+            nn.Linear(prev_dim, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(dropout)
+        ])
+        prev_dim = hidden_dim
+    layers.append(nn.Linear(prev_dim, 1))
     
-    model = SurvivorQualityNet(
-        input_size=input_dim,
-        hidden_layers=hidden_layers,
-        dropout=dropout
-    ).to(device)
+    model = nn.Sequential(*layers).to(device)
     
     # Use DataParallel if multiple GPUs available
     if torch.cuda.device_count() > 1:
@@ -454,8 +459,8 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         # Save the model state dict (handles DataParallel)
         state_to_save = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
         torch.save({
-            'state_dict': state_to_save,
-            'feature_count': input_dim,
+            'model_state_dict': state_to_save,
+            'input_dim': input_dim,
             'hidden_layers': hidden_layers,
             'dropout': dropout,
             'best_epoch': best_epoch

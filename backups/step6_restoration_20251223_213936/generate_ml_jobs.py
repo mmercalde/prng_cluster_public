@@ -58,6 +58,202 @@ def main():
 
 if __name__ == "__main__":
     main()
+michael@zeus:~/distributed_prng_analysis$ cat anti_overfit_trial_worker.py
+#!/usr/bin/env python3
+"""
+anti_overfit_trial_worker.py - Single Optuna trial for distributed ML training
+Runs ONE trial with hyperparameters suggested by Optuna
+"""
+
+import json
+import sys
+import os
+import logging
+from pathlib import Path
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def main():
+    # Parse command line arguments
+    if len(sys.argv) != 6:
+        logger.error("Usage: anti_overfit_trial_worker.py <survivors_file> <scores_file> <study_name> <study_db> <trial_id>")
+        sys.exit(1)
+
+    survivors_file = sys.argv[1]
+    scores_file = sys.argv[2]
+    study_name = sys.argv[3]
+    study_db = sys.argv[4]
+    trial_id = int(sys.argv[5])
+
+    logger.info(f"Starting trial {trial_id}")
+    logger.info(f"Survivors: {survivors_file}")
+    logger.info(f"Scores: {scores_file}")
+    logger.info(f"Study: {study_name}")
+
+    try:
+        # Import after args are validated
+        import torch
+        import optuna
+        from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
+
+        # Load data
+        logger.info("Loading data...")
+        with open(survivors_file) as f:
+            survivors = json.load(f)
+        with open(scores_file) as f:
+            scores = json.load(f)
+
+        logger.info(f"Loaded {len(survivors)} survivors")
+
+        # Load base config
+        base_config_path = Path(survivors_file).parent / "reinforcement_engine_config.json"
+        if base_config_path.exists():
+            base_config = ReinforcementConfig.from_json(str(base_config_path))
+            logger.info(f"Loaded base config from {base_config_path}")
+        else:
+            # Create default config if none exists
+            base_config = ReinforcementConfig()
+            logger.warning("No base config found, using defaults")
+
+        # Define Optuna objective function
+        def objective(trial):
+            """Optuna objective - samples hyperparameters and returns validation loss"""
+
+            # Sample hyperparameters
+            hidden_layers = trial.suggest_categorical('hidden_layers', [
+                [128, 64],
+                [256, 128, 64],
+                [512, 256, 128],
+                [256, 128, 64, 32]
+            ])
+
+            dropout = trial.suggest_float('dropout', 0.1, 0.5)
+            learning_rate = trial.suggest_loguniform('learning_rate', 1e-5, 1e-2)
+            batch_size = trial.suggest_categorical('batch_size', [32, 64, 128, 256])
+            epochs = trial.suggest_int('epochs', 30, 100)
+
+            logger.info(f"Trial {trial.number} hyperparameters:")
+            logger.info(f"  Hidden layers: {hidden_layers}")
+            logger.info(f"  Dropout: {dropout:.3f}")
+            logger.info(f"  Learning rate: {learning_rate:.6f}")
+            logger.info(f"  Batch size: {batch_size}")
+            logger.info(f"  Epochs: {epochs}")
+
+            # Create config with trial's hyperparameters
+            config = ReinforcementConfig()
+            config.model['hidden_layers'] = hidden_layers
+            config.model['dropout'] = dropout
+            config.training['learning_rate'] = learning_rate
+            config.training['batch_size'] = batch_size
+            config.training['epochs'] = epochs
+
+            # Use base config for other settings
+            config.training['validation_split'] = base_config.training.get('validation_split', 0.2)
+            config.training['early_stopping_patience'] = base_config.training.get('early_stopping_patience', 10)
+
+            # Create model save path
+            model_dir = Path("/shared/ml/models")
+            model_dir.mkdir(parents=True, exist_ok=True)
+            model_path = model_dir / f"trial_{trial.number}_best.pth"
+
+            # Initialize reinforcement engine
+            logger.info("Initializing ReinforcementEngine...")
+            engine = ReinforcementEngine(
+                config=config,
+                lottery_history=[0] * 5000  # Dummy history, not used in this context
+            )
+
+            # Train the model
+            logger.info("Starting training...")
+            try:
+                engine.train(survivors=survivors, actual_results=scores)
+
+                # Get validation loss
+                val_loss = engine.best_val_loss
+                overfit_ratio = engine.best_overfit_ratio
+
+                logger.info(f"Training complete:")
+                logger.info(f"  Val loss: {val_loss:.6f}")
+                logger.info(f"  Overfit ratio: {overfit_ratio:.3f}")
+
+                # Save model if it's good
+                if hasattr(engine, 'best_model_path') and engine.best_model_path:
+                    import shutil
+                    shutil.copy(engine.best_model_path, str(model_path))
+                    logger.info(f"Model saved to {model_path}")
+
+                # Return validation loss for Optuna
+                return val_loss
+
+            except Exception as e:
+                logger.error(f"Training failed: {e}")
+                raise optuna.exceptions.TrialPruned()
+
+        # Load or create Optuna study
+        logger.info(f"Connecting to Optuna study: {study_name}")
+        study = optuna.load_study(
+            study_name=study_name,
+            storage=study_db
+        )
+
+        # Run ONE trial
+        logger.info("Starting Optuna optimization (1 trial)...")
+        study.optimize(objective, n_trials=1, show_progress_bar=False)
+
+        # Get this trial's results
+        trial = study.trials[-1]  # Most recent trial
+
+        # Prepare result JSON
+        result = {
+            "trial_id": trial_id,
+            "trial_number": trial.number,
+            "val_loss": trial.value if trial.value is not None else float('inf'),
+            "overfit_ratio": None,
+            "state": str(trial.state),
+            "params": trial.params,
+            "model_path": f"/shared/ml/models/trial_{trial.number}_best.pth"
+        }
+
+        # Write result to stdout (for coordinator to capture)
+        print(json.dumps(result))
+
+        # Also write to file
+        output_file = f"/shared/ml/results/trial_{trial_id}.json"
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, 'w') as f:
+            json.dump(result, f, indent=2)
+
+        logger.info(f"✅ Trial {trial_id} complete")
+        logger.info(f"   Trial number: {trial.number}")
+        logger.info(f"   Val loss: {result['val_loss']:.6f}")
+        logger.info(f"   Result saved to {output_file}")
+
+    except Exception as e:
+        logger.error(f"❌ Trial {trial_id} failed: {e}", exc_info=True)
+
+        # Write error result
+        error_result = {
+            "trial_id": trial_id,
+            "error": str(e),
+            "state": "FAILED"
+        }
+        print(json.dumps(error_result))
+
+        output_file = f"/shared/ml/results/trial_{trial_id}.json"
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, 'w') as f:
+            json.dump(error_result, f, indent=2)
+
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+michael@zeus:~/distributed_prng_analysis$ cat reinforcement_engine.py
 #!/usr/bin/env python3
 """
 Reinforcement Engine - ML Training Orchestrator (IMPROVED)
@@ -82,9 +278,6 @@ import logging
 import pickle
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
-
-# GlobalStateTracker - imported from GPU-neutral module (Step 6 Restoration v2.2)
-from models.global_state_tracker import GlobalStateTracker
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from collections import Counter, deque
@@ -261,6 +454,175 @@ class ReinforcementConfig:
 # ============================================================================
 # GLOBAL STATE TRACKER (UNCHANGED - keeping your working version)
 # ============================================================================
+
+class GlobalStateTracker:
+    """
+    Track system-wide statistical patterns
+
+    Whitepaper Section 4.1: Global Statistical State Vector
+    """
+
+    def __init__(self, lottery_history: List[int], config: Dict[str, Any]):
+        self.lottery_history = lottery_history
+        self.config = config
+        self._cache = {}
+        self._history_hash = self._compute_hash(lottery_history)
+        self.current_regime_start = 0
+        self.regime_history = []
+        self._initialized = False
+
+    def _compute_hash(self, data: List[int]) -> str:
+        return hashlib.md5(str(data).encode()).hexdigest()
+
+    def get_global_state(self) -> Dict[str, float]:
+        current_hash = self._compute_hash(self.lottery_history)
+        if current_hash != self._history_hash or not self._cache:
+            self._cache = self._compute_global_state()
+            self._history_hash = current_hash
+        return self._cache
+
+    def _compute_global_state(self) -> Dict[str, float]:
+        if len(self.lottery_history) < 100:
+            return self._default_state()
+
+        state = {}
+        state.update(self._compute_residue_distributions())
+        state.update(self._detect_power_of_two_bias())
+        state.update(self._detect_frequency_anomalies())
+        state.update(self._detect_regime_changes())
+        state.update(self._track_marker_numbers())
+        state.update(self._compute_temporal_stability())
+        return state
+
+    def _default_state(self) -> Dict[str, float]:
+        return {
+            'residue_8_entropy': 0.0,
+            'residue_125_entropy': 0.0,
+            'residue_1000_entropy': 0.0,
+            'power_of_two_bias': 0.0,
+            'frequency_bias_ratio': 1.0,
+            'suspicious_gap_percentage': 0.0,
+            'regime_change_detected': 0.0,
+            'regime_age': 0.0,
+            'high_variance_count': 0.0,
+            'marker_390_variance': 0.0,
+            'marker_804_variance': 0.0,
+            'marker_575_variance': 0.0,
+            'reseed_probability': 0.0,
+            'temporal_stability': 1.0
+        }
+
+    def _compute_residue_distributions(self) -> Dict[str, float]:
+        residues = {}
+        for mod in [8, 125, 1000]:
+            residue_counts = Counter([x % mod for x in self.lottery_history])
+            total = len(self.lottery_history)
+            probs = [count / total for count in residue_counts.values()]
+            ent = entropy(probs)
+            max_entropy = np.log(mod)
+            normalized_entropy = ent / max_entropy if max_entropy > 0 else 0
+            residues[f'residue_{mod}_entropy'] = float(normalized_entropy)
+        return residues
+
+    def _detect_power_of_two_bias(self) -> Dict[str, float]:
+        powers_of_two = [2**i for i in range(10) if 2**i < 1000]
+        power_two_count = sum(1 for x in self.lottery_history if x in powers_of_two)
+        expected_rate = len(powers_of_two) / 1000.0
+        actual_rate = power_two_count / len(self.lottery_history)
+        bias = actual_rate / expected_rate if expected_rate > 0 else 1.0
+        return {'power_of_two_bias': float(bias)}
+
+    def _detect_frequency_anomalies(self) -> Dict[str, float]:
+        freq_counter = Counter(self.lottery_history)
+        if not freq_counter:
+            return {'frequency_bias_ratio': 1.0, 'suspicious_gap_percentage': 0.0}
+        max_freq = max(freq_counter.values())
+        min_freq = min(freq_counter.values())
+        ratio = max_freq / min_freq if min_freq > 0 else 1.0
+        gap_threshold = self.config.get('gap_threshold', 500)
+        last_seen = {}
+        suspicious_count = 0
+        for i, num in enumerate(self.lottery_history):
+            last_seen[num] = i
+        current_index = len(self.lottery_history) - 1
+        for num in range(1000):
+            if num not in last_seen:
+                suspicious_count += 1
+            elif current_index - last_seen[num] > gap_threshold:
+                suspicious_count += 1
+        suspicious_pct = suspicious_count / 1000.0
+        return {
+            'frequency_bias_ratio': float(ratio),
+            'suspicious_gap_percentage': float(suspicious_pct)
+        }
+
+    def _detect_regime_changes(self) -> Dict[str, float]:
+        window_size = self.config.get('window_size', 1000)
+        threshold = self.config.get('regime_change_threshold', 0.15)
+        if len(self.lottery_history) < window_size * 2:
+            return {'regime_change_detected': 0.0, 'regime_age': 0.0}
+        recent = self.lottery_history[-window_size:]
+        historical = self.lottery_history[-2*window_size:-window_size]
+        recent_dist = Counter(recent)
+        historical_dist = Counter(historical)
+        divergence = 0.0
+        for num in range(1000):
+            p = (recent_dist.get(num, 0) + 1) / (window_size + 1000)
+            q = (historical_dist.get(num, 0) + 1) / (window_size + 1000)
+            divergence += p * np.log(p / q)
+        regime_changed = 1.0 if divergence > threshold else 0.0
+        if regime_changed > 0.5:
+            self.current_regime_start = len(self.lottery_history)
+        regime_age = len(self.lottery_history) - self.current_regime_start
+        return {
+            'regime_change_detected': float(regime_changed),
+            'regime_age': float(regime_age)
+        }
+
+    def _track_marker_numbers(self) -> Dict[str, float]:
+        marker_numbers = self.config.get('marker_numbers', [390, 804, 575])
+        metrics = {}
+        for marker in marker_numbers:
+            appearances = [i for i, x in enumerate(self.lottery_history) if x == marker]
+            if len(appearances) < 2:
+                metrics[f'marker_{marker}_variance'] = 0.0
+                continue
+            gaps = [appearances[i+1] - appearances[i] for i in range(len(appearances)-1)]
+            if not gaps:
+                metrics[f'marker_{marker}_variance'] = 0.0
+                continue
+            mean_gap = np.mean(gaps)
+            std_gap = np.std(gaps)
+            cv = std_gap / mean_gap if mean_gap > 0 else 0.0
+            metrics[f'marker_{marker}_variance'] = float(cv)
+        high_variance_count = sum(1 for v in metrics.values() if v > 1.0)
+        reseed_prob = high_variance_count / len(marker_numbers) if marker_numbers else 0.0
+        metrics['reseed_probability'] = float(reseed_prob)
+        metrics['high_variance_count'] = float(high_variance_count)
+        return metrics
+
+    def _compute_temporal_stability(self) -> Dict[str, float]:
+        window_size = min(100, len(self.lottery_history) // 4)
+        if len(self.lottery_history) < window_size * 2:
+            return {'temporal_stability': 1.0}
+        windows = []
+        for i in range(4):
+            start = len(self.lottery_history) - (i+1) * window_size
+            end = len(self.lottery_history) - i * window_size
+            if start >= 0:
+                windows.append(Counter(self.lottery_history[start:end]))
+        if len(windows) < 2:
+            return {'temporal_stability': 1.0}
+        overlaps = []
+        for i in range(len(windows)-1):
+            common = set(windows[i].keys()) & set(windows[i+1].keys())
+            overlap = len(common) / 1000.0
+            overlaps.append(overlap)
+        stability = np.mean(overlaps) if overlaps else 1.0
+        return {'temporal_stability': float(stability)}
+
+    def update_history(self, new_draws: List[int]):
+        self.lottery_history.extend(new_draws)
 
 
 # ============================================================================

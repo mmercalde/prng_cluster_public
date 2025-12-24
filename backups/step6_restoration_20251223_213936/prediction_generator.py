@@ -50,11 +50,7 @@ try:
     from models.feature_schema import validate_feature_schema_hash, get_feature_schema_with_hash
     MULTI_MODEL_AVAILABLE = True
 except ImportError:
-
     MULTI_MODEL_AVAILABLE = False
-
-# GlobalStateTracker - GPU-neutral module (Step 6 Restoration v2.2)
-from models.global_state_tracker import GlobalStateTracker, GLOBAL_FEATURE_COUNT, GLOBAL_FEATURE_NAMES
 
 
 # ============================================================================
@@ -95,10 +91,6 @@ class PredictionConfig:
     save_predictions: bool = True
     predictions_dir: str = 'results/predictions'
     log_level: str = 'INFO'
-
-    # Model directory (Step 6 Restoration v2.2)
-    models_dir: str = "models/reinforcement"
-    survivors_forward_file: str = ""
 
     @classmethod
     def from_json(cls, path: str) -> 'PredictionConfig':
@@ -166,25 +158,6 @@ class PredictionGenerator:
         self.logger.info(f"  Dual-sieve: {config.use_dual_sieve}")
         self.logger.info(f"  GPU: {GPU_AVAILABLE}")
 
-        # Model loading (Step 6 Restoration v2.2)
-        self.model = None
-        self.model_meta = None
-        self.model_checkpoint_path = None
-        self.global_tracker = None
-
-        if MULTI_MODEL_AVAILABLE:
-            try:
-                self.model, self.model_meta = load_model_from_sidecar(
-                    models_dir=config.models_dir,
-                    device="cuda" if GPU_AVAILABLE else "cpu"
-                )
-                self.logger.info(f"  Model loaded: {self.model_meta.get('model_type', 'unknown')}")
-                self.model_checkpoint_path = self.model_meta.get('checkpoint_path', f'{config.models_dir}/best_model')
-            except FileNotFoundError as e:
-                self.logger.warning(f"  Model not found: {e}")
-            except Exception as e:
-                self.logger.error(f"  Model loading failed: {e}")
-
     def generate_predictions(
         self,
         survivors_forward: List[int],
@@ -219,31 +192,28 @@ class PredictionGenerator:
             method = 'dual_sieve'
             
             # Compute intersection (Whitepaper: "bidirectional approximation mechanism")
-            intersection_result = self.scorer.compute_dual_sieve_intersection(
+            intersection = self.scorer.compute_dual_sieve_intersection(
                 survivors_forward, survivors_reverse
             )
             
-            if intersection_result["intersection"]:
-                self.logger.info(f"Using intersection: {len(intersection_result['intersection'])} survivors")
-                working_survivors = intersection_result["intersection"]
+            if intersection:
+                self.logger.info(f"Using intersection: {len(intersection)} survivors")
+                working_survivors = intersection
             else:
                 self.logger.warning("No intersection! Using forward survivors only")
         
         # Build prediction pool using survivor_scorer.py
         # Whitepaper Section 2: "High-quality prediction pools act as reinforcement signals"
         self.logger.info("Building prediction pool...")
-
-        # Initialize GlobalStateTracker (Step 6 Restoration v2.2)
-        self.global_tracker = GlobalStateTracker(lottery_history, {"mod": self.config.mod})
-        global_values = self.global_tracker.get_feature_values()
         
-
-        pool_result = self._build_prediction_pool(
+        pool_result = self.scorer.build_prediction_pool(
             survivors=working_survivors,
             lottery_history=lottery_history,
-            global_values=global_values,
             pool_size=self.config.pool_size,
-            skip=self.config.skip
+            skip=self.config.skip,
+            use_dual_scoring=self.config.use_dual_sieve,
+            forward_survivors=survivors_forward if self.config.use_dual_sieve else None,
+            reverse_survivors=survivors_reverse if self.config.use_dual_sieve else None
         )
         
         # Extract predictions from pool
@@ -307,101 +277,6 @@ class PredictionGenerator:
         
         return result
 
-
-    def _empty_pool_result(self) -> Dict:
-        """Return empty result structure."""
-        return {
-            "predictions": [],
-            "confidence_scores": [],
-            "survivor_count": 0,
-            "pool_size": 0,
-            "mean_confidence": 0.0,
-            "model_type": None,
-            "global_features_used": 0,
-            "total_features": 0
-        }
-
-    def _build_prediction_pool(
-        self,
-        survivors: List,
-        lottery_history: List[int],
-        global_values,
-        pool_size: int = 10,
-        skip: int = 0
-    ) -> Dict:
-        """
-        Build prediction pool using trained model.
-        Handles both int and dict survivor formats.
-        """
-        if not survivors:
-            return self._empty_pool_result()
-
-        # Get feature schema from sidecar
-        per_seed_names = []
-        total_features = 0
-        if self.model_meta:
-            fs = self.model_meta.get("feature_schema", {})
-            per_seed_names = fs.get("per_seed_feature_names", fs.get("feature_names", []))
-            total_features = fs.get("total_features", len(per_seed_names))
-
-        # Build feature matrix
-        X_list = []
-        survivor_seeds = []
-
-        for survivor in survivors:
-            if isinstance(survivor, dict):
-                seed = survivor["seed"]
-                features = survivor.get("features", {})
-            elif isinstance(survivor, (int, np.integer)):
-                seed = int(survivor)
-                features = self.scorer.extract_ml_features(seed, lottery_history, skip=skip)
-            else:
-                continue
-
-            if per_seed_names:
-                row = [float(features.get(name, 0.0)) for name in per_seed_names]
-            else:
-                row = [float(v) for k, v in sorted(features.items()) if k not in ("score", "confidence")]
-
-            X_list.append(row)
-            survivor_seeds.append(seed)
-
-        if not X_list:
-            return self._empty_pool_result()
-
-        X = np.array(X_list, dtype=np.float32)
-
-        # Score using model or fallback
-        if self.model is not None:
-            predicted_quality = self.model.predict(X)
-            model_type = self.model_meta.get("model_type", "unknown")
-        else:
-            predicted_quality = np.mean(X, axis=1)
-            model_type = "fallback_mean"
-
-        # Rank and generate predictions
-        ranked_idx = np.argsort(predicted_quality)[::-1]
-        predictions = []
-        confidences = []
-        next_idx = len(lottery_history)
-
-        for idx in ranked_idx[:pool_size]:
-            seed = survivor_seeds[idx]
-            quality = float(predicted_quality[idx])
-            seq = self.scorer._generate_sequence(seed, next_idx + 1, skip=skip)
-            if len(seq) > next_idx:
-                predictions.append(int(seq[next_idx]))
-                confidences.append(quality)
-
-        return {
-            "predictions": predictions,
-            "confidence_scores": confidences,
-            "survivor_count": len(survivors),
-            "pool_size": len(predictions),
-            "mean_confidence": float(np.mean(confidences)) if confidences else 0.0,
-            "model_type": model_type,
-            "total_features": X.shape[1] if len(X_list) > 0 else 0
-        }
     def extract_features_batch(
         self,
         survivors: List[int],
@@ -459,6 +334,7 @@ class PredictionGenerator:
             ],
             outputs=[str(filepath)],
             pipeline_step=6,
+            pipeline_step_name="prediction",
             follow_up_agent=None,
             confidence=avg_conf,
             suggested_params=None,

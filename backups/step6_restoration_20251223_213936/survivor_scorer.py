@@ -30,7 +30,7 @@ os.environ.setdefault("ROCM_PATH", "/opt/rocm")
 os.environ.setdefault("HIP_PATH", "/opt/rocm")
 os.environ.setdefault('CUPY_CUDA_MEMORY_POOL_TYPE', 'none')
 
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Optional, Union
 import numpy as np
 from scipy.stats import entropy as _entropy
 
@@ -113,78 +113,15 @@ class SurvivorScorer:
         self._residue_cache = {}
 
         # Use CPU LCG for tiny sequences + PyTorch for features
-        self._cpu_func = get_cpu_reference(self.prng_type)
+        self.generate_sequence = java_lcg_sequence
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    def _generate_sequence(self, seed: int, n: int, skip: int = 0) -> np.ndarray:
-        """
-        Generate PRNG sequence using configured prng_type.
-        Uses prng_registry for dynamic PRNG lookup - NO HARDCODING.
-        """
-        raw = self._cpu_func(seed=int(seed), n=n, skip=skip)
-        return np.array([v % self.mod for v in raw], dtype=np.int64)
-
-
-    def _coerce_seed_list(self, items) -> List[int]:
-        """Convert mixed list (int or dict with seed) to list of ints."""
-        out = []
-        for x in items or []:
-            if isinstance(x, dict):
-                if "seed" in x:
-                    out.append(int(x["seed"]))
-            else:
-                out.append(int(x))
-        return out
-
-    def compute_dual_sieve_intersection(
-        self,
-        forward_survivors: List[int],
-        reverse_survivors: List[int]
-    ) -> Dict[str, Any]:
-        """
-        Compute intersection of forward and reverse sieve survivors.
-        Per Team Beta: NEVER discard valid intersection, Jaccard is metadata.
-
-        """
-        # Coerce to seed lists (handles both int and dict formats)
-        forward_survivors = self._coerce_seed_list(forward_survivors)
-        reverse_survivors = self._coerce_seed_list(reverse_survivors)
-
-        if not forward_survivors or not reverse_survivors:
-            return {
-                "intersection": [],
-                "jaccard": 0.0,
-                "counts": {
-                    "forward": len(forward_survivors) if forward_survivors else 0,
-                    "reverse": len(reverse_survivors) if reverse_survivors else 0,
-                    "intersection": 0,
-                    "union": 0
-                }
-            }
-        
-        forward_set = set(forward_survivors)
-        reverse_set = set(reverse_survivors)
-        intersection = forward_set & reverse_set
-        union = forward_set | reverse_set
-        jaccard = len(intersection) / len(union) if union else 0.0
-        
-        return {
-            "intersection": sorted(list(intersection)),
-            "jaccard": float(jaccard),
-            "counts": {
-                "forward": len(forward_survivors),
-                "reverse": len(reverse_survivors),
-                "intersection": len(intersection),
-                "union": len(union)
-            }
-        }
 
     def extract_ml_features(self, seed: int, lottery_history: List[int], forward_survivors=None, reverse_survivors=None, skip: int = 0) -> Dict[str, float]:
         if not lottery_history:
             return self._empty_ml_features()
 
         n = len(lottery_history)
-        seq = self._generate_sequence(seed, n, skip=skip)
+        seq = self.generate_sequence(seed, n, self.mod)
         hist_np = np.array(lottery_history)
 
         # Use PyTorch tensors — proven stable on ROCm

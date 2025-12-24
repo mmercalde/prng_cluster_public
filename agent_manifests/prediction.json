@@ -1,8 +1,8 @@
 {
   "agent_name": "prediction_agent",
-  "description": "Step 6: Final prediction generation using trained ML model. Loads model type from best_model.meta.json sidecar (v3.1.2). Produces high-confidence prediction pools with statistical explanations.",
+  "description": "Step 6: Final prediction generation using trained ML model. Loads model type from best_model.meta.json sidecar (v3.2.1). Produces high-confidence prediction pools with statistical explanations. Now includes GlobalStateTracker for 14 global features.",
   "pipeline_step": 6,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "feature_registry": "config_manifests/feature_registry.json",
   "inputs": [
     "models/reinforcement/best_model.meta.json",
@@ -19,15 +19,14 @@
   "actions": [
     {
       "type": "run_script",
-      "script": "generate_predictions.py",
+      "script": "prediction_generator.py",
       "args_map": {
-        "model-file": "best_model_file",
-        "survivors-file": "survivors_with_scores_file",
-        "lottery-file": "lottery_file",
-        "window-config": "optimal_window_config_file",
-        "pool-size": "pool_size",
-        "confidence-threshold": "confidence_threshold",
-        "ensemble-mode": "ensemble_mode"
+        "models-dir": "models_dir",
+        "survivors-forward": "survivors_forward_file",
+        "survivors-reverse": "survivors_reverse_file",
+        "lottery-history": "lottery_history_file",
+        "k": "pool_size",
+        "config": "config_file"
       },
       "distributed": false,
       "timeout_minutes": 60
@@ -154,6 +153,13 @@
       "description": "Directory containing best_model.meta.json (sidecar determines model type).",
       "optimized_by": "Manual",
       "effect": "Model type and checkpoint path loaded from sidecar, not inferred from extension."
+    },
+    "use_global_features": {
+      "type": "bool",
+      "default": true,
+      "description": "Whether to include GlobalStateTracker features in prediction.",
+      "optimized_by": "Manual",
+      "effect": "Enables regime change detection and temporal stability analysis."
     }
   },
   "success_metrics": {
@@ -178,5 +184,9 @@
     "confidence_cap": 0.95,
     "min_pool_size": 5,
     "min_average_confidence": 0.6
+  },
+  "changelog": {
+    "1.5.0": "Added GlobalStateTracker integration, fixed script name to prediction_generator.py",
+    "1.4.0": "Initial sidecar-based model loading"
   }
 }
