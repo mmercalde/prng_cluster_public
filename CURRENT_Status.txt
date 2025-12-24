@@ -1,4 +1,4 @@
-# CURRENT STATUS - Updated December 22, 2025 (Session 11)
+# CURRENT STATUS - Updated December 24, 2025 (Session 15)
 
 ## Timeline Summary
 ```
@@ -13,365 +13,113 @@ Session 8: Dec 7, 2025     - Centralized search bounds, threshold philosophy fix
 Session 9: Dec 21, 2025    - Multi-model architecture (4 ML models), Team Beta fixes
 Session 10: Dec 21-22, 2025 - OpenCL/CUDA conflict discovery, subprocess isolation design
 Session 11: Dec 22, 2025   - Subprocess isolation implementation, model checkpoint saving
+Session 12: Dec 23, 2025   - Neural net architecture fix, XGBoost wins multi-model comparison
+Session 13: Dec 23, 2025   - Step 6 Restoration v2.1 proposal, Team Beta review
+Session 14: Dec 23-24, 2025 - Step 6 Restoration v2.2 implementation, GlobalStateTracker module
+Session 15: Dec 24, 2025   - Confidence bug fix, raw scores, parent_run_id lineage
 ```
 
 ---
 
-## Session 11 Accomplishments (Dec 22, 2025) - SUBPROCESS ISOLATION + MODEL SAVING
+## Session 15 Accomplishments (Dec 24, 2025) - STEP 6 CONFIDENCE FIX + LINEAGE
 
-### ✅ CRITICAL BUG FIXED: OpenCL/CUDA GPU Conflict
+### ✅ CRITICAL BUG FIXED: All Confidence = 1.0
 
-**Problem Discovered (Session 10):**
-- LightGBM uses OpenCL, other models (XGBoost, CatBoost, Neural Net) use CUDA
-- `initialize_cuda_early()` at module import time blocks OpenCL initialization
-- Even with `SAFE_MODEL_ORDER = ['lightgbm', ...]`, Optuna's random trial sampling 
-  causes CUDA to initialize before LightGBM trials
-- Result: LightGBM fails with "Error Code: -9999" when running `--compare-models`
+**Problem Discovered:**
+- Step 6 displayed `confidence: 1.0000` for ALL predictions
+- Root cause: `generate_predictions()` never read `pool_result['confidence_scores']`
+- Code assumed predictions were dicts, but they were ints
+- Fallback assigned `1.0 / len(predictions_list)` to all → normalization → all 1.0
 
-**Solution: Subprocess Isolation Architecture**
+**Solution:**
+- Fixed extraction to read both `predictions` and `confidence_scores` from pool_result
+- Added sigmoid z-score calibration (Team Beta approved)
+- Preserves raw scores for automation, calibrated scores for gating
+
+**Before:**
 ```
-Main Process (coordinator)
-    ↓ (no GPU imports!)
-    ├── Trial 0: subprocess → imports LightGBM → trains → exits (GPU freed)
-    ├── Trial 1: subprocess → imports PyTorch → trains → exits (GPU freed)
-    ├── Trial 2: subprocess → imports XGBoost → trains → exits (GPU freed)
-    └── Trial N: Fresh GPU state each time!
-```
-
-**Files Created:**
-- `train_single_trial.py` (v1.0.1) - Isolated worker script with model saving
-- `subprocess_trial_coordinator.py` (v1.0.1) - Coordinates subprocess execution
-- `meta_prediction_optimizer_anti_overfit.py` (v2.0) - Updated with subprocess support
-
-### ✅ Model Checkpoint Saving Implemented
-
-**Problem:** Subprocess trains model, calculates metrics, exits → model LOST (never saved to disk)
-
-**Solution:** 
-- Added `--save-model` and `--model-output-dir` args to worker
-- Each trial saves checkpoint to temp directory
-- Coordinator tracks best result and copies winner to output
-
-**Output Structure:**
-```
-models/reinforcement/
-├── best_model.cbm                 # Winner checkpoint (CatBoost example)
-└── best_model.meta.json           # Sidecar with actual checkpoint_path
+1. 521 (confidence: 1.0000)
+2. 626 (confidence: 1.0000)
+3. 415 (confidence: 1.0000)
 ```
 
-### ✅ Full GPU Test Passed
-
-Test run with 12 trials (randomized order):
+**After:**
 ```
-Trial 0:  LIGHTGBM   ✅ (gpu)     MSE: 0.003243
-Trial 1:  NEURAL_NET ✅ (cuda:0)  MSE: 0.004272
-Trial 2:  XGBOOST    ✅ (cuda:0)  MSE: 0.003654
-...
-Trial 10: LIGHTGBM   ✅ (gpu)     MSE: 0.003243  ← AFTER 9 CUDA trials!
-Trial 11: LIGHTGBM   ✅ (gpu)     MSE: 0.003242  ← Still works!
+1. 521 (confidence: 0.7949)
+2. 626 (confidence: 0.6884)
+3. 415 (confidence: 0.3286)
 ```
 
-**Key Achievement:** LightGBM (OpenCL) works regardless of trial order!
+### ✅ Raw Scores Contract (Team Beta Requirement)
 
-### ✅ Production Run Completed
+**New output contract for Step 6:**
+- `raw_scores` - Machine truth, cross-run comparable (automation uses this)
+- `confidence_scores` - Calibrated 0-1 using sigmoid z-score (for gating/thresholds)
+- `confidence_scores_normalized` - Human-friendly display (max = 1.0)
+- `metadata.score_stats` - Debugging: min/max/mean/std/unique
 
-Full comparison with 395,211 survivors × 48 features:
-- Train: 252,936 samples
-- Val: 63,233 samples  
-- Test: 79,042 samples (held out)
+### ✅ Parent Run ID Lineage (Team Beta Requirement)
 
-**Results:**
-| Model | Val MSE | R² | Device | Status |
-|-------|---------|-----|--------|--------|
-| 🏆 CatBoost | 2.17e-11 | 1.0000 | cuda:0:1 | WINNER |
-| XGBoost | 2.93e-08 | 1.0000 | cuda:0 | ✅ |
-| LightGBM | 8.82e-08 | 1.0000 | gpu (OpenCL) | ✅ |
-| Neural Net | 0.00249 | -0.0002 | cuda:0,1 | ⚠️ Timeouts |
+**Problem:** Step 6 had no traceability to Step 5 training run
+**Solution:**
+- Auto-reads `parent_run_id` from Step 5 sidecar (`best_model.meta.json`)
+- CLI override available: `--parent-run-id`
+- Stored in `agent_metadata.parent_run_id`
+
+**Lineage chain now complete:**
+```
+Step 5: run_id: "step5_20251223_171709"
+    ↓
+Step 6: parent_run_id: "step5_20251223_171709"
+```
+
+### ✅ Type-Tolerant Intersection (Session 14 carryover)
+
+- `compute_dual_sieve_intersection()` now handles both int and dict survivors
+- Added `_coerce_seed_list()` helper for robust format handling
+- Prevents `TypeError: unhashable type: 'dict'` with production data
 
 ---
 
-## Session 10 Accomplishments (Dec 21-22, 2025) - BUG DISCOVERY
+## Current Pipeline Status
 
-### 🔍 OpenCL/CUDA Conflict Analysis
-
-**Root Cause Investigation:**
-1. PyTorch CUDA initialization happens at import time
-2. `initialize_cuda_early()` called at module level
-3. CUDA context creation blocks OpenCL from accessing GPU
-4. LightGBM's OpenCL backend fails with error -9999
-
-**Test Script Created:** `test_subprocess_isolation_gpu.py`
-- Validates subprocess isolation works
-- Runs 12 trials in random order
-- Confirms LightGBM works after CUDA models
-
-### 📋 Architecture Design
-
-Designed 3-file solution:
-1. `train_single_trial.py` - Isolated worker (NO GPU imports at module level)
-2. `subprocess_trial_coordinator.py` - Manages subprocess execution
-3. Integration into `meta_prediction_optimizer_anti_overfit.py`
+| Step | Component | Status | Notes |
+|------|-----------|--------|-------|
+| 1 | Window Optimizer | ✅ Working | Optuna Bayesian optimization |
+| 2 | Forward Sieve | ✅ Working | GPU-accelerated filtering |
+| 2.5 | Scorer Meta-Optimizer | ✅ Working | Distributed 26-GPU |
+| 3 | Full Scoring | ✅ Working | 46 features per survivor |
+| 4 | Bidirectional Intersection | ✅ Working | Type-tolerant (int/dict) |
+| 5 | ML Training | ✅ Working | 4 models, subprocess isolation |
+| 6 | Prediction Generator | ✅ FIXED | Confidence bug fixed, lineage added |
 
 ---
 
-## Session 9 Accomplishments (Dec 21, 2025) - MULTI-MODEL ARCHITECTURE
+## Key Files Modified (Session 15)
 
-### ✅ Team Beta's 5 Required Fixes Implemented
-
-1. **Proper Argument Wiring** - CLI args passed through to training functions
-2. **Strict Validation** - Pydantic models for config validation
-3. **Metadata Tracking** - Agent metadata injection across all scripts
-4. **LightGBM Ordering Guardrails** - `SAFE_MODEL_ORDER` constant
-5. **Model Type Selection** - `--model-type` and `--compare-models` flags
-
-### ✅ Multi-Model Support Added
-
-| Model | Backend | GPU Framework |
-|-------|---------|---------------|
-| Neural Net | PyTorch | CUDA |
-| XGBoost | XGBoost | CUDA |
-| LightGBM | LightGBM | OpenCL |
-| CatBoost | CatBoost | CUDA |
-
-### ✅ Sidecar Metadata Generation
-
-`best_model.meta.json` now includes:
-- `feature_schema` with all 48 feature names
-- `feature_schema_hash` for validation
-- `y_label_source` with observed min/max/range
-- `training_params` from Optuna
-- `validation_metrics` 
-- `provenance` with git commit, CLI args, timestamp
-- `agent_metadata` for pipeline integration
-
----
-
-## Implementation Status (Updated)
-
-| Component | Status | Evidence |
-|-----------|--------|----------|
-| Schema v1.0.3 (agent_metadata) | ✅ DONE | metadata_writer.py |
-| Schema v1.0.4 (Dual-LLM) | ✅ DONE | llm_metadata fields |
-| Dual-LLM Servers | ✅ DONE | Qwen2.5-Coder-14B + Math-7B |
-| LLM Router | ✅ DONE | Intelligent routing |
-| Universal Agent v1.0 | ✅ DONE | agents/agent_core.py |
-| All 6 Manifests v1.3.0 | ✅ DONE | 58 parameters |
-| Configurable Thresholds | ✅ DONE | Optuna + CLI + manifest |
-| Pydantic Context Framework | ✅ DONE | v3.2.0 + Addendums A-E |
-| Watcher Agent (Pipeline Mgr) | ✅ DONE | watcher_agent.py |
-| Web Dashboard | ✅ DONE | web_dashboard.py |
-| Centralized Search Bounds | ✅ DONE | distributed_config.json |
-| **Multi-Model Architecture** | ✅ DONE | **4 ML models supported** |
-| **Subprocess Isolation** | ✅ DONE | **OpenCL/CUDA conflict solved** |
-| **Model Checkpoint Saving** | ✅ DONE | **best_model.* files created** |
-| **Sidecar Metadata (v3.1.2)** | ✅ DONE | **best_model.meta.json** |
-
----
-
-## Project Implementation Phases
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    PROJECT PHASES                                    │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Phase 1: Schema v1.0.3/v1.0.4           ✅ DONE (Session 1)        │
-│  Phase 2: Dual-LLM Infrastructure        ✅ DONE (Session 1)        │
-│  Phase 3: Universal Agent v1.0           ✅ DONE (Session 1)        │
-│  Phase 4: Watcher Agent (Pipeline Mgr)   ✅ DONE (Session 2)        │
-│  Phase 5: Pydantic Context Framework     ✅ DONE (Sessions 1-4)     │
-│  Phase 6: Web Dashboard                  ✅ DONE (Session 5)        │
-│  Phase 7: Centralized Configuration      ✅ DONE (Session 8)        │
-│  Phase 8: Multi-Model Architecture       ✅ DONE (Sessions 9-11)    │
-│                                                                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                    ONGOING WORK                                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Feature Importance AI Analysis          ⏳ Ready (module exists)   │
-│  End-to-end Pipeline Test                🔜 NEXT                    │
-│  GBNF Phase 2: Supervisory LLM           📝 PENDING                 │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Files Modified/Created in Sessions 9-11
-
-### Session 11 (Dec 22, 2025)
 | File | Changes |
 |------|---------|
-| `train_single_trial.py` | Added `--save-model`, `--model-output-dir`, model.save() calls |
-| `subprocess_trial_coordinator.py` | Added `save_best_model()`, tracks `best_result` |
-| `meta_prediction_optimizer_anti_overfit.py` | Calls `save_best_model()`, real checkpoint_path in sidecar |
-
-### Session 10 (Dec 21-22, 2025)
-| File | Changes |
-|------|---------|
-| `test_subprocess_isolation_gpu.py` | Created - validates subprocess isolation |
-| `train_single_trial.py` | Created - isolated worker script |
-| `subprocess_trial_coordinator.py` | Created - subprocess management |
-
-### Session 9 (Dec 21, 2025)
-| File | Changes |
-|------|---------|
-| `meta_prediction_optimizer_anti_overfit.py` | Added multi-model support, `--compare-models` |
-| `models/wrappers/*.py` | Model wrapper implementations |
-| `models/model_factory.py` | Model instantiation factory |
-| `agent_manifests/reinforcement.json` | Updated for multi-model |
+| `prediction_generator.py` | Fixed confidence extraction, added raw_scores, parent_run_id |
+| `survivor_scorer.py` | Added `_coerce_seed_list()` for type-tolerant intersection |
+| `models/global_state_tracker.py` | NEW: 14 global features, SciPy fallback |
+| `models/__init__.py` | Added GlobalStateTracker exports |
+| `agent_manifests/prediction.json` | Updated to v1.5.0 |
 
 ---
 
-## Subprocess Isolation Architecture
+## Remaining Team Beta Notes (Not Blockers)
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│           meta_prediction_optimizer_anti_overfit.py                  │
-│                    (Main Process - NO GPU imports)                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  SubprocessTrialCoordinator                                         │
-│  ├── Saves X_train, y_train, X_val, y_val to .npz                  │
-│  ├── For each Optuna trial:                                        │
-│  │   └── subprocess.run(train_single_trial.py ...)                 │
-│  │       ├── --model-type {lightgbm|xgboost|catboost|neural_net}  │
-│  │       ├── --data-path /tmp/trial_data.npz                      │
-│  │       ├── --params '{"n_estimators": 100, ...}'                │
-│  │       ├── --save-model                                          │
-│  │       └── --model-output-dir /tmp/trial_models/                │
-│  │                                                                  │
-│  │   train_single_trial.py (Fresh subprocess)                      │
-│  │   ├── NO GPU imports at module level                            │
-│  │   ├── Imports ML library AFTER arg parsing                      │
-│  │   ├── Trains model                                              │
-│  │   ├── Saves checkpoint                                          │
-│  │   ├── Outputs JSON with metrics + checkpoint_path               │
-│  │   └── Exits (GPU memory freed)                                  │
-│  │                                                                  │
-│  ├── Tracks best result per model type                             │
-│  └── save_best_model() → copies winner to output_dir              │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
+1. **Config file warning** - `prediction_generator_config.json` not found, using defaults
+   - Solution: Create default config OR load from `distributed_config.json`
+
+2. **Dict survivor guardrail** - If dict missing "seed" key, should raise ValueError
+   - Currently silently skips, could cause "empty intersection" false positives
 
 ---
 
-## CLI Changes
+## Next Steps
 
-### New in v2.0
-```bash
-# Compare all 4 models with subprocess isolation
-python3 meta_prediction_optimizer_anti_overfit.py \
-    --survivors survivors_with_scores.json \
-    --lottery-data synthetic_lottery.json \
-    --compare-models \
-    --trials 50
-
-# Single model (backward compatible)
-python3 meta_prediction_optimizer_anti_overfit.py \
-    --survivors survivors_with_scores.json \
-    --lottery-data synthetic_lottery.json \
-    --model-type xgboost \
-    --trials 50
-
-# With custom output directory
-python3 meta_prediction_optimizer_anti_overfit.py \
-    --survivors survivors_with_scores.json \
-    --lottery-data synthetic_lottery.json \
-    --compare-models \
-    --output-dir models/reinforcement
-```
-
----
-
-## Key Insights from Sessions 9-11
-
-### GPU Framework Compatibility
-
-| Framework | GPU Backend | Notes |
-|-----------|-------------|-------|
-| PyTorch | CUDA | Initializes at import time |
-| XGBoost | CUDA | Works with PyTorch |
-| CatBoost | CUDA | Works with PyTorch |
-| LightGBM | **OpenCL** | Conflicts with CUDA! |
-
-**Solution:** Subprocess isolation ensures each trial gets fresh GPU state.
-
-### Model Performance Comparison
-
-For tabular data (48 features, 395K samples):
-- **Tree models dominate** (CatBoost, XGBoost, LightGBM)
-- **Neural nets struggle** without longer training time
-- **CatBoost is fastest** to near-perfect R²
-
-### Sidecar Metadata Importance
-
-The `best_model.meta.json` enables:
-- Feature importance extraction from saved model
-- Validation that feature ordering matches training
-- Provenance tracking for reproducibility
-- Agent handoff with full context
-
----
-
-## Hardware Configuration
-
-### Zeus (Primary/Coordinator)
-- 2× RTX 3080 Ti (CUDA + OpenCL capable)
-- ~59.69 TFLOPS
-- Runs: Coordinator, LLM servers, Optuna, Web Dashboard, Step 5 training
-
-### Mining Rigs (Workers)
-- rig-6600: 12× RX 6600 (ROCm) @ 192.168.3.120
-- rig-6600b: 12× RX 6600 (ROCm) @ 192.168.3.154
-- ~226 TFLOPS combined
-
-### SER8 (Development)
-- AMD Ryzen 7 8845HS
-- Development machine at 192.168.1.228
-- Used for code editing, file transfer to Zeus
-
-### Total Cluster
-- 26 GPUs
-- ~285 TFLOPS
-
----
-
-## Next Session Goals
-
-1. **Verify Model Checkpoint Saving** - Check `best_model.cbm` exists with correct content
-2. **Feature Importance Analysis** - Run existing module on saved model
-3. **End-to-end Pipeline Test** - Steps 1→6 with 26 GPUs
-4. **Documentation Updates** - Sync all proposal docs
-5. **Consider Neural Net Timeout** - Increase from 300s for large datasets
-
----
-
-## Git Commits (Sessions 9-11)
-
-- `5583c23` - Multi-model architecture + Team Beta fixes
-- `[pending]` - Subprocess isolation implementation
-- `[pending]` - Model checkpoint saving
-
----
-
-## TODO List (Updated Priority)
-
-### ✅ COMPLETED
-- [x] TODO #1: Add `parameter_bounds` to manifests Steps 2-6
-- [x] TODO #2: Progress Display & Visualization
-- [x] TODO #7: Centralize search bounds configuration
-- [x] TODO #8: Fix threshold philosophy (discovery vs filtering)
-- [x] **TODO #9: Multi-model architecture (4 ML models)**
-- [x] **TODO #10: OpenCL/CUDA conflict resolution**
-- [x] **TODO #11: Model checkpoint saving**
-
-### 🔜 NEXT
-- [ ] TODO #3: End-to-end pipeline test with full 26-GPU cluster
-- [ ] TODO #12: Feature importance AI analysis on saved models
-
-### 📝 PENDING
-- [ ] GBNF Phase 2: Supervisory LLM implementation
-- [ ] Navigation tabs in web dashboard
-- [ ] Neural net timeout configuration
+1. ✅ Commit Session 15 changes
+2. Run full pipeline test with production data
+3. Implement config file loading (low priority)
+4. Complete Watcher Agent integration

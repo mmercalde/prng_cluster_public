@@ -18,6 +18,28 @@ A fully distributed, AI-driven analysis system designed to:
 
 ---
 
+## 🆕 Recent Updates (December 24, 2025)
+
+### Session 15: Step 6 Confidence Fix + Lineage
+- ✅ **CRITICAL FIX:** Confidence scores now differentiated (was all 1.0)
+- ✅ Raw scores preserved for automation cross-run comparability
+- ✅ Parent run ID lineage from Step 5 → Step 6
+- ✅ Score statistics for monitoring (min/max/mean/std/unique)
+
+### Session 14: Step 6 Restoration v2.2
+- ✅ GlobalStateTracker module (14 global features, GPU-neutral)
+- ✅ Type-tolerant intersection (handles int and dict survivors)
+- ✅ Model loading from sidecar with feature schema
+
+### Session 11-12: Multi-Model Architecture
+- ✅ Subprocess isolation for OpenCL/CUDA conflict
+- ✅ 4 ML models: XGBoost, LightGBM, CatBoost, Neural Net
+- ✅ Model checkpoint persistence
+
+📄 See `CURRENT_Status.txt` for detailed session history.
+
+---
+
 ## 🔗 6-Step Pipeline Flow
 
 ```

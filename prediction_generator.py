@@ -171,6 +171,7 @@ class PredictionGenerator:
         self.model_meta = None
         self.model_checkpoint_path = None
         self.global_tracker = None
+        self.parent_run_id = None  # Will be set from CLI or sidecar
 
         if MULTI_MODEL_AVAILABLE:
             try:
@@ -180,6 +181,11 @@ class PredictionGenerator:
                 )
                 self.logger.info(f"  Model loaded: {self.model_meta.get('model_type', 'unknown')}")
                 self.model_checkpoint_path = self.model_meta.get('checkpoint_path', f'{config.models_dir}/best_model')
+                # Auto-read parent_run_id from sidecar (Team Beta requirement)
+                agent_meta = self.model_meta.get('agent_metadata', {})
+                self.parent_run_id = agent_meta.get('run_id', None)
+                if self.parent_run_id:
+                    self.logger.info(f"  Parent run ID: {self.parent_run_id}")
             except FileNotFoundError as e:
                 self.logger.warning(f"  Model not found: {e}")
             except Exception as e:
@@ -262,29 +268,92 @@ class PredictionGenerator:
         
         self.logger.info(f"Pool generated {len(predictions_list)} predictions")
         
-        # Extract prediction numbers and confidences
-        # Whitepaper Section 4: "ML models can learn optimal weighting"
+        # Extract prediction numbers and raw scores from pool_result
+        # FIX: Previously only read 'predictions', ignored 'confidence_scores'
+        # Team Beta approved fix with 3 requirements:
+        #   1) Guard against length mismatch
+        #   2) Dict-safe extraction (handle both int and dict formats)
+        #   3) Preserve raw_scores in output contract
+        
+        import math
+        
+        # Get raw data from pool
+        pool_predictions = pool_result.get('predictions', [])
+        pool_scores = pool_result.get('confidence_scores', [])
+        
+        # Tweak #2: Dict-safe extraction - handle both int and dict formats
         predictions = []
-        confidences = []
+        raw_scores = []
         
-        for pred in predictions_list[:k]:
+        for i, pred in enumerate(pool_predictions[:k]):
             if isinstance(pred, dict):
-                predictions.append(pred.get('next_prediction', 0))
-                confidences.append(pred.get('confidence', 0.0))
-            elif isinstance(pred, (int, float)):
+                # Future-proof: if predictions become dicts
+                predictions.append(int(pred.get('next_prediction', pred.get('prediction', 0))))
+                raw_scores.append(float(pred.get('raw_score', pred.get('confidence', 0.0))))
+            else:
+                # Current format: predictions are ints, scores in separate list
                 predictions.append(int(pred))
-                confidences.append(1.0 / len(predictions_list))
+                if i < len(pool_scores):
+                    raw_scores.append(float(pool_scores[i]))
         
-        # Normalize confidences
-        if confidences:
-            max_conf = max(confidences)
-            if max_conf > 0:
-                confidences = [c / max_conf for c in confidences]
+        # Tweak #1: Guard against length mismatch
+        n = min(len(predictions), len(raw_scores))
+        predictions = predictions[:n]
+        raw_scores = raw_scores[:n]
         
-        # Build result
+        # Compute score statistics for debugging/monitoring
+        score_stats = {}
+        confidences = []
+        normalized = []
+        
+        if raw_scores:
+            n_scores = len(raw_scores)
+            mn, mx = min(raw_scores), max(raw_scores)
+            mean_score = sum(raw_scores) / n_scores
+            var = sum((x - mean_score) ** 2 for x in raw_scores) / max(1, n_scores - 1)
+            std = math.sqrt(var)
+            
+            score_stats = {
+                'raw_min': float(mn),
+                'raw_max': float(mx),
+                'raw_mean': float(mean_score),
+                'raw_std': float(std),
+                'raw_unique': len(set(raw_scores))
+            }
+            
+            # Warn if model outputs are constant (no discriminative power)
+            if score_stats['raw_unique'] == 1 or std < 1e-9:
+                self.logger.warning('Model outputs are constant; confidence set to 0.5 for all')
+            
+            # Human-friendly normalized scores (for display)
+            if mx > 0:
+                normalized = [x / mx for x in raw_scores]
+            else:
+                normalized = [0.0] * len(raw_scores)
+            
+            # Calibrated confidence using sigmoid of z-score
+            # - raw_scores = automation (cross-run comparable)
+            # - confidences = convenience (bounded 0-1 for gating/display)
+            eps = 1e-12
+            if std < 1e-9 or abs(mx - mn) < eps:
+                confidences = [0.5] * len(raw_scores)
+            else:
+                def sigmoid(z):
+                    z = max(-20.0, min(20.0, z))
+                    return 1.0 / (1.0 + math.exp(-z))
+                confidences = [sigmoid((x - mean_score) / (std + eps)) for x in raw_scores]
+        else:
+            self.logger.warning('No raw scores from pool - using neutral confidence')
+            confidences = [0.5] * len(predictions)
+            normalized = [0.5] * len(predictions)
+            raw_scores = [0.0] * len(predictions)
+        
+        # Build result (Team Beta tweak #3: include raw_scores + score_stats)
         result = {
-            'predictions': predictions[:k],
-            'confidence_scores': confidences[:k],
+            'predictions': predictions,
+            'raw_scores': raw_scores,                    # Machine truth, cross-run comparable
+            'confidence_scores': confidences,            # Calibrated 0-1 for gating/automation
+            'confidence_scores_normalized': normalized,  # Human-friendly display (optional)
             'metadata': {
                 'method': method,
                 'pool_size': self.config.pool_size,
@@ -297,7 +366,8 @@ class PredictionGenerator:
                 'skip': self.config.skip,
                 'dual_sieve': self.config.use_dual_sieve,
                 'gpu_available': GPU_AVAILABLE,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'score_stats': score_stats               # For monitoring/debugging
             }
         }
         
@@ -458,6 +528,7 @@ class PredictionGenerator:
                 {"file": "survivors_with_scores.json", "required": True}
             ],
             outputs=[str(filepath)],
+            parent_run_id=self.parent_run_id,
             pipeline_step=6,
             follow_up_agent=None,
             confidence=avg_conf,
@@ -497,6 +568,8 @@ def main():
     # Multi-Model Architecture v3.1.2
     parser.add_argument('--models-dir', type=str, default='models/reinforcement',
                        help='Directory containing best_model.meta.json (default: models/reinforcement)')
+    parser.add_argument('--parent-run-id', type=str, default=None,
+                       help='Parent run ID for lineage tracking (auto-reads from sidecar if not provided)')
 
     args = parser.parse_args()
 
@@ -559,6 +632,13 @@ def main():
 
     # Initialize generator
     generator = PredictionGenerator(config, logger)
+    
+    # Override parent_run_id from CLI if provided (Team Beta requirement)
+    if args.parent_run_id:
+        generator.parent_run_id = args.parent_run_id
+        logger.info(f"Using CLI parent_run_id: {args.parent_run_id}")
+    elif generator.parent_run_id:
+        logger.info(f"Using sidecar parent_run_id: {generator.parent_run_id}")
 
     # Generate predictions
     result = generator.generate_predictions(

@@ -196,3 +196,68 @@
 ---
 
 **Implementation COMPLETE. Multi-Model Architecture with Subprocess Isolation is production-ready.**
+
+---
+
+## Step 6 Restoration v2.2 (December 23-24, 2025)
+
+### Phase 1: GlobalStateTracker Module
+- [x] 1.1 Create `models/global_state_tracker.py` - 14 global features
+- [x] 1.2 Implement SciPy fallback for entropy calculation
+- [x] 1.3 Update `models/__init__.py` to export GlobalStateTracker
+- [x] 1.4 Eliminate duplicate GlobalStateTracker from `reinforcement_engine.py`
+- [x] 1.5 Eliminate duplicate GlobalStateTracker from `generate_ml_jobs.py`
+
+### Phase 2: Type-Tolerant Intersection
+- [x] 2.1 Add `_coerce_seed_list()` helper to `survivor_scorer.py`
+- [x] 2.2 Update `compute_dual_sieve_intersection()` to coerce inputs
+- [x] 2.3 Test with int lists, dict lists, and mixed lists
+
+### Phase 3: Prediction Generator Fixes
+- [x] 3.1 Add GlobalStateTracker import
+- [x] 3.2 Add model loading from sidecar in `__init__`
+- [x] 3.3 Add `_build_prediction_pool()` method
+- [x] 3.4 Add `_empty_pool_result()` helper
+- [x] 3.5 Fix intersection Dict handling (`intersection_result["intersection"]`)
+
+### Phase 4: Confidence Bug Fix (Session 15)
+- [x] 4.1 Fix extraction to read `pool_result['confidence_scores']`
+- [x] 4.2 Implement sigmoid z-score calibration
+- [x] 4.3 Add `raw_scores` to output contract
+- [x] 4.4 Add `confidence_scores_normalized` for human display
+- [x] 4.5 Add `score_stats` to metadata (min/max/mean/std/unique)
+- [x] 4.6 Add constant-output warning (if std ≈ 0)
+
+### Phase 5: Parent Run ID Lineage (Session 15)
+- [x] 5.1 Add `--parent-run-id` CLI argument
+- [x] 5.2 Auto-read from sidecar (`best_model.meta.json → agent_metadata.run_id`)
+- [x] 5.3 Pass to `inject_agent_metadata()` 
+- [x] 5.4 Test lineage chain (Step 5 → Step 6)
+
+### Phase 6: Manifest Updates
+- [x] 6.1 Update `agent_manifests/prediction.json` to v1.5.0
+
+### Phase 7: Testing
+- [x] 7.1 Test Step 3: Full Scoring (50 survivors, 46 features) ✅
+- [x] 7.2 Test Step 4: Bidirectional Intersection (25 seeds) ✅
+- [x] 7.3 Test Step 5: Model Training (XGBoost) ✅
+- [x] 7.4 Test Step 6: Predictions with differentiated confidence ✅
+- [x] 7.5 Verify raw_scores, normalized, score_stats in output ✅
+- [x] 7.6 Verify parent_run_id in agent_metadata ✅
+
+---
+
+## Status: ✅ COMPLETE
+
+All Step 6 Restoration v2.2 items completed and tested.
+
+**Test Output (December 24, 2025):**
+```
+1. 521 (confidence: 0.7949)  # Was 1.0000
+2. 626 (confidence: 0.6884)  # Was 1.0000
+3. 415 (confidence: 0.3286)  # Was 1.0000
+4. 131 (confidence: 0.3283)  # Was 1.0000
+5. 026 (confidence: 0.3281)  # Was 1.0000
+
+parent_run_id: "step5_20251223_171709" ✅
+```
