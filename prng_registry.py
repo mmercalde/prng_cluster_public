@@ -65,77 +65,28 @@ SUPPORTED WINDOW SIZES:
 """
 from typing import List, Dict, Any, Callable
 import numpy as np
+# ============================================================================
+# PYTORCH SUPPORT (LAZY IMPORT — DO NOT IMPORT TORCH AT MODULE LOAD)
+# ============================================================================
+# CRITICAL: Importing torch at module level breaks CuPy kernel compilation
+# on ROCm (AMD GPUs). PyTorch modifies HIP environment variables, causing
+# "stddef.h not found" errors when CuPy tries to compile kernels.
+#
+# Solution: Lazy-load torch only when pytorch_gpu functions are actually called.
+# This keeps prng_registry safe to import from CuPy-first workflows (sieve_filter.py).
+# ============================================================================
+import importlib.util
 
-# ============================================================================
-# PYTORCH IMPORT (v2.4 Addition - For Step 2.5 GPU Scoring)
-# ============================================================================
-try:
+def _torch_available() -> bool:
+    """Check if PyTorch is installed without importing it."""
+    return importlib.util.find_spec("torch") is not None
+
+def _get_torch():
+    """Lazy import torch - only when actually needed."""
+    if not _torch_available():
+        raise RuntimeError("PyTorch not available")
     import torch
-    PYTORCH_AVAILABLE = True
-except ImportError:
-    PYTORCH_AVAILABLE = False
-    print("⚠️  PyTorch not available - GPU scoring disabled (CPU fallback will be used)")
-    print("   To enable GPU scoring: pip install torch --break-system-packages")
-
-# ============================================================================
-# PYTORCH IMPORT (v2.4 Addition - For Step 2.5 GPU Scoring)
-# ============================================================================
-try:
-    import torch
-    PYTORCH_AVAILABLE = True
-except ImportError:
-    PYTORCH_AVAILABLE = False
-    print("⚠️  PyTorch not available - GPU scoring disabled (CPU fallback will be used)")
-    print("   To enable GPU scoring: pip install torch --break-system-packages")
-# ============================================================================
-
-# ============================================================================
-# PYTORCH GPU IMPLEMENTATIONS (v2.4 - For Step 2.5 ML Scoring)
-# ============================================================================
-
-def java_lcg_pytorch_gpu(
-    seeds: 'torch.Tensor',
-    n: int,
-    mod: int,
-    device: str = 'cuda',
-    skip: int = 0,
-    **kwargs
-) -> 'torch.Tensor':
-    """PyTorch GPU implementation of Java LCG (java.util.Random)"""
-    if not PYTORCH_AVAILABLE:
-        raise RuntimeError("PyTorch not installed. Install with: pip install torch --break-system-packages")
-    
-    a = kwargs.get('a', 25214903917)
-    c = kwargs.get('c', 11)
-    mask = (1 << 48) - 1
-    
-    seeds = seeds.to(device).long()
-    N = seeds.shape[0]
-    state = (seeds ^ a) & mask
-    
-    for _ in range(skip):
-        state = (a * state + c) & mask
-    
-    output = torch.zeros((N, n), dtype=torch.int64, device=device)
-    
-    for i in range(n):
-        state = (a * state + c) & mask
-        output[:, i] = (state >> 16) % mod
-    
-    return output
-
-
-def java_lcg_hybrid_pytorch_gpu(
-    seeds: 'torch.Tensor',
-    n: int,
-    mod: int,
-    device: str = 'cuda',
-    skip: int = 0,
-    **kwargs
-) -> 'torch.Tensor':
-    """PyTorch GPU for java_lcg_hybrid"""
-    return java_lcg_pytorch_gpu(seeds, n, mod, device, skip, **kwargs)
-
+    return torch
 
 # ============================================================================
 # PYTORCH GPU IMPLEMENTATIONS (v2.4 - For Step 2.5 ML Scoring)
@@ -155,8 +106,9 @@ def java_lcg_pytorch_gpu(
     FIXED: Correct initialization without XOR
     Matches java_lcg_cpu reference implementation
     """
-    if not PYTORCH_AVAILABLE:
-        raise RuntimeError("PyTorch not installed. Install with: pip install torch --break-system-packages")
+    if not _torch_available():
+        raise RuntimeError("PyTorch not available")
+    torch = _get_torch()
     
     a = kwargs.get('a', 25214903917)
     c = kwargs.get('c', 11)
@@ -4188,8 +4140,9 @@ KERNEL_REGISTRY = {
 
 def get_pytorch_gpu_reference(prng_family: str) -> Callable:
     """Get PyTorch GPU implementation for PRNG family."""
-    if not PYTORCH_AVAILABLE:
-        raise RuntimeError("PyTorch not installed. Install with: pip install torch --break-system-packages")
+    if not _torch_available():
+        raise RuntimeError("PyTorch not available")
+    torch = _get_torch()
     
     info = get_kernel_info(prng_family)
     
@@ -4206,7 +4159,7 @@ def get_pytorch_gpu_reference(prng_family: str) -> Callable:
 
 def has_pytorch_gpu(prng_family: str) -> bool:
     """Check if PRNG has PyTorch GPU implementation."""
-    if not PYTORCH_AVAILABLE:
+    if not _torch_available():
         return False
     
     try:
@@ -4218,7 +4171,7 @@ def has_pytorch_gpu(prng_family: str) -> bool:
 
 def list_pytorch_gpu_prngs() -> List[str]:
     """List all PRNGs with PyTorch GPU support."""
-    if not PYTORCH_AVAILABLE:
+    if not _torch_available():
         return []
     
     return [
@@ -4230,46 +4183,6 @@ def list_pytorch_gpu_prngs() -> List[str]:
 # ============================================================================
 # PYTORCH GPU HELPER FUNCTIONS (v2.4 Addition)
 # ============================================================================
-
-def get_pytorch_gpu_reference(prng_family: str) -> Callable:
-    """Get PyTorch GPU implementation for PRNG family."""
-    if not PYTORCH_AVAILABLE:
-        raise RuntimeError("PyTorch not installed. Install with: pip install torch --break-system-packages")
-    
-    info = get_kernel_info(prng_family)
-    
-    if 'pytorch_gpu' not in info:
-        available = list_pytorch_gpu_prngs()
-        raise ValueError(
-            f"PyTorch GPU not implemented for '{prng_family}'. "
-            f"Available GPU PRNGs: {available}. "
-            f"Use get_cpu_reference('{prng_family}') for CPU fallback."
-        )
-    
-    return info['pytorch_gpu']
-
-
-def has_pytorch_gpu(prng_family: str) -> bool:
-    """Check if PRNG has PyTorch GPU implementation."""
-    if not PYTORCH_AVAILABLE:
-        return False
-    
-    try:
-        info = get_kernel_info(prng_family)
-        return 'pytorch_gpu' in info
-    except ValueError:
-        return False
-
-
-def list_pytorch_gpu_prngs() -> List[str]:
-    """List all PRNGs with PyTorch GPU support."""
-    if not PYTORCH_AVAILABLE:
-        return []
-    
-    return [
-        name for name, info in KERNEL_REGISTRY.items()
-        if 'pytorch_gpu' in info
-    ]
 
 def get_kernel_info(prng_family: str) -> Dict[str, Any]:
     """Get kernel configuration for PRNG family"""
