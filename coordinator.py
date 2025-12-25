@@ -966,12 +966,11 @@ class MultiGPUCoordinator:
             self.ssh_pool.return_connection(node.hostname, ssh)
             ssh = None
             runtime = time.time() - start_time
-            #             json_result = self.parse_json_result(output)
-            #             if json_result:
-            #                 # Coordinator memory cleanup (no CUDA calls)
-            #                 gc.collect()
-            #                 return JobResult(job.job_id, worker.node.hostname, True, json_result, None, runtime)
-            # else: # v1.8.1 - stdout parsing disabled, file check is now primary
+            # v1.8.2 - Re-enable stdout JSON parsing for sieve jobs
+            json_result = self.parse_json_result(output)
+            if json_result:
+                gc.collect()
+                return JobResult(job.job_id, worker.node.hostname, True, json_result, None, runtime)
             # v1.8.0 Fallback: For script jobs, check if expected_output file exists on remote
             if job.payload and job.payload.get('expected_output'):
                 expected_file = job.payload['expected_output']

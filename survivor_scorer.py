@@ -261,7 +261,8 @@ class SurvivorScorer:
                   'intersection_weight','survivor_overlap_ratio','forward_count','reverse_count',
                   'intersection_count','intersection_ratio','pred_min','pred_max',
                   'residual_mean','residual_std','residual_abs_mean','residual_max_abs',
-                  'forward_only_count','reverse_only_count']:
+                  'forward_only_count','reverse_only_count',
+                  'skip_min','skip_max','bidirectional_count','bidirectional_selectivity']:
             features.setdefault(k, 0.0)
 
         # Critical: Clean VRAM on 1x PCIe rigs
@@ -527,7 +528,8 @@ class SurvivorScorer:
                       'intersection_weight','survivor_overlap_ratio','forward_count','reverse_count',
                       'intersection_count','intersection_ratio','pred_min','pred_max',
                       'residual_mean','residual_std','residual_abs_mean','residual_max_abs',
-                      'forward_only_count','reverse_only_count']:
+                      'forward_only_count','reverse_only_count',
+                  'skip_min','skip_max','bidirectional_count','bidirectional_selectivity']:
                 features.setdefault(k, 0.0)
             
             results.append(features)

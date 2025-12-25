@@ -560,7 +560,8 @@ class ReinforcementEngine:
                 reverse_survivors=reverse_survivors
             )
 
-            feature_names = sorted(per_seed_features.keys())
+            # Filter out excluded features (score, confidence)
+            feature_names = sorted([k for k in per_seed_features.keys() if k not in self.excluded_features])
             per_seed_values = [per_seed_features[k] for k in feature_names]
             
             if self.per_seed_feature_names is None:
