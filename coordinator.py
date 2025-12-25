@@ -41,7 +41,7 @@ CHANGES:
          'script' in job.payload:" - prevents "NoneType is not iterable" error when
          processing seed-based correlation/sieve jobs
 """
-from models import WorkerNode, JobSpec, GPUWorker, JobResult, ProgressState, GPUPerformanceProfile
+from cluster_models import WorkerNode, JobSpec, GPUWorker, JobResult, ProgressState, GPUPerformanceProfile
 from gpu_optimizer import GPUOptimizer
 from recovery_manager import AutoRecoveryManager
 from connection_manager import SSHConnectionPool

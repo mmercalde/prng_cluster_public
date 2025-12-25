@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Dict, Optional
 from dataclasses import asdict
-from models import ProgressState
+from cluster_models import ProgressState
 
 class AutoRecoveryManager:
     """Manages automatic job recovery and progress persistence"""

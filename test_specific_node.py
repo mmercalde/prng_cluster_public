@@ -1,7 +1,7 @@
 import sys, json
 sys.path.insert(0, '.')
 from coordinator import MultiGPUCoordinator
-from models import JobSpec, GPUWorker, WorkerNode
+from cluster_models import JobSpec, GPUWorker, WorkerNode
 
 coordinator = MultiGPUCoordinator('distributed_config.json')
 coordinator.current_target_file = 'daily3.json'

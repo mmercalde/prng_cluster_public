@@ -6,7 +6,7 @@ Handles GPU performance profiling, optimization, and workload distribution
 
 import time
 from collections import defaultdict
-from models import GPUPerformanceProfile
+from cluster_models import GPUPerformanceProfile
 
 class GPUOptimizer:
     """GPU optimization system with performance learning"""
