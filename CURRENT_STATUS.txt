@@ -1,0 +1,174 @@
+# CURRENT STATUS - Updated December 25, 2025 (Session 16)
+
+## Timeline Summary
+```
+Session 1: Dec 3-4, 2025   - Schema v1.0.3/v1.0.4, Dual-LLM, Universal Agent v1.0
+Session 2: Dec 4-5, 2025   - Watcher Agent, Progress Display, 26-GPU fix
+Session 3: Dec 5-6, 2025   - Configurable thresholds, chunk sizing fix
+Session 4: Dec 6, 2025     - Manifests v1.3.0 (Steps 2-6), PROPOSAL Addendum B
+Session 5: Dec 6-7, 2025   - Web Dashboard, Interactive Plots, Live Trial Data
+Session 6: Dec 7, 2025     - AMD GPU monitoring, Settings UI, Dashboard polish
+Session 7: Dec 7, 2025     - Java LCG sieve debugging, triple-modulo fix, threshold tuning
+Session 8: Dec 7, 2025     - Centralized search bounds, threshold philosophy fix, Optuna working
+Session 9: Dec 21, 2025    - Multi-model architecture (4 ML models), Team Beta fixes
+Session 10: Dec 21-22, 2025 - OpenCL/CUDA conflict discovery, subprocess isolation design
+Session 11: Dec 22, 2025   - Subprocess isolation implementation, model checkpoint saving
+Session 12: Dec 23, 2025   - Neural net architecture fix, XGBoost wins multi-model comparison
+Session 13: Dec 23, 2025   - Step 6 Restoration v2.1 proposal, Team Beta review
+Session 14: Dec 23-24, 2025 - Step 6 Restoration v2.2 implementation, GlobalStateTracker module
+Session 15: Dec 24, 2025   - Confidence bug fix, raw scores, parent_run_id lineage
+Session 16: Dec 25, 2025   - Parallel execution, Step 4 fix, feature count alignment
+```
+
+---
+
+## Session 16 Accomplishments (Dec 25, 2025) - PARALLEL EXECUTION + CRITICAL FIXES
+
+### ✅ Parallel Execution in scripts_coordinator.py
+
+**Problem:** Jobs ran sequentially within each node (only nodes ran in parallel)
+- With 20 jobs across 3 nodes: each node processed its jobs one-by-one
+- GPU utilization was poor - only 1 GPU active per node at a time
+
+**Solution:** ThreadPoolExecutor with GPU-aware parallelism
+- Pre-assign jobs to GPUs (round-robin)
+- Each GPU runs its jobs sequentially
+- All GPUs on a node run in parallel
+- Respects `max_concurrent_script_jobs` from config
+
+**Debug Output Added:**
+```
+🔀 PARALLEL: localhost | 2 GPU workers | 4 jobs | distribution: {0: 2, 1: 2}
+🔀 PARALLEL: 192.168.3.120 | 12 GPU workers | 7 jobs | distribution: {0: 1, 1: 1, ...}
+```
+
+**Performance:**
+- 4 jobs: 11.0s parallel vs ~14s sequential (21% faster)
+- More jobs = more dramatic improvement
+
+### ✅ Step 4 --survivor-data Argument Fix
+
+**Problem:** `adaptive_meta_optimizer.py` missing `--survivor-data` argument
+- Workflow passed `--survivor-data survivors_with_scores.json`
+- Script rejected it as unrecognized
+
+**Solution:** Added argument parser entry:
+```python
+parser.add_argument('--survivor-data', type=str,
+                   help='Path to scored survivors file')
+```
+
+### ✅ Feature Count Alignment (48 per-seed features)
+
+**Problem:** survivor_scorer.py missing 4 features that reinforcement_engine.py expected
+- Caused feature count mismatch (60 vs 62)
+
+**Missing Features Added:**
+- `skip_min`
+- `skip_max`
+- `bidirectional_count`
+- `bidirectional_selectivity`
+
+### ✅ coordinator.py v1.8.2 - Stdout Parsing Restored
+
+**Problem:** v1.8.1 disabled stdout JSON parsing, breaking sieve jobs
+**Solution:** v1.8.2 re-enabled with improved error handling
+
+---
+
+## Current Pipeline Status
+
+| Step | Component | Status | Notes |
+|------|-----------|--------|-------|
+| 1 | Window Optimizer | ✅ Working | Optuna Bayesian optimization |
+| 2 | Forward/Reverse Sieve | ✅ Working | GPU-accelerated filtering |
+| 2.5 | Scorer Meta-Optimizer | ✅ Working | Distributed 26-GPU |
+| 3 | Full Scoring | ✅ IMPROVED | Parallel execution within nodes |
+| 4 | Adaptive Meta-Optimizer | ✅ FIXED | --survivor-data argument added |
+| 5 | ML Training | ✅ Working | 4 models, subprocess isolation |
+| 6 | Prediction Generator | ✅ Working | Confidence calibrated, lineage tracked |
+
+---
+
+## Key Files Modified (Session 16)
+
+| File | Changes |
+|------|---------|
+| `scripts_coordinator.py` | Parallel execution, NodeConfig.max_concurrent, debug output |
+| `adaptive_meta_optimizer.py` | Added --survivor-data argument |
+| `survivor_scorer.py` | Added 4 missing features |
+| `reinforcement_engine.py` | Filter score/confidence from features |
+| `coordinator.py` | v1.8.2 - restored stdout JSON parsing |
+
+---
+
+## Feature Architecture
+```
+Total Features: 62
+├── Per-seed features: 48 (survivor_scorer.py)
+│   ├── Residue features: 12
+│   ├── Temporal features: 20
+│   ├── Statistical features: 12
+│   └── Metadata features: 4 (skip_min, skip_max, bidirectional_count, bidirectional_selectivity)
+│
+└── Global features: 14 (GlobalStateTracker)
+    ├── Distribution stats: 11
+    └── Count stats: 3
+```
+
+---
+
+## Verification Test Results (Session 16)
+```
+======================================================================
+✅✅✅ COMPLETE DISTRIBUTED WORKFLOW PASSED ✅✅✅
+======================================================================
+
+Workflow Summary:
+  1. ✅ Bayesian Window Optimizer: 2 trials, 1,290 survivors
+  2.5 ✅ Scorer Meta-Optimizer: 3 distributed trials
+  3. ✅ Full Scoring Run: All survivors scored
+      🔀 PARALLEL: localhost | 1 GPU workers | 1 jobs
+      🔀 PARALLEL: 192.168.3.120 | 1 GPU workers | 1 jobs
+  4. ✅ Adaptive Optimizer: Training params derived
+  5. ✅ Anti-Overfit Optimizer: 2 trials, model: neural_net
+  6. ✅ Prediction Generator: Top-K predictions generated
+
+Test completed in 24.7 minutes
+======================================================================
+
+Final Predictions:
+1. 764 (confidence: 0.9056)
+2. 705 (confidence: 0.7119)
+3. 506 (confidence: 0.6112)
+4. 738 (confidence: 0.5000)
+5. 692 (confidence: 0.5000)
+```
+
+---
+
+## Git Commit (Session 16)
+```
+commit 185e755
+Session 16: Parallel execution + multiple critical fixes
+
+scripts_coordinator.py:
+- Added parallel execution within nodes using ThreadPoolExecutor
+- Added max_concurrent field to NodeConfig
+- Added debug output: '🔀 PARALLEL: {node} | {workers} GPU workers | {jobs} jobs'
+
+adaptive_meta_optimizer.py:
+- Added --survivor-data argument
+
+Verified: Full 6-step pipeline passes with parallel Step 3 execution
+```
+
+---
+
+## Next Steps
+
+1. ✅ Session 16 complete - all fixes committed
+2. Run larger scale test (50k+ seeds) to measure parallel speedup
+3. Complete Watcher Agent integration
+4. Consider web dashboard improvements for Step 3 progress
+5. Potential: Add --save-all-models flag to Step 5 for post-hoc analysis
