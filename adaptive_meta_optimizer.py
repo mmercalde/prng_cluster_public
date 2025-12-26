@@ -1077,6 +1077,8 @@ def main():
                        help='Override window optimizer results path')
     parser.add_argument('--lottery-data', type=str,
                        help='Override lottery data path')
+    parser.add_argument('--survivor-data', type=str,
+                       help='Path to scored survivors file')
     parser.add_argument('--apply', action='store_true',
                        help='Apply results to reinforcement_engine_config.json')
     parser.add_argument('--test', action='store_true',

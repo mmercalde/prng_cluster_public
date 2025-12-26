@@ -58,6 +58,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =============================================================================
 # CONSTANTS (Established Environment Protocols)
@@ -108,6 +109,7 @@ class NodeConfig:
     gpu_type: str
     script_path: str
     python_env: str
+    max_concurrent: int = 12  # Max parallel jobs on this node
     
     @property
     def is_rocm(self) -> bool:
@@ -205,7 +207,8 @@ class ScriptsCoordinator:
                 gpu_count=node_data['gpu_count'],
                 gpu_type=node_data.get('gpu_type', 'unknown'),
                 script_path=node_data['script_path'],
-                python_env=node_data['python_env']
+                python_env=node_data['python_env'],
+                max_concurrent=node_data.get('max_concurrent_script_jobs', node_data['gpu_count'])
             )
             self.nodes.append(node)
         
@@ -481,31 +484,53 @@ class ScriptsCoordinator:
         print(f"  Manifest: {manifest_path}")
     
     def _node_executor(self, node: NodeConfig, jobs: List[Job]):
-        """Execute jobs sequentially on a single node (thread target)"""
-        gpu_id = 0
+        """Execute jobs in PARALLEL on a node (one worker per GPU)"""
         
+        # Pre-assign jobs to GPUs (round-robin)
+        gpu_jobs = {i: [] for i in range(node.gpu_count)}
         for i, job in enumerate(jobs):
-            # Apply stagger delay (skip for first GPU in cycle)
-            if gpu_id > 0:
-                time.sleep(node.stagger_delay * gpu_id)
-            
-            # Execute job
-            result = self._execute_job(node, job, gpu_id)
-            
-            with self.results_lock:
-                self.results.append(result)
-                if not result.success:
-                    self.failed_jobs.append(job)
-            
-            # Progress output
-            status = "✓" if result.success else "✗"
-            print(f"  {status} {job.job_id} → {node.hostname}:GPU{gpu_id} ({result.runtime:.1f}s)")
-            
-            if not result.success and self.verbose:
-                print(f"      FAIL: {result.failure_mode}: {result.error}")
-            
-            # Cycle to next GPU
-            gpu_id = (gpu_id + 1) % node.gpu_count
+            gpu_jobs[i % node.gpu_count].append(job)
+        
+        def gpu_worker(gpu_id: int, job_list: List[Job]):
+            """Execute jobs sequentially on one GPU"""
+            for i, job in enumerate(job_list):
+                # Stagger delay between jobs on same GPU
+                if i > 0:
+                    time.sleep(node.stagger_delay)
+                
+                # Execute job
+                result = self._execute_job(node, job, gpu_id)
+                
+                with self.results_lock:
+                    self.results.append(result)
+                    if not result.success:
+                        self.failed_jobs.append(job)
+                
+                # Progress output
+                status = "✓" if result.success else "✗"
+                print(f"  {status} {job.job_id} → {node.hostname}:GPU{gpu_id} ({result.runtime:.1f}s)")
+                
+                if not result.success and self.verbose:
+                    print(f"      FAIL: {result.failure_mode}: {result.error}")
+        
+        # Run GPUs in parallel, limited by max_concurrent
+        active_gpus = [gid for gid, jlist in gpu_jobs.items() if jlist]
+        max_workers = min(len(active_gpus), node.max_concurrent)
+        
+        # Debug: Show parallel execution mode
+        jobs_per_gpu = {gid: len(gpu_jobs[gid]) for gid in active_gpus}
+        print(f"  🔀 PARALLEL: {node.hostname} | {max_workers} GPU workers | {len(jobs)} jobs | distribution: {jobs_per_gpu}")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(gpu_worker, gpu_id, gpu_jobs[gpu_id])
+                for gpu_id in active_gpus
+            ]
+            for future in as_completed(futures):
+                try:
+                    future.result()  # Raises if worker had exception
+                except Exception as e:
+                    print(f"  ✗ Worker exception on {node.hostname}: {e}")
     
     def _execute_job(self, node: NodeConfig, job: Job, gpu_id: int) -> JobResult:
         """Execute a single job and verify output file exists"""
