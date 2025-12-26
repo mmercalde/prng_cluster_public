@@ -1,0 +1,49 @@
+{
+  "_schema_version": "1.5.0",
+  "_description": "Step 6 Prediction Generator Config - aligned with agent_manifests/prediction.json",
+  
+  "prediction": {
+    "pool_size": 20,
+    "min_confidence": 0.5,
+    "k": 10,
+    "confidence_threshold": 0.7,
+    
+    "ensemble_methods": [
+      "weighted_average",
+      "confidence_weighted",
+      "feature_weighted"
+    ],
+    "ensemble_mode": "weighted",
+    
+    "feature_weights": {},
+    "use_global_features": true,
+    
+    "prng": {
+      "_note": "These are fallbacks - script reads from optimal_window_config.json first",
+      "prng_type": "java_lcg",
+      "mod": 1000,
+      "skip": 0
+    },
+    
+    "use_dual_sieve": true,
+    "forward_weight": 0.5,
+    "bidirectional_bonus": 1.5,
+    
+    "temporal_decay": 0.98,
+    "recency_window": 30,
+    "drift_sensitivity": 0.3,
+    
+    "min_survivor_history": 10,
+    "skip_mode_preference": "adaptive",
+    
+    "output": {
+      "save_predictions": true,
+      "predictions_dir": "results/predictions",
+      "log_level": "INFO"
+    },
+    "explanation_verbosity": "standard",
+    
+    "models_dir": "models/reinforcement",
+    "upstream_config_file": "optimal_window_config.json"
+  }
+}

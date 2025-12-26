@@ -60,71 +60,149 @@ from models.global_state_tracker import GlobalStateTracker, GLOBAL_FEATURE_COUNT
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-
 @dataclass
 class PredictionConfig:
     """
     Configuration for prediction generation
     
     Whitepaper Section 4: Machine Learning Integration
+    All parameters aligned with agent_manifests/prediction.json v1.5.0
     """
-    # Pool parameters
-    pool_size: int = 10
+    # === Pool Parameters ===
+    pool_size: int = 20
     min_confidence: float = 0.5
-    k: int = 10  # Top-K predictions
+    k: int = 10
+    confidence_threshold: float = 0.7
     
-    # Ensemble methods (Whitepaper Section 5)
+    # === Ensemble Methods ===
     ensemble_methods: List[str] = field(default_factory=lambda: [
         'weighted_average',
         'confidence_weighted',
         'feature_weighted'
     ])
+    ensemble_mode: str = 'weighted'
     
-    # Feature weights (46 features from survivor_scorer.py)
+    # === Feature Configuration ===
     feature_weights: Dict[str, float] = field(default_factory=dict)
+    use_global_features: bool = True
     
-    # PRNG parameters
+    # === PRNG Parameters (inherited from optimal_window_config.json) ===
     prng_type: str = 'java_lcg'
     mod: int = 1000
     skip: int = 0
     
-    # Dual-sieve (Whitepaper Section 1)
+    # === Dual-sieve ===
     use_dual_sieve: bool = True
+    forward_weight: float = 0.5
+    bidirectional_bonus: float = 1.5
     
-    # Output
+    # === Temporal Parameters ===
+    temporal_decay: float = 0.98
+    recency_window: int = 30
+    drift_sensitivity: float = 0.3
+    
+    # === Survivor Filtering ===
+    min_survivor_history: int = 10
+    skip_mode_preference: str = 'adaptive'
+    
+    # === Output Configuration ===
     save_predictions: bool = True
     predictions_dir: str = 'results/predictions'
     log_level: str = 'INFO'
-
-    # Model directory (Step 6 Restoration v2.2)
+    explanation_verbosity: str = 'standard'
+    
+    # === Model Configuration ===
     models_dir: str = "models/reinforcement"
+    
+    # === Input Files ===
     survivors_forward_file: str = ""
-
+    survivors_reverse_file: str = ""
+    lottery_history_file: str = ""
+    upstream_config_file: str = "optimal_window_config.json"
+    
     @classmethod
     def from_json(cls, path: str) -> 'PredictionConfig':
-        """Load from JSON config"""
+        """Load from JSON config with upstream config inheritance."""
         with open(path, 'r') as f:
             data = json.load(f)
         
         config_data = data.get('prediction', data)
         
+        # Try to inherit PRNG params from upstream config
+        upstream_config = config_data.get('upstream_config_file', 'optimal_window_config.json')
+        upstream_prng = {}
+        try:
+            with open(upstream_config, 'r') as f:
+                upstream = json.load(f)
+                upstream_prng = {
+                    'prng_type': upstream.get('prng_type'),
+                    'mod': upstream.get('mod'),
+                }
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        
+        # Build PRNG settings with inheritance
+        prng_section = config_data.get('prng', {})
+        prng_type = prng_section.get('prng_type') or upstream_prng.get('prng_type') or 'java_lcg'
+        mod = prng_section.get('mod') or upstream_prng.get('mod') or 1000
+        skip = prng_section.get('skip', 0)
+        
         return cls(
-            pool_size=config_data.get('pool_size', 10),
+            pool_size=config_data.get('pool_size', 20),
             min_confidence=config_data.get('min_confidence', 0.5),
             k=config_data.get('k', 10),
+            confidence_threshold=config_data.get('confidence_threshold', 0.7),
             ensemble_methods=config_data.get('ensemble_methods', [
                 'weighted_average', 'confidence_weighted', 'feature_weighted'
             ]),
+            ensemble_mode=config_data.get('ensemble_mode', 'weighted'),
             feature_weights=config_data.get('feature_weights', {}),
-            prng_type=config_data.get('prng', {}).get('prng_type', 'java_lcg'),
-            mod=config_data.get('prng', {}).get('mod', 1000),
-            skip=config_data.get('prng', {}).get('skip', 0),
+            use_global_features=config_data.get('use_global_features', True),
+            prng_type=prng_type,
+            mod=mod,
+            skip=skip,
             use_dual_sieve=config_data.get('use_dual_sieve', True),
+            forward_weight=config_data.get('forward_weight', 0.5),
+            bidirectional_bonus=config_data.get('bidirectional_bonus', 1.5),
+            temporal_decay=config_data.get('temporal_decay', 0.98),
+            recency_window=config_data.get('recency_window', 30),
+            drift_sensitivity=config_data.get('drift_sensitivity', 0.3),
+            min_survivor_history=config_data.get('min_survivor_history', 10),
+            skip_mode_preference=config_data.get('skip_mode_preference', 'adaptive'),
             save_predictions=config_data.get('output', {}).get('save_predictions', True),
             predictions_dir=config_data.get('output', {}).get('predictions_dir', 'results/predictions'),
-            log_level=config_data.get('output', {}).get('log_level', 'INFO')
+            log_level=config_data.get('output', {}).get('log_level', 'INFO'),
+            explanation_verbosity=config_data.get('explanation_verbosity', 'standard'),
+            models_dir=config_data.get('models_dir', 'models/reinforcement'),
+            survivors_forward_file=config_data.get('survivors_forward_file', ''),
+            survivors_reverse_file=config_data.get('survivors_reverse_file', ''),
+            lottery_history_file=config_data.get('lottery_history_file', ''),
+            upstream_config_file=upstream_config
         )
-
+    
+    def to_dict(self) -> Dict:
+        """Export config to dict for serialization/logging"""
+        return {
+            'pool_size': self.pool_size,
+            'min_confidence': self.min_confidence,
+            'k': self.k,
+            'confidence_threshold': self.confidence_threshold,
+            'ensemble_mode': self.ensemble_mode,
+            'use_global_features': self.use_global_features,
+            'prng_type': self.prng_type,
+            'mod': self.mod,
+            'skip': self.skip,
+            'use_dual_sieve': self.use_dual_sieve,
+            'forward_weight': self.forward_weight,
+            'bidirectional_bonus': self.bidirectional_bonus,
+            'temporal_decay': self.temporal_decay,
+            'recency_window': self.recency_window,
+            'drift_sensitivity': self.drift_sensitivity,
+            'min_survivor_history': self.min_survivor_history,
+            'skip_mode_preference': self.skip_mode_preference,
+            'explanation_verbosity': self.explanation_verbosity,
+            'models_dir': self.models_dir
+        }
 
 def setup_logging(config: PredictionConfig) -> logging.Logger:
     """Setup logging"""
@@ -543,45 +621,97 @@ class PredictionGenerator:
 
 
 # ============================================================================
-# CLI / PIPELINE INTERFACE
+# CLI INTERFACE
 # ============================================================================
-
 def main():
     """
-    CLI interface for standalone testing
+    CLI interface for Step 6 Prediction Generation
     
-    In production, this is called programmatically by the reinforcement engine
+    All parameters aligned with agent_manifests/prediction.json v1.5.0
     """
     import argparse
-
     parser = argparse.ArgumentParser(
-        description='Prediction Generator - Pipeline Component'
+        description='Step 6: Prediction Generator - Generate predictions from trained model'
     )
+    
+    # === Config File ===
     parser.add_argument('--config', type=str, 
-                       default='prediction_generator_config.json')
-    parser.add_argument('--survivors-forward', type=str, required=False)
-    parser.add_argument('--survivors-reverse', type=str)
-    parser.add_argument('--lottery-history', type=str, required=False)
-    parser.add_argument('--k', type=int)
+                       default='prediction_generator_config.json',
+                       help='Path to config JSON file')
+    
+    # === Required Input Files ===
+    parser.add_argument('--survivors-forward', type=str, required=False,
+                       help='Path to forward survivors JSON')
+    parser.add_argument('--survivors-reverse', type=str,
+                       help='Path to reverse survivors JSON (optional for dual-sieve)')
+    parser.add_argument('--lottery-history', type=str, required=False,
+                       help='Path to lottery history JSON')
+    
+    # === Model Configuration ===
+    parser.add_argument('--models-dir', type=str, default='models/reinforcement',
+                       help='Directory containing best_model.meta.json (sidecar)')
+    parser.add_argument('--parent-run-id', type=str, default=None,
+                       help='Parent run ID for lineage (auto-reads from sidecar if not provided)')
+    
+    # === Pool Parameters ===
+    parser.add_argument('--k', type=int,
+                       help='Number of top predictions to return')
+    parser.add_argument('--pool-size', type=int,
+                       help='Size of candidate pool before ranking')
+    parser.add_argument('--confidence-threshold', type=float,
+                       help='Minimum confidence for high-confidence predictions')
+    
+    # === Ensemble Parameters ===
+    parser.add_argument('--ensemble-mode', type=str, 
+                       choices=['single', 'weighted', 'voting', 'stacking'],
+                       help='Ensemble combination method')
+    parser.add_argument('--forward-weight', type=float,
+                       help='Weight for forward sieve (0.5 = equal)')
+    parser.add_argument('--bidirectional-bonus', type=float,
+                       help='Multiplier for bidirectional survivors')
+    
+    # === Temporal Parameters ===
+    parser.add_argument('--temporal-decay', type=float,
+                       help='Decay factor for older scores (0.9-1.0)')
+    parser.add_argument('--recency-window', type=int,
+                       help='Number of recent draws to emphasize')
+    parser.add_argument('--drift-sensitivity', type=float,
+                       help='Sensitivity to PRNG drift detection (0.0-1.0)')
+    
+    # === Feature Parameters ===
+    parser.add_argument('--use-global-features', action='store_true', default=None,
+                       help='Include GlobalStateTracker features')
+    parser.add_argument('--no-global-features', action='store_true',
+                       help='Disable GlobalStateTracker features')
+    parser.add_argument('--skip-mode-preference', type=str,
+                       choices=['constant', 'variable', 'adaptive', 'both'],
+                       help='Which skip mode survivors to prefer')
+    
+    # === Output Parameters ===
+    parser.add_argument('--output-dir', type=str,
+                       help='Directory for prediction output files')
+    parser.add_argument('--explanation-verbosity', type=str,
+                       choices=['minimal', 'standard', 'detailed', 'debug'],
+                       help='Level of detail in output')
+    parser.add_argument('--log-level', type=str,
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       help='Logging verbosity')
+    
+    # === Utility ===
     parser.add_argument('--test', action='store_true',
                        help='Run self-test')
-    # Multi-Model Architecture v3.1.2
-    parser.add_argument('--models-dir', type=str, default='models/reinforcement',
-                       help='Directory containing best_model.meta.json (default: models/reinforcement)')
-    parser.add_argument('--parent-run-id', type=str, default=None,
-                       help='Parent run ID for lineage tracking (auto-reads from sidecar if not provided)')
-
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Show configuration without running')
+    
     args = parser.parse_args()
-
+    
     # Test mode
     if args.test:
         print("="*70)
         print("PREDICTION GENERATOR - SELF TEST")
         print("="*70)
-
         config = PredictionConfig()
         logger = setup_logging(config)
-
         try:
             generator = PredictionGenerator(config, logger)
             print("✅ Generator initialized successfully")
@@ -591,45 +721,88 @@ def main():
         except Exception as e:
             print(f"❌ Initialization failed: {e}")
             return 1
-
         print("\n✅ All tests passed!")
         return 0
-
+    
     # Validate args
     if not args.survivors_forward or not args.lottery_history:
         parser.error("--survivors-forward and --lottery-history required (or use --test)")
-
-    # Load config
+    
+    # Load config from file
     try:
         config = PredictionConfig.from_json(args.config)
     except Exception as e:
         print(f"Warning: Could not load config: {e}")
         print("Using default config")
         config = PredictionConfig()
-
+    
+    # Override config with CLI args (CLI takes precedence)
+    if args.k is not None:
+        config.k = args.k
+    if args.pool_size is not None:
+        config.pool_size = args.pool_size
+    if args.confidence_threshold is not None:
+        config.confidence_threshold = args.confidence_threshold
+    if args.ensemble_mode is not None:
+        config.ensemble_mode = args.ensemble_mode
+    if args.forward_weight is not None:
+        config.forward_weight = args.forward_weight
+    if args.bidirectional_bonus is not None:
+        config.bidirectional_bonus = args.bidirectional_bonus
+    if args.temporal_decay is not None:
+        config.temporal_decay = args.temporal_decay
+    if args.recency_window is not None:
+        config.recency_window = args.recency_window
+    if args.drift_sensitivity is not None:
+        config.drift_sensitivity = args.drift_sensitivity
+    if args.use_global_features:
+        config.use_global_features = True
+    if args.no_global_features:
+        config.use_global_features = False
+    if args.skip_mode_preference is not None:
+        config.skip_mode_preference = args.skip_mode_preference
+    if args.output_dir is not None:
+        config.predictions_dir = args.output_dir
+    if args.explanation_verbosity is not None:
+        config.explanation_verbosity = args.explanation_verbosity
+    if args.log_level is not None:
+        config.log_level = args.log_level
+    if args.models_dir:
+        config.models_dir = args.models_dir
+    
+    # Dry run - show config and exit
+    if args.dry_run:
+        print("="*70)
+        print("DRY RUN - Configuration")
+        print("="*70)
+        for k, v in config.to_dict().items():
+            print(f"  {k}: {v}")
+        print("="*70)
+        return 0
+    
     logger = setup_logging(config)
     logger.info("=== Prediction Generator Started ===")
-
+    
     # Load data
     with open(args.survivors_forward, 'r') as f:
         data = json.load(f)
         survivors_forward = data if isinstance(data, list) else data.get('survivors', data)
-
+    
     survivors_reverse = None
     if args.survivors_reverse:
         with open(args.survivors_reverse, 'r') as f:
             data = json.load(f)
             survivors_reverse = data if isinstance(data, list) else data.get('survivors', data)
-
+    
     with open(args.lottery_history, 'r') as f:
         data = json.load(f)
         lottery_history = data if isinstance(data, list) else data.get('draws', data)
-
+    
     logger.info(f"Loaded {len(survivors_forward)} forward survivors")
     if survivors_reverse:
         logger.info(f"Loaded {len(survivors_reverse)} reverse survivors")
     logger.info(f"Loaded {len(lottery_history)} lottery draws")
-
+    
     # Initialize generator
     generator = PredictionGenerator(config, logger)
     
@@ -639,20 +812,19 @@ def main():
         logger.info(f"Using CLI parent_run_id: {args.parent_run_id}")
     elif generator.parent_run_id:
         logger.info(f"Using sidecar parent_run_id: {generator.parent_run_id}")
-
+    
     # Generate predictions
     result = generator.generate_predictions(
         survivors_forward,
         lottery_history,
         survivors_reverse,
-        k=args.k
+        k=config.k
     )
-
+    
     # Display results
     logger.info("=== PREDICTIONS ===")
     for i, (num, conf) in enumerate(zip(result['predictions'], result['confidence_scores']), 1):
         logger.info(f"{i}. {num:03d} (confidence: {conf:.4f})")
-
     logger.info("=== Complete ===")
 
 
