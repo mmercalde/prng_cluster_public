@@ -243,10 +243,29 @@ echo "Phase 5: Aggregating results..."
 echo "------------------------------------------------------------"
 
 # Aggregation script (Python inline for portability)
-python3 << AGGREGATE_EOF
+TRAIN_HISTORY="$TRAIN_HISTORY" python3 << 'AGGREGATE_EOF'
 import json
 import sys
+import os
 from pathlib import Path
+
+# ============================================================================
+# Global Features Integration (Team Beta Approved - Dec 26, 2025)
+# ============================================================================
+# Add 14 global features from GlobalStateTracker to each survivor.
+# Features are prefixed with "global_" to prevent namespace collision.
+# These are identical for all survivors (computed from lottery history).
+# ============================================================================
+
+# Import GlobalStateTracker
+sys.path.insert(0, '.')
+try:
+    from models.global_state_tracker import GlobalStateTracker, GLOBAL_FEATURE_NAMES
+    GLOBAL_TRACKER_AVAILABLE = True
+except ImportError as e:
+    print(f"  ⚠️  GlobalStateTracker not available: {e}")
+    GLOBAL_TRACKER_AVAILABLE = False
+    GLOBAL_FEATURE_NAMES = []
 
 # Find latest run directory
 run_dirs = sorted(Path("full_scoring_results").glob("step3_*"), reverse=True)
@@ -269,6 +288,44 @@ if manifest_path.exists():
     print(f"  Jobs completed: {manifest.get('jobs_completed', '?')}")
     if manifest.get('jobs_failed', 0) > 0:
         print(f"  ⚠️  Jobs failed: {manifest.get('jobs_failed')}")
+
+# ============================================================================
+# Compute Global Features (once for all survivors)
+# ============================================================================
+global_features_prefixed = {}
+if GLOBAL_TRACKER_AVAILABLE:
+    train_history_file = os.environ.get('TRAIN_HISTORY', 'train_history.json')
+    try:
+        with open(train_history_file) as f:
+            lottery_data = json.load(f)
+        
+        # Handle both formats: list of ints or list of dicts
+        if lottery_data and isinstance(lottery_data[0], dict):
+            lottery_history = [d.get('draw', d.get('number', 0)) for d in lottery_data]
+        else:
+            lottery_history = lottery_data
+        
+        print(f"  Loading lottery history: {len(lottery_history)} draws from {train_history_file}")
+        
+        # Compute global features
+        global_tracker = GlobalStateTracker(lottery_history, {'mod': 1000})
+        global_features = global_tracker.get_global_state()
+        
+        # Team Beta Fix #1: Prefix with "global_" to prevent namespace collision
+        global_features_prefixed = {
+            f"global_{k}": v for k, v in global_features.items()
+        }
+        
+        # Team Beta Fix #2: Variance guardrail
+        unique_values = len(set(global_features.values()))
+        if unique_values <= 1:
+            print(f"  ⚠️  WARNING: Global features have no variance ({unique_values} unique values)")
+        
+        print(f"  ✅ Global features computed: {len(global_features_prefixed)} features")
+        
+    except Exception as e:
+        print(f"  ⚠️  Could not compute global features: {e}")
+        global_features_prefixed = {}
 
 all_survivors = []
 error_count = 0
@@ -299,6 +356,21 @@ if not all_survivors:
     print("Check scripts_run_manifest.json for failure details")
     sys.exit(1)
 
+# ============================================================================
+# Merge Global Features into Each Survivor
+# ============================================================================
+# NOTE (Team Beta Fix #2): Global features are replicated per survivor.
+# ML libraries don't know they're identical. This is intentional but
+# may cause over-weighting in feature importance. Document for future.
+# ============================================================================
+if global_features_prefixed:
+    print(f"  Merging {len(global_features_prefixed)} global features into {len(all_survivors)} survivors...")
+    for survivor in all_survivors:
+        if 'features' in survivor:
+            survivor['features'].update(global_features_prefixed)
+        else:
+            survivor['features'] = dict(global_features_prefixed)
+
 # Sort by score (highest first)
 all_survivors.sort(key=lambda x: x.get('score', 0), reverse=True)
 
@@ -322,7 +394,12 @@ print("")
 print("Sample survivor structure:")
 print(f"  Keys: {list(sample.keys())}")
 if 'features' in sample:
-    print(f"  Feature count: {len(sample['features'])}")
+    # Separate per-seed and global feature counts
+    per_seed_count = len([k for k in sample['features'] if not k.startswith('global_')])
+    global_count = len([k for k in sample['features'] if k.startswith('global_')])
+    print(f"  Per-seed features: {per_seed_count}")
+    print(f"  Global features: {global_count}")
+    print(f"  Total features: {len(sample['features'])}")
 else:
     print("  WARNING: No 'features' key found!")
 
