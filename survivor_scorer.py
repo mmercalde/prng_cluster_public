@@ -255,12 +255,22 @@ class SurvivorScorer:
         })
         features['lane_consistency'] = (features['lane_agreement_8'] + features['lane_agreement_125']) / 2
 
-        # Fill remaining keys
+        # Compute pred_min/max and residual features (FIX: these were never computed!)
+        features['pred_min'] = float(pred.float().min().item())
+        features['pred_max'] = float(pred.float().max().item())
+        
+        # Residuals = predicted - actual
+        residuals = (pred.float() - act.float())
+        features['residual_mean'] = float(residuals.mean().item())
+        features['residual_std'] = float(residuals.std().item())
+        features['residual_abs_mean'] = float(residuals.abs().mean().item())
+        features['residual_max_abs'] = float(residuals.abs().max().item())
+
+        # Fill remaining keys (bidirectional features come from metadata)
         for k in ['skip_entropy','skip_mean','skip_std','skip_range',
                   'survivor_velocity','velocity_acceleration',
                   'intersection_weight','survivor_overlap_ratio','forward_count','reverse_count',
-                  'intersection_count','intersection_ratio','pred_min','pred_max',
-                  'residual_mean','residual_std','residual_abs_mean','residual_max_abs',
+                  'intersection_count','intersection_ratio',
                   'forward_only_count','reverse_only_count',
                   'skip_min','skip_max','bidirectional_count','bidirectional_selectivity']:
             features.setdefault(k, 0.0)
