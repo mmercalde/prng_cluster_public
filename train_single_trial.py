@@ -522,7 +522,7 @@ def train_random_forest(X_train, y_train, X_val, y_val, params: dict, save_path:
     
     return {
         "val_mse": float(val_mse),
-        "val_r2": float(val_r2),
+        "r2": float(val_r2),
         "duration": duration,
         "device": "cpu",
         "model_type": "random_forest",
