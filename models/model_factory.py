@@ -22,14 +22,15 @@ from typing import Dict, Any, List, Optional
 logger = logging.getLogger(__name__)
 
 # Available model types
-AVAILABLE_MODELS = ['neural_net', 'xgboost', 'lightgbm', 'catboost']
+AVAILABLE_MODELS = ['neural_net', 'xgboost', 'lightgbm', 'catboost', 'random_forest']
 
 # Model file extensions
 MODEL_EXTENSIONS = {
     'neural_net': '.pth',
     'xgboost': '.json',
     'lightgbm': '.txt',
-    'catboost': '.cbm'
+    'catboost': '.cbm',
+    'random_forest': '.joblib'
 }
 
 # Default output directory (matches reinforcement_engine.py)
@@ -62,6 +63,9 @@ def _get_model_class(model_type: str):
     elif model_type == 'catboost':
         from models.wrappers.catboost_wrapper import CatBoostWrapper
         return CatBoostWrapper
+    elif model_type == 'random_forest':
+        from models.wrappers.random_forest_wrapper import RandomForestWrapper
+        return RandomForestWrapper
     else:
         raise ValueError(
             f"Unknown model type: {model_type}. "

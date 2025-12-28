@@ -797,6 +797,9 @@ def main():
     with open(args.lottery_history, 'r') as f:
         data = json.load(f)
         lottery_history = data if isinstance(data, list) else data.get('draws', data)
+        # Handle dict format: [{'date': ..., 'draw': 123}, ...] -> [123, ...]
+        if lottery_history and isinstance(lottery_history[0], dict):
+            lottery_history = [d['draw'] for d in lottery_history]
     
     logger.info(f"Loaded {len(survivors_forward)} forward survivors")
     if survivors_reverse:
