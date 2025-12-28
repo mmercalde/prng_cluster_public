@@ -206,7 +206,7 @@ echo "Phase 4: Pulling results from remote nodes..."
 echo "------------------------------------------------------------"
 
 # Find the latest run directory (scripts_coordinator creates run-scoped dirs)
-LATEST_RUN=$(ls -td full_scoring_results/step3_* 2>/dev/null | head -1)
+LATEST_RUN=$(ls -td full_scoring_results/full_scoring_results_* 2>/dev/null | head -1)
 
 if [[ -z "$LATEST_RUN" ]]; then
     echo "ERROR: No run directory found in full_scoring_results/"
@@ -268,7 +268,7 @@ except ImportError as e:
     GLOBAL_FEATURE_NAMES = []
 
 # Find latest run directory
-run_dirs = sorted(Path("full_scoring_results").glob("step3_*"), reverse=True)
+run_dirs = sorted(Path("full_scoring_results").glob("full_scoring_results_*"), reverse=True)
 if not run_dirs:
     print("ERROR: No run directories found")
     sys.exit(1)

@@ -59,6 +59,8 @@ import logging
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+# GlobalStateTracker - GPU-neutral module for global features (14 features)
+from models.global_state_tracker import GlobalStateTracker, GLOBAL_FEATURE_NAMES
 
 # ============================================================================
 # ROCm/CUDA Environment Setup - MUST BE BEFORE ANY GPU IMPORTS
@@ -207,6 +209,11 @@ def score_survivors(
     scorer = scorer_class(prng_type=prng_type, mod=mod)
     logger.info(f"Initialized SurvivorScorer with prng_type={prng_type}, mod={mod}")
     
+    # Initialize GlobalStateTracker for global features (14 features)
+    global_tracker = GlobalStateTracker(train_history, {"mod": mod})
+    global_features = global_tracker.get_global_state()
+    logger.info(f"GlobalStateTracker initialized: {len(global_features)} global features")
+    
     results = []
     total = len(seeds)
     start_time = time.time()
@@ -245,6 +252,9 @@ def score_survivors(
                     'timestamp': time.time()
                 }
             }
+            # Merge global features (14 features with global_ prefix)
+            for gkey, gval in global_features.items():
+                result["features"][f"global_{gkey}"] = float(gval) if isinstance(gval, (int, float)) else gval
             results.append(result)
         
         elapsed = time.time() - start_time
@@ -271,6 +281,9 @@ def score_survivors(
                         if field in meta and meta[field] is not None:
                             features[field] = float(meta[field])
                 score = features.get('score', features.get('confidence', 0.0))
+                # Merge global features (14 features with global_ prefix)
+                for gkey, gval in global_features.items():
+                    features[f"global_{gkey}"] = float(gval) if isinstance(gval, (int, float)) else gval
                 results.append({
                     'seed': seed,
                     'score': float(score),
