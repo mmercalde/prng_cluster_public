@@ -525,6 +525,7 @@ def train_random_forest(X_train, y_train, X_val, y_val, params: dict, save_path:
         "val_r2": float(val_r2),
         "duration": duration,
         "device": "cpu",
+        "model_type": "random_forest",
         "checkpoint_path": checkpoint_path,
         "feature_importances": model.feature_importances_.tolist() if hasattr(model, "feature_importances_") else None
     }
