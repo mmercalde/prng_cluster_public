@@ -35,7 +35,7 @@ import logging
 __version__ = "1.0.1"
 
 # Safe model order - LightGBM MUST be first for OpenCL/CUDA compatibility
-SAFE_MODEL_ORDER = ['lightgbm', 'neural_net', 'xgboost', 'catboost']
+SAFE_MODEL_ORDER = ['lightgbm', 'xgboost', 'catboost', 'random_forest']  # 'neural_net' commented out - poor R² on tabular data
 
 # Default timeout per trial (seconds)
 DEFAULT_TIMEOUT = 600
@@ -45,7 +45,8 @@ MODEL_EXTENSIONS = {
     'neural_net': '.pth',
     'xgboost': '.json',
     'lightgbm': '.txt',
-    'catboost': '.cbm'
+    'catboost': '.cbm',
+    'random_forest': '.joblib'
 }
 
 
@@ -577,6 +578,17 @@ def sample_params_for_model(trial, model_type: str) -> Dict[str, Any]:
             'weight_decay': trial.suggest_float('nn_weight_decay', 1e-6, 1e-2, log=True),
         }
     
+    elif model_type == 'random_forest':
+        params = {
+            'rf_n_estimators': trial.suggest_int('rf_n_estimators', 50, 500),
+            'rf_max_depth': trial.suggest_int('rf_max_depth', 3, 30),
+            'rf_min_samples_split': trial.suggest_int('rf_min_samples_split', 2, 20),
+            'rf_min_samples_leaf': trial.suggest_int('rf_min_samples_leaf', 1, 10),
+            'rf_max_features': trial.suggest_categorical('rf_max_features', ['sqrt', 'log2', None]),
+            'rf_n_jobs': -1,
+            'rf_random_state': 42,
+        }
+
     return params
 
 

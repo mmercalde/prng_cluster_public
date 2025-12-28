@@ -1,4 +1,4 @@
-# CURRENT STATUS - Updated December 25, 2025 (Session 16)
+# CURRENT STATUS - Updated December 27, 2025 (Session 17)
 
 ## Timeline Summary
 ```
@@ -18,61 +18,85 @@ Session 13: Dec 23, 2025   - Step 6 Restoration v2.1 proposal, Team Beta review
 Session 14: Dec 23-24, 2025 - Step 6 Restoration v2.2 implementation, GlobalStateTracker module
 Session 15: Dec 24, 2025   - Confidence bug fix, raw scores, parent_run_id lineage
 Session 16: Dec 25, 2025   - Parallel execution, Step 4 fix, feature count alignment
+Session 17: Dec 26-27, 2025 - Step 0 archived, global features integration, timeout CLI
 ```
 
 ---
 
-## Session 16 Accomplishments (Dec 25, 2025) - PARALLEL EXECUTION + CRITICAL FIXES
+## Session 17 Accomplishments (Dec 26-27, 2025) - STEP 0 ARCHIVED + GLOBAL FEATURES
 
-### ✅ Parallel Execution in scripts_coordinator.py
+### ✅ Step 0 PRNG Fingerprinting - ARCHIVED
 
-**Problem:** Jobs ran sequentially within each node (only nodes ran in parallel)
-- With 20 jobs across 3 nodes: each node processed its jobs one-by-one
-- GPU utilization was poor - only 1 GPU active per node at a time
+**Investigation Summary:**
+Comprehensive testing of PRNG fingerprinting under mod1000 projection.
 
-**Solution:** ThreadPoolExecutor with GPU-aware parallelism
-- Pre-assign jobs to GPUs (round-robin)
-- Each GPU runs its jobs sequentially
-- All GPUs on a node run in parallel
-- Respects `max_concurrent_script_jobs` from config
+| Test | Features | Best SNR | Useful Features | Result |
+|------|----------|----------|-----------------|--------|
+| Mod1000 @ 5K draws | 52 | 0.11 | 0 | Failed |
+| Mod1000 @ 18K draws | 52 | 0.13 | 0 | Failed |
+| Original @ 18K draws | 30 | 0.13 | 0 | Failed |
 
-**Debug Output Added:**
-```
-🔀 PARALLEL: localhost | 2 GPU workers | 4 jobs | distribution: {0: 2, 1: 2}
-🔀 PARALLEL: 192.168.3.120 | 12 GPU workers | 7 jobs | distribution: {0: 1, 1: 1, ...}
-```
+**Root Cause:** Under mod1000 projection, between-PRNG variance < within-PRNG variance for ALL features. SNR < 0.15 means seed noise dominates PRNG signal.
 
-**Performance:**
-- 4 jobs: 11.0s parallel vs ~14s sequential (21% faster)
-- More jobs = more dramatic improvement
+**Verdict:** PRNG fingerprinting is mathematically impossible under mod1000. **ARCHIVED.**
 
-### ✅ Step 4 --survivor-data Argument Fix
+**Recommendation:** Trust the sieve - wrong PRNG → 0 survivors, right PRNG → survivors exist.
 
-**Problem:** `adaptive_meta_optimizer.py` missing `--survivor-data` argument
-- Workflow passed `--survivor-data survivors_with_scores.json`
-- Script rejected it as unrecognized
+### ✅ Global Features Integration at Step 3
 
-**Solution:** Added argument parser entry:
-```python
-parser.add_argument('--survivor-data', type=str,
-                   help='Path to scored survivors file')
-```
+**Problem Identified:**
+14 global features from `GlobalStateTracker` were only used in `ReinforcementEngine` path, NOT in multi-model comparison (XGBoost, LightGBM, CatBoost).
 
-### ✅ Feature Count Alignment (48 per-seed features)
+**Solution:** Add global features at Step 3 Phase 5 (Aggregation)
 
-**Problem:** survivor_scorer.py missing 4 features that reinforcement_engine.py expected
-- Caused feature count mismatch (60 vs 62)
+**Team Beta Approved Fixes:**
+1. ✅ Prefix with `global_` to prevent namespace collision
+2. ✅ Variance guardrail added
+3. ✅ Documented replication concern (identical for all survivors)
 
-**Missing Features Added:**
-- `skip_min`
-- `skip_max`
-- `bidirectional_count`
-- `bidirectional_selectivity`
+**Commit:** `fb59429`
 
-### ✅ coordinator.py v1.8.2 - Stdout Parsing Restored
+### ✅ Feature Registry Update
 
-**Problem:** v1.8.1 disabled stdout JSON parsing, breaking sieve jobs
-**Solution:** v1.8.2 re-enabled with improved error handling
+Updated `config_manifests/feature_registry.json`:
+- All 14 global features now documented with `global_` prefix
+- Added metadata notes for Team Beta changes
+- Updated interpretation guidance
+
+### ✅ Multi-Model Test with 62 Features
+
+Created `survivors_with_scores_64feat.json` for testing:
+- 50 per-seed features + 14 global features = 64 total
+- Minus score/confidence = 62 training features
+
+**Results (8 trials):**
+
+| Trial | Model | R² | MSE | Duration |
+|-------|-------|-----|-----|----------|
+| 0 | neural_net | 0.0000 | 0.002495 | 253s |
+| 1 | neural_net | TIMEOUT | - | 600s |
+| 2 | xgboost | 1.0000 | 1.0e-07 | 1.8s |
+| 3 | neural_net | TIMEOUT | - | 600s |
+| 4 | xgboost | 0.9991 | 2.2e-06 | 3.0s |
+| 5 | **catboost** | **1.0000** | **8.6e-11** | 4.8s |
+| 6 | lightgbm | 0.9996 | 1.0e-06 | 2.3s |
+| 7 | lightgbm | 0.9999 | 2.1e-07 | 2.9s |
+
+**Winner:** CatBoost 🏆
+
+### ✅ Timeout CLI Argument Added
+
+**Problem:** Neural net trials timing out at 600s default
+
+**Solution:** Added `--timeout` argument to `meta_prediction_optimizer_anti_overfit.py`
+- Default: 600 seconds
+- Usage: `--timeout 900` for 15 minutes
+
+### ✅ Data Quality Finding
+
+**Problem:** `daily3_scraper.py` creates duplicate entries
+- Found 721 duplicates in 18,666 entries (full history)
+- Created `daily3_clean.json` with 17,945 clean entries
 
 ---
 
@@ -80,95 +104,65 @@ parser.add_argument('--survivor-data', type=str,
 
 | Step | Component | Status | Notes |
 |------|-----------|--------|-------|
+| 0 | PRNG Fingerprinting | ❌ ARCHIVED | Impossible under mod1000 |
 | 1 | Window Optimizer | ✅ Working | Optuna Bayesian optimization |
 | 2 | Forward/Reverse Sieve | ✅ Working | GPU-accelerated filtering |
 | 2.5 | Scorer Meta-Optimizer | ✅ Working | Distributed 26-GPU |
-| 3 | Full Scoring | ✅ IMPROVED | Parallel execution within nodes |
-| 4 | Adaptive Meta-Optimizer | ✅ FIXED | --survivor-data argument added |
-| 5 | ML Training | ✅ Working | 4 models, subprocess isolation |
+| 3 | Full Scoring | ✅ IMPROVED | Now includes 14 global features |
+| 4 | Adaptive Meta-Optimizer | ✅ Working | --survivor-data argument |
+| 5 | ML Training | ✅ IMPROVED | --timeout argument added |
 | 6 | Prediction Generator | ✅ Working | Confidence calibrated, lineage tracked |
 
 ---
 
-## Key Files Modified (Session 16)
+## Key Files Modified (Session 17)
 
 | File | Changes |
 |------|---------|
-| `scripts_coordinator.py` | Parallel execution, NodeConfig.max_concurrent, debug output |
-| `adaptive_meta_optimizer.py` | Added --survivor-data argument |
-| `survivor_scorer.py` | Added 4 missing features |
-| `reinforcement_engine.py` | Filter score/confidence from features |
-| `coordinator.py` | v1.8.2 - restored stdout JSON parsing |
+| `run_step3_full_scoring.sh` | Global features integration at Phase 5 aggregation |
+| `config_manifests/feature_registry.json` | Updated with `global_` prefix |
+| `meta_prediction_optimizer_anti_overfit.py` | Added --timeout CLI argument |
 
 ---
 
-## Feature Architecture
+## Feature Architecture (Updated)
 ```
-Total Features: 62
-├── Per-seed features: 48 (survivor_scorer.py)
+Total Features: 64 (62 for training after excluding score/confidence)
+├── Per-seed features: 50 (survivor_scorer.py)
 │   ├── Residue features: 12
 │   ├── Temporal features: 20
 │   ├── Statistical features: 12
-│   └── Metadata features: 4 (skip_min, skip_max, bidirectional_count, bidirectional_selectivity)
+│   ├── Metadata features: 4
+│   └── Score metrics: 2 (excluded from training)
 │
-└── Global features: 14 (GlobalStateTracker)
-    ├── Distribution stats: 11
-    └── Count stats: 3
+└── Global features: 14 (GlobalStateTracker, prefixed with 'global_')
+    ├── Residue entropy: 3 (global_residue_8/125/1000_entropy)
+    ├── Bias detection: 3 (global_power_of_two_bias, global_frequency_bias_ratio, global_suspicious_gap_percentage)
+    ├── Regime detection: 3 (global_regime_change_detected, global_regime_age, global_reseed_probability)
+    ├── Marker analysis: 4 (global_marker_390/804/575_variance, global_high_variance_count)
+    └── Stability: 1 (global_temporal_stability)
 ```
 
 ---
 
-## Verification Test Results (Session 16)
+## Git Commits (Session 17)
 ```
-======================================================================
-✅✅✅ COMPLETE DISTRIBUTED WORKFLOW PASSED ✅✅✅
-======================================================================
+commit fb59429
+Step 3: Add 14 global features at aggregation (Team Beta approved)
 
-Workflow Summary:
-  1. ✅ Bayesian Window Optimizer: 2 trials, 1,290 survivors
-  2.5 ✅ Scorer Meta-Optimizer: 3 distributed trials
-  3. ✅ Full Scoring Run: All survivors scored
-      🔀 PARALLEL: localhost | 1 GPU workers | 1 jobs
-      🔀 PARALLEL: 192.168.3.120 | 1 GPU workers | 1 jobs
-  4. ✅ Adaptive Optimizer: Training params derived
-  5. ✅ Anti-Overfit Optimizer: 2 trials, model: neural_net
-  6. ✅ Prediction Generator: Top-K predictions generated
-
-Test completed in 24.7 minutes
-======================================================================
-
-Final Predictions:
-1. 764 (confidence: 0.9056)
-2. 705 (confidence: 0.7119)
-3. 506 (confidence: 0.6112)
-4. 738 (confidence: 0.5000)
-5. 692 (confidence: 0.5000)
-```
-
----
-
-## Git Commit (Session 16)
-```
-commit 185e755
-Session 16: Parallel execution + multiple critical fixes
-
-scripts_coordinator.py:
-- Added parallel execution within nodes using ThreadPoolExecutor
-- Added max_concurrent field to NodeConfig
-- Added debug output: '🔀 PARALLEL: {node} | {workers} GPU workers | {jobs} jobs'
-
-adaptive_meta_optimizer.py:
-- Added --survivor-data argument
-
-Verified: Full 6-step pipeline passes with parallel Step 3 execution
+- GlobalStateTracker computes features once from lottery history
+- Features prefixed with 'global_' to prevent namespace collision
+- Variance guardrail added per Team Beta review
+- Graceful fallback if GlobalStateTracker unavailable
+- Total features now: 50 per-seed + 14 global = 64
 ```
 
 ---
 
 ## Next Steps
 
-1. ✅ Session 16 complete - all fixes committed
-2. Run larger scale test (50k+ seeds) to measure parallel speedup
-3. Complete Watcher Agent integration
-4. Consider web dashboard improvements for Step 3 progress
-5. Potential: Add --save-all-models flag to Step 5 for post-hoc analysis
+1. ✅ Session 17 complete
+2. Commit remaining changes (feature_registry.json, timeout fix)
+3. Run full pipeline test when rigs back online
+4. Complete Step 6 cleanup (deprecate unused global_values parameter)
+5. Consider Watcher Agent integration

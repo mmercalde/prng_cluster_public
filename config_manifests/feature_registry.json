@@ -3,475 +3,663 @@
     "version": "1.0.0",
     "description": "Complete feature registry for PRNG analysis ML pipeline",
     "created": "2025-12-13",
-    "source_files": ["survivor_scorer.py", "reinforcement_engine.py", "full_scoring_worker.py"],
+    "source_files": [
+      "survivor_scorer.py",
+      "reinforcement_engine.py",
+      "full_scoring_worker.py"
+    ],
     "total_features": 64,
     "per_seed_features": 50,
-    "global_features": 14
+    "global_features": 14,
+    "updated": "2025-12-26",
+    "notes": "Updated global feature names with global_ prefix per Team Beta requirement"
   },
-
   "per_seed_features": {
     "_description": "50 features extracted per survivor seed by SurvivorScorer.extract_ml_features() + Step 2 metadata",
     "_source": "survivor_scorer.py, full_scoring_worker.py",
-
     "score_metrics": {
       "_description": "Primary scoring and confidence metrics",
       "score": {
         "type": "float",
-        "range": [0.0, 100.0],
+        "range": [
+          0.0,
+          100.0
+        ],
         "higher_is_better": true,
         "description": "Primary match score: percentage of exact matches between PRNG predictions and actual lottery draws"
       },
       "confidence": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Confidence level in the score, bounded by min_confidence_threshold"
       },
       "exact_matches": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": true,
         "description": "Count of exact matches between predicted and actual values"
       },
       "total_predictions": {
         "type": "int",
-        "range": [1, null],
+        "range": [
+          1,
+          null
+        ],
         "higher_is_better": null,
         "description": "Total number of predictions evaluated (length of lottery history)"
       },
       "best_offset": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Optimal temporal offset for alignment (reserved for future use)"
       }
     },
-
     "residue_analysis": {
       "_description": "Modular arithmetic pattern analysis at different scales (mod 8, 125, 1000)",
       "residue_8_match_rate": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Match rate in mod-8 residue space (digit-level patterns)"
       },
       "residue_8_coherence": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Distribution similarity in mod-8 space: 1/(1+KL_divergence)"
       },
       "residue_8_kl_divergence": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": false,
         "description": "KL divergence between predicted and actual mod-8 distributions"
       },
       "residue_125_match_rate": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Match rate in mod-125 residue space (5^3, hundred-level patterns)"
       },
       "residue_125_coherence": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Distribution similarity in mod-125 space"
       },
       "residue_125_kl_divergence": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": false,
         "description": "KL divergence between predicted and actual mod-125 distributions"
       },
       "residue_1000_match_rate": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Match rate in mod-1000 residue space (full Pick 3 range)"
       },
       "residue_1000_coherence": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Distribution similarity in mod-1000 space"
       },
       "residue_1000_kl_divergence": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": false,
         "description": "KL divergence between predicted and actual mod-1000 distributions"
       }
     },
-
     "temporal_stability": {
       "_description": "Time-series consistency of predictions across sliding windows",
       "temporal_stability_mean": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Average match rate across temporal windows"
       },
       "temporal_stability_std": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": false,
         "description": "Standard deviation of match rates across windows (lower = more consistent)"
       },
       "temporal_stability_min": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Minimum match rate across any temporal window"
       },
       "temporal_stability_max": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Maximum match rate across any temporal window"
       },
       "temporal_stability_trend": {
         "type": "float",
-        "range": [-1.0, 1.0],
+        "range": [
+          -1.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Linear trend slope across windows (positive = improving over time)"
       }
     },
-
     "statistical_distribution": {
       "_description": "Basic statistical properties of predictions vs actuals",
       "pred_mean": {
         "type": "float",
-        "range": [0.0, 999.0],
+        "range": [
+          0.0,
+          999.0
+        ],
         "higher_is_better": null,
         "description": "Mean of predicted values"
       },
       "pred_std": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Standard deviation of predicted values"
       },
       "pred_min": {
         "type": "float",
-        "range": [0.0, 999.0],
+        "range": [
+          0.0,
+          999.0
+        ],
         "higher_is_better": null,
         "description": "Minimum predicted value"
       },
       "pred_max": {
         "type": "float",
-        "range": [0.0, 999.0],
+        "range": [
+          0.0,
+          999.0
+        ],
         "higher_is_better": null,
         "description": "Maximum predicted value"
       },
       "actual_mean": {
         "type": "float",
-        "range": [0.0, 999.0],
+        "range": [
+          0.0,
+          999.0
+        ],
         "higher_is_better": null,
         "description": "Mean of actual lottery values"
       },
       "actual_std": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Standard deviation of actual lottery values"
       }
     },
-
     "lane_agreement": {
       "_description": "Agreement in modular buckets (lanes)",
       "lane_agreement_8": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Fraction of predictions in same mod-8 lane as actual"
       },
       "lane_agreement_125": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Fraction of predictions in same mod-125 lane as actual"
       },
       "lane_consistency": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Average of lane_agreement_8 and lane_agreement_125"
       }
     },
-
     "bidirectional_sieve_metadata": {
       "_description": "Forward/reverse sieve metrics from Step 2 (merged into features)",
       "_source": "bidirectional_survivors.json via full_scoring_worker.py",
       "forward_count": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": true,
         "description": "Number of windows where seed survived forward sieve (Step 2)"
       },
       "reverse_count": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": true,
         "description": "Number of windows where seed survived reverse sieve (Step 2)"
       },
       "bidirectional_count": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": true,
         "description": "Number of windows where seed survived BOTH forward AND reverse sieve"
       },
       "bidirectional_selectivity": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Ratio indicating bidirectional filtering strength: forward_count/reverse_count"
       }
     },
-
     "skip_analysis": {
       "_description": "PRNG skip pattern characteristics",
       "skip_min": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Minimum skip value found during sieve analysis (from Step 2)"
       },
       "skip_max": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Maximum skip value found during sieve analysis (from Step 2)"
       },
       "skip_range": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Range of skip values (skip_max - skip_min)"
       },
       "skip_mean": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Mean of skip values (requires skip distribution analysis)"
       },
       "skip_std": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Standard deviation of skip values"
       },
       "skip_entropy": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Entropy of skip distribution (higher = more random)"
       }
     },
-
     "intersection_metrics": {
       "_description": "Survivor set overlap and intersection statistics",
       "intersection_count": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": true,
         "description": "Count of seeds in forward/reverse intersection"
       },
       "intersection_ratio": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
         "description": "Ratio of intersection to union of forward/reverse sets"
       },
       "intersection_weight": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": true,
         "description": "Weighted importance of intersection membership"
       },
       "survivor_overlap_ratio": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": null,
         "description": "Overlap ratio between different survivor sets"
       },
       "forward_only_count": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Seeds surviving only forward sieve, not reverse"
       },
       "reverse_only_count": {
         "type": "int",
-        "range": [0, null],
+        "range": [
+          0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Seeds surviving only reverse sieve, not forward"
       }
     },
-
     "residual_analysis": {
       "_description": "Prediction error analysis",
       "residual_mean": {
         "type": "float",
-        "range": [null, null],
+        "range": [
+          null,
+          null
+        ],
         "higher_is_better": null,
         "description": "Mean prediction error (predicted - actual)"
       },
       "residual_std": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": false,
         "description": "Standard deviation of prediction errors"
       },
       "residual_abs_mean": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": false,
         "description": "Mean absolute prediction error"
       },
       "residual_max_abs": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": false,
         "description": "Maximum absolute prediction error"
       }
     },
-
     "velocity_metrics": {
       "_description": "Rate of change in survivor characteristics",
       "survivor_velocity": {
         "type": "float",
-        "range": [null, null],
+        "range": [
+          null,
+          null
+        ],
         "higher_is_better": null,
         "description": "Rate of change in survivor count over windows"
       },
       "velocity_acceleration": {
         "type": "float",
-        "range": [null, null],
+        "range": [
+          null,
+          null
+        ],
         "higher_is_better": null,
         "description": "Second derivative of survivor count"
       }
     }
   },
-
   "global_features": {
-    "_description": "14 global statistical features computed by GlobalStateTracker from lottery history",
-    "_source": "reinforcement_engine.py GlobalStateTracker._default_state()",
-
+    "_description": "14 global statistical features computed by GlobalStateTracker from lottery history. All prefixed with 'global_' to prevent namespace collision.",
+    "_source": "models/global_state_tracker.py GlobalStateTracker.get_global_state()",
+    "_prefix_note": "All global features are prefixed with 'global_' when merged into survivors_with_scores.json",
     "residue_entropy": {
       "_description": "Global entropy of residue distributions across entire dataset",
-      "residue_8_entropy": {
+      "global_residue_8_entropy": {
         "type": "float",
-        "range": [0.0, 3.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": null,
-        "description": "Shannon entropy of mod-8 residue distribution (max ~2.08 for uniform)"
+        "description": "Normalized Shannon entropy of mod-8 residue distribution (1.0 = uniform)"
       },
-      "residue_125_entropy": {
+      "global_residue_125_entropy": {
         "type": "float",
-        "range": [0.0, 7.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": null,
-        "description": "Shannon entropy of mod-125 residue distribution (max ~4.64 for uniform)"
+        "description": "Normalized Shannon entropy of mod-125 residue distribution (1.0 = uniform)"
       },
-      "residue_1000_entropy": {
+      "global_residue_1000_entropy": {
         "type": "float",
-        "range": [0.0, 10.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": null,
-        "description": "Shannon entropy of mod-1000 residue distribution (max ~6.91 for uniform)"
+        "description": "Normalized Shannon entropy of mod-1000 residue distribution (1.0 = uniform)"
       }
     },
-
     "bias_detection": {
       "_description": "Global bias and anomaly detection",
-      "power_of_two_bias": {
+      "global_power_of_two_bias": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
-        "description": "Detected bias toward power-of-two values (PRNG artifact indicator)"
+        "description": "Ratio of actual vs expected power-of-two occurrences (1.0 = no bias)"
       },
-      "frequency_bias_ratio": {
+      "global_frequency_bias_ratio": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          1.0,
+          null
+        ],
         "higher_is_better": null,
-        "description": "Ratio of most frequent to least frequent values (1.0 = uniform)"
+        "description": "Ratio of most frequent to least frequent values (1.0 = uniform, higher = biased)"
       },
-      "suspicious_gap_percentage": {
+      "global_suspicious_gap_percentage": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": false,
-        "description": "Percentage of suspiciously long gaps in draw sequence"
+        "description": "Percentage of numbers with suspiciously long gaps (>500 draws)"
       }
     },
-
     "regime_detection": {
       "_description": "Detection of PRNG regime changes or reseeding events",
-      "regime_change_detected": {
+      "global_regime_change_detected": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": null,
-        "description": "Binary indicator (0/1) if regime change detected"
+        "description": "Binary indicator (0/1) if regime change detected via KL divergence"
       },
-      "regime_age": {
+      "global_regime_age": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
         "description": "Number of draws since last detected regime change"
       },
-      "reseed_probability": {
+      "global_reseed_probability": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": null,
-        "description": "Estimated probability that PRNG was recently reseeded"
+        "description": "Estimated probability that PRNG was recently reseeded (based on marker variance)"
       }
     },
-
     "marker_analysis": {
-      "_description": "Variance tracking for known marker numbers (390, 804, 575)",
-      "marker_390_variance": {
+      "_description": "Variance tracking for known marker numbers (390, 804, 575) - discovered in real lottery data analysis",
+      "global_marker_390_variance": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
-        "description": "Variance in appearance pattern of marker number 390"
+        "description": "Coefficient of variation in gap pattern for marker number 390 (>1.0 = irregular, tied to reseeds)"
       },
-      "marker_804_variance": {
+      "global_marker_804_variance": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
-        "description": "Variance in appearance pattern of marker number 804"
+        "description": "Coefficient of variation in gap pattern for marker number 804"
       },
-      "marker_575_variance": {
+      "global_marker_575_variance": {
         "type": "float",
-        "range": [0.0, null],
+        "range": [
+          0.0,
+          null
+        ],
         "higher_is_better": null,
-        "description": "Variance in appearance pattern of marker number 575"
+        "description": "Coefficient of variation in gap pattern for marker number 575"
       },
-      "high_variance_count": {
-        "type": "int",
-        "range": [0, null],
+      "global_high_variance_count": {
+        "type": "float",
+        "range": [
+          0.0,
+          3.0
+        ],
         "higher_is_better": null,
-        "description": "Count of markers showing high variance (potential PRNG indicators)"
+        "description": "Count of marker numbers showing high variance (CV > 1.0)"
       }
     },
-
     "global_stability": {
       "_description": "Overall dataset stability metric",
-      "temporal_stability": {
+      "global_temporal_stability": {
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "higher_is_better": true,
-        "description": "Global stability metric for entire lottery dataset (distinct from per-seed temporal_stability_*)"
+        "description": "Global temporal stability: overlap of number distributions across time windows (1.0 = stable)"
       }
     }
   },
-
   "feature_combination": {
     "_description": "How features are combined for ML training",
     "combined_vector_size": 64,
-    "combination_method": "ReinforcementEngine.extract_combined_features()",
-    "order": "per_seed_features (50) + global_features (14) = 64-dim input vector",
-    "target_model": "SurvivorQualityNet"
+    "per_seed_features": 50,
+    "global_features": 14,
+    "combination_method": "Phase 5 aggregation in run_step3_full_scoring.sh",
+    "order": "per_seed_features (50) + global_* features (14) = 64-dim input vector",
+    "global_prefix": "All global features prefixed with 'global_' to prevent namespace collision",
+    "target_models": [
+      "neural_net",
+      "xgboost",
+      "lightgbm",
+      "catboost"
+    ]
   },
-
   "agent_usage_notes": {
     "primary_ranking_features": [
       "score",
@@ -490,10 +678,12 @@
       "bidirectional_selectivity"
     ],
     "global_context_features": [
-      "regime_change_detected",
-      "reseed_probability",
-      "temporal_stability"
+      "global_regime_change_detected",
+      "global_reseed_probability",
+      "global_temporal_stability",
+      "global_frequency_bias_ratio",
+      "global_marker_390_variance"
     ],
-    "interpretation_guidance": "Higher bidirectional_count with high lane_consistency and low temporal_stability_std indicates a strong survivor candidate. Global features provide context about overall PRNG behavior and should be used to adjust confidence in per-seed predictions."
+    "interpretation_guidance": "Higher bidirectional_count with high lane_consistency and low temporal_stability_std indicates a strong survivor candidate. Global features (prefixed with 'global_') provide context about overall PRNG behavior: global_regime_change_detected and global_reseed_probability indicate system instability, global_frequency_bias_ratio > 3.0 suggests non-uniform PRNG, global_marker_390_variance > 1.0 indicates reseed-linked number behavior."
   }
 }

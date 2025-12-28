@@ -348,7 +348,8 @@ def run_multi_model_comparison(X_train: np.ndarray,
                                 study_name: str = None,
                                 storage: str = 'sqlite:///optuna_studies.db',
                                 save_all_models: bool = False,
-                                output_dir: str = 'models/reinforcement') -> Dict[str, Any]:
+                                output_dir: str = 'models/reinforcement',
+                                timeout: int = 600) -> Dict[str, Any]:
     """
     Run multi-model comparison using subprocess isolation.
     
@@ -385,6 +386,7 @@ def run_multi_model_comparison(X_train: np.ndarray,
         X_train, y_train, X_val, y_val,
         worker_script='train_single_trial.py',
         output_dir=output_dir,
+        timeout=timeout,
         verbose=True
     ) as coordinator:
         
@@ -931,7 +933,8 @@ def main():
     # Output options
     parser.add_argument('--output-dir', type=str, default='models/reinforcement',
                         help='Output directory for models (default: models/reinforcement)')
-
+    parser.add_argument('--timeout', type=int, default=600,
+                        help='Timeout per trial in seconds (default: 600)')
     args = parser.parse_args()
 
     # Store CLI args for provenance

@@ -1,5 +1,5 @@
 # 🗂 Distributed PRNG Analysis — Logical Project Map
-📌 *AI-Friendly, Developer-Friendly — Updated December 24, 2025*
+📌 *AI-Friendly, Developer-Friendly — Updated December 27, 2025 (Session 17)*
 
 > This structure explains **how your system is organized logically**,
 > without physically changing file locations on disk.
@@ -11,20 +11,27 @@
 
 | Step | Script | Purpose | Output |
 |------|--------|---------|--------|
+| ~~0~~ | ~~PRNG Fingerprinting~~ | ~~Classify unknown PRNGs~~ | **ARCHIVED** (Session 17) |
 | 1 | `window_optimizer.py` | Bayesian window optimization | `bidirectional_survivors.json` |
 | 2.5 | `generate_scorer_jobs.py` | Distributed scoring meta-optimizer | `optimal_scorer_config.json` |
-| 3 | `generate_full_scoring_jobs.py` | Full GPU scoring (46 features) | `survivors_with_scores.json` |
+| 3 | `run_step3_full_scoring.sh` | Full GPU scoring (64 features) | `survivors_with_scores.json` |
 | 4 | `adaptive_meta_optimizer.py` | ML meta-optimizer | `reinforcement_engine_config.json` |
-| 5 | `meta_prediction_optimizer_anti_overfit.py` | Multi-model training | `best_model.{json,pth}` + sidecar |
+| 5 | `meta_prediction_optimizer_anti_overfit.py` | Multi-model training | `best_model.{cbm,json,pth,txt}` + sidecar |
 | 6 | `prediction_generator.py` | Generate predictions | `predictions_*.json` |
 
+### Step 0: PRNG Fingerprinting — ARCHIVED
+Investigated in Session 17. **Mathematically impossible** under mod1000 projection:
+- SNR < 0.15 for ALL features tested
+- Within-PRNG variance dominates between-PRNG variance
+- Alternative: Trust the sieve (wrong PRNG → 0 survivors)
+
 ──────────────────────────────────────────────
-🧠 MULTI-MODEL ARCHITECTURE (v3.1.3)
+🧠 MULTI-MODEL ARCHITECTURE (v3.2.0)
 ──────────────────────────────────────────────
 
 models/
 ├── __init__.py                    # Exports all model components
-├── global_state_tracker.py        # NEW: 14 global features (GPU-neutral)
+├── global_state_tracker.py        # 14 global features (GPU-neutral)
 ├── feature_schema.py              # Streaming schema derivation + hash
 ├── model_factory.py               # Model loader with sidecar support
 ├── model_selector.py              # Best model selection logic
@@ -33,7 +40,7 @@ models/
     ├── neural_net_wrapper.py      # PyTorch NN (ROCm + CUDA)
     ├── xgboost_wrapper.py         # XGBoost (CUDA)
     ├── lightgbm_wrapper.py        # LightGBM (OpenCL)
-    └── catboost_wrapper.py        # CatBoost (CUDA)
+    └── catboost_wrapper.py        # CatBoost (CUDA) 🏆 Session 17 winner
 
 ### Subprocess Isolation (OpenCL/CUDA Conflict Resolution)
 ```
@@ -42,12 +49,21 @@ Main Process (coordinator) - NO GPU imports
     ├── Trial 0: subprocess → LightGBM (OpenCL) → exits
     ├── Trial 1: subprocess → PyTorch (CUDA) → exits  
     ├── Trial 2: subprocess → XGBoost (CUDA) → exits
+    ├── Trial 3: subprocess → CatBoost (CUDA) → exits
     └── Trial N: Fresh GPU state each time
 ```
 
 Files:
 - `train_single_trial.py` - Isolated worker script
 - `subprocess_trial_coordinator.py` - Coordinates subprocess execution
+
+### Session 17 Multi-Model Results (62 features)
+| Model | R² | MSE | Duration |
+|-------|-----|-----|----------|
+| CatBoost | 1.0000 | 8.6e-11 | 4.8s 🏆 |
+| XGBoost | 1.0000 | 1.0e-07 | 1.8s |
+| LightGBM | 0.9999 | 2.1e-07 | 2.9s |
+| Neural Net | 0.0000 | 0.0025 | 253s+ |
 
 ──────────────────────────────────────────────
 🤖 AI AGENT ARCHITECTURE
@@ -71,9 +87,9 @@ watcher_agent.py             # Autonomous pipeline orchestration (WIP)
 ### Step 5 → Step 6 Handoff Protocol
 ```
 Step 5 Output:
-├── best_model.json (or .pth)
+├── best_model.cbm (CatBoost wins - Session 17)
 └── best_model.meta.json (sidecar)
-    └── agent_metadata.run_id: "step5_20251223_171709"
+    └── agent_metadata.run_id: "step5_20251226_235017"
 
 Step 6 Input:
 ├── Reads sidecar → auto-detects model type
@@ -82,11 +98,11 @@ Step 6 Input:
 ```
 
 ──────────────────────────────────────────────
-📊 SCORING & FEATURES
+📊 SCORING & FEATURES (Updated Session 17)
 ──────────────────────────────────────────────
 
 survivor_scorer.py
-│   • 46 per-seed features extraction
+│   • 50 per-seed features extraction
 │   • _generate_sequence() - Dynamic PRNG lookup
 │   • _coerce_seed_list() - Type-tolerant (int/dict)
 │   • compute_dual_sieve_intersection() - Bidirectional filtering
@@ -96,21 +112,38 @@ models/global_state_tracker.py
 │   • SciPy fallback for entropy calculation
 │   • GPU-neutral (importable anywhere)
 
-### Feature Architecture (62 total)
-```
-Per-seed features: 48 (from survivor_scorer.py)
-├── actual_mean, actual_std, actual_min, actual_max
-├── predicted_mean, predicted_std, predicted_min, predicted_max
-├── mae, rmse, correlation, r_squared
-├── skip_0_mae through skip_5_mae
-└── ... (46 statistical features)
+run_step3_full_scoring.sh
+│   • Phase 5 Aggregation: Merges global features
+│   • GlobalStateTracker computed once (O(1))
+│   • Features prefixed with 'global_' (Team Beta)
 
-Global features: 14 (from GlobalStateTracker)
-├── global_lottery_mean, global_lottery_std
-├── global_lottery_skew, global_lottery_kurtosis
-├── global_lottery_entropy (SciPy fallback)
-└── global_draw_count, global_unique_ratio, etc.
+### Feature Architecture (64 total, 62 for training)
 ```
+Total Features: 64 (in survivors_with_scores.json)
+Training Features: 62 (after excluding score, confidence)
+
+├── Per-seed features: 50 (from survivor_scorer.py)
+│   ├── Residue features: 12
+│   ├── Temporal features: 20
+│   ├── Statistical features: 12
+│   ├── Metadata features: 4 (skip_min, skip_max, bidirectional_count, bidirectional_selectivity)
+│   └── Score metrics: 2 (excluded from training)
+│
+└── Global features: 14 (from GlobalStateTracker, prefixed with 'global_')
+    ├── Residue entropy: 3
+    │   └── global_residue_8_entropy, global_residue_125_entropy, global_residue_1000_entropy
+    ├── Bias detection: 3
+    │   └── global_power_of_two_bias, global_frequency_bias_ratio, global_suspicious_gap_percentage
+    ├── Regime detection: 3
+    │   └── global_regime_change_detected, global_regime_age, global_reseed_probability
+    ├── Marker analysis: 4
+    │   └── global_marker_390_variance, global_marker_804_variance, global_marker_575_variance, global_high_variance_count
+    └── Stability: 1
+        └── global_temporal_stability
+```
+
+### Feature Registry
+`config_manifests/feature_registry.json` - Documents all 64 features with metadata
 
 ──────────────────────────────────────────────
 🎯 STEP 6 OUTPUT CONTRACT (v2.2)
@@ -131,7 +164,7 @@ Global features: 14 (from GlobalStateTracker)
     },
     "agent_metadata": {
         "pipeline_step": 6,
-        "parent_run_id": "step5_20251223_171709"   // Lineage
+        "parent_run_id": "step5_20251226_235017"   // Lineage
     }
 }
 ```
@@ -148,14 +181,18 @@ Global features: 14 (from GlobalStateTracker)
 
 **Total: 26 GPUs, ~285 TFLOPS**
 
-coordinator.py
+coordinator.py (v1.8.2)
 │   • Master controller for distributed execution
 │   • SSH orchestration, GPU job scheduling
 │   • ROCm/CUDA activation per node
 
-distributed_worker.py
+distributed_worker.py (v1.8.0)
 │   • Runs jobs on individual GPUs
 │   • Pull-based job collection
+
+scripts_coordinator.py
+│   • Parallel execution within nodes (Session 16)
+│   • ThreadPoolExecutor with GPU-aware workers
 
 ROCm Activation:
 ```bash
@@ -185,22 +222,38 @@ modules/
 |------|---------|
 | `README.md` | Main project overview |
 | `PROJECT_MAP.md` | This file - logical structure |
-| `CURRENT_Status.txt` | Session-by-session progress |
+| `CURRENT_STATUS.txt` | Session-by-session progress |
 | `IMPLEMENTATION_CHECKLIST.md` | Feature completion tracking |
-| `PROPOSAL_Unified_Agent_Context_Framework_v3_2_8.md` | Latest architecture proposal |
+| `PROPOSAL_Unified_Agent_Context_Framework_v3_2_10.md` | Latest architecture proposal |
+| `COMPLETE_OPERATING_GUIDE_v1_1.md` | Full system documentation |
+| `Multi-Model_Architecture_integration_autonomy.md` | Autonomy integration guide |
 
 ──────────────────────────────────────────────
 ⚙️ CONFIGURATION FILES
 ──────────────────────────────────────────────
 
-distributed_config.json     # Node IPs, GPU mappings, SSH config
-agent_config.yaml           # Meta-optimizer parameters
-optimal_window_config.json  # Best window sizes (Optuna output)
-prng_registry.py           # 46 PRNG algorithm definitions
+distributed_config.json              # Node IPs, GPU mappings, SSH config
+config_manifests/feature_registry.json  # Feature documentation (NEW Session 17)
+agent_config.yaml                    # Meta-optimizer parameters
+optimal_window_config.json           # Best window sizes (Optuna output)
+prng_registry.py                    # 46 PRNG algorithm definitions
 
 ──────────────────────────────────────────────
 📌 RECENT CHANGES (December 2025)
 ──────────────────────────────────────────────
+
+### Session 17 (Dec 26-27)
+- ❌ Step 0 PRNG Fingerprinting **ARCHIVED** (mathematically impossible under mod1000)
+- ✅ Global features integrated at Step 3 Phase 5 aggregation
+- ✅ Feature registry updated with `global_` prefix (Team Beta requirement)
+- ✅ Added `--timeout` CLI argument to Step 5
+- ✅ Multi-model test: CatBoost wins (R²=1.0, MSE=8.6e-11)
+- ✅ Data quality: Found 721 duplicates in daily3.json
+
+### Session 16 (Dec 25)
+- ✅ Parallel execution in scripts_coordinator.py
+- ✅ Step 4 --survivor-data argument fix
+- ✅ Feature count alignment (48 per-seed features)
 
 ### Session 15 (Dec 24)
 - ✅ Fixed confidence bug (was all 1.0, now differentiated)

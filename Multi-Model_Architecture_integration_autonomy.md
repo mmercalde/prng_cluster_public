@@ -1,5 +1,5 @@
 # Multi-Model Architecture Integration with Autonomy
-**Updated:** December 24, 2025 (Session 15)
+**Updated:** December 27, 2025 (Session 17)
 
 ## Overview
 
@@ -12,6 +12,7 @@ This document explains how the Multi-Model Architecture integrates with the auto
 watcher_agent.py
     │
     ├── Monitors pipeline steps (1 → 2 → 2.5 → 3 → 4 → 5 → 6)
+    │   NOTE: Step 0 (PRNG Fingerprinting) ARCHIVED - mathematically impossible under mod1000
     │
     ├── Reads agent_manifests/*.json for each step
     │
@@ -39,6 +40,11 @@ watcher_agent.py
     "compare_models": {
       "type": "bool", 
       "default": false
+    },
+    "timeout": {
+      "type": "int",
+      "default": 600,
+      "description": "Per-trial timeout in seconds (NEW Session 17)"
     }
   }
 }
@@ -72,6 +78,7 @@ Step 5 Triggered
     │   │
     │   ├── "survivors_with_scores.json has 395K entries"
     │   ├── "Feature distribution shows high variance"
+    │   ├── "62 features (50 per-seed + 14 global)"  # NEW Session 17
     │   └── "Previous neural_net had overfit_ratio > 1.5"
     │
     ├── LLM suggests parameters:
@@ -79,25 +86,27 @@ Step 5 Triggered
     │     "model_type": "xgboost",
     │     "compare_models": true,
     │     "trials": 50,
-    │     "k_folds": 5
+    │     "k_folds": 5,
+    │     "timeout": 900
     │   }
     │
     └── watcher_agent executes:
         python3 meta_prediction_optimizer_anti_overfit.py \
             --model-type xgboost \
             --compare-models \
-            --trials 50
+            --trials 50 \
+            --timeout 900
 ````
 
-### 3. Step 5 → Step 6 Handoff (NEW in v2.2)
+### 3. Step 5 → Step 6 Handoff (Updated Session 17)
 ````
 Step 5 Output:
-├── models/reinforcement/best_model.json (or .pth)
+├── models/reinforcement/best_model.json (or .pth, .cbm, .txt)
 └── models/reinforcement/best_model.meta.json (sidecar)
-    ├── model_type: "xgboost"
+    ├── model_type: "catboost"  # CatBoost wins (Session 17)
     ├── feature_schema: { per_seed_feature_names: [...], total_features: 62 }
     └── agent_metadata:
-        └── run_id: "step5_20251223_171709"
+        └── run_id: "step5_20251226_235017"
 
 Step 6 Input:
 ├── Reads sidecar → auto-detects model type
@@ -110,7 +119,7 @@ Step 6 Output:
 │   ├── raw_scores: [0.127, 0.108, 0.057]      # Machine truth
 │   ├── confidence_scores: [0.79, 0.68, 0.32]  # Calibrated
 │   └── agent_metadata:
-│       └── parent_run_id: "step5_20251223_171709"  # Lineage!
+│       └── parent_run_id: "step5_20251226_235017"  # Lineage!
 ````
 
 ### 4. Agent Context Injection
@@ -127,6 +136,7 @@ def build_step5_command(self, context: dict) -> list:
         '--trials', str(context.get('trials', 50)),
         '--k-folds', str(context.get('k_folds', 5)),
         '--output-dir', 'models/reinforcement',
+        '--timeout', str(context.get('timeout', 600)),  # NEW Session 17
     ]
     
     # Model type selection (from LLM or default)
@@ -163,6 +173,36 @@ def build_step6_command(self, context: dict) -> list:
 
 ---
 
+## Feature Architecture (Updated Session 17)
+
+### Total Features: 64 (62 for training)
+````
+survivors_with_scores.json
+├── Per-seed features: 50 (from survivor_scorer.py)
+│   ├── Residue features: 12
+│   ├── Temporal features: 20
+│   ├── Statistical features: 12
+│   ├── Metadata features: 4
+│   └── Score metrics: 2 (excluded from training)
+│
+└── Global features: 14 (from GlobalStateTracker, prefixed with 'global_')
+    ├── Residue entropy: 3
+    ├── Bias detection: 3 (global_frequency_bias_ratio, etc.)
+    ├── Regime detection: 3 (global_regime_change_detected, etc.)
+    ├── Marker analysis: 4 (global_marker_390_variance, etc.)
+    └── Stability: 1 (global_temporal_stability)
+````
+
+### Global Features Integration (NEW Session 17)
+
+Global features are added at Step 3 Phase 5 (Aggregation):
+- Computed once from lottery history
+- Identical for all survivors
+- Prefixed with `global_` to prevent namespace collision
+- Now available to ALL model types (not just ReinforcementEngine)
+
+---
+
 ## LLM Prompt for Step 5 Model Selection
 ````python
 STEP5_CONTEXT_PROMPT = """
@@ -182,12 +222,18 @@ You are selecting ML model configuration for survivor quality prediction.
 - catboost: When skip_mode categorical feature is important
 - compare_models=true: When unsure, let the system pick best
 
+### Session 17 Results (62 features):
+- CatBoost: R²=1.0000, MSE=8.6e-11, 4.8s 🏆
+- XGBoost: R²=1.0000, MSE=1.0e-07, 1.8s
+- LightGBM: R²=0.9999, MSE=2.1e-07, 2.9s
+- Neural Net: R²=0.0000, MSE=0.0025, 253s+ (often times out)
+
 ### Previous Results:
 {previous_step_results}
 
 ### Current Data:
 - Survivors: {survivor_count}
-- Features: {feature_count}
+- Features: 62 (50 per-seed + 14 global)
 - Score range: [{score_min}, {score_max}]
 
 ### Suggest parameters:
@@ -196,7 +242,8 @@ You are selecting ML model configuration for survivor quality prediction.
   "model_type": "...",
   "compare_models": true/false,
   "trials": ...,
-  "k_folds": ...
+  "k_folds": ...,
+  "timeout": ...
 }
 ```
 """
@@ -210,8 +257,8 @@ You are selecting ML model configuration for survivor quality prediction.
 │                     watcher_agent.py                                 │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  Step 3 Complete → survivors_with_scores.json (813MB)               │
-│       │                                                              │
+│  Step 3 Complete → survivors_with_scores.json                        │
+│       │            (64 features: 50 per-seed + 14 global)           │
 │       ▼                                                              │
 │  Step 4 Complete → reinforcement_engine_config.json                 │
 │       │                                                              │
@@ -221,19 +268,20 @@ You are selecting ML model configuration for survivor quality prediction.
 │  │                                                              │    │
 │  │  LLM analyzes:                                              │    │
 │  │  • Survivor count (395K)                                    │    │
-│  │  • Feature variance                                         │    │
+│  │  • Feature count (62 training features)                     │    │
+│  │  • Global features present (regime_change, marker_390, etc) │    │
 │  │  • Previous overfit ratios                                  │    │
 │  │                                                              │    │
-│  │  LLM suggests: {model_type: "xgboost", compare: true}       │    │
+│  │  LLM suggests: {model_type: "catboost", compare: true}      │    │
 │  │                                                              │    │
 │  │  Execute:                                                    │    │
 │  │  meta_prediction_optimizer_anti_overfit.py                  │    │
-│  │    --model-type xgboost --compare-models                    │    │
+│  │    --compare-models --timeout 900                           │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │       │                                                              │
 │       ▼                                                              │
 │  Output: models/reinforcement/                                       │
-│          ├── best_model.json (xgboost won)                          │
+│          ├── best_model.cbm (catboost won - Session 17)             │
 │          └── best_model.meta.json (sidecar with run_id)             │
 │       │                                                              │
 │       ▼                                                              │
@@ -243,9 +291,9 @@ You are selecting ML model configuration for survivor quality prediction.
 │  │  prediction_generator.py --models-dir models/reinforcement  │    │
 │  │                                                              │    │
 │  │  → Reads best_model.meta.json                               │    │
-│  │  → Sees model_type: "xgboost"                               │    │
-│  │  → Extracts parent_run_id: "step5_20251223_171709"          │    │
-│  │  → Loads best_model.json (not .pth!)                        │    │
+│  │  → Sees model_type: "catboost"                              │    │
+│  │  → Extracts parent_run_id: "step5_20251226_235017"          │    │
+│  │  → Loads best_model.cbm                                     │    │
 │  │  → Validates feature hash                                    │    │
 │  │  → Generates predictions with lineage                        │    │
 │  └─────────────────────────────────────────────────────────────┘    │
@@ -265,10 +313,13 @@ Main Process (subprocess_trial_coordinator.py)
     ├── Trial 0: subprocess → train_single_trial.py → LightGBM (OpenCL) → exits
     ├── Trial 1: subprocess → train_single_trial.py → PyTorch (CUDA) → exits
     ├── Trial 2: subprocess → train_single_trial.py → XGBoost (CUDA) → exits
+    ├── Trial 3: subprocess → train_single_trial.py → CatBoost (CUDA) → exits
     └── Trial N: Fresh GPU state each time!
 ````
 
 This solves the "Error Code: -9999" issue when LightGBM runs after CUDA models.
+
+**Timeout (NEW Session 17):** Each subprocess has configurable timeout (default 600s, use `--timeout` to adjust).
 
 ---
 
@@ -291,7 +342,7 @@ This solves the "Error Code: -9999" issue when LightGBM runs after CUDA models.
     },
     "agent_metadata": {
         "pipeline_step": 6,
-        "parent_run_id": "step5_20251223_171709",
+        "parent_run_id": "step5_20251226_235017",
         "confidence": 0.4937,
         "reasoning": "Generated 5 predictions with avg confidence 0.4937"
     }
@@ -324,8 +375,22 @@ The **sidecar pattern** makes autonomy easier because:
 |-----------|--------|-------|
 | Multi-model wrappers | ✅ Complete | 4 models: neural_net, xgboost, lightgbm, catboost |
 | Subprocess isolation | ✅ Complete | Resolves OpenCL/CUDA conflict |
+| Timeout CLI | ✅ Complete | `--timeout` argument (Session 17) |
+| Global features | ✅ Complete | 14 features at Step 3 aggregation (Session 17) |
 | Sidecar generation | ✅ Complete | model_type, feature_schema, run_id |
 | Step 6 model loading | ✅ Complete | Auto-detects from sidecar |
 | Confidence calibration | ✅ Complete | Sigmoid z-score, raw scores preserved |
 | Parent run ID lineage | ✅ Complete | Auto-read from sidecar, CLI override |
 | Watcher agent integration | 🔄 In Progress | Manifest updates done, full integration pending |
+
+---
+
+## Session 17 Key Changes
+
+| Change | Description |
+|--------|-------------|
+| Step 0 Archived | PRNG Fingerprinting impossible under mod1000 |
+| Global Features | 14 features added at Step 3 aggregation |
+| Feature Count | 64 total (62 training) vs previous 50 (48 training) |
+| Timeout CLI | `--timeout` argument for Step 5 |
+| CatBoost Wins | Best model in 8-trial comparison (R²=1.0) |

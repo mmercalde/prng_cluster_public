@@ -47,7 +47,8 @@ MODEL_EXTENSIONS = {
     'neural_net': '.pth',
     'xgboost': '.json',
     'lightgbm': '.txt',
-    'catboost': '.cbm'
+    'catboost': '.cbm',
+    'random_forest': '.joblib'
 }
 
 
@@ -476,6 +477,58 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     }
 
 
+
+
+def train_random_forest(X_train, y_train, X_val, y_val, params: dict, save_path: str = None) -> dict:
+    """
+    Train Random Forest model (CPU-based, no GPU conflicts).
+    
+    Imports sklearn HERE to ensure clean state.
+    """
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_squared_error, r2_score
+    import numpy as np
+    import joblib
+    
+    start_time = time.time()
+    
+    # Extract RF-specific params
+    rf_params = {
+        "n_estimators": params.get("rf_n_estimators", 100),
+        "max_depth": params.get("rf_max_depth", None),
+        "min_samples_split": params.get("rf_min_samples_split", 2),
+        "min_samples_leaf": params.get("rf_min_samples_leaf", 1),
+        "max_features": params.get("rf_max_features", "sqrt"),
+        "n_jobs": params.get("rf_n_jobs", -1),
+        "random_state": params.get("rf_random_state", 42),
+    }
+    
+    # Train model
+    model = RandomForestRegressor(**rf_params)
+    model.fit(X_train, y_train)
+    
+    # Evaluate
+    y_pred = model.predict(X_val)
+    val_mse = mean_squared_error(y_val, y_pred)
+    val_r2 = r2_score(y_val, y_pred)
+    
+    duration = time.time() - start_time
+    
+    # Save model if path provided
+    checkpoint_path = None
+    if save_path:
+        checkpoint_path = save_path if save_path.endswith(".joblib") else f"{save_path}.joblib"
+        joblib.dump(model, checkpoint_path)
+    
+    return {
+        "val_mse": float(val_mse),
+        "val_r2": float(val_r2),
+        "duration": duration,
+        "device": "cpu",
+        "checkpoint_path": checkpoint_path,
+        "feature_importances": model.feature_importances_.tolist() if hasattr(model, "feature_importances_") else None
+    }
+
 def main():
     """
     Main entry point for isolated trial worker.
@@ -486,7 +539,7 @@ def main():
         description='Isolated Single-Trial Trainer - runs in subprocess for GPU isolation'
     )
     parser.add_argument('--model-type', required=True,
-                        choices=['lightgbm', 'neural_net', 'xgboost', 'catboost'],
+                        choices=['lightgbm', 'neural_net', 'xgboost', 'catboost', 'random_forest'],
                         help='Model type to train')
     parser.add_argument('--data-path', required=True,
                         help='Path to .npz file with X_train, y_train, X_val, y_val')
@@ -574,6 +627,8 @@ def main():
             result = train_catboost(X_train, y_train, X_val, y_val, params, save_path)
         elif args.model_type == 'neural_net':
             result = train_neural_net(X_train, y_train, X_val, y_val, params, save_path)
+        elif args.model_type == 'random_forest':
+            result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path)
         else:
             raise ValueError(f"Unknown model type: {args.model_type}")
         
