@@ -35,7 +35,7 @@ import logging
 __version__ = "1.0.1"
 
 # Safe model order - LightGBM MUST be first for OpenCL/CUDA compatibility
-SAFE_MODEL_ORDER = ['lightgbm', 'xgboost', 'catboost', 'random_forest']  # 'neural_net' commented out - poor R² on tabular data
+SAFE_MODEL_ORDER = ['neural_net', 'lightgbm', 'xgboost', 'catboost', 'random_forest']  # neural_net re-enabled after fixing circular training
 
 # Default timeout per trial (seconds)
 DEFAULT_TIMEOUT = 600

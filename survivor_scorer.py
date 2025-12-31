@@ -397,6 +397,16 @@ class SurvivorScorer:
         # Stats - all on GPU
         pred_means = predictions.float().mean(dim=1)  # (batch_size,)
         pred_stds = predictions.float().std(dim=1)    # (batch_size,)
+        
+        # FIX: Add pred_min/max and residual features (were missing from batch method!)
+        pred_mins = predictions.float().min(dim=1)[0]   # (batch_size,)
+        pred_maxs = predictions.float().max(dim=1)[0]   # (batch_size,)
+        residuals = predictions.float() - hist_expanded.float()  # (batch_size, n)
+        residual_means = residuals.mean(dim=1)          # (batch_size,)
+        residual_stds = residuals.std(dim=1)            # (batch_size,)
+        residual_abs_means = residuals.abs().mean(dim=1)  # (batch_size,)
+        residual_max_abs = residuals.abs().max(dim=1)[0]  # (batch_size,)
+        
         act_mean = hist_t.float().mean()
         act_std = hist_t.float().std()
         
@@ -492,6 +502,12 @@ class SurvivorScorer:
             'best_offset': torch.zeros(batch_size, device=device),
             'pred_mean': pred_means,
             'pred_std': pred_stds,
+            'pred_min': pred_mins,
+            'pred_max': pred_maxs,
+            'residual_mean': residual_means,
+            'residual_std': residual_stds,
+            'residual_abs_mean': residual_abs_means,
+            'residual_max_abs': residual_max_abs,
             'actual_mean': torch.full((batch_size,), float(act_mean), device=device),
             'actual_std': torch.full((batch_size,), float(act_std), device=device),
             'lane_agreement_8': lane_8,

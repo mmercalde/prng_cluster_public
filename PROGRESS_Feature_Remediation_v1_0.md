@@ -283,3 +283,70 @@
 
 **Last Updated:** December 28, 2025
 **Next Review:** After Phase 0 completion
+
+---
+
+## Session 18 Part 5-6 Update (December 29, 2025)
+
+### Completed Today
+
+#### Phase 1 Complete ✅
+1. **OOM Fix** - Removed 1.7GB file loading from workers
+   - `full_scoring_worker.py`: Uses chunk metadata instead of loading forward/reverse files
+   - `run_step3_full_scoring.sh`: Removed file copy to remotes
+   - Result: Workers use ~50MB instead of ~1.7GB
+
+2. **6 Intersection Fields Added** to Step 2 output
+   - `window_optimizer_integration_final.py`: Added to both constant and variable skip metadata
+   - Fields: `intersection_count`, `intersection_ratio`, `forward_only_count`, `reverse_only_count`, `survivor_overlap_ratio`, `intersection_weight`
+
+3. **Re-ran Step 2 and Step 3**
+   - Step 2: 831,672 survivors with new fields
+   - Step 3: 111.9s, 39/39 jobs successful
+
+### Current Feature Status
+
+| Category | Count | Status |
+|----------|-------|--------|
+| **Working (non-zero variance)** | 52/64 | ✅ |
+| **Legitimately zero** | 7/64 | ✅ (no anomalies) |
+| **Phase 2 required** | 5/64 | ⏳ (skip pipeline) |
+
+#### Working Features (52)
+- Residual: pred_mean, pred_std, pred_min, pred_max, residual_mean, residual_std, residual_abs_mean, residual_max_abs
+- Intersection: intersection_count, intersection_ratio, forward_only_count, reverse_only_count, survivor_overlap_ratio, intersection_weight
+- Bidirectional: forward_count, reverse_count, bidirectional_count, bidirectional_selectivity
+- Lane/Residue: lane_agreement_8, lane_agreement_125, lane_consistency, residue_*_match_rate, residue_*_kl_divergence, residue_*_coherence
+- Temporal: temporal_stability_mean, temporal_stability_std, temporal_stability_min, temporal_stability_max, temporal_stability_trend
+- Skip (partial): skip_min, skip_max, skip_range
+- Global: 8 of 14 working
+- Other: score, confidence, exact_matches, total_predictions, actual_mean, actual_std
+
+#### Legitimately Zero (7)
+- `best_offset`: Offset search not used
+- `global_high_variance_count`: No markers with CV > 1.0
+- `global_marker_575_variance`: Marker appears < 2 times (computed, not placeholder!)
+- `global_marker_804_variance`: Marker appears < 2 times
+- `global_regime_age`: History 400 < 2000 required
+- `global_regime_change_detected`: History too short
+- `global_reseed_probability`: Dependent on high_variance_count
+
+#### Phase 2 Required (5)
+- `skip_entropy`: Needs skip arrays from sieve
+- `skip_mean`: Needs skip arrays from sieve
+- `skip_std`: Needs skip arrays from sieve
+- `survivor_velocity`: Needs temporal window tracking
+- `velocity_acceleration`: Needs temporal window tracking
+
+### Added Phase 2.5: Autonomous Feature Validator
+- `feature_watcher_agent.py` specification added to technical spec
+- Diagnoses zero features and recommends/triggers fixes
+- Can auto-fix by re-running steps with correct parameters
+- Enables autonomous pipeline operation
+
+### Next Steps
+1. **Immediate**: Test ML training with 52 working features
+2. **Phase 2**: Implement skip metadata pipeline for remaining 5 features
+3. **Phase 2.5**: Implement feature watcher agent for autonomy
+4. **Future**: Use longer history file (2000+ draws) for regime detection
+

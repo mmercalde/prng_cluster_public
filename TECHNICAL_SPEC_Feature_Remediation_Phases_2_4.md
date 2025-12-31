@@ -553,3 +553,466 @@ print('Context keys:', list(s.get('context', {}).keys()))
 **Document Version:** 1.0
 **Author:** Claude (Session 18)
 **Status:** Ready for Implementation
+
+---
+
+## Phase 2.5: Autonomous Feature Validator (Watcher Agent)
+
+### 2.5.1 Purpose
+
+Enable autonomous detection and remediation of zero-variance features. When the ML pipeline detects features that should have values but are zero due to configuration issues (e.g., history too short), it can automatically recommend or trigger re-runs with corrected parameters.
+
+### 2.5.2 Feature Diagnostic Rules
+
+| Feature | Zero Condition | Required Fix |
+|---------|----------------|--------------|
+| `regime_change_detected` | `len(history) < 2000` | Use history ≥ 2000 draws |
+| `regime_age` | `len(history) < 2000` | Use history ≥ 2000 draws |
+| `marker_*_variance` | Marker appears < 2 times | Use longer history or different markers |
+| `high_variance_count` | No markers have CV > 1.0 | Informational only (legitimate zero) |
+| `reseed_probability` | `high_variance_count == 0` | Depends on high_variance_count |
+| `skip_entropy/mean/std` | Skip metadata not provided | Run Phase 2 skip pipeline |
+| `survivor_velocity` | Temporal tracking not enabled | Run Phase 2 skip pipeline |
+| `intersection_*` | Fields not in chunk metadata | Re-run Step 2 with updated code |
+
+### 2.5.3 Implementation
+
+#### File: `feature_watcher_agent.py` (NEW)
+```python
+#!/usr/bin/env python3
+"""
+Feature Watcher Agent - Autonomous Feature Quality Monitor
+
+Detects zero-variance features and recommends/triggers remediation.
+
+Usage:
+    python3 feature_watcher_agent.py --survivors survivors_with_scores.json
+    python3 feature_watcher_agent.py --survivors survivors_with_scores.json --auto-fix
+"""
+
+import json
+import argparse
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+from enum import Enum
+
+class FixAction(Enum):
+    NONE = "none"  # Legitimately zero
+    RERUN_STEP2 = "rerun_step2"
+    RERUN_STEP3 = "rerun_step3"
+    LONGER_HISTORY = "longer_history"
+    PHASE2_SKIP_PIPELINE = "phase2_skip_pipeline"
+
+@dataclass
+class FeatureDiagnosis:
+    feature: str
+    current_value: float
+    is_zero: bool
+    cause: str
+    fix_action: FixAction
+    fix_params: Dict
+    is_legitimate_zero: bool
+
+class FeatureWatcherAgent:
+    """Monitors feature quality and recommends/triggers fixes."""
+    
+    # Features that are legitimately zero when no anomalies detected
+    LEGITIMATE_ZERO_FEATURES = {
+        'high_variance_count',  # Zero if no markers have CV > 1.0
+        'best_offset',  # Zero if alignment search disabled
+    }
+    
+    # Minimum history requirements
+    HISTORY_REQUIREMENTS = {
+        'regime_change_detected': 2000,
+        'regime_age': 2000,
+    }
+    
+    # Features requiring Phase 2 skip pipeline
+    SKIP_PIPELINE_FEATURES = {
+        'skip_entropy', 'skip_mean', 'skip_std',
+        'survivor_velocity', 'velocity_acceleration'
+    }
+    
+    # Features requiring Step 2 re-run
+    STEP2_FEATURES = {
+        'intersection_count', 'intersection_ratio', 'intersection_weight',
+        'forward_only_count', 'reverse_only_count', 'survivor_overlap_ratio'
+    }
+    
+    def __init__(self, survivors_file: str, history_file: str = 'train_history.json'):
+        self.survivors_file = survivors_file
+        self.history_file = history_file
+        self.survivors = self._load_survivors()
+        self.history_length = self._get_history_length()
+        self.diagnoses: List[FeatureDiagnosis] = []
+    
+    def _load_survivors(self) -> List[Dict]:
+        with open(self.survivors_file) as f:
+            return json.load(f)
+    
+    def _get_history_length(self) -> int:
+        try:
+            with open(self.history_file) as f:
+                return len(json.load(f))
+        except:
+            return 0
+    
+    def analyze(self) -> List[FeatureDiagnosis]:
+        """Analyze all features and diagnose zeros."""
+        self.diagnoses = []
+        
+        if not self.survivors:
+            return self.diagnoses
+        
+        features = self.survivors[0].get('features', {})
+        
+        # Sample 1000 survivors for variance check
+        sample_size = min(1000, len(self.survivors))
+        
+        for feature_name, value in features.items():
+            # Check variance across sample
+            values = [s['features'].get(feature_name, 0) 
+                     for s in self.survivors[:sample_size]]
+            unique_count = len(set(values))
+            is_zero = (unique_count == 1 and values[0] == 0.0)
+            
+            if is_zero:
+                diagnosis = self._diagnose_zero_feature(feature_name, value)
+                self.diagnoses.append(diagnosis)
+        
+        return self.diagnoses
+    
+    def _diagnose_zero_feature(self, feature: str, value: float) -> FeatureDiagnosis:
+        """Diagnose why a feature is zero and recommend fix."""
+        
+        # Check if legitimately zero
+        if feature in self.LEGITIMATE_ZERO_FEATURES:
+            return FeatureDiagnosis(
+                feature=feature,
+                current_value=value,
+                is_zero=True,
+                cause="Legitimately zero (no anomalies detected)",
+                fix_action=FixAction.NONE,
+                fix_params={},
+                is_legitimate_zero=True
+            )
+        
+        # Check history length requirements
+        if feature in self.HISTORY_REQUIREMENTS:
+            required = self.HISTORY_REQUIREMENTS[feature]
+            if self.history_length < required:
+                return FeatureDiagnosis(
+                    feature=feature,
+                    current_value=value,
+                    is_zero=True,
+                    cause=f"History too short ({self.history_length} < {required})",
+                    fix_action=FixAction.LONGER_HISTORY,
+                    fix_params={'min_history': required, 'current_history': self.history_length},
+                    is_legitimate_zero=False
+                )
+        
+        # Check skip pipeline features
+        if feature in self.SKIP_PIPELINE_FEATURES:
+            return FeatureDiagnosis(
+                feature=feature,
+                current_value=value,
+                is_zero=True,
+                cause="Skip metadata pipeline not implemented",
+                fix_action=FixAction.PHASE2_SKIP_PIPELINE,
+                fix_params={'phase': 2, 'component': 'skip_metadata'},
+                is_legitimate_zero=False
+            )
+        
+        # Check Step 2 features
+        if feature in self.STEP2_FEATURES:
+            return FeatureDiagnosis(
+                feature=feature,
+                current_value=value,
+                is_zero=True,
+                cause="Field not in chunk metadata (old Step 2 output)",
+                fix_action=FixAction.RERUN_STEP2,
+                fix_params={'step': 2},
+                is_legitimate_zero=False
+            )
+        
+        # Check marker features
+        if feature.startswith('global_marker_'):
+            marker_num = feature.split('_')[2]
+            return FeatureDiagnosis(
+                feature=feature,
+                current_value=value,
+                is_zero=True,
+                cause=f"Marker {marker_num} appears < 2 times in history",
+                fix_action=FixAction.LONGER_HISTORY,
+                fix_params={'reason': 'marker_appearances'},
+                is_legitimate_zero=False
+            )
+        
+        # Global features dependent on other globals
+        if feature in ('global_reseed_probability',):
+            return FeatureDiagnosis(
+                feature=feature,
+                current_value=value,
+                is_zero=True,
+                cause="Dependent on high_variance_count (which is 0)",
+                fix_action=FixAction.NONE,
+                fix_params={},
+                is_legitimate_zero=True
+            )
+        
+        # Unknown - default to legitimate
+        return FeatureDiagnosis(
+            feature=feature,
+            current_value=value,
+            is_zero=True,
+            cause="Unknown cause (treating as legitimate)",
+            fix_action=FixAction.NONE,
+            fix_params={},
+            is_legitimate_zero=True
+        )
+    
+    def generate_report(self) -> str:
+        """Generate human-readable diagnostic report."""
+        if not self.diagnoses:
+            self.analyze()
+        
+        lines = [
+            "=" * 70,
+            "FEATURE WATCHER AGENT - DIAGNOSTIC REPORT",
+            "=" * 70,
+            f"Survivors file: {self.survivors_file}",
+            f"History length: {self.history_length}",
+            f"Total zero-variance features: {len(self.diagnoses)}",
+            "",
+        ]
+        
+        # Group by fix action
+        by_action = {}
+        for d in self.diagnoses:
+            action = d.fix_action.value
+            if action not in by_action:
+                by_action[action] = []
+            by_action[action].append(d)
+        
+        for action, diagnoses in by_action.items():
+            lines.append(f"\n### {action.upper()} ({len(diagnoses)} features)")
+            lines.append("-" * 50)
+            for d in diagnoses:
+                status = "✅ OK" if d.is_legitimate_zero else "⚠️ FIXABLE"
+                lines.append(f"  {d.feature}: {status}")
+                lines.append(f"    Cause: {d.cause}")
+                if d.fix_params:
+                    lines.append(f"    Params: {d.fix_params}")
+        
+        # Recommendations
+        lines.append("\n" + "=" * 70)
+        lines.append("RECOMMENDED ACTIONS")
+        lines.append("=" * 70)
+        
+        fixable = [d for d in self.diagnoses if not d.is_legitimate_zero]
+        if not fixable:
+            lines.append("✅ No fixable issues - all zeros are legitimate")
+        else:
+            actions_needed = set(d.fix_action for d in fixable)
+            for action in actions_needed:
+                if action == FixAction.LONGER_HISTORY:
+                    min_hist = max(d.fix_params.get('min_history', 0) 
+                                  for d in fixable if d.fix_action == action)
+                    lines.append(f"• Use longer history file (≥ {min_hist} draws)")
+                    lines.append(f"  Command: ./run_step3_full_scoring.sh --train-history daily3_full_{min_hist}.json")
+                elif action == FixAction.RERUN_STEP2:
+                    lines.append("• Re-run Step 2 (window optimizer)")
+                    lines.append("  Command: python3 window_optimizer.py --strategy bayesian ...")
+                elif action == FixAction.PHASE2_SKIP_PIPELINE:
+                    lines.append("• Implement Phase 2 skip metadata pipeline")
+                    lines.append("  See: TECHNICAL_SPEC_Feature_Remediation_Phases_2_4.md")
+        
+        return "\n".join(lines)
+    
+    def auto_fix(self, dry_run: bool = True) -> List[str]:
+        """
+        Automatically apply fixes where possible.
+        
+        Returns list of commands executed (or would execute if dry_run).
+        """
+        if not self.diagnoses:
+            self.analyze()
+        
+        commands = []
+        fixable = [d for d in self.diagnoses if not d.is_legitimate_zero]
+        
+        # Group by action type
+        actions_needed = set(d.fix_action for d in fixable)
+        
+        for action in actions_needed:
+            if action == FixAction.RERUN_STEP3:
+                cmd = f"./run_step3_full_scoring.sh --survivors bidirectional_survivors.json --train-history {self.history_file}"
+                commands.append(cmd)
+            elif action == FixAction.LONGER_HISTORY:
+                # Check for available longer history files
+                available = list(Path('.').glob('daily3_*_*.json'))
+                longer = [f for f in available 
+                         if self._get_file_draw_count(f) >= 2000]
+                if longer:
+                    best = max(longer, key=lambda f: self._get_file_draw_count(f))
+                    cmd = f"./run_step3_full_scoring.sh --survivors bidirectional_survivors.json --train-history {best}"
+                    commands.append(cmd)
+        
+        if not dry_run:
+            for cmd in commands:
+                print(f"Executing: {cmd}")
+                subprocess.run(cmd, shell=True)
+        
+        return commands
+    
+    def _get_file_draw_count(self, filepath: Path) -> int:
+        """Get number of draws in a lottery file."""
+        try:
+            with open(filepath) as f:
+                return len(json.load(f))
+        except:
+            return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Feature Watcher Agent')
+    parser.add_argument('--survivors', required=True, help='Path to survivors_with_scores.json')
+    parser.add_argument('--history', default='train_history.json', help='Path to history file')
+    parser.add_argument('--auto-fix', action='store_true', help='Automatically apply fixes')
+    parser.add_argument('--dry-run', action='store_true', help='Show commands without executing')
+    parser.add_argument('--json', action='store_true', help='Output as JSON')
+    args = parser.parse_args()
+    
+    agent = FeatureWatcherAgent(args.survivors, args.history)
+    agent.analyze()
+    
+    if args.json:
+        output = {
+            'diagnoses': [
+                {
+                    'feature': d.feature,
+                    'is_zero': d.is_zero,
+                    'cause': d.cause,
+                    'fix_action': d.fix_action.value,
+                    'fix_params': d.fix_params,
+                    'is_legitimate_zero': d.is_legitimate_zero
+                }
+                for d in agent.diagnoses
+            ],
+            'summary': {
+                'total_zero': len(agent.diagnoses),
+                'legitimate_zero': sum(1 for d in agent.diagnoses if d.is_legitimate_zero),
+                'fixable': sum(1 for d in agent.diagnoses if not d.is_legitimate_zero)
+            }
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        print(agent.generate_report())
+    
+    if args.auto_fix:
+        commands = agent.auto_fix(dry_run=args.dry_run)
+        if args.dry_run:
+            print("\n[DRY RUN] Would execute:")
+            for cmd in commands:
+                print(f"  {cmd}")
+
+
+if __name__ == '__main__':
+    main()
+```
+
+### 2.5.4 Integration with Pipeline
+
+#### Option A: Manual Trigger
+```bash
+# After Step 3 completes, run watcher
+python3 feature_watcher_agent.py --survivors survivors_with_scores.json
+
+# Auto-fix with dry run first
+python3 feature_watcher_agent.py --survivors survivors_with_scores.json --auto-fix --dry-run
+
+# Apply fixes
+python3 feature_watcher_agent.py --survivors survivors_with_scores.json --auto-fix
+```
+
+#### Option B: Integrated into run_step3_full_scoring.sh
+```bash
+# At end of Phase 6 (validation):
+
+echo "Phase 7: Feature Quality Check..."
+python3 feature_watcher_agent.py --survivors survivors_with_scores.json --json > /tmp/feature_check.json
+
+FIXABLE=$(python3 -c "import json; d=json.load(open('/tmp/feature_check.json')); print(d['summary']['fixable'])")
+if [ "$FIXABLE" -gt 0 ]; then
+    echo "⚠️  $FIXABLE features have fixable zero-variance issues"
+    echo "   Run: python3 feature_watcher_agent.py --survivors survivors_with_scores.json"
+fi
+```
+
+#### Option C: Full Autonomous Loop (Future)
+```python
+# In complete_whitepaper_workflow_with_meta_optimizer_v3.py
+
+def run_step3_with_validation():
+    """Run Step 3 with automatic re-run on feature issues."""
+    max_retries = 2
+    
+    for attempt in range(max_retries):
+        # Run Step 3
+        run_command(['bash', 'run_step3_full_scoring.sh', ...])
+        
+        # Validate features
+        agent = FeatureWatcherAgent('survivors_with_scores.json')
+        agent.analyze()
+        
+        fixable = [d for d in agent.diagnoses if not d.is_legitimate_zero]
+        
+        if not fixable:
+            print("✅ All features valid")
+            return True
+        
+        # Check if we can fix
+        can_fix = any(d.fix_action in (FixAction.RERUN_STEP3, FixAction.LONGER_HISTORY) 
+                     for d in fixable)
+        
+        if can_fix and attempt < max_retries - 1:
+            print(f"⚠️ {len(fixable)} fixable issues, retrying...")
+            commands = agent.auto_fix(dry_run=False)
+        else:
+            print(f"⚠️ {len(fixable)} issues remain (Phase 2 required)")
+            return True  # Continue anyway
+    
+    return True
+```
+
+### 2.5.5 Validation
+```bash
+# Test the watcher agent
+python3 feature_watcher_agent.py --survivors survivors_with_scores.json
+
+# Expected output:
+# ======================================================================
+# FEATURE WATCHER AGENT - DIAGNOSTIC REPORT
+# ======================================================================
+# ...
+# ### NONE (7 features)
+# --------------------------------------------------
+#   best_offset: ✅ OK
+#   global_high_variance_count: ✅ OK
+#   ...
+# 
+# ### PHASE2_SKIP_PIPELINE (5 features)
+# --------------------------------------------------
+#   skip_entropy: ⚠️ FIXABLE
+#   skip_mean: ⚠️ FIXABLE
+#   ...
+```
+
+---
+
+**Phase 2.5 Status:** Ready for Implementation
+**Dependencies:** None (can be implemented independently)
+**Priority:** Medium (enables autonomous operation)

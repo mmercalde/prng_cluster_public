@@ -557,6 +557,12 @@ class ScriptsCoordinator:
             
             runtime = time.time() - start_time
             
+            # DEBUG: Print SSH result for remote jobs
+            if not node.is_localhost and result.returncode != 0:
+                print(f"  [DEBUG] {job.job_id} SSH returncode: {result.returncode}")
+                print(f"  [DEBUG] STDOUT: {result.stdout[:500]}")
+                print(f"  [DEBUG] STDERR: {result.stderr[:500]}")
+            
             # File-based success detection (Team Beta Recommendation 3)
             success, error, failure_mode = self._check_output(node, job.expected_output)
             

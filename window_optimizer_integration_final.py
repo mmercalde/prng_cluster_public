@@ -223,6 +223,8 @@ def run_bidirectional_test(coordinator,
         }
 
         # Metadata specific to constant skip
+        # v1.9.1: Added 6 missing metadata fields for ML features
+        union_size = len(forward_set | reverse_set)
         metadata_constant = {
             **metadata_base,
             'skip_mode': 'constant',  # NEW: Identifies this as constant skip
@@ -231,7 +233,14 @@ def run_bidirectional_test(coordinator,
             'reverse_count': len(reverse_survivors),
             'bidirectional_count': len(bidirectional_constant),
             'bidirectional_selectivity': len(forward_survivors) / max(len(reverse_survivors), 1),
-            'score': len(bidirectional_constant)
+            'score': len(bidirectional_constant),
+            # v1.9.1: 6 new fields for ML feature completeness
+            'intersection_count': len(bidirectional_constant),
+            'intersection_ratio': len(bidirectional_constant) / max(union_size, 1),
+            'forward_only_count': len(forward_set - reverse_set),
+            'reverse_only_count': len(reverse_set - forward_set),
+            'survivor_overlap_ratio': len(bidirectional_constant) / max(len(forward_set), 1),
+            'intersection_weight': len(bidirectional_constant) / max(len(forward_set) + len(reverse_set), 1),
         }
 
         # Accumulate survivors with metadata
@@ -310,6 +319,8 @@ def run_bidirectional_test(coordinator,
         
         if accumulator is not None:
             # Metadata specific to variable skip
+            # v1.9.1: Added 6 missing metadata fields for ML features
+            union_size_hybrid = len(forward_set_hybrid | reverse_set_hybrid)
             metadata_variable = {
                 **metadata_base,
                 'skip_mode': 'variable',  # NEW: Identifies this as variable skip
@@ -318,7 +329,14 @@ def run_bidirectional_test(coordinator,
                 'reverse_count': len(reverse_survivors_hybrid),
                 'bidirectional_count': len(bidirectional_variable),
                 'bidirectional_selectivity': len(forward_survivors_hybrid) / max(len(reverse_survivors_hybrid), 1),
-                'score': len(bidirectional_variable)
+                'score': len(bidirectional_variable),
+                # v1.9.1: 6 new fields for ML feature completeness
+                'intersection_count': len(bidirectional_variable),
+                'intersection_ratio': len(bidirectional_variable) / max(union_size_hybrid, 1),
+                'forward_only_count': len(forward_set_hybrid - reverse_set_hybrid),
+                'reverse_only_count': len(reverse_set_hybrid - forward_set_hybrid),
+                'survivor_overlap_ratio': len(bidirectional_variable) / max(len(forward_set_hybrid), 1),
+                'intersection_weight': len(bidirectional_variable) / max(len(forward_set_hybrid) + len(reverse_set_hybrid), 1),
             }
 
             # Accumulate variable skip survivors

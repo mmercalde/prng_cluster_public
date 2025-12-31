@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-Complete Whitepaper Workflow with Meta-Optimizer - V3.0
+Complete Whitepaper Workflow with Meta-Optimizer - V3.1
 ========================================================
-Version: 3.0
+Version: 3.1
 Date: 2025-12-20
+
+NEW IN V3.1:
+- Step 3 now passes --forward-survivors and --reverse-survivors for bidirectional features
+- Fixes 10 features that were always 0.0 (intersection_weight, forward_count, etc.)
+- Added random_forest to model choices
 
 NEW IN V3.0:
 - Uses scripts_coordinator.py instead of coordinator.py (100% success rate)
@@ -301,10 +306,19 @@ def main(args):
     print("ℹ️  This will extract 50 features for each survivor")
     print("ℹ️  Using scripts_coordinator.py (100% success rate)")
 
-    if not run_command(
-        ['bash', 'run_step3_full_scoring.sh'],
-        "Running: 26-GPU Full Scoring Run (scripts_coordinator.py)"
-    ):
+    # V3.1: Pass bidirectional survivor files for proper feature computation
+    forward_survivors_file = "forward_survivors.json"
+    reverse_survivors_file = "reverse_survivors.json"
+    
+    step3_cmd = [
+        'bash', 'run_step3_full_scoring.sh',
+        '--survivors', survivor_file,
+        '--train-history', train_history_file,
+        '--forward-survivors', forward_survivors_file,
+        '--reverse-survivors', reverse_survivors_file
+    ]
+    
+    if not run_command(step3_cmd, "Running: 26-GPU Full Scoring Run (scripts_coordinator.py)"):
         return 1
 
     if not Path(scored_survivor_file).exists():
@@ -323,6 +337,7 @@ def main(args):
         ['python3', 'adaptive_meta_optimizer.py',
          '--mode', 'full',
          '--lottery-data', train_history_file,
+        '--holdout-history', holdout_history_file,
          '--survivor-data', scored_survivor_file,
          '--apply'],
         "Running: Adaptive Meta-Optimizer"
@@ -348,6 +363,7 @@ def main(args):
         'python3', 'meta_prediction_optimizer_anti_overfit.py',
         '--survivors', scored_survivor_file,
         '--lottery-data', train_history_file,
+        '--holdout-history', holdout_history_file,
         '--trials', str(args.anti_overfit_trials),
         '--k-folds', str(args.k_folds),
         '--study-name', 'final_model_anti_overfit',
@@ -481,7 +497,7 @@ if __name__ == '__main__':
     
     # NEW V3.0: Multi-Model Architecture
     parser.add_argument('--model-type', type=str, default='neural_net',
-                       choices=['neural_net', 'xgboost', 'lightgbm', 'catboost'],
+                       choices=['neural_net', 'xgboost', 'lightgbm', 'catboost', 'random_forest'],
                        help='ML model type for training (default: neural_net)')
     parser.add_argument('--compare-models', action='store_true',
                        help='Train all 4 model types and select best performer')

@@ -171,15 +171,8 @@ for NODE in $REMOTE_NODES; do
     echo "    Copying full_scoring_worker.py..."
     scp -q full_scoring_worker.py ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
     
-    # Copy forward/reverse survivors if provided
-    if [[ -n "$FORWARD_SURVIVORS" && -f "$FORWARD_SURVIVORS" ]]; then
-        echo "    Copying forward survivors..."
-        scp -q "$FORWARD_SURVIVORS" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    fi
-    if [[ -n "$REVERSE_SURVIVORS" && -f "$REVERSE_SURVIVORS" ]]; then
-        echo "    Copying reverse survivors..."
-        scp -q "$REVERSE_SURVIVORS" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    fi
+    # v1.9.1: Removed forward/reverse survivor file copying (1.7GB)
+    # Metadata is already embedded in chunk files
     
     echo "    ✓ Data distributed to $NODE"
 done

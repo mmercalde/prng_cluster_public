@@ -386,17 +386,11 @@ Example:
         train_history = load_lottery_history(args.train_history)
         logger.info(f"Loaded {len(train_history)} lottery draws")
         
-        # Load optional dual-sieve files
+        # v1.9.1: Removed loading of forward/reverse survivor files (1.7GB)
+        # The metadata is already in the chunk file via survivor_metadata
         forward_survivors = None
         reverse_survivors = None
-        
-        if args.forward_survivors and os.path.exists(args.forward_survivors):
-            forward_survivors = load_seeds(args.forward_survivors)
-            logger.info(f"Loaded {len(forward_survivors)} forward survivors")
-        
-        if args.reverse_survivors and os.path.exists(args.reverse_survivors):
-            reverse_survivors = load_seeds(args.reverse_survivors)
-            logger.info(f"Loaded {len(reverse_survivors)} reverse survivors")
+        logger.info("Using chunk metadata for bidirectional features (no large file loading)")
             
     except Exception as e:
         error_msg = f"Failed to load input data: {e}"

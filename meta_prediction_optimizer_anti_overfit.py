@@ -144,6 +144,166 @@ class ValidationMetrics:
 # FEATURE LOADING UTILITIES
 # ============================================================================
 
+
+# ============================================================================
+# HOLDOUT SCORING - Fixes circular training (y must not be derived from X)
+# ============================================================================
+
+def compute_holdout_scores(survivors_file: str, holdout_history: List[int], 
+                           prng_type: str = 'java_lcg', mod: int = 1000) -> Dict[int, float]:
+    """
+    Compute match rate on holdout data for each survivor.
+    
+    This is the CORRECT y-label: how well does this survivor predict UNSEEN draws?
+    
+    Uses the PRNG registry for proper PRNG-agnostic generation.
+    
+    Args:
+        survivors_file: Path to survivors JSON
+        holdout_history: List of holdout draw values
+        prng_type: PRNG type from registry (java_lcg, xorshift128, minstd, etc.)
+        mod: Modulus for output
+        
+    Returns:
+        Dict mapping seed -> holdout_match_rate
+    """
+    from prng_registry import get_cpu_reference, get_kernel_info
+    
+    with open(survivors_file) as f:
+        data = json.load(f)
+    
+    survivors = data if isinstance(data, list) else data.get('survivors', data)
+    
+    # Get PRNG function and params from registry (PRNG-agnostic!)
+    prng_func = get_cpu_reference(prng_type)
+    prng_params = get_kernel_info(prng_type).get('default_params', {})
+    
+    holdout_scores = {}
+    n_holdout = len(holdout_history)
+    
+    for survivor in survivors:
+        if isinstance(survivor, dict):
+            seed = survivor.get('seed', survivor.get('id', 0))
+            skip = survivor.get('skip', survivor.get('metadata', {}).get('skip', 0))
+        else:
+            seed = survivor
+            skip = 0
+        
+        # Generate predictions using registry function
+        # This handles all PRNG types correctly (java_lcg, xorshift, minstd, etc.)
+        outputs = prng_func(seed, n=n_holdout, skip=skip, **prng_params)
+        predictions = [out % mod for out in outputs]
+        
+        # Compute match rate
+        matches = sum(1 for p, a in zip(predictions, holdout_history) if p == a)
+        holdout_scores[seed] = matches / n_holdout if n_holdout > 0 else 0.0
+    
+    return holdout_scores
+
+
+def load_features_with_holdout_y(survivors_file: str, 
+                                  holdout_history: List[int] = None,
+                                  prng_type: str = 'java_lcg',
+                                  exclude_features: List[str] = None) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Load features from survivors and compute y from HOLDOUT performance.
+    
+    This fixes the circular training bug where y was derived from features in X.
+    
+    Args:
+        survivors_file: Path to survivors JSON
+        holdout_history: Holdout draw values (if None, falls back to training score)
+        prng_type: PRNG type for holdout scoring
+        exclude_features: Features to exclude from X
+        
+    Returns:
+        X: Feature matrix
+        y: Holdout-based quality scores (NOT training score!)
+        metadata: Feature metadata
+    """
+    # Default exclusions: circular features that would leak into y
+    if exclude_features is None:
+        exclude_features = [
+            'score', 'confidence', 'seed', 'actual_quality',
+            'exact_matches', 'residue_1000_match_rate'  # These DEFINE training score
+        ]
+    
+    with open(survivors_file) as f:
+        data = json.load(f)
+    
+    survivors = data if isinstance(data, list) else data.get('survivors', data)
+    
+    # Compute holdout scores if holdout_history provided
+    if holdout_history is not None:
+        print(f"  📊 Computing holdout scores for {len(survivors)} survivors...")
+        holdout_scores = compute_holdout_scores(survivors_file, holdout_history, prng_type)
+        print(f"  ✅ Holdout scores computed (y is now HOLDOUT performance, not training!)")
+    else:
+        holdout_scores = None
+        print(f"  ⚠️  No holdout history provided - using training score (CIRCULAR!)")
+    
+    # Extract features and quality
+    all_features = []
+    quality_scores = []
+    feature_names = None
+    
+    for survivor in survivors:
+        if isinstance(survivor, dict):
+            seed = survivor.get('seed', survivor.get('id', 0))
+            
+            # Get y-label: HOLDOUT score (preferred) or training score (fallback)
+            if holdout_scores is not None:
+                quality = holdout_scores.get(seed, 0.0)
+            elif 'holdout_hits' in survivor:
+                quality = survivor['holdout_hits']
+            elif 'actual_quality' in survivor:
+                quality = survivor['actual_quality']
+            elif 'score' in survivor:
+                quality = survivor['score']
+            elif 'features' in survivor and 'score' in survivor['features']:
+                quality = survivor['features']['score']
+            else:
+                quality = 0.0
+            
+            quality_scores.append(quality)
+            
+            # Get features
+            if 'features' in survivor:
+                features_dict = survivor['features']
+            else:
+                features_dict = {k: v for k, v in survivor.items() 
+                               if k not in ['seed', 'actual_quality']}
+            
+            # Filter out excluded features
+            features_dict = {k: v for k, v in features_dict.items() 
+                           if k not in exclude_features and isinstance(v, (int, float))}
+            
+            if feature_names is None:
+                feature_names = sorted(features_dict.keys())
+            
+            feature_vec = [features_dict.get(k, 0.0) for k in feature_names]
+            all_features.append(feature_vec)
+    
+    X = np.array(all_features, dtype=np.float32)
+    y = np.array(quality_scores, dtype=np.float32)
+    
+    # Compute metadata
+    metadata = {
+        'feature_names': feature_names,
+        'n_features': len(feature_names) if feature_names else 0,
+        'n_samples': len(survivors),
+        'y_source': 'holdout_performance' if holdout_scores else 'training_score',
+        'y_min': float(y.min()) if len(y) > 0 else 0.0,
+        'y_max': float(y.max()) if len(y) > 0 else 1.0,
+        'y_range': float(y.max() - y.min()) if len(y) > 0 else 1.0,
+        'excluded_features': exclude_features,
+        'warnings': [] if holdout_scores else ['Using training score - CIRCULAR TRAINING!']
+    }
+    
+    return X, y, metadata
+
+
+
 def load_features_from_survivors(survivors_file: str, 
                                   exclude_features: List[str] = None) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
@@ -159,7 +319,7 @@ def load_features_from_survivors(survivors_file: str,
         metadata: Dict with feature names, schema hash, etc.
     """
     if exclude_features is None:
-        exclude_features = ['score', 'confidence', 'seed', 'actual_quality']
+        exclude_features = ['score', 'confidence', 'seed', 'actual_quality', 'exact_matches', 'residue_1000_match_rate']
     
     with open(survivors_file) as f:
         data = json.load(f)
@@ -303,7 +463,7 @@ def save_model_with_sidecar(model_path: str,
         },
         
         'y_label_source': {
-            'field': 'features.score',
+            'field': feature_metadata.get('y_source', 'holdout_performance'),
             'observed_min': feature_metadata.get('y_min', 0.0),
             'observed_max': feature_metadata.get('y_max', 1.0),
             'observed_range': feature_metadata.get('y_range', 1.0),
@@ -905,7 +1065,9 @@ def main():
     parser.add_argument('--survivors', required=True,
                         help='Path to survivors JSON file')
     parser.add_argument('--lottery-data', required=True,
-                        help='Path to lottery data JSON file')
+                        help='Path to lottery data JSON file (training)')
+    parser.add_argument('--holdout-history', type=str, default=None,
+                        help='Path to holdout history JSON for y-label computation (RECOMMENDED)')
     
     # Optimization parameters
     parser.add_argument('--trials', type=int, default=50,
@@ -965,9 +1127,21 @@ def main():
     print(f"  Survivors: {args.survivors}")
     print(f"  Lottery: {args.lottery_data}")
     
-    # Try to load features if available
+    # Load holdout history if provided
+    holdout_history = None
+    if args.holdout_history:
+        with open(args.holdout_history) as f:
+            holdout_data = json.load(f)
+            holdout_history = [d['draw'] if isinstance(d, dict) else d for d in holdout_data]
+        print(f"  ✅ Loaded {len(holdout_history)} holdout draws for y-label computation")
+    
+    # Try to load features with holdout-based y (FIXES CIRCULAR TRAINING)
     try:
-        X, y, feature_metadata = load_features_from_survivors(args.survivors)
+        X, y, feature_metadata = load_features_with_holdout_y(
+            args.survivors, 
+            holdout_history=holdout_history,
+            prng_type=args.prng_type if hasattr(args, 'prng_type') else 'java_lcg'
+        )
         has_features = X.shape[1] > 0
         print(f"  ✅ Loaded {X.shape[0]} survivors with {X.shape[1]} features")
         if feature_metadata.get('warnings'):

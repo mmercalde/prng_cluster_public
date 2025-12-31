@@ -13,7 +13,7 @@
   "training": {
     "learning_rate": 0.001,
     "batch_size": 256,
-    "epochs": 99,
+    "epochs": 150,
     "optimizer": "adam",
     "loss_function": "mse",
     "early_stopping_patience": 10,
@@ -47,7 +47,7 @@
     "drift_threshold": 0.3
   },
   "survivor_pool": {
-    "max_pool_size": 58838,
+    "max_pool_size": 475,
     "prune_threshold": 0.3,
     "min_confidence": 0.5,
     "update_frequency": 10
@@ -59,9 +59,9 @@
     "log_level": "INFO"
   },
   "_meta_optimizer": {
-    "last_calibration": "2025-11-14T17:27:04.060545",
+    "last_calibration": "2025-12-27T23:27:27.366161",
     "calibration_type": "full",
-    "confidence": 0.845,
+    "confidence": 0.24499999999999997,
     "weights_used": {
       "window_optimizer": 0.6,
       "historical_patterns": 0.35,
