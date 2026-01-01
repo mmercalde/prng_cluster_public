@@ -30,6 +30,7 @@ set -e  # Exit on error
 # Default values
 SURVIVORS_FILE="bidirectional_survivors.json"
 TRAIN_HISTORY="train_history.json"
+HOLDOUT_HISTORY="holdout_history.json"
 CONFIG_FILE="optimal_scorer_config.json"
 CHUNK_SIZE=auto
 FORWARD_SURVIVORS=""
@@ -48,6 +49,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --train-history)
             TRAIN_HISTORY="$2"
+            shift 2
+            ;;
+        --holdout-history)
+            HOLDOUT_HISTORY="$2"
             shift 2
             ;;
         --config)
@@ -113,6 +118,7 @@ echo "------------------------------------------------------------"
 GEN_CMD="python3 generate_step3_scoring_jobs.py \
     --survivors $SURVIVORS_FILE \
     --train-history $TRAIN_HISTORY \
+    --holdout-history $HOLDOUT_HISTORY \
     --chunk-size $CHUNK_SIZE \
     --output-file scoring_jobs.json"
 
@@ -164,6 +170,9 @@ for NODE in $REMOTE_NODES; do
     
     echo "    Copying training history..."
     scp -q "$TRAIN_HISTORY" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
+    
+    echo "    Copying holdout history..."
+    scp -q "$HOLDOUT_HISTORY" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
     
     echo "    Copying chunk files..."
     scp -q scoring_chunks/*.json ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/scoring_chunks/ 2>/dev/null || true

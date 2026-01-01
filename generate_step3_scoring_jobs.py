@@ -101,6 +101,7 @@ def calculate_smart_chunk_size(total_seeds: int, num_gpus: int = 26) -> int:
 def generate_jobs(
     survivors_file: str,
     train_history_file: str,
+    holdout_history_file: str,
     config_file: Optional[str],
     chunk_size: int = 5000,
     prng_type: str = 'java_lcg',
@@ -150,9 +151,7 @@ def generate_jobs(
         print(f"  Using prng_type={prng_type}, mod={mod}")
     
     # Split seeds into chunks
-    # v1.8.2: Chunk full survivor objects to preserve metadata
-    survivor_chunks = chunk_list(survivors_data, chunk_size) if isinstance(survivors_data[0], dict) else [[{"seed": s} for s in chunk] for chunk in chunk_list(seeds, chunk_size)]
-    seed_chunks = survivor_chunks  # Keep variable name for compatibility
+    seed_chunks = chunk_list(seeds, chunk_size)
     num_chunks = len(seed_chunks)
     print(f"Split {len(seeds)} seeds into {num_chunks} chunks of ~{chunk_size} each")
     
@@ -177,12 +176,14 @@ def generate_jobs(
         # Remote paths (will be copied by run_full_scoring.sh)
         remote_chunk_path = f"{remote_base_path}/scoring_chunks/{chunk_filename}"
         remote_history_path = f"{remote_base_path}/{Path(train_history_file).name}"
+        remote_holdout_path = f"{remote_base_path}/{Path(holdout_history_file).name}"
         remote_output_path = f"{remote_base_path}/full_scoring_results/chunk_{i:04d}.json"
         
         # Build job arguments
         args = [
             "--seeds-file", remote_chunk_path,
             "--train-history", remote_history_path,
+            "--holdout-history", remote_holdout_path,
             "--output-file", remote_output_path,
             "--prng-type", prng_type,
             "--mod", str(mod)
@@ -263,6 +264,8 @@ Example:
                        help='Forward sieve survivors for dual-sieve scoring')
     parser.add_argument('--reverse-survivors', default=None,
                        help='Reverse sieve survivors for dual-sieve scoring')
+    parser.add_argument('--holdout-history', default='holdout_history.json',
+                       help='Holdout history for computing holdout_hits y-label')
     
     args = parser.parse_args()
     
@@ -312,6 +315,7 @@ Example:
         jobs = generate_jobs(
             survivors_file=args.survivors,
             train_history_file=args.train_history,
+            holdout_history_file=args.holdout_history,
             config_file=args.config,
             chunk_size=chunk_size,
             prng_type=args.prng_type,

@@ -175,6 +175,89 @@ def load_lottery_history(history_file: str) -> List[int]:
         return [int(x) for x in data]
 
 
+
+
+def compute_holdout_hits(
+    seed: int,
+    holdout_history: List[int],
+    prng_type: str = 'java_lcg',
+    mod: int = 1000
+) -> float:
+    """
+    Compute holdout Hit@K for a single seed.
+    
+    This is the y-label for ML training (Step 5).
+    Measures how many holdout draws the seed correctly predicts.
+    
+    Args:
+        seed: The survivor seed to evaluate
+        holdout_history: List of holdout lottery draws (NOT used in sieving)
+        prng_type: PRNG algorithm type
+        mod: Modulo value (default: 1000)
+    
+    Returns:
+        Hit rate as float [0.0, 1.0] = hits / total_holdout_draws
+    """
+    from prng_registry import get_cpu_reference
+    
+    prng_func = get_cpu_reference(prng_type)
+    if prng_func is None:
+        logger.warning(f"Unknown PRNG type '{prng_type}', cannot compute holdout_hits")
+        return 0.0
+    
+    # Generate all predictions at once (prng_func returns list of N values)
+    num_draws = len(holdout_history)
+    if num_draws == 0:
+        return 0.0
+    
+    predictions = prng_func(seed, num_draws)
+    hits = 0
+    for position, actual_draw in enumerate(holdout_history):
+        predicted = predictions[position] % mod
+        if predicted == actual_draw:
+            hits += 1
+    
+    return hits / num_draws
+
+
+def compute_holdout_hits_batch(
+    seeds: List[int],
+    holdout_history: List[int],
+    train_history_len: int,
+    prng_type: str = 'java_lcg',
+    mod: int = 1000
+) -> Dict[int, float]:
+    """
+    Compute holdout Hit@K for multiple seeds efficiently.
+    
+    CRITICAL: offset is DERIVED from train_history_len, not configurable.
+    holdout data is positions [train_history_len : train_history_len + holdout_len]
+    
+    Returns dict mapping seed -> holdout_hits rate.
+    """
+    from prng_registry import get_cpu_reference
+    
+    prng_func = get_cpu_reference(prng_type)
+    if prng_func is None:
+        logger.warning(f"Unknown PRNG type '{prng_type}', cannot compute holdout_hits")
+        return {seed: 0.0 for seed in seeds}
+    
+    results = {}
+    n_holdout = len(holdout_history)
+    
+    # OFFSET DERIVED - THIS IS THE LAW (per Team Beta)
+    offset = train_history_len
+    logger.info(f"[HOLDOUT] Offset derived from train_history_len: {offset}")
+    
+    for seed in seeds:
+        # Generate predictions starting at position OFFSET (skip training positions)
+        predictions = prng_func(seed, n_holdout, skip=offset)
+        hits = sum(1 for pos, actual in enumerate(holdout_history) 
+                   if predictions[pos] % mod == actual)
+        results[seed] = hits / n_holdout if n_holdout > 0 else 0.0
+    
+    return results
+
 def score_survivors(
     seeds: List[int],
     train_history: List[int],
@@ -184,7 +267,8 @@ def score_survivors(
     forward_survivors: Optional[List[int]] = None,
     reverse_survivors: Optional[List[int]] = None,
     scorer_class = None,
-    survivor_metadata: Dict[int, Dict] = None  # v1.8.2: seed -> metadata mapping
+    survivor_metadata: Dict[int, Dict] = None,  # v1.8.2: seed -> metadata mapping
+    holdout_history: Optional[List[int]] = None  # v2.0: For computing holdout_hits (y-label)
 ) -> List[Dict[str, Any]]:
     """
     Score all seeds with full 50-feature extraction.
@@ -222,6 +306,19 @@ def score_survivors(
     # Process ALL seeds in parallel on GPU, single CPU transfer at end
     logger.info(f"[BATCH-GPU] Starting batched feature extraction for {total} seeds...")
     
+    # v2.0: Compute holdout_hits for y-label (if holdout_history provided)
+    holdout_hits_map = {}
+    if holdout_history:
+        logger.info(f"[HOLDOUT] Computing holdout_hits for {total} seeds...")
+        holdout_hits_map = compute_holdout_hits_batch(
+            seeds=seeds,
+            holdout_history=holdout_history,
+            train_history_len=len(train_history),  # DERIVED - not configurable
+            prng_type=prng_type,
+            mod=mod
+        )
+        logger.info(f"[HOLDOUT] Complete. Mean holdout_hits: {sum(holdout_hits_map.values())/len(holdout_hits_map):.4f}")
+
     try:
         # Call the new batched method - processes all seeds on GPU in parallel
         all_features = scorer.extract_ml_features_batch(
@@ -255,6 +352,8 @@ def score_survivors(
             # Merge global features (14 features with global_ prefix)
             for gkey, gval in global_features.items():
                 result["features"][f"global_{gkey}"] = float(gval) if isinstance(gval, (int, float)) else gval
+            # v2.0: Add holdout_hits (y-label for Step 5)
+            result["holdout_hits"] = holdout_hits_map.get(seed, 0.0)
             results.append(result)
         
         elapsed = time.time() - start_time
@@ -289,7 +388,8 @@ def score_survivors(
                     'score': float(score),
                     'features': features,
                     'metadata': {'prng_type': prng_type, 'mod': mod, 
-                                'worker_hostname': HOST, 'timestamp': time.time()}
+                                'worker_hostname': HOST, 'timestamp': time.time()},
+                    'holdout_hits': holdout_hits_map.get(seed, 0.0),
                 })
             except Exception as e2:
                 logger.warning(f"Failed to score seed {seed}: {e2}")
@@ -343,6 +443,9 @@ Example:
     parser.add_argument('--reverse-survivors', default=None,
                        help='Optional: JSON file with reverse sieve survivors')
     
+    # v2.0: Holdout data for y-label
+    parser.add_argument('--holdout-history', default=None,
+                       help='JSON file with holdout lottery draws for computing holdout_hits (y-label)')
     # Verbose mode
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
@@ -391,6 +494,15 @@ Example:
         forward_survivors = None
         reverse_survivors = None
         logger.info("Using chunk metadata for bidirectional features (no large file loading)")
+        
+        # v2.0: Load holdout history for computing holdout_hits (y-label)
+        holdout_history = None
+        if args.holdout_history:
+            logger.info(f"Loading holdout history from {args.holdout_history}...")
+            holdout_history = load_lottery_history(args.holdout_history)
+            logger.info(f"Loaded {len(holdout_history)} holdout draws for y-label computation")
+        else:
+            logger.warning("No --holdout-history provided, holdout_hits will be 0.0 for all survivors")
             
     except Exception as e:
         error_msg = f"Failed to load input data: {e}"
@@ -437,7 +549,8 @@ Example:
             forward_survivors=forward_survivors,
             reverse_survivors=reverse_survivors,
             scorer_class=SurvivorScorer,  # Pass the class imported after GPU setup
-            survivor_metadata=survivor_metadata  # v1.8.2: pass metadata for merging
+            survivor_metadata=survivor_metadata,  # v1.8.2: pass metadata for merging
+            holdout_history=holdout_history  # v2.0: for computing y-label
         )
         
         elapsed = time.time() - start_time
