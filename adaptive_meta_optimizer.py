@@ -3,28 +3,36 @@
 Adaptive Meta-Optimizer - Finds Optimal Training Parameters
 ===========================================================
 
-DESIGN PHILOSOPHY:
-- Same optimization approach as window_optimizer.py
-- Derives parameters from empirical data (not arbitrary values)
-- Modular, ML/AI configurable
-- Continuous self-optimization with reinforcement feedback
-- Adheres to whitepaper principles
+DESIGN PHILOSOPHY (Team Beta Approved - Option A):
+- Step 4 is a CAPACITY & ARCHITECTURE PLANNER
+- Derives parameters from empirical sieve data (not survivor-level data)
+- Intentionally does NOT consume survivors_with_scores.json
+- Intentionally does NOT inspect holdout_hits
+- Model selection happens in Step 5, NOT here
 
-HYBRID APPROACH:
-1. One-time calibration at system initialization
-2. Continuous micro-optimization based on reinforcement feedback
-3. Major re-optimization on regime changes or performance degradation
+This separation prevents:
+- Validation leakage
+- Hyperparameters tuned on future data  
+- Silent overfitting
+- Blurred step boundaries
 
 PARAMETER DERIVATION (Weighted):
 - PRIMARY (60%): Window optimizer empirical results
-- SECONDARY (35%): Historical pattern characteristics
+- SECONDARY (35%): Historical pattern characteristics (entropy, stability)
 - CONTINUOUS (5%→25%): Reinforcement performance feedback
 
-WHITEPAPER ALIGNMENT:
-- Section 2: Reinforcement mechanism (adaptive parameters)
-- Section 4: ML-driven optimization
-- Section 4.1: Global state integration
-- Section 5: Continuous learning
+WHAT STEP 4 DOES:
+✅ Load window optimizer results (optimal_window_config.json)
+✅ Load training lottery history (train_history.json)
+✅ Optionally read reinforcement feedback (post-deployment)
+✅ Derive: survivor pool size, network architecture, training epochs
+✅ Write reinforcement_engine_config.json
+
+WHAT STEP 4 DOES NOT DO:
+❌ Load survivors_with_scores.json (that's Step 5)
+❌ Inspect holdout_hits (that's Step 5)
+❌ Select model type (that's Step 5)
+❌ Perform any evaluation (that's Step 5)
 
 Integration:
 - Reads window_optimizer results
@@ -34,7 +42,7 @@ Integration:
 
 Author: Distributed PRNG Analysis System
 Date: November 7, 2025
-Version: 1.0
+Version: 2.0 (Team Beta Option A - Capacity Planner Only)
 """
 
 import sys
@@ -66,18 +74,20 @@ except ImportError:
 class MetaOptimizerConfig:
     """
     Configuration for adaptive meta-optimizer
-
-    All parameters are data-driven, not arbitrary
+    
+    NOTE: This is a CAPACITY PLANNER, not a data-aware optimizer.
+    All parameters are derived from sieve behavior and pattern complexity,
+    NOT from survivor-level data.
     """
     # Data sources (weighted importance)
     sources: Dict[str, Any] = field(default_factory=lambda: {
         'window_optimizer_results': {
-            'path': 'optimal_window_config.json',  # Updated to match Step 1 output
+            'path': 'optimal_window_config.json',  # Step 1 output
             'weight': 0.60,
             'required': True
         },
         'lottery_history': {
-            'path': 'lottery_data.json',  # Override via --lottery-data or config
+            'path': 'train_history.json',  # Override via --lottery-data
             'weight': 0.35,
             'required': True
         },
@@ -86,6 +96,8 @@ class MetaOptimizerConfig:
             'max_weight': 0.25,
             'growth_rate': 'confidence_based'
         }
+        # NOTE: survivors_with_scores.json is intentionally NOT a source
+        # That data is consumed by Step 5, not Step 4
     })
 
     # Optimization modes
@@ -202,7 +214,7 @@ class WindowOptimizerAnalyzer:
         Initialize analyzer
 
         Args:
-            results_path: Path to window_optimizer_results.json
+            results_path: Path to optimal_window_config.json (Step 1 output)
         """
         self.results_path = results_path
         self.results = None
@@ -288,6 +300,8 @@ class HistoricalPatternAnalyzer:
     Analyze lottery history to determine pattern characteristics
 
     SECONDARY SOURCE (35% weight)
+    
+    NOTE: This analyzes TRAINING history only, not holdout.
     """
 
     def __init__(self, lottery_data_path: str):
@@ -295,7 +309,7 @@ class HistoricalPatternAnalyzer:
         Initialize analyzer
 
         Args:
-            lottery_data_path: Path to lottery history JSON (daily3.json format)
+            lottery_data_path: Path to lottery history JSON (train_history.json)
         """
         self.lottery_data_path = lottery_data_path
         self.lottery_history = []
@@ -557,7 +571,14 @@ class AdaptiveMetaOptimizer:
     """
     Main meta-optimizer class
 
-    Finds optimal training parameters through data-driven analysis
+    CAPACITY & ARCHITECTURE PLANNER (not data-aware optimizer)
+    
+    Finds optimal training parameters through:
+    - Window optimizer behavior analysis
+    - Lottery pattern complexity analysis
+    - Reinforcement feedback (if available)
+    
+    Does NOT analyze survivor-level data (that's Step 5's job)
     """
 
     def __init__(self, config: MetaOptimizerConfig,
@@ -573,7 +594,8 @@ class AdaptiveMetaOptimizer:
         self.logger = logger or self._setup_logger()
 
         # Initialize analyzers
-        self.logger.info("Initializing AdaptiveMetaOptimizer...")
+        self.logger.info("Initializing AdaptiveMetaOptimizer (Capacity Planner)...")
+        self.logger.info("NOTE: Step 4 does NOT consume survivor-level data (by design)")
 
         # PRIMARY (60%): Window optimizer
         window_path = config.sources['window_optimizer_results']['path']
@@ -821,7 +843,8 @@ class AdaptiveMetaOptimizer:
             Complete optimal configuration
         """
         self.logger.info("\n" + "="*70)
-        self.logger.info("FULL CALIBRATION - INITIALIZATION PHASE")
+        self.logger.info("FULL CALIBRATION - CAPACITY & ARCHITECTURE PLANNING")
+        self.logger.info("NOTE: This does NOT analyze survivor-level data (by design)")
         self.logger.info("="*70)
 
         # 1. Derive optimal survivor count
@@ -854,12 +877,15 @@ class AdaptiveMetaOptimizer:
         }
 
         self.logger.info("\n" + "="*70)
-        self.logger.info("OPTIMAL CONFIGURATION")
+        self.logger.info("OPTIMAL CONFIGURATION (Capacity Planning)")
         self.logger.info("="*70)
         self.logger.info(f"  Survivor count: {optimal_config['survivor_count']}")
         self.logger.info(f"  Network architecture: {optimal_config['network_architecture']}")
         self.logger.info(f"  Training epochs: {optimal_config['training_epochs']}")
         self.logger.info(f"  Overall confidence: {optimal_config['confidence']:.2%}")
+        self.logger.info("")
+        self.logger.info("NOTE: Model selection (neural_net/xgboost/lightgbm/catboost)")
+        self.logger.info("      happens in Step 5, NOT here.")
         self.logger.info("="*70 + "\n")
 
         return optimal_config
@@ -1026,7 +1052,7 @@ class AdaptiveMetaOptimizer:
         with open(target_file, 'w') as f:
             json.dump(current_config, f, indent=2)
 
-        self.logger.info(f"âœ… Updated configuration: {target_file}")
+        self.logger.info(f"✅ Updated configuration: {target_file}")
 
     def save_results(self, results: Dict[str, Any], filename: Optional[str] = None):
         """
@@ -1045,7 +1071,7 @@ class AdaptiveMetaOptimizer:
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
 
-        self.logger.info(f"âœ… Results saved: {output_path}")
+        self.logger.info(f"✅ Results saved: {output_path}")
 
         # ALSO save to fixed filename for pipeline integration
         fixed_path = Path(self.config.output['results_dir']) / 'meta_optimization_results.json'
@@ -1064,7 +1090,13 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Adaptive Meta-Optimizer - Find Optimal Training Parameters'
+        description='Adaptive Meta-Optimizer - Capacity & Architecture Planning (Step 4)',
+        epilog='''
+NOTE: Step 4 is intentionally NOT data-aware.
+It derives capacity parameters from window optimization behavior and 
+training-history complexity only. Survivor-level data (including holdout_hits) 
+is first consumed in Step 5, where model selection and overfit control occur.
+        '''
     )
     parser.add_argument('--config', type=str,
                        default='adaptive_meta_optimizer_config.json',
@@ -1074,11 +1106,9 @@ def main():
                        default='full',
                        help='Optimization mode')
     parser.add_argument('--window-results', type=str,
-                       help='Override window optimizer results path')
+                       help='Override window optimizer results path (Step 1 output)')
     parser.add_argument('--lottery-data', type=str,
-                       help='Override lottery data path')
-    parser.add_argument('--survivor-data', type=str,
-                       help='Path to scored survivors file')
+                       help='Override lottery data path (train_history.json)')
     parser.add_argument('--apply', action='store_true',
                        help='Apply results to reinforcement_engine_config.json')
     parser.add_argument('--test', action='store_true',
@@ -1091,16 +1121,16 @@ def main():
         print("="*70)
         print("ADAPTIVE META-OPTIMIZER - SELF TEST")
         print("="*70)
-        print("\nâš ï¸  Test mode requires:")
-        print("  1. window_optimizer_results.json")
-        print("  2. daily3.json (or synthetic_lottery.json)")
+        print("\n⚠️  Test mode requires:")
+        print("  1. optimal_window_config.json (Step 1 output)")
+        print("  2. train_history.json")
         print("\nPlease ensure these files exist before running.\n")
         return 0
 
     # Load config
     try:
         config = MetaOptimizerConfig.from_json(args.config)
-        print(f"âœ… Config loaded from {args.config}")
+        print(f"✅ Config loaded from {args.config}")
     except Exception as e:
         print(f"Warning: Could not load config: {e}")
         print("Using default config")
@@ -1116,7 +1146,7 @@ def main():
     try:
         optimizer = AdaptiveMetaOptimizer(config)
     except FileNotFoundError as e:
-        print(f"\nâŒ ERROR: {e}")
+        print(f"\n❌ ERROR: {e}")
         print("\nPlease ensure required files exist:")
         print(f"  1. {config.sources['window_optimizer_results']['path']}")
         print(f"  2. {config.sources['lottery_history']['path']}")
@@ -1140,7 +1170,7 @@ def main():
     # Apply to target config if requested
     if args.apply and args.mode == 'full':
         optimizer.update_target_config(results)
-        print("\nâœ… Configuration applied to reinforcement_engine_config.json")
+        print("\n✅ Configuration applied to reinforcement_engine_config.json")
 
     print("\n" + "="*70)
     print("OPTIMIZATION COMPLETE!")

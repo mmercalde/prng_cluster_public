@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Complete Whitepaper Workflow with Meta-Optimizer - V3.1
+Complete Whitepaper Workflow with Meta-Optimizer - V3.2
 ========================================================
-Version: 3.1
-Date: 2025-12-20
+Version: 3.2
+Date: 2026-01-01
+
+NEW IN V3.2:
+- FIXED Step 4 call: Removed --survivor-data and --holdout-history (Team Beta Option A)
+- Step 4 is now correctly documented as "Capacity & Architecture Planning"
+- Added --window-results to Step 4 call (explicit path)
+- Updated Step 4 messaging to clarify its role
 
 NEW IN V3.1:
 - Step 3 now passes --forward-survivors and --reverse-survivors for bidirectional features
@@ -17,21 +23,18 @@ NEW IN V3.0:
 - CRITICAL: Now uses real y-labels from survivors_with_scores.json (not random!)
 - Updated run_step3_full_scoring.sh path
 
-NEW IN V2.0:
-- Added --test-both-modes flag to test constant AND variable skip patterns
-- Added --prng-type argument (no longer hardcoded)
-- Displays skip mode distribution in summaries
-- Passes --test-both-modes to window optimizer
-
 This script orchestrates the full, distributed ML pipeline in the correct order.
 
 Steps:
 1.  (26-GPU) Bayesian Window Optimizer → Finds optimal params + generates survivors
 2.5 (26-GPU) Scorer Meta-Optimizer → Finds optimal scorer parameters
 3.  (26-GPU) Full Distributed Scoring → Scores all survivors (scripts_coordinator.py)
-4.  (Local)  Adaptive Meta-Optimizer → Derives optimal training architecture
+4.  (Local)  Adaptive Meta-Optimizer → Capacity & architecture planning (NOT data-aware)
 5.  (26-GPU) Anti-Overfit Optimizer → Trains final model with K-Fold validation
                                        NOW SUPPORTS: neural_net, xgboost, lightgbm, catboost
+                                       FIRST step to consume survivors_with_scores.json
+                                       FIRST step to use holdout_hits
+                                       Model selection happens HERE
 6.  (Local)  Quality Prediction → Tests the final model (loads from sidecar)
 """
 
@@ -117,7 +120,7 @@ def main(args):
     launch_progress_monitor()
 
     print("="*70)
-    print("COMPLETE WHITEPAPER WORKFLOW V3.0")
+    print("COMPLETE WHITEPAPER WORKFLOW V3.2")
     print("(Multi-Model Architecture + scripts_coordinator.py)")
     print("="*70)
     print("\nOrchestrating full, distributed pipeline:")
@@ -128,8 +131,11 @@ def main(args):
         print("     ℹ️  Testing constant skip only (use --test-both-modes for both)")
     print("  2.5 Scorer Meta-Optimizer (26-GPU)")
     print("  3. Full Distributed Scoring (26-GPU, scripts_coordinator.py)")
-    print("  4. Adaptive Meta-Optimizer (Local)")
+    print("  4. Adaptive Meta-Optimizer (Local, Capacity Planning)")
+    print("     ℹ️  NOTE: Step 4 does NOT consume survivor data (by design)")
     print(f"  5. Anti-Overfit Optimizer (26-GPU, model-type: {args.model_type})")
+    print("     ℹ️  FIRST step to use survivors_with_scores.json & holdout_hits")
+    print("     ℹ️  Model selection happens HERE")
     if args.compare_models:
         print("     ⚡ COMPARING ALL MODELS: neural_net, xgboost, lightgbm, catboost")
     print("  6. Final Model Prediction (Local, loads from sidecar)")
@@ -172,10 +178,11 @@ def main(args):
         'scripts_coordinator.py',  # NEW V3.0
         'full_scoring_worker.py',
 
-        # Step 4 - Adaptive Optimizer
+        # Step 4 - Adaptive Optimizer (Capacity Planning)
         'adaptive_meta_optimizer.py',
 
         # Step 5 - Anti-Overfit (V3.0: Multi-Model support)
+        # NOTE: This is the FIRST step that consumes survivors_with_scores.json
         'meta_prediction_optimizer_anti_overfit.py',
         'anti_overfit_trial_worker.py',
 
@@ -303,7 +310,7 @@ def main(args):
     print("STEP 3: FULL DISTRIBUTED SCORING (26 GPUs, scripts_coordinator.py)")
     print("="*70)
     print(f"\nLaunching distributed run to score all {survivor_count:,} survivors...")
-    print("ℹ️  This will extract 50 features for each survivor")
+    print("ℹ️  This will extract 62 features for each survivor")
     print("ℹ️  Using scripts_coordinator.py (100% success rate)")
 
     # V3.1: Pass bidirectional survivor files for proper feature computation
@@ -327,26 +334,36 @@ def main(args):
     else:
         print(f"\n✅ All survivors scored and aggregated into {scored_survivor_file}")
 
-    # --- STEP 4: Adaptive Meta-Optimizer (Derive Training Params) ---
+    # --- STEP 4: Adaptive Meta-Optimizer (Capacity & Architecture Planning) ---
+    # V3.2 FIX: Step 4 is a CAPACITY PLANNER, not data-aware optimizer
+    # It intentionally does NOT consume survivors_with_scores.json or holdout_history
+    # Model selection happens in Step 5, not here
     print("\n\n" + "="*70)
-    print("STEP 4: ADAPTIVE META-OPTIMIZER (Parameter Derivation)")
+    print("STEP 4: ADAPTIVE META-OPTIMIZER (Capacity & Architecture Planning)")
     print("="*70)
-    print("\nDeriving optimal training parameters (network architecture, epochs, etc.)...")
+    print("\nDeriving optimal capacity parameters (survivor pool size, network depth, epochs)...")
+    print("ℹ️  NOTE: Step 4 does NOT consume survivor-level data (by design)")
+    print("ℹ️  Model selection happens in Step 5, not here")
 
+    # V3.2 FIX: Removed --holdout-history and --survivor-data
+    # These were passed but IGNORED by the script (contract mismatch)
+    # Step 4 only needs window optimizer results + training history
     if not run_command(
         ['python3', 'adaptive_meta_optimizer.py',
          '--mode', 'full',
+         '--window-results', optimal_window_config,
          '--lottery-data', train_history_file,
-        '--holdout-history', holdout_history_file,
-         '--survivor-data', scored_survivor_file,
          '--apply'],
-        "Running: Adaptive Meta-Optimizer"
+        "Running: Adaptive Meta-Optimizer (Capacity Planning)"
     ):
         print("\n⚠️  Meta-optimizer failed, training will use default parameters...")
     else:
-        print(f"\n✅ Optimal training config saved to {optimal_training_config}")
+        print(f"\n✅ Capacity config saved to {optimal_training_config}")
 
     # --- STEP 5: Anti-Overfit Optimizer (V3.0: Multi-Model Support) ---
+    # NOTE: This is the FIRST step that consumes survivors_with_scores.json
+    # NOTE: This is the FIRST step that uses holdout_hits
+    # NOTE: Model selection (neural_net/xgboost/lightgbm/catboost) happens HERE
     print("\n\n" + "="*70)
     print("STEP 5: ANTI-OVERFIT OPTIMIZER (Multi-Model Architecture v3.1.2)")
     print("="*70)
@@ -356,7 +373,9 @@ def main(args):
         print(f"   ⚡ COMPARING ALL: neural_net, xgboost, lightgbm, catboost")
     print(f"   K-Folds: {args.k_folds}")
     print(f"   Output: {model_output_dir}/")
-    print("ℹ️  CRITICAL: Training on REAL quality scores (not synthetic!)")
+    print("ℹ️  FIRST step to consume survivors_with_scores.json")
+    print("ℹ️  FIRST step to use holdout_hits as training target")
+    print("ℹ️  Model selection happens HERE (not in Step 4)")
 
     # Build Step 5 command
     step5_cmd = [
@@ -450,8 +469,9 @@ def main(args):
         print(f"      ℹ️  Tested constant skip only")
     print(f"  2.5 ✅ Scorer Meta-Optimizer: {args.scorer_trials} distributed trials")
     print(f"  3. ✅ Full Scoring Run: All survivors scored (scripts_coordinator.py)")
-    print(f"  4. ✅ Adaptive Optimizer: Training params derived")
+    print(f"  4. ✅ Adaptive Optimizer: Capacity params derived (NOT data-aware)")
     print(f"  5. ✅ Anti-Overfit Optimizer: {args.anti_overfit_trials} trials, model: {actual_model_type}")
+    print(f"      ℹ️  FIRST step to use survivors + holdout_hits")
     if args.compare_models:
         print(f"      ⚡ Compared all 4 model types, selected best")
     print(f"  6. ✅ Prediction Generator: Top-K predictions generated")
@@ -468,7 +488,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Complete Whitepaper Workflow Orchestrator V3.0 (Multi-Model + scripts_coordinator)'
+        description='Complete Whitepaper Workflow Orchestrator V3.2 (Multi-Model + scripts_coordinator)'
     )
 
     # --- General ---
