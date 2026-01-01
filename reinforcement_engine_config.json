@@ -47,7 +47,7 @@
     "drift_threshold": 0.3
   },
   "survivor_pool": {
-    "max_pool_size": 475,
+    "max_pool_size": 476,
     "prune_threshold": 0.3,
     "min_confidence": 0.5,
     "update_frequency": 10
@@ -59,7 +59,7 @@
     "log_level": "INFO"
   },
   "_meta_optimizer": {
-    "last_calibration": "2025-12-27T23:27:27.366161",
+    "last_calibration": "2026-01-01T09:50:12.985392",
     "calibration_type": "full",
     "confidence": 0.24499999999999997,
     "weights_used": {

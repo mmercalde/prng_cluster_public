@@ -1,175 +1,126 @@
 {
   "agent_name": "ml_meta_agent",
-  "description": "Step 4: Adaptive ML meta-optimizer using Optuna TPE to find optimal neural network architecture, learning rates, and regularization for survivor prediction.",
+  "description": "Step 4: Capacity & Architecture Planning. Derives optimal training parameters (survivor pool size, network depth, epochs) from window optimizer behavior and lottery pattern complexity. INTENTIONALLY does NOT consume survivor-level data - that happens in Step 5.",
   "pipeline_step": 4,
-  "version": "1.3.0",
-  "feature_registry": "config_manifests/feature_registry.json",
+  "version": "2.0.0",
+  "design_note": "Step 4 is a CAPACITY PLANNER, not a data-aware optimizer. Model selection (neural_net/xgboost/lightgbm/catboost) happens in Step 5.",
+  
   "inputs": [
-    "survivors_with_scores.json",
-    "scoring_statistics.json"
+    "optimal_window_config.json",
+    "train_history.json"
   ],
+  
   "outputs": [
     "reinforcement_engine_config.json",
-    "best_model_architecture.json",
-    "ml_meta_results.json"
+    "optimization_results/meta_optimization_results.json"
   ],
+  
   "actions": [
     {
       "type": "run_script",
       "script": "adaptive_meta_optimizer.py",
       "args_map": {
-        "input-file": "survivors_with_scores_file",
-        "trials": "ml_trials",
-        "study-name": "study_name",
-        "timeout-hours": "timeout_hours",
-        "n-jobs": "parallel_jobs"
+        "--mode": "full",
+        "--window-results": "optimal_window_config.json",
+        "--lottery-data": "train_history.json",
+        "--apply": true
       },
       "distributed": false,
-      "timeout_minutes": 480
+      "timeout_minutes": 10
     }
   ],
+  
   "follow_up_agents": [
     "reinforcement_agent"
   ],
-  "success_condition": "reinforcement_engine_config.json exists AND best_model_architecture.json has valid layers",
+  
+  "success_condition": "reinforcement_engine_config.json exists AND contains survivor_pool.max_pool_size",
+  
   "retry": 1,
+  
   "parameter_bounds": {
-    "ml_trials": {
-      "type": "int",
-      "min": 20,
-      "max": 500,
-      "default": 100,
-      "description": "Number of Optuna trials for ML architecture search.",
-      "optimized_by": "Optuna TPE",
-      "effect": "More trials = better architecture discovery. 50-200 typical. Diminishing returns past 300."
-    },
-    "timeout_hours": {
+    "window_optimizer_weight": {
       "type": "float",
-      "min": 1.0,
-      "max": 48.0,
-      "default": 8.0,
-      "description": "Maximum hours for ML meta-optimization.",
-      "optimized_by": "Manual",
-      "effect": "Longer timeout allows more trials and better convergence."
+      "min": 0.4,
+      "max": 0.8,
+      "default": 0.6,
+      "description": "Weight given to window optimizer results (PRIMARY source).",
+      "effect": "Higher = more trust in sieve behavior analysis."
     },
-    "parallel_jobs": {
-      "type": "int",
-      "min": 1,
-      "max": 4,
-      "default": 2,
-      "description": "Number of parallel Optuna workers on Zeus (2x RTX 3080 Ti).",
-      "optimized_by": "Hardware",
-      "effect": "2 = one per GPU. Higher may cause memory contention."
-    },
-    "min_layers": {
-      "type": "int",
-      "min": 1,
-      "max": 5,
-      "default": 2,
-      "description": "Minimum hidden layers in neural network search space.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Shallow networks may underfit complex survivor patterns."
-    },
-    "max_layers": {
-      "type": "int",
-      "min": 3,
-      "max": 10,
-      "default": 6,
-      "description": "Maximum hidden layers in neural network search space.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Deeper networks may overfit. 4-6 layers typical for this domain."
-    },
-    "min_neurons": {
-      "type": "int",
-      "min": 16,
-      "max": 128,
-      "default": 32,
-      "description": "Minimum neurons per layer in search space.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Too few = underfitting. 32-64 minimum typical."
-    },
-    "max_neurons": {
-      "type": "int",
-      "min": 128,
-      "max": 1024,
-      "default": 512,
-      "description": "Maximum neurons per layer in search space.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Too many = overfitting and slow training. 256-512 typical."
-    },
-    "learning_rate_min": {
+    "historical_pattern_weight": {
       "type": "float",
-      "min": 1e-06,
-      "max": 0.0001,
-      "default": 1e-05,
-      "description": "Lower bound for learning rate search.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Very low LR = slow convergence but stable training."
+      "min": 0.2,
+      "max": 0.5,
+      "default": 0.35,
+      "description": "Weight given to lottery history pattern analysis (SECONDARY source).",
+      "effect": "Higher = more trust in entropy/stability analysis."
     },
-    "learning_rate_max": {
+    "reinforcement_feedback_weight": {
       "type": "float",
-      "min": 0.001,
-      "max": 0.1,
-      "default": 0.01,
-      "description": "Upper bound for learning rate search.",
-      "optimized_by": "Optuna TPE",
-      "effect": "High LR = fast but may diverge. Typical optimal: 1e-4 to 1e-3."
+      "min": 0.05,
+      "max": 0.25,
+      "default": 0.05,
+      "description": "Weight given to reinforcement feedback (CONTINUOUS source, grows over time).",
+      "effect": "Grows from 5% to 25% based on confidence in historical performance."
     },
-    "dropout_min": {
-      "type": "float",
-      "min": 0.0,
-      "max": 0.3,
-      "default": 0.1,
-      "description": "Minimum dropout rate in search space.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Low dropout may cause overfitting."
-    },
-    "dropout_max": {
+    "survivor_count_min_multiplier": {
       "type": "float",
       "min": 0.3,
       "max": 0.7,
       "default": 0.5,
-      "description": "Maximum dropout rate in search space.",
-      "optimized_by": "Optuna TPE",
-      "effect": "High dropout prevents overfitting but may underfit."
+      "description": "Minimum survivor count as multiplier of optimal.",
+      "effect": "Lower = allow smaller pools."
     },
-    "weight_decay_min": {
+    "survivor_count_max_multiplier": {
       "type": "float",
-      "min": 1e-07,
-      "max": 1e-05,
-      "default": 1e-06,
-      "description": "Minimum L2 regularization weight decay.",
-      "optimized_by": "Optuna TPE",
-      "effect": "L2 regularization prevents large weights."
+      "min": 1.5,
+      "max": 3.0,
+      "default": 2.0,
+      "description": "Maximum survivor count as multiplier of optimal.",
+      "effect": "Higher = allow larger pools."
     },
-    "weight_decay_max": {
-      "type": "float",
-      "min": 0.0001,
-      "max": 0.01,
-      "default": 0.001,
-      "description": "Maximum L2 regularization weight decay.",
-      "optimized_by": "Optuna TPE",
-      "effect": "Higher decay = stronger regularization."
+    "min_epochs": {
+      "type": "int",
+      "min": 20,
+      "max": 100,
+      "default": 50,
+      "description": "Minimum training epochs.",
+      "effect": "Lower bound for epoch estimation."
+    },
+    "max_epochs": {
+      "type": "int",
+      "min": 200,
+      "max": 1000,
+      "default": 500,
+      "description": "Maximum training epochs.",
+      "effect": "Upper bound for epoch estimation."
     }
   },
+  
   "success_metrics": {
-    "min_valid_trials": 20,
-    "target_validation_loss": 0.5,
-    "max_trial_failures": 10
+    "config_written": true,
+    "survivor_count_reasonable": "survivor_count >= 100 AND survivor_count <= 10000",
+    "epochs_reasonable": "training_epochs >= 50 AND training_epochs <= 500"
   },
+  
   "default_params": {
-    "survivors": "survivors_with_scores.json",
-    "lottery_data": "synthetic_lottery.json",
-    "trials": 100,
-    "config": "reinforcement_engine_config.json",
-    "timeout_hours": 8.0,
-    "parallel_jobs": 2
+    "window_results": "optimal_window_config.json",
+    "lottery_data": "train_history.json",
+    "mode": "full",
+    "apply": true
   },
+  
   "evaluation_params": {
-    "confidence_formula": "validation_loss",
+    "confidence_source": "weighted_combination",
     "confidence_base": 0.7,
-    "confidence_cap": 0.95,
-    "target_validation_loss": 0.5,
-    "min_successful_trials": 20
-  }
+    "confidence_cap": 0.95
+  },
+  
+  "what_step_4_does_NOT_do": [
+    "Load survivors_with_scores.json (that's Step 5)",
+    "Inspect holdout_hits (that's Step 5)",
+    "Select model type (that's Step 5)",
+    "Run Optuna trials on survivor data (that's Step 5)",
+    "Perform any evaluation (that's Step 5)"
+  ]
 }
