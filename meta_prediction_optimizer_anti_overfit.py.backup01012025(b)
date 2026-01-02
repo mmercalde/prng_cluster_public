@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION (v3.2)
+Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION (v3.1)
 =============================================================
 
 VERSION HISTORY:
@@ -8,9 +8,8 @@ VERSION HISTORY:
   v2.0   - Multi-model support (--model-type, --compare-models)
   v3.0   - signal_quality emission for Step 6 gate
   v3.1   - data_context fingerprint for WATCHER loop prevention
-  v3.2   - Early exit on degenerate signal + degenerate sidecar
 
-KEY FEATURES (v3.2):
+KEY FEATURES (v3.1):
 ✅ Multi-model support: neural_net, xgboost, lightgbm, catboost
 ✅ Subprocess isolation for OpenCL/CUDA compatibility
 ✅ signal_quality emission for Step 6 prediction gate
@@ -18,17 +17,10 @@ KEY FEATURES (v3.2):
 ✅ Feature schema hash for runtime validation
 ✅ Sidecar metadata generation (best_model.meta.json)
 ✅ --compare-models to train all 4 and select best
-✅ Early exit on degenerate signal (saves GPU time)
-✅ Degenerate sidecar for WATCHER consumption
-
-EXIT CODES:
-  0 - Success (model trained and saved)
-  1 - Error (exception during execution)
-  2 - Degenerate signal (sidecar saved, no model)
 
 Author: Distributed PRNG Analysis System
 Date: January 2, 2026
-Version: 3.2.0
+Version: 3.1.0
 """
 
 import json
@@ -814,7 +806,7 @@ class MultiModelTrainer:
         
         # Build sidecar
         sidecar = {
-            "schema_version": "3.2.0",
+            "schema_version": "3.1.0",
             "model_type": model_type,
             "checkpoint_path": str(checkpoint_path),
             "checkpoint_format": ext.lstrip('.'),
@@ -1066,56 +1058,8 @@ class AntiOverfitMetaOptimizer:
             
         Returns:
             Best config and validation metrics
-            
-        Exit Codes:
-            0 - Success (model trained and saved)
-            2 - Degenerate signal (sidecar saved, no model, early exit)
         """
         self.n_trials_total = n_trials
-        
-        # ================================================================
-        # EARLY EXIT ON DEGENERATE SIGNAL (v3.2)
-        # ================================================================
-        # Check signal quality BEFORE wasting GPU time on training
-        if not self.signal_quality.get('prediction_allowed', True):
-            self.logger.warning("=" * 70)
-            self.logger.warning("DEGENERATE SIGNAL DETECTED - EARLY EXIT")
-            self.logger.warning("=" * 70)
-            self.logger.warning(f"  Signal status: {self.signal_quality['signal_status']}")
-            self.logger.warning(f"  Unique target values: {self.signal_quality['unique_target_values']}")
-            self.logger.warning(f"  Target variance: {self.signal_quality['target_variance']}")
-            self.logger.warning(f"  Non-zero ratio: {self.signal_quality['nonzero_ratio']}")
-            self.logger.warning("=" * 70)
-            self.logger.warning("Skipping training to save GPU time (~45 minutes)")
-            self.logger.warning("Saving degenerate sidecar for WATCHER consumption")
-            self.logger.warning("=" * 70)
-            
-            # Save degenerate sidecar so WATCHER can consume it
-            self._save_degenerate_sidecar()
-            
-            # Return early with empty config and degenerate metrics
-            degenerate_metrics = ValidationMetrics(
-                train_variance=0.0,
-                val_variance=0.0,
-                test_variance=0.0,
-                train_mae=0.0,
-                val_mae=0.0,
-                test_mae=0.0,
-                overfit_ratio=0.0,
-                variance_consistency=0.0,
-                temporal_stability=0.0,
-                p_value=1.0,
-                confidence_interval=(0.0, 0.0),
-                r2_score=0.0
-            )
-            
-            # Signal to caller that this was a degenerate exit
-            self.degenerate_exit = True
-            
-            return {}, degenerate_metrics
-        
-        # Normal training path
-        self.degenerate_exit = False
         
         if self.compare_models:
             return self._run_model_comparison()
@@ -1212,8 +1156,7 @@ class AntiOverfitMetaOptimizer:
     def save_best_model(self):
         """Save the best model with full sidecar metadata."""
         if self.best_model is None:
-            self.logger.warning("No model trained - saving degenerate sidecar only")
-            self._save_degenerate_sidecar()
+            self.logger.warning("No model to save")
             return
         
         duration = (datetime.now() - self.start_time).total_seconds()
@@ -1258,86 +1201,6 @@ class AntiOverfitMetaOptimizer:
         self.logger.info(f"  Data fingerprint: {self.data_context['fingerprint_hash']}")
         self.logger.info(f"  Schema hash: {self.feature_schema['feature_schema_hash']}")
         self.logger.info("=" * 70)
-    
-    def _save_degenerate_sidecar(self):
-        """
-        Save sidecar for degenerate signal (no model checkpoint).
-        
-        This allows WATCHER to:
-        1. Read signal_quality and understand why prediction failed
-        2. Read data_context fingerprint to avoid retrying same config
-        3. Take appropriate recovery action
-        """
-        output_path = Path(self.output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        duration = (datetime.now() - self.start_time).total_seconds()
-        
-        sidecar = {
-            "schema_version": "3.2.0",
-            "model_type": None,
-            "checkpoint_path": None,
-            "checkpoint_format": None,
-            
-            "feature_schema": self.feature_schema,
-            "signal_quality": self.signal_quality,
-            "data_context": self.data_context,
-            
-            "training_metrics": {
-                "status": "degenerate_signal",
-                "r2": 0.0,
-                "train_mse": None,
-                "val_mse": None,
-                "error": "Training skipped due to degenerate target (zero variance)"
-            },
-            
-            "hardware": {
-                "device_requested": self.device,
-                "cuda_available": CUDA_INITIALIZED
-            },
-            
-            "training_info": {
-                "started_at": self.start_time.isoformat(),
-                "completed_at": datetime.now().isoformat(),
-                "duration_seconds": duration,
-                "outcome": "DEGENERATE_SIGNAL"
-            },
-            
-            "agent_metadata": {
-                "pipeline_step": 5,
-                "pipeline_step_name": "anti_overfit_training",
-                "run_id": f"step5_{self.start_time.strftime('%Y%m%d_%H%M%S')}",
-                "parent_run_id": self.parent_run_id,
-                "outcome": "DEGENERATE_SIGNAL",
-                "exit_code": 2
-            },
-            
-            "provenance": {
-                "run_id": f"step5_{self.start_time.strftime('%Y%m%d_%H%M%S')}",
-                "started_at": self.start_time.isoformat(),
-                "duration_seconds": duration,
-                "survivors_file": str(Path(self.survivors_file).resolve()),
-                "n_survivors": len(self.X),
-                "model_type": self.model_type,
-                "compare_models_used": self.compare_models,
-                "outcome": "DEGENERATE_SIGNAL"
-            }
-        }
-        
-        sidecar_path = output_path / "best_model.meta.json"
-        with open(sidecar_path, 'w') as f:
-            json.dump(sidecar, f, indent=2)
-        
-        self.logger.info("\n" + "=" * 70)
-        self.logger.info("DEGENERATE SIDECAR SAVED (No Model)")
-        self.logger.info("=" * 70)
-        self.logger.info(f"  Signal status: {self.signal_quality['signal_status']}")
-        self.logger.info(f"  Signal confidence: {self.signal_quality['signal_confidence']:.4f}")
-        self.logger.info(f"  Data fingerprint: {self.data_context['fingerprint_hash']}")
-        self.logger.info(f"  Sidecar path: {sidecar_path}")
-        self.logger.info("=" * 70)
-        self.logger.info("WATCHER AGENT: Consume sidecar and decide recovery action")
-        self.logger.info("=" * 70)
 
 
 # ============================================================================
@@ -1346,7 +1209,7 @@ class AntiOverfitMetaOptimizer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Anti-Overfit Meta-Prediction Optimizer v3.2'
+        description='Anti-Overfit Meta-Prediction Optimizer v3.1'
     )
     parser.add_argument('--survivors', required=True,
                        help='Path to survivors JSON with features')
@@ -1389,7 +1252,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 70)
-    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER v3.2")
+    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER v3.1")
     print("=" * 70)
     print(f"✅ CUDA initialized: {CUDA_INITIALIZED}")
     print(f"✅ Model type: {args.model_type}")
@@ -1421,24 +1284,6 @@ def main():
     
     best_config, metrics = optimizer.run(n_trials=args.trials)
     
-    # Check for degenerate exit
-    if hasattr(optimizer, 'degenerate_exit') and optimizer.degenerate_exit:
-        print()
-        print("=" * 70)
-        print("DEGENERATE SIGNAL - EARLY EXIT")
-        print("=" * 70)
-        print(f"Signal Quality: {optimizer.signal_quality['signal_status']}")
-        print(f"Data Fingerprint: {optimizer.data_context['fingerprint_hash']}")
-        print()
-        print("⚠️  No model trained (degenerate target)")
-        print("✅ Sidecar saved for WATCHER consumption")
-        print("=" * 70)
-        print()
-        print("EXIT CODE: 2 (DEGENERATE_SIGNAL)")
-        print("WATCHER should consume sidecar and decide recovery action")
-        print("=" * 70)
-        sys.exit(2)
-    
     print()
     print("=" * 70)
     print("FINAL RESULTS")
@@ -1457,9 +1302,6 @@ def main():
     print(f"Signal Quality: {optimizer.signal_quality['signal_status']}")
     print(f"Data Fingerprint: {optimizer.data_context['fingerprint_hash']}")
     print("=" * 70)
-    
-    # Success exit
-    sys.exit(0)
 
 
 if __name__ == "__main__":

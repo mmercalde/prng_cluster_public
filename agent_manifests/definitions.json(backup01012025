@@ -1,0 +1,133 @@
+{
+  "$schema": "agent_definitions_v1.0",
+  "description": "Shared semantic definitions for agent manifests. All agents consume these definitions for consistent reasoning.",
+  "version": "1.0.0",
+  "last_updated": "2026-01-01",
+  
+  "definitions": {
+    
+    "signal_quality": {
+      "description": "Indicates whether learned signal is actionable for prediction. Emitted by Step 5, consumed by Step 6, reasoned over by WATCHER AGENT.",
+      "emitted_by": "step5_anti_overfit",
+      "consumed_by": ["step6_prediction", "watcher_agent"],
+      
+      "schema": {
+        "target_name": {
+          "type": "string",
+          "description": "Name of the target variable (e.g., 'holdout_hits')",
+          "example": "holdout_hits"
+        },
+        "derived_by": {
+          "type": "string",
+          "description": "Which step computed this signal quality",
+          "example": "step5_anti_overfit"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "ISO8601",
+          "description": "When signal quality was computed"
+        },
+        "sample_count": {
+          "type": "integer",
+          "description": "Number of training samples"
+        },
+        "unique_target_values": {
+          "type": "integer",
+          "description": "Count of distinct target values"
+        },
+        "target_variance": {
+          "type": "float",
+          "description": "Variance of target distribution"
+        },
+        "observed_mean": {
+          "type": "float",
+          "description": "Mean of target values"
+        },
+        "observed_std": {
+          "type": "float",
+          "description": "Standard deviation of target values"
+        },
+        "nonzero_count": {
+          "type": "integer",
+          "description": "Count of non-zero target values"
+        },
+        "nonzero_ratio": {
+          "type": "float",
+          "description": "Proportion of non-zero targets (0.0 to 1.0)"
+        },
+        "signal_status": {
+          "type": "enum",
+          "values": {
+            "usable": "Signal has sufficient variance for meaningful predictions",
+            "degenerate": "All targets identical or near-zero variance. Model learned trivial solution.",
+            "sparse": "Very few non-zero targets. Signal may be unreliable.",
+            "below_baseline": "Signal below random expectation. Hypothesis likely incorrect.",
+            "no_data": "No training samples available."
+          }
+        },
+        "signal_confidence": {
+          "type": "float",
+          "range": [0.0, 1.0],
+          "description": "Confidence in signal quality assessment"
+        },
+        "prediction_allowed": {
+          "type": "boolean",
+          "description": "Explicit gate: whether Step 6 may proceed with predictions"
+        }
+      },
+      
+      "authority_boundaries": {
+        "step5": "Computes and declares signal_quality (descriptive only)",
+        "step6": "Consumes signal_quality, gates execution, emits structured skip if blocked",
+        "watcher_agent": "Decides recovery action when prediction_allowed=false"
+      },
+      
+      "recovery_actions": {
+        "degenerate": [
+          "adjust_holdout_window",
+          "re_run_step3_scoring",
+          "reject_hypothesis",
+          "flag_regime_mismatch"
+        ],
+        "sparse": [
+          "expand_survivor_pool",
+          "adjust_scoring_threshold",
+          "re_run_step2_sieve"
+        ],
+        "below_baseline": [
+          "reject_hypothesis",
+          "try_alternative_prng",
+          "flag_for_human_review"
+        ]
+      }
+    },
+    
+    "pipeline_status": {
+      "description": "Standard status values for pipeline step outputs",
+      "values": {
+        "success": "Step completed successfully with actionable output",
+        "prediction_skipped": "Step 6 blocked by signal quality gate",
+        "failed": "Step encountered an error",
+        "timeout": "Step exceeded time limit",
+        "skipped": "Step was intentionally skipped"
+      }
+    },
+    
+    "recovery_authority": {
+      "description": "Which agent has authority to decide next action",
+      "values": {
+        "WATCHER_AGENT": "Autonomous agent decides recovery",
+        "HUMAN": "Requires human intervention",
+        "AUTO_RETRY": "Automatic retry with same parameters"
+      }
+    }
+  },
+  
+  "architectural_rules": [
+    "Learning steps must declare signal quality explicitly",
+    "Execution steps may act only on declared usable signals", 
+    "Control agents (WATCHER) decide recovery actions",
+    "No step may override another step's authority",
+    "No step may infer hidden intent from another step"
+  ]
+}

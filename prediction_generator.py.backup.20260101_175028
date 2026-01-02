@@ -6,25 +6,19 @@ Prediction Generator - Pipeline Component
 Whitepaper-Compliant Implementation:
 - Integrates with survivor_scorer.py
 - Generates Top-K predictions from forward/reverse sieves
-- ML/AI ready with 62-feature extraction
+- ML/AI ready with 46-feature extraction
 - GPU-accelerated via CuPy
 - Part of reinforcement learning pipeline
 
 Author: Distributed PRNG Analysis System
 Date: November 6, 2025
-Version: 6.0 (Consolidated Patch - Team Beta Approved)
-
-v6.0 Changes:
-- P0: Signal Quality Gate from sidecar (v2.1 autonomy design)
-- P0: Per-survivor skip handling (read from survivor metadata)
-- P1: Feature schema enforcement (fail if sidecar missing schema)
-- P1: Global feature handling resolved (removed dead code path)
+Version: 5.0 (Pipeline Integration)
 """
 
 import sys
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 import json
 from datetime import datetime
@@ -56,6 +50,7 @@ try:
     from models.feature_schema import validate_feature_schema_hash, get_feature_schema_with_hash
     MULTI_MODEL_AVAILABLE = True
 except ImportError:
+
     MULTI_MODEL_AVAILABLE = False
 
 # GlobalStateTracker - GPU-neutral module (Step 6 Restoration v2.2)
@@ -71,7 +66,7 @@ class PredictionConfig:
     Configuration for prediction generation
     
     Whitepaper Section 4: Machine Learning Integration
-    All parameters aligned with agent_manifests/prediction.json v1.6.0
+    All parameters aligned with agent_manifests/prediction.json v1.5.0
     """
     # === Pool Parameters ===
     pool_size: int = 20
@@ -89,12 +84,12 @@ class PredictionConfig:
     
     # === Feature Configuration ===
     feature_weights: Dict[str, float] = field(default_factory=dict)
-    use_global_features: bool = False  # v6.0: Disabled until properly wired
+    use_global_features: bool = True
     
     # === PRNG Parameters (inherited from optimal_window_config.json) ===
     prng_type: str = 'java_lcg'
     mod: int = 1000
-    default_skip: int = 0  # v6.0: Renamed from 'skip' - only used as fallback
+    skip: int = 0
     
     # === Dual-sieve ===
     use_dual_sieve: bool = True
@@ -118,7 +113,6 @@ class PredictionConfig:
     
     # === Model Configuration ===
     models_dir: str = "models/reinforcement"
-    require_feature_schema: bool = True  # v6.0: Enforce feature schema
     
     # === Input Files ===
     survivors_forward_file: str = ""
@@ -151,7 +145,7 @@ class PredictionConfig:
         prng_section = config_data.get('prng', {})
         prng_type = prng_section.get('prng_type') or upstream_prng.get('prng_type') or 'java_lcg'
         mod = prng_section.get('mod') or upstream_prng.get('mod') or 1000
-        default_skip = prng_section.get('skip', prng_section.get('default_skip', 0))
+        skip = prng_section.get('skip', 0)
         
         return cls(
             pool_size=config_data.get('pool_size', 20),
@@ -163,10 +157,10 @@ class PredictionConfig:
             ]),
             ensemble_mode=config_data.get('ensemble_mode', 'weighted'),
             feature_weights=config_data.get('feature_weights', {}),
-            use_global_features=config_data.get('use_global_features', False),
+            use_global_features=config_data.get('use_global_features', True),
             prng_type=prng_type,
             mod=mod,
-            default_skip=default_skip,
+            skip=skip,
             use_dual_sieve=config_data.get('use_dual_sieve', True),
             forward_weight=config_data.get('forward_weight', 0.5),
             bidirectional_bonus=config_data.get('bidirectional_bonus', 1.5),
@@ -180,7 +174,6 @@ class PredictionConfig:
             log_level=config_data.get('output', {}).get('log_level', 'INFO'),
             explanation_verbosity=config_data.get('explanation_verbosity', 'standard'),
             models_dir=config_data.get('models_dir', 'models/reinforcement'),
-            require_feature_schema=config_data.get('require_feature_schema', True),
             survivors_forward_file=config_data.get('survivors_forward_file', ''),
             survivors_reverse_file=config_data.get('survivors_reverse_file', ''),
             lottery_history_file=config_data.get('lottery_history_file', ''),
@@ -198,7 +191,7 @@ class PredictionConfig:
             'use_global_features': self.use_global_features,
             'prng_type': self.prng_type,
             'mod': self.mod,
-            'default_skip': self.default_skip,
+            'skip': self.skip,
             'use_dual_sieve': self.use_dual_sieve,
             'forward_weight': self.forward_weight,
             'bidirectional_bonus': self.bidirectional_bonus,
@@ -208,10 +201,8 @@ class PredictionConfig:
             'min_survivor_history': self.min_survivor_history,
             'skip_mode_preference': self.skip_mode_preference,
             'explanation_verbosity': self.explanation_verbosity,
-            'models_dir': self.models_dir,
-            'require_feature_schema': self.require_feature_schema
+            'models_dir': self.models_dir
         }
-
 
 def setup_logging(config: PredictionConfig) -> logging.Logger:
     """Setup logging"""
@@ -233,14 +224,8 @@ class PredictionGenerator:
     Whitepaper Compliance:
     - Section 1: Dual-sieve methodology
     - Section 2: Reinforcement signals from prediction quality
-    - Section 4: ML feature integration (62 features)
+    - Section 4: ML feature integration (46 features)
     - Section 5: Forward-reverse-ML ensemble
-    
-    v6.0 Autonomy Compliance:
-    - Signal quality gate from sidecar (does NOT recompute)
-    - Per-survivor skip handling (respects hypothesis)
-    - Feature schema enforcement (fails if missing)
-    - Clean exit on degenerate signal (WATCHER decides recovery)
     """
 
     def __init__(self, config: PredictionConfig, logger: logging.Logger):
@@ -253,19 +238,18 @@ class PredictionGenerator:
             mod=config.mod
         )
         
-        self.logger.info("PredictionGenerator initialized (v6.0)")
+        self.logger.info("PredictionGenerator initialized")
         self.logger.info(f"  PRNG: {config.prng_type}, mod={config.mod}")
         self.logger.info(f"  Pool size: {config.pool_size}, Top-K: {config.k}")
         self.logger.info(f"  Dual-sieve: {config.use_dual_sieve}")
         self.logger.info(f"  GPU: {GPU_AVAILABLE}")
-        self.logger.info(f"  Feature schema required: {config.require_feature_schema}")
 
         # Model loading (Step 6 Restoration v2.2)
         self.model = None
         self.model_meta = None
         self.model_checkpoint_path = None
-        self.parent_run_id = None
-        self.feature_names = None  # v6.0: Explicit feature name tracking
+        self.global_tracker = None
+        self.parent_run_id = None  # Will be set from CLI or sidecar
 
         if MULTI_MODEL_AVAILABLE:
             try:
@@ -275,179 +259,42 @@ class PredictionGenerator:
                 )
                 self.logger.info(f"  Model loaded: {self.model_meta.get('model_type', 'unknown')}")
                 self.model_checkpoint_path = self.model_meta.get('checkpoint_path', f'{config.models_dir}/best_model')
-                
-                # Auto-read parent_run_id from sidecar
+                # Auto-read parent_run_id from sidecar (Team Beta requirement)
                 agent_meta = self.model_meta.get('agent_metadata', {})
                 self.parent_run_id = agent_meta.get('run_id', None)
                 if self.parent_run_id:
                     self.logger.info(f"  Parent run ID: {self.parent_run_id}")
-                
-                # v6.0: Extract and validate feature schema
-                fs = self.model_meta.get("feature_schema", {})
-                self.feature_names = fs.get("per_seed_feature_names", fs.get("feature_names", []))
-                
-                if self.feature_names:
-                    self.logger.info(f"  Feature schema: {len(self.feature_names)} features")
-                elif config.require_feature_schema:
-                    raise ValueError("Feature schema required but not found in sidecar!")
-                else:
-                    self.logger.warning("  No feature schema in sidecar - using alphabetical fallback (UNSAFE)")
-                
-                # v6.0: Log signal quality status
-                sq = self.model_meta.get("signal_quality", {})
-                if sq:
-                    self.logger.info(f"  Signal quality: {sq.get('signal_status', 'unknown')}")
-                    self.logger.info(f"  Prediction allowed: {sq.get('prediction_allowed', 'not specified')}")
-                else:
-                    self.logger.warning("  No signal_quality in sidecar (legacy model)")
-                    
             except FileNotFoundError as e:
                 self.logger.warning(f"  Model not found: {e}")
             except Exception as e:
                 self.logger.error(f"  Model loading failed: {e}")
-                raise
-
-    # =========================================================================
-    # SIGNAL QUALITY GATE (v6.0 - Team Beta Approved)
-    # =========================================================================
-    
-    def _get_signal_explanation(self, status: str) -> str:
-        """
-        Human-readable explanation for signal status.
-        """
-        explanations = {
-            "degenerate": "All targets identical. Model learned trivial solution. No forward generalization detected.",
-            "sparse": "Very few non-zero targets (<0.1%). Signal too sparse for reliable predictions.",
-            "below_baseline": "Signal below random baseline. Hypothesis likely incorrect.",
-            "no_data": "No training samples available. Cannot make predictions.",
-            "unknown": "Signal quality not declared by Step 5. Sidecar may be outdated."
-        }
-        return explanations.get(status, f"Unrecognized signal status: {status}")
-
-    def _check_signal_gate(self) -> Optional[Dict]:
-        """
-        Preflight signal quality gate.
-        
-        Architectural Rule (Team Beta v2.1):
-            "Learning steps declare signal quality; execution steps act only on 
-             declared usable signals; control agents decide recovery."
-        
-        Step 6 consumes signal_quality from sidecar.
-        Step 6 does NOT recompute - trusts Step 5's assessment.
-        WATCHER AGENT decides recovery actions.
-        
-        Returns:
-            None if prediction is allowed
-            Dict with skip result if prediction is blocked
-        """
-        if not self.model_meta:
-            self.logger.warning("No model metadata available - skipping signal gate")
-            return None
-        
-        sq = self.model_meta.get("signal_quality")
-        
-        if sq is None:
-            self.logger.warning("No signal_quality in sidecar - assuming usable (legacy model)")
-            return None
-        
-        # Use explicit boolean gate (Team Beta Refinement #2)
-        prediction_allowed = sq.get("prediction_allowed", True)
-        signal_status = sq.get("signal_status", "unknown")
-        
-        if not prediction_allowed:
-            self.logger.warning("=" * 60)
-            self.logger.warning("SIGNAL QUALITY GATE BLOCKED")
-            self.logger.warning("=" * 60)
-            self.logger.warning(f"  Status: {signal_status}")
-            self.logger.warning(f"  Target: {sq.get('target_name', 'unknown')}")
-            self.logger.warning(f"  Unique values: {sq.get('unique_target_values', '?')}")
-            self.logger.warning(f"  Variance: {sq.get('target_variance', '?')}")
-            self.logger.warning(f"  Non-zero ratio: {sq.get('nonzero_ratio', '?')}")
-            self.logger.warning(f"  Sample count: {sq.get('sample_count', '?')}")
-            self.logger.warning(f"  Derived by: {sq.get('derived_by', '?')}")
-            self.logger.warning("=" * 60)
-            self.logger.warning("WATCHER AGENT will decide recovery action")
-            self.logger.warning("=" * 60)
-            
-            return {
-                "status": "prediction_skipped",
-                "reason": signal_status,
-                "prediction_allowed": False,
-                "diagnostics": sq,
-                "explanation": self._get_signal_explanation(signal_status),
-                "recovery_authority": "WATCHER_AGENT",
-                "timestamp": datetime.now().isoformat()
-            }
-        
-        # Signal is usable
-        self.logger.info(f"Signal quality gate PASSED: {signal_status}")
-        self.logger.info(f"  Confidence: {sq.get('signal_confidence', '?')}")
-        self.logger.info(f"  Non-zero ratio: {sq.get('nonzero_ratio', '?')}")
-        return None
-
-    # =========================================================================
-    # PER-SURVIVOR SKIP EXTRACTION (v6.0 - P0 Fix)
-    # =========================================================================
-    
-    def _get_survivor_skip(self, survivor: Union[int, Dict], fallback_skip: int) -> int:
-        """
-        Extract skip value from survivor metadata.
-        
-        Each survivor may have been discovered with a DIFFERENT skip value.
-        Using a single global skip will generate wrong predictions.
-        """
-        if isinstance(survivor, dict):
-            # Try multiple possible locations for skip
-            skip = survivor.get('skip')
-            if skip is not None:
-                return int(skip)
-            
-            metadata = survivor.get('metadata', {})
-            skip = metadata.get('skip')
-            if skip is not None:
-                return int(skip)
-            
-            features = survivor.get('features', {})
-            skip = features.get('skip_hypothesis')
-            if skip is not None:
-                return int(skip)
-        
-        return fallback_skip
-
-    # =========================================================================
-    # MAIN PREDICTION METHOD
-    # =========================================================================
 
     def generate_predictions(
         self,
-        survivors_forward: List[Union[int, Dict]],
+        survivors_forward: List[int],
         lottery_history: List[int],
-        survivors_reverse: Optional[List[Union[int, Dict]]] = None,
+        survivors_reverse: Optional[List[int]] = None,
         k: Optional[int] = None
     ) -> Dict:
         """
         Generate Top-K predictions from survivors
         
-        v6.0 Compliance:
-        - Signal quality gate (blocks if degenerate)
-        - Per-survivor skip handling
-        - Feature schema enforcement
+        Whitepaper Section 5: Forward-reverse-ML ensemble
+        
+        Args:
+            survivors_forward: Forward sieve survivors
+            lottery_history: Historical lottery draws
+            survivors_reverse: Reverse sieve survivors (optional)
+            k: Number of predictions (default: config.k)
+            
+        Returns:
+            Dictionary with predictions, confidence scores, and metadata
         """
         k = k or self.config.k
         
-        # =====================================================================
-        # SIGNAL QUALITY GATE (Team Beta Approved v2.1)
-        # =====================================================================
-        skip_result = self._check_signal_gate()
-        if skip_result:
-            if self.config.save_predictions:
-                self._save_predictions(skip_result)
-            return skip_result
-        # =====================================================================
-        
         self.logger.info(f"Generating {k} predictions from {len(survivors_forward)} survivors")
         
-        # Dual-sieve methodology
+        # Whitepaper Section 1: Dual-sieve methodology
         method = 'forward_only'
         working_survivors = survivors_forward
         
@@ -455,6 +302,7 @@ class PredictionGenerator:
             self.logger.info(f"Dual-sieve mode: {len(survivors_reverse)} reverse survivors")
             method = 'dual_sieve'
             
+            # Compute intersection (Whitepaper: "bidirectional approximation mechanism")
             intersection_result = self.scorer.compute_dual_sieve_intersection(
                 survivors_forward, survivors_reverse
             )
@@ -465,15 +313,24 @@ class PredictionGenerator:
             else:
                 self.logger.warning("No intersection! Using forward survivors only")
         
-        # Build prediction pool
+        # Build prediction pool using survivor_scorer.py
+        # Whitepaper Section 2: "High-quality prediction pools act as reinforcement signals"
         self.logger.info("Building prediction pool...")
+
+        # Initialize GlobalStateTracker (Step 6 Restoration v2.2)
+        self.global_tracker = GlobalStateTracker(lottery_history, {"mod": self.config.mod})
+        global_values = self.global_tracker.get_feature_values()
         
+
         pool_result = self._build_prediction_pool(
             survivors=working_survivors,
             lottery_history=lottery_history,
-            pool_size=self.config.pool_size
+            global_values=global_values,
+            pool_size=self.config.pool_size,
+            skip=self.config.skip
         )
         
+        # Extract predictions from pool
         predictions_list = pool_result.get('predictions', [])
         
         if not predictions_list:
@@ -489,29 +346,40 @@ class PredictionGenerator:
         
         self.logger.info(f"Pool generated {len(predictions_list)} predictions")
         
-        # Process predictions and compute confidence scores
+        # Extract prediction numbers and raw scores from pool_result
+        # FIX: Previously only read 'predictions', ignored 'confidence_scores'
+        # Team Beta approved fix with 3 requirements:
+        #   1) Guard against length mismatch
+        #   2) Dict-safe extraction (handle both int and dict formats)
+        #   3) Preserve raw_scores in output contract
+        
         import math
         
+        # Get raw data from pool
         pool_predictions = pool_result.get('predictions', [])
         pool_scores = pool_result.get('confidence_scores', [])
         
+        # Tweak #2: Dict-safe extraction - handle both int and dict formats
         predictions = []
         raw_scores = []
         
         for i, pred in enumerate(pool_predictions[:k]):
             if isinstance(pred, dict):
+                # Future-proof: if predictions become dicts
                 predictions.append(int(pred.get('next_prediction', pred.get('prediction', 0))))
                 raw_scores.append(float(pred.get('raw_score', pred.get('confidence', 0.0))))
             else:
+                # Current format: predictions are ints, scores in separate list
                 predictions.append(int(pred))
                 if i < len(pool_scores):
                     raw_scores.append(float(pool_scores[i]))
         
+        # Tweak #1: Guard against length mismatch
         n = min(len(predictions), len(raw_scores))
         predictions = predictions[:n]
         raw_scores = raw_scores[:n]
         
-        # Compute score statistics
+        # Compute score statistics for debugging/monitoring
         score_stats = {}
         confidences = []
         normalized = []
@@ -531,14 +399,19 @@ class PredictionGenerator:
                 'raw_unique': len(set(raw_scores))
             }
             
+            # Warn if model outputs are constant (no discriminative power)
             if score_stats['raw_unique'] == 1 or std < 1e-9:
                 self.logger.warning('Model outputs are constant; confidence set to 0.5 for all')
             
+            # Human-friendly normalized scores (for display)
             if mx > 0:
                 normalized = [x / mx for x in raw_scores]
             else:
                 normalized = [0.0] * len(raw_scores)
             
+            # Calibrated confidence using sigmoid of z-score
+            # - raw_scores = automation (cross-run comparable)
+            # - confidences = convenience (bounded 0-1 for gating/display)
             eps = 1e-12
             if std < 1e-9 or abs(mx - mn) < eps:
                 confidences = [0.5] * len(raw_scores)
@@ -553,13 +426,12 @@ class PredictionGenerator:
             normalized = [0.5] * len(predictions)
             raw_scores = [0.0] * len(predictions)
         
-        # Build result
+        # Build result (Team Beta tweak #3: include raw_scores + score_stats)
         result = {
-            'status': 'success',
             'predictions': predictions,
-            'raw_scores': raw_scores,
-            'confidence_scores': confidences,
-            'confidence_scores_normalized': normalized,
+            'raw_scores': raw_scores,                    # Machine truth, cross-run comparable
+            'confidence_scores': confidences,            # Calibrated 0-1 for gating/automation
+            'confidence_scores_normalized': normalized,  # Human-friendly display (optional)
             'metadata': {
                 'method': method,
                 'pool_size': self.config.pool_size,
@@ -569,21 +441,20 @@ class PredictionGenerator:
                 'intersection_count': len(working_survivors),
                 'prng_type': self.config.prng_type,
                 'mod': self.config.mod,
-                'default_skip': self.config.default_skip,
+                'skip': self.config.skip,
                 'dual_sieve': self.config.use_dual_sieve,
                 'gpu_available': GPU_AVAILABLE,
-                'model_type': pool_result.get('model_type', 'unknown'),
-                'feature_count': pool_result.get('total_features', 0),
                 'timestamp': datetime.now().isoformat(),
-                'score_stats': score_stats,
-                'version': '6.0'
+                'score_stats': score_stats               # For monitoring/debugging
             }
         }
         
+        # Save if configured
         if self.config.save_predictions:
             self._save_predictions(result)
         
         return result
+
 
     def _empty_pool_result(self) -> Dict:
         """Return empty result structure."""
@@ -594,75 +465,65 @@ class PredictionGenerator:
             "pool_size": 0,
             "mean_confidence": 0.0,
             "model_type": None,
+            "global_features_used": 0,
             "total_features": 0
         }
 
     def _build_prediction_pool(
         self,
-        survivors: List[Union[int, Dict]],
+        survivors: List,
         lottery_history: List[int],
-        pool_size: int = 10
+        global_values,
+        pool_size: int = 10,
+        skip: int = 0
     ) -> Dict:
         """
         Build prediction pool using trained model.
-        
-        v6.0 Changes:
-        - Per-survivor skip handling
-        - Feature schema enforcement
-        - Removed unused global_values parameter
+        Handles both int and dict survivor formats.
         """
         if not survivors:
             return self._empty_pool_result()
 
-        # v6.0: Enforce feature schema
-        if self.config.require_feature_schema and not self.feature_names:
-            self.logger.error("Feature schema required but not available!")
-            raise ValueError(
-                "Feature schema required in sidecar for prediction. "
-                "Set require_feature_schema=False to allow unsafe fallback."
-            )
+        # Get feature schema from sidecar
+        per_seed_names = []
+        total_features = 0
+        if self.model_meta:
+            fs = self.model_meta.get("feature_schema", {})
+            per_seed_names = fs.get("per_seed_feature_names", fs.get("feature_names", []))
+            total_features = fs.get("total_features", len(per_seed_names))
 
-        # Build feature matrix with per-survivor skip tracking
+        # Build feature matrix
         X_list = []
-        survivor_data = []
-        
+        survivor_seeds = []
+
         for survivor in survivors:
             if isinstance(survivor, dict):
                 seed = survivor["seed"]
                 features = survivor.get("features", {})
             elif isinstance(survivor, (int, np.integer)):
                 seed = int(survivor)
-                features = self.scorer.extract_ml_features(
-                    seed, lottery_history, 
-                    skip=self._get_survivor_skip(survivor, self.config.default_skip)
-                )
+                features = self.scorer.extract_ml_features(seed, lottery_history, skip=skip)
             else:
-                self.logger.warning(f"Skipping invalid survivor type: {type(survivor)}")
                 continue
 
-            survivor_skip = self._get_survivor_skip(survivor, self.config.default_skip)
-
-            if self.feature_names:
-                row = [float(features.get(name, 0.0)) for name in self.feature_names]
+            if per_seed_names:
+                row = [float(features.get(name, 0.0)) for name in per_seed_names]
             else:
-                row = [float(v) for k, v in sorted(features.items()) 
-                       if k not in ("score", "confidence", "seed", "skip")]
+                row = [float(v) for k, v in sorted(features.items()) if k not in ("score", "confidence")]
 
             X_list.append(row)
-            survivor_data.append((seed, survivor_skip, survivor))
+            survivor_seeds.append(seed)
 
         if not X_list:
             return self._empty_pool_result()
 
         X = np.array(X_list, dtype=np.float32)
-        self.logger.debug(f"Feature matrix shape: {X.shape}")
 
         # Score using model or fallback
         if self.model is not None:
             predicted_quality = self.model.predict(X)
             model_type = self.model_meta.get("model_type", "unknown")
         else:
-            self.logger.warning("No model loaded - using mean fallback")
             predicted_quality = np.mean(X, axis=1)
             model_type = "fallback_mean"
 
@@ -673,17 +534,12 @@ class PredictionGenerator:
         next_idx = len(lottery_history)
 
         for idx in ranked_idx[:pool_size]:
-            seed, survivor_skip, _ = survivor_data[idx]
+            seed = survivor_seeds[idx]
             quality = float(predicted_quality[idx])
-            
-            # v6.0: Use per-survivor skip for sequence generation
-            seq = self.scorer._generate_sequence(seed, next_idx + 1, skip=survivor_skip)
-            
+            seq = self.scorer._generate_sequence(seed, next_idx + 1, skip=skip)
             if len(seq) > next_idx:
                 predictions.append(int(seq[next_idx]))
                 confidences.append(quality)
-            else:
-                self.logger.warning(f"Sequence too short for seed {seed} with skip {survivor_skip}")
 
         return {
             "predictions": predictions,
@@ -694,7 +550,6 @@ class PredictionGenerator:
             "model_type": model_type,
             "total_features": X.shape[1] if len(X_list) > 0 else 0
         }
-
     def extract_features_batch(
         self,
         survivors: List[int],
@@ -702,25 +557,26 @@ class PredictionGenerator:
         forward_survivors: Optional[List[int]] = None,
         reverse_survivors: Optional[List[int]] = None
     ) -> List[Dict]:
-        """Extract ML features for batch of survivors"""
+        """
+        Extract ML features for batch of survivors
+        
+        Whitepaper Section 4: "Feature sets include survivor overlap ratios..."
+        
+        This is used by the reinforcement engine for training.
+        
+        Returns:
+            List of feature dictionaries (46 features each)
+        """
         self.logger.info(f"Extracting features for {len(survivors)} survivors...")
         
         features_list = []
         
-        for survivor in survivors:
-            if isinstance(survivor, dict):
-                seed = survivor["seed"]
-                skip = self._get_survivor_skip(survivor, self.config.default_skip)
-            else:
-                seed = int(survivor)
-                skip = self.config.default_skip
-            
+        for seed in survivors:
             features = self.scorer.extract_ml_features(
                 seed=seed,
                 lottery_history=lottery_history,
                 forward_survivors=forward_survivors,
-                reverse_survivors=reverse_survivors,
-                skip=skip
+                reverse_survivors=reverse_survivors
             )
             features_list.append(features)
         
@@ -728,7 +584,7 @@ class PredictionGenerator:
         return features_list
 
     def _save_predictions(self, result: Dict):
-        """Save predictions to JSON with agent metadata"""
+        """Save predictions to JSON"""
         output_dir = Path(self.config.predictions_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -736,17 +592,12 @@ class PredictionGenerator:
         filename = f"predictions_{timestamp}.json"
         filepath = output_dir / filename
 
+        # Inject agent_metadata for pipeline tracking
         avg_conf = 0.5
         if result.get('confidence_scores'):
             avg_conf = sum(result['confidence_scores']) / len(result['confidence_scores'])
 
         num_predictions = len(result.get('predictions', []))
-        
-        status = result.get('status', 'unknown')
-        if status == 'prediction_skipped':
-            reasoning = f"Prediction skipped: {result.get('reason', 'unknown')}"
-        else:
-            reasoning = f"Generated {num_predictions} predictions with avg confidence {avg_conf:.4f}"
 
         result = inject_agent_metadata(
             result,
@@ -760,7 +611,7 @@ class PredictionGenerator:
             follow_up_agent=None,
             confidence=avg_conf,
             suggested_params=None,
-            reasoning=reasoning
+            reasoning=f"Generated {num_predictions} predictions with avg confidence {avg_conf:.4f}"
         )
 
         with open(filepath, 'w') as f:
@@ -773,89 +624,166 @@ class PredictionGenerator:
 # CLI INTERFACE
 # ============================================================================
 def main():
-    """CLI interface for Step 6 Prediction Generation"""
+    """
+    CLI interface for Step 6 Prediction Generation
+    
+    All parameters aligned with agent_manifests/prediction.json v1.5.0
+    """
     import argparse
     parser = argparse.ArgumentParser(
-        description='Step 6: Prediction Generator v6.0 - Generate predictions from trained model'
+        description='Step 6: Prediction Generator - Generate predictions from trained model'
     )
     
+    # === Config File ===
     parser.add_argument('--config', type=str, 
                        default='prediction_generator_config.json',
                        help='Path to config JSON file')
+    
+    # === Required Input Files ===
     parser.add_argument('--survivors-forward', type=str, required=False,
                        help='Path to forward survivors JSON')
     parser.add_argument('--survivors-reverse', type=str,
-                       help='Path to reverse survivors JSON')
+                       help='Path to reverse survivors JSON (optional for dual-sieve)')
     parser.add_argument('--lottery-history', type=str, required=False,
                        help='Path to lottery history JSON')
+    
+    # === Model Configuration ===
     parser.add_argument('--models-dir', type=str, default='models/reinforcement',
-                       help='Directory containing best_model.meta.json')
+                       help='Directory containing best_model.meta.json (sidecar)')
     parser.add_argument('--parent-run-id', type=str, default=None,
-                       help='Parent run ID for lineage')
-    parser.add_argument('--no-require-schema', action='store_true',
-                       help='Allow prediction without feature schema (UNSAFE)')
-    parser.add_argument('--k', type=int, help='Number of top predictions')
-    parser.add_argument('--pool-size', type=int, help='Size of candidate pool')
-    parser.add_argument('--output-dir', type=str, help='Directory for output')
+                       help='Parent run ID for lineage (auto-reads from sidecar if not provided)')
+    
+    # === Pool Parameters ===
+    parser.add_argument('--k', type=int,
+                       help='Number of top predictions to return')
+    parser.add_argument('--pool-size', type=int,
+                       help='Size of candidate pool before ranking')
+    parser.add_argument('--confidence-threshold', type=float,
+                       help='Minimum confidence for high-confidence predictions')
+    
+    # === Ensemble Parameters ===
+    parser.add_argument('--ensemble-mode', type=str, 
+                       choices=['single', 'weighted', 'voting', 'stacking'],
+                       help='Ensemble combination method')
+    parser.add_argument('--forward-weight', type=float,
+                       help='Weight for forward sieve (0.5 = equal)')
+    parser.add_argument('--bidirectional-bonus', type=float,
+                       help='Multiplier for bidirectional survivors')
+    
+    # === Temporal Parameters ===
+    parser.add_argument('--temporal-decay', type=float,
+                       help='Decay factor for older scores (0.9-1.0)')
+    parser.add_argument('--recency-window', type=int,
+                       help='Number of recent draws to emphasize')
+    parser.add_argument('--drift-sensitivity', type=float,
+                       help='Sensitivity to PRNG drift detection (0.0-1.0)')
+    
+    # === Feature Parameters ===
+    parser.add_argument('--use-global-features', action='store_true', default=None,
+                       help='Include GlobalStateTracker features')
+    parser.add_argument('--no-global-features', action='store_true',
+                       help='Disable GlobalStateTracker features')
+    parser.add_argument('--skip-mode-preference', type=str,
+                       choices=['constant', 'variable', 'adaptive', 'both'],
+                       help='Which skip mode survivors to prefer')
+    
+    # === Output Parameters ===
+    parser.add_argument('--output-dir', type=str,
+                       help='Directory for prediction output files')
+    parser.add_argument('--explanation-verbosity', type=str,
+                       choices=['minimal', 'standard', 'detailed', 'debug'],
+                       help='Level of detail in output')
     parser.add_argument('--log-level', type=str,
-                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
-    parser.add_argument('--test', action='store_true', help='Run self-test')
-    parser.add_argument('--dry-run', action='store_true', help='Show config only')
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       help='Logging verbosity')
+    
+    # === Utility ===
+    parser.add_argument('--test', action='store_true',
+                       help='Run self-test')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Show configuration without running')
     
     args = parser.parse_args()
     
+    # Test mode
     if args.test:
         print("="*70)
-        print("PREDICTION GENERATOR v6.0 - SELF TEST")
+        print("PREDICTION GENERATOR - SELF TEST")
         print("="*70)
         config = PredictionConfig()
-        config.require_feature_schema = False
         logger = setup_logging(config)
         try:
             generator = PredictionGenerator(config, logger)
             print("✅ Generator initialized successfully")
-            print(f"   Version: 6.0")
-            print(f"   Signal gate: enabled")
-            print(f"   Per-survivor skip: enabled")
+            print(f"   PRNG: {config.prng_type}")
+            print(f"   Pool size: {config.pool_size}")
+            print(f"   GPU: {GPU_AVAILABLE}")
         except Exception as e:
             print(f"❌ Initialization failed: {e}")
             return 1
         print("\n✅ All tests passed!")
         return 0
     
+    # Validate args
     if not args.survivors_forward or not args.lottery_history:
         parser.error("--survivors-forward and --lottery-history required (or use --test)")
     
+    # Load config from file
     try:
         config = PredictionConfig.from_json(args.config)
     except Exception as e:
         print(f"Warning: Could not load config: {e}")
+        print("Using default config")
         config = PredictionConfig()
     
+    # Override config with CLI args (CLI takes precedence)
     if args.k is not None:
         config.k = args.k
     if args.pool_size is not None:
         config.pool_size = args.pool_size
+    if args.confidence_threshold is not None:
+        config.confidence_threshold = args.confidence_threshold
+    if args.ensemble_mode is not None:
+        config.ensemble_mode = args.ensemble_mode
+    if args.forward_weight is not None:
+        config.forward_weight = args.forward_weight
+    if args.bidirectional_bonus is not None:
+        config.bidirectional_bonus = args.bidirectional_bonus
+    if args.temporal_decay is not None:
+        config.temporal_decay = args.temporal_decay
+    if args.recency_window is not None:
+        config.recency_window = args.recency_window
+    if args.drift_sensitivity is not None:
+        config.drift_sensitivity = args.drift_sensitivity
+    if args.use_global_features:
+        config.use_global_features = True
+    if args.no_global_features:
+        config.use_global_features = False
+    if args.skip_mode_preference is not None:
+        config.skip_mode_preference = args.skip_mode_preference
     if args.output_dir is not None:
         config.predictions_dir = args.output_dir
+    if args.explanation_verbosity is not None:
+        config.explanation_verbosity = args.explanation_verbosity
     if args.log_level is not None:
         config.log_level = args.log_level
     if args.models_dir:
         config.models_dir = args.models_dir
-    if args.no_require_schema:
-        config.require_feature_schema = False
     
+    # Dry run - show config and exit
     if args.dry_run:
         print("="*70)
-        print("DRY RUN - Configuration (v6.0)")
+        print("DRY RUN - Configuration")
         print("="*70)
         for k, v in config.to_dict().items():
             print(f"  {k}: {v}")
+        print("="*70)
         return 0
     
     logger = setup_logging(config)
-    logger.info("=== Prediction Generator v6.0 Started ===")
+    logger.info("=== Prediction Generator Started ===")
     
+    # Load data
     with open(args.survivors_forward, 'r') as f:
         data = json.load(f)
         survivors_forward = data if isinstance(data, list) else data.get('survivors', data)
@@ -869,17 +797,26 @@ def main():
     with open(args.lottery_history, 'r') as f:
         data = json.load(f)
         lottery_history = data if isinstance(data, list) else data.get('draws', data)
+        # Handle dict format: [{'date': ..., 'draw': 123}, ...] -> [123, ...]
         if lottery_history and isinstance(lottery_history[0], dict):
             lottery_history = [d['draw'] for d in lottery_history]
     
     logger.info(f"Loaded {len(survivors_forward)} forward survivors")
+    if survivors_reverse:
+        logger.info(f"Loaded {len(survivors_reverse)} reverse survivors")
     logger.info(f"Loaded {len(lottery_history)} lottery draws")
     
+    # Initialize generator
     generator = PredictionGenerator(config, logger)
     
+    # Override parent_run_id from CLI if provided (Team Beta requirement)
     if args.parent_run_id:
         generator.parent_run_id = args.parent_run_id
+        logger.info(f"Using CLI parent_run_id: {args.parent_run_id}")
+    elif generator.parent_run_id:
+        logger.info(f"Using sidecar parent_run_id: {generator.parent_run_id}")
     
+    # Generate predictions
     result = generator.generate_predictions(
         survivors_forward,
         lottery_history,
@@ -887,17 +824,11 @@ def main():
         k=config.k
     )
     
-    if result.get('status') == 'prediction_skipped':
-        logger.warning("=== PREDICTION SKIPPED ===")
-        logger.warning(f"Reason: {result.get('reason')}")
-        logger.warning(f"Recovery authority: {result.get('recovery_authority')}")
-    else:
-        logger.info("=== PREDICTIONS ===")
-        for i, (num, conf) in enumerate(zip(result['predictions'], result['confidence_scores']), 1):
-            logger.info(f"{i}. {num:03d} (confidence: {conf:.4f})")
-    
+    # Display results
+    logger.info("=== PREDICTIONS ===")
+    for i, (num, conf) in enumerate(zip(result['predictions'], result['confidence_scores']), 1):
+        logger.info(f"{i}. {num:03d} (confidence: {conf:.4f})")
     logger.info("=== Complete ===")
-    return 0
 
 
 if __name__ == "__main__":

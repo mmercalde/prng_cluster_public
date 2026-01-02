@@ -1,0 +1,192 @@
+{
+  "agent_name": "prediction_agent",
+  "description": "Step 6: Final prediction generation using trained ML model. Loads model type from best_model.meta.json sidecar (v3.2.1). Produces high-confidence prediction pools with statistical explanations. Now includes GlobalStateTracker for 14 global features.",
+  "pipeline_step": 6,
+  "version": "1.5.0",
+  "feature_registry": "config_manifests/feature_registry.json",
+  "inputs": [
+    "models/reinforcement/best_model.meta.json",
+    "survivors_with_scores.json",
+    "lottery_file",
+    "optimal_window_config.json"
+  ],
+  "outputs": [
+    "prediction_pool.json",
+    "confidence_map.json",
+    "statistical_explanation.json",
+    "next_draw_recommendations.json"
+  ],
+  "actions": [
+    {
+      "type": "run_script",
+      "script": "prediction_generator.py",
+      "args_map": {
+        "models-dir": "models_dir",
+        "survivors-forward": "survivors_forward_file",
+        "survivors-reverse": "survivors_reverse_file",
+        "lottery-history": "lottery_history_file",
+        "k": "pool_size",
+        "config": "config_file"
+      },
+      "distributed": false,
+      "timeout_minutes": 60
+    }
+  ],
+  "follow_up_agents": [],
+  "success_condition": "prediction_pool.json exists AND best_model.meta.json was validated AND pool has entries >= min_pool_size",
+  "retry": 2,
+  "parameter_bounds": {
+    "pool_size": {
+      "type": "int",
+      "min": 5,
+      "max": 100,
+      "default": 20,
+      "description": "Number of top candidates to include in prediction pool.",
+      "optimized_by": "Manual",
+      "effect": "Larger pool = more coverage but lower average confidence."
+    },
+    "confidence_threshold": {
+      "type": "float",
+      "min": 0.5,
+      "max": 0.95,
+      "default": 0.7,
+      "description": "Minimum confidence score to include in prediction pool.",
+      "optimized_by": "Optuna TPE from Step 5",
+      "effect": "Higher = fewer but more confident predictions."
+    },
+    "ensemble_mode": {
+      "type": "choice",
+      "choices": [
+        "single",
+        "weighted",
+        "voting",
+        "stacking"
+      ],
+      "default": "weighted",
+      "description": "Method for combining multiple survivor predictions.",
+      "optimized_by": "Manual",
+      "effect": "weighted = best for continuous scores. voting = best for discrete."
+    },
+    "temporal_decay": {
+      "type": "float",
+      "min": 0.9,
+      "max": 1.0,
+      "default": 0.98,
+      "description": "Decay factor for older survivor scores in prediction.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Lower decay = more weight on recent patterns. 0.98 typical."
+    },
+    "drift_sensitivity": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.3,
+      "description": "Sensitivity to PRNG drift detection signals from GlobalStateTracker.",
+      "optimized_by": "Manual",
+      "effect": "Higher = more responsive to regime changes but less stable."
+    },
+    "forward_weight": {
+      "type": "float",
+      "min": 0.3,
+      "max": 0.7,
+      "default": 0.5,
+      "description": "Weight for forward sieve survivors vs reverse in ensemble.",
+      "optimized_by": "Optuna TPE",
+      "effect": "0.5 = equal weight. Higher = favor forward sieve predictions."
+    },
+    "bidirectional_bonus": {
+      "type": "float",
+      "min": 1.0,
+      "max": 3.0,
+      "default": 1.5,
+      "description": "Multiplier for survivors that appear in BOTH forward and reverse sieves.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher = strongly favor bidirectional consensus survivors."
+    },
+    "recency_window": {
+      "type": "int",
+      "min": 10,
+      "max": 100,
+      "default": 30,
+      "description": "Number of recent draws to emphasize in prediction.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Smaller = focus on very recent patterns. 20-50 typical."
+    },
+    "min_survivor_history": {
+      "type": "int",
+      "min": 5,
+      "max": 50,
+      "default": 10,
+      "description": "Minimum historical matches required to include survivor in pool.",
+      "optimized_by": "Manual",
+      "effect": "Higher = more vetted survivors but smaller pool."
+    },
+    "skip_mode_preference": {
+      "type": "choice",
+      "choices": [
+        "constant",
+        "variable",
+        "adaptive",
+        "both"
+      ],
+      "default": "adaptive",
+      "description": "Which skip mode survivors to prefer in predictions.",
+      "optimized_by": "ML from Step 5",
+      "effect": "adaptive = use ML-learned preference. both = no preference."
+    },
+    "explanation_verbosity": {
+      "type": "choice",
+      "choices": [
+        "minimal",
+        "standard",
+        "detailed",
+        "debug"
+      ],
+      "default": "standard",
+      "description": "Level of detail in statistical explanation output.",
+      "optimized_by": "Manual",
+      "effect": "debug = full feature dumps for analysis."
+    },
+    "models_dir": {
+      "type": "string",
+      "default": "models/reinforcement",
+      "description": "Directory containing best_model.meta.json (sidecar determines model type).",
+      "optimized_by": "Manual",
+      "effect": "Model type and checkpoint path loaded from sidecar, not inferred from extension."
+    },
+    "use_global_features": {
+      "type": "bool",
+      "default": true,
+      "description": "Whether to include GlobalStateTracker features in prediction.",
+      "optimized_by": "Manual",
+      "effect": "Enables regime change detection and temporal stability analysis."
+    }
+  },
+  "success_metrics": {
+    "min_pool_size": 5,
+    "min_average_confidence": 0.6,
+    "max_pool_variance": 0.2
+  },
+  "default_params": {
+    "config": "reinforcement_engine_config.json",
+    "survivors_forward": "forward_survivors.json",
+    "survivors_reverse": "reverse_survivors.json",
+    "lottery_history": "synthetic_lottery.json",
+    "k": 20,
+    "pool_size": 20,
+    "confidence_threshold": 0.7,
+    "ensemble_mode": "weighted",
+    "models_dir": "models/reinforcement"
+  },
+  "evaluation_params": {
+    "confidence_formula": "pool_quality",
+    "confidence_base": 0.7,
+    "confidence_cap": 0.95,
+    "min_pool_size": 5,
+    "min_average_confidence": 0.6
+  },
+  "changelog": {
+    "1.5.0": "Added GlobalStateTracker integration, fixed script name to prediction_generator.py",
+    "1.4.0": "Initial sidecar-based model loading"
+  }
+}

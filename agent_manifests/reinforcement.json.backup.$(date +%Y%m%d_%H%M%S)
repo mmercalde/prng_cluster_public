@@ -1,0 +1,231 @@
+{
+  "agent_name": "reinforcement_agent",
+  "description": "Step 5: Distributed K-fold anti-overfit training using reinforcement learning. Trains final production model across 26 GPUs with cross-validation.",
+  "pipeline_step": 5,
+  "version": "1.4.0",
+  "feature_registry": "config_manifests/feature_registry.json",
+  "inputs": [
+    "survivors_with_scores.json",
+    "reinforcement_engine_config.json",
+    "best_model_architecture.json"
+  ],
+  "outputs": [
+    "models/reinforcement/best_model.pth",
+    "models/reinforcement/best_model.meta.json",
+    "models/reinforcement/training_history.json",
+    "anti_overfit_validation_results.json"
+  ],
+  "actions": [
+    {
+      "type": "run_script",
+      "script": "generate_kfold_jobs.py",
+      "args_map": {
+        "data-file": "survivors_with_scores_file",
+        "config-file": "reinforcement_engine_config_file",
+        "k-folds": "k_folds",
+        "trials-per-fold": "trials_per_fold"
+      },
+      "distributed": false,
+      "timeout_minutes": 10
+    },
+    {
+      "type": "run_distributed",
+      "script": "anti_overfit_trial_worker.py",
+      "args_map": {
+        "job-file": "job_file",
+        "gpu-id": "gpu_id",
+        "model-config": "model_config_file"
+      },
+      "distributed": true,
+      "timeout_minutes": 300
+    },
+    {
+      "type": "aggregate",
+      "script": "aggregate_reinforcement_shards.py",
+      "args_map": {
+        "input-dir": "training_shards_dir",
+        "output-dir": "models_output_dir",
+        "best-model-file": "best_model_file"
+      },
+      "distributed": false,
+      "timeout_minutes": 30
+    }
+  ],
+  "follow_up_agents": [
+    "prediction_agent"
+  ],
+  "success_condition": "best_model.meta.json exists AND validation_metrics show acceptable performance",
+  "retry": 1,
+  "parameter_bounds": {
+    "k_folds": {
+      "type": "int",
+      "min": 3,
+      "max": 15,
+      "default": 5,
+      "description": "Number of cross-validation folds for anti-overfit training.",
+      "optimized_by": "Optuna TPE",
+      "effect": "More folds = more robust validation but longer training. 5-10 typical."
+    },
+    "trials_per_fold": {
+      "type": "int",
+      "min": 10,
+      "max": 100,
+      "default": 50,
+      "description": "Number of Optuna trials per K-fold split.",
+      "optimized_by": "Optuna TPE",
+      "effect": "More trials = better hyperparameter tuning per fold."
+    },
+    "epochs_min": {
+      "type": "int",
+      "min": 10,
+      "max": 50,
+      "default": 20,
+      "description": "Minimum training epochs per trial.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Too few epochs = underfitting. Early stopping may trigger first."
+    },
+    "epochs_max": {
+      "type": "int",
+      "min": 50,
+      "max": 500,
+      "default": 200,
+      "description": "Maximum training epochs per trial.",
+      "optimized_by": "Optuna TPE",
+      "effect": "More epochs allows deeper convergence. Early stopping prevents waste."
+    },
+    "early_stopping_patience": {
+      "type": "int",
+      "min": 5,
+      "max": 50,
+      "default": 20,
+      "description": "Epochs to wait before early stopping if no improvement.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher patience = more chance to recover from local minima."
+    },
+    "batch_size": {
+      "type": "int",
+      "min": 16,
+      "max": 256,
+      "default": 64,
+      "description": "Training batch size.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Larger = faster but less stable gradients. 32-128 typical."
+    },
+    "learning_rate": {
+      "type": "float",
+      "min": 1e-05,
+      "max": 0.01,
+      "default": 0.001,
+      "description": "Initial learning rate (uses scheduler).",
+      "optimized_by": "Optuna TPE",
+      "effect": "Discovered in Step 4, fine-tuned here."
+    },
+    "lr_scheduler_factor": {
+      "type": "float",
+      "min": 0.1,
+      "max": 0.9,
+      "default": 0.5,
+      "description": "Factor to reduce learning rate on plateau.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Lower = more aggressive LR reduction."
+    },
+    "lr_scheduler_patience": {
+      "type": "int",
+      "min": 3,
+      "max": 20,
+      "default": 10,
+      "description": "Epochs to wait before reducing LR.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher = more stable but slower adaptation."
+    },
+    "gradient_clip_norm": {
+      "type": "float",
+      "min": 0.5,
+      "max": 5.0,
+      "default": 1.0,
+      "description": "Maximum gradient norm for clipping.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Prevents exploding gradients. 1.0 is standard."
+    },
+    "validation_split": {
+      "type": "float",
+      "min": 0.1,
+      "max": 0.3,
+      "default": 0.2,
+      "description": "Fraction of fold data for validation (within each fold).",
+      "optimized_by": "Manual",
+      "effect": "20% provides reasonable validation signal."
+    },
+    "reinforce_weight": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "description": "Weight for reinforcement learning component vs supervised.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Higher = more reinforcement signal from survivor patterns."
+    },
+    "temporal_window": {
+      "type": "int",
+      "min": 10,
+      "max": 200,
+      "default": 50,
+      "description": "Historical window for temporal features in reinforcement.",
+      "optimized_by": "Optuna TPE",
+      "effect": "Larger = more historical context but slower training."
+    },
+    "model_type": {
+      "type": "categorical",
+      "choices": [
+        "neural_net",
+        "xgboost",
+        "lightgbm",
+        "catboost"
+      ],
+      "default": "neural_net",
+      "description": "ML model type for training. neural_net runs on all 26 GPUs, others run on Zeus only.",
+      "optimized_by": "Manual or --compare-models",
+      "effect": "Different models may perform better on different data characteristics."
+    },
+    "compare_models": {
+      "type": "bool",
+      "default": false,
+      "description": "If true, train all 4 model types and select best performer.",
+      "optimized_by": "Manual",
+      "effect": "Finds optimal model type at cost of 4x training time."
+    },
+    "output_dir": {
+      "type": "string",
+      "default": "models/reinforcement",
+      "description": "Output directory for model checkpoint and sidecar metadata.",
+      "optimized_by": "Manual",
+      "effect": "Determines where best_model.* and best_model.meta.json are saved."
+    }
+  },
+  "success_metrics": {
+    "min_completed_folds": 3,
+    "target_validation_loss": 0.3,
+    "max_overfit_ratio": 1.5,
+    "min_validation_accuracy": 0.6
+  },
+  "default_params": {
+    "survivors": "survivors_with_scores.json",
+    "lottery_data": "synthetic_lottery.json",
+    "trials": 50,
+    "k_folds": 5,
+    "test_holdout": 0.2,
+    "study_name": "anti_overfit_study",
+    "storage": "sqlite:///optuna_studies/anti_overfit.db",
+    "model_type": "neural_net",
+    "compare_models": false,
+    "output_dir": "models/reinforcement"
+  },
+  "evaluation_params": {
+    "confidence_formula": "overfit_ratio",
+    "confidence_base": 0.7,
+    "confidence_cap": 0.95,
+    "max_overfit_ratio": 1.5,
+    "target_validation_loss": 0.3,
+    "min_completed_folds": 3
+  }
+}

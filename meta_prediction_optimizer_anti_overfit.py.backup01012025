@@ -1,0 +1,1236 @@
+#!/usr/bin/env python3
+"""
+Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION
+=====================================================
+
+Pipeline Step 5: Train ML models with anti-overfitting measures
+
+Version: 3.0.0 (Team Beta Approved - Signal Quality Gate)
+
+Features:
+- Multi-model support (neural_net, xgboost, lightgbm, catboost, random_forest)
+- K-fold cross-validation with holdout test set
+- Optuna hyperparameter optimization with persistence
+- Signal quality emission to sidecar (v2.1 autonomy design)
+- Feature schema hash for Step 6 validation
+- Agent metadata injection for pipeline lineage
+
+v3.0.0 Changes:
+- P0: Signal quality emission to sidecar
+- P0: compute_signal_quality() function
+- P0: prediction_allowed boolean gate
+
+Author: Distributed PRNG Analysis System
+Date: January 1, 2026
+"""
+
+import json
+import hashlib
+import numpy as np
+from pathlib import Path
+from typing import Dict, List, Any, Tuple, Optional, Union
+from dataclasses import dataclass, asdict, field
+import optuna
+from optuna.samplers import TPESampler
+import logging
+import time
+import sys
+import subprocess
+from datetime import datetime
+from sklearn.model_selection import KFold
+
+# Agent metadata injection
+try:
+    from integration.metadata_writer import inject_agent_metadata
+    METADATA_WRITER_AVAILABLE = True
+except ImportError:
+    METADATA_WRITER_AVAILABLE = False
+    def inject_agent_metadata(data, **kwargs):
+        return data
+
+# ============================================================================
+# EARLY CUDA INITIALIZATION
+# ============================================================================
+
+def initialize_cuda_early():
+    """Initialize CUDA before any model operations"""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = torch.device('cuda:0')
+            torch.cuda.set_device(device)
+            _ = torch.zeros(1).to(device)
+            if torch.cuda.device_count() > 1:
+                for i in range(torch.cuda.device_count()):
+                    device_i = torch.device(f'cuda:{i}')
+                    _ = torch.zeros(1).to(device_i)
+            return True
+    except:
+        pass
+    return False
+
+CUDA_INITIALIZED = initialize_cuda_early()
+
+
+# ============================================================================
+# SIGNAL QUALITY COMPUTATION (Team Beta Approved v2.1)
+# ============================================================================
+
+def compute_signal_quality(y: np.ndarray, target_name: str = "holdout_hits") -> Dict:
+    """
+    Compute signal quality metrics for sidecar.
+    
+    Called during Step 5 before saving model metadata.
+    This is the SINGLE SOURCE OF TRUTH for signal quality.
+    Step 6 consumes this; it does NOT recompute.
+    
+    Architectural Rule (Team Beta v2.1):
+        "Learning steps declare signal quality; execution steps act only on 
+         declared usable signals; control agents decide recovery."
+    
+    Args:
+        y: Target values (holdout_hits)
+        target_name: Name of target variable
+        
+    Returns:
+        signal_quality dict for sidecar
+    """
+    y = np.asarray(y).flatten()
+    
+    # Core metrics
+    sample_count = len(y)
+    unique_values = len(np.unique(y)) if sample_count > 0 else 0
+    variance = float(np.var(y)) if sample_count > 0 else 0.0
+    nonzero_count = int(np.sum(y > 0)) if sample_count > 0 else 0
+    nonzero_ratio = nonzero_count / sample_count if sample_count > 0 else 0.0
+    observed_mean = float(np.mean(y)) if sample_count > 0 else 0.0
+    observed_std = float(np.std(y)) if sample_count > 0 else 0.0
+    observed_min = float(np.min(y)) if sample_count > 0 else 0.0
+    observed_max = float(np.max(y)) if sample_count > 0 else 0.0
+    
+    # Determine signal status and prediction_allowed
+    if sample_count == 0:
+        status = "no_data"
+        confidence = 0.0
+        prediction_allowed = False
+    elif unique_values == 1:
+        status = "degenerate"
+        confidence = 0.0
+        prediction_allowed = False
+    elif variance < 1e-10:
+        status = "degenerate"
+        confidence = 0.0
+        prediction_allowed = False
+    elif nonzero_ratio < 0.001:  # Less than 0.1% non-zero
+        status = "sparse"
+        confidence = 0.2
+        prediction_allowed = False  # Too sparse to trust
+    elif nonzero_ratio < 0.01:  # Less than 1% non-zero
+        status = "sparse"
+        confidence = 0.4
+        prediction_allowed = True  # Allow but flag
+    else:
+        status = "usable"
+        # Confidence scales with variance and non-zero ratio
+        confidence = min(1.0, (nonzero_ratio * 2) + (min(variance, 0.1) * 5))
+        prediction_allowed = True
+    
+    return {
+        # === Core Identity ===
+        "target_name": target_name,
+        "derived_by": "step5_anti_overfit",
+        "timestamp": datetime.now().isoformat(),
+        
+        # === Sample Statistics ===
+        "sample_count": sample_count,
+        "unique_target_values": unique_values,
+        
+        # === Distribution Metrics ===
+        "target_variance": variance,
+        "observed_mean": observed_mean,
+        "observed_std": observed_std,
+        "observed_min": observed_min,
+        "observed_max": observed_max,
+        
+        # === Non-zero Analysis ===
+        "nonzero_count": nonzero_count,
+        "nonzero_ratio": nonzero_ratio,
+        
+        # === Signal Assessment ===
+        "signal_status": status,  # degenerate | sparse | usable | no_data
+        "signal_confidence": confidence,
+        
+        # === Execution Gate (Team Beta Refinement #2) ===
+        "prediction_allowed": prediction_allowed
+    }
+
+
+# ============================================================================
+# FEATURE SCHEMA UTILITIES
+# ============================================================================
+
+def get_feature_schema_from_survivors(survivors_file: str, survivors_data: List[Dict] = None) -> Dict:
+    """
+    Extract feature schema from survivors file.
+    
+    Args:
+        survivors_file: Path to survivors JSON
+        survivors_data: Pre-loaded survivors (optional)
+        
+    Returns:
+        Feature schema dict with names, count, and hash
+    """
+    if survivors_data is None:
+        with open(survivors_file, 'r') as f:
+            survivors_data = json.load(f)
+    
+    # Handle different data formats
+    if isinstance(survivors_data, dict) and 'survivors' in survivors_data:
+        survivors_list = survivors_data['survivors']
+    else:
+        survivors_list = survivors_data
+    
+    # Find first survivor with features
+    feature_names = []
+    for survivor in survivors_list:
+        if isinstance(survivor, dict) and 'features' in survivor:
+            features = survivor['features']
+            # Exclude non-feature fields
+            exclude = {'score', 'confidence', 'seed', 'holdout_hits'}
+            feature_names = sorted([k for k in features.keys() if k not in exclude])
+            break
+    
+    if not feature_names:
+        raise ValueError(f"No features found in survivors file: {survivors_file}")
+    
+    # Compute hash
+    names_str = ",".join(feature_names)
+    feature_hash = hashlib.sha256(names_str.encode('utf-8')).hexdigest()[:16]
+    
+    return {
+        "source_file": str(Path(survivors_file).resolve()),
+        "feature_count": len(feature_names),
+        "per_seed_feature_names": feature_names,
+        "ordering": "lexicographic_by_key",
+        "feature_schema_hash": feature_hash
+    }
+
+
+# ============================================================================
+# VALIDATION METRICS
+# ============================================================================
+
+@dataclass
+class ValidationMetrics:
+    """Comprehensive validation metrics to detect overfitting"""
+    train_variance: float
+    val_variance: float
+    test_variance: float
+    train_mae: float
+    val_mae: float
+    test_mae: float
+    overfit_ratio: float
+    variance_consistency: float
+    temporal_stability: float
+    p_value: float
+    confidence_interval: Tuple[float, float]
+    
+    # v3.0: Additional metrics
+    train_mse: float = 0.0
+    val_mse: float = 0.0
+    test_mse: float = 0.0
+    r2_score: float = 0.0
+
+    def is_overfitting(self) -> bool:
+        """Detect if model is overfitting"""
+        return (
+            self.overfit_ratio > 1.5 or
+            self.test_mae > self.val_mae * 1.3 or
+            self.p_value > 0.05
+        )
+
+    def composite_score(self) -> float:
+        """Composite score that penalizes overfitting"""
+        penalty = 0.5 if self.is_overfitting() else 1.0
+        score = (
+            self.test_variance * 10.0 +
+            (1.0 / (self.test_mae + 0.01)) * 5.0 +
+            self.variance_consistency * 3.0 +
+            self.temporal_stability * 2.0 +
+            (1.0 - self.p_value) * 2.0
+        ) * penalty
+        return score
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary"""
+        return asdict(self)
+
+
+# ============================================================================
+# MODEL TRAINING CONFIGURATION
+# ============================================================================
+
+@dataclass
+class TrainingConfig:
+    """Configuration for model training"""
+    # Model parameters
+    model_type: str = "neural_net"
+    hidden_layers: List[int] = field(default_factory=lambda: [128, 64, 32])
+    dropout: float = 0.3
+    
+    # Training parameters
+    learning_rate: float = 0.001
+    batch_size: int = 128
+    epochs: int = 100
+    early_stopping_patience: int = 10
+    early_stopping_min_delta: float = 0.0001
+    
+    # Regularization
+    weight_decay: float = 0.0001
+    gradient_clip: float = 1.0
+    
+    # XGBoost/LightGBM/CatBoost specific
+    n_estimators: int = 200
+    max_depth: int = 6
+    
+    # Output
+    output_dir: str = "models/reinforcement"
+    
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+# ============================================================================
+# MULTI-MODEL TRAINER
+# ============================================================================
+
+class MultiModelTrainer:
+    """
+    Train and compare multiple ML model types.
+    
+    Supported models:
+    - neural_net: PyTorch neural network
+    - xgboost: XGBoost gradient boosting
+    - lightgbm: LightGBM gradient boosting
+    - catboost: CatBoost gradient boosting
+    - random_forest: scikit-learn RandomForest
+    """
+    
+    # Safe model training order (LightGBM last due to OpenCL conflicts)
+    SAFE_MODEL_ORDER = ["neural_net", "catboost", "xgboost", "random_forest", "lightgbm"]
+    
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self.models = {}
+        self.results = {}
+    
+    def train_model(
+        self,
+        model_type: str,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        config: TrainingConfig
+    ) -> Tuple[Any, Dict]:
+        """
+        Train a single model type.
+        
+        Returns:
+            model: Trained model
+            metrics: Training metrics dict
+        """
+        self.logger.info(f"Training {model_type}...")
+        start_time = time.time()
+        
+        try:
+            if model_type == "neural_net":
+                model, metrics = self._train_neural_net(X_train, y_train, X_val, y_val, config)
+            elif model_type == "xgboost":
+                model, metrics = self._train_xgboost(X_train, y_train, X_val, y_val, config)
+            elif model_type == "lightgbm":
+                model, metrics = self._train_lightgbm(X_train, y_train, X_val, y_val, config)
+            elif model_type == "catboost":
+                model, metrics = self._train_catboost(X_train, y_train, X_val, y_val, config)
+            elif model_type == "random_forest":
+                model, metrics = self._train_random_forest(X_train, y_train, X_val, y_val, config)
+            else:
+                raise ValueError(f"Unknown model type: {model_type}")
+            
+            duration = time.time() - start_time
+            metrics['training_time_seconds'] = duration
+            metrics['model_type'] = model_type
+            
+            self.logger.info(f"  {model_type} trained in {duration:.1f}s")
+            self.logger.info(f"  Val MSE: {metrics.get('val_mse', 'N/A')}")
+            
+            return model, metrics
+            
+        except Exception as e:
+            self.logger.error(f"  {model_type} training failed: {e}")
+            return None, {'error': str(e), 'model_type': model_type}
+    
+    def _train_neural_net(self, X_train, y_train, X_val, y_val, config) -> Tuple[Any, Dict]:
+        """Train PyTorch neural network"""
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader, TensorDataset
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Build network
+        layers = []
+        input_size = X_train.shape[1]
+        for hidden_size in config.hidden_layers:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(config.dropout))
+            input_size = hidden_size
+        layers.append(nn.Linear(input_size, 1))
+        
+        model = nn.Sequential(*layers).to(device)
+        
+        # Prepare data
+        X_train_t = torch.FloatTensor(X_train).to(device)
+        y_train_t = torch.FloatTensor(y_train).reshape(-1, 1).to(device)
+        X_val_t = torch.FloatTensor(X_val).to(device)
+        y_val_t = torch.FloatTensor(y_val).reshape(-1, 1).to(device)
+        
+        train_dataset = TensorDataset(X_train_t, y_train_t)
+        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+        
+        # Train
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, 
+                                       weight_decay=config.weight_decay)
+        criterion = nn.MSELoss()
+        
+        best_val_loss = float('inf')
+        patience_counter = 0
+        
+        for epoch in range(config.epochs):
+            model.train()
+            for batch_X, batch_y in train_loader:
+                optimizer.zero_grad()
+                output = model(batch_X)
+                loss = criterion(output, batch_y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                optimizer.step()
+            
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                val_pred = model(X_val_t)
+                val_loss = criterion(val_pred, y_val_t).item()
+            
+            if val_loss < best_val_loss - config.early_stopping_min_delta:
+                best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= config.early_stopping_patience:
+                    break
+        
+        # Final metrics
+        model.eval()
+        with torch.no_grad():
+            train_pred = model(X_train_t).cpu().numpy().flatten()
+            val_pred = model(X_val_t).cpu().numpy().flatten()
+        
+        train_mse = float(np.mean((train_pred - y_train) ** 2))
+        val_mse = float(np.mean((val_pred - y_val) ** 2))
+        
+        return model, {
+            'train_mse': train_mse,
+            'val_mse': val_mse,
+            'epochs_trained': epoch + 1,
+            'device': str(device)
+        }
+    
+    def _train_xgboost(self, X_train, y_train, X_val, y_val, config) -> Tuple[Any, Dict]:
+        """Train XGBoost model"""
+        import xgboost as xgb
+        
+        params = {
+            'objective': 'reg:squarederror',
+            'max_depth': config.max_depth,
+            'learning_rate': config.learning_rate,
+            'n_estimators': config.n_estimators,
+            'tree_method': 'hist',
+            'device': 'cuda' if CUDA_INITIALIZED else 'cpu',
+            'verbosity': 0
+        }
+        
+        model = xgb.XGBRegressor(**params)
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            verbose=False
+        )
+        
+        train_pred = model.predict(X_train)
+        val_pred = model.predict(X_val)
+        
+        return model, {
+            'train_mse': float(np.mean((train_pred - y_train) ** 2)),
+            'val_mse': float(np.mean((val_pred - y_val) ** 2))
+        }
+    
+    def _train_lightgbm(self, X_train, y_train, X_val, y_val, config) -> Tuple[Any, Dict]:
+        """Train LightGBM model"""
+        import lightgbm as lgb
+        
+        params = {
+            'objective': 'regression',
+            'metric': 'mse',
+            'max_depth': config.max_depth,
+            'learning_rate': config.learning_rate,
+            'n_estimators': config.n_estimators,
+            'verbosity': -1,
+            'force_row_wise': True
+        }
+        
+        model = lgb.LGBMRegressor(**params)
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+        )
+        
+        train_pred = model.predict(X_train)
+        val_pred = model.predict(X_val)
+        
+        return model, {
+            'train_mse': float(np.mean((train_pred - y_train) ** 2)),
+            'val_mse': float(np.mean((val_pred - y_val) ** 2))
+        }
+    
+    def _train_catboost(self, X_train, y_train, X_val, y_val, config) -> Tuple[Any, Dict]:
+        """Train CatBoost model"""
+        from catboost import CatBoostRegressor
+        
+        # Check for multiple GPUs
+        task_type = 'GPU' if CUDA_INITIALIZED else 'CPU'
+        devices = '0:1' if CUDA_INITIALIZED else None
+        
+        model = CatBoostRegressor(
+            iterations=config.n_estimators,
+            depth=config.max_depth,
+            learning_rate=config.learning_rate,
+            loss_function='RMSE',
+            task_type=task_type,
+            devices=devices,
+            verbose=False
+        )
+        
+        model.fit(
+            X_train, y_train,
+            eval_set=(X_val, y_val),
+            verbose=False
+        )
+        
+        train_pred = model.predict(X_train)
+        val_pred = model.predict(X_val)
+        
+        return model, {
+            'train_mse': float(np.mean((train_pred - y_train) ** 2)),
+            'val_mse': float(np.mean((val_pred - y_val) ** 2))
+        }
+    
+    def _train_random_forest(self, X_train, y_train, X_val, y_val, config) -> Tuple[Any, Dict]:
+        """Train Random Forest model"""
+        from sklearn.ensemble import RandomForestRegressor
+        
+        model = RandomForestRegressor(
+            n_estimators=config.n_estimators,
+            max_depth=config.max_depth,
+            n_jobs=-1,
+            random_state=42
+        )
+        
+        model.fit(X_train, y_train)
+        
+        train_pred = model.predict(X_train)
+        val_pred = model.predict(X_val)
+        
+        return model, {
+            'train_mse': float(np.mean((train_pred - y_train) ** 2)),
+            'val_mse': float(np.mean((val_pred - y_val) ** 2))
+        }
+    
+    def save_model(
+        self,
+        model: Any,
+        model_type: str,
+        output_dir: str,
+        feature_schema: Dict,
+        training_metrics: Dict,
+        signal_quality: Dict,
+        hyperparameters: Dict,
+        provenance: Dict,
+        parent_run_id: Optional[str] = None
+    ) -> str:
+        """
+        Save model with sidecar metadata.
+        
+        v3.0: Includes signal_quality for Step 6 gate.
+        
+        Args:
+            model: Trained model
+            model_type: Type of model
+            output_dir: Output directory
+            feature_schema: Feature schema dict
+            training_metrics: Training metrics
+            signal_quality: Signal quality dict (Team Beta v2.1)
+            hyperparameters: Model hyperparameters
+            provenance: Training provenance
+            parent_run_id: Parent run ID for lineage
+            
+        Returns:
+            Path to saved model checkpoint
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Determine file extension and save model
+        if model_type == "neural_net":
+            import torch
+            checkpoint_path = output_path / "best_model.pth"
+            torch.save(model.state_dict(), checkpoint_path)
+        elif model_type == "xgboost":
+            checkpoint_path = output_path / "best_model.xgb"
+            model.save_model(str(checkpoint_path))
+        elif model_type == "lightgbm":
+            checkpoint_path = output_path / "best_model.lgb"
+            model.booster_.save_model(str(checkpoint_path))
+        elif model_type == "catboost":
+            checkpoint_path = output_path / "best_model.cbm"
+            model.save_model(str(checkpoint_path))
+        elif model_type == "random_forest":
+            import joblib
+            checkpoint_path = output_path / "best_model.joblib"
+            joblib.dump(model, checkpoint_path)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+        
+        # Build sidecar metadata
+        run_id = f"step5_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        sidecar = {
+            "schema_version": "3.0.0",
+            "model_type": model_type,
+            "checkpoint_path": str(checkpoint_path),
+            
+            # Feature schema (for Step 6 validation)
+            "feature_schema": feature_schema,
+            
+            # Signal quality (Team Beta v2.1 - for Step 6 gate)
+            "signal_quality": signal_quality,
+            
+            # Training results
+            "training_metrics": training_metrics,
+            "hyperparameters": hyperparameters,
+            
+            # Provenance
+            "provenance": provenance,
+            
+            # Agent metadata
+            "agent_metadata": {
+                "run_id": run_id,
+                "parent_run_id": parent_run_id,
+                "pipeline_step": 5,
+                "pipeline_step_name": "anti_overfit_training",
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        # Inject full agent metadata if available
+        if METADATA_WRITER_AVAILABLE:
+            sidecar = inject_agent_metadata(
+                sidecar,
+                inputs=[{"file": provenance.get("survivors_file", "survivors_with_scores.json"), "required": True}],
+                outputs=[str(checkpoint_path), str(output_path / "best_model.meta.json")],
+                parent_run_id=parent_run_id,
+                pipeline_step=5,
+                follow_up_agent="prediction_agent",
+                confidence=signal_quality.get("signal_confidence", 0.5),
+                reasoning=f"Trained {model_type} model. Signal status: {signal_quality.get('signal_status', 'unknown')}"
+            )
+        
+        # Save sidecar
+        sidecar_path = output_path / "best_model.meta.json"
+        with open(sidecar_path, 'w') as f:
+            json.dump(sidecar, f, indent=2)
+        
+        self.logger.info(f"Model saved: {checkpoint_path}")
+        self.logger.info(f"Sidecar saved: {sidecar_path}")
+        self.logger.info(f"Signal quality: {signal_quality.get('signal_status', 'unknown')}")
+        self.logger.info(f"Prediction allowed: {signal_quality.get('prediction_allowed', 'unknown')}")
+        
+        return str(checkpoint_path)
+
+
+# ============================================================================
+# ANTI-OVERFIT META OPTIMIZER
+# ============================================================================
+
+class AntiOverfitMetaOptimizer:
+    """
+    Meta-optimizer with strong anti-overfitting measures.
+    
+    v3.0 Features:
+    - Multi-model support with --compare-models
+    - Signal quality emission to sidecar
+    - Feature schema validation
+    - Optuna study persistence
+    """
+
+    def __init__(
+        self,
+        survivors_file: str,
+        lottery_data_file: str,
+        output_dir: str = "models/reinforcement",
+        k_folds: int = 5,
+        test_holdout_pct: float = 0.2,
+        study_name: str = None,
+        storage: str = None,
+        parent_run_id: str = None
+    ):
+        """
+        Initialize anti-overfit meta-optimizer.
+        
+        Args:
+            survivors_file: Path to survivors_with_scores.json
+            lottery_data_file: Path to lottery history JSON
+            output_dir: Output directory for models
+            k_folds: Number of CV folds
+            test_holdout_pct: Fraction held out for final test
+            study_name: Optuna study name
+            storage: Optuna storage path
+            parent_run_id: Parent run ID from Step 4
+        """
+        self.survivors_file = survivors_file
+        self.lottery_data_file = lottery_data_file
+        self.output_dir = output_dir
+        self.k_folds = k_folds
+        self.test_holdout_pct = test_holdout_pct
+        self.parent_run_id = parent_run_id
+        
+        # Optuna persistence
+        self.study_name = study_name or f"anti_overfit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.storage = storage or 'sqlite:///optuna_studies.db'
+        
+        # Setup logging
+        self.logger = logging.getLogger(__name__)
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        # Load data
+        self._load_data()
+        
+        # Results tracking
+        self.best_model = None
+        self.best_model_type = None
+        self.best_metrics = None
+        self.feature_schema = None
+        self.signal_quality = None
+        self.optimization_history = []
+        self.trial_times = []
+        self.n_trials_total = None
+        
+        # Multi-model trainer
+        self.trainer = MultiModelTrainer(self.logger)
+    
+    def _load_data(self):
+        """Load survivors and lottery data"""
+        self.logger.info("Loading data...")
+        
+        # Load survivors
+        with open(self.survivors_file, 'r') as f:
+            data = json.load(f)
+        
+        if isinstance(data, dict) and 'survivors' in data:
+            survivors_list = data['survivors']
+        else:
+            survivors_list = data
+        
+        # Extract features and targets
+        self.feature_names = None
+        X_list = []
+        y_list = []
+        seeds = []
+        
+        for survivor in survivors_list:
+            if isinstance(survivor, dict):
+                seed = survivor.get('seed', survivor.get('id'))
+                features = survivor.get('features', {})
+                
+                # Get feature names from first survivor
+                if self.feature_names is None:
+                    exclude = {'score', 'confidence', 'seed', 'holdout_hits'}
+                    self.feature_names = sorted([k for k in features.keys() if k not in exclude])
+                
+                # Extract feature values in consistent order
+                row = [float(features.get(name, 0.0)) for name in self.feature_names]
+                
+                # Target is holdout_hits (NOT score!)
+                target = float(features.get('holdout_hits', 0.0))
+                
+                X_list.append(row)
+                y_list.append(target)
+                seeds.append(seed)
+        
+        self.X = np.array(X_list, dtype=np.float32)
+        self.y = np.array(y_list, dtype=np.float32)
+        self.seeds = np.array(seeds)
+        
+        # Get feature schema
+        self.feature_schema = get_feature_schema_from_survivors(self.survivors_file, survivors_list)
+        
+        # Load lottery history
+        with open(self.lottery_data_file, 'r') as f:
+            lottery_data = json.load(f)
+        
+        if isinstance(lottery_data, list) and lottery_data and isinstance(lottery_data[0], dict):
+            self.lottery_history = [d['draw'] for d in lottery_data]
+        else:
+            self.lottery_history = lottery_data
+        
+        self.logger.info(f"Loaded {len(self.X)} survivors with {len(self.feature_names)} features")
+        self.logger.info(f"Loaded {len(self.lottery_history)} lottery draws")
+        
+        # Create train/test split
+        self._create_splits()
+        
+        # Compute signal quality (Team Beta v2.1)
+        self.signal_quality = compute_signal_quality(self.y, target_name="holdout_hits")
+        self._log_signal_quality()
+    
+    def _create_splits(self):
+        """Create train/val/test splits"""
+        n_total = len(self.X)
+        n_test = int(n_total * self.test_holdout_pct)
+        
+        indices = np.random.permutation(n_total)
+        
+        # Test set (final holdout)
+        self.test_indices = indices[:n_test]
+        self.X_test = self.X[self.test_indices]
+        self.y_test = self.y[self.test_indices]
+        
+        # Train+val set
+        train_val_indices = indices[n_test:]
+        self.X_train_val = self.X[train_val_indices]
+        self.y_train_val = self.y[train_val_indices]
+        
+        self.logger.info("=" * 70)
+        self.logger.info("DATA SPLITS")
+        self.logger.info("=" * 70)
+        self.logger.info(f"Total: {n_total} survivors")
+        self.logger.info(f"Train+Val: {len(self.X_train_val)} survivors")
+        self.logger.info(f"Test (HOLDOUT): {len(self.X_test)} survivors")
+        self.logger.info(f"K-Fold CV: {self.k_folds} folds")
+        self.logger.info("=" * 70)
+    
+    def _log_signal_quality(self):
+        """Log signal quality assessment"""
+        sq = self.signal_quality
+        
+        self.logger.info("")
+        self.logger.info("=" * 70)
+        self.logger.info("SIGNAL QUALITY ASSESSMENT (Team Beta v2.1)")
+        self.logger.info("=" * 70)
+        self.logger.info(f"Target: {sq['target_name']}")
+        self.logger.info(f"Sample count: {sq['sample_count']}")
+        self.logger.info(f"Unique values: {sq['unique_target_values']}")
+        self.logger.info(f"Variance: {sq['target_variance']:.6f}")
+        self.logger.info(f"Mean: {sq['observed_mean']:.6f}")
+        self.logger.info(f"Non-zero count: {sq['nonzero_count']}")
+        self.logger.info(f"Non-zero ratio: {sq['nonzero_ratio']:.4f}")
+        self.logger.info("")
+        self.logger.info(f"Signal status: {sq['signal_status']}")
+        self.logger.info(f"Signal confidence: {sq['signal_confidence']:.4f}")
+        self.logger.info(f"Prediction allowed: {sq['prediction_allowed']}")
+        self.logger.info("=" * 70)
+        
+        if not sq['prediction_allowed']:
+            self.logger.warning("")
+            self.logger.warning("⚠️  WARNING: Signal is DEGENERATE or SPARSE!")
+            self.logger.warning("   Step 6 will REFUSE to make predictions.")
+            self.logger.warning("   WATCHER AGENT will decide recovery action.")
+            self.logger.warning("")
+    
+    def train_single_model(
+        self,
+        model_type: str,
+        n_trials: int = 50,
+        config: TrainingConfig = None
+    ) -> Tuple[Any, Dict]:
+        """
+        Train a single model type with Optuna optimization.
+        
+        Args:
+            model_type: Model type to train
+            n_trials: Number of Optuna trials
+            config: Optional pre-defined config (skips Optuna)
+            
+        Returns:
+            model: Best trained model
+            metrics: Training metrics
+        """
+        self.logger.info(f"Training {model_type} with {n_trials} trials...")
+        
+        if config is None:
+            # Use Optuna to find best hyperparameters
+            best_config, best_metrics = self._optimize_hyperparameters(model_type, n_trials)
+        else:
+            best_config = config.to_dict()
+        
+        # Train final model on all train+val data
+        config_obj = TrainingConfig(**{k: v for k, v in best_config.items() 
+                                       if k in TrainingConfig.__dataclass_fields__})
+        
+        model, metrics = self.trainer.train_model(
+            model_type,
+            self.X_train_val,
+            self.y_train_val,
+            self.X_test,
+            self.y_test,
+            config_obj
+        )
+        
+        return model, metrics
+    
+    def _optimize_hyperparameters(
+        self,
+        model_type: str,
+        n_trials: int
+    ) -> Tuple[Dict, Dict]:
+        """Optimize hyperparameters with Optuna"""
+        
+        def objective(trial: optuna.Trial) -> float:
+            # Sample hyperparameters based on model type
+            if model_type == "neural_net":
+                config = self._sample_neural_net_config(trial)
+            else:
+                config = self._sample_tree_config(trial)
+            
+            config_obj = TrainingConfig(**config)
+            
+            # K-fold cross-validation
+            kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
+            val_mses = []
+            
+            for fold, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
+                X_train = self.X_train_val[train_idx]
+                y_train = self.y_train_val[train_idx]
+                X_val = self.X_train_val[val_idx]
+                y_val = self.y_train_val[val_idx]
+                
+                _, metrics = self.trainer.train_model(
+                    model_type, X_train, y_train, X_val, y_val, config_obj
+                )
+                
+                if 'error' not in metrics:
+                    val_mses.append(metrics['val_mse'])
+            
+            if not val_mses:
+                return float('inf')
+            
+            return np.mean(val_mses)
+        
+        # Create Optuna study
+        study = optuna.create_study(
+            study_name=f"{self.study_name}_{model_type}",
+            direction='minimize',
+            sampler=TPESampler(seed=42),
+            storage=self.storage,
+            load_if_exists=True
+        )
+        
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+        
+        best_params = study.best_params
+        best_value = study.best_value
+        
+        self.logger.info(f"Best {model_type} val MSE: {best_value:.6f}")
+        
+        return best_params, {'best_val_mse': best_value}
+    
+    def _sample_neural_net_config(self, trial: optuna.Trial) -> Dict:
+        """Sample neural network hyperparameters"""
+        n_layers = trial.suggest_int('n_layers', 2, 4)
+        layers = []
+        for i in range(n_layers):
+            if i == 0:
+                size = trial.suggest_int(f'layer_{i}', 64, 256)
+            else:
+                size = trial.suggest_int(f'layer_{i}', 32, layers[-1])
+            layers.append(size)
+        
+        return {
+            'model_type': 'neural_net',
+            'hidden_layers': layers,
+            'dropout': trial.suggest_float('dropout', 0.2, 0.5),
+            'learning_rate': trial.suggest_float('lr', 1e-5, 1e-3, log=True),
+            'batch_size': trial.suggest_categorical('batch', [64, 128, 256]),
+            'epochs': trial.suggest_int('epochs', 50, 150),
+            'early_stopping_patience': trial.suggest_int('patience', 5, 15),
+            'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+        }
+    
+    def _sample_tree_config(self, trial: optuna.Trial) -> Dict:
+        """Sample tree model hyperparameters"""
+        return {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+            'max_depth': trial.suggest_int('max_depth', 4, 10),
+            'learning_rate': trial.suggest_float('lr', 0.01, 0.3, log=True)
+        }
+    
+    def compare_models(
+        self,
+        n_trials: int = 50,
+        model_types: List[str] = None
+    ) -> Tuple[str, Any, Dict]:
+        """
+        Train and compare all model types.
+        
+        Args:
+            n_trials: Optuna trials per model
+            model_types: List of model types (default: all in safe order)
+            
+        Returns:
+            best_model_type: Winner model type
+            best_model: Best trained model
+            all_results: Results for all models
+        """
+        if model_types is None:
+            model_types = self.trainer.SAFE_MODEL_ORDER
+        
+        self.logger.info("")
+        self.logger.info("=" * 70)
+        self.logger.info("MULTI-MODEL COMPARISON")
+        self.logger.info("=" * 70)
+        self.logger.info(f"Models: {model_types}")
+        self.logger.info(f"Trials per model: {n_trials}")
+        self.logger.info("=" * 70)
+        
+        all_results = {}
+        best_model_type = None
+        best_model = None
+        best_val_mse = float('inf')
+        
+        for model_type in model_types:
+            self.logger.info(f"\n--- Training {model_type} ---")
+            
+            try:
+                model, metrics = self.train_single_model(model_type, n_trials)
+                
+                if model is not None and 'val_mse' in metrics:
+                    all_results[model_type] = metrics
+                    
+                    if metrics['val_mse'] < best_val_mse:
+                        best_val_mse = metrics['val_mse']
+                        best_model_type = model_type
+                        best_model = model
+                        
+            except Exception as e:
+                self.logger.error(f"{model_type} failed: {e}")
+                all_results[model_type] = {'error': str(e)}
+        
+        # Print comparison table
+        self._print_comparison_table(all_results, best_model_type)
+        
+        self.best_model = best_model
+        self.best_model_type = best_model_type
+        self.best_metrics = all_results.get(best_model_type, {})
+        
+        return best_model_type, best_model, all_results
+    
+    def _print_comparison_table(self, results: Dict, winner: str):
+        """Print model comparison table"""
+        self.logger.info("")
+        self.logger.info("=" * 70)
+        self.logger.info("MODEL COMPARISON RESULTS")
+        self.logger.info("=" * 70)
+        self.logger.info(f"{'Model':<15} {'Val MSE':<15} {'Train MSE':<15} {'Time (s)':<10} {'Status':<10}")
+        self.logger.info("-" * 70)
+        
+        for model_type, metrics in results.items():
+            if 'error' in metrics:
+                self.logger.info(f"{model_type:<15} {'N/A':<15} {'N/A':<15} {'N/A':<10} {'FAILED':<10}")
+            else:
+                val_mse = metrics.get('val_mse', 0)
+                train_mse = metrics.get('train_mse', 0)
+                time_s = metrics.get('training_time_seconds', 0)
+                status = "🏆 WINNER" if model_type == winner else ""
+                
+                self.logger.info(
+                    f"{model_type:<15} {val_mse:<15.6f} {train_mse:<15.6f} {time_s:<10.1f} {status:<10}"
+                )
+        
+        self.logger.info("=" * 70)
+    
+    def save_best_model(self) -> str:
+        """
+        Save best model with sidecar metadata.
+        
+        v3.0: Includes signal_quality for Step 6 gate.
+        
+        Returns:
+            Path to saved checkpoint
+        """
+        if self.best_model is None:
+            raise ValueError("No model trained yet! Call train_single_model() or compare_models() first.")
+        
+        # Build provenance
+        provenance = {
+            "survivors_file": str(Path(self.survivors_file).resolve()),
+            "lottery_data_file": str(Path(self.lottery_data_file).resolve()),
+            "n_survivors": len(self.X),
+            "n_features": len(self.feature_names),
+            "n_lottery_draws": len(self.lottery_history),
+            "k_folds": self.k_folds,
+            "test_holdout_pct": self.test_holdout_pct,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Build hyperparameters
+        hyperparameters = self.best_metrics.copy() if self.best_metrics else {}
+        
+        return self.trainer.save_model(
+            model=self.best_model,
+            model_type=self.best_model_type,
+            output_dir=self.output_dir,
+            feature_schema=self.feature_schema,
+            training_metrics=self.best_metrics,
+            signal_quality=self.signal_quality,
+            hyperparameters=hyperparameters,
+            provenance=provenance,
+            parent_run_id=self.parent_run_id
+        )
+
+
+# ============================================================================
+# CLI INTERFACE
+# ============================================================================
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Step 5: Anti-Overfit Meta-Prediction Optimizer v3.0'
+    )
+    
+    # Required inputs
+    parser.add_argument('--survivors', required=True,
+                       help='Path to survivors_with_scores.json')
+    parser.add_argument('--lottery-data', required=True,
+                       help='Path to lottery history JSON')
+    
+    # Model selection
+    parser.add_argument('--model-type', type=str, default='neural_net',
+                       choices=['neural_net', 'xgboost', 'lightgbm', 'catboost', 'random_forest'],
+                       help='Model type to train')
+    parser.add_argument('--compare-models', action='store_true',
+                       help='Train and compare all model types')
+    
+    # Optimization
+    parser.add_argument('--trials', type=int, default=50,
+                       help='Number of Optuna trials per model')
+    parser.add_argument('--k-folds', type=int, default=5,
+                       help='Number of K-fold CV splits')
+    parser.add_argument('--test-holdout', type=float, default=0.2,
+                       help='Fraction held out for final test')
+    
+    # Optuna persistence
+    parser.add_argument('--study-name', type=str,
+                       help='Optuna study name')
+    parser.add_argument('--storage', type=str, default='sqlite:///optuna_studies.db',
+                       help='Optuna storage path')
+    
+    # Output
+    parser.add_argument('--output-dir', type=str, default='models/reinforcement',
+                       help='Output directory for models')
+    
+    # Pipeline lineage
+    parser.add_argument('--parent-run-id', type=str,
+                       help='Parent run ID from Step 4')
+    
+    # Utility
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Show configuration without training')
+    
+    args = parser.parse_args()
+    
+    print("=" * 70)
+    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER v3.0")
+    print("Pipeline Step 5: ML Model Training")
+    print("=" * 70)
+    print(f"CUDA available: {CUDA_INITIALIZED}")
+    print(f"Survivors: {args.survivors}")
+    print(f"Lottery data: {args.lottery_data}")
+    print(f"Model type: {args.model_type}")
+    print(f"Compare models: {args.compare_models}")
+    print(f"Trials: {args.trials}")
+    print(f"Output: {args.output_dir}")
+    print("=" * 70)
+    
+    if args.dry_run:
+        print("\n[DRY RUN] Configuration shown above. Exiting.")
+        return 0
+    
+    # Initialize optimizer
+    optimizer = AntiOverfitMetaOptimizer(
+        survivors_file=args.survivors,
+        lottery_data_file=args.lottery_data,
+        output_dir=args.output_dir,
+        k_folds=args.k_folds,
+        test_holdout_pct=args.test_holdout,
+        study_name=args.study_name,
+        storage=args.storage,
+        parent_run_id=args.parent_run_id
+    )
+    
+    # Train model(s)
+    if args.compare_models:
+        best_type, best_model, all_results = optimizer.compare_models(n_trials=args.trials)
+        print(f"\n🏆 Best model: {best_type}")
+    else:
+        model, metrics = optimizer.train_single_model(args.model_type, n_trials=args.trials)
+        optimizer.best_model = model
+        optimizer.best_model_type = args.model_type
+        optimizer.best_metrics = metrics
+    
+    # Save model with sidecar (includes signal_quality)
+    checkpoint_path = optimizer.save_best_model()
+    
+    # Final summary
+    print("")
+    print("=" * 70)
+    print("TRAINING COMPLETE")
+    print("=" * 70)
+    print(f"Model type: {optimizer.best_model_type}")
+    print(f"Checkpoint: {checkpoint_path}")
+    print(f"Sidecar: {args.output_dir}/best_model.meta.json")
+    print("")
+    print("Signal Quality:")
+    sq = optimizer.signal_quality
+    print(f"  Status: {sq['signal_status']}")
+    print(f"  Confidence: {sq['signal_confidence']:.4f}")
+    print(f"  Prediction allowed: {sq['prediction_allowed']}")
+    
+    if not sq['prediction_allowed']:
+        print("")
+        print("⚠️  WARNING: Signal is DEGENERATE!")
+        print("   Step 6 will REFUSE to make predictions.")
+        print("   WATCHER AGENT will decide recovery action.")
+    
+    print("=" * 70)
+    
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
