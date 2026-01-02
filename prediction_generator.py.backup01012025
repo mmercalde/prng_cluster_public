@@ -11,26 +11,14 @@ Whitepaper-Compliant Implementation:
 - Part of reinforcement learning pipeline
 
 Author: Distributed PRNG Analysis System
-Date: January 2, 2026
-Version: 6.1 (Signal Gate Fix)
-
-v6.1 Changes:
-- CRITICAL FIX: Check signal_quality BEFORE loading model
-- Handles degenerate sidecar (checkpoint_path: null)
-- Exit code 3 for PREDICTION_SKIPPED
-- _signal_gate_blocked flag for early exit
+Date: November 6, 2025
+Version: 6.0 (Consolidated Patch - Team Beta Approved)
 
 v6.0 Changes:
 - P0: Signal Quality Gate from sidecar (v2.1 autonomy design)
 - P0: Per-survivor skip handling (read from survivor metadata)
 - P1: Feature schema enforcement (fail if sidecar missing schema)
 - P1: Global feature handling resolved (removed dead code path)
-
-EXIT CODES:
-  0 - Success (predictions generated)
-  1 - Error (exception)
-  2 - No model found  
-  3 - Signal gate blocked (PREDICTION_SKIPPED)
 """
 
 import sys
@@ -265,90 +253,34 @@ class PredictionGenerator:
             mod=config.mod
         )
         
-        self.logger.info("PredictionGenerator initialized (v6.1)")
+        self.logger.info("PredictionGenerator initialized (v6.0)")
         self.logger.info(f"  PRNG: {config.prng_type}, mod={config.mod}")
         self.logger.info(f"  Pool size: {config.pool_size}, Top-K: {config.k}")
         self.logger.info(f"  Dual-sieve: {config.use_dual_sieve}")
         self.logger.info(f"  GPU: {GPU_AVAILABLE}")
         self.logger.info(f"  Feature schema required: {config.require_feature_schema}")
 
-        # Model loading (Step 6 v6.1 - Signal Gate Fix)
+        # Model loading (Step 6 Restoration v2.2)
         self.model = None
         self.model_meta = None
         self.model_checkpoint_path = None
         self.parent_run_id = None
-        self.feature_names = None
-        self._signal_gate_blocked = False
-        self._signal_gate_result = None
+        self.feature_names = None  # v6.0: Explicit feature name tracking
 
         if MULTI_MODEL_AVAILABLE:
-            # === STEP 1: Load sidecar metadata FIRST (no model yet) ===
-            sidecar_path = Path(config.models_dir) / "best_model.meta.json"
-            
-            if not sidecar_path.exists():
-                self.logger.error(f"Sidecar not found: {sidecar_path}")
-                raise FileNotFoundError(f"Required sidecar missing: {sidecar_path}")
-            
-            with open(sidecar_path) as f:
-                self.model_meta = json.load(f)
-            
-            self.logger.info(f"  Sidecar loaded: {sidecar_path}")
-            
-            # === STEP 2a: Extract parent_run_id FIRST (before gate check) ===
-            agent_meta = self.model_meta.get('agent_metadata', {})
-            self.parent_run_id = agent_meta.get('run_id', None)
-            if self.parent_run_id:
-                self.logger.info(f"  Parent run ID: {self.parent_run_id}")
-            
-            # === STEP 2b: Check signal gate BEFORE model load ===
-            sq = self.model_meta.get("signal_quality", {})
-            prediction_allowed = sq.get("prediction_allowed", True)
-            signal_status = sq.get("signal_status", "unknown")
-            
-            if sq:
-                self.logger.info(f"  Signal quality: {signal_status}")
-                self.logger.info(f"  Prediction allowed: {prediction_allowed}")
-            else:
-                self.logger.warning("  No signal_quality in sidecar (legacy model)")
-            
-            # === STEP 3: Gate if signal is degenerate ===
-            if not prediction_allowed:
-                self.logger.warning("=" * 60)
-                self.logger.warning("SIGNAL QUALITY GATE - EARLY BLOCK")
-                self.logger.warning("=" * 60)
-                self.logger.warning(f"  Status: {signal_status}")
-                self.logger.warning(f"  Model was not trained (degenerate signal)")
-                self.logger.warning(f"  checkpoint_path: {self.model_meta.get('checkpoint_path')}")
-                self.logger.warning("=" * 60)
-                self.logger.warning("Skipping model load - no valid model exists")
-                self.logger.warning("WATCHER AGENT will decide recovery action")
-                self.logger.warning("=" * 60)
-                
-                # Store gate status for generate_predictions to handle
-                self._signal_gate_blocked = True
-                self._signal_gate_result = {
-                    "status": "PREDICTION_SKIPPED",
-                    "reason": signal_status,
-                    "signal_quality": sq,
-                    "data_context": self.model_meta.get("data_context", {}),
-                    "explanation": "Model training skipped due to degenerate signal",
-                    "recovery_authority": "WATCHER_AGENT",
-                    "timestamp": datetime.now().isoformat()
-                }
-                return  # Exit __init__ without loading model
-            
-            # === STEP 4: Signal OK - now load model ===
-            checkpoint_path = self.model_meta.get("checkpoint_path")
-            if checkpoint_path is None:
-                raise ValueError("checkpoint_path is null but prediction_allowed is True - sidecar inconsistent")
-            
             try:
-                self.model, _ = load_model_from_sidecar(
+                self.model, self.model_meta = load_model_from_sidecar(
                     models_dir=config.models_dir,
                     device="cuda" if GPU_AVAILABLE else "cpu"
                 )
                 self.logger.info(f"  Model loaded: {self.model_meta.get('model_type', 'unknown')}")
-                self.model_checkpoint_path = checkpoint_path
+                self.model_checkpoint_path = self.model_meta.get('checkpoint_path', f'{config.models_dir}/best_model')
+                
+                # Auto-read parent_run_id from sidecar
+                agent_meta = self.model_meta.get('agent_metadata', {})
+                self.parent_run_id = agent_meta.get('run_id', None)
+                if self.parent_run_id:
+                    self.logger.info(f"  Parent run ID: {self.parent_run_id}")
                 
                 # v6.0: Extract and validate feature schema
                 fs = self.model_meta.get("feature_schema", {})
@@ -360,6 +292,14 @@ class PredictionGenerator:
                     raise ValueError("Feature schema required but not found in sidecar!")
                 else:
                     self.logger.warning("  No feature schema in sidecar - using alphabetical fallback (UNSAFE)")
+                
+                # v6.0: Log signal quality status
+                sq = self.model_meta.get("signal_quality", {})
+                if sq:
+                    self.logger.info(f"  Signal quality: {sq.get('signal_status', 'unknown')}")
+                    self.logger.info(f"  Prediction allowed: {sq.get('prediction_allowed', 'not specified')}")
+                else:
+                    self.logger.warning("  No signal_quality in sidecar (legacy model)")
                     
             except FileNotFoundError as e:
                 self.logger.warning(f"  Model not found: {e}")
@@ -488,26 +428,12 @@ class PredictionGenerator:
         """
         Generate Top-K predictions from survivors
         
-        v6.1 Compliance:
-        - Early signal gate check (blocked in __init__)
+        v6.0 Compliance:
         - Signal quality gate (blocks if degenerate)
         - Per-survivor skip handling
         - Feature schema enforcement
         """
         k = k or self.config.k
-        
-        # =====================================================================
-        # v6.1: EARLY SIGNAL GATE CHECK (blocked during __init__)
-        # =====================================================================
-        if self._signal_gate_blocked:
-            self.logger.warning("=" * 60)
-            self.logger.warning("PREDICTION_SKIPPED - Signal gate blocked during init")
-            self.logger.warning("=" * 60)
-            
-            if self.config.save_predictions:
-                self._save_predictions(self._signal_gate_result)
-            return self._signal_gate_result
-        # =====================================================================
         
         # =====================================================================
         # SIGNAL QUALITY GATE (Team Beta Approved v2.1)
@@ -928,7 +854,7 @@ def main():
         return 0
     
     logger = setup_logging(config)
-    logger.info("=== Prediction Generator v6.1 Started ===")
+    logger.info("=== Prediction Generator v6.0 Started ===")
     
     with open(args.survivors_forward, 'r') as f:
         data = json.load(f)
@@ -961,18 +887,10 @@ def main():
         k=config.k
     )
     
-    # v6.1: Handle signal gate exit code
-    if result.get('status') in ['prediction_skipped', 'PREDICTION_SKIPPED']:
-        logger.warning("=" * 60)
-        logger.warning("PREDICTION_SKIPPED")
-        logger.warning("=" * 60)
+    if result.get('status') == 'prediction_skipped':
+        logger.warning("=== PREDICTION SKIPPED ===")
         logger.warning(f"Reason: {result.get('reason')}")
-        logger.warning(f"Signal: {result.get('signal_quality', {}).get('signal_status', '?')}")
-        logger.warning(f"Fingerprint: {result.get('data_context', {}).get('fingerprint_hash', '?')}")
-        logger.warning("=" * 60)
-        logger.warning("WATCHER AGENT should consume this and decide recovery")
-        logger.warning("=" * 60)
-        return 3  # Signal gate exit code
+        logger.warning(f"Recovery authority: {result.get('recovery_authority')}")
     else:
         logger.info("=== PREDICTIONS ===")
         for i, (num, conf) in enumerate(zip(result['predictions'], result['confidence_scores']), 1):
