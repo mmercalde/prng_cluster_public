@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION (v3.2)
+Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION (v3.3)
 =============================================================
 
 VERSION HISTORY:
@@ -9,8 +9,9 @@ VERSION HISTORY:
   v3.0   - signal_quality emission for Step 6 gate
   v3.1   - data_context fingerprint for WATCHER loop prevention
   v3.2   - Early exit on degenerate signal + degenerate sidecar
+  v3.3   - CRITICAL FIX: Remove prng_type from fingerprint hash (Team Beta approved)
 
-KEY FEATURES (v3.2):
+KEY FEATURES (v3.3):
 ✅ Multi-model support: neural_net, xgboost, lightgbm, catboost
 ✅ Subprocess isolation for OpenCL/CUDA compatibility
 ✅ signal_quality emission for Step 6 prediction gate
@@ -20,6 +21,7 @@ KEY FEATURES (v3.2):
 ✅ --compare-models to train all 4 and select best
 ✅ Early exit on degenerate signal (saves GPU time)
 ✅ Degenerate sidecar for WATCHER consumption
+✅ CRITICAL: Fingerprint hash excludes prng_type (data-only identity)
 
 EXIT CODES:
   0 - Success (model trained and saved)
@@ -28,7 +30,7 @@ EXIT CODES:
 
 Author: Distributed PRNG Analysis System
 Date: January 2, 2026
-Version: 3.2.0
+Version: 3.3.0
 """
 
 import json
@@ -178,11 +180,15 @@ def compute_data_context(
     holdout_end = holdout_start + holdout_draws - 1
     
     # Compute fingerprint hash
+    # CRITICAL (v3.3): Fingerprint represents DATA CONTEXT only, not PRNG hypothesis
+    # This enables WATCHER to detect "this window failed multiple PRNGs"
+    # prng_type is tracked separately in registry attempts table
+    survivors_filename = Path(survivors_file).name
     context_str = (
         f"{train_start}:{train_end}|"
         f"{holdout_start}:{holdout_end}|"
         f"{survivor_count}|"
-        f"{prng_type}|{mod}"
+        f"{survivors_filename}"
     )
     fingerprint = hashlib.sha256(context_str.encode()).hexdigest()[:8]
     
@@ -190,6 +196,7 @@ def compute_data_context(
     data_context = {
         # === Quick Comparison ===
         "fingerprint_hash": fingerprint,
+        "fingerprint_version": "v2_data_only",  # v3.3: excludes prng_type from hash
         
         # === Training Window ===
         "training_window": {
@@ -1346,7 +1353,7 @@ class AntiOverfitMetaOptimizer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Anti-Overfit Meta-Prediction Optimizer v3.2'
+        description='Anti-Overfit Meta-Prediction Optimizer v3.3'
     )
     parser.add_argument('--survivors', required=True,
                        help='Path to survivors JSON with features')
@@ -1389,7 +1396,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 70)
-    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER v3.2")
+    print("ANTI-OVERFIT META-PREDICTION OPTIMIZER v3.3")
     print("=" * 70)
     print(f"✅ CUDA initialized: {CUDA_INITIALIZED}")
     print(f"✅ Model type: {args.model_type}")

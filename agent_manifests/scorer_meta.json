@@ -18,10 +18,14 @@
       "type": "run_script",
       "script": "generate_scorer_jobs.py",
       "args_map": {
-        "study": "study_name",
-        "num-trials": "scorer_trials",
-        "survivors-file": "bidirectional_survivors_file",
-        "chunk-size": "chunk_size"
+        "trials": "scorer_trials",
+        "survivors": "survivors_file",
+        "train-history": "train_history",
+        "holdout-history": "holdout_history",
+        "study-name": "study_name",
+        "study-db": "study_db",
+        "output": "output_file",
+        "sample-size": "sample_size"
       },
       "distributed": false,
       "timeout_minutes": 10
