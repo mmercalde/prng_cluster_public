@@ -41,6 +41,7 @@ PULL ARCHITECTURE:
 import os
 import sys
 import json
+from utils.survivor_loader import load_survivors
 import time
 import socket
 import logging
@@ -107,16 +108,11 @@ def load_data(survivors_file: str, train_history_file: str, holdout_history_file
             train_history_file = os.path.expanduser(train_history_file)
             holdout_history_file = os.path.expanduser(holdout_history_file)
 
-            # Load survivors - NPZ (fast) with JSON fallback
-            if survivors_file.endswith('.npz'):
-                import numpy as np
-                npz = np.load(survivors_file, allow_pickle=True)
-                survivors = {'seeds': npz['seeds'], 'scores': npz['scores']}
-                print(f"Loaded {len(npz['seeds']):,} survivors from NPZ (fast path)")
-            else:
-                with open(survivors_file) as f:
-                    survivors = json.load(f)
-                print(f"Loaded {len(survivors):,} survivors from JSON (fallback)")
+            # Load survivors using modular loader (NPZ/JSON auto-detect)
+            survivor_result = load_survivors(survivors_file, return_format="array")
+            survivors = survivor_result.data
+            logger.info(f"Loaded {survivor_result.count:,} survivors from {survivor_result.format} "
+                       f"(fallback={survivor_result.fallback_used})")
 
             with open(train_history_file) as f:
                 train_data = json.load(f)
@@ -132,17 +128,8 @@ def load_data(survivors_file: str, train_history_file: str, holdout_history_file
                 else:
                     holdout_history = holdout_data
 
-            # Handle both NPZ (dict with arrays) and JSON (list of dicts) formats
-            if isinstance(survivors, dict) and 'seeds' in survivors:
-                # NPZ format - already numpy array
-                seeds_to_score = survivors['seeds'].tolist()
-            elif isinstance(survivors, list) and len(survivors) > 0:
-                if isinstance(survivors[0], dict):
-                    seeds_to_score = [s.get('seed', s) for s in survivors]
-                else:
-                    seeds_to_score = survivors
-            else:
-                seeds_to_score = []
+            # Extract seeds (modular loader returns array format)
+            seeds_to_score = survivors['seeds'].tolist()
 
             logger.info(f"Loaded {len(seeds_to_score)} survivors/seeds from {survivors_file}.")
             logger.info(f"Loaded {len(train_history)} training draws from {train_history_file}.")

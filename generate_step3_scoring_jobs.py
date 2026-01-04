@@ -26,6 +26,7 @@ Version: 2.0.0 - FIXED to use full_scoring_worker.py
 import sys
 import os
 import json
+from utils.survivor_loader import load_survivors
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -295,10 +296,11 @@ Example:
         print(f"WARNING: Config file not found: {args.config} - using defaults")
         args.config = None
     
-    # Load survivors to get count for auto chunk sizing
-    with open(args.survivors, 'r') as f:
-        survivors_data = json.load(f)
-    total_seeds = len(survivors_data)
+    # Load survivors using modular loader (NPZ/JSON auto-detect)
+    result = load_survivors(args.survivors, return_format="array")
+    survivors_data = result.data['seeds'].tolist()
+    total_seeds = result.count
+    print(f"  Loaded {total_seeds:,} survivors from {result.format} (fallback={result.fallback_used})")
     
     # Calculate chunk size (auto or manual)
     if args.chunk_size == 'auto':

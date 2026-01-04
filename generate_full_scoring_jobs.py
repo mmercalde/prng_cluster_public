@@ -9,6 +9,7 @@ This script creates one job per N survivors.
 """
 
 import json
+from utils.survivor_loader import load_survivors
 import argparse
 from pathlib import Path
 import math
@@ -42,15 +43,14 @@ def main():
         print("Please run the Scorer Meta-Optimizer (Step 3) first.")
         return 1
     
-    # 2. Load survivors
+    # 2. Load survivors using modular loader (NPZ/JSON auto-detect)
     print(f"Loading survivors from {args.survivors}...")
     try:
-        with open(args.survivors, 'r') as f:
-            survivors = json.load(f)
-        # Ensure we get the seed, whether it's a dict or just an int/str
-        survivor_seeds = [s.get('seed', s) if isinstance(s, dict) else s for s in survivors]
-        print(f"Loaded {len(survivor_seeds)} survivor seeds.")
-    except FileNotFoundError:
+        result = load_survivors(args.survivors, return_format="array")
+        survivor_seeds = result.data['seeds'].tolist()
+        print(f"Loaded {len(survivor_seeds)} survivor seeds from {result.format} "
+              f"(fallback={result.fallback_used})")
+    except FileNotFoundError as e:
         print(f"❌ ERROR: Survivor file not found: {args.survivors}")
         return 1
     
