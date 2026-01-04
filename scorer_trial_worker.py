@@ -107,8 +107,16 @@ def load_data(survivors_file: str, train_history_file: str, holdout_history_file
             train_history_file = os.path.expanduser(train_history_file)
             holdout_history_file = os.path.expanduser(holdout_history_file)
 
-            with open(survivors_file) as f:
-                survivors = json.load(f)
+            # Load survivors - NPZ (fast) with JSON fallback
+            if survivors_file.endswith('.npz'):
+                import numpy as np
+                npz = np.load(survivors_file, allow_pickle=True)
+                survivors = {'seeds': npz['seeds'], 'scores': npz['scores']}
+                print(f"Loaded {len(npz['seeds']):,} survivors from NPZ (fast path)")
+            else:
+                with open(survivors_file) as f:
+                    survivors = json.load(f)
+                print(f"Loaded {len(survivors):,} survivors from JSON (fallback)")
 
             with open(train_history_file) as f:
                 train_data = json.load(f)
@@ -124,7 +132,11 @@ def load_data(survivors_file: str, train_history_file: str, holdout_history_file
                 else:
                     holdout_history = holdout_data
 
-            if isinstance(survivors, list) and len(survivors) > 0:
+            # Handle both NPZ (dict with arrays) and JSON (list of dicts) formats
+            if isinstance(survivors, dict) and 'seeds' in survivors:
+                # NPZ format - already numpy array
+                seeds_to_score = survivors['seeds'].tolist()
+            elif isinstance(survivors, list) and len(survivors) > 0:
                 if isinstance(survivors[0], dict):
                     seeds_to_score = [s.get('seed', s) for s in survivors]
                 else:
@@ -143,7 +155,10 @@ def load_data(survivors_file: str, train_history_file: str, holdout_history_file
     # Extract PRNG type from survivor metadata
     prng_type = 'java_lcg'
     mod = 1000
-    if survivors and len(survivors) > 0 and isinstance(survivors[0], dict):
+    if isinstance(survivors, dict) and 'seeds' in survivors:
+        # NPZ format - prng_type from metadata if available
+        pass  # Keep defaults, NPZ doesn't store per-survivor prng_type
+    elif survivors and len(survivors) > 0 and isinstance(survivors[0], dict):
         prng_type = survivors[0].get('prng_type', 'java_lcg')
         if '_' in prng_type and prng_type.split('_')[-1].isdigit():
             mod = int(prng_type.split('_')[-1])

@@ -184,6 +184,24 @@ class AgentManifest(BaseModel):
             return all_inputs
         return v if v else []
     
+    @field_validator('outputs', mode='before')
+    @classmethod
+    def normalize_outputs(cls, v):
+        """Handle both list of strings and list of dicts for outputs."""
+        if not v:
+            return []
+        normalized = []
+        for item in v:
+            if isinstance(item, dict):
+                # Extract file path from dict format (v1.1 schema)
+                # Priority: file_pattern > file > name
+                path = item.get('file_pattern') or item.get('file') or item.get('name', '')
+                if path:
+                    normalized.append(path)
+            else:
+                normalized.append(str(item))
+        return normalized
+    
     # ══════════════════════════════════════════════════════════════════════
     # ACTIONS
     # ══════════════════════════════════════════════════════════════════════

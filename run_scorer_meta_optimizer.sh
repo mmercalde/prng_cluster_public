@@ -44,7 +44,7 @@ echo "Study name: $STUDY_NAME"
 echo ""
 
 # Input files
-SURVIVORS="bidirectional_survivors.json"
+SURVIVORS="bidirectional_survivors_binary.npz"
 TRAIN_HISTORY="train_history.json"
 HOLDOUT_HISTORY="holdout_history.json"
 
@@ -105,13 +105,12 @@ for node in 192.168.3.120 192.168.3.154; do
 done
 echo "Latest code pushed to all 26 GPUs"
 
-# Launch coordinator
-echo "Launching jobs via coordinator.py..."
-python3 coordinator.py \
+# Launch scripts_coordinator (Team Beta approved for script jobs)
+echo "Launching jobs via scripts_coordinator.py..."
+python3 scripts_coordinator.py \
     --jobs-file scorer_jobs.json \
-    --config ml_coordinator_config.json \
-    --max-concurrent 26 \
-    --resume-policy restart
+    --output-dir scorer_trial_results \
+    --preserve-paths
 
 # Rest of script (collection + Optuna reporting)
 echo ""

@@ -676,9 +676,9 @@ class ScriptsCoordinator:
             try:
                 with open(p) as f:
                     data = json.load(f)
-                if not isinstance(data, list):
-                    return False, f"Invalid JSON structure (expected list): {filepath}", FailureMode.INVALID_JSON
-                if len(data) == 0:
+                if not isinstance(data, (list, dict)):
+                    return False, f"Invalid JSON structure (expected list or dict): {filepath}", FailureMode.INVALID_JSON
+                if isinstance(data, list) and len(data) == 0:
                     return False, f"Empty JSON array: {filepath}", FailureMode.INVALID_JSON
             except json.JSONDecodeError as e:
                 return False, f"Invalid JSON: {e}", FailureMode.INVALID_JSON
@@ -699,9 +699,10 @@ class ScriptsCoordinator:
                 if result.returncode != 0:
                     return False, f"File missing or empty: {filepath}", FailureMode.MISSING
                 
-                # Check 3: Starts with JSON array marker
-                if not result.stdout.strip().startswith('['):
-                    return False, f"Invalid JSON (doesn't start with '['): {filepath}", FailureMode.INVALID_JSON
+                # Check 3: Starts with valid JSON marker (object or array)
+                first_char = result.stdout.strip()[:1]
+                if first_char not in ['{', '[']:
+                    return False, f"Invalid JSON (doesn't start with '{{' or '['): {filepath}", FailureMode.INVALID_JSON
                 
                 return True, None, None
                 

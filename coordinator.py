@@ -1482,12 +1482,12 @@ class MultiGPUCoordinator:
                 # Log job assignment for visibility
                 print(f"→ {job_spec.get('job_id')} → {hostname}:GPU{worker.gpu_id}", flush=True)
 
-                # Step 4.5: Stagger localhost script jobs to prevent CUDA init collision
-                # GPU 0 starts immediately, GPU 1 waits 3s, etc.
-                if analysis_type == 'script' and hostname == 'localhost':
-                    stagger_delay = worker.gpu_id * 3.0  # 3 seconds per GPU
+                # Step 4.5: Stagger ALL script jobs to prevent SSH/CUDA init collision
+                # GPU 0 starts immediately, GPU 1 waits 2s, etc.
+                if analysis_type == 'script':
+                    stagger_delay = worker.gpu_id * 2.0  # 2 seconds per GPU, ALL nodes
                     if stagger_delay > 0:
-                        self.logger.info(f"[localhost stagger] GPU {worker.gpu_id} waiting {stagger_delay}s before CUDA init")
+                        self.logger.info(f"[{hostname} stagger] GPU {worker.gpu_id} waiting {stagger_delay}s before init")
                         time.sleep(stagger_delay)
 
                 # Step 5: Process the job (unified handling for both script and seed jobs)

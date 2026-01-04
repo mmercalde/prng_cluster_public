@@ -16,7 +16,7 @@
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
-      "max_concurrent_script_jobs": 4,
+      "max_concurrent_script_jobs": 12,
       "note": "4-core i3 CPU - limit to 1 job per core"
     },
     {
@@ -26,7 +26,7 @@
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
-      "max_concurrent_script_jobs": 6,
+      "max_concurrent_script_jobs": 12,
       "note": "6-core i5 CPU - limit to 1 job per core"
     }
   ],

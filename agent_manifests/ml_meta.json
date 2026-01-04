@@ -23,7 +23,7 @@
         "--mode": "full",
         "--window-results": "optimal_window_config.json",
         "--lottery-data": "train_history.json",
-        "--apply": true
+        "--apply": "true"
       },
       "distributed": false,
       "timeout_minutes": 10
