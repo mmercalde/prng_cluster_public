@@ -2,36 +2,59 @@
 """
 Window Optimizer Context - Step 1 specialized agent context.
 
-Provides domain expertise for evaluating window optimization results,
-including bidirectional survivor analysis and PRNG parameter tuning.
+REFACTORED: 2026-01-04 (Team Beta Approved)
+- Thresholds loaded from distributed_config.json
+- No semantic interpretation - raw + derived metrics only
+- LLM does the reasoning, not this file
 
-Version: 3.2.0
+Version: 4.0.0
 """
-
-from typing import Dict, Any, List, Tuple
-import math
+from typing import Dict, Any, List, Tuple, Optional
 import json
 from pathlib import Path
 from agents.contexts.base_agent_context import BaseAgentContext, EvaluationResult
+
+# Import the new metrics extractor
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from utils.metrics_extractor import (
+    extract_step1_derived_metrics,
+    get_step_thresholds,
+    STEP_IDS
+)
 
 
 class WindowOptimizerContext(BaseAgentContext):
     """
     Specialized context for Step 1: Window Optimizer.
     
-    Key focus areas:
-    - Bidirectional survivor count (forward AND reverse matches)
-    - Window size optimization
-    - PRNG parameter tuning (skip values)
-    - Forward/reverse balance
+    REFACTORED RESPONSIBILITIES:
+    - Extract raw metrics from results
+    - Compute derived metrics (rates, ratios)
+    - Load threshold priors from config
+    - Package for LLM evaluation
+    
+    NOT RESPONSIBLE FOR:
+    - Semantic interpretation ("good", "bad", "consider narrowing")
+    - Decision making (proceed/retry/escalate)
+    - That's the LLM's job now
     """
     
     agent_name: str = "window_optimizer_agent"
     pipeline_step: int = 1
+    step_id: str = "step_1_window_optimizer"
+    data_source_type: str = "synthetic"
+    manifest_path: Optional[str] = None
+    
+    _threshold_priors: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        underscore_attrs_are_private = True
     
     def get_key_metrics(self) -> List[str]:
         """Key metrics for window optimization."""
         return [
+            "seeds_tested",
             "bidirectional_count",
             "forward_count",
             "reverse_count",
@@ -41,206 +64,246 @@ class WindowOptimizerContext(BaseAgentContext):
             "execution_time_seconds"
         ]
     
-    def get_thresholds(self) -> Dict[str, Dict[str, Any]]:
-        """Evaluation thresholds for window optimizer."""
+    def get_threshold_priors(self) -> Dict[str, Any]:
+        """
+        Load thresholds from distributed_config.json.
+        
+        These are PRIORS for the LLM, not absolute rules.
+        """
+        if self._threshold_priors is None:
+            self._threshold_priors = get_step_thresholds(
+                self.step_id,
+                self.data_source_type
+            )
+        return self._threshold_priors
+    
+    def get_raw_metrics(self) -> Dict[str, Any]:
+        """
+        Extract raw metrics from results.
+        
+        NO INTERPRETATION - just the facts.
+        """
         return {
-            "bidirectional_count": {
-                "excellent": {"min": 1, "max": 10},
-                "good": {"min": 11, "max": 100},
-                "acceptable": {"min": 101, "max": 1000},
-                "poor": {"min": 1001, "max": 10000},
-                "fail": {"min": 10001, "max": None}
-            },
-            "forward_count": {
-                "excellent": {"min": 1, "max": 100},
-                "good": {"min": 101, "max": 1000},
-                "acceptable": {"min": 1001, "max": 10000},
-                "poor": {"min": 10001, "max": 100000},
-                "fail": {"min": 100001, "max": None}
-            },
-            "reverse_count": {
-                "excellent": {"min": 1, "max": 100},
-                "good": {"min": 101, "max": 1000},
-                "acceptable": {"min": 1001, "max": 10000},
-                "poor": {"min": 10001, "max": 100000},
-                "fail": {"min": 100001, "max": None}
-            },
-            "optimization_score": {
-                "excellent": {"min": 0.9, "max": 1.0},
-                "good": {"min": 0.7, "max": 0.9},
-                "acceptable": {"min": 0.5, "max": 0.7},
-                "poor": {"min": 0.3, "max": 0.5},
-                "fail": {"min": 0.0, "max": 0.3}
+            "seeds_tested": self.results.get("seed_count", 
+                           self.results.get("seeds_tested", 0)),
+            "forward_count": self.results.get("forward_count", 0),
+            "reverse_count": self.results.get("reverse_count", 0),
+            "bidirectional_count": self.results.get("bidirectional_count", 0),
+            "window_size": self.results.get("window_size",
+                          self.results.get("best_window_size", 0)),
+            "skip_min": self.results.get("skip_min", 0),
+            "skip_max": self.results.get("skip_max", 0),
+            "optimization_score": self.results.get("optimization_score", 0),
+            "runtime_seconds": self.results.get("execution_time_seconds",
+                              self.results.get("runtime_seconds", 0)),
+        }
+    
+    def get_derived_metrics(self) -> Dict[str, float]:
+        """
+        Compute derived metrics (rates, ratios).
+        
+        NO INTERPRETATION - just math.
+        """
+        raw = self.get_raw_metrics()
+        return extract_step1_derived_metrics(raw)
+    
+    def get_overall_success(self) -> Tuple[bool, float]:
+        """
+        Determine overall success using rate-based thresholds.
+        
+        This is the HEURISTIC FALLBACK when LLM is unavailable.
+        Uses config-driven thresholds, not hardcoded values.
+        """
+        derived = self.get_derived_metrics()
+        priors = self.get_threshold_priors()
+        
+        bi_rate = derived.get("bidirectional_rate", 1.0)
+        overlap = derived.get("overlap_ratio", 0.0)
+        
+        # Get thresholds from config
+        bi_thresholds = priors.get("bidirectional_rate", {})
+        overlap_thresholds = priors.get("overlap_ratio", {})
+        
+        good_max = bi_thresholds.get("good_max", 0.02)
+        warn_max = bi_thresholds.get("warn_max", 0.10)
+        fail_max = bi_thresholds.get("fail_max", 0.30)
+        overlap_good = overlap_thresholds.get("good_min", 0.25)
+        
+        # Zero survivors = critical failure
+        if self.results.get("bidirectional_count", 0) == 0:
+            return (False, 0.1)
+        
+        # Rate-based evaluation
+        if bi_rate <= good_max and overlap >= overlap_good:
+            return (True, 0.95)
+        elif bi_rate <= warn_max:
+            return (True, 0.75)
+        elif bi_rate <= fail_max:
+            return (False, 0.55)
+        else:
+            return (False, 0.30)
+    
+    def get_heuristic_decision(self) -> Dict[str, Any]:
+        """
+        Deterministic heuristic fallback when LLM unavailable.
+        
+        Returns a decision dict compatible with WatcherDecision schema.
+        Conservative bias: when in doubt, retry > escalate > proceed.
+        """
+        derived = self.get_derived_metrics()
+        priors = self.get_threshold_priors()
+        success, confidence = self.get_overall_success()
+        
+        bi_rate = derived.get("bidirectional_rate", 1.0)
+        bi_thresholds = priors.get("bidirectional_rate", {})
+        
+        good_max = bi_thresholds.get("good_max", 0.02)
+        warn_max = bi_thresholds.get("warn_max", 0.10)
+        
+        # Zero survivors
+        if self.results.get("bidirectional_count", 0) == 0:
+            return {
+                "decision": "escalate",
+                "retry_reason": None,
+                "confidence": 0.90,
+                "reasoning": f"Zero bidirectional survivors for {self.data_source_type} data - PRNG hypothesis may be incorrect",
+                "primary_signal": "bidirectional_count",
+                "suggested_params": {"window_size": "increase", "skip_max": "increase"},
+                "warnings": ["zero_survivors"],
+                "checks": {
+                    "used_rates": True,
+                    "mentioned_data_source": True,
+                    "avoided_absolute_only": True
+                }
+            }
+        
+        # Good range
+        if bi_rate <= good_max:
+            return {
+                "decision": "proceed",
+                "retry_reason": None,
+                "confidence": confidence,
+                "reasoning": f"bidirectional_rate {bi_rate:.4f} within good range for {self.data_source_type} data",
+                "primary_signal": "bidirectional_rate",
+                "suggested_params": None,
+                "warnings": [],
+                "checks": {
+                    "used_rates": True,
+                    "mentioned_data_source": True,
+                    "avoided_absolute_only": True
+                }
+            }
+        
+        # Warning range - retry with tighten
+        if bi_rate <= warn_max:
+            return {
+                "decision": "retry",
+                "retry_reason": "tighten",
+                "confidence": confidence,
+                "reasoning": f"bidirectional_rate {bi_rate:.4f} in warning range for {self.data_source_type} - thresholds may be too loose",
+                "primary_signal": "bidirectional_rate",
+                "suggested_params": {
+                    "forward_threshold": 0.005,
+                    "reverse_threshold": 0.005
+                },
+                "warnings": ["rate_in_warning_range"],
+                "checks": {
+                    "used_rates": True,
+                    "mentioned_data_source": True,
+                    "avoided_absolute_only": True
+                }
+            }
+        
+        # Fail range - escalate
+        return {
+            "decision": "escalate",
+            "retry_reason": None,
+            "confidence": confidence,
+            "reasoning": f"bidirectional_rate {bi_rate:.4f} exceeds fail threshold for {self.data_source_type} data",
+            "primary_signal": "bidirectional_rate",
+            "suggested_params": None,
+            "warnings": ["rate_exceeds_fail_threshold"],
+            "checks": {
+                "used_rates": True,
+                "mentioned_data_source": True,
+                "avoided_absolute_only": True
             }
         }
     
-
-    def get_overall_success(self) -> Tuple[bool, float]:
-        """
-        Determine overall success and confidence for Step 1.
-        
-        Reads evaluation_params from manifest for configurable confidence formula.
-        Returns (success, confidence) tuple.
-        """
-        # Extract survivor counts - check both top-level and nested locations
-        bi = self.results.get("bidirectional_count", 0)
-        if bi == 0:
-            # Try nested location (best_result)
-            best_result = self.results.get("best_result", {})
-            bi = best_result.get("bidirectional_count", 0)
-        
-        bi = int(bi or 0)
-        
-        # Load evaluation params from manifest (with defaults)
-        eval_params = {
-            "confidence_formula": "bit_length",
-            "confidence_base": 0.7,
-            "confidence_divisor": 64.0,
-            "confidence_cap": 0.95,
-            "zero_survivors_confidence": 0.5
-        }
-        
-        # Try to load from manifest
-        manifest_path = Path("agent_manifests/window_optimizer.json")
-        if manifest_path.exists():
-            try:
-                with open(manifest_path) as f:
-                    manifest = json.load(f)
-                eval_params.update(manifest.get("evaluation_params", {}))
-            except Exception:
-                pass  # Use defaults
-        
-        # Zero survivors = failure
-        if bi == 0:
-            return False, eval_params["zero_survivors_confidence"]
-        
-        # Calculate confidence based on formula
-        formula = eval_params["confidence_formula"]
-        base = eval_params["confidence_base"]
-        cap = eval_params["confidence_cap"]
-        divisor = eval_params["confidence_divisor"]
-        
-        if formula == "bit_length":
-            confidence = min(cap, base + (bi.bit_length() / divisor))
-        elif formula == "log10":
-            confidence = min(cap, base + (math.log10(bi + 1) / 10.0))
-        else:
-            # Default to bit_length
-            confidence = min(cap, base + (bi.bit_length() / divisor))
-        
-        return True, confidence
-
+    # ════════════════════════════════════════════════════════════════════════
+    # DEPRECATED METHODS - Kept for backward compatibility
+    # ════════════════════════════════════════════════════════════════════════
+    
+    def get_thresholds(self) -> Dict[str, Dict[str, Any]]:
+        """DEPRECATED: Use get_threshold_priors() instead."""
+        import warnings
+        warnings.warn(
+            "get_thresholds() is deprecated. Use get_threshold_priors() which loads from config.",
+            DeprecationWarning
+        )
+        return self.get_threshold_priors()
+    
     def interpret_results(self) -> str:
-        """Interpret window optimization results."""
-        bi_count = self.results.get("bidirectional_count", 0)
-        fwd_count = self.results.get("forward_count", 0)
-        rev_count = self.results.get("reverse_count", 0)
-        window = self.results.get("best_window_size", "unknown")
-        skip = self.results.get("best_skip", "unknown")
+        """
+        DEPRECATED: LLM now does interpretation.
         
-        # Zero survivors is critical failure
-        if bi_count == 0:
-            return "CRITICAL: Zero bidirectional survivors. PRNG hypothesis may be incorrect or parameters need major adjustment."
-        
-        # Evaluate balance
-        if fwd_count > 0 and rev_count > 0:
-            ratio = min(fwd_count, rev_count) / max(fwd_count, rev_count)
-        else:
-            ratio = 0
-        
-        interpretation_parts = []
-        
-        # Bidirectional analysis
-        if bi_count <= 10:
-            interpretation_parts.append(f"Excellent signal: Only {bi_count} bidirectional survivors - highly constrained search space.")
-        elif bi_count <= 100:
-            interpretation_parts.append(f"Good signal: {bi_count} bidirectional survivors - manageable for ML scoring.")
-        elif bi_count <= 1000:
-            interpretation_parts.append(f"Acceptable: {bi_count} bidirectional survivors - scoring will take longer but feasible.")
-        else:
-            interpretation_parts.append(f"High survivor count ({bi_count}) - consider adjusting parameters to narrow search space.")
-        
-        # Balance analysis
-        if ratio > 0.8:
-            interpretation_parts.append(f"Forward/reverse balance is good (ratio={ratio:.2f}).")
-        elif ratio > 0.5:
-            interpretation_parts.append(f"Moderate forward/reverse imbalance (ratio={ratio:.2f}).")
-        else:
-            interpretation_parts.append(f"Significant forward/reverse imbalance (ratio={ratio:.2f}) - may indicate parameter issues.")
-        
-        # Optimal parameters
-        interpretation_parts.append(f"Optimal window={window}, skip={skip}.")
-        
-        return " ".join(interpretation_parts)
+        Returns raw metrics summary for backward compatibility.
+        """
+        import warnings
+        warnings.warn(
+            "interpret_results() is deprecated. LLM now handles interpretation.",
+            DeprecationWarning
+        )
+        raw = self.get_raw_metrics()
+        derived = self.get_derived_metrics()
+        return (
+            f"seeds_tested={raw['seeds_tested']}, "
+            f"bidirectional_count={raw['bidirectional_count']}, "
+            f"bidirectional_rate={derived['bidirectional_rate']:.4f}, "
+            f"overlap_ratio={derived['overlap_ratio']:.4f}"
+        )
     
     def get_retry_suggestions(self) -> List[Dict[str, Any]]:
-        """Suggest parameter adjustments for retry."""
-        suggestions = []
-        bi_count = self.results.get("bidirectional_count", 0)
-        fwd_count = self.results.get("forward_count", 0)
-        current_window = self.results.get("best_window_size", 512)
-        current_trials = self.results.get("config", {}).get("trials", 50)
-        
-        # Zero survivors - major adjustments needed
-        if bi_count == 0:
-            suggestions.append({
-                "param": "window_size",
-                "suggestion": min(current_window * 2, 2000),
-                "reason": "Zero survivors - try larger window to capture more draws"
-            })
-            suggestions.append({
-                "param": "skip_max",
-                "suggestion": 50,
-                "reason": "Zero survivors - expand skip search range"
-            })
-            return suggestions
-        
-        # Too many survivors - narrow search
-        if bi_count > 1000:
-            suggestions.append({
-                "param": "window_size",
-                "suggestion": max(current_window // 2, 50),
-                "reason": f"Too many survivors ({bi_count}) - try smaller window"
-            })
-            suggestions.append({
-                "param": "trials",
-                "suggestion": min(current_trials * 2, 200),
-                "reason": "Increase optimization trials to find better parameters"
-            })
-        
-        # Forward/reverse imbalance
-        if fwd_count > 0 and bi_count > 0:
-            if fwd_count > bi_count * 100:
-                suggestions.append({
-                    "param": "skip_max",
-                    "suggestion": 30,
-                    "reason": "High forward count relative to bidirectional - adjust skip range"
-                })
-        
-        # Low optimization score
-        opt_score = self.results.get("optimization_score", 1.0)
-        if opt_score < 0.5:
-            suggestions.append({
-                "param": "trials",
-                "suggestion": min(current_trials * 2, 300),
-                "reason": f"Low optimization score ({opt_score:.2f}) - more trials may help"
-            })
-        
-        return suggestions
+        """DEPRECATED: Use get_heuristic_decision()['suggested_params'] instead."""
+        import warnings
+        warnings.warn(
+            "get_retry_suggestions() is deprecated. Use get_heuristic_decision() instead.",
+            DeprecationWarning
+        )
+        decision = self.get_heuristic_decision()
+        params = decision.get("suggested_params") or {}
+        return [{"param": k, "suggestion": v} for k, v in params.items()]
 
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FACTORY FUNCTION (for backward compatibility)
+# ════════════════════════════════════════════════════════════════════════════════
 
 def create_window_optimizer_context(
     results: Dict[str, Any],
     run_number: int = 1,
-    manifest_path: str = None
+    manifest_path: str = None,
+    data_source_type: str = "synthetic"
 ) -> WindowOptimizerContext:
-    """Factory function to create window optimizer context."""
+    """
+    Factory function to create window optimizer context.
+    
+    Args:
+        results: Results from window_optimizer.py
+        run_number: Current run number (for retry tracking)
+        manifest_path: Path to manifest (optional, for metadata)
+        data_source_type: "synthetic", "real", or "hybrid"
+    
+    Returns:
+        Configured WindowOptimizerContext instance
+    """
     ctx = WindowOptimizerContext(
+        results=results,
         run_number=run_number,
-        results=results
+        data_source_type=data_source_type
     )
     
     if manifest_path:
-        ctx.load_manifest(manifest_path)
+        ctx.manifest_path = manifest_path
     
     return ctx

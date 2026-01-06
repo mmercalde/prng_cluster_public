@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*found in sys.modules.*")
 """
 Watcher Agent - Autonomous pipeline monitoring and orchestration.
 
@@ -60,6 +63,13 @@ except ImportError:
 from agents.full_agent_context import FullAgentContext, build_full_context
 from agents.agent_decision import AgentDecision, parse_llm_response
 from agents.history import AnalysisHistory, load_history
+# Step-specific prompt builders (Team Beta Approved 2026-01-04)
+try:
+    from agents.prompts.step1_prompt import build_step1_prompt, build_step1_corrective_prompt
+    from agents.threshold_guardrail import validate_decision, enforce_thresholds
+    STEP_PROMPTS_AVAILABLE = True
+except ImportError:
+    STEP_PROMPTS_AVAILABLE = False
 from agents.safety import KillSwitch, check_safety, create_halt, clear_halt
 from agents.pipeline import get_step_info
 from agents.doctrine import validate_decision_against_doctrine
@@ -281,22 +291,137 @@ class WatcherAgent:
     def _evaluate_with_llm(self, context: FullAgentContext) -> Optional[AgentDecision]:
         """
         Evaluate using LLM with grammar-constrained decoding.
-
+        v1.2.0: Step-specific prompts with mission context (Team Beta 2026-01-04)
         v1.1.0: Uses LLMRouter.evaluate_decision() for guaranteed JSON structure.
-
         Returns AgentDecision or None if LLM unavailable.
         """
-        # v1.1.0: Try grammar-constrained evaluation via LLMRouter
+        # v1.2.0: Use step-specific prompts for supported steps
         if self.llm_router and self.config.use_grammar:
+            # Step 1: Use new prompt with mission context
+            if context.step == 1 and STEP_PROMPTS_AVAILABLE:
+                try:
+                    decision = self._evaluate_step1_with_new_prompt(context)
+                    if decision:
+                        return decision
+                    # Fall through to legacy if new method returns None
+                    logger.info("Step 1 new prompt failed, trying legacy router")
+                except Exception as e:
+                    logger.warning(f"Step 1 new prompt failed: {e}, trying legacy")
+            
+            # Legacy router for other steps or fallback
             try:
                 decision = self._evaluate_with_router(context)
                 if decision:
                     return decision
             except Exception as e:
                 logger.warning(f"Router evaluation failed: {e}, trying direct HTTP")
-
+        
         # Fallback: Direct HTTP request (legacy method)
         return self._evaluate_with_http(context)
+
+
+    def _evaluate_step1_with_new_prompt(self, context: FullAgentContext) -> Optional[AgentDecision]:
+        """
+        Evaluate Step 1 using the new prompt structure.
+        Team Beta Approved: 2026-01-04
+        
+        Uses raw + derived metrics instead of legacy to_context_dict().
+        Includes mission context so LLM understands PRNG domain.
+        """
+        if not STEP_PROMPTS_AVAILABLE:
+            logger.warning("Step prompts not available, falling back to legacy")
+            return None
+        
+        # Get the WindowOptimizerContext
+        agent_ctx = context.agent_context
+        if not hasattr(agent_ctx, 'get_raw_metrics'):
+            logger.warning("Agent context missing get_raw_metrics, falling back to legacy")
+            return None
+        
+        # Extract metrics using new methods
+        raw_metrics = agent_ctx.get_raw_metrics()
+        derived_metrics = agent_ctx.get_derived_metrics()
+        threshold_priors = agent_ctx.get_threshold_priors()
+        data_source_type = getattr(agent_ctx, 'data_source_type', 'synthetic')
+        
+        # Build new prompt
+        prompt = build_step1_prompt(
+            raw_metrics=raw_metrics,
+            derived_metrics=derived_metrics,
+            threshold_priors=threshold_priors,
+            data_source_type=data_source_type
+        )
+        
+        agent_name = "watcher_step1_v2"
+        
+        try:
+            # Use grammar-constrained evaluation with NEW grammar
+            decision_dict = self.llm_router.evaluate_watcher_decision(
+                prompt,
+                step_id="step1_window_optimizer",
+                agent=agent_name
+            )
+            
+            # Validate checks
+            checks = decision_dict.get("checks", {})
+            if not checks.get("used_rates", False) or not checks.get("mentioned_data_source", False):
+                logger.warning("LLM violated checks, attempting corrective retry")
+                # One corrective retry (Team Beta rule)
+                corrective_prompt = build_step1_corrective_prompt(
+                    raw_metrics=raw_metrics,
+                    derived_metrics=derived_metrics,
+                    threshold_priors=threshold_priors,
+                    data_source_type=data_source_type,
+                    violation="checks.used_rates or checks.mentioned_data_source was false"
+                )
+                decision_dict = self.llm_router.evaluate_watcher_decision(
+                    corrective_prompt,
+                    step_id="step1_window_optimizer",
+                    agent=agent_name + "_retry"
+                )
+                # If still failing, return None to trigger heuristic fallback
+                checks = decision_dict.get("checks", {})
+                if not checks.get("used_rates", False):
+                    logger.error("LLM failed checks after retry, using heuristic fallback")
+                    return None
+            
+            # Apply deterministic threshold guardrail (Team Beta rule)
+            # LLMs reason, deterministic code decides on thresholds
+            decision_dict = validate_decision(
+                decision_dict,
+                derived_metrics,
+                threshold_priors,
+                data_source_type
+            )
+            
+            # Map new schema to AgentDecision
+            decision = decision_dict.get("decision", "escalate")
+            action_map = {
+                "proceed": "proceed",
+                "retry": "retry",
+                "escalate": "escalate"
+            }
+            
+            agent_decision = AgentDecision(
+                success_condition_met=(decision == "proceed"),
+                confidence=float(decision_dict.get("confidence", 0.5)),
+                reasoning=decision_dict.get("reasoning", "No reasoning provided"),
+                recommended_action=action_map.get(decision, "escalate"),
+                suggested_param_adjustments=decision_dict.get("suggested_params") or {},
+                warnings=decision_dict.get("warnings", [])
+            )
+            agent_decision.parse_method = "llm_step1_new_prompt"
+            
+            logger.info(
+                f"Step 1 LLM decision (new prompt): {agent_decision.recommended_action} "
+                f"(confidence={agent_decision.confidence:.2f}, "
+                f"primary_signal={decision_dict.get('primary_signal', 'unknown')})"
+            )
+            return agent_decision
+            
+        except Exception as e:
+            logger.warning(f"Step 1 new prompt evaluation error: {e}")
+            return None
 
     def _evaluate_with_router(self, context: FullAgentContext) -> Optional[AgentDecision]:
         """
@@ -474,6 +599,20 @@ class WatcherAgent:
             "warnings": decision.warnings,
             "parse_method": decision.parse_method
         })
+
+        # Display LLM feedback to user
+        print(f"\n{'='*60}")
+        print(f"📊 WATCHER EVALUATION - Step {step}: {STEP_NAMES.get(step, 'Unknown')}")
+        print(f"{'='*60}")
+        print(f"   Parse Method: {decision.parse_method}")
+        print(f"   Confidence:   {decision.confidence:.2f}")
+        print(f"   Action:       {decision.recommended_action.upper()}")
+        print(f"   Reasoning:    {decision.reasoning}")
+        if decision.suggested_param_adjustments:
+            print(f"   Adjustments:  {decision.suggested_param_adjustments}")
+        if decision.warnings:
+            print(f"   ⚠️  Warnings:  {decision.warnings}")
+        print(f"{'='*60}\n")
 
         # Execute based on action
         if decision.recommended_action == "proceed":
@@ -735,7 +874,7 @@ class WatcherAgent:
     # PIPELINE EXECUTION
     # ════════════════════════════════════════════════════════════════════════
 
-    def run_pipeline(self, start_step: int = 1, end_step: int = 6):
+    def run_pipeline(self, start_step: int = 1, end_step: int = 6, params: Dict[str, Any] = None):
         """
         Run the full pipeline from start_step to end_step.
 
@@ -745,6 +884,22 @@ class WatcherAgent:
         """
         logger.info(f"Starting pipeline from step {start_step} to {end_step}")
 
+        
+        # Check for halt file BEFORE starting
+        if not check_safety():
+            halt_file = "/tmp/agent_halt"
+            print("\n" + "="*60)
+            print(f"⛔ PIPELINE HALTED - Cannot start")
+            print("="*60)
+            try:
+                with open(halt_file) as f:
+                    reason = f.read().strip()
+                print(f"Reason: {reason}")
+            except:
+                print("Reason: Unknown (halt file exists)")
+            print(f"\nTo resume: python3 -m agents.watcher_agent --clear-halt")
+            print("="*60 + "\n")
+            return
         self.running = True
         self.current_step = start_step
 
@@ -775,7 +930,7 @@ class WatcherAgent:
                 logger.info(f"{'='*60}")
 
                 # Run the step
-                results = self.run_step(step)
+                results = self.run_step(step, params)
 
                 if results is None:
                     results = {"success": False, "error": "No results returned"}
@@ -963,6 +1118,12 @@ def main():
         default=0.70,
         help="Auto-proceed confidence threshold (default: 0.70)"
     )
+    parser.add_argument(
+        "--params",
+        type=str,
+        default=None,
+        help="JSON string of params to override manifest defaults"
+    )
 
     args = parser.parse_args()
 
@@ -1022,7 +1183,16 @@ def main():
         print("=========================\n")
 
     elif args.run_pipeline:
-        watcher.run_pipeline(args.start_step, args.end_step)
+        # Parse params JSON if provided
+        override_params = None
+        if args.params:
+            try:
+                override_params = json.loads(args.params)
+                logger.info(f"CLI param overrides: {override_params}")
+            except json.JSONDecodeError as e:
+                print(f"ERROR: Invalid JSON in --params: {e}")
+                return
+        watcher.run_pipeline(args.start_step, args.end_step, override_params)
 
     elif args.daemon:
         try:

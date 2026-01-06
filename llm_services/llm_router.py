@@ -612,6 +612,126 @@ class LLMRouter:
                 "warnings": [f"Parse error: {str(e)}", f"Raw response: {response[:200]}"]
             }
 
+
+    def evaluate_watcher_decision(
+        self,
+        prompt: str,
+        *,
+        step_id: str,
+        agent: Optional[str] = None,
+        timeout: int = 120,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate a WatcherDecision using the universal watcher grammar.
+        
+        Team Beta Approved: 2026-01-04
+        This is the ONLY path for autonomous step decisions.
+        
+        Args:
+            prompt: Complete prompt with mission context + metrics
+            step_id: Step identifier (e.g., "step1_window_optimizer")
+            agent: Optional agent identity for logging
+            timeout: Request timeout in seconds
+            
+        Returns:
+            Parsed WatcherDecision dict with guaranteed structure:
+            {
+                "decision": "proceed"|"retry"|"escalate",
+                "retry_reason": str|null,
+                "confidence": float,
+                "reasoning": str,
+                "primary_signal": str,
+                "suggested_params": dict|null,
+                "warnings": [],
+                "checks": {
+                    "used_rates": bool,
+                    "mentioned_data_source": bool,
+                    "avoided_absolute_only": bool
+                }
+            }
+        """
+        grammar_path = Path(__file__).parent / "grammars" / "watcher_decision.gbnf"
+        
+        # Fallback to project root grammars directory
+        if not grammar_path.exists():
+            grammar_path = Path(__file__).parent.parent / "grammars" / "watcher_decision.gbnf"
+        
+        if not grammar_path.exists():
+            print(f"Watcher grammar not found: {grammar_path}")
+            return {
+                "decision": "escalate",
+                "retry_reason": None,
+                "confidence": 0.0,
+                "reasoning": f"Grammar file not found: {grammar_path}",
+                "primary_signal": "error",
+                "suggested_params": None,
+                "warnings": ["grammar_not_found"],
+                "checks": {
+                    "used_rates": False,
+                    "mentioned_data_source": False,
+                    "avoided_absolute_only": False
+                }
+            }
+        
+        with open(grammar_path, "r") as f:
+            grammar = f.read()
+        
+        if agent:
+            self.set_agent(agent)
+        
+        try:
+            response = self.route(
+                force_endpoint="orchestrator",
+                prompt=prompt,
+                grammar=grammar,
+                temperature=0.2,  # Low creativity for decisions
+                max_tokens=512,
+            )
+            
+            result = json.loads(response)
+            
+            # Log with step context
+            print(
+                f"WatcherDecision [{step_id}]: {result.get('decision', 'unknown')} "
+                f"(confidence={result.get('confidence', 0):.2f}, "
+                f"signal={result.get('primary_signal', 'unknown')})"
+            )
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            print(f"WatcherDecision JSON parse error: {e}")
+            return {
+                "decision": "escalate",
+                "retry_reason": None,
+                "confidence": 0.0,
+                "reasoning": f"JSON parse error: {e}",
+                "primary_signal": "error",
+                "suggested_params": None,
+                "warnings": [f"parse_error: {str(e)}"],
+                "checks": {
+                    "used_rates": False,
+                    "mentioned_data_source": False,
+                    "avoided_absolute_only": False
+                }
+            }
+        except Exception as e:
+            print(f"WatcherDecision error: {e}")
+            return {
+                "decision": "escalate",
+                "retry_reason": None,
+                "confidence": 0.0,
+                "reasoning": f"Evaluation error: {e}",
+                "primary_signal": "error",
+                "suggested_params": None,
+                "warnings": [f"error: {str(e)}"],
+                "checks": {
+                    "used_rates": False,
+                    "mentioned_data_source": False,
+                    "avoided_absolute_only": False
+                }
+            }
+
     def analyze_sieve(self, prompt: str, agent: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
         Analyze sieve results with structured output.

@@ -171,69 +171,31 @@ def build_doctrine_header(
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# STEP-SPECIFIC THRESHOLDS
+# STEP-SPECIFIC THRESHOLDS (NOW CONFIG-DRIVEN)
 # ════════════════════════════════════════════════════════════════════════════════
+# REFACTORED: 2026-01-04 (Team Beta Approved)
+# Thresholds now loaded from distributed_config.json
+# No hardcoded values - everything configurable
 
-STEP_THRESHOLDS = {
-    1: {  # Window Optimizer
-        "bidirectional_count": {
-            "excellent": {"min": 1, "max": 10},
-            "good": {"min": 11, "max": 100},
-            "acceptable": {"min": 101, "max": 1000},
-            "poor": {"min": 1001, "max": 10000},
-            "fail": {"min": 10001, "max": None}
-        },
-        "zero_survivors": "fail"
-    },
-    2: {  # Scorer Meta Optimizer
-        "validation_score": {
-            "excellent": {"min": 0.95},
-            "good": {"min": 0.85},
-            "acceptable": {"min": 0.70},
-            "poor": {"min": 0.50},
-            "fail": {"max": 0.50}
-        },
-        "convergence_required": True
-    },
-    3: {  # Full Scoring
-        "completion_rate": {
-            "required": 1.0,
-            "acceptable": 0.99
-        },
-        "features_required": 64
-    },
-    4: {  # ML Meta Optimizer
-        "architecture_score": {
-            "excellent": {"min": 0.85},
-            "good": {"min": 0.70},
-            "acceptable": {"min": 0.55},
-            "fail": {"max": 0.55}
-        },
-        "optimal_layers": {"min": 2, "max": 4}
-    },
-    5: {  # Anti-Overfit
-        "overfit_ratio": {
-            "excellent": {"min": 0.95, "max": 1.05},
-            "good": {"min": 1.05, "max": 1.15},
-            "warning": {"min": 1.15, "max": 1.30},
-            "fail": {"min": 1.30}
-        },
-        "kfold_std_max": 0.05
-    },
-    6: {  # Prediction
-        "pool_size": {
-            "optimal": {"min": 100, "max": 300},
-            "acceptable": {"min": 50, "max": 500}
-        },
-        "mean_confidence": {
-            "high": {"min": 0.7},
-            "moderate": {"min": 0.5},
-            "low": {"max": 0.5}
-        }
-    }
-}
+from utils.metrics_extractor import get_step_thresholds, STEP_IDS
 
 
-def get_thresholds_for_step(step: int) -> Dict[str, Any]:
-    """Get evaluation thresholds for a pipeline step."""
-    return STEP_THRESHOLDS.get(step, {})
+def get_thresholds_for_step(
+    step: int, 
+    data_source_type: str = "synthetic"
+) -> Dict[str, Any]:
+    """
+    Get evaluation thresholds for a pipeline step.
+    
+    REFACTORED: Now loads from distributed_config.json
+    
+    Args:
+        step: Pipeline step (1-6)
+        data_source_type: "synthetic", "real", or "hybrid"
+    
+    Returns:
+        Threshold priors for the step/source combination
+    """
+    step_id = STEP_IDS.get(step, f"step_{step}_unknown")
+    return get_step_thresholds(step_id, data_source_type)
+

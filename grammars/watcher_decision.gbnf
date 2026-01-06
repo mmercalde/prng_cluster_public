@@ -1,0 +1,33 @@
+root ::= "{" ws decision-kv "," ws retry-reason-kv "," ws confidence-kv "," ws reasoning-kv "," ws signal-kv "," ws params-kv "," ws warnings-kv "," ws checks-kv ws "}"
+
+decision-kv ::= "\"decision\"" ws ":" ws decision-enum
+decision-enum ::= "\"proceed\"" | "\"retry\"" | "\"escalate\""
+
+retry-reason-kv ::= "\"retry_reason\"" ws ":" ws (retry-reason-enum | "null")
+retry-reason-enum ::= "\"tighten\"" | "\"widen\"" | "\"rerun\"" | "\"investigate\""
+
+confidence-kv ::= "\"confidence\"" ws ":" ws number
+
+reasoning-kv ::= "\"reasoning\"" ws ":" ws string
+
+signal-kv ::= "\"primary_signal\"" ws ":" ws string
+
+params-kv ::= "\"suggested_params\"" ws ":" ws ("null" | simple-object)
+
+warnings-kv ::= "\"warnings\"" ws ":" ws string-array
+
+checks-kv ::= "\"checks\"" ws ":" ws checks-object
+checks-object ::= "{" ws used-rates-kv "," ws mentioned-kv "," ws avoided-kv ws "}"
+used-rates-kv ::= "\"used_rates\"" ws ":" ws boolean
+mentioned-kv ::= "\"mentioned_data_source\"" ws ":" ws boolean
+avoided-kv ::= "\"avoided_absolute_only\"" ws ":" ws boolean
+
+boolean ::= "true" | "false"
+number ::= [0-9] "." [0-9] [0-9]
+string ::= "\"" chars "\""
+chars ::= char*
+char ::= [^"\\] | "\\" escape
+escape ::= ["\\/bfnrt]
+ws ::= [ \t\n]*
+string-array ::= "[" ws "]" | "[" ws string (ws "," ws string)* ws "]"
+simple-object ::= "{" ws "}" | "{" ws string ws ":" ws (string | number) (ws "," ws string ws ":" ws (string | number))* ws "}"

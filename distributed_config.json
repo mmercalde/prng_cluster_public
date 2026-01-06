@@ -81,5 +81,223 @@
       "max": 0.1,
       "default": 0.01
     }
+  },
+  "evaluation_thresholds": {
+    "step_1_window_optimizer": {
+      "synthetic": {
+        "bidirectional_rate": {
+          "good_max": 0.02,
+          "warn_max": 0.1,
+          "fail_max": 0.3
+        },
+        "forward_rate": {
+          "warn_max": 0.25
+        },
+        "reverse_rate": {
+          "warn_max": 0.25
+        },
+        "overlap_ratio": {
+          "good_min": 0.25,
+          "warn_min": 0.12
+        },
+        "min_seeds_tested": 250000
+      },
+      "real": {
+        "bidirectional_rate": {
+          "good_max": 0.005,
+          "warn_max": 0.03,
+          "fail_max": 0.1
+        },
+        "forward_rate": {
+          "warn_max": 0.1
+        },
+        "reverse_rate": {
+          "warn_max": 0.1
+        },
+        "overlap_ratio": {
+          "good_min": 0.2,
+          "warn_min": 0.1
+        },
+        "min_seeds_tested": 500000
+      },
+      "hybrid": {
+        "bidirectional_rate": {
+          "good_max": 0.01,
+          "warn_max": 0.06,
+          "fail_max": 0.2
+        },
+        "forward_rate": {
+          "warn_max": 0.15
+        },
+        "reverse_rate": {
+          "warn_max": 0.15
+        },
+        "overlap_ratio": {
+          "good_min": 0.2,
+          "warn_min": 0.1
+        },
+        "min_seeds_tested": 350000
+      }
+    },
+    "step_2_scorer_meta": {
+      "synthetic": {
+        "score_improvement": {
+          "good_min": 0.05,
+          "warn_min": 0.01
+        },
+        "convergence_rate": {
+          "good_max": 0.5,
+          "warn_max": 0.8
+        }
+      },
+      "real": {
+        "score_improvement": {
+          "good_min": 0.03,
+          "warn_min": 0.005
+        },
+        "convergence_rate": {
+          "good_max": 0.6,
+          "warn_max": 0.9
+        }
+      },
+      "hybrid": {
+        "score_improvement": {
+          "good_min": 0.04,
+          "warn_min": 0.008
+        },
+        "convergence_rate": {
+          "good_max": 0.55,
+          "warn_max": 0.85
+        }
+      }
+    },
+    "step_3_full_scoring": {
+      "synthetic": {
+        "completion_rate": {
+          "good_min": 0.98,
+          "warn_min": 0.9
+        },
+        "feature_coverage": {
+          "good_min": 62,
+          "warn_min": 55
+        }
+      },
+      "real": {
+        "completion_rate": {
+          "good_min": 0.95,
+          "warn_min": 0.8
+        },
+        "feature_coverage": {
+          "good_min": 62,
+          "warn_min": 50
+        }
+      },
+      "hybrid": {
+        "completion_rate": {
+          "good_min": 0.96,
+          "warn_min": 0.85
+        },
+        "feature_coverage": {
+          "good_min": 62,
+          "warn_min": 52
+        }
+      }
+    },
+    "step_4_ml_meta": {
+      "synthetic": {
+        "score_range": {
+          "good_min": 0.02,
+          "warn_min": 0.005
+        },
+        "avg_feature_variance": {
+          "good_min": 0.15,
+          "warn_min": 0.05
+        }
+      },
+      "real": {
+        "score_range": {
+          "good_min": 0.01,
+          "warn_min": 0.002
+        },
+        "avg_feature_variance": {
+          "good_min": 0.1,
+          "warn_min": 0.03
+        }
+      },
+      "hybrid": {
+        "score_range": {
+          "good_min": 0.015,
+          "warn_min": 0.003
+        },
+        "avg_feature_variance": {
+          "good_min": 0.12,
+          "warn_min": 0.04
+        }
+      }
+    },
+    "step_5_anti_overfit": {
+      "synthetic": {
+        "val_train_gap": {
+          "good_max": 0.03,
+          "warn_max": 0.1
+        },
+        "holdout_accuracy": {
+          "good_min": 0.65,
+          "warn_min": 0.55
+        }
+      },
+      "real": {
+        "val_train_gap": {
+          "good_max": 0.05,
+          "warn_max": 0.15
+        },
+        "holdout_accuracy": {
+          "good_min": 0.55,
+          "warn_min": 0.45
+        }
+      },
+      "hybrid": {
+        "val_train_gap": {
+          "good_max": 0.04,
+          "warn_max": 0.12
+        },
+        "holdout_accuracy": {
+          "good_min": 0.6,
+          "warn_min": 0.5
+        }
+      }
+    },
+    "step_6_prediction": {
+      "synthetic": {
+        "confidence_mean": {
+          "good_min": 0.75,
+          "warn_min": 0.6
+        },
+        "prediction_entropy": {
+          "good_max": 1.5,
+          "warn_max": 2.5
+        }
+      },
+      "real": {
+        "confidence_mean": {
+          "good_min": 0.65,
+          "warn_min": 0.5
+        },
+        "prediction_entropy": {
+          "good_max": 2.0,
+          "warn_max": 3.0
+        }
+      },
+      "hybrid": {
+        "confidence_mean": {
+          "good_min": 0.7,
+          "warn_min": 0.55
+        },
+        "prediction_entropy": {
+          "good_max": 1.8,
+          "warn_max": 2.8
+        }
+      }
+    }
   }
 }
