@@ -1,0 +1,174 @@
+=== MISSION CONTEXT ===
+
+You are an AI assistant for the Distributed PRNG Analysis System - a sophisticated GPU-accelerated platform for reverse-engineering pseudo-random number generator behavior through functional mimicry.
+
+PROJECT GOAL: Achieve "functional mimicry" of unknown PRNGs - not cryptographic reconstruction, but statistical emulation that enables predictive performance. We analyze lottery draw data to identify PRNG seeds and patterns.
+
+ARCHITECTURE:
+- 26-GPU Cluster: Zeus (2× RTX 3080 Ti) + rig-6600 (12× RX 6600) + rig-6600b (12× RX 6600)
+- ~285 TFLOPS combined computing power
+- 6-Step Pipeline: Window Optimizer → Bidirectional Sieve → Scorer Meta-Optimizer → Full Scoring → Anti-Overfit Training → Prediction Generator
+- 46 PRNG algorithms in registry (LCG, MT19937, PCG, XorShift families)
+- ML models: PyTorch neural networks, XGBoost, LightGBM, CatBoost
+
+KEY PRINCIPLE: "Learning steps declare signal quality; execution steps act only on declared usable signals." Lower survival rates indicate stronger signal (better constraint). If bidirectional_rate exceeds warn_max threshold, the signal is too weak for reliable predictions.
+
+=== CHAPTER 2: BIDIRECTIONAL SIEVE (Technical Context) ===
+
+## 1. Mathematical Foundation
+
+### 1.1 The Observable Data Problem
+
+The lottery uses an internal 32-bit PRNG, then applies MOD 1000:
+
+```
+PRNG Internal State:  2,147,483,523  (32-bit, HIDDEN)
+                           ↓
+                      MOD 1000
+                           ↓
+Lottery Display:          523         (3-digit, VISIBLE)
+```
+
+**We only see the MOD 1000 output.** The 32-bit internal state is hidden.
+
+### 1.2 The Collision Space
+
+For any single lottery draw (e.g., 523), approximately **4.3 million** different 32-bit values produce it:
+
+```
+523, 1523, 2523, 3523, 4523, ... up to ~4,294,967,523
+```
+
+**Calculation:**
+```
+2³² / 1000 = 4,294,967,296 / 1000 ≈ 4.3 million collisions per draw
+```
+
+### 1.3 The Power of Sequential Filtering
+
+Each additional draw reduces survivors exponentially:
+
+| After Draw | Calculation | Expected Survivors |
+|------------|-------------|-------------------|
+| Draw 1 | 2³² / 1000 | ~4,300,000 |
+| Draw 2 | 4.3M / 1000 | ~4,300 |
+| Draw 3 | 4,300 / 1000 | ~4.3 |
+| Draw 4 | 4.3 / 1000 | ~0.004 |
+
+**After just 4 draws, expected random survivors < 1**
+
+### 1.4 General Probability Formula
+
+```
+Expected Random Survivors = 2³² / 1000^N = 4.3×10⁹ / 10^(3N)
+```
+
+For N = 400 draws: P(random survival) ≈ 10⁻¹¹⁹¹
+
+## 2. Forward Sieve
+
+The forward sieve starts at the **oldest/first draw** and works toward the newest:
+
+```
+Draw 1 (oldest):  Compute ALL seeds in 2³² space that produce draw_1
+Draw 2:           Of those survivors, find which also produce draw_2
+Draw 3:           Of those survivors, find which also produce draw_3
+...
+Draw N (newest):  Final forward survivors
+```
+
+## 3. Reverse Sieve
+
+The reverse sieve starts at the **newest/last draw** and works toward the oldest:
+
+```
+Draw N (newest):  Compute ALL seeds in 2³² space that produce draw_N
+Draw N-1:         Of those survivors, find which also produce draw_{N-1}
+...
+Draw 1 (oldest):  Final reverse survivors
+```
+
+**"Reverse" refers to the ORDER of processing draws, NOT inverting the PRNG.**
+
+Both sieves use the **same forward PRNG computation**. The difference:
+- Forward sieve: Validates oldest → newest
+- Reverse sieve: Validates newest → oldest
+
+### Why Reverse Matters
+
+A "lucky" seed might match early draws by chance but diverge later. Validating from **both directions** catches:
+
+| Failure Mode | Caught By |
+|--------------|-----------|
+| Early match, late divergence | Reverse sieve |
+| Late match, early divergence | Forward sieve |
+| Pattern that only works one direction | Bidirectional |
+
+## 4. Bidirectional Intersection
+
+```
+bidirectional_survivors = forward_survivors ∩ reverse_survivors
+```
+
+A seed survives bidirectionally if and only if it:
+1. ✅ Passes the forward sieve (all positions, oldest→newest)
+2. ✅ Passes the reverse sieve (all positions, newest→oldest)
+
+**Mathematical significance:**
+```
+For N = 400 draws:
+P(random seed survives bidirectional) ≈ 10⁻¹¹⁹¹
+
+Every bidirectional survivor is mathematically significant.
+```
+
+### What Survivors Mean
+
+**Survivors are NOT false positives.** At 10⁻¹¹⁹¹ probability, they exist because:
+- They actually match the PRNG behavior
+- They represent the true seed (or one of multiple seeds if lottery uses several)
+- They may represent partial matches (valid before a reseed event)
+
+## 5. Skip/Gap Handling
+
+The lottery may not publish every PRNG output:
+
+```
+PRNG Internal:  output_1, output_2, output_3, output_4, output_5, ...
+                    ↓          ↓                   ↓
+Lottery Shows:  draw_1     draw_2              draw_3  (gaps!)
+```
+
+The sieves test multiple **skip hypotheses**:
+- skip=0: Every PRNG output published
+- skip=1: Every other output published
+- skip=N: Every (N+1)th output published
+
+## 6. Signal Quality Metrics
+
+Key metrics for evaluating sieve output:
+
+- **bidirectional_rate**: survivors / seeds_tested (lower = stronger signal)
+- **forward_rate**: forward_survivors / seeds_tested
+- **reverse_rate**: reverse_survivors / seeds_tested
+- **intersection_ratio**: bidirectional / min(forward, reverse)
+
+Thresholds:
+- **warn_max**: Maximum acceptable bidirectional_rate (typically 0.10)
+- If rate EXCEEDS warn_max: signal too weak → RETRY with different parameters
+
+=== EVALUATION QUESTIONS ===
+
+Based on the mission context and sieve documentation above, please answer the following:
+
+1. **State Variables & Invariants**: List the key state variables tracked by the bidirectional sieve system and identify the mathematical invariants that must hold for a seed to survive.
+
+2. **Information Loss & Compensation**: Identify where information is lost due to the MOD 1000 projection (the "collision space" problem) and explain how the algorithm compensates for this loss through sequential filtering.
+
+3. **Leverage Parameters**: Identify the 3-5 most leverage parameters (thresholds/windows/skip policies) that control sieve behavior and explain the directionality of each (i.e., does increasing the parameter make filtering more strict or lenient?).
+
+4. **Experiment Plan**: Propose a concrete experiment plan (3-6 steps) to move toward functional mimicry with minimal compute waste. Consider: How would you validate that survivors represent true PRNG behavior vs. statistical coincidence?
+
+5. **Assumption Risks**: Flag any assumptions in the sieve design that could fail on real draw data. What edge cases or real-world conditions might break the mathematical guarantees?
+
+Please provide detailed, actionable answers with specific references to the technical context provided.
