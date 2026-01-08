@@ -1,104 +1,76 @@
 {
-    "orchestrator": {
-        "model": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "primary": {
+        "model": "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+        "model_path": "models/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
         "port": 8080,
-        "gpu_id": 0,
-        "context_length": 16384,
-        "max_tokens": 2048,
-        "batch_size": 512,
-        "threads": 8,
+        "gpu_id": "auto",
+        "context_length": 8192,
+        "max_tokens": 4096,
+        "batch_size": 2048,
+        "threads": 12,
         "n_gpu_layers": 99,
-        "description": "Code generation, planning, JSON manipulation, result synthesis",
+        "description": "DeepSeek-R1 distilled reasoning model - primary WATCHER agent",
         "vram_estimate_gb": 8.5,
-        "expected_speed_tps": 25,
+        "expected_speed_tps": 51,
+        "backend": "vulkan",
+        "gpu_split": "auto",
         "capabilities": [
+            "reasoning",
             "code_generation",
             "json_manipulation",
             "planning",
             "orchestration",
-            "result_synthesis",
-            "config_generation"
-        ]
-    },
-    "math": {
-        "model": "Qwen2.5-Math-7B-Instruct-Q5_K_M.gguf",
-        "port": 8081,
-        "gpu_id": 1,
-        "context_length": 8192,
-        "max_tokens": 512,
-        "batch_size": 512,
-        "threads": 8,
-        "n_gpu_layers": 99,
-        "description": "PRNG calculations, modular arithmetic, statistical analysis, residue computations",
-        "vram_estimate_gb": 5.5,
-        "expected_speed_tps": 45,
-        "capabilities": [
+            "threshold_evaluation",
+            "signal_quality_assessment",
             "modular_arithmetic",
             "prng_state_calculations",
             "statistical_analysis",
-            "residue_computations",
             "probability_calculations",
-            "confidence_scoring"
+            "confidence_scoring",
+            "experiment_design"
+        ],
+        "chat_template": "chatml",
+        "stop_tokens": ["</s>", "<|im_end|>", "<|endoftext|>", "<｜end▁of▁sentence｜>"]
+    },
+    "backup": {
+        "provider": "claude_code",
+        "model": "claude-opus-4.5",
+        "description": "Claude Opus 4.5 via Claude Code CLI - deep analysis backup",
+        "invocation": "claude --print -p",
+        "working_dir": "~/claude_test",
+        "expected_speed_tps": 38,
+        "capabilities": [
+            "deep_analysis",
+            "novel_derivations",
+            "edge_case_discovery",
+            "bias_calculations",
+            "comprehensive_debugging"
+        ],
+        "use_when": [
+            "primary returns uncertain/low_confidence",
+            "complex debugging required",
+            "novel problem analysis",
+            "human escalation recommended"
         ]
     },
     "routing": {
-        "math_keywords": [
-            "residue",
-            "modulo",
-            "modular",
-            "state =",
-            "seed",
-            "probability",
-            "calculate",
-            "compute",
-            "lcg",
-            "xorshift",
-            "prng",
-            "xorshifted",
-            "statistical",
-            "confidence",
-            "threshold",
-            "entropy",
-            "bitwise",
-            "survivor",
-            "match_rate",
-            "skip",
-            "pcg",
-            "mersenne",
-            "mt19937",
-            "chi-squared",
-            "distribution",
-            "variance",
-            "standard deviation",
-            "correlation",
-            "randomness",
-            "forward sieve",
-            "reverse sieve",
-            "bidirectional",
-            "skip interval",
-            "gap-aware",
-            "state reconstruction",
-            "temper",
-            "twist",
-            "pcg output",
-            "xoroshiro",
-            "lcg step",
-            "survivor scoring",
-            "residue filter",
-            "window size",
-            "survival rate",
-            "hybrid sieve"
+        "default": "primary",
+        "escalation_triggers": [
+            "UNCERTAIN",
+            "LOW_CONFIDENCE",
+            "ESCALATE_TO_BACKUP",
+            "REQUIRES_DEEP_ANALYSIS"
+        ],
+        "decision_keywords": [
+            "proceed", "retry", "escalate", "halt",
+            "threshold", "rate", "signal", "quality",
+            "bidirectional", "survivor", "sieve"
         ],
         "default_temperature": 0.7,
         "request_timeout_seconds": 120,
         "auto_retry_on_timeout": true,
         "max_retries": 2,
-        "context_reset_threshold": 14000
-    },
-    "delegation": {
-        "enabled": true,
-        "trigger": "[MATH_DELEGATE]",
-        "description": "Orchestrator can delegate math-heavy tasks to Math Specialist"
+        "context_reset_threshold": 8000
     },
     "human_override": {
         "enabled": true,
@@ -119,7 +91,8 @@
         "log_prompts": true,
         "log_responses": true,
         "log_latency": true,
-        "log_agent_identity": true
+        "log_agent_identity": true,
+        "log_escalations": true
     },
     "health": {
         "check_interval_seconds": 60,
@@ -137,8 +110,47 @@
         "max_queue_depth": 10,
         "memory_warning_threshold_gb": 11.0
     },
-    "schema_version": "1.0.5",
-    "config_version": "1.0.5",
-    "last_updated": "2025-12-01",
-    "review_status": "Team Beta approved with 7 fixes implemented"
+    "server_commands": {
+        "start_primary": "~/llama.cpp/llama-server --model ~/distributed_prng_analysis/models/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf --port 8080 --ctx-size 8192 --n-gpu-layers 99",
+        "health_check": "curl -s http://localhost:8080/health",
+        "stop": "pkill -f llama-server"
+    },
+    "benchmarks": {
+        "primary_14b": {
+            "prompt_processing_tps": 1472,
+            "text_generation_tps": 63.7,
+            "test_date": "2026-01-07",
+            "sections_addressed": "5/5",
+            "note": "PhD Candidate - correct, fast, production-ready"
+        },
+        "backup_opus": {
+            "text_generation_tps": 37.9,
+            "test_date": "2026-01-07", 
+            "sections_addressed": "5/5",
+            "note": "PhD Professor - deeper analysis, novel derivations"
+        },
+        "comparison_notes": {
+            "local_32b": "27 tok/s, no significant quality gain over 14B",
+            "deepseek_api": "28.7 tok/s, truncated responses, not recommended"
+        }
+    },
+    "migration": {
+        "from_version": "1.0.5",
+        "to_version": "2.0.0",
+        "changes": [
+            "Replaced Qwen dual-LLM (Coder+Math) with single DeepSeek-R1-14B",
+            "Removed math routing - R1 handles reasoning natively",
+            "Added Claude Opus 4.5 backup via Claude Code CLI",
+            "Added escalation triggers for backup invocation",
+            "Added benchmark results from A/B testing"
+        ],
+        "removed_models": [
+            "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+            "Qwen2.5-Math-7B-Instruct-Q5_K_M.gguf"
+        ]
+    },
+    "schema_version": "2.0.0",
+    "config_version": "2.0.0",
+    "last_updated": "2026-01-07",
+    "review_status": "Validated via A/B testing - 14B primary, Opus backup"
 }
