@@ -1,0 +1,269 @@
+MODEL: claude API (claude-opus-4.5 (via Claude Code))
+TIME: 59.7s @ 37.9 tok/s
+============================================================
+
+# Bidirectional Sieve Analysis
+
+## 1. State Variables & Invariants
+
+### Key State Variables
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `seed_candidates` | Set[uint32] | Current surviving seed set (starts at 2³² space) |
+| `forward_survivors` | Set[uint32] | Seeds passing oldest→newest validation |
+| `reverse_survivors` | Set[uint32] | Seeds passing newest→oldest validation |
+| `bidirectional_survivors` | Set[uint32] | Intersection of forward ∩ reverse |
+| `current_skip` | int | Skip hypothesis being tested (0, 1, 2, ...) |
+| `draw_sequence` | List[int] | Observed lottery outputs (0-999) |
+| `position_index` | int | Current draw position in validation |
+| `algorithm_id` | enum | Which of 46 PRNG algorithms being tested |
+
+### Mathematical Invariants
+
+For a seed `s` to survive bidirectionally, **all** of these must hold:
+
+```
+∀ i ∈ [0, N-1]:  PRNG(s, i × (skip+1)) MOD 1000 = draw[i]
+```
+
+More explicitly:
+
+1. **Forward Invariant**: 
+   ```
+   PRNG_advance(s, 0) MOD 1000 = draw[0]
+   PRNG_advance(s, skip+1) MOD 1000 = draw[1]
+   PRNG_advance(s, 2×(skip+1)) MOD 1000 = draw[2]
+   ...
+   ```
+
+2. **Reverse Invariant** (same constraint, different validation order):
+   ```
+   PRNG_advance(s, (N-1)×(skip+1)) MOD 1000 = draw[N-1]
+   PRNG_advance(s, (N-2)×(skip+1)) MOD 1000 = draw[N-2]
+   ...
+   ```
+
+3. **Set Invariant**:
+   ```
+   bidirectional_survivors ⊆ forward_survivors
+   bidirectional_survivors ⊆ reverse_survivors
+   |bidirectional_survivors| ≤ min(|forward|, |reverse|)
+   ```
+
+4. **Probability Bound**:
+   ```
+   E[random_survivors] = 2³² × (1/1000)^N
+   ```
+   Any survivor count significantly exceeding this indicates either true signal or algorithm mismatch.
+
+---
+
+## 2. Information Loss & Compensation
+
+### Where Information Is Lost
+
+The MOD 1000 projection creates a **many-to-one mapping**:
+
+```
+32-bit space (4.3 billion values)
+            ↓
+      MOD 1000
+            ↓
+3-digit space (1000 values)
+```
+
+**Quantified loss per draw:**
+- Input entropy: 32 bits
+- Output entropy: ~10 bits (log₂(1000) ≈ 9.97)
+- **Lost per draw: ~22 bits**
+
+This creates the collision space where ~4.3 million seeds map to each visible output.
+
+### How Sequential Filtering Compensates
+
+The algorithm exploits **temporal correlation** in PRNG sequences:
+
+| Mechanism | How It Recovers Information |
+|-----------|----------------------------|
+| **Sequential constraint** | Each additional draw adds ~10 bits of constraint, reducing survivors by ~1000× |
+| **PRNG determinism** | Given seed + algorithm, entire sequence is fixed—no degrees of freedom |
+| **Bidirectional validation** | Catches "lucky partial matches" that only work in one direction |
+| **Skip hypothesis testing** | Explores the hidden variable of unpublished outputs |
+
+**Information recovery calculation:**
+```
+After N draws:
+  Constraint bits = N × log₂(1000) ≈ 10N bits
+  For N = 400: 4000 bits of constraint vs. 32-bit seed space
+  Overdetermined by factor of 125×
+```
+
+The system is **massively overdetermined**—survivors are not coincidences but genuine matches to the underlying PRNG behavior.
+
+---
+
+## 3. Leverage Parameters
+
+### Parameter Analysis (Ordered by Impact)
+
+| # | Parameter | Controls | Directionality | Impact |
+|---|-----------|----------|----------------|--------|
+| 1 | **`window_size` (N)** | Number of draws in validation | ↑ increase = ↑ stricter filtering (10³ᴺ reduction) | **Highest**—exponential effect on survivor count |
+| 2 | **`skip_max`** | Maximum skip hypothesis tested | ↑ increase = ↑ more lenient (more hypotheses, more potential survivors) | High—multiplicative on search space |
+| 3 | **`warn_max`** | Threshold for bidirectional_rate | ↑ increase = ↑ more lenient (accepts weaker signals) | High—gates whether results are actionable |
+| 4 | **`algorithm_set`** | Which PRNGs to test | ↑ more algorithms = ↑ more lenient (more chances to find matches) | Medium—linear on compute cost |
+| 5 | **`seed_batch_size`** | GPU parallelism granularity | No effect on strictness—pure performance tuning | Low (affects speed, not results) |
+
+### Critical Relationships
+
+```
+window_size ↑  →  bidirectional_rate ↓  →  signal quality ↑
+skip_max ↑     →  compute cost ↑          →  coverage ↑
+warn_max ↑     →  false positive risk ↑   →  prediction reliability ↓
+```
+
+**Key insight**: `window_size` is the primary lever. Doubling window size squares the filtering power (roughly), while other parameters have linear effects.
+
+---
+
+## 4. Experiment Plan
+
+### Phase 1: Baseline Characterization (Low Compute)
+
+**Step 1: Algorithm Elimination Sweep**
+```
+For each algorithm in registry (46 total):
+  - Run small window (N=10) on recent 100 draws
+  - Measure survivor counts
+  - Eliminate algorithms with survivor_count >> expected (4.3×10⁻²¹ × 2³² ≈ 0)
+  
+Expected outcome: Reduce to 3-8 candidate algorithms
+Compute: ~1 GPU-hour
+```
+
+**Step 2: Skip Hypothesis Narrowing**
+```
+For surviving algorithms:
+  - Test skip ∈ {0, 1, 2, 3, 4} with N=20
+  - Identify skip values that produce any survivors
+  
+Expected outcome: Pin skip to 1-2 likely values
+Compute: ~2 GPU-hours
+```
+
+### Phase 2: Signal Validation (Medium Compute)
+
+**Step 3: Temporal Stability Test**
+```
+For (algorithm, skip) candidates:
+  - Run bidirectional sieve on 3 non-overlapping windows:
+    * Draws [0-100], [100-200], [200-300]
+  - Check if SAME seeds survive across windows
+  
+Validation criteria:
+  - Same seed → true PRNG match
+  - Different seeds → possible reseed events or false positives
+Compute: ~4 GPU-hours
+```
+
+**Step 4: Prediction Holdout Test**
+```
+For surviving (seed, algorithm, skip) tuples:
+  - Train on draws [0, N-10]
+  - Predict draws [N-9, N]
+  - Measure exact match rate
+  
+Success threshold: >50% exact matches (vs. 0.1% random baseline)
+Compute: ~1 GPU-hour
+```
+
+### Phase 3: Robustness (Higher Compute)
+
+**Step 5: Reseed Detection**
+```
+If Step 3 shows different seeds per window:
+  - Binary search for reseed boundaries
+  - Characterize reseed frequency
+  - Build segmented model
+  
+Compute: Variable, ~10 GPU-hours worst case
+```
+
+**Step 6: Full Production Run**
+```
+With validated parameters:
+  - Run complete sieve on all available history
+  - Generate prediction confidence intervals
+  - Monitor bidirectional_rate against warn_max
+  
+Compute: ~20 GPU-hours
+```
+
+### Validation Logic
+
+**True PRNG match indicators:**
+- Same seed survives across disjoint time windows
+- Survivor count matches theoretical expectation (0-2 seeds)
+- Predictions on holdout data exceed random chance by >100×
+
+**Statistical coincidence indicators:**
+- Different seeds in each window
+- Survivor count >> expected
+- Holdout predictions at random baseline
+
+---
+
+## 5. Assumption Risks
+
+### Critical Assumptions That Could Fail
+
+| Assumption | Risk Level | Failure Mode | Mitigation |
+|------------|------------|--------------|------------|
+| **Single PRNG algorithm** | HIGH | Lottery uses hybrid/custom PRNG not in registry | Expand registry; add generic neural emulator |
+| **Constant skip** | HIGH | Skip varies (e.g., skip=1 weekdays, skip=2 weekends) | Test time-varying skip models |
+| **No reseed** | MEDIUM | Lottery reseeds daily/weekly | Segment analysis by time; detect discontinuities |
+| **32-bit state** | MEDIUM | Lottery uses 64-bit or larger state | 64-bit search computationally infeasible; require ML approach |
+| **Deterministic PRNG** | LOW | Lottery adds entropy injection | Would see survivor rate spike; detectable |
+| **Clean data** | MEDIUM | Transcription errors, missing draws, duplicates | Data validation pass; outlier detection |
+
+### Edge Cases to Test
+
+1. **Draw value 000**: Some systems represent as "0" vs "000"—parsing ambiguity
+2. **Rollover behavior**: What happens at seed 2³²-1? Unsigned wrap vs. signed overflow
+3. **Time zone boundaries**: Draw timestamps may shift sequence alignment
+4. **Holiday gaps**: Missing draws could be misinterpreted as skip changes
+5. **Multiple PRNGs**: System might use different PRNGs for different digit positions
+
+### Mathematical Guarantee Breakers
+
+The 10⁻¹¹⁹¹ probability guarantee assumes:
+
+```
+P(random survival) = (1/1000)^N
+```
+
+This **breaks** if:
+- PRNG outputs are not uniformly distributed (biased generator)
+- Draws are not independent (correlated sampling)
+- MOD 1000 doesn't map uniformly (e.g., if PRNG range isn't divisible by 1000)
+
+**Example bias risk:**
+```
+If PRNG produces 32-bit values and we compute MOD 1000:
+  Values 0-4294967295 MOD 1000
+  
+  296 values map to 0-295 (with probability 4294968/2³² each)
+  704 values map to 296-999 (with probability 4294967/2³² each)
+  
+  Bias: ~0.00002% per digit position
+  Over 400 draws: cumulative bias could shift survivor expectations
+```
+
+### Recommended Safeguards
+
+1. **Always validate on holdout data** before trusting survivors
+2. **Monitor bidirectional_rate trends**—sudden spikes indicate model breakdown
+3. **Maintain algorithm registry updates**—new PRNGs emerge
+4. **Log all anomalies**—they often reveal hidden system behavior
+5. **Never extrapolate beyond validated skip/window combinations**

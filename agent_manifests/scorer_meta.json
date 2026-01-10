@@ -124,5 +124,12 @@
     "confidence_cap": 0.95,
     "zero_trials_confidence": 0.5,
     "min_successful_trials": 10
-  }
+  },
+  "arg_style": "positional",
+  "positional_args": [
+    "trials"
+  ],
+  "flag_args": [
+    "legacy_scoring"
+  ]
 }

@@ -1,0 +1,50 @@
+MODEL: deepseek API (deepseek-reasoner)
+TIME: 142.9s @ 28.7 tok/s
+============================================================
+
+# Distributed PRNG Analysis System - Bidirectional Sieve Evaluation
+
+## 1. **State Variables & Invariants**
+
+### Key State Variables
+- **forward_survivors**: Set of 32-bit seeds that satisfy all draws when validated chronologically (oldest→newest)
+- **reverse_survivors**: Set of 32-bit seeds that satisfy all draws when validated anti-chronologically (newest→oldest)  
+- **bidirectional_survivors**: Intersection of forward and reverse survivors (`forward ∩ reverse`)
+- **skip_hypothesis**: Current assumption about gaps between published draws (skip=0,1,2,...)
+- **current_draw_window**: Subset of draws being analyzed (optimized by Window Optimizer)
+- **bidirectional_rate**: `|bidirectional_survivors| / seeds_tested`
+
+### Mathematical Invariants for Seed Survival
+For a seed S to survive **bidirectional validation**, both invariants must hold:
+
+**Forward Invariant:**
+```
+∀ i ∈ {1..N}: PRNG_output(S, step = cumulative_skips_i) MOD 1000 = draw_i
+```
+where `cumulative_skips_i` accounts for all skips up to draw i.
+
+**Reverse Invariant:**
+```
+∀ j ∈ {N..1}: PRNG_output(S, step = cumulative_skips_j) MOD 1000 = draw_j
+```
+*Note: Both use forward PRNG computation; "reverse" refers only to validation order.*
+
+**Bidirectional Invariant:**
+```
+S ∈ forward_survivors ∧ S ∈ reverse_survivors
+```
+
+## 2. **Information Loss & Compensation**
+
+### Information Loss Points
+1. **MOD 1000 Projection**: 32-bit state space (4.3×10⁹ values) → 3-digit output (10³ values)
+   - Loss factor: ~4.3 million:1 mapping per draw
+   - Entropy reduction: 32 bits → ~10 bits per observation
+
+2. **Temporal Ambiguity**: Without knowing exact PRNG step between draws, we lose alignment information
+
+### Compensation Mechanisms
+
+**Sequential Filtering (Exponential Constraint):**
+```
+Initial space

@@ -1,0 +1,71 @@
+MODEL: 14b
+TIME: 24.1s @ 51.4 tok/s
+============================================================
+
+Okay, so I'm trying to figure out how to answer these evaluation questions about the bidirectional sieve system. Let me start by understanding each part step by step.
+
+First, the mission context explains that the system uses a 26-GPU cluster to analyze lottery draws and identify PRNG seeds and patterns. The key is functional mimicry, not breaking cryptography, but emulating the PRNG statistically for predictive performance.
+
+Now, looking at the technical context, the system uses a bidirectional sieve approach. The forward sieve goes from the oldest draw to the newest, while the reverse sieve does the opposite. Both sieves use the same PRNG computation but process draws in opposite orders. The intersection of survivors from both sieves gives the bidirectional survivors, which are considered significant because the chance of a random seed surviving is extremely low.
+
+The first question is about state variables and invariants. I think the state variables would include the current draw position, the set of survivors, and the skip hypothesis. The invariants must ensure that a seed works forwards and backwards through all draws.
+
+For the second question, the MOD 1000 projection causes a huge collision space—each draw has about 4.3 million possible seeds. The system compensates by filtering through multiple draws, exponentially reducing survivors. Each additional draw filters out more seeds, reducing the number of possible survivors.
+
+The third question asks about leverage parameters. The most important ones seem to be the number of draws, the skip hypothesis, and the thresholds like warn_max. Increasing the number of draws makes it stricter, while a higher skip is more lenient. Thresholds control when the system retries with different parameters.
+
+The fourth question is about an experiment plan. I think starting with small datasets to test survivor validity would be good. Then, using known PRNGs to see if the system recovers the seed correctly. Maybe also checking how the system handles gaps and different skips. Validating with a known good seed would show if the survivors match.
+
+Finally, assumption risks. The system assumes uniform distribution and fixed skip, but real data might have non-uniform seeds or varying skips. Also, if the PRNG isn't in the registry, the system might not find any survivors. Edge cases like multiple seeds or PRNG state changes could also cause issues.
+
+I need to make sure each answer ties back to the technical context provided. Let me structure each part clearly, referencing the sections where applicable.
+</think>
+
+### 1. State Variables & Invariants
+
+**Key State Variables:**
+- **Current Draw Position:** Tracks which draw is being processed in the forward or reverse sieve.
+- **Set of Survivors:** Maintains the seeds that have passed all previous draw tests.
+- **Skip Hypothesis:** Determines the interval at which outputs are considered (e.g., every other output).
+
+**Mathematical Invariants:**
+- **Forward Consistency:** A seed must produce all draws from the oldest to the newest.
+- **Reverse Consistency:** A seed must produce all draws from the newest to the oldest.
+- **Bidirectional Intersection:** Survivors must satisfy both forward and reverse sieves, ensuring the seed aligns with all draws in both directions.
+
+### 2. Information Loss & Compensation
+
+**Information Loss:**
+- The MOD 1000 operation reduces a 32-bit state to 3 digits, causing each draw to have 4.3 million possible seeds. This loss means individual seeds can't be uniquely determined from a single draw.
+
+**Compensation Through Sequential Filtering:**
+- The system uses multiple draws to filter seeds. Each draw reduces the number of possible seeds exponentially, ensuring that only seeds matching all draws survive. This sequential approach compensates for the initial information loss, making the probability of a random seed surviving extremely low.
+
+### 3. Leverage Parameters
+
+**Key Parameters and Their Impact:**
+- **Number of Draws (N):** Increasing N makes the sieve stricter, as more draws exponentially reduce the number of survivors.
+- **Skip Hypothesis (skip=N):** A higher skip value is more lenient, as fewer outputs are considered, potentially allowing more seeds to survive.
+- **Seeds Tested:** More seeds increase the initial pool, making the sieve more lenient, but the filtering effect still reduces survivors.
+- **Warn_max Threshold:** If exceeded, the system retries with different parameters, making the filtering process stricter by adjusting thresholds or parameters.
+
+### 4. Experiment Plan
+
+**Steps:**
+1. **Small Dataset Test:** Use a known PRNG seed and a few draws to see if the system identifies the seed correctly.
+2. **Known PRNG Validation:** Test with a known algorithm (e.g., MT19937) to check if the system recovers the seed, validating the sieve's effectiveness.
+3. **Gap Handling Test:** Introduce gaps in the draws and check if the system correctly identifies the seed, ensuring skip hypotheses are accurate.
+4. **Threshold Experimentation:** Adjust warn_max to observe when the system retries, testing the sensitivity of the sieve.
+5. **Survivor Validation:** Use a known seed to generate draws and check if the system's survivors include the seed, confirming they represent true PRNG behavior.
+
+### 5. Assumption Risks
+
+**Potential Failures:**
+- **Non-Uniform Distribution:** If the PRNG isn't uniform or has biases, the sieve might not function correctly.
+- **Fixed Skip Assumption:** Real data might have varying skips, invalidating the sieve's skip hypotheses.
+- **Registry Limitation:** If the PRNG isn't in the system's registry, no survivors might be found, even with a valid seed.
+- **Multiple Seeds or State Changes:** The presence of multiple seeds or state changes could lead to ambiguous survivors, affecting predictions.
+
+### Summary
+
+The bidirectional sieve effectively reduces the seed space through sequential filtering, compensating for the MOD 1000 loss. Key parameters control its strictness, and experiments validate its accuracy. However, real-world conditions might challenge its assumptions, requiring careful testing and adaptation.

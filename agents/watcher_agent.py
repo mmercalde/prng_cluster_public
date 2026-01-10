@@ -135,7 +135,7 @@ class WatcherConfig:
 # Step to script mapping
 STEP_SCRIPTS = {
     1: "window_optimizer.py",
-    2: "run_scorer_meta_optimizer.py",
+    2: "run_scorer_meta_optimizer.sh",
     3: "generate_full_scoring_jobs.py",
     4: "adaptive_meta_optimizer.py",
     5: "meta_prediction_optimizer_anti_overfit.py",
@@ -775,11 +775,33 @@ class WatcherAgent:
         final_params.pop("output_file", None)
 
         # Build command
-        cmd = ["python3", script]
-        for key, value in final_params.items():
-            # Convert underscores to dashes for CLI args
-            cli_key = key.replace("_", "-")
-            cmd.extend([f"--{cli_key}", str(value)])
+        # Detect script type: .sh uses bash, .py uses python3
+        if script.endswith(".sh"):
+            cmd = ["bash", script]
+        else:
+            cmd = ["python3", script]
+        # Build args based on manifest's declared arg_style
+        arg_style = manifest_data.get("arg_style", "named") if manifest_data else "named"
+        
+        if arg_style == "positional":
+            # Shell scripts with positional args - use manifest hints
+            positional_args = manifest_data.get("positional_args", [])
+            flag_args = manifest_data.get("flag_args", [])
+            
+            # Add positional args in order
+            for arg_name in positional_args:
+                if arg_name in final_params:
+                    cmd.append(str(final_params[arg_name]))
+            
+            # Add flag args (--flag style, no value)
+            for arg_name in flag_args:
+                if final_params.get(arg_name):
+                    cmd.append(f"--{arg_name.replace('_', '-')}")
+        else:
+            # Python scripts with named args (--key value)
+            for key, value in final_params.items():
+                cli_key = key.replace("_", "-")
+                cmd.extend([f"--{cli_key}", str(value)])
 
         logger.debug(f"Command: {' '.join(cmd)}")
 

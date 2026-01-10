@@ -1,3 +1,11 @@
+"""
+DEPRECATED - January 9, 2026
+
+This script assumes /shared/ml/ NFS mount which does not exist.
+Use run_scorer_meta_optimizer.sh instead (PULL architecture).
+
+See: CHAPTER_12_WATCHER_AGENT.md Section 3.4
+"""
 #!/usr/bin/env python3
 """
 Scorer Meta-Optimizer (Step 2.5)

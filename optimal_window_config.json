@@ -1,22 +1,22 @@
 {
-  "window_size": 228,
-  "offset": 56,
-  "skip_min": 6,
-  "skip_max": 47,
+  "window_size": 68,
+  "offset": 75,
+  "skip_min": 9,
+  "skip_max": 431,
   "sessions": [
     "midday"
   ],
   "prng_type": "java_lcg",
   "test_both_modes": false,
-  "seed_count": 50000,
-  "optimization_score": 801.0,
-  "forward_count": 801,
-  "reverse_count": 801,
-  "bidirectional_count": 801,
+  "seed_count": 1000000,
+  "optimization_score": 76000.0,
+  "forward_count": 114000,
+  "reverse_count": 114000,
+  "bidirectional_count": 76000,
   "agent_metadata": {
     "inputs": [
       {
-        "file": "synthetic_lottery.json",
+        "file": "test_synthetic_500.json",
         "required": true
       }
     ],
@@ -32,13 +32,13 @@
     "follow_up_agent": "scorer_meta_agent",
     "confidence": 0.95,
     "suggested_params": {
-      "window_size": 228,
-      "forward_threshold": 0.01,
-      "reverse_threshold": 0.02,
+      "window_size": 68,
+      "forward_threshold": 0.1,
+      "reverse_threshold": 0.09,
       "k_folds": 5
     },
-    "reasoning": "Optimization found N/A survivors with score 801.0000",
-    "timestamp_injected": "2026-01-06T03:25:36.802191+00:00"
+    "reasoning": "Optimization found N/A survivors with score 76000.0000",
+    "timestamp_injected": "2026-01-10T04:19:53.494019+00:00"
   },
-  "run_id": "step1_20260105_192536_35340"
+  "run_id": "step1_20260109_201953_49300"
 }

@@ -1,0 +1,88 @@
+MODEL: 32b
+TIME: 53.4s @ 27.2 tok/s
+============================================================
+
+Alright, I've got this detailed mission context about the Distributed PRNG Analysis System. The user wants me to answer five evaluation questions based on the provided documentation. Let me break down each question and think through the steps to address them effectively.
+
+First, I need to understand the key components of the system. It's a GPU-accelerated platform aiming to reverse-engineer PRNG behavior through functional mimicry, not cryptographic reconstruction. The system uses a 6-step pipeline and has a 46 PRNG algorithm registry. The main focus here is on the Bidirectional Sieve chapter, which involves forward and reverse sieves to filter possible seeds.
+
+**Question 1: State Variables & Invariants**
+
+I should list the key state variables tracked by the bidirectional sieve system. From the context, these include the internal PRNG state, the MOD 1000 outputs, the number of draws, and the skip hypotheses. The invariants would be the consistency of the PRNG across forward and reverse directions, ensuring that a seed that passes both sieves is valid.
+
+**Question 2: Information Loss & Compensation**
+
+The MOD 1000 operation causes a collision space, losing information about the higher bits. The system compensates by using sequential filtering—each draw reduces the number of possible seeds exponentially. This is where the forward and reverse sieves play a crucial role in narrowing down the seeds.
+
+**Question 3: Leverage Parameters**
+
+I need to identify 3-5 parameters that most influence the sieve's behavior. These could be the number of draws (N), the skip hypothesis (gap handling), the threshold warn_max, and the processing order (forward vs. reverse). Each parameter affects the strictness of the filtering. For example, increasing N makes filtering stricter, while increasing the skip hypothesis might make it lenient.
+
+**Question 4: Experiment Plan**
+
+Proposing an experiment plan involves steps like data collection, initial sieve runs, analysis of survivors, statistical validation, and iterative refinement. The goal is to ensure that the survivors aren't statistical coincidences but actual PRNG seeds. This would involve using a combination of forward and reverse sieves, checking intersection ratios, and possibly adjusting parameters based on results.
+
+**Question 5: Assumption Risks**
+
+The sieve assumes that the PRNG is consistent without reseeding and that the draws are sequential with known skips. Real-world issues like reseeding, data gaps, or non-uniform MOD operations could break these assumptions. Additionally, the system might fail if the PRNG algorithm isn't in the registry or if there are external factors influencing the draws.
+
+Now, I need to structure these thoughts into detailed answers, ensuring each point is clear and references the provided context where applicable. I'll make sure to address each question thoroughly, providing specific examples and explanations to support the answers.
+</think>
+
+### Evaluation Questions and Answers
+
+#### 1. **State Variables & Invariants**
+
+**Key State Variables:**
+- **Internal PRNG State:** The 32-bit state of the PRNG, which is hidden but influences the visible output.
+- **Visible Outputs:** The results of the PRNG after applying MOD 1000.
+- **Number of Draws (N):** The sequence length of visible outputs used for analysis.
+- **Skip Hypotheses:** The assumption about how often the PRNG outputs are published (e.g., every output, every other output, etc.).
+
+**Mathematical Invariants:**
+- **Consistency in Forward and Reverse Directions:** A seed must produce the visible outputs when processed in both forward (oldest to newest) and reverse (newest to oldest) orders.
+- **Intersection of Survivors:** A seed must be present in both forward and reverse survivors to be considered a bidirectional survivor.
+
+#### 2. **Information Loss & Compensation**
+
+**Information Loss:**
+The MOD 1000 operation reduces the 32-bit PRNG state to a 3-digit number, leading to a collision space where multiple internal states map to the same visible output. This loss of higher-order bits makes it difficult to determine the exact internal state.
+
+**Compensation through Sequential Filtering:**
+- **Forward Sieve:** Starts with the oldest draw and filters seeds that match each subsequent draw, exponentially reducing the number of possible seeds.
+- **Reverse Sieve:** Begins with the newest draw and works backward, further narrowing down the seeds.
+- **Bidirectional Intersection:** Only seeds that pass both sieves are retained, ensuring high confidence in their validity.
+
+#### 3. **Leverage Parameters**
+
+**Key Parameters:**
+1. **Number of Draws (N):** Increasing N makes filtering stricter, as each draw exponentially reduces the number of possible seeds.
+2. **Skip Hypotheses:** A higher skip value (e.g., every 10th output) makes filtering lenient by considering more gaps between published draws.
+3. **Threshold (warn_max):** A lower warn_max makes the system more stringent, requiring a lower bidirectional rate to proceed.
+4. **Processing Order:** The order (forward or reverse) affects how the system identifies divergent seeds, with both being crucial for robustness.
+
+#### 4. **Experiment Plan**
+
+**Steps:**
+1. **Data Collection:** Gather a sequence of visible outputs (draws) from the lottery.
+2. **Initial Sieve Runs:** Perform forward and reverse sieves with an initial set of parameters (e.g., N=100, skip=0).
+3. **Survivor Analysis:** Identify bidirectional survivors and assess their statistical significance.
+4. **Statistical Validation:** Use the intersection ratio to determine if survivors are likely true seeds or coincidences.
+5. **Iterative Refinement:** Adjust parameters (e.g., increase N, try different skip hypotheses) based on initial results to improve filtering efficiency.
+6. **Final Verification:** Validate the identified seeds by simulating the PRNG forward and reverse to ensure they match all draws.
+
+#### 5. **Assumption Risks**
+
+**Potential Assumption Failures:**
+- **Reseeding:** If the PRNG is reseeded unpredictably, the system might fail to track the internal state accurately.
+- **Data Gaps:** Unaccounted gaps in published draws could lead to incorrect skip hypotheses.
+- **Non-Uniform MOD Operation:** If the MOD operation isn't strictly 1000, the collision space calculations would be inaccurate.
+- **Algorithm Registry Limitations:** If the actual PRNG isn't in the registry, the system can't identify it, leading to false negatives.
+
+**Edge Cases:**
+- **Short Sequences:** With too few draws, the system might not narrow down seeds sufficiently.
+- **High Skip Values:** If the skip hypothesis is incorrect, the system might miss valid seeds or include false positives.
+
+### Conclusion
+
+The bidirectional sieve system effectively compensates for information loss through sequential filtering, leveraging parameters to control strictness. By iteratively refining experiments and validating results, the system can achieve functional mimicry of the PRNG, provided assumptions hold and edge cases are managed.

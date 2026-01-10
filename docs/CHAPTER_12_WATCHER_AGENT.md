@@ -2,8 +2,8 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.0.0  
-**Date:** January 3, 2026  
+**Version:** 1.1.0  
+**Date:** January 9, 2026  
 **Files:** `agents/watcher_agent.py`, `agents/watcher_registry_hooks.py`, `agents/fingerprint_registry.py`  
 **Purpose:** Autonomous pipeline orchestration with PRNG attempt tracking
 
@@ -151,6 +151,95 @@ decision, context = watcher.evaluate_results(
 | PROCEED | ≥ 0.70 | Trigger next step automatically |
 | RETRY | 0.50 - 0.70 | Re-run current step with adjustments |
 | ESCALATE | < 0.50 | Alert human for review |
+
+### 3.4 Script Execution Mappings (CRITICAL)
+
+The Watcher Agent uses **two dictionaries** to determine what to run for each step. Understanding both is essential for troubleshooting.
+
+#### 3.4.1 STEP_SCRIPTS (Lines 136-145)
+
+**This dictionary defines what script is ACTUALLY EXECUTED:**
+
+```python
+STEP_SCRIPTS = {
+    1: "window_optimizer.py",
+    2: "run_scorer_meta_optimizer.sh",  # NOTE: .sh not .py (PULL architecture)
+    3: "generate_full_scoring_jobs.py",
+    4: "adaptive_meta_optimizer.py",
+    5: "meta_prediction_optimizer_anti_overfit.py",
+    6: "reinforcement_engine.py"
+}
+```
+
+#### 3.4.2 STEP_MANIFESTS (Lines 147-155)
+
+**This dictionary defines where to load default parameters and evaluation criteria:**
+
+```python
+STEP_MANIFESTS = {
+    1: "window_optimizer.json",
+    2: "scorer_meta.json",
+    3: "full_scoring.json",
+    4: "ml_meta.json",
+    5: "reinforcement.json",
+    6: "prediction.json"
+}
+```
+
+#### 3.4.3 Why Step 2 Uses `.sh` Instead of `.py`
+
+| Script | Architecture | Status |
+|--------|--------------|--------|
+| `run_scorer_meta_optimizer.py` | Assumes `/shared/ml/` NFS mount | ❌ **BROKEN** |
+| `run_scorer_meta_optimizer.sh` | PULL architecture via `scripts_coordinator.py` | ✅ **CORRECT** |
+
+**The `.py` version has hardcoded paths:**
+```python
+# run_scorer_meta_optimizer.py lines 35-36 (BROKEN)
+JOB_DIR = Path("/shared/ml/scorer_evaluation_jobs")      # Does not exist!
+RESULTS_DIR = Path("/shared/ml/scorer_evaluation_results") # Does not exist!
+```
+
+**The `.sh` version implements PULL architecture correctly:**
+1. Calls `generate_scorer_jobs.py` to create trial jobs
+2. SCPs data to remote nodes
+3. Launches via `scripts_coordinator.py` (per January 3, 2026 fix)
+4. Workers write results locally on each rig
+5. Coordinator PULLS results back via SCP
+6. Aggregates and reports to Optuna
+
+**See Chapter 3 Section 3 for full PULL architecture details.**
+
+#### 3.4.4 How Execution Works (Line 748)
+
+```python
+def run_step(self, step: int):
+    # Script comes from STEP_SCRIPTS (hardcoded)
+    script = STEP_SCRIPTS.get(step)
+    
+    # Default params come from manifest (STEP_MANIFESTS)
+    manifest_name = STEP_MANIFESTS.get(step)
+    manifest = load_manifest(manifest_name)
+    default_params = manifest.get('default_params', {})
+    
+    # Execute the script
+    subprocess.run([script] + build_args(default_params))
+```
+
+#### 3.4.5 Future Improvement
+
+Currently `STEP_SCRIPTS` is hardcoded. A more robust design would read the script from the manifest's `actions[0].script` field:
+
+```python
+# Current (hardcoded - error-prone):
+script = STEP_SCRIPTS.get(step)
+
+# Future (manifest-driven - single source of truth):
+manifest = load_manifest(STEP_MANIFESTS.get(step))
+script = manifest['actions'][0]['script']
+```
+
+This would eliminate the dual-dictionary pattern and ensure consistency.
 
 ---
 
@@ -431,6 +520,7 @@ python3 test_watcher_agent.py
 | "LLM unavailable" | Server not running | Use `--no-llm` or start LLM |
 | "Halt flag exists" | Previous halt | Remove `watcher_halt.flag` |
 | "Max retries exceeded" | Persistent failure | Review logs, fix root cause |
+| "/shared/ml/ not found" | Step 2 using wrong script | Ensure line 138 uses `.sh` not `.py` |
 
 ### 10.2 Debug Mode
 
@@ -469,6 +559,21 @@ cat watcher_decisions.jsonl | jq .
 - Fingerprint Registry prevents redundant PRNG attempts
 - Safety controls ensure human oversight
 - All 6 pipeline steps validated and working
+- **STEP_SCRIPTS dict (line 136) determines actual script execution**
+- **Step 2 must use `.sh` (PULL architecture) not `.py` (broken NFS paths)**
+
+---
+
+## 12. Changelog
+
+### v1.1.0 (January 9, 2026)
+- Added Section 3.4: Script Execution Mappings (CRITICAL)
+- Documented STEP_SCRIPTS vs STEP_MANIFESTS dictionaries
+- Explained why Step 2 uses `.sh` instead of `.py`
+- Added troubleshooting entry for `/shared/ml/` error
+
+### v1.0.0 (January 3, 2026)
+- Initial release
 
 ---
 
