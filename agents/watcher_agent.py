@@ -798,10 +798,16 @@ class WatcherAgent:
                 except Exception as e:
                     logger.warning(f"Could not load manifest defaults: {e}")
 
-        # Merge params: user params override defaults
+        # Merge params: user params override defaults (STEP-SCOPED)
         final_params = {**default_params}
         if params:
-            final_params.update(params)
+            # Only merge params that this step's manifest declares (Team Beta: step-scoped filtering)
+            allowed_params = set(default_params.keys())
+            for key, value in params.items():
+                if key in allowed_params:
+                    final_params[key] = value
+                else:
+                    logger.debug(f"Skipping param '{key}' - not declared in step {step} manifest")
 
         # Remove output_file if present (use script default)
         final_params.pop("output_file", None)
