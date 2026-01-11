@@ -37,6 +37,7 @@ import os
 import sys
 import time
 import subprocess
+import signal
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -843,16 +844,13 @@ class WatcherAgent:
                 cmd.extend([f"--{cli_key}", str(value)])
 
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
-
         try:
-            # Run the script
-            result = subprocess.run(
+            # Run the script with live streaming (Team Beta approved)
+            result = self._run_step_streaming(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.config.step_timeout_minutes * 60
+                step,
+                self.config.step_timeout_minutes * 60
             )
-
             if result.returncode != 0:
                 logger.error(f"Step {step} failed with code {result.returncode}")
                 logger.error(f"stderr: {result.stderr[:500]}")
@@ -934,6 +932,136 @@ class WatcherAgent:
     # ════════════════════════════════════════════════════════════════════════
     # PIPELINE EXECUTION
     # ════════════════════════════════════════════════════════════════════════
+
+    def _run_step_streaming(self, cmd, step, timeout_seconds):
+        """
+        Run command with live output streaming.
+        Adapted from complete_whitepaper_workflow_with_meta_optimizer.py
+        
+        Team Beta amendments applied:
+        - PYTHONUNBUFFERED=1 for Python scripts
+        - Token-aware progress parsing (not generic regex)
+        - Atomic progress file writes
+        - Process group kill on timeout
+        """
+        import re
+        
+        # Environment with unbuffered Python output
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        
+        # Start process in new session for clean group kill
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True
+        )
+        
+        # Guard against None stdout (Team Beta recommendation A)
+        if process.stdout is None:
+            raise RuntimeError("Process stdout not available")
+        
+        output_lines = []
+        start_time = time.time()
+        step_name = STEP_NAMES.get(step, f"Step {step}")
+        
+        # Token-aware progress patterns (Team Beta: not generic regex)
+        PROGRESS_PATTERNS = [
+            # Window optimizer: [5/50] or [Trial 5/50]
+            re.compile(r'\[(?:Trial\s*)?(\d+)/(\d+)\]'),
+            # Iteration format: --- Iteration 5/50 ---
+            re.compile(r'Iteration\s+(\d+)/(\d+)'),
+            # Coordinator jobs: Job 5/34 or similar
+            re.compile(r'Job\s+(\d+)/(\d+)'),
+        ]
+        
+        current_progress = {"current": 0, "total": 0}
+        
+        # Write initial progress (Team Beta recommendation B)
+        self._write_progress_atomic(step, step_name, current_progress, 0.0)
+        
+        try:
+            while True:
+                # Check timeout
+                elapsed = time.time() - start_time
+                if elapsed > timeout_seconds:
+                    # Kill entire process group
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                        time.sleep(1)
+                        if process.poll() is None:
+                            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    raise subprocess.TimeoutExpired(cmd, timeout_seconds)
+                
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    line = output.strip()
+                    print(line)  # Stream to terminal
+                    output_lines.append(output)
+                    
+                    # Token-aware progress parsing
+                    for pattern in PROGRESS_PATTERNS:
+                        match = pattern.search(line)
+                        if match:
+                            groups = match.groups()
+                            if len(groups) >= 2:
+                                current_progress["current"] = int(groups[0])
+                                current_progress["total"] = int(groups[1])
+                                self._write_progress_atomic(step, step_name, current_progress, elapsed)
+                            break
+            
+            # Final progress update
+            self._write_progress_atomic(step, step_name, current_progress, 
+                                        time.time() - start_time, finished=True)
+            
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=process.returncode,
+                stdout=''.join(output_lines),
+                stderr=''
+            )
+            
+        except subprocess.TimeoutExpired:
+            raise
+        except Exception as e:
+            logger.error(f"Streaming execution error: {e}")
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except:
+                pass
+            raise
+
+    def _write_progress_atomic(self, step, step_name, progress, elapsed, finished=False):
+        """Atomic write to progress file (Team Beta: avoid partial JSON reads)."""
+        progress_data = {
+            "step": step,
+            "step_name": step_name,
+            "jobs_completed": progress.get("current", 0),
+            "total_jobs": progress.get("total", 0),
+            "elapsed_seconds": elapsed,
+            "finished": finished,
+            "timestamp": time.time()
+        }
+        
+        progress_file = "/tmp/cluster_progress.json"
+        temp_file = f"{progress_file}.tmp.{os.getpid()}"
+        
+        try:
+            with open(temp_file, 'w') as f:
+                json.dump(progress_data, f)
+            os.rename(temp_file, progress_file)  # Atomic on POSIX
+        except Exception as e:
+            logger.debug(f"Progress file write failed: {e}")
+
 
     def run_pipeline(self, start_step: int = 1, end_step: int = 6, params: Dict[str, Any] = None):
         """
