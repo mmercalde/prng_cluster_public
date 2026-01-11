@@ -1144,8 +1144,8 @@ class WatcherAgent:
                     break
 
                 # If retry, stay on same step; if proceed, move to next
-                if decision.recommended_action == "proceed":
-                    self.current_step += 1
+                # if decision.recommended_action == "proceed":  # REMOVED: double-increment bug
+                #     self.current_step += 1  # Step advancement handled in _handle_proceed()
 
                 # Small delay between steps
                 time.sleep(1)
