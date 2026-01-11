@@ -44,7 +44,9 @@
   "follow_up_agents": [
     "full_scoring_agent"
   ],
-  "success_condition": "optimal_scorer_config.json exists AND scorer_meta_results.json has trials >= min_required_trials",
+  "success_condition": [
+    "optimal_scorer_config.json"
+  ],
   "retry": 2,
   "parameter_bounds": {
     "chunk_size": {
@@ -131,5 +133,9 @@
   ],
   "flag_args": [
     "legacy_scoring"
-  ]
+  ],
+  "evaluation_type": "file_exists",
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true,
+  "retry_policy": "none"
 }

@@ -136,7 +136,7 @@ class WatcherConfig:
 STEP_SCRIPTS = {
     1: "window_optimizer.py",
     2: "run_scorer_meta_optimizer.sh",
-    3: "generate_full_scoring_jobs.py",
+    3: "run_step3_full_scoring.sh",
     4: "adaptive_meta_optimizer.py",
     5: "meta_prediction_optimizer_anti_overfit.py",
     6: "reinforcement_engine.py"
@@ -254,6 +254,37 @@ class WatcherAgent:
             if not os.path.exists(manifest_path):
                 manifest_path = None
                 logger.warning(f"Manifest not found: {manifest_path}")
+
+        # Check for file-based evaluation (Step 2.5 style)
+        if manifest_path and os.path.exists(manifest_path):
+            with open(manifest_path) as f:
+                manifest_data = json.load(f)
+            
+            if manifest_data.get('evaluation_type') == 'file_exists':
+                required_files = manifest_data.get('success_condition', [])
+                if isinstance(required_files, str):
+                    required_files = [required_files]
+                
+                missing = [p for p in required_files if not Path(p).exists()]
+                success = not missing
+                
+                logger.info(f"File-based evaluation: {required_files} -> {'all exist' if success else f'missing: {missing}'}")
+                
+                decision = AgentDecision(
+                    success_condition_met=success,
+                    confidence=1.0 if success else 0.0,
+                    reasoning="All required files exist" if success else f"Missing required files: {missing}",
+                    recommended_action="proceed" if success else "escalate",
+                    parse_method="file_exists"
+                )
+                # Build minimal context for return
+                context = build_full_context(
+                    step=step,
+                    results=results,
+                    run_number=run_number,
+                    manifest_path=manifest_path
+                )
+                return decision, context
 
         # Build full context
         context = build_full_context(
@@ -803,7 +834,7 @@ class WatcherAgent:
                 cli_key = key.replace("_", "-")
                 cmd.extend([f"--{cli_key}", str(value)])
 
-        logger.debug(f"Command: {' '.join(cmd)}")
+        logger.info(f"EXEC CMD: {' '.join(cmd)}")
 
         try:
             # Run the script

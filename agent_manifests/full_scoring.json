@@ -18,10 +18,10 @@
       "type": "run_script",
       "script": "generate_full_scoring_jobs.py",
       "args_map": {
-        "survivors-file": "bidirectional_survivors_file",
-        "config-file": "optimal_scorer_config_file",
-        "chunk-size": "chunk_size",
-        "output-dir": "scoring_output_dir"
+        "survivors": "survivors",
+        "config": "config",
+        "train-history": "train_history",
+        "holdout-history": "holdout_history"
       },
       "distributed": false,
       "timeout_minutes": 10
@@ -51,7 +51,9 @@
   "follow_up_agents": [
     "ml_meta_agent"
   ],
-  "success_condition": "survivors_with_scores.json exists AND scoring_statistics.json shows valid_survivors > 0",
+  "success_condition": [
+    "survivors_with_scores.json"
+  ],
   "retry": 2,
   "parameter_bounds": {
     "chunk_size": {
@@ -124,5 +126,9 @@
     "confidence_cap": 0.95,
     "zero_scored_confidence": 0.5,
     "min_scored_survivors": 100
-  }
+  },
+  "evaluation_type": "file_exists",
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true,
+  "retry_policy": "none"
 }

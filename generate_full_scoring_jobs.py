@@ -27,7 +27,9 @@ def main():
     parser.add_argument('--holdout-history', type=str, default='holdout_history.json', help='Path to holdout_history.json')
     parser.add_argument('--chunk-size', type=int, default=DEFAULT_CHUNK_SIZE, help='Number of survivors per job')
     parser.add_argument('--jobs-file', type=str, default='scoring_jobs.json', help='Output JSON file for coordinator')
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        print(f"Note: Ignoring unknown args: {unknown}")
 
     print("="*70)
     print("Generating Full Distributed Scoring Jobs (Step 3.5)")
