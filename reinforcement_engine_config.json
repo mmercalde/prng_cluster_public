@@ -1,65 +1,23 @@
 {
   "model": {
-    "input_features": 46,
     "hidden_layers": [
       256,
       128,
       64
-    ],
-    "dropout": 0.3,
-    "activation": "relu",
-    "output_activation": "sigmoid"
+    ]
   },
   "training": {
-    "learning_rate": 0.001,
-    "batch_size": 256,
-    "epochs": 150,
-    "optimizer": "adam",
-    "loss_function": "mse",
-    "early_stopping_patience": 10,
-    "validation_split": 0.2
+    "epochs": 150
   },
-  "prng": {
-    "prng_type": "java_lcg",
-    "mod": 1000,
-    "skip": 0
-  },
-  "global_state": {
-    "window_size": 1000,
-    "anomaly_threshold": 3.0,
-    "regime_change_threshold": 0.15,
-    "marker_numbers": [
-      390,
-      804,
-      575
-    ],
-    "variance_threshold": 1.0,
-    "gap_threshold": 500,
-    "frequency_bias_threshold": 3.0
-  },
-  "normalization": {
-    "enabled": true,
-    "method": "standard",
-    "auto_fit": true,
-    "per_feature": true,
-    "save_with_model": true,
-    "refit_on_drift": true,
-    "drift_threshold": 0.3
-  },
+  "prng": {},
+  "global_state": {},
+  "normalization": {},
   "survivor_pool": {
-    "max_pool_size": 476,
-    "prune_threshold": 0.3,
-    "min_confidence": 0.5,
-    "update_frequency": 10
+    "max_pool_size": 475
   },
-  "output": {
-    "models_dir": "models/reinforcement",
-    "logs_dir": "logs/reinforcement",
-    "save_frequency": 100,
-    "log_level": "INFO"
-  },
+  "output": {},
   "_meta_optimizer": {
-    "last_calibration": "2026-01-01T09:50:12.985392",
+    "last_calibration": "2026-01-11T09:17:13.572280",
     "calibration_type": "full",
     "confidence": 0.24499999999999997,
     "weights_used": {

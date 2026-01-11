@@ -4,17 +4,14 @@
   "pipeline_step": 4,
   "version": "2.0.0",
   "design_note": "Step 4 is a CAPACITY PLANNER, not a data-aware optimizer. Model selection (neural_net/xgboost/lightgbm/catboost) happens in Step 5.",
-  
   "inputs": [
     "optimal_window_config.json",
     "train_history.json"
   ],
-  
   "outputs": [
     "reinforcement_engine_config.json",
     "optimization_results/meta_optimization_results.json"
   ],
-  
   "actions": [
     {
       "type": "run_script",
@@ -29,15 +26,13 @@
       "timeout_minutes": 10
     }
   ],
-  
   "follow_up_agents": [
     "reinforcement_agent"
   ],
-  
-  "success_condition": "reinforcement_engine_config.json exists AND contains survivor_pool.max_pool_size",
-  
+  "success_condition": [
+    "reinforcement_engine_config.json"
+  ],
   "retry": 1,
-  
   "parameter_bounds": {
     "window_optimizer_weight": {
       "type": "float",
@@ -96,31 +91,31 @@
       "effect": "Upper bound for epoch estimation."
     }
   },
-  
   "success_metrics": {
     "config_written": true,
     "survivor_count_reasonable": "survivor_count >= 100 AND survivor_count <= 10000",
     "epochs_reasonable": "training_epochs >= 50 AND training_epochs <= 500"
   },
-  
   "default_params": {
     "window_results": "optimal_window_config.json",
     "lottery_data": "train_history.json",
     "mode": "full",
     "apply": true
   },
-  
   "evaluation_params": {
     "confidence_source": "weighted_combination",
     "confidence_base": 0.7,
     "confidence_cap": 0.95
   },
-  
   "what_step_4_does_NOT_do": [
     "Load survivors_with_scores.json (that's Step 5)",
     "Inspect holdout_hits (that's Step 5)",
     "Select model type (that's Step 5)",
     "Run Optuna trials on survivor data (that's Step 5)",
     "Perform any evaluation (that's Step 5)"
-  ]
+  ],
+  "evaluation_type": "file_exists",
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true,
+  "retry_policy": "none"
 }

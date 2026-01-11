@@ -832,6 +832,14 @@ class WatcherAgent:
             # Python scripts with named args (--key value)
             for key, value in final_params.items():
                 cli_key = key.replace("_", "-")
+                
+                # Boolean flag-only behavior
+                if isinstance(value, bool):
+                    if value:
+                        cmd.append(f"--{cli_key}")
+                    # If False, omit the flag entirely
+                    continue
+                
                 cmd.extend([f"--{cli_key}", str(value)])
 
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
