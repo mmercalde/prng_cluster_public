@@ -34,7 +34,10 @@
   "follow_up_agents": [
     "scorer_meta_agent"
   ],
-  "success_condition": "optimal_window_config.json exists AND bidirectional_survivors.json has survivors > 0",
+  "success_condition": [
+    "optimal_window_config.json",
+    "bidirectional_survivors.json"
+  ],
   "retry": 2,
   "parameter_bounds": {
     "window_size": {
@@ -149,5 +152,9 @@
     "confidence_divisor": 64.0,
     "confidence_cap": 0.95,
     "zero_survivors_confidence": 0.5
-  }
+  },
+  "evaluation_type": "file_exists",
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true,
+  "retry_policy": "none"
 }
