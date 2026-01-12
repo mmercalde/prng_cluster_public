@@ -34,7 +34,7 @@
   ],
   "follow_up_agents": [],
   "success_condition": [
-    "prediction_pool.json"
+    "results/predictions"
   ],
   "retry": 2,
   "parameter_bounds": {
