@@ -1,6 +1,7 @@
 # Chapter 13 Implementation Progress
 
 **Last Updated:** 2026-01-11  
+**Document Version:** 1.1.0  
 **Status:** Planning Complete → Implementation Phase 1
 
 ---
@@ -35,6 +36,8 @@
 
 **Blockers:** None  
 **Notes:** 
+- PRNG type inherited from `optimal_window_config.json` (no hardcoding)
+- Uses `prng_registry.py` (same as Steps 1-6)
 
 ---
 
@@ -65,10 +68,11 @@
 | Add `execute_learning_loop()` to WATCHER | 🔲 | Runs Steps 3→5→6 |
 | Implement partial rerun logic | 🔲 | Selective step execution |
 | Implement cooldown enforcement | 🔲 | Prevent thrashing |
+| Human approval gate | 🔲 | Required for v1 |
 | Test: Trigger conditions | 🔲 | Each threshold |
 
 **Blockers:** None  
-**Notes:**
+**Notes:** v1 requires human approval for trigger execution. Autonomous execution is deferred.
 
 ---
 
@@ -166,10 +170,33 @@
 
 ---
 
+## Deferred Extensions (Future Work)
+
+These are **not required** for v1. They will be implemented after core Chapter 13 stability is proven.
+
+| Extension | Description | Status | Depends On |
+|-----------|-------------|--------|------------|
+| #1 | Step-6 Backtesting Hooks | 🔲 Deferred | v1 stable |
+| #2 | Confidence Calibration Curves (rolling) | 🔲 Deferred | v1 stable |
+| #3 | Autonomous Trigger Execution (no human approval) | 🔲 Deferred | v1 stable |
+| #4 | Convergence Dashboards | 🔲 Deferred | v1 stable |
+
+### v1 vs Deferred Execution Clarification
+
+| Aspect | v1 (Current) | Extension #3 (Deferred) |
+|--------|--------------|-------------------------|
+| Trigger definition | ✅ Implemented | No change |
+| Trigger evaluation | ✅ Implemented | No change |
+| Trigger execution | ⚠️ **Requires human approval** | Fully autonomous |
+| Human-in-the-loop | Required | Optional |
+
+---
+
 ## Commits
 
 | Date | Hash | Description |
 |------|------|-------------|
+| 2026-01-11 | 263ebec | docs: Add Chapter 13 - Live Feedback Loop & Implementation Progress |
 | - | - | - |
 
 ---
@@ -187,6 +214,8 @@
 - **2026-01-11:** Chapter 13 spec finalized. Team Alpha + Beta aligned.
 - **2026-01-11:** Synthetic injection uses config-based PRNG (no hardcoding).
 - **2026-01-11:** Test mode requires dual flags: `test_mode` AND `synthetic_injection.enabled`.
+- **2026-01-11:** v1 trigger execution requires human approval (Extension #3 deferred).
+- **2026-01-11:** Added deferred extensions roadmap (Team Beta proposals).
 
 ---
 

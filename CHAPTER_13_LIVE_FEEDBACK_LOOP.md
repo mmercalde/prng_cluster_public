@@ -2,7 +2,7 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.0.0  
+**Version:** 1.1.0  
 **Status:** Architecture-Final  
 **Depends On:** Chapters 1-12  
 **Executes After:** Step 6 (Prediction Generator)  
@@ -32,6 +32,7 @@
 17. [Safety & Ethics](#17-safety--ethics)
 18. [Configurable Parameter Reference](#18-configurable-parameter-reference)
 19. [Implementation Checklist](#19-implementation-checklist)
+20. [Deferred Extensions (Roadmap)](#20-deferred-extensions-roadmap)
 
 ---
 
@@ -466,9 +467,21 @@ def refresh_labels():
 
 ## 10. Retrain Trigger Policies
 
-### 10.1 Automatic Triggers
+### 10.1 What v1 Implements
 
-WATCHER automatically triggers Steps 3→5→6 when:
+Chapter 13 v1 implements trigger **definition** and **evaluation**:
+
+| Aspect | v1 Status |
+|--------|-----------|
+| Trigger definition | ✅ Implemented |
+| Trigger evaluation | ✅ Implemented |
+| Trigger execution | ⚠️ **Requires human approval** |
+
+**Important:** Automatic trigger execution without human approval is **deferred** to future versions. See [Section 20: Deferred Extensions](#20-deferred-extensions-roadmap).
+
+### 10.2 Automatic Triggers (Require Approval)
+
+WATCHER evaluates and **recommends** Steps 3→5→6 when:
 
 | Condition | Threshold | Rationale |
 |-----------|-----------|-----------|
@@ -477,7 +490,7 @@ WATCHER automatically triggers Steps 3→5→6 when:
 | Consecutive misses | ≥ 5 | Performance collapse |
 | Hit rate collapse | < 0.01 over 20 draws | Model failure |
 
-### 10.2 LLM-Proposed Triggers
+### 10.3 LLM-Proposed Triggers
 
 LLM may propose retraining when diagnostics show:
 - Feature importance shift
@@ -486,7 +499,7 @@ LLM may propose retraining when diagnostics show:
 
 Proposals require WATCHER validation before execution.
 
-### 10.3 Regime Shift (Full Pipeline)
+### 10.4 Regime Shift (Full Pipeline)
 
 Trigger Steps 1→6 only when:
 - Window decay > 0.5
@@ -935,15 +948,20 @@ This system is:
 - [ ] `watcher_policies.json` — Includes test_mode and synthetic_injection settings
 
 ### Phase 2: Diagnostics Engine
-- [ ] `chapter_13_diagnostics.py` — Generates `post_draw_diagnostics.json`
+- [ ] `chapter_13_diagnostics.py` — Core diagnostic generator
 - [ ] Prediction vs reality comparison
-- [ ] Confidence calibration analysis
+- [ ] Confidence calibration metrics
+- [ ] Survivor performance tracking
 - [ ] Feature drift detection
+- [ ] Generate `post_draw_diagnostics.json`
+- [ ] Create `diagnostics_history/` archival
 
 ### Phase 3: LLM Integration
+- [ ] `chapter_13_llm_advisor.py` — LLM analysis module
+- [ ] `llm_proposal_schema.py` — Pydantic model for proposals
+- [ ] `chapter_13.gbnf` — Grammar constraint
 - [ ] System/user prompt templates
-- [ ] Proposal schema validation (Pydantic)
-- [ ] GBNF grammar for constrained output
+- [ ] Integration with existing LLM infrastructure
 
 ### Phase 4: WATCHER Policies
 - [ ] Acceptance/rejection rules
@@ -962,6 +980,104 @@ This system is:
 - [ ] Proposal validation tests
 - [ ] Convergence monitoring
 - [ ] Divergence detection tests
+
+---
+
+## 20. Deferred Extensions (Roadmap)
+
+The following extensions are **not required** for Chapter 13 v1 correctness, safety, or autonomy guarantees. They are optional enhancements for future implementation.
+
+### 20.1 Extension #1: Step-6 Backtesting Hooks
+
+**Status:** 🔲 Deferred
+
+**What It Does:**
+Adds an offline replay capability to Step 6 that allows historical draws to be replayed through prediction logic.
+
+**Enables:**
+- Controlled regression testing
+- Confidence sanity checks
+- Historical comparison without contaminating live learning
+
+**Why Deferred:**
+Chapter 13 v1 already validates live predictions correctly. Backtesting is diagnostic-only.
+
+---
+
+### 20.2 Extension #2: Confidence Calibration Curves (Rolling)
+
+**Status:** 🔲 Deferred
+
+**What It Does:**
+Tracks whether predicted confidence values correspond to observed hit rates **over time**.
+
+**Example:**
+- Predictions with 0.80 confidence should succeed ~80% of the time
+- Drift indicates miscalibration
+
+**v1 vs Extension:**
+| Aspect | v1 | Extension |
+|--------|-----|-----------|
+| Point metrics | ✅ | ✅ |
+| Rolling curves | ❌ | ✅ |
+| Longitudinal analysis | ❌ | ✅ |
+
+**Why Deferred:**
+Chapter 13 v1 already reports confidence deltas. Rolling curves are a long-horizon quality metric.
+
+---
+
+### 20.3 Extension #3: Autonomous Trigger Execution
+
+**Status:** 🔲 Deferred
+
+**What It Does:**
+Allows WATCHER to **automatically execute** retrain triggers without human approval.
+
+**v1 vs Extension:**
+| Aspect | v1 | Extension |
+|--------|-----|-----------|
+| Trigger definition | ✅ | ✅ |
+| Trigger evaluation | ✅ | ✅ |
+| Trigger execution | ⚠️ Manual/Approved | ✅ Fully autonomous |
+| Human-in-the-loop | Required | Optional |
+
+**Why Deferred:**
+Automated retraining is powerful and should only activate after stability is proven. v1 requires human approval as a safety gate.
+
+---
+
+### 20.4 Extension #4: Convergence Dashboards
+
+**Status:** 🔲 Deferred
+
+**What It Does:**
+Provides human-readable visualizations of:
+- Survivor convergence
+- Confidence stability
+- Parameter drift
+- Model improvement rate
+
+**Key Constraint:**
+- No control authority
+- No parameter mutation
+- Observability only
+
+**Why Deferred:**
+Autonomy does not require dashboards. Dashboards support trust, audit, and debugging—not execution.
+
+---
+
+### 20.5 Extension Summary Table
+
+| Extension | Description | v1 Status | Deferred |
+|-----------|-------------|-----------|----------|
+| #1 | Backtesting Hooks | Not present | ✅ |
+| #2 | Calibration Curves (rolling) | Point metrics only | ✅ |
+| #3 | Autonomous Execution | Manual approval required | ✅ |
+| #4 | Convergence Dashboards | Not present | ✅ |
+
+**None of these extensions duplicate existing code.** They consume existing outputs and operate post-hoc.
 
 ---
 
@@ -991,6 +1107,12 @@ You are building a **self-correcting inference system**.
 ## Version History
 
 ```
+Version 1.1.0 — January 11, 2026
+- Added Section 20: Deferred Extensions (Roadmap)
+- Clarified v1 trigger execution requires human approval
+- Added Team Beta extension proposals
+- Updated Table of Contents
+
 Version 1.0.0 — January 11, 2026
 - Initial release
 - Complete circular learning loop specification
