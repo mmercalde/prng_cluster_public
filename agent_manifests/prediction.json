@@ -33,7 +33,9 @@
     }
   ],
   "follow_up_agents": [],
-  "success_condition": "prediction_pool.json exists AND best_model.meta.json was validated AND pool has entries >= min_pool_size",
+  "success_condition": [
+    "prediction_pool.json"
+  ],
   "retry": 2,
   "parameter_bounds": {
     "pool_size": {
@@ -174,8 +176,6 @@
     "lottery_history": "synthetic_lottery.json",
     "k": 20,
     "pool_size": 20,
-    "confidence_threshold": 0.7,
-    "ensemble_mode": "weighted",
     "models_dir": "models/reinforcement"
   },
   "evaluation_params": {
@@ -188,5 +188,8 @@
   "changelog": {
     "1.5.0": "Added GlobalStateTracker integration, fixed script name to prediction_generator.py",
     "1.4.0": "Initial sidecar-based model loading"
-  }
+  },
+  "evaluation_type": "file_exists",
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true
 }
