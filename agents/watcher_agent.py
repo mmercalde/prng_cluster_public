@@ -140,7 +140,7 @@ STEP_SCRIPTS = {
     3: "run_step3_full_scoring.sh",
     4: "adaptive_meta_optimizer.py",
     5: "meta_prediction_optimizer_anti_overfit.py",
-    6: "reinforcement_engine.py"
+    6: "prediction_generator.py"
 }
 
 # Step to manifest mapping

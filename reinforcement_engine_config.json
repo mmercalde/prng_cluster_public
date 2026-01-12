@@ -1,0 +1,29 @@
+{
+  "model": {
+    "hidden_layers": [
+      256,
+      128,
+      64
+    ]
+  },
+  "training": {
+    "epochs": 150
+  },
+  "prng": {},
+  "global_state": {},
+  "normalization": {},
+  "survivor_pool": {
+    "max_pool_size": 476
+  },
+  "output": {},
+  "_meta_optimizer": {
+    "last_calibration": "2026-01-11T14:21:03.511483",
+    "calibration_type": "full",
+    "confidence": 0.24499999999999997,
+    "weights_used": {
+      "window_optimizer": 0.6,
+      "historical_patterns": 0.35,
+      "reinforcement_feedback": 0.05
+    }
+  }
+}

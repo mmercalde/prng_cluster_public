@@ -3,7 +3,6 @@
   "description": "Step 5: Train ML models with anti-overfitting measures. Emits signal_quality to sidecar for Step 6 gate.",
   "pipeline_step": 5,
   "version": "1.5.0",
-  
   "inputs": [
     {
       "name": "survivors_with_scores",
@@ -18,7 +17,6 @@
       "description": "Training lottery draws"
     }
   ],
-  
   "outputs": [
     {
       "name": "model_checkpoint",
@@ -33,13 +31,11 @@
       "description": "Model metadata with signal_quality"
     }
   ],
-  
   "signal_quality_emission": {
     "description": "Step 5 computes and emits signal_quality to sidecar",
     "destination": "best_model.meta.json:signal_quality",
     "computed_from": "holdout_hits target distribution"
   },
-  
   "autonomy_boundaries": {
     "step_5_authority": [
       "Train ML models",
@@ -51,11 +47,16 @@
       "Override WATCHER_AGENT"
     ]
   },
-  
   "parameter_bounds": {
     "model_type": {
       "type": "categorical",
-      "values": ["neural_net", "xgboost", "lightgbm", "catboost", "random_forest"],
+      "values": [
+        "neural_net",
+        "xgboost",
+        "lightgbm",
+        "catboost",
+        "random_forest"
+      ],
       "default": "neural_net"
     },
     "compare_models": {
@@ -69,9 +70,30 @@
       "default": 50
     }
   },
-  
-  "follow_up_agents": ["prediction_agent"],
+  "follow_up_agents": [
+    "prediction_agent"
+  ],
   "version_history": [
-    {"version": "1.5.0", "date": "2026-01-01", "changes": ["Added signal_quality emission"]}
-  ]
+    {
+      "version": "1.5.0",
+      "date": "2026-01-01",
+      "changes": [
+        "Added signal_quality emission"
+      ]
+    }
+  ],
+  "evaluation_type": "file_exists",
+  "success_condition": [
+    "models/reinforcement/best_model.meta.json"
+  ],
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true,
+  "retry_policy": "none",
+  "default_params": {
+    "survivors": "survivors_with_scores.json",
+    "lottery_data": "train_history.json",
+    "model_type": "xgboost",
+    "trials": 20,
+    "output_dir": "models/reinforcement"
+  }
 }
