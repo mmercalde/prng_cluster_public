@@ -1,8 +1,9 @@
 # Chapter 13 Implementation Progress
 
 **Last Updated:** 2026-01-12  
-**Document Version:** 1.4.0  
-**Status:** Phases 1-6 Complete → Phase 7 Testing
+**Document Version:** 1.4.1  
+**Status:** Phases 1-6 Complete → Phase 7 Testing  
+**Team Beta Endorsement:** ✅ Approved
 
 ---
 
@@ -488,7 +489,20 @@ self.trigger_manager = Chapter13TriggerManager(self)
 ```
 
 Ownership remains WATCHER's. Implementation is modularized.
-- **2026-01-12:** Phase 1 complete. Three deliverables ready for deployment.
+
+---
+
+## Critical Design Invariant
+
+**Chapter 13 v1 does not alter model weights directly. All learning occurs through controlled re-execution of Step 5 with expanded labels.**
+
+This ensures:
+- No online/streaming weight updates
+- All learning is batch-based and checkpointed
+- Full auditability of what the model learned and when
+- Clean rollback to any previous model state
+
+*— Added per Team Beta review recommendation*
 
 ---
 
