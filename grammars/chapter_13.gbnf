@@ -1,0 +1,40 @@
+# Chapter 13 LLM Proposal Grammar v1.1
+# Fixed to match llama.cpp GBNF syntax
+
+root ::= "{" ws analysis-kv "," ws failure-kv "," ws confidence-kv "," ws action-kv "," ws scope-kv "," ws proposals-kv "," ws risk-kv "," ws review-kv "," ws alt-kv ws "}"
+
+analysis-kv ::= "\"analysis_summary\"" ws ":" ws string
+failure-kv ::= "\"failure_mode\"" ws ":" ws failure-enum
+confidence-kv ::= "\"confidence\"" ws ":" ws number
+action-kv ::= "\"recommended_action\"" ws ":" ws action-enum
+scope-kv ::= "\"retrain_scope\"" ws ":" ws (scope-enum | "null")
+proposals-kv ::= "\"parameter_proposals\"" ws ":" ws proposals-array
+risk-kv ::= "\"risk_level\"" ws ":" ws risk-enum
+review-kv ::= "\"requires_human_review\"" ws ":" ws boolean
+alt-kv ::= "\"alternative_hypothesis\"" ws ":" ws (string | "null")
+
+failure-enum ::= "\"calibration_drift\"" | "\"feature_relevance\"" | "\"window_misalignment\"" | "\"random_variance\"" | "\"regime_shift\"" | "\"model_overfit\"" | "\"data_quality\"" | "\"none_detected\""
+
+action-enum ::= "\"RETRAIN\"" | "\"WAIT\"" | "\"ESCALATE\"" | "\"FULL_RESET\""
+
+scope-enum ::= "\"steps_3_5_6\"" | "\"steps_5_6\"" | "\"step_6_only\"" | "\"full_pipeline\""
+
+risk-enum ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+proposals-array ::= "[]" | "[" ws proposal-obj (ws "," ws proposal-obj)* ws "]"
+
+proposal-obj ::= "{" ws param-kv "," ws curr-kv "," ws prop-kv "," ws delta-kv "," ws pconf-kv "," ws rat-kv ws "}"
+param-kv ::= "\"parameter\"" ws ":" ws string
+curr-kv ::= "\"current_value\"" ws ":" ws (number | "null")
+prop-kv ::= "\"proposed_value\"" ws ":" ws number
+delta-kv ::= "\"delta\"" ws ":" ws string
+pconf-kv ::= "\"confidence\"" ws ":" ws number
+rat-kv ::= "\"rationale\"" ws ":" ws string
+
+boolean ::= "true" | "false"
+number ::= [0-9] "." [0-9] [0-9]
+string ::= "\"" chars "\""
+chars ::= char*
+char ::= [^"\\] | "\\" escape
+escape ::= ["\\/bfnrt]
+ws ::= [ \t\n]*
