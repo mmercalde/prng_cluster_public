@@ -55,6 +55,24 @@ except ImportError:
     print("ERROR: CuPy not available - GPU required for sieve", file=sys.stderr)
     sys.exit(1)
 import numpy as np
+
+def _best_effort_gpu_cleanup():
+    """Clean GPU memory after job completion - safe, best-effort"""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+
+
 # ============================================================================
 # DATASET LOADING
 # ============================================================================
@@ -101,7 +119,7 @@ class GPUSieve:
         seed_end: int,
         residues: List[int],
         skip_range: Tuple[int, int] = (0, 16),
-        min_match_threshold: float = 0.5,
+        min_match_threshold: float = 0.25,
         custom_params: Optional[Dict] = None,
         chunk_size: int = 1_000_000,
         offset: int = 0
@@ -233,7 +251,7 @@ class GPUSieve:
         seed_end: int,
         residues: List[int],
         strategies: List[Dict[str, Any]],
-        min_match_threshold: float = 0.5,
+        min_match_threshold: float = 0.25,
         chunk_size: int = 100_000,
         offset: int = 0
     ) -> Dict[str, Any]:
@@ -404,7 +422,7 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
             seed_end = job.get('seed_end', 100000)
         skip_range = tuple(job.get('skip_range', [0, 16]))
         print(f'🔍 SIEVE READ: skip_range={skip_range} from job file', file=sys.stderr)
-        min_match_threshold = job.get('min_match_threshold', 0.5)
+        min_match_threshold = job.get('min_match_threshold', 0.25)
         offset = job.get('offset', 0)
         sessions = job.get('sessions', ['midday', 'evening'])
         # Load draws
@@ -610,7 +628,7 @@ Job file format (JSON):
   "seed_start": 0,
   "seed_end": 1000000,
   "window_size": 10,
-  "min_match_threshold": 0.5,
+  "min_match_threshold": 0.25,
   "skip_range": [0, 16],
   "prng_families": ["xorshift32", "pcg32"],
   "sessions": ["midday", "evening"]
@@ -658,6 +676,7 @@ Job file format (JSON):
         )
     except Exception as e:
         print(f"Note: New results format unavailable: {e}")
+    _best_effort_gpu_cleanup()
     print(json.dumps(result))
     return 0 if result['success'] else 1
 if __name__ == '__main__':

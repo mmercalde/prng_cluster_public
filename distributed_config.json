@@ -69,17 +69,17 @@
     },
     "skip_max": {
       "min": 10,
-      "max": 500
+      "max": 250
     },
     "forward_threshold": {
-      "min": 0.001,
-      "max": 0.1,
-      "default": 0.01
+      "min": 0.15,
+      "max": 0.6,
+      "default": 0.25
     },
     "reverse_threshold": {
-      "min": 0.001,
-      "max": 0.1,
-      "default": 0.01
+      "min": 0.15,
+      "max": 0.6,
+      "default": 0.25
     }
   },
   "evaluation_thresholds": {

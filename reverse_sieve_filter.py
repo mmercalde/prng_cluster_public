@@ -67,6 +67,24 @@ except ImportError:
     sys.exit(1)
 import numpy as np
 
+def _best_effort_gpu_cleanup():
+    """Clean GPU memory after job completion - safe, best-effort"""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+
+
+
 # Load kernels from prng_registry
 try:
     from prng_registry import KERNEL_REGISTRY, get_kernel_info
@@ -285,6 +303,7 @@ def main():
     except Exception as e:
         print(f"Note: New results format unavailable: {e}")
 
+    _best_effort_gpu_cleanup()
     print(json.dumps(result))
     return 0 if result['success'] else 1
 

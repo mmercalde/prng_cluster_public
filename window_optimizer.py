@@ -117,15 +117,15 @@ class SearchBounds:
     min_skip_min: int = 0
     max_skip_min: int = 10
     min_skip_max: int = 10
-    max_skip_max: int = 500
+    max_skip_max: int = 250
     # Threshold bounds - LOW for discovery, not filtering
-    min_forward_threshold: float = 0.001
-    max_forward_threshold: float = 0.10
-    min_reverse_threshold: float = 0.001
-    max_reverse_threshold: float = 0.10
+    min_forward_threshold: float = 0.15
+    max_forward_threshold: float = 0.60
+    min_reverse_threshold: float = 0.15
+    max_reverse_threshold: float = 0.60
     # Defaults
-    default_forward_threshold: float = 0.01
-    default_reverse_threshold: float = 0.01
+    default_forward_threshold: float = 0.25
+    default_reverse_threshold: float = 0.25
     session_options: List[List[str]] = None
     
     @classmethod
@@ -157,6 +157,42 @@ class SearchBounds:
                 ['midday'],              # Midday only
                 ['evening']              # Evening only
             ]
+
+
+    def validate_baseline_in_bounds(self, baseline_path: str = "baselines/baseline_window_thresholds.json") -> bool:
+        """
+        Validate that baseline thresholds are within search bounds.
+        Team Beta mandate: baseline must always be reachable.
+        """
+        import os
+        if not os.path.exists(baseline_path):
+            print(f"⚠️ Baseline file not found: {baseline_path}")
+            return True  # No baseline = no constraint
+        
+        import json
+        with open(baseline_path) as f:
+            baseline = json.load(f)
+        
+        fwd = baseline.get('forward_threshold', 0.25)
+        rev = baseline.get('reverse_threshold', 0.25)
+        skip = baseline.get('skip_max', 200)
+        
+        errors = []
+        if not (self.min_forward_threshold <= fwd <= self.max_forward_threshold):
+            errors.append(f"forward_threshold {fwd} not in [{self.min_forward_threshold}, {self.max_forward_threshold}]")
+        if not (self.min_reverse_threshold <= rev <= self.max_reverse_threshold):
+            errors.append(f"reverse_threshold {rev} not in [{self.min_reverse_threshold}, {self.max_reverse_threshold}]")
+        if skip > self.max_skip_max:
+            errors.append(f"skip_max {skip} exceeds max {self.max_skip_max}")
+        
+        if errors:
+            print("❌ BASELINE VALIDATION FAILED:")
+            for e in errors:
+                print(f"   {e}")
+            raise ValueError("Baseline thresholds outside search bounds - fix config before proceeding")
+        
+        print("✅ Baseline validation passed - baseline is reachable within search bounds")
+        return True
 
     def random_config(self) -> WindowConfig:
         """Generate random config within bounds (for random search)"""

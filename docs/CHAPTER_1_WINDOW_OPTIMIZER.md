@@ -137,8 +137,8 @@ class WindowConfig:
     sessions: List[str]        # ['midday', 'evening'] or subset
     skip_min: int              # Minimum skip for variable PRNGs
     skip_max: int              # Maximum skip for variable PRNGs
-    forward_threshold: float = 0.40   # Forward sieve threshold
-    reverse_threshold: float = 0.45   # Reverse sieve threshold
+    forward_threshold: float = 0.25   # Forward sieve threshold
+    reverse_threshold: float = 0.25   # Reverse sieve threshold
 ```
 
 **Methods:**
@@ -158,11 +158,11 @@ config = WindowConfig(
     sessions=['midday', 'evening'],
     skip_min=0,
     skip_max=50,
-    forward_threshold=0.01,
-    reverse_threshold=0.01
+    forward_threshold=0.25,
+    reverse_threshold=0.25
 )
 print(config.description())
-# Output: W512_O100_midday+evening_S0-50_FT0.01_RT0.01
+# Output: W512_O100_midday+evening_S0-50_FT0.25_RT0.25
 ```
 
 ### 3.2 SearchBounds
@@ -185,14 +185,14 @@ class SearchBounds:
     max_skip_max: int = 500
     
     # Threshold bounds (LOW for discovery)
-    min_forward_threshold: float = 0.001
-    max_forward_threshold: float = 0.10
-    min_reverse_threshold: float = 0.001
-    max_reverse_threshold: float = 0.10
+    min_forward_threshold: float = 0.15
+    max_forward_threshold: float = 0.60
+    min_reverse_threshold: float = 0.15
+    max_reverse_threshold: float = 0.60
     
     # Defaults
-    default_forward_threshold: float = 0.01
-    default_reverse_threshold: float = 0.01
+    default_forward_threshold: float = 0.25
+    default_reverse_threshold: float = 0.25
     
     # Session options
     session_options: List[List[str]] = None  # Auto-initialized
@@ -260,8 +260,8 @@ def load_search_bounds_from_config(config_path: str = "distributed_config.json")
         "offset": {"min": 0, "max": 100},
         "skip_min": {"min": 0, "max": 10},
         "skip_max": {"min": 10, "max": 500},
-        "forward_threshold": {"min": 0.001, "max": 0.10, "default": 0.01},
-        "reverse_threshold": {"min": 0.001, "max": 0.10, "default": 0.01}
+        "forward_threshold": {"min": 0.15, "max": 0.60, "default": 0.25},
+        "reverse_threshold": {"min": 0.15, "max": 0.60, "default": 0.25}
     }
     
     try:
@@ -286,15 +286,15 @@ def load_search_bounds_from_config(config_path: str = "distributed_config.json")
         "offset": {"min": 0, "max": 100},
         "skip_min": {"min": 0, "max": 10},
         "skip_max": {"min": 10, "max": 500},
-        "forward_threshold": {"min": 0.001, "max": 0.10, "default": 0.01},
-        "reverse_threshold": {"min": 0.001, "max": 0.10, "default": 0.01}
+        "forward_threshold": {"min": 0.15, "max": 0.60, "default": 0.25},
+        "reverse_threshold": {"min": 0.15, "max": 0.60, "default": 0.25}
     }
 }
 ```
 
 ### 4.3 Threshold Philosophy
 
-**CRITICAL INSIGHT:** Use LOW thresholds (0.001-0.10) for discovery!
+**CRITICAL INSIGHT:** Target 1K-10K bidirectional survivors. Bounds: [0.15, 0.60], baseline: 0.25. See docs/THRESHOLD_GOVERNANCE.md
 
 ```
 The system is a behavioral fingerprint machine, NOT a filter.

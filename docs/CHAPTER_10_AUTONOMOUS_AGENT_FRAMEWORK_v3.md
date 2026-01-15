@@ -509,4 +509,20 @@ Version 1.0.0 - December 2025
 
 ---
 
+
+### Parameter Bounds Authority
+
+**Critical:** Agent manifests (`agent_manifests/*.json`) define parameter metadata and documentation only.
+Runtime bounds for Optuna search are defined exclusively in `distributed_config.json`.
+
+| Source | Role |
+|--------|------|
+| `distributed_config.json` | **Authoritative** - Runtime search bounds |
+| `agent_manifests/*.json` | Documentation only - NOT runtime bounds |
+| `baselines/baseline_window_thresholds.json` | Recovery baseline |
+
+See `docs/THRESHOLD_GOVERNANCE.md` for full governance model.
+
+---
+
 **END OF CHAPTER 10**

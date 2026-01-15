@@ -232,7 +232,7 @@ class MultiGPUCoordinator:
     def __init__(self, config_file: str = "distributed_config.json",
                  seed_cap_nvidia: int = 40000, seed_cap_amd: int = 19000, seed_cap_default: int = 19000,
                  max_concurrent: int = 8, max_per_node: int = 4, max_local_concurrent: Optional[int] = None,
-                 job_timeout: int = 300, resume_policy: str = 'prompt'):
+                 job_timeout: int = 600, resume_policy: str = 'prompt'):
         self.config_file = config_file
         self.nodes: List[WorkerNode] = []
         self.gpu_workers: List[GPUWorker] = []
@@ -389,7 +389,7 @@ class MultiGPUCoordinator:
         # Timeout wrapper (graceful if `timeout` exists; otherwise run as-is)
         timeout_wrapper = (
             f"if command -v timeout >/dev/null 2>&1; then "
-            f"timeout -k 10 {timeout_s or 300} {env_prefix}{cmd_body}; "
+            f"timeout -k 10 {timeout_s or 600} {env_prefix}{cmd_body}; "
             f"else {env_prefix}{cmd_body}; fi"
         )
         # Run, then cleanup job file only (results collected via PULL)

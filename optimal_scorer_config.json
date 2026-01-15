@@ -1,13 +1,13 @@
 {
-  "residue_mod_1": 6,
-  "residue_mod_2": 107,
-  "residue_mod_3": 930,
+  "residue_mod_1": 17,
+  "residue_mod_2": 72,
+  "residue_mod_3": 1452,
   "max_offset": 7,
-  "temporal_window_size": 80,
-  "temporal_num_windows": 10,
-  "min_confidence_threshold": 0.06540149033446396,
+  "temporal_window_size": 55,
+  "temporal_num_windows": 9,
+  "min_confidence_threshold": 0.18472399310763526,
   "hidden_layers": "128_64",
-  "dropout": 0.19213455544324073,
-  "learning_rate": 0.0003190455016040581,
+  "dropout": 0.465328280499116,
+  "learning_rate": 0.0005278665455391713,
   "batch_size": 32
 }

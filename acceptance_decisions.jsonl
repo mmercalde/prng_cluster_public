@@ -1,0 +1,1 @@
+{"result": "reject", "reason": "delta_too_large", "violations": ["Delta for history_window: 40.0% > max 30%"], "proposal_id": "prop_20260115T024806", "timestamp": "2026-01-15T02:48:06.759074+00:00", "approved_changes": [], "escalation_reasons": []}
