@@ -97,6 +97,28 @@ holdout_history = None
 seeds_to_score = None
 
 
+
+def _best_effort_gpu_cleanup():
+    """Post-trial GPU memory cleanup (safe, non-invasive)"""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
 def load_data(survivors_file: str, train_history_file: str, holdout_history_file: str):
     """Load data files (cached for reuse across trials on same worker)."""
     global survivors, train_history, holdout_history, seeds_to_score
@@ -520,6 +542,7 @@ def main():
         
         save_local_result(trial_id, params, accuracy, "success", None, scores=scores)
         
+        _best_effort_gpu_cleanup()
         print(json.dumps({"status": "success", "trial_id": trial_id, "accuracy": accuracy}))
         sys.stdout.flush()
         sys.exit(0)
@@ -528,6 +551,7 @@ def main():
         if "pruned" in str(e).lower():
             logger.info(f"⚡ Trial {trial_id} was pruned")
             save_local_result(trial_id, params, float('-inf'), "pruned", "Trial pruned", scores=None)
+            _best_effort_gpu_cleanup()
             print(json.dumps({"status": "pruned", "trial_id": trial_id}))
             sys.stdout.flush()
             sys.exit(0)
@@ -537,6 +561,7 @@ def main():
             if params is None:
                 params = {"error": "Failed to parse params"}
             save_local_result(trial_id, params, float('-inf'), "error", error_msg, scores=None)
+            _best_effort_gpu_cleanup()
             print(json.dumps({"status": "error", "trial_id": trial_id, "error": error_msg}))
             sys.stdout.flush()
             sys.exit(1)

@@ -333,6 +333,7 @@ def execute_analysis_job(job_data: Dict[str, Any], args) -> Dict[str, Any]:
                     try:
                         # Build command with GPU ID injection
                         cmd = [sys.executable, '-u', script] + script_args
+                        print(f"[DEBUG] script_args: {script_args}")
                         if '--gpu-id' not in script_args and args.gpu_id is not None:
                             cmd.extend(['--gpu-id', str(args.gpu_id)])
 
