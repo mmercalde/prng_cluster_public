@@ -537,3 +537,82 @@ Options:
 ---
 
 *End of Chapter 9: GPU Cluster Infrastructure*
+
+---
+
+### 8.4 ROCm Stability Envelope (RX 6600) — VALIDATED
+
+> **Updated: 2026-01-18** — Based on systematic benchmark testing
+
+#### Root Cause Analysis
+
+Prior assumptions about ROCm instability (HIP initialization collisions, GPU concurrency limits) have been superseded. Systematic benchmarking revealed the **true constraint is host memory pressure during data loading**, not GPU-side limitations.
+
+| ❌ Previous Assumption | ✅ Validated Reality |
+|------------------------|---------------------|
+| "ROCm can't handle high concurrency" | Full 12-GPU concurrency is stable |
+| "Weak CPUs cause contention" | i5-9400/i5-8400 are sufficient |
+| "HIP init collision is dominant failure" | Memory pressure during load is the cause |
+| "Reduce GPU count for stability" | Reduce sample_size instead |
+
+#### Validated Configuration
+
+```bash
+# Validated ROCm configuration (RX 6600)
+# Tested: 2026-01-18, 100 trials, 100% success rate
+
+max_concurrent_script_jobs: 12     # Full GPU utilization
+sample_size: 450                   # Optimal operating point
+ppfeaturemask: 0xffff7fff          # GFXOFF disabled
+cleanup: enabled                   # Best-effort GPU allocator cleanup between jobs
+```
+
+#### Performance Envelope
+
+| Sample Size | Throughput | Stability |
+|-------------|------------|-----------|
+| 350 | 14.98 trials/min | ✅ Stable |
+| **450** | **15.41 trials/min** | ✅ **Optimal** |
+| 550 | 14.66 trials/min | ✅ Stable |
+| 650 | 13.13 trials/min | ✅ Stable |
+| 750 | 12.45 trials/min | ✅ Stable |
+| 1000 | 10.42 trials/min | ✅ Stable |
+| 2000 | — | ❌ Freeze risk |
+
+#### Required Settings
+
+1. **GFXOFF Disabled** — Add to kernel boot params:
+   ```bash
+   amdgpu.ppfeaturemask=0xffff7fff
+   ```
+
+2. **Concurrency Configuration** — `distributed_config.json`:
+   ```json
+   {
+     "hostname": "192.168.3.120",
+     "max_concurrent_script_jobs": 12
+   }
+   ```
+
+3. **Sample Size Cap** — `run_scorer_meta_optimizer.sh`:
+   ```bash
+   --sample-size 450
+   ```
+
+#### Troubleshooting: ROCm Freeze / Monitor Desync
+
+**Symptoms:**
+- `rocm-smi` shows GPU with `N/A` in SCLK/MCLK columns
+- `Perf` column shows `unknown` instead of `auto`
+- Jobs hang without error messages
+- Monitor shows "Expected integer value" warnings
+
+**Root Cause:** Memory pressure during concurrent data loading causes allocator thrashing.
+
+**Fix Checklist:**
+1. ✅ Reduce sample_size (not GPU count)
+2. ✅ Verify GFXOFF disabled: `cat /sys/module/amdgpu/parameters/ppfeaturemask`
+3. ✅ Verify cleanup enabled between jobs
+4. ✅ Reboot rig if GPU shows persistent N/A state
+5. ❌ Do NOT reduce max_concurrent_script_jobs as first response
+

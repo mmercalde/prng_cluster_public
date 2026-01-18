@@ -1,0 +1,1 @@
+sample_size,trials,total_runtime_s,avg_trial_time_s,throughput_trials_per_min,success_rate,successful,failed,best_accuracy,pruned_trials

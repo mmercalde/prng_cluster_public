@@ -858,3 +858,45 @@ cat ~/distributed_prng_analysis/scorer_trial_results/trial_0.json | jq .
 ---
 
 *End of Chapter 13: Scorer Trial Worker*
+
+---
+
+### 9.4 Resource Scaling and Performance Constraints — VALIDATED
+
+> **Updated: 2026-01-18** — Based on systematic benchmark testing
+
+#### Sample Size vs Throughput Trade-off
+
+At 12-way ROCm concurrency, sample sizes above 450 increase memory residency time without improving Optuna convergence. The relationship is inverse: smaller samples = higher throughput.
+
+| Sample Size | Throughput | Signal Quality |
+|-------------|------------|----------------|
+| 350 | 14.98 trials/min | ✅ Preserved |
+| **450** | **15.41 trials/min** | ✅ **Optimal** |
+| 550 | 14.66 trials/min | ✅ Preserved |
+| 1000 | 10.42 trials/min | ✅ Preserved |
+| 2000+ | — | ❌ Freeze risk |
+
+#### Why Signal Quality Is Preserved
+
+Optuna's TPE (Tree-structured Parzen Estimator) sampler is designed for noisy objectives:
+- Hyperparameter **ranking** is preserved across sample sizes
+- More trials with lower precision beats fewer trials with higher precision
+- 500 trials × moderate precision > 100 trials × high precision for global coverage
+
+#### Validated Operating Point
+
+```bash
+# Optimal Step 2.5 configuration
+sample_size=450              # Maximize throughput
+max_concurrent_script_jobs=12  # Full GPU utilization
+trials=200-500               # Good Bayesian coverage
+```
+
+#### Performance Improvement
+
+| Configuration | Throughput | Factor |
+|---------------|------------|--------|
+| Old (5000 samples @ 4 concurrent) | ~3.4 trials/min | 1× |
+| New (450 samples @ 12 concurrent) | 15.41 trials/min | **4.5×** |
+

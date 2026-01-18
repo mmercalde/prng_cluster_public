@@ -72,6 +72,9 @@ if [ "$USE_LEGACY_SCORING" = true ]; then
         --holdout-history $HOLDOUT_HISTORY \
         --study-name $STUDY_NAME \
         --study-db "$STUDY_DB" \
+        --sample-size 450    # TUNED 2026-01-17: 5000 seeds = ~60-90s trials
+                              # (vs 25000 default = 400-700s trials)
+                              # Benefits: Better Bayesian exploration, less GPU stress \
         --legacy-scoring
 else
     python3 generate_scorer_jobs.py \
@@ -80,7 +83,10 @@ else
         --train-history $TRAIN_HISTORY \
         --holdout-history $HOLDOUT_HISTORY \
         --study-name $STUDY_NAME \
-        --study-db "$STUDY_DB"
+        --study-db "$STUDY_DB" \
+        --sample-size 450    # TUNED 2026-01-17: 5000 seeds = ~60-90s trials
+                              # (vs 25000 default = 400-700s trials)
+                              # Benefits: Better Bayesian exploration, less GPU stress
 fi
 
 echo "Generated scorer_jobs.json with $TRIALS pre-sampled jobs"
