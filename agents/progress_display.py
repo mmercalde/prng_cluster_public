@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+from rich.panel import Panel
+from rich.table import Table
+from rich.console import Console
+from rich.progress import Progress
 """
 Centralized Progress Display Module for PRNG Cluster Operations
 ================================================================

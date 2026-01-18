@@ -43,6 +43,7 @@ import sys
 import json
 from utils.survivor_loader import load_survivors
 import time
+import atexit
 import socket
 import logging
 from pathlib import Path
@@ -116,8 +117,13 @@ def _best_effort_gpu_cleanup():
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
     except Exception:
         pass
+
+# Register cleanup for crash safety
+atexit.register(_best_effort_gpu_cleanup)
 
 def load_data(survivors_file: str, train_history_file: str, holdout_history_file: str):
     """Load data files (cached for reuse across trials on same worker)."""

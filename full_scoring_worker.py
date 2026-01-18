@@ -101,6 +101,38 @@ logger = logging.getLogger("FullScoringWorker")
 SurvivorScorer = None  # Placeholder, imported in main()
 
 
+
+def _best_effort_gpu_cleanup():
+    """Post-trial GPU memory cleanup (safe, non-invasive)"""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+    # CuPy ROCm allocator cleanup
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+
+    # PyTorch ROCm allocator cleanup
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
+import atexit
+atexit.register(_best_effort_gpu_cleanup)
+
 def load_seeds(seeds_file: str) -> List[int]:
     """
     Load seeds from JSON file.

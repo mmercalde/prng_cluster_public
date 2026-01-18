@@ -77,6 +77,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+
+def _best_effort_gpu_cleanup():
+    """Post-trial GPU memory cleanup (safe, non-invasive)"""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+    # CuPy ROCm allocator cleanup
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+
+    # PyTorch ROCm allocator cleanup
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
+import atexit
+atexit.register(_best_effort_gpu_cleanup)
+
 def load_data(survivors_file: str, lottery_file: str):
     """Load survivors and lottery data."""
     logger.info(f"Loading survivors from {survivors_file}")

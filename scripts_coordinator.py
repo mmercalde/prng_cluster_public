@@ -74,7 +74,7 @@ ROCM_ENV_VARS = [
 ]
 
 STAGGER_LOCALHOST = 3.0   # seconds - CUDA init collision prevention
-STAGGER_REMOTE = 0.5      # seconds - ROCm needs less separation
+STAGGER_REMOTE = 2.0      # seconds - ROCm needs less separation
 
 ROCM_HOSTNAMES = ['192.168.3.120', '192.168.3.154', 'rig-6600', 'rig-6600b']
 
@@ -522,10 +522,14 @@ class ScriptsCoordinator:
         print(f"  🔀 PARALLEL: {node.hostname} | {max_workers} GPU workers | {len(jobs)} jobs | distribution: {jobs_per_gpu}")
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(gpu_worker, gpu_id, gpu_jobs[gpu_id])
-                for gpu_id in active_gpus
-            ]
+            futures = []
+            for i, gpu_id in enumerate(active_gpus):
+                futures.append(executor.submit(gpu_worker, gpu_id, gpu_jobs[gpu_id]))
+                # Stagger GPU worker startup to prevent HIP init collision
+                # Uses existing node.stagger_delay (STAGGER_REMOTE=2.0s)
+                if i < len(active_gpus) - 1:
+                    time.sleep(node.stagger_delay)
+
             for future in as_completed(futures):
                 try:
                     future.result()  # Raises if worker had exception
