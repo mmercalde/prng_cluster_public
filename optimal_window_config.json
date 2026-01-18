@@ -1,18 +1,18 @@
 {
-  "window_size": 4,
-  "offset": 34,
-  "skip_min": 9,
-  "skip_max": 113,
+  "window_size": 5,
+  "offset": 1,
+  "skip_min": 0,
+  "skip_max": 143,
   "sessions": [
-    "evening"
+    "midday"
   ],
   "prng_type": "java_lcg",
   "test_both_modes": false,
-  "seed_count": 100000,
-  "optimization_score": 13098.0,
-  "forward_count": 13098,
-  "reverse_count": 13098,
-  "bidirectional_count": 13098,
+  "seed_count": 500000,
+  "optimization_score": 746.0,
+  "forward_count": 746,
+  "reverse_count": 746,
+  "bidirectional_count": 746,
   "agent_metadata": {
     "inputs": [
       {
@@ -32,13 +32,13 @@
     "follow_up_agent": "scorer_meta_agent",
     "confidence": 0.95,
     "suggested_params": {
-      "window_size": 4,
-      "forward_threshold": 0.37,
+      "window_size": 5,
+      "forward_threshold": 0.56,
       "reverse_threshold": 0.39,
       "k_folds": 5
     },
-    "reasoning": "Optimization found N/A survivors with score 13098.0000",
-    "timestamp_injected": "2026-01-16T03:33:08.075630+00:00"
+    "reasoning": "Optimization found N/A survivors with score 746.0000",
+    "timestamp_injected": "2026-01-18T19:45:17.391735+00:00"
   },
-  "run_id": "step1_20260115_193308_09230"
+  "run_id": "step1_20260118_114517_38483"
 }

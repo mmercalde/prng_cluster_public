@@ -130,5 +130,6 @@
   "evaluation_type": "file_exists",
   "disable_llm_parsing": true,
   "disable_heuristic_parsing": true,
-  "retry_policy": "none"
+  "retry_policy": "none",
+  "_note_default_params": "Some default_params (prng_type, mod, batch_size, jobs_file, output_file) are included for documentation/future use but are not currently consumed by run_step3_full_scoring.sh. The shell script's tolerance mechanism logs 'Note: Ignoring unknown option' for these - this is expected behavior, not an error."
 }
