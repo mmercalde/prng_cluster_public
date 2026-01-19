@@ -38,6 +38,7 @@ import sys
 import time
 import subprocess
 import signal
+import fnmatch
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +75,163 @@ except ImportError:
 from agents.safety import KillSwitch, check_safety, create_halt, clear_halt
 from agents.pipeline import get_step_info
 from agents.doctrine import validate_decision_against_doctrine
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FILE VALIDATION CONFIG (Team Beta Approved v1.1.0)
+# ════════════════════════════════════════════════════════════════════════════════
+
+FILE_VALIDATION_CONFIG = {
+    "min_sizes": {
+        ".json": 50,
+        ".npz": 100,
+        ".pth": 1000,
+        ".pt": 1000,
+        ".xgb": 1000,
+        ".lgb": 1000,
+        ".cbm": 1000,
+        "default": 10
+    },
+    "json_array_minimums": {
+        "bidirectional_survivors*.json": 100,
+        "forward_survivors*.json": 100,
+        "reverse_survivors*.json": 100,
+        "survivors_with_scores*.json": 100,
+        "train_history*.json": 10,
+        "holdout_history*.json": 5,
+    },
+    "json_required_keys": {
+        "optimal_window_config*.json": ["window_size", "offset"],
+        "optimal_scorer_config*.json": ["best_trial"],
+        "best_model*.meta.json": ["model_type", "feature_schema"],
+        "reinforcement_engine_config*.json": ["survivor_count"],
+        "predictions*.json": ["predictions"],
+        "prediction_pool*.json": ["predictions"],
+    }
+}
+
+
+def _get_min_file_size(filepath: str) -> int:
+    """Get minimum expected file size based on extension."""
+    ext = Path(filepath).suffix.lower()
+    return FILE_VALIDATION_CONFIG["min_sizes"].get(
+        ext, FILE_VALIDATION_CONFIG["min_sizes"]["default"]
+    )
+
+
+def _match_config_by_pattern(filename: str, table: dict):
+    """Match filename against pattern-based config table using fnmatch."""
+    for pattern, value in table.items():
+        if fnmatch.fnmatch(filename, pattern):
+            return value
+    return None
+
+
+def _validate_json_structure(filepath: str) -> tuple:
+    """Validate JSON file has meaningful content. Returns (is_valid, reason)."""
+    filename = Path(filepath).name
+    try:
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON: {e}"
+    except Exception as e:
+        return False, f"Read error: {e}"
+
+    if data is None:
+        return False, "JSON contains null"
+
+    if isinstance(data, list):
+        if len(data) == 0:
+            return False, "JSON array is empty"
+        min_count = _match_config_by_pattern(
+            filename, FILE_VALIDATION_CONFIG["json_array_minimums"]
+        )
+        if min_count and len(data) < min_count:
+            return False, f"JSON array has {len(data)} items, expected >= {min_count}"
+
+    elif isinstance(data, dict):
+        if len(data) == 0:
+            return False, "JSON object is empty"
+        required_keys = _match_config_by_pattern(
+            filename, FILE_VALIDATION_CONFIG["json_required_keys"]
+        )
+        if required_keys:
+            missing_keys = [k for k in required_keys if k not in data]
+            if missing_keys:
+                return False, f"Missing required keys: {missing_keys}"
+
+    return True, "Valid JSON structure"
+
+
+def _validate_file_content(filepath: str) -> tuple:
+    """Validate file content based on type. Returns (is_valid, reason)."""
+    ext = Path(filepath).suffix.lower()
+
+    if ext == ".json":
+        return _validate_json_structure(filepath)
+
+    elif ext == ".npz":
+        try:
+            import numpy as np
+            with np.load(filepath, mmap_mode="r") as data:
+                if len(data.files) == 0:
+                    return False, "NPZ contains no arrays"
+                for key in data.files:
+                    if data[key].size > 0:
+                        return True, f"NPZ valid with {len(data.files)} arrays"
+                return False, "All NPZ arrays are empty"
+        except Exception as e:
+            return False, f"NPZ read error: {e}"
+
+    elif ext in [".pth", ".pt"]:
+        try:
+            with open(filepath, "rb") as f:
+                magic = f.read(16)
+            if len(magic) < 16:
+                return False, "PyTorch file too small"
+            return True, "PyTorch checkpoint present (not deserialized)"
+        except Exception as e:
+            return False, f"PyTorch file read error: {e}"
+
+    elif ext in [".xgb", ".lgb", ".cbm"]:
+        try:
+            with open(filepath, "rb") as f:
+                magic = f.read(16)
+            if len(magic) < 16:
+                return False, f"{ext} model file too small"
+            return True, f"{ext} model present (not deserialized)"
+        except Exception as e:
+            return False, f"{ext} file read error: {e}"
+
+    return True, "Content validation skipped (unknown type)"
+
+
+def evaluate_file_exists(filepath: str, validate_content: bool = True) -> tuple:
+    """
+    Evaluate if file exists AND has meaningful content.
+    Returns (success, reason) tuple.
+    """
+    if not os.path.exists(filepath):
+        return False, f"File does not exist: {filepath}"
+
+    if not os.path.isfile(filepath):
+        return False, f"Path is not a file: {filepath}"
+
+    file_size = os.path.getsize(filepath)
+    min_size = _get_min_file_size(filepath)
+
+    if file_size < min_size:
+        return False, f"File too small: {file_size} bytes (min: {min_size})"
+
+    if validate_content:
+        is_valid, content_reason = _validate_file_content(filepath)
+        if not is_valid:
+            return False, f"Content validation failed: {content_reason}"
+        return True, f"Valid file: {file_size} bytes - {content_reason}"
+
+    return True, f"Valid file: {file_size} bytes"
+
+
 
 # Configure logging
 logging.basicConfig(
@@ -266,15 +424,25 @@ class WatcherAgent:
                 if isinstance(required_files, str):
                     required_files = [required_files]
                 
-                missing = [p for p in required_files if not Path(p).exists()]
-                success = not missing
+                # Validate files exist AND have meaningful content (v1.1.0 fix)
+                validation_results = []
+                for p in required_files:
+                    is_valid, reason = evaluate_file_exists(p)
+                    validation_results.append({"file": p, "valid": is_valid, "reason": reason})
                 
-                logger.info(f"File-based evaluation: {required_files} -> {'all exist' if success else f'missing: {missing}'}")
+                failed = [r for r in validation_results if not r["valid"]]
+                success = len(failed) == 0
+
+                if success:
+                    logger.info(f"File-based evaluation: all {len(required_files)} files valid")
+                else:
+                    for f in failed:
+                        logger.warning(f"File validation failed: {f['file']} - {f['reason']}")
                 
                 decision = AgentDecision(
                     success_condition_met=success,
                     confidence=1.0 if success else 0.0,
-                    reasoning="All required files exist" if success else f"Missing required files: {missing}",
+                    reasoning="All required files valid" if success else f"File validation failed: {[r['file'] + ': ' + r['reason'] for r in failed]}",
                     recommended_action="proceed" if success else "escalate",
                     parse_method="file_exists"
                 )
