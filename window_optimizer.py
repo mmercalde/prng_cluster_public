@@ -606,6 +606,26 @@ def run_bayesian_optimization(
         'reverse_count': reverse_count,
         'bidirectional_count': bidirectional_count
     }
+    
+    # === MERGE INCREMENTAL OUTPUT FIELDS (Patch 2026-01-18) ===
+    # Preserve fields from incremental saves (crash recovery data)
+    if Path(output_config).exists():
+        try:
+            with open(output_config, 'r') as f:
+                existing = json.load(f)
+            # Preserve incremental tracking fields
+            incremental_fields = ['status', 'completed_trials', 'total_trials', 
+                                  'best_trial_number', 'best_value', 'best_bidirectional_count',
+                                  'last_updated', 'last_trial_number', 'last_trial_value']
+            for field in incremental_fields:
+                if field in existing:
+                    optimal_config[field] = existing[field]
+            # Mark as complete since we finished successfully
+            optimal_config['status'] = 'complete'
+            optimal_config['completed_at'] = datetime.now().isoformat()
+        except (json.JSONDecodeError, IOError):
+            pass  # If file is corrupt, just use new config
+    # === END MERGE ===
 
     # Inject agent_metadata for pipeline chaining
     run_id = f"step1_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(str(results)) % 100000:05d}"

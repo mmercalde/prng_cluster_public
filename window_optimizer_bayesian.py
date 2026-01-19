@@ -39,6 +39,13 @@ except ImportError:
     print("⚠️  scikit-learn GP not available")
 
 
+# === INCREMENTAL OUTPUT IMPORTS (Patch 2026-01-18) ===
+from datetime import datetime as _patch_datetime
+from pathlib import Path as _patch_Path
+import json as _patch_json
+# === END INCREMENTAL IMPORTS ===
+
+
 # ============================================================================
 # DATA STRUCTURES (copied from window_optimizer.py)
 # ============================================================================
@@ -128,6 +135,92 @@ class ResultScorer:
             return result.bidirectional_count * ratio if result.bidirectional_count > 0 else -1000
         else:
             return result.bidirectional_count if result.bidirectional_count > 0 else -1000
+
+
+# ============================================================================
+# INCREMENTAL OUTPUT CALLBACK (Patch 2026-01-18)
+# ============================================================================
+
+def create_incremental_save_callback(
+    output_config_path: str = "optimal_window_config.json",
+    output_survivors_path: str = "bidirectional_survivors.json",
+    total_trials: int = 50
+):
+    """
+    Optuna callback that saves best-so-far results after each trial.
+    Ensures crash recovery and WATCHER visibility.
+    """
+    def save_best_so_far(study, trial):
+        completed = len([t for t in study.trials if t.state.name == "COMPLETE"])
+        
+        progress = {
+            "status": "in_progress",
+            "completed_trials": completed,
+            "total_trials": total_trials,
+            "last_updated": _patch_datetime.now().isoformat(),
+            "last_trial_number": trial.number,
+            "last_trial_value": trial.value,
+        }
+        
+        if study.best_trial is not None:
+            best_params = study.best_params or {}
+            best_config = {
+                **progress,
+                "best_trial_number": study.best_trial.number,
+                "best_value": study.best_value,
+                "best_bidirectional_count": int(study.best_value) if study.best_value and study.best_value > 0 else 0,
+                "best_params": best_params,
+                "window_size": best_params.get("window_size"),
+                "offset": best_params.get("offset"),
+                "skip_min": best_params.get("skip_min"),
+                "skip_max": best_params.get("skip_max"),
+                "forward_threshold": best_params.get("forward_threshold"),
+                "reverse_threshold": best_params.get("reverse_threshold"),
+            }
+            
+            # Atomic write
+            temp_path = _patch_Path(output_config_path).with_suffix(".tmp")
+            with open(temp_path, "w") as f:
+                _patch_json.dump(best_config, f, indent=2)
+            temp_path.rename(output_config_path)
+            
+            print(f"[SAVE] Trial {trial.number}: config saved (best={study.best_value:.0f} @ trial {study.best_trial.number})")
+            
+            # Save survivors if this trial stored them and is the new best
+            if trial.number == study.best_trial.number:
+                survivors = trial.user_attrs.get("bidirectional_survivors")
+                if survivors and len(survivors) > 0:
+                    temp_surv = _patch_Path(output_survivors_path).with_suffix(".tmp")
+                    with open(temp_surv, "w") as f:
+                        _patch_json.dump(survivors, f)
+                    temp_surv.rename(output_survivors_path)
+                    print(f"[SAVE] Trial {trial.number}: {len(survivors)} survivors saved")
+        else:
+            progress["note"] = "No successful trials yet"
+            temp_path = _patch_Path(output_config_path).with_suffix(".tmp")
+            with open(temp_path, "w") as f:
+                _patch_json.dump(progress, f, indent=2)
+            temp_path.rename(output_config_path)
+    
+    return save_best_so_far
+
+
+def finalize_incremental_output(study, output_config_path: str = "optimal_window_config.json"):
+    """Mark output as complete after study.optimize() finishes."""
+    config_path = _patch_Path(output_config_path)
+    if not config_path.exists():
+        return
+    
+    with open(config_path, "r") as f:
+        config = _patch_json.load(f)
+    
+    config["status"] = "complete"
+    config["completed_at"] = _patch_datetime.now().isoformat()
+    
+    with open(config_path, "w") as f:
+        _patch_json.dump(config, f, indent=2)
+    
+    print(f"[SAVE] Finalized {output_config_path} (status=complete)")
 
 
 # ============================================================================
@@ -224,6 +317,11 @@ class OptunaBayesianSearch:
             all_results.append(result)
             score = scorer.score(result)
             
+            # Store result data for incremental callback
+            trial.set_user_attr("bidirectional_survivors", 
+                               getattr(result, 'bidirectional_survivors', []))
+            trial.set_user_attr("result_dict", result.to_dict())
+            
             # Track best
             nonlocal best_result, best_score
             if score > best_score:
@@ -257,8 +355,16 @@ class OptunaBayesianSearch:
         )
         print(f"   📊 Optuna study saved to: optuna_studies/{study_name}.db")
         
-        # Run optimization
-        study.optimize(optuna_objective, n_trials=max_iterations)
+        # Run optimization with incremental save callback
+        _incremental_callback = create_incremental_save_callback(
+            output_config_path="optimal_window_config.json",
+            output_survivors_path="bidirectional_survivors.json",
+            total_trials=max_iterations
+        )
+        study.optimize(optuna_objective, n_trials=max_iterations, callbacks=[_incremental_callback])
+        
+        # Finalize output (mark status=complete)
+        finalize_incremental_output(study, "optimal_window_config.json")
         
         # Print summary
         print(f"\n{'='*80}")
