@@ -1,4 +1,143 @@
 #!/bin/bash
+
+# =============================================================================
+# NPZ AUTO-CONVERSION BLOCK (Inserted by install_npz_auto_conversion.sh)
+# Date: 20260119_195923
+# Team Beta Approved: January 19, 2026
+# =============================================================================
+
+set -euo pipefail  # Fail-fast, no undefined vars, pipe failures
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+SURVIVORS="bidirectional_survivors_binary.npz"
+JSON_SOURCE="bidirectional_survivors.json"
+TMP_NPZ="${SURVIVORS%.npz}.tmp.$$.npz"
+CONFIG_FILE="distributed_config.json"
+REMOTE_DIR="distributed_prng_analysis"
+
+trap 'rm -f "$TMP_NPZ"' EXIT
+
+# -----------------------------------------------------------------------------
+# Extract remote nodes from distributed_config.json (no hardcoding)
+# -----------------------------------------------------------------------------
+get_remote_nodes() {
+    python3 << 'PYEOF'
+import json
+import sys
+
+CONFIG_FILE = "distributed_config.json"
+
+try:
+    with open(CONFIG_FILE) as f:
+        config = json.load(f)
+    
+    nodes = config.get("nodes", [])
+    for node in nodes:
+        hostname = node.get("hostname", "")
+        if hostname and hostname != "localhost" and not hostname.startswith("127."):
+            print(hostname)
+except FileNotFoundError:
+    print(f"ERROR: {CONFIG_FILE} not found", file=sys.stderr)
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"ERROR: Invalid JSON in {CONFIG_FILE}: {e}", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+# -----------------------------------------------------------------------------
+# NPZ Conversion Function (atomic write)
+# -----------------------------------------------------------------------------
+convert_to_npz() {
+    echo "============================================"
+    echo "NPZ Conversion Required"
+    echo "============================================"
+    
+    if [ ! -f "$JSON_SOURCE" ]; then
+        echo "ERROR: $JSON_SOURCE not found!"
+        echo "Run Step 1 (window_optimizer.py) first."
+        exit 1
+    fi
+    
+    echo "Converting $JSON_SOURCE → $SURVIVORS (atomic)..."
+    rm -f "$TMP_NPZ"
+    
+    if ! python3 convert_survivors_to_binary.py "$JSON_SOURCE" --output "$TMP_NPZ"; then
+        echo "ERROR: NPZ conversion failed!"
+        exit 1
+    fi
+    
+    if [ ! -s "$TMP_NPZ" ]; then
+        echo "ERROR: Conversion produced empty or missing file!"
+        exit 1
+    fi
+    
+    mv "$TMP_NPZ" "$SURVIVORS"
+    echo "✓ Conversion complete: $SURVIVORS"
+}
+
+# -----------------------------------------------------------------------------
+# Distribute NPZ to Remote Nodes
+# -----------------------------------------------------------------------------
+distribute_npz() {
+    echo ""
+    echo "Distributing NPZ to remote nodes..."
+    
+    local nodes
+    nodes=$(get_remote_nodes)
+    
+    if [ -z "$nodes" ]; then
+        echo "WARNING: No remote nodes found in $CONFIG_FILE"
+        echo "Skipping distribution (localhost-only mode)."
+        return 0
+    fi
+    
+    local failed=0
+    for node in $nodes; do
+        echo -n "  → $node: "
+        if scp -q "$SURVIVORS" "${node}:~/${REMOTE_DIR}/" 2>/dev/null; then
+            echo "✓"
+        else
+            echo "✗ FAILED"
+            failed=1
+        fi
+    done
+    
+    if [ $failed -ne 0 ]; then
+        echo "ERROR: Distribution failed to one or more nodes!"
+        echo "Cluster is in inconsistent state. Aborting."
+        exit 1
+    fi
+    
+    echo "✓ Distribution complete to all nodes."
+}
+
+# -----------------------------------------------------------------------------
+# Main: Auto-Convert if Needed
+# -----------------------------------------------------------------------------
+if [ ! -f "$SURVIVORS" ]; then
+    echo "NPZ file missing - conversion required."
+    convert_to_npz
+    distribute_npz
+elif [ "$JSON_SOURCE" -nt "$SURVIVORS" ]; then
+    echo "JSON newer than NPZ - reconversion required."
+    convert_to_npz
+    distribute_npz
+else
+    echo "NPZ file up-to-date, skipping conversion."
+fi
+
+echo "============================================"
+echo ""
+# =============================================================================
+# END NPZ AUTO-CONVERSION BLOCK
+# =============================================================================
+
 # run_scorer_meta_optimizer.sh (v2.2 - AUTO CODE PUSH + Legacy Option)
 # ============================
 # Runs the 26-GPU Scorer Meta-Optimization (Step 2.5).
