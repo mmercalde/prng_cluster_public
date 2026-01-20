@@ -126,7 +126,7 @@
     },
     "test_both_modes": {
       "type": "bool",
-      "default": false,
+      "default": true,
       "description": "Test BOTH constant AND variable skip patterns (V2.0 feature).",
       "optimized_by": "Manual",
       "effect": "Doubles search space but discovers variable skip patterns."
@@ -144,7 +144,8 @@
     "trials": 50,
     "max_seeds": 10000000,
     "prng_type": "java_lcg",
-    "output": "optimal_window_config.json"
+    "output": "optimal_window_config.json",
+    "test_both_modes": true
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
