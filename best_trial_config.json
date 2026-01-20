@@ -1,0 +1,10 @@
+{
+    "window_size": 4,
+    "offset": 34,
+    "skip_min": 5,
+    "skip_max": 246,
+    "sessions": ["evening", "midday"],
+    "prng_type": "java_lcg",
+    "forward_threshold": 0.482,
+    "reverse_threshold": 0.157
+}

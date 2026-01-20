@@ -148,8 +148,8 @@
 
 | Metric | Target | Current | Status |
 |--------|--------|---------|--------|
-| True seed in top-100 | ≤20 draws | - | 🔲 |
-| True seed in top-20 | ≤50 draws | - | 🔲 |
+| Hit Rate (Top-20) | > 5% | - | 🔲 |
+| Confidence Calibration | Correlation > 0.3 | - | 🔲 |
 | Confidence trend | Increasing | - | 🔲 |
 | Hit rate | >0.05 | - | 🔲 |
 

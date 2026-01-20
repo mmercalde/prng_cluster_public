@@ -308,10 +308,10 @@
 
 | Metric | Target | Current | Status |
 |--------|--------|---------|--------|
-| True seed in top-100 | ≤20 draws | - | 🔲 |
-| True seed in top-20 | ≤50 draws | - | 🔲 |
-| Confidence trend | Increasing | - | 🔲 |
-| Hit rate | >0.05 | - | 🔲 |
+| **Hit Rate** | >5% (better than random) | - | 🔲 |
+| **Confidence Calibration** | Correlation >0.3 | - | 🔲 |
+| **Hit Rate Improvement** | Increasing over N draws | - | 🔲 |
+| **Pattern Stability** | Consistent across PRNG types | - | 🔲 |
 
 ---
 

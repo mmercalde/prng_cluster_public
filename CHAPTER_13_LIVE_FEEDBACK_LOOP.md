@@ -270,21 +270,23 @@ def inject_synthetic_draw():
 ### Validation Purpose
 
 With known `true_seed`:
-- System should "find" the correct pattern
-- True seed should rise in survivor rankings over iterations
-- Validates learning loop actually learns
+- System generates **consistent, reproducible test sequences**
+- Allows measurement of whether pattern learning improves over iterations
+- Validates that the feedback loop actually learns surface patterns
+
+> **Note:** The `true_seed` is used for reproducible test data generation, NOT as a discovery target. The system learns output patterns, not seed values.
 
 ### Convergence Expectation
 
-> **With a correct PRNG hypothesis, the true seed should enter the top-K survivors within N synthetic draws.**
+> **With a correct PRNG hypothesis, learned patterns should produce measurable prediction lift over random baseline.**
 
 | Metric | Target | Failure Indicates |
 |--------|--------|-------------------|
-| True seed in top-100 | ≤ 20 draws | Feature construction issue |
-| True seed in top-20 | ≤ 50 draws | Learning loop issue |
-| Confidence on true seed | Increasing trend | Calibration issue |
+| Hit Rate (Top-20) | > 5% (vs 0.1% random) | Pattern extraction not working |
+| Confidence Calibration | Correlation > 0.3 | Confidence scores meaningless |
+| Hit Rate Trend | Non-decreasing over N draws | Learning loop not improving |
 
-This provides a quantitative pass/fail test for the learning loop.
+This provides a quantitative pass/fail test for functional mimicry quality.
 
 ### Safety: Test Mode Gating
 
