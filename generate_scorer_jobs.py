@@ -24,6 +24,22 @@ import argparse
 from pathlib import Path
 
 
+# ============================================================
+# RAMDISK PATH HELPER (Team Beta Approved 2026-01-20)
+# ============================================================
+RAMDISK_PATH = "/dev/shm/prng"
+USE_RAMDISK_FOR_REMOTES = True  # Set False to disable
+
+def get_remote_data_path(filename):
+    """Return ramdisk path for remote nodes."""
+    if USE_RAMDISK_FOR_REMOTES:
+        return f"{RAMDISK_PATH}/{filename}"
+    else:
+        return f"/home/michael/distributed_prng_analysis/{filename}"
+# ============================================================
+
+
+
 def define_search_space(trial: optuna.Trial, sample_size: int = 25000):
     """
     Define the search space for scorer meta-optimization.

@@ -241,6 +241,53 @@ for node in 192.168.3.120 192.168.3.154; do
 done
 echo "Data copied to remote nodes"
 
+# ============================================================
+# RAMDISK PRELOAD (Team Beta Approved 2026-01-20)
+# Eliminates disk I/O contention during worker startup
+# ============================================================
+echo ""
+echo "[INFO] Preloading data to RAM disk on remote nodes..."
+
+# Extract remote nodes from distributed_config.json (single source of truth)
+REMOTE_NODES=$(python3 -c "
+import json
+with open('distributed_config.json') as f:
+    cfg = json.load(f)
+for node in cfg['nodes']:
+    if node['hostname'] != 'localhost':
+        print(node['hostname'])
+")
+
+for REMOTE in $REMOTE_NODES; do
+    echo "  → $REMOTE"
+    
+    # Sanity check: verify /dev/shm is available
+    ssh "$REMOTE" "df -h /dev/shm | grep -q shm" || {
+        echo "    ⚠️  WARNING: /dev/shm not available on $REMOTE, skipping ramdisk"
+        continue
+    }
+    
+    # Copy-once guard: only copy if .ready sentinel missing
+    ssh "$REMOTE" "
+        mkdir -p /dev/shm/prng &&
+        if [ ! -f /dev/shm/prng/.ready ]; then
+            cp ~/distributed_prng_analysis/bidirectional_survivors_binary.npz /dev/shm/prng/ &&
+            cp ~/distributed_prng_analysis/train_history.json /dev/shm/prng/ &&
+            cp ~/distributed_prng_analysis/holdout_history.json /dev/shm/prng/ &&
+            cp ~/distributed_prng_analysis/scorer_jobs.json /dev/shm/prng/ 2>/dev/null || true &&
+            touch /dev/shm/prng/.ready &&
+            echo '    ✓ Ramdisk preload complete'
+        else
+            echo '    ✓ Ramdisk already loaded (skipped)'
+        fi
+    "
+done
+
+echo "[INFO] Ramdisk preload phase complete"
+echo ""
+# ============================================================
+
+
 # CRITICAL: Push latest code so all 26 GPUs use the correct version
 echo "Pushing latest survivor_scorer.py and reinforcement_engine.py to all remote nodes..."
 for node in 192.168.3.120 192.168.3.154; do

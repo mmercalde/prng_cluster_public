@@ -53,7 +53,7 @@ After training ML models (Step 5), we need to understand:
 | **3 Importance Methods** | Permutation, Gradient, SHAP |
 | **4 Model Types** | Neural Net, XGBoost, LightGBM, CatBoost |
 | **13 Chart Types** | Bar, radar, heatmap, waterfall, etc. |
-| **AI Interpretation** | LLM-powered analysis via Qwen2.5-Math |
+| **AI Interpretation** | LLM-powered analysis via DeepSeek-R1-14B + Claude backup |
 | **Export Formats** | PNG, HTML (interactive), JSON, CSV |
 
 ---
@@ -760,12 +760,12 @@ def interactive_dashboard(self):
 def generate_ai_interpretation(
     importance: Dict[str, float],
     model_metrics: Dict[str, float],
-    llm_endpoint: str = "http://localhost:8081/v1/completions"
+    llm_endpoint: str = "http://localhost:8080/completion"
 ) -> str:
     """
-    Generate AI-powered interpretation using Qwen2.5-Math.
+    Generate AI-powered interpretation using DeepSeek-R1-14B.
     
-    Uses the Math LLM for statistical reasoning about features.
+    Uses DeepSeek-R1-14B (primary) with Claude backup for statistical reasoning about features.
     """
     import requests
     
@@ -806,7 +806,7 @@ Provide a concise statistical interpretation."""
 ### 10.2 Example AI Interpretation
 
 ```
-AI Interpretation (Qwen2.5-Math-7B):
+AI Interpretation (DeepSeek-R1-14B):
 ────────────────────────────────────
 The feature importance distribution shows a HEALTHY pattern:
 
@@ -1081,7 +1081,7 @@ else:
 - 3 importance methods for different use cases
 - 13 chart types cover all visualization needs
 - Circular feature detection prevents overfitting
-- AI interpretation via Qwen2.5-Math
+- AI interpretation via DeepSeek-R1-14B + Claude backup
 - Export to PNG, HTML (interactive), JSON
 
 ---

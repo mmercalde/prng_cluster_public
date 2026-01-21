@@ -77,6 +77,17 @@ STAGGER_LOCALHOST = 3.0   # seconds - CUDA init collision prevention
 STAGGER_REMOTE = 2.0      # seconds - ROCm needs less separation
 
 ROCM_HOSTNAMES = ['192.168.3.120', '192.168.3.154', 'rig-6600', 'rig-6600b']
+# =============================================================================
+# JOB BATCHING (Team Beta Approved - 2026-01-20)
+# =============================================================================
+# Prevents rig overload when dispatching large trial counts.
+# Mirrors benchmark_sample_sizes_v2.sh proven behavior.
+
+MAX_JOBS_PER_BATCH = 20          # Validated stable limit (benchmark: 100% success)
+MAX_JOBS_PER_NODE_PER_BATCH = 6   # ROCm nodes crash with >6 simultaneous HIP inits
+INTER_BATCH_COOLDOWN = 5.0       # Seconds between batches
+ENABLE_ALLOCATOR_RESET = True    # Reset memory between batches (drop_caches)
+
 
 MANIFEST_VERSION = "1.0.0"
 SCRIPT_JOB_SPEC_VERSION = "1.0"
@@ -324,6 +335,33 @@ class ScriptsCoordinator:
         
         return assignments
     
+    def _reset_allocator_state(self):
+        """
+        Reset memory allocator on remote ROCm nodes.
+        
+        Mirrors benchmark_sample_sizes_v2.sh behavior:
+        - sync filesystems
+        - drop page cache (echo 3 > drop_caches)
+        
+        Note: localhost reset intentionally skipped (CUDA manages its own memory).
+        """
+        if not ENABLE_ALLOCATOR_RESET:
+            return
+            
+        print("  Resetting allocator state on ROCm nodes...")
+        for node in self.nodes:
+            if not node.is_localhost:
+                try:
+                    subprocess.run(
+                        ['ssh', f'{node.username}@{node.hostname}',
+                         'sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true'],
+                        capture_output=True, timeout=10
+                    )
+                except Exception as e:
+                    print(f"    Warning: Failed to reset {node.hostname}: {e}")
+        time.sleep(2)  # Brief pause for stability
+        print("  Allocator reset complete")
+
     def run(self) -> Dict[str, Any]:
         """Execute all jobs and return results"""
         start_time = time.time()
@@ -379,22 +417,91 @@ class ScriptsCoordinator:
         print("Executing jobs...")
         print("-" * 60)
         
-        # Launch node executor threads
-        threads = []
-        for node in self.nodes:
-            node_jobs = assignments[node.hostname]
-            if node_jobs:
-                t = threading.Thread(
-                    target=self._node_executor,
-                    args=(node, node_jobs),
-                    name=f"executor-{node.hostname}"
-                )
-                threads.append(t)
-                t.start()
-        
-        # Wait for all threads
-        for t in threads:
-            t.join()
+        # Check if batching needed
+        total_jobs = len(self.jobs)
+        if total_jobs > MAX_JOBS_PER_BATCH:
+            # Batched execution
+            num_batches = (total_jobs + MAX_JOBS_PER_BATCH - 1) // MAX_JOBS_PER_BATCH
+            print(f"  [BATCH MODE] {total_jobs} jobs → {num_batches} batches of ≤{MAX_JOBS_PER_BATCH}")
+            
+            # Build job queues per node
+            node_queues = {}
+            for node in self.nodes:
+                node_queues[node.hostname] = list(assignments[node.hostname])
+            
+            # Form batches respecting per-node limits
+            all_batches = []
+            while any(node_queues.values()):
+                batch = []
+                for node in self.nodes:
+                    queue = node_queues[node.hostname]
+                    take = min(len(queue), MAX_JOBS_PER_NODE_PER_BATCH)
+                    for _ in range(take):
+                        if len(batch) < MAX_JOBS_PER_BATCH:
+                            batch.append((node, queue.pop(0)))
+                if batch:
+                    all_batches.append(batch)
+            
+            num_batches = len(all_batches)
+            print(f"  [BATCH MODE] {total_jobs} jobs → {num_batches} batches (max {MAX_JOBS_PER_NODE_PER_BATCH}/node)")
+            
+            # Process batches
+            for batch_num, batch_jobs in enumerate(all_batches):
+                
+                print(f"\n  {'='*50}")
+                print(f"  [BATCH {batch_num + 1}/{num_batches}] {len(batch_jobs)} jobs")
+                print(f"  {'='*50}")
+                
+                # Reset allocator before batch (except first)
+                if batch_num > 0:
+                    self._reset_allocator_state()
+                    print(f"  Cooling down {INTER_BATCH_COOLDOWN}s...")
+                    time.sleep(INTER_BATCH_COOLDOWN)
+                
+                # Group batch jobs by node
+                batch_by_node = {}
+                for node, job in batch_jobs:
+                    if node.hostname not in batch_by_node:
+                        batch_by_node[node.hostname] = []
+                    batch_by_node[node.hostname].append(job)
+                
+                # Launch node executor threads for this batch
+                threads = []
+                for node in self.nodes:
+                    node_jobs = batch_by_node.get(node.hostname, [])
+                    if node_jobs:
+                        t = threading.Thread(
+                            target=self._node_executor,
+                            args=(node, node_jobs),
+                            name=f"executor-{node.hostname}-batch{batch_num}"
+                        )
+                        threads.append(t)
+                        t.start()
+                
+                # Wait for batch to complete
+                for t in threads:
+                    t.join()
+                
+                # Batch summary
+                batch_successful = sum(1 for r in self.results[-len(batch_jobs):] if r.success)
+                print(f"  [BATCH {batch_num + 1}] Complete: {batch_successful}/{len(batch_jobs)} successful")
+        else:
+            # Original non-batched execution for small job counts
+            threads = []
+            for node in self.nodes:
+                node_jobs = assignments[node.hostname]
+                if node_jobs:
+                    t = threading.Thread(
+                        target=self._node_executor,
+                        args=(node, node_jobs),
+                        name=f"executor-{node.hostname}"
+                    )
+                    threads.append(t)
+                    t.start()
+            
+            # Wait for all threads
+            for t in threads:
+                t.join()
         
         # Retry failures on localhost
         if self.failed_jobs and self.max_retries > 0:
