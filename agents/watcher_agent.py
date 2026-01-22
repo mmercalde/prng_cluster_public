@@ -101,9 +101,9 @@ FILE_VALIDATION_CONFIG = {
     },
     "json_required_keys": {
         "optimal_window_config*.json": ["window_size", "offset"],
-        "optimal_scorer_config*.json": ["best_trial"],
+        "optimal_scorer_config*.json": ["residue_mod_1"],
         "best_model*.meta.json": ["model_type", "feature_schema"],
-        "reinforcement_engine_config*.json": ["survivor_count"],
+        "reinforcement_engine_config*.json": ["survivor_pool"],
         "predictions*.json": ["predictions"],
         "prediction_pool*.json": ["predictions"],
     }
