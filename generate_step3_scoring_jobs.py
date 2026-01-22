@@ -181,8 +181,8 @@ def generate_jobs(
         
         # Remote paths (will be copied by run_full_scoring.sh)
         remote_chunk_path = f"{remote_base_path}/scoring_chunks/{chunk_filename}"
-        remote_history_path = f"{remote_base_path}/{Path(train_history_file).name}"
-        remote_holdout_path = f"{remote_base_path}/{Path(holdout_history_file).name}"
+        remote_history_path = f"/dev/shm/prng/step3/{Path(train_history_file).name}"
+        remote_holdout_path = f"/dev/shm/prng/step3/{Path(holdout_history_file).name}"
         remote_output_path = f"{remote_base_path}/full_scoring_results/chunk_{i:04d}.json"
         
         # Build job arguments
