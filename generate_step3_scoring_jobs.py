@@ -58,6 +58,10 @@ def extract_seeds(survivors_data: Any) -> List[int]:
     - Flat list: [12345, 67890, ...]
     - Object list: [{"seed": 12345}, {"candidate_seed": 67890}, ...]
     """
+    # Handle NPZ dict format with 'seeds' key
+    if isinstance(survivors_data, dict) and 'seeds' in survivors_data:
+        return [int(s) for s in survivors_data['seeds']]
+    
     if not survivors_data:
         return []
     
