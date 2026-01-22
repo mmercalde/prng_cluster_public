@@ -39,6 +39,28 @@ preload_ramdisk \
     train_history.json \
     holdout_history.json
 
+# ============================================================================
+# Python Interpreter Binding (MANDATORY)
+# ============================================================================
+PYTHON_LOCAL=$(python3 - << 'EOF'
+import json
+with open("distributed_config.json") as f:
+    cfg = json.load(f)
+for node in cfg["nodes"]:
+    if node["hostname"] == "localhost":
+        print(node["python_env"])
+        break
+EOF
+)
+
+if [ -z "$PYTHON_LOCAL" ] || [ ! -x "$PYTHON_LOCAL" ]; then
+    echo "❌ Failed to resolve local Python interpreter"
+    exit 1
+fi
+
+export PYTHON_LOCAL
+echo "[INFO] Using Python interpreter: $PYTHON_LOCAL"
+
 
 # Default values
 SURVIVORS_FILE="bidirectional_survivors_binary.npz"
@@ -49,7 +71,7 @@ CHUNK_SIZE=auto
 FORWARD_SURVIVORS=""
 REVERSE_SURVIVORS=""
 DRY_RUN=false
-REMOTE_NODES=$(python3 -c "
+REMOTE_NODES=$("$PYTHON_LOCAL" -c "
 import json
 with open('distributed_config.json') as f:
     cfg = json.load(f)
@@ -135,7 +157,7 @@ echo "Phase 1: Generating job specifications..."
 echo "------------------------------------------------------------"
 
 # Build generate command
-GEN_CMD="python3 generate_step3_scoring_jobs.py \
+GEN_CMD=""$PYTHON_LOCAL" generate_step3_scoring_jobs.py \
     --survivors $SURVIVORS_FILE \
     --train-history $TRAIN_HISTORY \
     --holdout-history $HOLDOUT_HISTORY \
@@ -160,7 +182,7 @@ if [[ ! -f "scoring_jobs.json" ]]; then
     exit 1
 fi
 
-NUM_JOBS=$(python3 -c "import json; print(len(json.load(open('scoring_jobs.json'))))")
+NUM_JOBS=$("$PYTHON_LOCAL" -c "import json; print(len(json.load(open('scoring_jobs.json'))))")
 echo "✓ Generated $NUM_JOBS jobs"
 
 if [[ "$DRY_RUN" == "true" ]]; then
@@ -201,7 +223,7 @@ echo "Phase 3: Executing distributed jobs..."
 echo "------------------------------------------------------------"
 
 # UPDATED: Use scripts_coordinator.py instead of coordinator.py
-python3 scripts_coordinator.py --jobs-file scoring_jobs.json --config distributed_config.json
+"$PYTHON_LOCAL" scripts_coordinator.py --jobs-file scoring_jobs.json --config distributed_config.json
 
 echo "✓ Job execution complete"
 
@@ -250,7 +272,7 @@ echo "Phase 5: Aggregating results..."
 echo "------------------------------------------------------------"
 
 # Aggregation script (Python inline for portability)
-TRAIN_HISTORY="$TRAIN_HISTORY" python3 << 'AGGREGATE_EOF'
+TRAIN_HISTORY="$TRAIN_HISTORY" "$PYTHON_LOCAL" << 'AGGREGATE_EOF'
 import json
 import sys
 import os
@@ -426,7 +448,7 @@ echo ""
 echo "Phase 6: Validating output format..."
 echo "------------------------------------------------------------"
 
-python3 << 'VALIDATE_EOF'
+"$PYTHON_LOCAL" << 'VALIDATE_EOF'
 import json
 import sys
 
