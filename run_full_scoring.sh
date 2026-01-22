@@ -1,13 +1,26 @@
 #!/bin/bash
 #
-# run_full_scoring.sh (v1.1)
+# run_full_scoring.sh (v1.2 - Ramdisk + NPZ)
 #
 # Runs the full distributed scoring (Step 3.5) across all 26 GPUs.
 # This script is called by the main workflow.
 # It takes the 'optimal_scorer_config.json' and scores ALL survivors.
 # v1.1: Adds final aggregation step.
+# v1.2: Ramdisk preload + NPZ format (Team Beta approved 2026-01-21)
 
 set -e
+
+# ============================================================================
+# Ramdisk Preload (Step 3 - Unified v2.0)
+# ============================================================================
+export RAMDISK_STEP_ID=3
+source ramdisk_preload.sh
+
+preload_ramdisk \
+    bidirectional_survivors_binary.npz \
+    optimal_scorer_config.json \
+    train_history.json \
+    holdout_history.json
 
 echo "================================================="
 echo "STEP 3.5: FULL DISTRIBUTED SCORING (26 GPUs)"
@@ -16,7 +29,7 @@ echo "================================================="
 # 1. Generate the jobs
 echo "Generating scoring jobs from optimal config..."
 python3 generate_full_scoring_jobs.py \
-    --survivors bidirectional_survivors.json \
+    --survivors bidirectional_survivors_binary.npz \
     --config optimal_scorer_config.json \
     --train-history train_history.json \
     --holdout-history holdout_history.json \
@@ -29,15 +42,27 @@ if [ "$JOB_COUNT" -eq 0 ]; then
 fi
 echo "✅ Generated $JOB_COUNT scoring jobs."
 
-# 2. Copy data (chunks + history) to remote nodes
-echo "Copying input data and new seed chunks to remote nodes..."
-CHUNK_FILES=$(ls chunk_scoring_seeds_*.json)
+# 2. Copy chunk files to remote nodes (static files via ramdisk)
+echo "Copying chunk files to remote nodes..."
+mapfile -t CHUNK_FILES < <(ls -1 chunk_scoring_seeds_*.json 2>/dev/null || true)
 
-for node in 192.168.3.120 192.168.3.154; do
-    echo "  → $node"
-    scp -q train_history.json holdout_history.json $CHUNK_FILES $node:~/distributed_prng_analysis/
-done
-echo "✅ Data copied to remote nodes."
+if [ "${#CHUNK_FILES[@]}" -eq 0 ]; then
+    echo "  (no chunk files found; skipping SCP)"
+else
+    REMOTE_NODES=$(python3 -c "
+import json
+with open('distributed_config.json') as f:
+    cfg = json.load(f)
+for node in cfg['nodes']:
+    if node['hostname'] != 'localhost':
+        print(node['hostname'])
+")
+    for node in $REMOTE_NODES; do
+        echo "  → $node (chunks only; static files via ramdisk)"
+        scp -q "${CHUNK_FILES[@]}" "$node:~/distributed_prng_analysis/"
+    done
+fi
+echo "✅ Chunk files copied to remote nodes."
 
 # 3. Launch jobs via coordinator
 echo "Launching $JOB_COUNT jobs via coordinator.py..."
