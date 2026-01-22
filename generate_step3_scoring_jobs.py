@@ -133,7 +133,8 @@ def generate_jobs(
     
     # Load survivors
     print(f"Loading survivors from {survivors_file}...")
-    survivors_data = load_json(survivors_file)
+    result = load_survivors(survivors_file)
+    survivors_data = result.data if hasattr(result, "data") else result
     seeds = extract_seeds(survivors_data)
     print(f"  Loaded {len(seeds)} survivor seeds")
     
