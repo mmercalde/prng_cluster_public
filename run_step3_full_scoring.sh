@@ -27,8 +27,21 @@
 
 set -e  # Exit on error
 
+# ============================================================================
+# Ramdisk Preload (Step 3 - Unified v2.0)
+# ============================================================================
+export RAMDISK_STEP_ID=3
+source ramdisk_preload.sh
+
+preload_ramdisk \
+    bidirectional_survivors_binary.npz \
+    optimal_scorer_config.json \
+    train_history.json \
+    holdout_history.json
+
+
 # Default values
-SURVIVORS_FILE="bidirectional_survivors.json"
+SURVIVORS_FILE="bidirectional_survivors_binary.npz"
 TRAIN_HISTORY="train_history.json"
 HOLDOUT_HISTORY="holdout_history.json"
 CONFIG_FILE="optimal_scorer_config.json"
@@ -36,7 +49,14 @@ CHUNK_SIZE=auto
 FORWARD_SURVIVORS=""
 REVERSE_SURVIVORS=""
 DRY_RUN=false
-REMOTE_NODES="192.168.3.120 192.168.3.154"
+REMOTE_NODES=$(python3 -c "
+import json
+with open('distributed_config.json') as f:
+    cfg = json.load(f)
+for node in cfg['nodes']:
+    if node['hostname'] != 'localhost':
+        print(node['hostname'])
+")
 REMOTE_USER="michael"
 REMOTE_BASE="/home/michael/distributed_prng_analysis"
 
@@ -151,11 +171,12 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 # ============================================================================
-# Phase 2: Distribute Data to Remote Nodes
+# Phase 2: Distribute Chunk Files to Remote Nodes (static files via ramdisk)
 # ============================================================================
 echo ""
-echo "Phase 2: Distributing data to remote nodes..."
+echo "Phase 2: Distributing chunk files to remote nodes..."
 echo "------------------------------------------------------------"
+echo "  (Static files preloaded via ramdisk - skipping SCP)"
 
 for NODE in $REMOTE_NODES; do
     echo "  → $NODE"
@@ -164,29 +185,13 @@ for NODE in $REMOTE_NODES; do
     ssh ${REMOTE_USER}@${NODE} "mkdir -p ${REMOTE_BASE}/scoring_chunks" 2>/dev/null || true
     ssh ${REMOTE_USER}@${NODE} "mkdir -p ${REMOTE_BASE}/full_scoring_results" 2>/dev/null || true
     
-    # Copy required files
-    echo "    Copying survivors file..."
-    scp -q "$SURVIVORS_FILE" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    
-    echo "    Copying training history..."
-    scp -q "$TRAIN_HISTORY" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    
-    echo "    Copying holdout history..."
-    scp -q "$HOLDOUT_HISTORY" ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    
+    # Copy only chunk files (static files via ramdisk)
     echo "    Copying chunk files..."
     scp -q scoring_chunks/*.json ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/scoring_chunks/ 2>/dev/null || true
     
-    echo "    Copying full_scoring_worker.py..."
-    scp -q full_scoring_worker.py ${REMOTE_USER}@${NODE}:${REMOTE_BASE}/
-    
-    # v1.9.1: Removed forward/reverse survivor file copying (1.7GB)
-    # Metadata is already embedded in chunk files
-    
-    echo "    ✓ Data distributed to $NODE"
+    echo "    ✓ Chunks distributed to $NODE"
 done
-
-echo "✓ Data distribution complete"
+echo "✓ Chunk distribution complete"
 
 # ============================================================================
 # Phase 3: Execute Distributed Jobs (UPDATED: uses scripts_coordinator.py)
