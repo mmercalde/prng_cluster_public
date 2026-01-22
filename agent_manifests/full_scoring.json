@@ -5,7 +5,7 @@
   "version": "1.3.0",
   "feature_registry": "config_manifests/feature_registry.json",
   "inputs": [
-    "bidirectional_survivors.json",
+    "bidirectional_survivors_binary.npz",
     "optimal_scorer_config.json",
     "lottery_file"
   ],
@@ -108,7 +108,7 @@
     "max_scoring_failures": 10
   },
   "default_params": {
-    "survivors": "bidirectional_survivors.json",
+    "survivors": "bidirectional_survivors_binary.npz",
     "config": "optimal_scorer_config.json",
     "train_history": "train_history.json",
     "holdout_history": "holdout_history.json",
