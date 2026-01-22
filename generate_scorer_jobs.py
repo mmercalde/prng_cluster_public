@@ -25,17 +25,18 @@ from pathlib import Path
 
 
 # ============================================================
-# RAMDISK PATH HELPER (Team Beta Approved 2026-01-20)
+# UNIFIED RAMDISK PATH (Team Beta Approved 2026-01-20 - Option A)
+# All nodes use /dev/shm/prng for job data (unified path)
 # ============================================================
-RAMDISK_PATH = "/dev/shm/prng"
-USE_RAMDISK_FOR_REMOTES = True  # Set False to disable
+USE_RAMDISK = True  # Set False to use SSD paths
 
-def get_remote_data_path(filename):
-    """Return ramdisk path for remote nodes."""
-    if USE_RAMDISK_FOR_REMOTES:
-        return f"{RAMDISK_PATH}/{filename}"
-    else:
-        return f"/home/michael/distributed_prng_analysis/{filename}"
+if USE_RAMDISK:
+    # Unified Ramdisk v2.0 - Per-step directories (Team Beta A1)
+    RAMDISK_BASE = "/dev/shm/prng"
+    STEP_ID = 2
+    DATA_ROOT = f"{RAMDISK_BASE}/step{STEP_ID}"
+else:
+    DATA_ROOT = "/home/michael/distributed_prng_analysis"
 # ============================================================
 
 
@@ -109,7 +110,7 @@ def main():
     print(f"Pruner settings: startup={pruner._n_startup_trials}, warmup={pruner._n_warmup_steps}")
     print(f"Sample size: {args.sample_size} seeds per trial")  # v3 addition
 
-    remote_data_path = "/home/michael/distributed_prng_analysis"
+    # Path now uses unified DATA_ROOT (ramdisk or SSD based on USE_RAMDISK flag)
     jobs = []
 
     for i in range(args.trials):
@@ -122,9 +123,9 @@ def main():
             "analysis_type": "script",
             "script": "scorer_trial_worker.py",
             "args": [
-                f"{remote_data_path}/{Path(args.survivors).name}",
-                f"{remote_data_path}/{Path(args.train_history).name}",
-                f"{remote_data_path}/{Path(args.holdout_history).name}",
+                f"{DATA_ROOT}/{Path(args.survivors).name}",
+                f"{DATA_ROOT}/{Path(args.train_history).name}",
+                f"{DATA_ROOT}/{Path(args.holdout_history).name}",
                 str(i),
                 json.dumps(params),
                 "--optuna-study-name", args.study_name,
