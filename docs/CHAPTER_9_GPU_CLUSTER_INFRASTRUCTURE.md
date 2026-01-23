@@ -616,3 +616,64 @@ cleanup: enabled                   # Best-effort GPU allocator cleanup between j
 4. ✅ Reboot rig if GPU shows persistent N/A state
 5. ❌ Do NOT reduce max_concurrent_script_jobs as first response
 
+
+---
+
+## 8.5 Ramdisk Deployment for Step 3
+
+**Added: 2026-01-22**
+
+Step 3 (Full Scoring) requires ramdisk files on all nodes before distributed execution.
+
+### Path Structure
+
+```
+/dev/shm/prng/step3/
+├── train_history.json      # ~28KB
+└── holdout_history.json    # ~7KB
+```
+
+### Deployment Commands
+
+```bash
+# From Zeus - deploy to all nodes
+for node in localhost 192.168.3.120 192.168.3.154; do
+    if [ "$node" = "localhost" ]; then
+        mkdir -p /dev/shm/prng/step3
+        cp train_history.json holdout_history.json /dev/shm/prng/step3/
+    else
+        ssh $node "mkdir -p /dev/shm/prng/step3"
+        scp train_history.json holdout_history.json $node:/dev/shm/prng/step3/
+    fi
+done
+```
+
+### Persistence Warning
+
+**Ramdisk (`/dev/shm`) does NOT survive reboot.**
+
+After any node reboot, you must repopulate the ramdisk before running Step 3.
+
+### Verification Script
+
+```bash
+#!/bin/bash
+# verify_step3_ramdisk.sh
+echo "=== Ramdisk Status ==="
+for node in localhost 192.168.3.120 192.168.3.154; do
+    echo -n "$node: "
+    if [ "$node" = "localhost" ]; then
+        ls /dev/shm/prng/step3/*.json 2>/dev/null | wc -l | xargs -I{} echo "{} files"
+    else
+        ssh $node "ls /dev/shm/prng/step3/*.json 2>/dev/null | wc -l" | xargs -I{} echo "{} files"
+    fi
+done
+```
+
+**Expected output:**
+```
+localhost: 2 files
+192.168.3.120: 2 files
+192.168.3.154: 2 files
+```
+

@@ -542,6 +542,55 @@ cat watcher_decisions.jsonl | jq .
 
 ---
 
+---
+
+## 10.5 Ramdisk Preload Limitation
+
+**Added: 2026-01-22**
+
+### Standalone Mode Behavior
+
+When WATCHER runs Step 3, it performs ramdisk preload:
+
+```
+[INFO] Ramdisk preload for Step 3 (4 files)...
+[INFO] Target: /dev/shm/prng/step3
+[INFO] Standalone mode
+[INFO] Ramdisk preload complete
+```
+
+**"Standalone mode" means:** Only the local node (Zeus) is populated.
+
+Remote nodes (rig-6600, rig-6600b) are **NOT** automatically populated.
+
+### Impact on Distributed Execution
+
+| Node | Ramdisk Populated | Jobs Will... |
+|------|-------------------|--------------|
+| Zeus (local) | ✅ Yes | Work |
+| rig-6600 | ❌ No | Fail immediately |
+| rig-6600b | ❌ No | Fail immediately |
+
+### Workaround
+
+Before running Step 3 via WATCHER, manually populate remote ramdisks:
+
+```bash
+# Run on Zeus before WATCHER pipeline
+for node in 192.168.3.120 192.168.3.154; do
+    ssh $node "mkdir -p /dev/shm/prng/step3"
+    scp train_history.json holdout_history.json $node:/dev/shm/prng/step3/
+done
+```
+
+### Future Enhancement
+
+TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
+1. Detect distributed mode
+2. SCP files to all configured nodes in `distributed_config.json`
+3. Verify files exist before proceeding
+
+
 ## 11. Chapter Summary
 
 **Chapter 12: WATCHER Agent & Fingerprint Registry** covers:

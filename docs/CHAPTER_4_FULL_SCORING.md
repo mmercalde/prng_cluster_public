@@ -146,6 +146,67 @@ def entropy(p, q=None, *args, **kwargs):
 
 ---
 
+---
+
+## 2.5 Ramdisk Prerequisites (CRITICAL)
+
+**Added: 2026-01-22**
+
+Step 3 jobs expect training data at `/dev/shm/prng/step3/` on **ALL nodes**.
+
+### Required Files
+
+| File | Purpose |
+|------|---------|
+| `train_history.json` | Training draws for scoring |
+| `holdout_history.json` | Holdout draws for validation |
+
+### Why Ramdisk?
+
+Jobs reference paths like `/dev/shm/prng/step3/train_history.json` to avoid:
+- Disk I/O contention with 12 concurrent GPU jobs
+- NFS/network latency on distributed nodes
+- JSON parsing overhead on repeated loads
+
+### Verification (Before Running Step 3)
+
+```bash
+# Check all nodes
+ssh 192.168.3.120 "ls -la /dev/shm/prng/step3/"
+ssh 192.168.3.154 "ls -la /dev/shm/prng/step3/"
+ls -la /dev/shm/prng/step3/  # Zeus
+```
+
+**Expected:** Both files present on all three nodes.
+
+### Manual Population (If Missing)
+
+```bash
+# On Zeus
+mkdir -p /dev/shm/prng/step3
+cp train_history.json holdout_history.json /dev/shm/prng/step3/
+
+# On rig-6600
+ssh 192.168.3.120 "mkdir -p /dev/shm/prng/step3"
+scp train_history.json holdout_history.json 192.168.3.120:/dev/shm/prng/step3/
+
+# On rig-6600b
+ssh 192.168.3.154 "mkdir -p /dev/shm/prng/step3"
+scp train_history.json holdout_history.json 192.168.3.154:/dev/shm/prng/step3/
+```
+
+### Automatic Preload
+
+The WATCHER agent runs ramdisk preload but in **"Standalone mode"** — it only populates the local node. For distributed execution, you must manually populate remote nodes or run the preload script on each node.
+
+### Common Failure Pattern
+
+If Step 3 jobs fail instantly (~3 seconds) with no output file:
+1. Check ramdisk exists on failing node
+2. Worker expects `--train-history /dev/shm/prng/step3/train_history.json`
+3. Missing file = immediate argument parsing failure
+
+
 ## 3. Constants and Configuration
 
 ### 3.1 Default Constants
