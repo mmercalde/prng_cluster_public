@@ -78,15 +78,96 @@ STAGGER_REMOTE = 2.0      # seconds - ROCm needs less separation
 
 ROCM_HOSTNAMES = ['192.168.3.120', '192.168.3.154', 'rig-6600', 'rig-6600b']
 # =============================================================================
-# JOB BATCHING (Team Beta Approved - 2026-01-20)
+# JOB BATCHING (Team Beta Approved - 2026-01-22)
 # =============================================================================
 # Prevents rig overload when dispatching large trial counts.
-# Mirrors benchmark_sample_sizes_v2.sh proven behavior.
+# Step-aware batching: Step 3 is 6-7x heavier than Step 2.5.
+#
+# TEAM BETA RULING (2026-01-22):
+#   Step 3 exceeded validated envelope with cap=6 (GPU unknown states, crashes)
+#   Step 3: cap=2, cooldown=10s
+#   Step 2.5: cap=6, cooldown=5s (unchanged)
 
 MAX_JOBS_PER_BATCH = 20          # Validated stable limit (benchmark: 100% success)
-MAX_JOBS_PER_NODE_PER_BATCH = 6   # ROCm nodes crash with >6 simultaneous HIP inits
-INTER_BATCH_COOLDOWN = 5.0       # Seconds between batches
 ENABLE_ALLOCATOR_RESET = True    # Reset memory between batches (drop_caches)
+
+# Step 2.5 and other steps (default)
+DEFAULT_MAX_JOBS_PER_NODE_PER_BATCH = 6   # ROCm nodes crash with >6 simultaneous HIP inits
+DEFAULT_INTER_BATCH_COOLDOWN = 5.0        # Seconds between batches
+
+# Step 3 (Full Scoring) - heavier workload requires conservative limits
+STEP3_MAX_JOBS_PER_NODE_PER_BATCH = 12     # Full GPU utilization (12 per node)
+STEP3_INTER_BATCH_COOLDOWN = 5.0         # Standard cooldown (5s)
+
+# Legacy aliases (for backward compatibility with any direct references)
+MAX_JOBS_PER_NODE_PER_BATCH = DEFAULT_MAX_JOBS_PER_NODE_PER_BATCH
+INTER_BATCH_COOLDOWN = DEFAULT_INTER_BATCH_COOLDOWN
+
+# =============================================================================
+# STEP DETECTION (Team Beta - 2026-01-22)
+# =============================================================================
+
+def detect_job_step(jobs_file: str, jobs: list = None) -> str:
+    """
+    Detect which pipeline step these jobs belong to.
+    
+    Returns:
+        'step3' for Full Scoring jobs
+        'step2.5' for Scorer Meta-Optimizer jobs
+        'unknown' for other job types
+    
+    Detection methods (in priority order):
+    1. Explicit 'job_type' field in job spec
+    2. Jobs file name pattern
+    3. Script name in job command
+    """
+    jobs_file_lower = jobs_file.lower() if jobs_file else ''
+    
+    # Method 1: Check job specs for explicit job_type
+    if jobs:
+        for job in jobs[:5]:  # Check first 5 jobs
+            job_type = job.get('job_type', '')
+            if job_type == 'full_scoring':
+                return 'step3'
+            elif job_type == 'scorer_trial':
+                return 'step2.5'
+    
+    # Method 2: Jobs file name pattern
+    if 'scoring_jobs' in jobs_file_lower and 'scorer' not in jobs_file_lower:
+        return 'step3'
+    if 'full_scoring' in jobs_file_lower:
+        return 'step3'
+    if 'scorer_jobs' in jobs_file_lower or 'scorer_trial' in jobs_file_lower:
+        return 'step2.5'
+    
+    # Method 3: Check script names in jobs
+    if jobs:
+        for job in jobs[:5]:
+            cmd = job.get('command', '') or job.get('script', '')
+            if 'full_scoring_worker' in cmd:
+                return 'step3'
+            if 'scorer_trial_worker' in cmd:
+                return 'step2.5'
+    
+    return 'unknown'
+
+
+def get_step_aware_limits(step: str) -> tuple:
+    """
+    Get batching limits for the detected step.
+    
+    Returns:
+        (max_jobs_per_node, cooldown_seconds, step_name)
+    """
+    if step == 'step3':
+        return (STEP3_MAX_JOBS_PER_NODE_PER_BATCH, 
+                STEP3_INTER_BATCH_COOLDOWN,
+                'Step 3 (Full Scoring)')
+    else:
+        return (DEFAULT_MAX_JOBS_PER_NODE_PER_BATCH,
+                DEFAULT_INTER_BATCH_COOLDOWN,
+                f'Step 2.5/Other ({step})')
+
 
 
 MANIFEST_VERSION = "1.0.0"
@@ -420,22 +501,28 @@ class ScriptsCoordinator:
         # Check if batching needed
         total_jobs = len(self.jobs)
         if total_jobs > MAX_JOBS_PER_BATCH:
+            # Step-aware batching (Team Beta 2026-01-22)
+            detected_step = detect_job_step(self.jobs_file, self.jobs)
+            effective_max_per_node, effective_cooldown, step_name = get_step_aware_limits(detected_step)
+            
             # Batched execution
             num_batches = (total_jobs + MAX_JOBS_PER_BATCH - 1) // MAX_JOBS_PER_BATCH
             print(f"  [BATCH MODE] {total_jobs} jobs → {num_batches} batches of ≤{MAX_JOBS_PER_BATCH}")
+            print(f"  [STEP-AWARE] Detected: {step_name}")
+            print(f"  [STEP-AWARE] Limits: max_per_node={effective_max_per_node}, cooldown={effective_cooldown}s")
             
             # Build job queues per node
             node_queues = {}
             for node in self.nodes:
                 node_queues[node.hostname] = list(assignments[node.hostname])
             
-            # Form batches respecting per-node limits
+            # Form batches respecting per-node limits (using step-aware value)
             all_batches = []
             while any(node_queues.values()):
                 batch = []
                 for node in self.nodes:
                     queue = node_queues[node.hostname]
-                    take = min(len(queue), MAX_JOBS_PER_NODE_PER_BATCH)
+                    take = min(len(queue), effective_max_per_node)
                     for _ in range(take):
                         if len(batch) < MAX_JOBS_PER_BATCH:
                             batch.append((node, queue.pop(0)))
@@ -443,7 +530,7 @@ class ScriptsCoordinator:
                     all_batches.append(batch)
             
             num_batches = len(all_batches)
-            print(f"  [BATCH MODE] {total_jobs} jobs → {num_batches} batches (max {MAX_JOBS_PER_NODE_PER_BATCH}/node)")
+            print(f"  [BATCH MODE] {total_jobs} jobs → {num_batches} batches (max {effective_max_per_node}/node)")
             
             # Process batches
             for batch_num, batch_jobs in enumerate(all_batches):
@@ -455,8 +542,8 @@ class ScriptsCoordinator:
                 # Reset allocator before batch (except first)
                 if batch_num > 0:
                     self._reset_allocator_state()
-                    print(f"  Cooling down {INTER_BATCH_COOLDOWN}s...")
-                    time.sleep(INTER_BATCH_COOLDOWN)
+                    print(f"  Cooling down {effective_cooldown}s...")
+                    time.sleep(effective_cooldown)
                 
                 # Group batch jobs by node
                 batch_by_node = {}
