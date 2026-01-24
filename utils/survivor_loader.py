@@ -18,8 +18,11 @@ Usage:
     result = load_survivors("survivors.json", return_format="array")
     result = load_survivors("survivors.npz", return_format="dict")
 
-Version: 1.0.0
-Date: January 3, 2026
+Version History:
+  1.0.0 - Initial modular loader (Jan 3, 2026)
+  2.0.0 - NPZ v3.0 support: full metadata reconstruction (Jan 23, 2026)
+          Now reconstructs all 22 fields from NPZ v3.0 format
+          
 Approved: Team Beta
 """
 import json
@@ -29,8 +32,21 @@ from typing import Dict, List, Any, Union, Optional, Literal
 from dataclasses import dataclass
 import logging
 
+VERSION = "2.0.0"
+
 # Default logger
 _default_logger = logging.getLogger(__name__)
+
+# Categorical decodings (reverse of encoding in converter)
+SKIP_MODE_DECODING = {0: 'constant', 1: 'variable'}
+PRNG_TYPE_DECODING = {
+    0: 'java_lcg', 1: 'java_lcg_reverse',
+    2: 'mt19937', 3: 'mt19937_reverse',
+    4: 'xorshift128', 5: 'xorshift128_reverse',
+    6: 'lcg32', 7: 'lcg32_reverse',
+    8: 'minstd', 9: 'minstd_reverse',
+    10: 'randu', 11: 'randu_reverse',
+}
 
 
 @dataclass
@@ -44,15 +60,35 @@ class SurvivorData:
         source_path: Resolved absolute path that was loaded
         fallback_used: True if fell back from NPZ to JSON
         count: Number of survivors loaded
+        npz_version: NPZ schema version (1 or 3) if loaded from NPZ
     """
     data: Union[Dict[str, np.ndarray], List[Dict[str, Any]]]
     format: Literal["npz", "json"]
     source_path: str
     fallback_used: bool
     count: int
+    npz_version: Optional[int] = None
     
     def __repr__(self):
-        return f"SurvivorData(format={self.format}, count={self.count}, fallback={self.fallback_used})"
+        ver = f", npz_v{self.npz_version}" if self.npz_version else ""
+        return f"SurvivorData(format={self.format}{ver}, count={self.count}, fallback={self.fallback_used})"
+
+
+def detect_npz_version(data: Dict[str, np.ndarray]) -> int:
+    """
+    Detect NPZ schema version based on available arrays.
+    
+    v1: seeds, forward_matches, reverse_matches (3 arrays)
+    v3: All 22 metadata fields including skip_min, forward_count, etc.
+    """
+    keys = set(data.keys())
+    
+    # v3.0 has metadata fields
+    v3_indicators = {'skip_min', 'skip_max', 'forward_count', 'bidirectional_count'}
+    if v3_indicators.issubset(keys):
+        return 3
+    
+    return 1
 
 
 def load_survivors(
@@ -88,6 +124,7 @@ def load_survivors(
             - source_path: Resolved path that was loaded
             - fallback_used: True if fallback occurred
             - count: Number of survivors
+            - npz_version: 1 or 3 if loaded from NPZ
     
     Raises:
         FileNotFoundError: If file not found and no fallback available
@@ -170,9 +207,12 @@ def load_survivors(
     
     # === LOAD DATA ===
     
+    npz_version = None
     if source_format == "npz":
         raw_data = _load_npz(resolved_path)
+        npz_version = detect_npz_version(raw_data)
         native_format = "array"
+        log.debug(f"NPZ version detected: v{npz_version}")
     else:
         raw_data = _load_json(resolved_path)
         native_format = "dict"
@@ -184,7 +224,7 @@ def load_survivors(
     elif return_format == "array" and native_format == "dict":
         data = _dict_to_array(raw_data)
     elif return_format == "dict" and native_format == "array":
-        data = _array_to_dict(raw_data)
+        data = _array_to_dict(raw_data, npz_version)
     else:
         data = raw_data
     
@@ -202,7 +242,8 @@ def load_survivors(
         format=source_format,
         source_path=str(resolved_path.absolute()),
         fallback_used=fallback_used,
-        count=count
+        count=count,
+        npz_version=npz_version
     )
 
 
@@ -211,7 +252,7 @@ def _load_npz(path: Path) -> Dict[str, np.ndarray]:
     
     Handles multiple NPZ schemas:
     - v1: seeds, forward_matches, reverse_matches
-    - v2: seeds, scores, forward_count, reverse_count, + metadata
+    - v3: seeds + 21 metadata arrays (full preservation)
     """
     data = np.load(path, allow_pickle=True)
     
@@ -232,43 +273,92 @@ def _load_json(path: Path) -> List[Dict[str, Any]]:
 
 
 def _dict_to_array(survivors: List[Dict[str, Any]]) -> Dict[str, np.ndarray]:
-    """Convert list of dicts to numpy arrays."""
-    seeds = []
-    forward_matches = []
-    reverse_matches = []
+    """Convert list of dicts to numpy arrays.
     
+    v2.0: Now extracts all available fields, not just seeds/matches.
+    """
+    if not survivors:
+        return {'seeds': np.array([], dtype=np.uint32)}
+    
+    # Collect all numeric fields from first survivor
+    sample = survivors[0]
+    
+    # Core fields (always present)
+    seeds = []
+    
+    # Build arrays for all numeric fields
+    numeric_fields = {}
+    for key, val in sample.items():
+        if key == 'seed':
+            continue  # Handled separately
+        if isinstance(val, (int, float)):
+            numeric_fields[key] = []
+    
+    # Extract values
     for s in survivors:
         if isinstance(s, dict):
             seeds.append(s.get('seed', s.get('candidate_seed', 0)))
-            forward_matches.append(s.get('forward_match_rate', s.get('forward_match', 0.0)))
-            reverse_matches.append(s.get('reverse_match_rate', s.get('reverse_match', 0.0)))
+            for key in numeric_fields:
+                numeric_fields[key].append(s.get(key, 0.0))
         else:
             # Just a seed integer
             seeds.append(int(s))
-            forward_matches.append(0.0)
-            reverse_matches.append(0.0)
+            for key in numeric_fields:
+                numeric_fields[key].append(0.0)
     
-    return {
-        'seeds': np.array(seeds, dtype=np.uint32),
-        'forward_matches': np.array(forward_matches, dtype=np.float32),
-        'reverse_matches': np.array(reverse_matches, dtype=np.float32)
-    }
+    result = {'seeds': np.array(seeds, dtype=np.uint32)}
+    
+    for key, vals in numeric_fields.items():
+        # Determine dtype
+        if all(isinstance(v, int) and -2**31 <= v < 2**31 for v in vals):
+            result[key] = np.array(vals, dtype=np.int32)
+        else:
+            result[key] = np.array(vals, dtype=np.float32)
+    
+    return result
 
 
-def _array_to_dict(data: Dict[str, np.ndarray]) -> List[Dict[str, Any]]:
-    """Convert numpy arrays to list of dicts."""
-    return [
-        {
-            'seed': int(seed),
-            'forward_match_rate': float(fwd),
-            'reverse_match_rate': float(rev)
-        }
-        for seed, fwd, rev in zip(
-            data['seeds'],
-            data['forward_matches'],
-            data['reverse_matches']
-        )
-    ]
+def _array_to_dict(data: Dict[str, np.ndarray], npz_version: int = 1) -> List[Dict[str, Any]]:
+    """Convert numpy arrays to list of dicts.
+    
+    v2.0: Supports both v1 (3 fields) and v3 (22 fields) NPZ formats.
+    """
+    n = len(data['seeds'])
+    survivors = []
+    
+    for i in range(n):
+        survivor = {'seed': int(data['seeds'][i])}
+        
+        # Core match fields (v1 compatible)
+        if 'forward_matches' in data:
+            survivor['forward_matches'] = float(data['forward_matches'][i])
+        if 'reverse_matches' in data:
+            survivor['reverse_matches'] = float(data['reverse_matches'][i])
+        
+        # v3.0 metadata fields
+        if npz_version >= 3:
+            # Integer fields
+            for field in ['window_size', 'offset', 'trial_number', 'skip_min', 'skip_max', 'skip_range']:
+                if field in data:
+                    survivor[field] = int(data[field][i])
+            
+            # Float fields
+            for field in ['forward_count', 'reverse_count', 'bidirectional_count',
+                         'intersection_count', 'intersection_ratio', 'intersection_weight',
+                         'bidirectional_selectivity', 'forward_only_count', 'reverse_only_count',
+                         'survivor_overlap_ratio', 'score']:
+                if field in data:
+                    survivor[field] = float(data[field][i])
+            
+            # Categorical fields (decode from int)
+            if 'skip_mode' in data:
+                survivor['skip_mode'] = SKIP_MODE_DECODING.get(int(data['skip_mode'][i]), 'constant')
+            if 'prng_type' in data:
+                survivor['prng_type'] = PRNG_TYPE_DECODING.get(int(data['prng_type'][i]), 'java_lcg')
+        
+        survivors.append(survivor)
+    
+    return survivors
 
 
 # === CONVENIENCE FUNCTIONS ===
@@ -285,3 +375,15 @@ def get_survivor_count(path: str) -> int:
             return len(json.load(f))
     else:
         raise FileNotFoundError(f"Survivor file not found: {path}")
+
+
+def get_survivor_metadata(path: str) -> Dict[int, Dict[str, Any]]:
+    """
+    Load survivors and return as dict keyed by seed.
+    Useful for Step 3 metadata merge.
+    
+    Returns:
+        {seed_value: {field: value, ...}, ...}
+    """
+    result = load_survivors(path, return_format="dict")
+    return {s['seed']: s for s in result.data}
