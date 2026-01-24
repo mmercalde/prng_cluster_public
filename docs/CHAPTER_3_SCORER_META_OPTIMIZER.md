@@ -742,12 +742,14 @@ all_results = coord.collect_scorer_results(total_trials)
 
 | Format | File Size | Load Time |
 |--------|-----------|-----------|
-| JSON | 258 MB | 4.2s |
-| NPZ | 0.6 MB | 0.05s |
+| JSON | 57.9 MB | 4.2s |
+| NPZ v3.0 | 733 KB | 0.05s |
 
 **Conversion:**
 ```bash
 python3 convert_survivors_to_binary.py bidirectional_survivors.json
+
+**Note (Jan 23, 2026):** NPZ v3.0 preserves all 22 metadata fields. Earlier versions (v1/v2) only saved 3 arrays, causing 14/47 ML features to be zeroed in Step 3. Always use v3.0 for full feature extraction.
 ```
 
 ---

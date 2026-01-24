@@ -45,6 +45,7 @@ BUG FIX 2: Temporal stability optimization (reuse seq, no duplicate generation)
 BUG FIX 3: Team Beta's targeted VRAM limit for RX 6600 rigs only
 BUG FIX 4: Consolidated launch contention fix (PYTORCH_HIP_ALLOC_CONF)
 BUG FIX 5: Explicit two-step NumPy to GPU tensor transfer (ROCm stability)
+BUG FIX 6: NPZ v3.0 metadata preservation (Jan 23, 2026) - all 22 fields now loaded
 ```
 
 ### 1.3 Key Features
@@ -57,6 +58,7 @@ BUG FIX 5: Explicit two-step NumPy to GPU tensor transfer (ROCm stability)
 | **Batch Processing** | Vectorized scoring for entire pools |
 | **Memory Management** | VRAM limits for 8GB GPUs |
 | **Holdout Integration** | Computes y-label for Step 5 ML training |
+| **NPZ v3.0 Input** | Loads 22 metadata fields from binary format |
 
 ### 1.4 HOLDOUT_HITS Integration (v2.0)
 
