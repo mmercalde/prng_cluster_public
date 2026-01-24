@@ -91,6 +91,16 @@ ROCM_HOSTNAMES = ['192.168.3.120', '192.168.3.154', 'rig-6600', 'rig-6600b']
 MAX_JOBS_PER_BATCH = 20          # Validated stable limit (benchmark: 100% success)
 ENABLE_ALLOCATOR_RESET = True    # Reset memory between batches (drop_caches)
 
+# HIP kernel cache clear (Team Beta ruling: Jan 23, 2026)
+# Clears stale compiled kernels that cause "invalid device function" errors
+# Set CLEAR_HIP_CACHE=0 to disable, CLEAR_HIP_CACHE=force to clear even localhost
+CLEAR_HIP_CACHE = os.environ.get('CLEAR_HIP_CACHE', '1')  # Default ON for ROCm nodes
+
+# ROCm warm-up barrier (Team Beta: Jan 23, 2026)
+# Warms each GPU sequentially ONCE per node per run_id to reduce first-wave init/compile races
+# Set WARMUP_ROCM=0 to disable, WARMUP_ROCM=force to include localhost
+WARMUP_ROCM = os.environ.get('WARMUP_ROCM', '1')  # Default ON for ROCm nodes  # Default ON for ROCm nodes
+
 # Step 2.5 and other steps (default)
 DEFAULT_MAX_JOBS_PER_NODE_PER_BATCH = 6   # ROCm nodes crash with >6 simultaneous HIP inits
 DEFAULT_INTER_BATCH_COOLDOWN = 5.0        # Seconds between batches
@@ -226,6 +236,137 @@ class Job:
     chunk_file: str = ""
     seed_count: int = 0
     timeout: int = 7200
+
+
+def clear_hip_cache_on_nodes(nodes: List[NodeConfig], run_id: str) -> None:
+    """
+    Clear HIP kernel cache once per node per run_id.
+    
+    Team Beta ruling (Jan 23, 2026):
+    - B1: Once per node per run_id (NOT per batch/job)
+    - B2: Non-fatal/idempotent (ignore failures)
+    - B3: Configurable via CLEAR_HIP_CACHE env var
+    - B4: Synchronous (wait before first wave)
+    
+    Fixes: "HIP error: invalid device function" from stale compiled kernels
+    """
+    if CLEAR_HIP_CACHE == '0':
+        print("[PRE-FLIGHT] HIP cache clear disabled (CLEAR_HIP_CACHE=0)")
+        return
+    
+    print(f"[PRE-FLIGHT] HIP cache clear for run_id={run_id}")
+    
+    # Select nodes to clear
+    nodes_to_clear = []
+    for node in nodes:
+        # Skip localhost unless force mode
+        if node.hostname == 'localhost' and CLEAR_HIP_CACHE != 'force':
+            continue
+        # ROCm detection: simple and stable (Team Beta required)
+        is_rocm = 'rocm' in node.python_env.lower()
+        if is_rocm or CLEAR_HIP_CACHE == 'force':
+            nodes_to_clear.append(node)
+    
+    if not nodes_to_clear:
+        print("[PRE-FLIGHT] No ROCm nodes to clear HIP cache")
+        return
+    
+    node_names = [n.hostname for n in nodes_to_clear]
+    print(f"[PRE-FLIGHT] Clearing HIP cache (once per run) on: {', '.join(node_names)}")
+    
+    cache_clear_cmd = "rm -rf ~/.cache/hip ~/.cache/amd_comgr ~/.cache/kernels 2>/dev/null || true"
+    
+    for node in nodes_to_clear:
+        try:
+            result = subprocess.run(
+                ['ssh', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',
+                 f'{node.username}@{node.hostname}', cache_clear_cmd],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                print(f"[PRE-FLIGHT] {node.hostname}: cleared (ok)")
+            else:
+                print(f"[PRE-FLIGHT] {node.hostname}: cleared (warning: exit {result.returncode})")
+        except subprocess.TimeoutExpired:
+            print(f"[PRE-FLIGHT] {node.hostname}: timeout (continuing anyway)")
+        except Exception as e:
+            print(f"[PRE-FLIGHT] {node.hostname}: error {e} (continuing anyway)")
+
+
+def warmup_rocm_on_nodes(nodes: List[NodeConfig], run_id: str) -> None:
+    """
+    Warm ROCm GPUs sequentially once per node per run_id.
+
+    Goal: mitigate + diagnose first-wave transient failures caused by parallel HIP init
+    and/or concurrent kernel compilation.
+
+    Guardrails:
+    - W1: Once per node per run_id (called once in run() pre-flight)
+    - W2: Non-fatal/idempotent (ignore failures, log warning)
+    - W3: Configurable via WARMUP_ROCM env var
+    - W4: Synchronous barrier before first dispatch
+    """
+    if WARMUP_ROCM == '0':
+        print("[PRE-FLIGHT] ROCm warm-up disabled (WARMUP_ROCM=0)")
+        return
+
+    # Select ROCm nodes (same stable heuristic as HIP cache clear)
+    nodes_to_warm = []
+    for node in nodes:
+        if node.hostname == 'localhost' and WARMUP_ROCM != 'force':
+            continue
+        is_rocm = 'rocm' in node.python_env.lower()
+        if is_rocm or WARMUP_ROCM == 'force':
+            nodes_to_warm.append(node)
+
+    if not nodes_to_warm:
+        print("[PRE-FLIGHT] No ROCm nodes selected for warm-up")
+        return
+
+    node_names = [n.hostname for n in nodes_to_warm]
+    print(f"[PRE-FLIGHT] ROCm warm-up barrier for run_id={run_id}")
+    print(f"[PRE-FLIGHT] Warming GPUs sequentially on: {', '.join(node_names)}")
+
+    # Tiny matmul per GPU; sequential loop prevents init storm.
+    # Keep workload small but non-trivial to trigger kernel compile + synchronize.
+    remote_py = r"""
+import os
+os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+import torch
+n = torch.cuda.device_count()
+print(f'WARMUP gpu_count={n}')
+for i in range(n):
+    torch.cuda.set_device(i)
+    x = torch.randn(512, 512, device='cuda')
+    y = x @ x
+    torch.cuda.synchronize()
+print('WARMUP_OK')
+"""
+
+    for node in nodes_to_warm:
+        try:
+            # Run under node.python_env (venv python path from distributed_config.json)
+            cmd = (
+                f"{node.python_env} - << 'PY'\n"
+                f"{remote_py}\n"
+                f"PY"
+            )
+            result = subprocess.run(
+                ['ssh', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',
+                 f'{node.username}@{node.hostname}', cmd],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                # Print a compact success line; keep stdout trimmed for logs
+                print(f"[PRE-FLIGHT] {node.hostname}: warmup ok")
+            else:
+                print(f"[PRE-FLIGHT] {node.hostname}: warmup warning (exit {result.returncode})")
+                if result.stderr:
+                    print(f"[PRE-FLIGHT] {node.hostname}: stderr: {result.stderr.strip()[:300]}")
+        except subprocess.TimeoutExpired:
+            print(f"[PRE-FLIGHT] {node.hostname}: warmup timeout (continuing anyway)")
+        except Exception as e:
+            print(f"[PRE-FLIGHT] {node.hostname}: warmup error {e} (continuing anyway)")
 
 
 @dataclass
@@ -495,6 +636,11 @@ class ScriptsCoordinator:
             }
         
         print("-" * 60)
+        # Clear HIP cache once per run (Team Beta: Jan 23, 2026)
+        clear_hip_cache_on_nodes(self.nodes, self.run_id)
+        warmup_rocm_on_nodes(self.nodes, self.run_id)
+
+        
         print("Executing jobs...")
         print("-" * 60)
         
@@ -761,6 +907,10 @@ class ScriptsCoordinator:
                 print(f"  [DEBUG] STDOUT: {result.stdout[:500]}")
                 print(f"  [DEBUG] STDERR: {result.stderr[:500]}")
             
+            # DEBUG: Also capture stderr when file check fails
+            job_stderr = result.stderr if result else ""
+            job_stdout = result.stdout if result else ""
+
             # File-based success detection (Team Beta Recommendation 3)
             success, error, failure_mode = self._check_output(node, job.expected_output)
             
@@ -774,13 +924,18 @@ class ScriptsCoordinator:
                     output_file=job.expected_output
                 )
             else:
+                # DEBUG: Print stderr on job failure (Team Beta diagnostic)
+                if job_stderr:
+                    print(f"  [DEBUG] {job.job_id} failed - STDERR: {job_stderr[:500]}")
+                if job_stdout:
+                    print(f"  [DEBUG] {job.job_id} failed - STDOUT: {job_stdout[:500]}")
                 return JobResult(
                     job_id=job.job_id,
                     success=False,
                     node=node.hostname,
                     gpu_id=gpu_id,
                     runtime=runtime,
-                    error=error,
+                    error=error + (f" | stderr: {job_stderr[:200]}" if job_stderr else ""),
                     failure_mode=failure_mode
                 )
                 

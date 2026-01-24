@@ -52,28 +52,69 @@ def chunk_list(lst: List, chunk_size: int) -> List[List]:
 
 def extract_seeds(survivors_data: Any) -> List[int]:
     """
-    Extract seed values from various input formats.
-    
-    Supports:
-    - Flat list: [12345, 67890, ...]
-    - Object list: [{"seed": 12345}, {"candidate_seed": 67890}, ...]
+    Extract seed values only (for backward compatibility).
+    For Step 3, use extract_survivors_full() instead.
     """
-    # Handle NPZ dict format with 'seeds' key
+    survivors = extract_survivors_full(survivors_data)
+    return [s['seed'] for s in survivors]
+
+
+def extract_survivors_full(survivors_data: Any) -> List[Dict]:
+    """
+    Extract full survivor objects with all metadata.
+    
+    CRITICAL (Jan 23, 2026 - Team Beta):
+    Previous version discarded metadata, causing 14/47 ML features = 0.
+    Now preserves all fields from NPZ/JSON for chunk files.
+    
+    Returns:
+        List of dicts, each with 'seed' + all metadata fields
+    """
+    result = []
+    
+    # Handle NPZ dict format with arrays
     if isinstance(survivors_data, dict) and 'seeds' in survivors_data:
-        return [int(s) for s in survivors_data['seeds']]
+        seeds = survivors_data['seeds']
+        n = len(seeds)
+        keys = list(survivors_data.keys())
+        
+        for i in range(n):
+            obj = {}
+            for k in keys:
+                arr = survivors_data[k]
+                if hasattr(arr, '__len__') and len(arr) == n:
+                    val = arr[i]
+                    # Convert numpy types to Python native
+                    if hasattr(val, 'item'):
+                        val = val.item()
+                    # Rename 'seeds' to 'seed' for consistency
+                    key = 'seed' if k == 'seeds' else k
+                    obj[key] = val
+            result.append(obj)
+        
+        # GUARDRAIL: Fail if metadata was dropped
+        if result and len(result[0]) < 3:
+            raise ValueError(
+                f"METADATA LOSS DETECTED: Survivors have only {len(result[0])} fields. "
+                f"Expected 20+. Check NPZ version or loader."
+            )
+        
+        return result
     
-    if not survivors_data:
-        return []
+    # Handle list of dicts (JSON format)
+    if isinstance(survivors_data, list) and survivors_data:
+        if isinstance(survivors_data[0], dict):
+            for s in survivors_data:
+                obj = dict(s)
+                if 'candidate_seed' in obj and 'seed' not in obj:
+                    obj['seed'] = obj['candidate_seed']
+                result.append(obj)
+            return result
+        else:
+            # Plain integers - convert to minimal dicts
+            return [{'seed': int(s)} for s in survivors_data]
     
-    if isinstance(survivors_data[0], dict):
-        seeds = []
-        for s in survivors_data:
-            seed = s.get('seed', s.get('candidate_seed', s.get('survivor_seed')))
-            if seed is not None:
-                seeds.append(int(seed))
-        return seeds
-    else:
-        return [int(s) for s in survivors_data]
+    return result
 
 
 def calculate_smart_chunk_size(total_seeds: int, num_gpus: int = 26) -> int:
@@ -139,10 +180,21 @@ def generate_jobs(
     print(f"Loading survivors from {survivors_file}...")
     result = load_survivors(survivors_file)
     survivors_data = result.data if hasattr(result, "data") else result
-    seeds = extract_seeds(survivors_data)
-    print(f"  Loaded {len(seeds)} survivor seeds")
+    # Extract full survivor objects (with metadata) - NOT just seeds
+    survivors_full = extract_survivors_full(survivors_data)
+    seeds = [s['seed'] for s in survivors_full]
+    print(f"  Loaded {len(survivors_full)} survivors with metadata")
     
-    if not seeds:
+    # Verify metadata is present (guardrail)
+    if survivors_full:
+        field_count = len(survivors_full[0])
+        sample_keys = list(survivors_full[0].keys())[:6]
+        print(f"  Fields per survivor: {field_count}")
+        print(f"  Sample keys: {sample_keys}")
+        if field_count < 5:
+            print(f"  ⚠️  WARNING: Low field count - metadata may be missing!")
+    
+    if not survivors_full:
         raise ValueError("No survivor seeds found in input file")
     
     # Load config to get optimized parameters (if available)
@@ -156,10 +208,10 @@ def generate_jobs(
         
         print(f"  Using prng_type={prng_type}, mod={mod}")
     
-    # Split seeds into chunks
-    seed_chunks = chunk_list(seeds, chunk_size)
-    num_chunks = len(seed_chunks)
-    print(f"Split {len(seeds)} seeds into {num_chunks} chunks of ~{chunk_size} each")
+    # Split full survivor objects into chunks (preserves metadata)
+    survivor_chunks = chunk_list(survivors_full, chunk_size)
+    num_chunks = len(survivor_chunks)
+    print(f"Split {len(survivors_full)} survivors into {num_chunks} chunks of ~{chunk_size} each")
     
     # Create chunk files directory
     chunk_dir = Path("scoring_chunks")
@@ -171,7 +223,7 @@ def generate_jobs(
     
     jobs = []
     
-    for i, chunk in enumerate(seed_chunks):
+    for i, chunk in enumerate(survivor_chunks):
         # Save chunk to local file
         chunk_filename = f"chunk_{i:04d}.json"
         local_chunk_path = chunk_dir / chunk_filename
@@ -210,7 +262,7 @@ def generate_jobs(
             "script": "full_scoring_worker.py",  # <-- FIXED: Was scorer_trial_worker.py
             "args": args,
             "chunk_file": str(local_chunk_path),
-            "seed_count": len(chunk),
+            "seed_count": len(chunk),  # Now counting full survivor objects
             "expected_output": f"full_scoring_results/chunk_{i:04d}.json",
             "timeout": timeout
         }

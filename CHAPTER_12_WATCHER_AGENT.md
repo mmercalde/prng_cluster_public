@@ -2,8 +2,8 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.2.0  
-**Date:** January 23, 2026  
+**Version:** 1.1.0  
+**Date:** January 9, 2026  
 **Files:** `agents/watcher_agent.py`, `agents/watcher_registry_hooks.py`, `agents/fingerprint_registry.py`  
 **Purpose:** Autonomous pipeline orchestration with PRNG attempt tracking
 
@@ -156,7 +156,7 @@ decision, context = watcher.evaluate_results(
 
 The Watcher Agent uses **two dictionaries** to determine what to run for each step. Understanding both is essential for troubleshooting.
 
-#### 3.4.1 STEP_SCRIPTS (Lines 295-302)
+#### 3.4.1 STEP_SCRIPTS (Lines 136-145)
 
 **This dictionary defines what script is ACTUALLY EXECUTED:**
 
@@ -164,18 +164,14 @@ The Watcher Agent uses **two dictionaries** to determine what to run for each st
 STEP_SCRIPTS = {
     1: "window_optimizer.py",
     2: "run_scorer_meta_optimizer.sh",  # NOTE: .sh not .py (PULL architecture)
-    3: "run_step3_full_scoring.sh",     # v2.0.0 - uses scripts_coordinator.py
+    3: "generate_full_scoring_jobs.py",
     4: "adaptive_meta_optimizer.py",
     5: "meta_prediction_optimizer_anti_overfit.py",
-    6: "prediction_generator.py"
+    6: "reinforcement_engine.py"
 }
 ```
 
-**Step 3 Note:** `run_step3_full_scoring.sh` (v2.0.0) is the canonical script. It uses `scripts_coordinator.py` per the January 3, 2026 architectural ruling. The older `run_full_scoring.sh` (v1.2) is superseded.
-
-**Step 6 Note:** `prediction_generator.py` generates final predictions. `reinforcement_engine.py` is a different component (not used as a pipeline step script).
-
-#### 3.4.2 STEP_MANIFESTS (Lines 304-312)
+#### 3.4.2 STEP_MANIFESTS (Lines 147-155)
 
 **This dictionary defines where to load default parameters and evaluation criteria:**
 
@@ -214,22 +210,7 @@ RESULTS_DIR = Path("/shared/ml/scorer_evaluation_results") # Does not exist!
 
 **See Chapter 3 Section 3 for full PULL architecture details.**
 
-#### 3.4.4 Why Step 3 Uses `.sh` Instead of `.py`
-
-| Script | Architecture | Status |
-|--------|--------------|--------|
-| `run_full_scoring.sh` (v1.2) | Uses `coordinator.py` | ❌ **SUPERSEDED** |
-| `run_step3_full_scoring.sh` (v2.0.0) | Uses `scripts_coordinator.py` | ✅ **CORRECT** |
-
-**The v2.0.0 script provides:**
-- `scripts_coordinator.py` compliance (Jan 3, 2026 ruling)
-- Python interpreter binding (reduces failures)
-- GlobalStateTracker integration (14 additional features)
-- Run-scoped directories with manifest files
-- Validation phase (Phase 6)
-- Step-aware batching
-
-#### 3.4.5 How Execution Works (Line 948)
+#### 3.4.4 How Execution Works (Line 748)
 
 ```python
 def run_step(self, step: int):
@@ -245,7 +226,7 @@ def run_step(self, step: int):
     subprocess.run([script] + build_args(default_params))
 ```
 
-#### 3.4.6 Future Improvement
+#### 3.4.5 Future Improvement
 
 Currently `STEP_SCRIPTS` is hardcoded. A more robust design would read the script from the manifest's `actions[0].script` field:
 
@@ -539,7 +520,7 @@ python3 test_watcher_agent.py
 | "LLM unavailable" | Server not running | Use `--no-llm` or start LLM |
 | "Halt flag exists" | Previous halt | Remove `watcher_halt.flag` |
 | "Max retries exceeded" | Persistent failure | Review logs, fix root cause |
-| "/shared/ml/ not found" | Step 2 using wrong script | Ensure STEP_SCRIPTS[2] uses `.sh` not `.py` |
+| "/shared/ml/ not found" | Step 2 using wrong script | Ensure line 138 uses `.sh` not `.py` |
 
 ### 10.2 Debug Mode
 
@@ -558,6 +539,8 @@ cat watcher_decisions.jsonl | jq .
 | `watcher_history.json` | Run history summary |
 | `watcher_decisions.jsonl` | Detailed decision audit (JSONL) |
 | `logs/watcher_agent.log` | Application logs |
+
+---
 
 ---
 
@@ -607,7 +590,6 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 2. SCP files to all configured nodes in `distributed_config.json`
 3. Verify files exist before proceeding
 
----
 
 ## 11. Chapter Summary
 
@@ -615,7 +597,7 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 
 | Component | Lines | Purpose |
 |-----------|-------|---------|
-| `watcher_agent.py` | ~1000 | Main orchestrator |
+| `watcher_agent.py` | ~500 | Main orchestrator |
 | `watcher_registry_hooks.py` | ~350 | Registry integration |
 | `fingerprint_registry.py` | ~250 | Dataset tracking |
 | Agent manifests | 6 files | Step configurations |
@@ -626,22 +608,12 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 - Fingerprint Registry prevents redundant PRNG attempts
 - Safety controls ensure human oversight
 - All 6 pipeline steps validated and working
-- **STEP_SCRIPTS dict (line 295) determines actual script execution**
+- **STEP_SCRIPTS dict (line 136) determines actual script execution**
 - **Step 2 must use `.sh` (PULL architecture) not `.py` (broken NFS paths)**
-- **Step 3 must use `run_step3_full_scoring.sh` (v2.0.0) not `run_full_scoring.sh` (v1.2)**
 
 ---
 
 ## 12. Changelog
-
-### v1.2.0 (January 23, 2026)
-- **CRITICAL FIX:** Corrected STEP_SCRIPTS in Section 3.4.1
-  - Step 3: `generate_full_scoring_jobs.py` → `run_step3_full_scoring.sh`
-  - Step 6: `reinforcement_engine.py` → `prediction_generator.py`
-- Fixed line number references (136 → 295)
-- Added Section 3.4.4: Why Step 3 uses `.sh` instead of `.py`
-- Added notes explaining Step 3 v2.0.0 and Step 6 script purposes
-- Updated Section 11 summary with correct line numbers
 
 ### v1.1.0 (January 9, 2026)
 - Added Section 3.4: Script Execution Mappings (CRITICAL)
