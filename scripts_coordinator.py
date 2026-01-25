@@ -136,7 +136,7 @@ def detect_job_step(jobs_file: str, jobs: list = None) -> str:
     # Method 1: Check job specs for explicit job_type
     if jobs:
         for job in jobs[:5]:  # Check first 5 jobs
-            job_type = job.get('job_type', '')
+            job_type = getattr(job, 'job_type', '')
             if job_type == 'full_scoring':
                 return 'step3'
             elif job_type == 'scorer_trial':
@@ -827,9 +827,10 @@ class ScriptsCoordinator:
         """Execute jobs in PARALLEL on a node (one worker per GPU)"""
         
         # Pre-assign jobs to GPUs (round-robin)
-        gpu_jobs = {i: [] for i in range(node.gpu_count)}
+        num_active_gpus = min(node.gpu_count, node.max_concurrent)
+        gpu_jobs = {i: [] for i in range(num_active_gpus)}
         for i, job in enumerate(jobs):
-            gpu_jobs[i % node.gpu_count].append(job)
+            gpu_jobs[i % num_active_gpus].append(job)
         
         def gpu_worker(gpu_id: int, job_list: List[Job]):
             """Execute jobs sequentially on one GPU"""
@@ -854,7 +855,7 @@ class ScriptsCoordinator:
                     print(f"      FAIL: {result.failure_mode}: {result.error}")
         
         # Run GPUs in parallel, limited by max_concurrent
-        active_gpus = [gid for gid, jlist in gpu_jobs.items() if jlist]
+        active_gpus = [gid for gid, jlist in gpu_jobs.items() if jlist][:node.max_concurrent]
         max_workers = min(len(active_gpus), node.max_concurrent)
         
         # Debug: Show parallel execution mode

@@ -2,8 +2,8 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.2.0  
-**Date:** January 23, 2026  
+**Version:** 1.3.0  
+**Date:** January 25, 2026  
 **Files:** `agents/watcher_agent.py`, `agents/watcher_registry_hooks.py`, `agents/fingerprint_registry.py`  
 **Purpose:** Autonomous pipeline orchestration with PRNG attempt tracking
 
@@ -259,6 +259,122 @@ script = manifest['actions'][0]['script']
 ```
 
 This would eliminate the dual-dictionary pattern and ensure consistency.
+
+
+## 3.5 Preflight & Cleanup Integration (v1.3.0)
+
+### 3.5.1 Overview
+
+As of v1.3.0, the WATCHER agent includes two integrated safety mechanisms:
+
+| Component | Purpose | Blocking? |
+|-----------|---------|-----------|
+| **Preflight Check** | Validates cluster before step execution | Yes (on critical failures) |
+| **GPU Cleanup** | Clears GPU memory after distributed steps | No (warnings only) |
+
+### 3.5.2 Preflight Check Integration
+
+**File:** `preflight_check.py`
+
+The preflight check runs automatically at the start of each step's `run_step()` method:
+
+```python
+# In run_step() - automatically called
+preflight_passed, preflight_msg = self._run_preflight_check(step)
+if not preflight_passed:
+    return {
+        "success": False,
+        "error": preflight_msg,
+        "blocked_by": "preflight_check"
+    }
+```
+
+**Checks Performed:**
+
+| Check | Method | Hard Block? |
+|-------|--------|-------------|
+| SSH connectivity | Ping each node | ✅ Yes |
+| Ramdisk files exist | Check `/dev/shm/prng/stepN/` | ✅ Yes |
+| Input files exist | Check required inputs | ✅ Yes |
+| GPU count matches config | Compare `rocm-smi` vs `distributed_config.json` | ⚠️ Warning only |
+
+**Failure Categories:**
+
+```python
+# Hard failures (block execution)
+hard_fail_keywords = ["ssh", "unreachable", "ramdisk", "input", "not found"]
+
+# Soft failures (warnings only)
+# - GPU count mismatch
+# - Non-critical validation errors
+```
+
+### 3.5.3 GPU Cleanup Integration
+
+**File:** `gpu_cleanup.py`
+
+GPU cleanup runs automatically after distributed steps (Steps 1, 2, 3):
+
+```python
+# In run_step() - automatically called after step completes
+DISTRIBUTED_STEPS = {1, 2, 3}
+
+def _run_post_step_cleanup(self, step: int) -> None:
+    if step not in DISTRIBUTED_STEPS:
+        return
+    # ... cleanup logic (never blocks)
+```
+
+**Behavior:**
+- Clears PyTorch/HIP allocator caches on ROCm nodes
+- Best-effort only - failures never block pipeline
+- Logs warnings if cleanup fails
+
+### 3.5.4 Module Availability
+
+Both integrations are optional - if modules aren't available, WATCHER proceeds normally:
+
+```python
+# Preflight
+try:
+    from preflight_check import PreflightChecker
+    PREFLIGHT_AVAILABLE = True
+except ImportError:
+    PREFLIGHT_AVAILABLE = False
+
+# GPU Cleanup
+try:
+    from gpu_cleanup import post_batch_cleanup, cleanup_all_nodes
+    GPU_CLEANUP_AVAILABLE = True
+except ImportError:
+    GPU_CLEANUP_AVAILABLE = False
+```
+
+### 3.5.5 Error Handling Examples
+
+**Example 1: SSH Failure (Hard Block)**
+```
+[ERROR] Preflight BLOCKED: SSH unreachable: 192.168.3.120
+Step 3 will NOT execute.
+```
+
+**Example 2: Ramdisk Missing (Hard Block)**
+```
+[ERROR] Preflight BLOCKED: Ramdisk not found: /dev/shm/prng/step3/train_history.json
+Step 3 will NOT execute.
+```
+
+**Example 3: GPU Count Mismatch (Warning Only)**
+```
+[WARNING] Preflight warnings: ['GPU_COUNT_MISMATCH: rig-6600 expected 12, found 10']
+Step 3 will execute (degraded capacity).
+```
+
+**Example 4: Cleanup Failure (Warning Only)**
+```
+[WARNING] [CLEANUP] Warning (non-blocking): Connection refused
+Pipeline continues normally.
+```
 
 ---
 
@@ -633,6 +749,12 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 ---
 
 ## 12. Changelog
+
+### v1.3.0 (January 25, 2026)
+- Added Section 3.5: Preflight & Cleanup Integration
+- Integrated `preflight_check.py` - validates cluster before step execution
+- Integrated `gpu_cleanup.py` - clears GPU memory after distributed steps
+- Hard blocks on SSH/ramdisk/input failures; warnings only for GPU count mismatches
 
 ### v1.2.0 (January 23, 2026)
 - **CRITICAL FIX:** Corrected STEP_SCRIPTS in Section 3.4.1

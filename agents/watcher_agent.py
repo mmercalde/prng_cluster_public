@@ -72,6 +72,24 @@ try:
     STEP_PROMPTS_AVAILABLE = True
 except ImportError:
     STEP_PROMPTS_AVAILABLE = False
+# Preflight Check Integration (Team Beta Item A)
+try:
+    from preflight_check import PreflightChecker
+    PREFLIGHT_AVAILABLE = True
+except ImportError:
+    PREFLIGHT_AVAILABLE = False
+    PreflightChecker = None
+
+# GPU Cleanup Integration (Team Beta Item C)
+try:
+    from gpu_cleanup import post_batch_cleanup, cleanup_all_nodes
+    GPU_CLEANUP_AVAILABLE = True
+except ImportError:
+    GPU_CLEANUP_AVAILABLE = False
+
+# Steps that use distributed GPU cluster (need cleanup)
+DISTRIBUTED_STEPS = {1, 2, 3}
+
 from agents.safety import KillSwitch, check_safety, create_halt, clear_halt
 from agents.pipeline import get_step_info
 from agents.doctrine import validate_decision_against_doctrine
@@ -927,6 +945,70 @@ class WatcherAgent:
         print("=" * 60 + "\n")
 
     # ════════════════════════════════════════════════════════════════════════
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PREFLIGHT AND CLEANUP HELPERS (Team Beta Integration)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def _run_preflight_check(self, step: int) -> Tuple[bool, str]:
+        """
+        Run preflight checks before executing a step.
+        
+        Returns:
+            (passed, message) - passed=False blocks step execution
+        """
+        if not PREFLIGHT_AVAILABLE:
+            logger.debug("Preflight check not available - skipping")
+            return True, "Preflight skipped (module not available)"
+        
+        try:
+            checker = PreflightChecker()
+            result = checker.check_all(step)
+            
+            # Categorize: SSH/ramdisk/input failures are hard blocks
+            # GPU count mismatches are warnings only
+            hard_fail_keywords = ["ssh", "unreachable", "ramdisk", "input", "not found"]
+            hard_failures = [
+                f for f in result.failures 
+                if any(kw in f.lower() for kw in hard_fail_keywords)
+            ]
+            
+            if hard_failures:
+                msg = f"Preflight BLOCKED: {'; '.join(hard_failures)}"
+                logger.error(msg)
+                return False, msg
+            
+            # Warnings only - proceed
+            if result.failures:
+                logger.warning(f"Preflight warnings: {result.failures}")
+            
+            return True, result.summary() if hasattr(result, "summary") else "OK"
+            
+        except Exception as e:
+            logger.warning(f"Preflight check error (non-blocking): {e}")
+            return True, f"Preflight error (proceeding anyway): {e}"
+
+    def _run_post_step_cleanup(self, step: int) -> None:
+        """
+        Run GPU cleanup after distributed steps.
+        This is best-effort only - failures never block the pipeline.
+        """
+        if step not in DISTRIBUTED_STEPS:
+            return
+        
+        if not GPU_CLEANUP_AVAILABLE:
+            logger.debug("GPU cleanup not available - skipping")
+            return
+        
+        try:
+            logger.info(f"[CLEANUP] Running post-step cleanup for Step {step}")
+            result = cleanup_all_nodes()
+            nodes_cleaned = result.get("nodes_cleaned", 0) if isinstance(result, dict) else 0
+            logger.info(f"[CLEANUP] Complete: {nodes_cleaned} nodes cleaned")
+        except Exception as e:
+            # Never block on cleanup failure
+            logger.warning(f"[CLEANUP] Warning (non-blocking): {e}")
+
     # STEP EXECUTION
     # ════════════════════════════════════════════════════════════════════════
 
@@ -951,6 +1033,15 @@ class WatcherAgent:
             return None
 
         logger.info(f"Running Step {step}: {script}")
+        # PREFLIGHT CHECK (Team Beta Item A)
+        preflight_passed, preflight_msg = self._run_preflight_check(step)
+        if not preflight_passed:
+            return {
+                "success": False,
+                "error": preflight_msg,
+                "blocked_by": "preflight_check"
+            }
+
 
         # Try to load default params from manifest
         default_params = {}
@@ -1033,6 +1124,9 @@ class WatcherAgent:
                     "return_code": result.returncode,
                     "error": result.stderr[:500]
                 }
+
+            # POST-STEP CLEANUP (Team Beta Item C)
+            self._run_post_step_cleanup(step)
 
             # Try to find and load results file
             results = self._find_results(step)
