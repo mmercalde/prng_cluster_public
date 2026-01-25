@@ -370,7 +370,7 @@ class PreflightChecker:
                 file_checks = " && ".join([f"test -f {ramdisk_path}/{f}" for f in required_files])
                 cmd = [
                     "ssh", "-o", f"ConnectTimeout={SSH_TIMEOUT_SECONDS}", hostname,
-                    
+                    "bash", "-c",
                     f"({file_checks}) && echo OK || echo MISSING"
                 ]
                 proc = subprocess.run(cmd, capture_output=True, timeout=RAMDISK_CHECK_TIMEOUT_SECONDS)
