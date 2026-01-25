@@ -677,3 +677,54 @@ localhost: 2 files
 192.168.3.154: 2 files
 ```
 
+
+
+---
+
+### 5.8 Configuration Location for chunk_size (CRITICAL)
+
+**Added: 2026-01-25** — Prevents OOM confusion.
+
+The `chunk_size=1000` memory-safe setting must be in **TWO places**:
+
+| File | Setting | Used By |
+|------|---------|---------|
+| `run_step3_full_scoring.sh` | `CHUNK_SIZE=1000` | Manual runs |
+| `agent_manifests/full_scoring.json` | `"chunk_size": 1000` | WATCHER automated runs |
+
+#### Why Two Places?
+
+- **Manual run:** `bash run_step3_full_scoring.sh` uses script's `CHUNK_SIZE=` variable
+- **WATCHER run:** Agent reads `default_params` from manifest, passes to script
+
+**Warning:** Manifest overrides script default! If WATCHER uses wrong chunk_size, check `agent_manifests/full_scoring.json` FIRST.
+
+#### Verification Commands
+
+```bash
+# Check both locations are in sync
+echo "=== Script default ==="
+grep "^CHUNK_SIZE=" run_step3_full_scoring.sh
+
+echo "=== Manifest default ==="
+grep '"chunk_size"' agent_manifests/full_scoring.json | head -1
+```
+
+**Expected output:**
+```
+=== Script default ===
+CHUNK_SIZE=1000
+=== Manifest default ===
+    "chunk_size": 1000,
+```
+
+#### If They Don't Match
+
+```bash
+# Fix manifest (authoritative for WATCHER)
+sed -i 's/"chunk_size": [0-9]*/"chunk_size": 1000/' agent_manifests/full_scoring.json
+
+# Fix script (authoritative for manual runs)
+sed -i 's/^CHUNK_SIZE=.*/CHUNK_SIZE=1000/' run_step3_full_scoring.sh
+```
+

@@ -627,3 +627,62 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 ---
 
 *End of Chapter 12: WATCHER Agent & Fingerprint Registry*
+
+
+---
+
+## 3.6 Manifest Parameter Precedence (CRITICAL)
+
+**Added: 2026-01-25** — Lesson learned from OOM debugging.
+
+### The Rule
+
+`agent_manifests/*.json` `default_params` **override** script defaults!
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 (highest) | CLI `--params '{...}'` | `--params '{"chunk_size": 500}'` |
+| 2 | `agent_manifests/*.json` `default_params` | `"chunk_size": 1000` |
+| 3 (lowest) | Script hardcoded default | `CHUNK_SIZE=5000` in .sh |
+
+### Why This Matters
+
+When WATCHER runs a step, it:
+1. Loads `agent_manifests/{step}.json`
+2. Reads `default_params` section
+3. Passes ALL params to the script
+4. Script's internal defaults are **never used**
+
+### Real Example (2026-01-25 OOM Bug)
+
+**Symptom:** Step 3 ran with `chunk_size=5000` despite script having `CHUNK_SIZE=1000`
+
+**Root cause:**
+```json
+// agent_manifests/full_scoring.json
+"default_params": {
+    "chunk_size": 5000,  // ← THIS overrode script default
+    ...
+}
+```
+
+**Fix:** Changed manifest to `"chunk_size": 1000`
+
+### Debugging Checklist
+
+When a WATCHER-run step uses unexpected parameters:
+
+1. ✅ Check `agent_manifests/{step}.json` `default_params` FIRST
+2. ✅ Check script hardcoded defaults SECOND
+3. ✅ Check CLI `--params` if passed
+
+### Best Practice
+
+Keep manifest `default_params` and script defaults **in sync**:
+
+```bash
+# Verify consistency
+grep "chunk_size" agent_manifests/full_scoring.json
+grep "CHUNK_SIZE" run_step3_full_scoring.sh
+```
+

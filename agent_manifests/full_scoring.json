@@ -112,7 +112,7 @@
     "config": "optimal_scorer_config.json",
     "train_history": "train_history.json",
     "holdout_history": "holdout_history.json",
-    "chunk_size": 5000,
+    "chunk_size": 1000,
     "jobs_file": "scoring_jobs.json",
     "prng_type": "java_lcg",
     "mod": 1000,
