@@ -54,6 +54,22 @@ check_ramdisk_headroom() {
     return 0
 }
 
+# B2: Verify required files actually exist (not just sentinel)
+verify_ramdisk_files() {
+    local node="$1"
+    shift
+    local files=("$@")
+    for f in "${files[@]}"; do
+        local bname=$(basename "$f")
+        if [ "$node" = "localhost" ]; then
+            [ ! -f "$RAMDISK_DIR/$bname" ] && return 1
+        else
+            ssh "$node" "[ ! -f $RAMDISK_DIR/$bname ]" 2>/dev/null && return 1
+        fi
+    done
+    return 0
+}
+
 # Main preload function
 preload_ramdisk() {
     local files=("$@")
@@ -71,8 +87,8 @@ preload_ramdisk() {
         
         if [ "$NODE" = "localhost" ]; then
             mkdir -p "$RAMDISK_DIR"
-            if [ -f "$RAMDISK_SENTINEL" ]; then
-                echo "    ✓ Already loaded (skipped)"
+            if [ -f "$RAMDISK_SENTINEL" ] && verify_ramdisk_files "localhost" "${files[@]}"; then
+                echo "    ✓ Already loaded (verified)"
                 continue
             fi
             [ -z "$watcher_managed" ] && rm -rf "${RAMDISK_DIR:?}"/* 2>/dev/null || true
@@ -84,8 +100,8 @@ preload_ramdisk() {
             echo "    ✓ Preloaded ($copied files)"
         else
             ssh "$NODE" "mkdir -p $RAMDISK_DIR" 2>/dev/null
-            if ssh "$NODE" "[ -f $RAMDISK_SENTINEL ]" 2>/dev/null; then
-                echo "    ✓ Already loaded (skipped)"
+            if ssh "$NODE" "[ -f $RAMDISK_SENTINEL ]" 2>/dev/null && verify_ramdisk_files "$NODE" "${files[@]}"; then
+                echo "    ✓ Already loaded (verified)"
                 continue
             fi
             [ -z "$watcher_managed" ] && ssh "$NODE" "rm -rf ${RAMDISK_DIR:?}/*" 2>/dev/null || true
