@@ -589,6 +589,18 @@ def add_window_optimizer_to_coordinator():
                 print(f"   Constant skip: {constant_count} survivors")
                 print(f"   Variable skip: {variable_count} survivors")
 
+
+            # Convert to NPZ binary format (required by Step 2)
+            from subprocess import run as subprocess_run, CalledProcessError
+            try:
+                subprocess_run(
+                    ["python3", "convert_survivors_to_binary.py", "bidirectional_survivors.json"],
+                    check=True
+                )
+                print(f"✅ Converted to bidirectional_survivors_binary.npz")
+            except CalledProcessError as e:
+                print(f"❌ NPZ conversion failed: {e}")
+                raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
             print(f"{'='*80}\n")
 
         except Exception as e:
