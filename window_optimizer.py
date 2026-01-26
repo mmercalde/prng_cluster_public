@@ -810,6 +810,19 @@ def run_with_config(
     print(f"✅ Saved {len(reverse_deduped):,} reverse survivors")
     print(f"✅ Saved {len(bidirectional_deduped):,} bidirectional survivors to {output_survivors}")
 
+    # Convert to NPZ binary format (required by Step 2)
+    from subprocess import run, CalledProcessError
+    try:
+        run(
+            ["python3", "convert_survivors_to_binary.py", output_survivors],
+            check=True
+        )
+        print(f"✅ Converted to {output_survivors.replace('.json', '_binary.npz')}")
+    except CalledProcessError as e:
+        print(f"❌ NPZ conversion failed: {e}")
+        raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
+
+
     # Split lottery data for train/holdout
     print("\n📊 Splitting lottery data...")
     with open(lottery_file, 'r') as f:
