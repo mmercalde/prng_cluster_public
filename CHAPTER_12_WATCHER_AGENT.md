@@ -686,3 +686,23 @@ grep "chunk_size" agent_manifests/full_scoring.json
 grep "CHUNK_SIZE" run_step3_full_scoring.sh
 ```
 
+
+### ⚠️ CRITICAL LESSON (2026-01-25)
+
+**When fixing params via CLI testing, ALWAYS update the manifest too!**
+
+| What Happens | CLI Run | WATCHER Run |
+|--------------|---------|-------------|
+| Config source | Script defaults / CLI args | Manifest `default_params` |
+| Your fix applies? | ✅ Yes | ❌ NO! |
+
+**Pattern that burns you:**
+1. Test via CLI: `python3 script.py --param 450` → Works!
+2. Update shell script: `--param 450` → Works!
+3. Run via WATCHER → Uses manifest's old value (25000) → Fails!
+
+**Fix:** After ANY successful CLI parameter tuning:
+```bash
+# Immediately update the manifest
+sed -i 's/"param": OLD/"param": NEW/' agent_manifests/step.json
+```
