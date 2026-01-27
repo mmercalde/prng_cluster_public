@@ -57,7 +57,14 @@ except ImportError:
 import numpy as np
 
 def _best_effort_gpu_cleanup():
-    """Clean GPU memory after job completion - safe, best-effort"""
+    """Clean GPU memory between chunks - safe, best-effort (Team Beta 2026-01-26)"""
+    # 1. Python GC first - drop refs before GPU cleanup
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    # 2. PyTorch/ROCm cache clear
     try:
         import torch
         if torch.cuda.is_available():
@@ -65,6 +72,7 @@ def _best_effort_gpu_cleanup():
             torch.cuda.empty_cache()
     except Exception:
         pass
+    # 3. CuPy memory pool release
     try:
         import cupy as cp
         cp.get_default_memory_pool().free_all_blocks()
@@ -219,6 +227,9 @@ class GPUSieve:
                             all_survivors.append(survivors[i])
                             all_match_rates.append(rate)
                             all_best_skips.append(skips[i])
+                # Inter-chunk cleanup (skip final chunk - Team Beta 2026-01-26)
+                if chunk_start + chunk_size < seed_end:
+                    _best_effort_gpu_cleanup()
                 total_tested += n_seeds
             duration_ms = (time.time() - start_time) * 1000
             # Build detailed survivor records
@@ -371,6 +382,9 @@ class GPUSieve:
                             all_strategy_ids.append(strat_ids[i])
                             skip_seq = skip_seqs[i, :k].tolist()
                             all_skip_sequences.append(skip_seq)
+                # Inter-chunk cleanup (skip final chunk - Team Beta 2026-01-26)
+                if chunk_start + chunk_size < seed_end:
+                    _best_effort_gpu_cleanup()
                 total_tested += n_seeds
             duration_ms = (time.time() - start_time) * 1000
             # Build detailed survivor records
