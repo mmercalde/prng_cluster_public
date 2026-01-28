@@ -340,6 +340,112 @@ STEP_NAMES = {
 }
 
 
+# =============================================================================
+# PHASE 1 PATCH v1.1.2 - Stale Output Detection (2026-01-27)
+# =============================================================================
+import os as _os_module
+from datetime import datetime as _datetime_module
+
+# Derive REPO_ROOT from this file's location (not os.getcwd())
+REPO_ROOT = _os_module.path.dirname(_os_module.path.dirname(_os_module.path.abspath(__file__)))
+
+# Preflight failure classification
+PREFLIGHT_HARD_FAILURES = [
+    "ssh", "unreachable", "connection refused", "connection timed out",
+    "no such file", "input file missing", "no gpus available",
+    "bidirectional_survivors_binary.npz not found",
+    "train_history.json not found", "holdout_history.json not found",
+    "primary input missing", "manifest missing"
+]
+
+PREFLIGHT_SOFT_FAILURES = [
+    "ramdisk", "gpu count", "mismatch", "remediation failed", "degraded"
+]
+
+
+def classify_preflight_failure(failure_msg: str) -> str:
+    """Classify preflight failure as HARD (block) or SOFT (warn + continue)."""
+    msg_lower = failure_msg.lower()
+    for keyword in PREFLIGHT_HARD_FAILURES:
+        if keyword in msg_lower:
+            return "HARD"
+    return "SOFT"
+
+
+def resolve_repo_path(p: str) -> str:
+    """Resolve path relative to REPO_ROOT."""
+    if _os_module.path.isabs(p):
+        return p
+    return _os_module.path.join(REPO_ROOT, p)
+
+
+def get_step_io_from_manifest(step: int) -> tuple:
+    """
+    Get required inputs and primary output from step manifest.
+    Returns: (required_inputs: List[str], primary_output: str)
+    Raises ValueError if manifest missing required fields.
+    """
+    import json
+    
+    manifest_name = STEP_MANIFESTS.get(step)
+    if not manifest_name:
+        raise ValueError(f"No manifest defined for step {step}")
+    
+    manifest_path = _os_module.path.join(REPO_ROOT, "agent_manifests", manifest_name)
+    if not _os_module.path.exists(manifest_path):
+        raise ValueError(f"Manifest not found: {manifest_path}")
+    
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    
+    required_inputs = manifest.get("required_inputs")
+    primary_output = manifest.get("primary_output")
+    
+    if not required_inputs:
+        raise ValueError(f"Manifest {manifest_name} missing 'required_inputs'")
+    if not primary_output:
+        raise ValueError(f"Manifest {manifest_name} missing 'primary_output'")
+    
+    required_inputs = [resolve_repo_path(p) for p in required_inputs]
+    primary_output = resolve_repo_path(primary_output)
+    
+    return required_inputs, primary_output
+
+
+def check_output_freshness(step: int) -> tuple:
+    """
+    Check if output file is newer than all input files.
+    Returns: (is_fresh: bool, reason: str, is_hard_failure: bool)
+    
+    NOTE: Freshness != semantic correctness. Phase 2 adds sidecar validation.
+    """
+    try:
+        required_inputs, primary_output = get_step_io_from_manifest(step)
+    except ValueError as e:
+        return False, f"HARD: {e}", True
+    
+    # Check required inputs exist
+    for inp in required_inputs:
+        if not _os_module.path.exists(inp):
+            return False, f"HARD: Primary input missing: {inp}", True
+    
+    # Check output exists
+    if not _os_module.path.exists(primary_output):
+        return False, f"Output missing: {primary_output}", False
+    
+    output_mtime = _os_module.path.getmtime(primary_output)
+    output_time_str = _datetime_module.fromtimestamp(output_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Output must be newer than ALL inputs
+    for inp in required_inputs:
+        input_mtime = _os_module.path.getmtime(inp)
+        if input_mtime > output_mtime:
+            input_time_str = _datetime_module.fromtimestamp(input_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            return False, f"STALE: {primary_output} ({output_time_str}) older than {inp} ({input_time_str})", False
+    
+    return True, f"Fresh: {primary_output} ({output_time_str})", False
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # WATCHER AGENT
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1048,6 +1154,29 @@ class WatcherAgent:
                 "error": preflight_msg,
                 "blocked_by": "preflight_check"
             }
+
+        # FRESHNESS CHECK (Phase 1 Patch v1.1.2)
+        is_fresh, freshness_msg, is_hard_freshness = check_output_freshness(step)
+        
+        if is_hard_freshness:
+            logger.error(f"Step {step} blocked by hard failure: {freshness_msg}")
+            return {
+                "success": False,
+                "error": freshness_msg,
+                "blocked_by": "freshness_hard_failure"
+            }
+        
+        if is_fresh:
+            if not preflight_passed:
+                # Soft failure + fresh output = skip with warning
+                warning_msg = f"⚠️ DEGRADED SKIP: Step {step} using existing output. Preflight: {preflight_msg}"
+                logger.warning(warning_msg)
+                print(warning_msg)
+            logger.info(f"Step {step}: {freshness_msg} - skipping (output is fresh)")
+            return {"success": True, "skipped": True, "reason": freshness_msg}
+        else:
+            logger.info(f"Step {step}: {freshness_msg} - will execute")
+
 
 
         # Try to load default params from manifest
