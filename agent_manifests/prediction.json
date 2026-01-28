@@ -3,6 +3,13 @@
   "description": "Step 6: Final prediction generation using trained ML model. Loads model type from best_model.meta.json sidecar (v3.2.1). Produces high-confidence prediction pools with statistical explanations. Now includes GlobalStateTracker for 14 global features.",
   "pipeline_step": 6,
   "version": "1.5.0",
+  "required_inputs": [
+    "models/reinforcement/best_model.meta.json",
+    "survivors_with_scores.json",
+    "forward_survivors.json",
+    "optimal_window_config.json"
+  ],
+  "primary_output": "predictions/next_draw_prediction.json",
   "feature_registry": "config_manifests/feature_registry.json",
   "inputs": [
     "models/reinforcement/best_model.meta.json",

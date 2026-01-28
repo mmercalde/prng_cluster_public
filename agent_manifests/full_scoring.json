@@ -3,6 +3,13 @@
   "description": "Step 3: Applies optimized scoring parameters from Step 2.5 to ALL survivors. Produces fully-scored survivor dataset for ML training.",
   "pipeline_step": 3,
   "version": "1.3.0",
+  "required_inputs": [
+    "bidirectional_survivors_binary.npz",
+    "optimal_scorer_config.json",
+    "train_history.json",
+    "holdout_history.json"
+  ],
+  "primary_output": "survivors_with_scores.json",
   "feature_registry": "config_manifests/feature_registry.json",
   "inputs": [
     "bidirectional_survivors_binary.npz",

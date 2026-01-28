@@ -3,6 +3,11 @@
   "description": "Step 4: Capacity & Architecture Planning. Derives optimal training parameters (survivor pool size, network depth, epochs) from window optimizer behavior and lottery pattern complexity. INTENTIONALLY does NOT consume survivor-level data - that happens in Step 5.",
   "pipeline_step": 4,
   "version": "2.0.0",
+  "required_inputs": [
+    "optimal_window_config.json",
+    "train_history.json"
+  ],
+  "primary_output": "reinforcement_engine_config.json",
   "design_note": "Step 4 is a CAPACITY PLANNER, not a data-aware optimizer. Model selection (neural_net/xgboost/lightgbm/catboost) happens in Step 5.",
   "inputs": [
     "optimal_window_config.json",

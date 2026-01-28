@@ -964,6 +964,13 @@ class WatcherAgent:
         try:
             checker = PreflightChecker()
             result = checker.check_all(step)
+
+            # DISPLAY FIX: Print preflight results visibly BEFORE Rich display
+            print("\n" + "="*70)
+            print(f"PREFLIGHT CHECK - Step {step}")
+            print("="*70)
+            print(result.summary())
+            print("="*70 + "\n")
             
             # Categorize: SSH/ramdisk/input failures are hard blocks
             # GPU count mismatches are warnings only
