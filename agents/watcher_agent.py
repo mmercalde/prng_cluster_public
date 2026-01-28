@@ -1149,11 +1149,17 @@ class WatcherAgent:
         # PREFLIGHT CHECK (Team Beta Item A)
         preflight_passed, preflight_msg = self._run_preflight_check(step)
         if not preflight_passed:
-            return {
-                "success": False,
-                "error": preflight_msg,
-                "blocked_by": "preflight_check"
-            }
+            failure_type = classify_preflight_failure(preflight_msg)
+            if failure_type == "HARD":
+                logger.error(f"Step {step} blocked by HARD preflight failure: {preflight_msg}")
+                return {
+                    "success": False,
+                    "error": preflight_msg,
+                    "blocked_by": "preflight_hard_failure"
+                }
+            else:
+                logger.warning(f"Step {step} SOFT preflight failure (continuing): {preflight_msg}")
+                print(f"⚠️ SOFT FAILURE: {preflight_msg} - continuing anyway")
 
         # FRESHNESS CHECK (Phase 1 Patch v1.1.2)
         is_fresh, freshness_msg, is_hard_freshness = check_output_freshness(step)
