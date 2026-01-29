@@ -190,3 +190,18 @@ for step in range(1, 7):
 ---
 
 *End of Phase 1 Addendum*
+
+---
+
+## Addendum: Step 6 Output Path Fix (2026-01-28)
+
+### Problem
+Manifest expected `predictions/next_draw_prediction.json`, but script saved to `results/predictions/predictions_YYYYMMDD.json`.
+
+### Team Beta Ruling: Option B
+- **Canonical:** `predictions/next_draw_prediction.json` (WATCHER contract)
+- **Archive:** `predictions/history/predictions_YYYYMMDD.json` (optional)
+
+### Files Modified
+- `prediction_generator.py` - `_save_predictions()` method
+- `agent_manifests/prediction.json` - `outputs`, `success_condition`
