@@ -18,10 +18,7 @@
     "optimal_window_config.json"
   ],
   "outputs": [
-    "prediction_pool.json",
-    "confidence_map.json",
-    "statistical_explanation.json",
-    "next_draw_recommendations.json"
+    "predictions/next_draw_prediction.json"
   ],
   "actions": [
     {
@@ -41,7 +38,7 @@
   ],
   "follow_up_agents": [],
   "success_condition": [
-    "results/predictions"
+    "predictions/next_draw_prediction.json"
   ],
   "retry": 2,
   "parameter_bounds": {

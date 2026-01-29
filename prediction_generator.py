@@ -802,13 +802,25 @@ class PredictionGenerator:
         return features_list
 
     def _save_predictions(self, result: Dict):
-        """Save predictions to JSON with agent metadata"""
-        output_dir = Path(self.config.predictions_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
+        """Save predictions to JSON with agent metadata
+        
+        Canonical output: predictions/next_draw_prediction.json
+        Archive (optional): predictions/history/predictions_YYYYMMDD_HHMMSS.json
+        
+        Per Team Beta ruling (2026-01-28): WATCHER only validates canonical path.
+        """
+        # Canonical output path (WATCHER contract)
+        canonical_dir = Path("predictions")
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        canonical_path = canonical_dir / "next_draw_prediction.json"
+        
+        # Archive path (for history, not orchestration)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"predictions_{timestamp}.json"
-        filepath = output_dir / filename
+        history_dir = canonical_dir / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        history_path = history_dir / f"predictions_{timestamp}.json"
+        
+        filepath = canonical_path  # For downstream compatibility
 
         avg_conf = 0.5
         if result.get('confidence_scores'):
@@ -837,10 +849,15 @@ class PredictionGenerator:
             reasoning=reasoning
         )
 
+        # Save canonical (WATCHER validates this)
         with open(filepath, 'w') as f:
             json.dump(result, f, indent=2)
-
         self.logger.info(f"Saved predictions to {filepath}")
+        
+        # Save to history archive (non-contractual)
+        with open(history_path, 'w') as f:
+            json.dump(result, f, indent=2)
+        self.logger.debug(f"Archived to {history_path}")
 
 
 # ============================================================================
