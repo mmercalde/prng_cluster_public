@@ -66,6 +66,7 @@ class TriggerType(str, Enum):
     REGIME_SHIFT = "regime_shift"
     LLM_PROPOSED = "llm_proposed"
     MANUAL = "manual"
+    SELFPLAY_RETRAIN = "selfplay_retrain"  # Phase 9A.3 (enum only, no auto-dispatch)
 
 
 class TriggerAction(str, Enum):
@@ -73,6 +74,7 @@ class TriggerAction(str, Enum):
     LEARNING_LOOP = "learning_loop"      # Steps 3→5→6
     FULL_PIPELINE = "full_pipeline"       # Steps 1→6
     STEP_6_ONLY = "step_6_only"          # Just Step 6
+    SELFPLAY = "selfplay"                 # Phase 9A.3 (enum only, WATCHER dispatches)
 
 
 @dataclass
@@ -744,6 +746,102 @@ To view full diagnostics:
 # =============================================================================
 # CLI
 # =============================================================================
+
+    # =========================================================================
+    # Phase 9A.3: Selfplay Retrain Trigger
+    # =========================================================================
+    #
+    # PHASE 9A.3 ONLY:
+    # This method creates a retrain request artifact.
+    # It does NOT evaluate learning quality.
+    # It does NOT trigger execution.
+    # WATCHER remains the sole execution authority.
+    #
+    # =========================================================================
+    
+    def request_selfplay(
+        self, 
+        reason: str,
+        source_policy: Optional[str] = None,
+        priority: str = "normal"
+    ) -> Dict[str, Any]:
+        """
+        Request selfplay exploration via WATCHER.
+        
+        Phase 9A.3: Chapter 13 can request selfplay retraining, but:
+        - Does NOT directly invoke selfplay_orchestrator.py
+        - WATCHER is the gate that authorizes execution
+        - Selfplay decides its own exploration strategy
+        
+        Args:
+            reason: Why selfplay is being requested
+            source_policy: Policy ID that triggered this (if any)
+            priority: "normal" or "high"
+            
+        Returns:
+            Request record for audit
+        """
+        request_id = f"selfplay_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        
+        request = {
+            "request_id": request_id,
+            "request_type": TriggerType.SELFPLAY_RETRAIN.value,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+            "reason": reason,
+            "source_policy": source_policy,
+            "priority": priority,
+            "requested_by": "chapter_13_triggers",
+            "requires_watcher_approval": True  # WATCHER must authorize
+        }
+        
+        # FIX #1: Unique request files (append-only audit)
+        requests_dir = Path("watcher_requests")
+        requests_dir.mkdir(exist_ok=True)
+        request_file = requests_dir / f"{request_id}.json"
+        
+        with open(request_file, 'w') as f:
+            json.dump(request, f, indent=2)
+        
+        logger.info(f"Selfplay retrain requested: {reason}")
+        logger.info(f"   Request file: {request_file}")
+        logger.info(f"   Source policy: {source_policy or 'none'}")
+        logger.info(f"   ⚠️  Awaiting WATCHER authorization")
+        
+        # Record in trigger history with consistent type
+        self._record_trigger({
+            "type": TriggerType.SELFPLAY_RETRAIN.value,
+            "request": request
+        })
+        
+        return request
+    
+    def should_request_selfplay(self, diagnostics: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Evaluate whether to request selfplay retraining.
+        
+        Phase 9A.3: Only gate on EXPLICIT signals, not analysis.
+        Policy interpretation belongs in Phase 9B or WATCHER.
+        
+        Returns:
+            (should_request, reason)
+        """
+        # FIX #2: Only explicit triggers, no policy heuristics
+        
+        # Check for explicit flag from diagnostics
+        summary_flags = diagnostics.get("summary_flags", [])
+        if "SELFPLAY_RECOMMENDED" in summary_flags:
+            return True, "Diagnostics flagged SELFPLAY_RECOMMENDED"
+        
+        # Check for explicit flag from recommended_actions
+        recommended = diagnostics.get("recommended_actions", {})
+        if recommended.get("request_selfplay", False):
+            return True, "Recommended actions included request_selfplay"
+        
+        # No explicit trigger
+        return False, "No explicit selfplay trigger"
+
+
 
 def main():
     import argparse

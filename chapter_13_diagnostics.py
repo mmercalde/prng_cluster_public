@@ -56,6 +56,9 @@ DEFAULT_POLICIES = "watcher_policies.json"
 DEFAULT_OUTPUT = "post_draw_diagnostics.json"
 DEFAULT_HISTORY_DIR = "diagnostics_history"
 
+# Phase 9A: Selfplay telemetry
+LEARNING_TELEMETRY_FILE = "telemetry/learning_health_latest.json"
+
 # Previous diagnostics for comparison
 PREVIOUS_DIAGNOSTICS = ".previous_diagnostics.json"
 
@@ -73,6 +76,25 @@ def load_json_safe(path: str, default: Any = None) -> Any:
     
     with open(path, 'r') as f:
         return json.load(f)
+
+
+
+def load_learning_telemetry(path: str = LEARNING_TELEMETRY_FILE) -> Optional[Dict[str, Any]]:
+    """
+    Load selfplay learning telemetry (Phase 9A).
+    
+    Returns None if file doesn't exist (selfplay not yet run).
+    Telemetry is OBSERVATIONAL ONLY - does not affect decisions.
+    """
+    if not os.path.exists(path):
+        return None
+    
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"   ⚠️  Failed to load learning telemetry: {e}")
+        return None
 
 
 def load_predictions(path: str) -> Dict[str, Any]:
@@ -768,6 +790,15 @@ def generate_diagnostics(
     policies = load_json_safe(policies_path, {})
     print(f"   ✅ Policies: loaded")
     
+    # Phase 9A: Load selfplay telemetry (observational only)
+    learning_telemetry = load_learning_telemetry()
+    if learning_telemetry:
+        print(f"   ✅ Learning telemetry: {learning_telemetry.get('models_trained_total', 0)} models trained")
+        if learning_telemetry.get('health_warnings'):
+            print(f"      ⚠️  Warnings: {len(learning_telemetry['health_warnings'])}")
+    else:
+        print(f"   ⚠️  Learning telemetry: not available (selfplay not run)")
+    
     previous = load_previous_diagnostics()
     if previous:
         print(f"   ✅ Previous diagnostics: {previous.get('run_id', 'unknown')}")
@@ -835,7 +866,19 @@ def generate_diagnostics(
         "pipeline_health": pipeline_health,
         
         "summary_flags": summary_flags,
-        "recommended_actions": recommended_actions
+        "recommended_actions": recommended_actions,
+        
+        # Phase 9A: Selfplay learning health (observational only)
+        "selfplay_health": {
+            "available": learning_telemetry is not None,
+            "models_trained_total": learning_telemetry.get("models_trained_total", 0) if learning_telemetry else 0,
+            "models_trained_last_hour": learning_telemetry.get("models_trained_last_hour", 0) if learning_telemetry else 0,
+            "fitness_best": learning_telemetry.get("fitness_best", 0.0) if learning_telemetry else 0.0,
+            "policy_entropy": learning_telemetry.get("policy_entropy") if learning_telemetry else None,
+            "last_promotion_days_ago": learning_telemetry.get("last_promotion_days_ago") if learning_telemetry else None,
+            "health_warnings": learning_telemetry.get("health_warnings", []) if learning_telemetry else [],
+            "current_best_policy": learning_telemetry.get("current_best_policy") if learning_telemetry else None
+        }
     }
     
     return diagnostics
