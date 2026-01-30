@@ -1,0 +1,101 @@
+{
+  "_note": "System governance thresholds. Version-controlled by design.",
+  "_schema": "watcher_policies/v1.0.0",
+  "_description": "WATCHER Agent policy configuration for Chapter 13 Live Feedback Loop",
+  "_updated": "2026-01-12",
+  "test_mode": true,
+  "_test_mode_note": "Set to true ONLY for synthetic injection testing. Production must be false.",
+  "synthetic_injection": {
+    "enabled": true,
+    "_enabled_note": "Requires BOTH test_mode:true AND enabled:true. Dual-flag safety.",
+    "true_seed": 12345,
+    "_true_seed_note": "Known seed for convergence validation. System should 'find' this.",
+    "interval_seconds": 60,
+    "_interval_note": "Seconds between daemon-mode injections"
+  },
+  "retrain_triggers": {
+    "_description": "Conditions that trigger Steps 3\u21925\u21926 rerun (v1: requires approval)",
+    "retrain_after_n_draws": 10,
+    "_n_draws_note": "Minimum draws for statistical significance before retraining",
+    "confidence_drift_threshold": 0.2,
+    "_drift_note": "Retrain if predicted vs actual correlation drops below this",
+    "max_consecutive_misses": 5,
+    "_misses_note": "Retrain after this many zero-hit draws in a row",
+    "hit_rate_collapse_threshold": 0.01,
+    "_collapse_note": "Retrain if hit rate drops below this over collapse_window draws",
+    "hit_rate_collapse_window": 20,
+    "_window_note": "Number of draws to evaluate for hit rate collapse"
+  },
+  "regime_shift_triggers": {
+    "_description": "Conditions that trigger FULL pipeline rerun (Steps 1\u21926)",
+    "window_decay_threshold": 0.5,
+    "_decay_note": "Full rerun if window performance decays beyond this",
+    "survivor_churn_threshold": 0.4,
+    "_churn_note": "Full rerun if survivor population changes by this fraction",
+    "llm_confidence_threshold": 0.8,
+    "_llm_note": "LLM must have >0.8 confidence to recommend regime shift"
+  },
+  "acceptance_rules": {
+    "_description": "Validation rules for LLM-proposed parameter changes",
+    "max_parameter_delta": 0.3,
+    "_delta_note": "Reject proposals that change any parameter by >30%",
+    "max_parameters_per_proposal": 3,
+    "_params_note": "Reject proposals that change >3 parameters at once",
+    "cooldown_runs": 3,
+    "_cooldown_note": "Minimum runs between parameter changes (prevent thrashing)"
+  },
+  "escalation": {
+    "_description": "When to require human intervention",
+    "escalate_on_consecutive_rejects": 3,
+    "_rejects_note": "Alert human after rejecting 3 consecutive proposals",
+    "escalate_on_divergence": true,
+    "_divergence_note": "Always alert human on detected divergence",
+    "escalate_on_regime_shift": true,
+    "_regime_note": "v1 requires human approval for full pipeline reruns"
+  },
+  "v1_approval_required": {
+    "_description": "Actions requiring human approval in v1 (autonomous in future)",
+    "retrain_execution": true,
+    "_retrain_note": "v1 evaluates triggers but requires approval to execute",
+    "regime_reset": true,
+    "_regime_note": "Full pipeline reruns always require approval in v1",
+    "parameter_application": true,
+    "_params_note": "LLM proposals require approval before application"
+  },
+  "convergence_targets": {
+    "_description": "Expected metrics for functional mimicry validation (NOT seed-finding)",
+    "true_seed_top_100_draws": 20,
+    "_top100_note": "DEPRECATED - functional mimicry measures hit rate, not seed ranking",
+    "true_seed_top_20_draws": 50,
+    "_top20_note": "DEPRECATED - functional mimicry measures hit rate, not seed ranking",
+    "confidence_trend": "increasing",
+    "_trend_note": "Confidence on true seed should trend upward",
+    "minimum_hit_rate": 0.05,
+    "_hitrate_note": "System should achieve >5% hit rate on synthetic data"
+  },
+  "daemon_settings": {
+    "_description": "WATCHER daemon behavior configuration",
+    "poll_interval_seconds": 30,
+    "_poll_note": "How often daemon checks for new_draw.flag",
+    "diagnostics_timeout_seconds": 300,
+    "_timeout_note": "Max time for diagnostic generation",
+    "llm_query_timeout_seconds": 60,
+    "_llm_timeout_note": "Max time for LLM analysis response"
+  },
+  "logging": {
+    "_description": "Audit and logging configuration",
+    "decision_log_path": "watcher_decision_log.json",
+    "diagnostics_archive": "diagnostics_history/",
+    "llm_proposals_archive": "llm_proposals/",
+    "parameter_change_log": "parameter_change_history.json",
+    "retrain_log": "retrain_history.json"
+  },
+  "selfplay": {
+    "min_fitness": 0.5,
+    "min_val_r2": 0.8,
+    "max_train_val_gap": 5.0,
+    "min_survivor_count": 1000,
+    "auto_promote": false,
+    "require_human_approval": true
+  }
+}
