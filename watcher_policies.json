@@ -1,5 +1,6 @@
 {
   "_note": "System governance thresholds. Version-controlled by design.",
+  "schema_version": "1.0.0",
   "_schema": "watcher_policies/v1.0.0",
   "_description": "WATCHER Agent policy configuration for Chapter 13 Live Feedback Loop",
   "_updated": "2026-01-12",
