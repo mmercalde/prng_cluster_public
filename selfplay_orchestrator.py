@@ -2,13 +2,19 @@
 """
 Selfplay Orchestrator
 =====================
-Version: 1.0.0
+Version: 1.1.0
 Date: 2026-01-30
-Status: Phase 8 Selfplay Integration
+Status: Phase 9B.2 Policy-Conditioned Learning Integration
 
 PURPOSE:
     Air traffic controller for selfplay learning.
     Schedules work, collects results, emits telemetry, writes candidates.
+    
+    Phase 9B.2 adds policy-conditioned learning:
+    - Loads active policy from learned_policy_active.json
+    - Applies transforms (filter/weight/mask/window) to survivors before training
+    - Tracks policy lineage across episodes
+    - Emits candidates with fingerprints for Chapter 13 validation
     
     Does NOT:
     - Contain ML logic (delegated to inner_episode_trainer)
@@ -27,6 +33,8 @@ AUTHORITY CONTRACT (from CONTRACT_SELFPLAY_CHAPTER13_AUTHORITY_v1_0.md):
         ✅ Schedule inner episodes (CPU ML via inner_episode_trainer)
         ✅ Emit telemetry (via learning_telemetry)
         ✅ Write learned_policy_candidate.json
+        ✅ [NEW] Apply policy conditioning to survivors before training
+        ✅ [NEW] Track policy lineage (parent_policy_id)
         
     Selfplay Orchestrator MUST NOT:
         ❌ Access live draw outcomes (Chapter 13 only)
@@ -39,6 +47,12 @@ INVARIANT 4 COMPLIANCE (Coordinator Requirement):
     "GPU sieving work MUST use coordinator.py / scripts_coordinator.py.
      Direct SSH to rigs for GPU work is FORBIDDEN."
 
+PHASE 9B.2 INVARIANTS:
+    - Policy transforms are pure functional (stateless, deterministic)
+    - Transforms never fabricate data (only filter/weight/mask/window)
+    - ABSOLUTE_MIN_SURVIVORS = 50 enforced
+    - Fingerprints enable semantic deduplication
+
 SINGLE-WRITER MODEL:
     Only this orchestrator writes telemetry.
     Workers return results; orchestrator records.
@@ -48,14 +62,34 @@ OUTPUTS:
     - Telemetry records via LearningTelemetry
 
 USAGE:
-    # Full selfplay run
+    # Full selfplay run (baseline mode)
     python3 selfplay_orchestrator.py --config configs/selfplay_config.json
+    
+    # Policy-conditioned mode (Phase 9B.2)
+    python3 selfplay_orchestrator.py --config configs/selfplay_config.json --policy-conditioned
     
     # Single outer+inner episode (testing)
     python3 selfplay_orchestrator.py --single-episode --survivors path/to/survivors.json
     
+    # Testing without candidate emission
+    python3 selfplay_orchestrator.py --survivors test.json --policy-conditioned --no-emit-candidate
+    
     # Dry run (no actual work, just validation)
     python3 selfplay_orchestrator.py --config configs/selfplay_config.json --dry-run
+
+CHANGELOG:
+    v1.1.0 (2026-01-30):
+        - Phase 9B.2: Policy-conditioned learning integration
+        - Added --policy-conditioned CLI flag
+        - Added --no-emit-candidate CLI flag for testing
+        - Integrated condition_episode() before training
+        - Added candidate emission with lineage tracking
+        - Fitness delta calculation vs parent policy
+        - Requires: policy_transform.py, policy_conditioned_episode.py
+    
+    v1.0.0 (2026-01-30):
+        - Initial release
+        - Phase 8 Selfplay Integration
 """
 
 from __future__ import annotations
@@ -94,12 +128,35 @@ except ImportError:
     TRAINER_AVAILABLE = False
     print("⚠️  Warning: inner_episode_trainer not found")
 
+# =============================================================================
+# PHASE 9B.2: Policy-Conditioned Learning Imports
+# =============================================================================
+
+try:
+    from policy_conditioned_episode import (
+        condition_episode,
+        create_policy_candidate as create_9b_candidate,
+        emit_policy_candidate,
+        load_active_policy,
+        PolicyConditionedResult,
+        PolicyCandidate as PolicyCandidate9B,
+    )
+    from policy_transform import (
+        compute_policy_fingerprint,
+        create_empty_policy,
+        PolicyViolationError,
+    )
+    POLICY_CONDITIONING_AVAILABLE = True
+except ImportError:
+    POLICY_CONDITIONING_AVAILABLE = False
+    print("⚠️  Warning: policy_conditioned_episode not found, Phase 9B.2 disabled")
+
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-SCHEMA_VERSION = "1.0.6"
+SCHEMA_VERSION = "1.1.0"
 DEFAULT_CONFIG_PATH = "configs/selfplay_config.json"
 DEFAULT_CANDIDATE_PATH = "learned_policy_candidate.json"
 DEFAULT_TELEMETRY_DIR = "telemetry"
@@ -140,9 +197,14 @@ class SelfplayConfig:
     survivors_input: str = "survivors_with_scores.json"
     candidate_output: str = DEFAULT_CANDIDATE_PATH
     telemetry_dir: str = DEFAULT_TELEMETRY_DIR
+    project_root: str = "."  # Added for Phase 9B.2
     
     # Policy generation
     policy_prefix: str = "policy"
+    
+    # Phase 9B.2: Policy-conditioned learning
+    policy_conditioned: bool = False  # Enable via --policy-conditioned
+    emit_candidates: bool = True  # Disable via --no-emit-candidate
     
     def __post_init__(self):
         """Auto-detect n_jobs if set to -1."""
@@ -182,11 +244,18 @@ class EpisodeResult:
     
     # Data stats
     survivor_count: int = 0
+    survivor_count_before: int = 0  # Before conditioning (Phase 9B.2)
     feature_count: int = 0
     
     # Policy info
     policy_id: Optional[str] = None
     is_candidate: bool = False
+    
+    # Phase 9B.2: Policy conditioning info
+    policy_conditioned: bool = False
+    active_policy_id: Optional[str] = None
+    active_policy_fingerprint: Optional[str] = None
+    conditioning_log: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -221,6 +290,12 @@ class PolicyCandidate:
     episode_id: str = ""
     survivors_source: str = ""
     
+    # Phase 9B.2: Policy lineage
+    parent_policy_id: Optional[str] = None
+    fitness_delta: Optional[float] = None
+    fingerprint: Optional[str] = None
+    transforms: Dict[str, Any] = field(default_factory=dict)
+    
     # Status (always "candidate" - Chapter 13 decides promotion)
     status: str = "candidate"
     
@@ -238,6 +313,11 @@ class SelfplayOrchestrator:
     
     Schedules outer episodes (GPU sieving) and inner episodes (CPU ML),
     emits telemetry, and writes policy candidates.
+    
+    Phase 9B.2 adds policy-conditioned learning:
+    - Loads active policy before each episode
+    - Applies transforms to survivors
+    - Tracks lineage across episodes
     
     AUTHORITY:
         - Schedules work (outer via coordinators, inner via trainer)
@@ -281,6 +361,10 @@ class SelfplayOrchestrator:
         self.best_fitness = -float('inf')
         self.best_episode: Optional[EpisodeResult] = None
         
+        # Phase 9B.2: Policy tracking
+        self.active_policy: Optional[Dict] = None
+        self.parent_fitness: Optional[float] = None
+        
         # Validate configuration
         self._validate_config()
         
@@ -295,12 +379,21 @@ class SelfplayOrchestrator:
         print(f"   K-folds: {config.k_folds}")
         print(f"   CPU threads: {config.n_jobs}")
         print(f"   Outer episodes: {'enabled' if config.use_coordinator else 'disabled (inner-only)'}")
+        print(f"   Policy-conditioned: {'✅ ENABLED' if config.policy_conditioned else 'disabled (baseline)'}")
+        print(f"   Emit candidates: {'enabled' if config.emit_candidates else 'disabled (testing)'}")
         print(f"   Dry run: {dry_run}")
         print(f"{'='*60}\n")
     
     def _validate_config(self) -> None:
         """Validate configuration before running."""
         errors = []
+        
+        # Phase 9B.2: Check policy conditioning availability
+        if self.config.policy_conditioned and not POLICY_CONDITIONING_AVAILABLE:
+            print("   ⚠️  Warning: --policy-conditioned requested but modules not found")
+            print("      Requires: policy_transform.py, policy_conditioned_episode.py")
+            print("      Falling back to baseline mode")
+            self.config.policy_conditioned = False
         
         # INVARIANT 4 NOTE: Coordinator is required for GPU work, but inner-only mode is allowed
         if not self.config.use_coordinator:
@@ -343,6 +436,35 @@ class SelfplayOrchestrator:
             raise ValueError("Configuration validation failed")
     
     # =========================================================================
+    # PHASE 9B.2: POLICY LOADING
+    # =========================================================================
+    
+    def _load_active_policy(self) -> Tuple[Dict, bool]:
+        """
+        Load the currently active policy for conditioning.
+        
+        Phase 9B.2: Loads from learned_policy_active.json.
+        If not found, returns an empty baseline policy.
+        
+        Returns:
+            (policy_dict, was_loaded)
+        """
+        if not POLICY_CONDITIONING_AVAILABLE:
+            return {"policy_id": "baseline_unavailable", "transforms": {}}, False
+        
+        policy, was_loaded = load_active_policy(self.config.project_root)
+        
+        if was_loaded:
+            self.parent_fitness = policy.get("fitness")
+            print(f"   📜 Active policy loaded: {policy.get('policy_id')}")
+            if self.parent_fitness is not None:
+                print(f"      Parent fitness: {self.parent_fitness:.4f}")
+        else:
+            print(f"   📜 No active policy found, using baseline")
+        
+        return policy, was_loaded
+    
+    # =========================================================================
     # MAIN RUN LOOP
     # =========================================================================
     
@@ -362,6 +484,10 @@ class SelfplayOrchestrator:
             print("   [DRY RUN] Skipping actual execution")
             return results
         
+        # Phase 9B.2: Load active policy at start of run
+        if self.config.policy_conditioned:
+            self.active_policy, _ = self._load_active_policy()
+        
         for episode_num in range(1, self.config.max_episodes + 1):
             print(f"\n{'─'*50}")
             print(f"📍 Episode {episode_num}/{self.config.max_episodes}")
@@ -379,11 +505,13 @@ class SelfplayOrchestrator:
                     print(f"   🏆 New best fitness: {result.fitness:.4f}")
                 
                 # Check if we should emit a candidate
-                if result.fitness >= self.config.min_fitness_threshold:
+                if result.fitness >= self.config.min_fitness_threshold and self.config.emit_candidates:
                     self._emit_candidate(result)
                 
             except Exception as e:
                 print(f"   ❌ Episode {episode_num} failed: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # Summary
@@ -394,6 +522,8 @@ class SelfplayOrchestrator:
     def _run_episode(self, episode_num: int) -> EpisodeResult:
         """
         Run a single selfplay episode (outer + inner).
+        
+        Phase 9B.2: Applies policy conditioning before inner episode.
         
         Args:
             episode_num: Episode number for logging
@@ -413,11 +543,13 @@ class SelfplayOrchestrator:
             print(f"   📁 Using existing survivors: {survivors_path}")
         
         # Step 2: Inner episode (CPU ML training)
+        # Phase 9B.2: With optional policy conditioning
         print(f"   🧠 Running inner episode (CPU ML)...")
         result = self._run_inner_episode(
             episode_id=episode_id,
             timestamp=timestamp,
-            survivors_path=survivors_path
+            survivors_path=survivors_path,
+            episode_num=episode_num
         )
         
         # Step 3: Record telemetry (single writer model)
@@ -511,17 +643,19 @@ class SelfplayOrchestrator:
         self,
         episode_id: str,
         timestamp: str,
-        survivors_path: str
+        survivors_path: str,
+        episode_num: int
     ) -> EpisodeResult:
         """
         Run inner episode (CPU ML training).
         
-        Uses InnerEpisodeTrainer to train tree models and select best.
+        Phase 9B.2: Applies policy conditioning before training if enabled.
         
         Args:
             episode_id: Episode identifier
             timestamp: Episode timestamp
             survivors_path: Path to survivors file
+            episode_num: Episode number
             
         Returns:
             EpisodeResult with training metrics
@@ -542,7 +676,8 @@ class SelfplayOrchestrator:
         
         # Load survivors
         try:
-            X, y, feature_names, survivor_count = self._load_survivors(survivors_path)
+            survivors_raw = self._load_survivors_raw(survivors_path)
+            survivor_count_before = len(survivors_raw)
         except Exception as e:
             print(f"      ❌ Failed to load survivors: {e}")
             return EpisodeResult(
@@ -553,6 +688,53 @@ class SelfplayOrchestrator:
                 val_r2=0.0,
                 policy_id=policy_id
             )
+        
+        # =====================================================================
+        # PHASE 9B.2: Apply policy conditioning
+        # =====================================================================
+        conditioning_result: Optional[PolicyConditionedResult] = None
+        active_policy_id = None
+        active_policy_fingerprint = None
+        conditioning_log = []
+        
+        if self.config.policy_conditioned and POLICY_CONDITIONING_AVAILABLE:
+            try:
+                print(f"      🔧 Applying policy conditioning...")
+                conditioning_result = condition_episode(
+                    survivors_raw,
+                    project_root=self.config.project_root,
+                    force_policy=self.active_policy,
+                )
+                
+                survivors_raw = conditioning_result.conditioned_survivors
+                active_policy_id = conditioning_result.active_policy_id
+                active_policy_fingerprint = conditioning_result.active_policy_fingerprint
+                conditioning_log = conditioning_result.transform_log
+                
+                print(f"      📊 Conditioned: {conditioning_result.survivors_before} → {conditioning_result.survivors_after} survivors")
+                print(f"         Policy: {active_policy_id}")
+                print(f"         Fingerprint: {active_policy_fingerprint}")
+                
+                # Log each transform
+                for log_entry in conditioning_log:
+                    if not log_entry.startswith("policy_fingerprint"):
+                        print(f"         {log_entry}")
+                
+            except PolicyViolationError as e:
+                print(f"      ⚠️  Policy violation: {e}")
+                print(f"      ⚠️  Falling back to unconditioned training")
+                conditioning_log = [f"FALLBACK: {e}"]
+            except Exception as e:
+                print(f"      ⚠️  Conditioning failed: {e}")
+                print(f"      ⚠️  Falling back to unconditioned training")
+                conditioning_log = [f"ERROR: {e}"]
+        else:
+            if self.config.policy_conditioned:
+                print(f"      ℹ️  Policy conditioning requested but modules unavailable")
+        
+        # Convert to X, y format for trainer
+        X, y, feature_names = self._survivors_to_xy(survivors_raw)
+        survivor_count = len(survivors_raw)
         
         # Configure trainer (matches TrainerConfig dataclass)
         trainer_config = TrainerConfig(
@@ -594,19 +776,25 @@ class SelfplayOrchestrator:
             train_val_gap=metrics.train_val_gap,
             training_time_ms=training_time_ms,
             survivor_count=survivor_count,
+            survivor_count_before=survivor_count_before,
             feature_count=len(feature_names),
-            policy_id=policy_id
+            policy_id=policy_id,
+            # Phase 9B.2 fields
+            policy_conditioned=self.config.policy_conditioned,
+            active_policy_id=active_policy_id,
+            active_policy_fingerprint=active_policy_fingerprint,
+            conditioning_log=conditioning_log,
         )
     
-    def _load_survivors(self, path: str) -> Tuple[Any, Any, List[str], int]:
+    def _load_survivors_raw(self, path: str) -> List[Dict]:
         """
-        Load survivors from JSON file.
+        Load survivors from JSON file as raw dicts.
+        
+        Phase 9B.2: Returns raw survivor dicts for policy conditioning.
         
         Returns:
-            Tuple of (X, y, feature_names, count)
+            List of survivor dicts
         """
-        import numpy as np
-        
         with open(path) as f:
             data = json.load(f)
         
@@ -621,12 +809,29 @@ class SelfplayOrchestrator:
         if not survivors:
             raise ValueError(f"Empty survivors file: {path}")
         
+        return survivors
+    
+    def _survivors_to_xy(self, survivors: List[Dict]) -> Tuple[Any, Any, List[str]]:
+        """
+        Convert survivor dicts to X, y arrays for training.
+        
+        Args:
+            survivors: List of survivor dicts
+            
+        Returns:
+            Tuple of (X, y, feature_names)
+        """
+        import numpy as np
+        
+        if not survivors:
+            raise ValueError("Empty survivors list")
+        
         # Extract features
         first = survivors[0]
         if "features" in first:
             features = first["features"]
         else:
-            features = {k: v for k, v in first.items() if k not in ["seed", "score", "label"]}
+            features = {k: v for k, v in first.items() if k not in ["seed", "score", "label", "holdout_hits"]}
         
         feature_names = sorted(features.keys())
         
@@ -638,16 +843,29 @@ class SelfplayOrchestrator:
             if "features" in survivor:
                 feat = survivor["features"]
             else:
-                feat = {k: v for k, v in survivor.items() if k not in ["seed", "score", "label"]}
+                feat = {k: v for k, v in survivor.items() if k not in ["seed", "score", "label", "holdout_hits"]}
             
             row = [feat.get(name, 0) for name in feature_names]
             X.append(row)
             
-            # Target: prefer "score", fallback to "label"
-            target = survivor.get("score", survivor.get("label", 0))
+            # Target: prefer "holdout_hits" (Phase 9B), then "score", fallback to "label"
+            target = survivor.get("holdout_hits", survivor.get("score", survivor.get("label", 0)))
             y.append(target)
         
-        return np.array(X), np.array(y), feature_names, len(survivors)
+        return np.array(X), np.array(y), feature_names
+    
+    def _load_survivors(self, path: str) -> Tuple[Any, Any, List[str], int]:
+        """
+        Load survivors from JSON file.
+        
+        Legacy method - kept for compatibility.
+        
+        Returns:
+            Tuple of (X, y, feature_names, count)
+        """
+        survivors = self._load_survivors_raw(path)
+        X, y, feature_names = self._survivors_to_xy(survivors)
+        return X, y, feature_names, len(survivors)
     
     # =========================================================================
     # CANDIDATE EMISSION
@@ -657,6 +875,8 @@ class SelfplayOrchestrator:
         """
         Emit a policy candidate for Chapter 13 review.
         
+        Phase 9B.2: Uses policy_conditioned_episode for emission with lineage.
+        
         This writes learned_policy_candidate.json.
         The candidate is a HYPOTHESIS, not a DECISION.
         Only Chapter 13 can promote it.
@@ -665,6 +885,22 @@ class SelfplayOrchestrator:
             result: The episode result to emit as candidate
         """
         print(f"   📤 Emitting policy candidate: {result.policy_id}")
+        
+        # Calculate fitness delta
+        fitness_delta = None
+        if self.parent_fitness is not None:
+            fitness_delta = result.fitness - self.parent_fitness
+            print(f"      Fitness delta: {fitness_delta:+.4f} (vs parent)")
+        
+        # Get transforms from active policy
+        transforms = {}
+        if self.active_policy:
+            transforms = self.active_policy.get("transforms", {})
+        
+        # Compute fingerprint
+        fingerprint = None
+        if POLICY_CONDITIONING_AVAILABLE:
+            fingerprint = compute_policy_fingerprint({"transforms": transforms})
         
         candidate = PolicyCandidate(
             schema_version=SCHEMA_VERSION,
@@ -680,6 +916,7 @@ class SelfplayOrchestrator:
                 "train_val_gap": result.train_val_gap,
                 "training_time_ms": result.training_time_ms,
                 "survivor_count": result.survivor_count,
+                "survivor_count_before": result.survivor_count_before,
                 "feature_count": result.feature_count,
             },
             parameters={
@@ -689,6 +926,11 @@ class SelfplayOrchestrator:
             },
             episode_id=result.episode_id,
             survivors_source=self.config.survivors_input,
+            # Phase 9B.2: Lineage tracking
+            parent_policy_id=result.active_policy_id,
+            fitness_delta=fitness_delta,
+            fingerprint=fingerprint,
+            transforms=transforms,
             status="candidate"  # Chapter 13 decides promotion
         )
         
@@ -703,6 +945,15 @@ class SelfplayOrchestrator:
         os.replace(tmp_path, output_path)
         
         print(f"   ✅ Candidate written to: {output_path}")
+        
+        # Phase 9B.2: Also write to policy_history/ for audit
+        if POLICY_CONDITIONING_AVAILABLE:
+            history_dir = Path(self.config.project_root) / "policy_history"
+            history_dir.mkdir(exist_ok=True)
+            archive_path = history_dir / f"{candidate.policy_id}.json"
+            with open(archive_path, 'w') as f:
+                json.dump(candidate.to_dict(), f, indent=2)
+            print(f"   📁 Archived to: {archive_path}")
         
         # Record policy emission in telemetry
         if self.telemetry:
@@ -736,6 +987,16 @@ class SelfplayOrchestrator:
         
         candidates = [r for r in results if r.is_candidate]
         print(f"   Candidates emitted: {len(candidates)}")
+        
+        # Phase 9B.2: Policy conditioning summary
+        if self.config.policy_conditioned:
+            print(f"\n   Policy Conditioning:")
+            print(f"      Active policy: {self.active_policy.get('policy_id') if self.active_policy else 'baseline'}")
+            if self.parent_fitness is not None:
+                print(f"      Parent fitness: {self.parent_fitness:.4f}")
+            if self.best_episode and self.parent_fitness:
+                delta = self.best_fitness - self.parent_fitness
+                print(f"      Best delta: {delta:+.4f}")
         
         if self.telemetry:
             summary = self.telemetry.get_health_summary()
@@ -802,6 +1063,27 @@ def main():
         help="Override CPU threads for ML training"
     )
     
+    # Phase 9B.2: New CLI arguments
+    parser.add_argument(
+        "--policy-conditioned",
+        action="store_true",
+        default=False,
+        help="Enable policy-conditioned learning (Phase 9B.2)"
+    )
+    
+    parser.add_argument(
+        "--no-emit-candidate",
+        action="store_true",
+        default=False,
+        help="Disable candidate emission (for testing)"
+    )
+    
+    parser.add_argument(
+        "--project-root",
+        default=".",
+        help="Project root directory (for policy files)"
+    )
+    
     args = parser.parse_args()
     
     # Load or create config
@@ -824,6 +1106,14 @@ def main():
         config.min_fitness_threshold = args.min_fitness
     if args.n_jobs:
         config.n_jobs = args.n_jobs
+    
+    # Phase 9B.2: Apply policy conditioning overrides
+    if args.policy_conditioned:
+        config.policy_conditioned = True
+    if args.no_emit_candidate:
+        config.emit_candidates = False
+    if args.project_root:
+        config.project_root = args.project_root
     
     # Create and run orchestrator
     orchestrator = SelfplayOrchestrator(
