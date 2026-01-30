@@ -706,3 +706,69 @@ grep "CHUNK_SIZE" run_step3_full_scoring.sh
 # Immediately update the manifest
 sed -i 's/"param": OLD/"param": NEW/' agent_manifests/step.json
 ```
+
+---
+
+## 11. Phase 9A: Selfplay Request Handling
+
+**Added:** 2026-01-30 | **Version:** 1.2.0
+
+### 11.1 Overview
+
+Phase 9A adds selfplay request handling. WATCHER monitors `watcher_requests/` for retrain requests from Chapter 13.
+
+### 11.2 Request Directory
+```
+watcher_requests/
+├── selfplay_20260130_021543.json
+├── selfplay_20260130_031022.json
+└── ...
+```
+
+**Request Schema:**
+```json
+{
+  "request_id": "selfplay_20260130_021543",
+  "request_type": "selfplay_retrain",
+  "created_at": "2026-01-30T02:15:43.860849+00:00",
+  "status": "pending",
+  "reason": "Diagnostics flagged SELFPLAY_RECOMMENDED",
+  "source_policy": "policy_selfplay_20260129_234039_ep010",
+  "priority": "normal",
+  "requested_by": "chapter_13_triggers",
+  "requires_watcher_approval": true
+}
+```
+
+### 11.3 Authorization Flow
+```
+Chapter 13                    WATCHER                      Selfplay
+──────────                    ───────                      ────────
+request_selfplay()
+        │
+        └──► watcher_requests/*.json
+                    │
+                    └──► validate_request()
+                              │
+                              ▼
+                         APPROVE / REJECT
+                              │
+                              ▼ (if APPROVE)
+                    dispatch_selfplay() ──────────► selfplay_orchestrator.py
+```
+
+### 11.4 Validation Rules
+
+| Check | Condition | Action if Failed |
+|-------|-----------|------------------|
+| Request age | < 24 hours | REJECT (stale) |
+| Priority valid | "normal" or "high" | REJECT (invalid) |
+| Cooldown elapsed | > 1 hour since last | DEFER |
+| Resources available | Cluster not busy | DEFER |
+
+### 11.5 Invariants
+
+- **WATCHER authorizes, does not learn** — No policy decisions
+- **Selfplay cannot self-dispatch** — Must go through WATCHER
+- **Requests are append-only** — Audit trail preserved
+- **Cooldown enforced** — Prevent selfplay storms

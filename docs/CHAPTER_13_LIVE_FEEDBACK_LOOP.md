@@ -1127,3 +1127,103 @@ Version 1.0.0 — January 11, 2026
 ---
 
 **END OF CHAPTER 13**
+
+---
+
+## 21. Phase 9A: Selfplay Integration
+
+**Added:** 2026-01-30 | **Version:** 1.2.0
+
+### 21.1 Overview
+
+Phase 9A connects Chapter 13 to the selfplay learning loop. Chapter 13 can:
+- Validate selfplay candidates
+- Promote policies to active
+- Request selfplay retraining
+
+### 21.2 New Files
+
+| File | Purpose |
+|------|---------|
+| `learned_policy_candidate.json` | Selfplay emits candidates |
+| `learned_policy_active.json` | Chapter 13 promotes approved policies |
+| `watcher_requests/*.json` | Retrain request queue |
+| `telemetry/learning_health_latest.json` | Selfplay health snapshot |
+
+### 21.3 Acceptance Engine Extensions
+
+**New CLI Commands:**
+```bash
+# Validate a candidate
+python3 chapter_13_acceptance.py --validate-selfplay learned_policy_candidate.json
+
+# Promote to active
+python3 chapter_13_acceptance.py --promote learned_policy_candidate.json
+```
+
+**Validation Thresholds (watcher_policies.json):**
+```json
+{
+  "selfplay": {
+    "min_fitness": 0.50,
+    "min_val_r2": 0.80,
+    "max_train_val_gap": 5.0,
+    "min_survivor_count": 1000
+  }
+}
+```
+
+### 21.4 Diagnostics Engine Extensions
+
+Chapter 13 diagnostics now include `selfplay_health`:
+```json
+{
+  "selfplay_health": {
+    "available": true,
+    "models_trained_total": 26,
+    "models_trained_last_hour": 0,
+    "fitness_best": 0.8474,
+    "health_warnings": [],
+    "current_best_policy": "policy_selfplay_20260129_234039_ep001"
+  }
+}
+```
+
+### 21.5 Triggers Engine Extensions
+
+**New Methods:**
+- `request_selfplay(reason, source_policy, priority)` — Create retrain request
+- `should_request_selfplay(diagnostics)` — Check explicit triggers
+
+**Request Flow:**
+```
+Diagnostics → Triggers → watcher_requests/*.json → WATCHER → Selfplay
+```
+
+### 21.6 Data Flow
+```
+Selfplay                     Chapter 13                    WATCHER
+────────                     ──────────                    ───────
+learned_policy_candidate.json
+        │
+        └──────────────────► validate_selfplay_candidate()
+                                      │
+                                      ▼
+                             ACCEPT / REJECT / ESCALATE
+                                      │
+                                      ▼ (if ACCEPT)
+                             learned_policy_active.json
+                             telemetry.record_promotion()
+                                      │
+                                      ▼ (if retrain needed)
+                             request_selfplay() ──────────► watcher_requests/*.json
+```
+
+### 21.7 Invariants (Phase 9A Contract)
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| Selfplay cannot promote policies | Only Chapter 13 writes `learned_policy_active.json` |
+| Chapter 13 requests, WATCHER executes | Requests queued in `watcher_requests/` |
+| Telemetry is observational only | No control path from telemetry |
+| Audit trail preserved | Append-only request files |
