@@ -2,8 +2,8 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.3.0  
-**Date:** January 25, 2026  
+**Version:** 1.1.0  
+**Date:** January 9, 2026  
 **Files:** `agents/watcher_agent.py`, `agents/watcher_registry_hooks.py`, `agents/fingerprint_registry.py`  
 **Purpose:** Autonomous pipeline orchestration with PRNG attempt tracking
 
@@ -156,7 +156,7 @@ decision, context = watcher.evaluate_results(
 
 The Watcher Agent uses **two dictionaries** to determine what to run for each step. Understanding both is essential for troubleshooting.
 
-#### 3.4.1 STEP_SCRIPTS (Lines 295-302)
+#### 3.4.1 STEP_SCRIPTS (Lines 136-145)
 
 **This dictionary defines what script is ACTUALLY EXECUTED:**
 
@@ -164,18 +164,14 @@ The Watcher Agent uses **two dictionaries** to determine what to run for each st
 STEP_SCRIPTS = {
     1: "window_optimizer.py",
     2: "run_scorer_meta_optimizer.sh",  # NOTE: .sh not .py (PULL architecture)
-    3: "run_step3_full_scoring.sh",     # v2.0.0 - uses scripts_coordinator.py
+    3: "generate_full_scoring_jobs.py",
     4: "adaptive_meta_optimizer.py",
     5: "meta_prediction_optimizer_anti_overfit.py",
-    6: "prediction_generator.py"
+    6: "reinforcement_engine.py"
 }
 ```
 
-**Step 3 Note:** `run_step3_full_scoring.sh` (v2.0.0) is the canonical script. It uses `scripts_coordinator.py` per the January 3, 2026 architectural ruling. The older `run_full_scoring.sh` (v1.2) is superseded.
-
-**Step 6 Note:** `prediction_generator.py` generates final predictions. `reinforcement_engine.py` is a different component (not used as a pipeline step script).
-
-#### 3.4.2 STEP_MANIFESTS (Lines 304-312)
+#### 3.4.2 STEP_MANIFESTS (Lines 147-155)
 
 **This dictionary defines where to load default parameters and evaluation criteria:**
 
@@ -214,22 +210,7 @@ RESULTS_DIR = Path("/shared/ml/scorer_evaluation_results") # Does not exist!
 
 **See Chapter 3 Section 3 for full PULL architecture details.**
 
-#### 3.4.4 Why Step 3 Uses `.sh` Instead of `.py`
-
-| Script | Architecture | Status |
-|--------|--------------|--------|
-| `run_full_scoring.sh` (v1.2) | Uses `coordinator.py` | ❌ **SUPERSEDED** |
-| `run_step3_full_scoring.sh` (v2.0.0) | Uses `scripts_coordinator.py` | ✅ **CORRECT** |
-
-**The v2.0.0 script provides:**
-- `scripts_coordinator.py` compliance (Jan 3, 2026 ruling)
-- Python interpreter binding (reduces failures)
-- GlobalStateTracker integration (14 additional features)
-- Run-scoped directories with manifest files
-- Validation phase (Phase 6)
-- Step-aware batching
-
-#### 3.4.5 How Execution Works (Line 948)
+#### 3.4.4 How Execution Works (Line 748)
 
 ```python
 def run_step(self, step: int):
@@ -245,7 +226,7 @@ def run_step(self, step: int):
     subprocess.run([script] + build_args(default_params))
 ```
 
-#### 3.4.6 Future Improvement
+#### 3.4.5 Future Improvement
 
 Currently `STEP_SCRIPTS` is hardcoded. A more robust design would read the script from the manifest's `actions[0].script` field:
 
@@ -259,122 +240,6 @@ script = manifest['actions'][0]['script']
 ```
 
 This would eliminate the dual-dictionary pattern and ensure consistency.
-
-
-## 3.5 Preflight & Cleanup Integration (v1.3.0)
-
-### 3.5.1 Overview
-
-As of v1.3.0, the WATCHER agent includes two integrated safety mechanisms:
-
-| Component | Purpose | Blocking? |
-|-----------|---------|-----------|
-| **Preflight Check** | Validates cluster before step execution | Yes (on critical failures) |
-| **GPU Cleanup** | Clears GPU memory after distributed steps | No (warnings only) |
-
-### 3.5.2 Preflight Check Integration
-
-**File:** `preflight_check.py`
-
-The preflight check runs automatically at the start of each step's `run_step()` method:
-
-```python
-# In run_step() - automatically called
-preflight_passed, preflight_msg = self._run_preflight_check(step)
-if not preflight_passed:
-    return {
-        "success": False,
-        "error": preflight_msg,
-        "blocked_by": "preflight_check"
-    }
-```
-
-**Checks Performed:**
-
-| Check | Method | Hard Block? |
-|-------|--------|-------------|
-| SSH connectivity | Ping each node | ✅ Yes |
-| Ramdisk files exist | Check `/dev/shm/prng/stepN/` | ✅ Yes |
-| Input files exist | Check required inputs | ✅ Yes |
-| GPU count matches config | Compare `rocm-smi` vs `distributed_config.json` | ⚠️ Warning only |
-
-**Failure Categories:**
-
-```python
-# Hard failures (block execution)
-hard_fail_keywords = ["ssh", "unreachable", "ramdisk", "input", "not found"]
-
-# Soft failures (warnings only)
-# - GPU count mismatch
-# - Non-critical validation errors
-```
-
-### 3.5.3 GPU Cleanup Integration
-
-**File:** `gpu_cleanup.py`
-
-GPU cleanup runs automatically after distributed steps (Steps 1, 2, 3):
-
-```python
-# In run_step() - automatically called after step completes
-DISTRIBUTED_STEPS = {1, 2, 3}
-
-def _run_post_step_cleanup(self, step: int) -> None:
-    if step not in DISTRIBUTED_STEPS:
-        return
-    # ... cleanup logic (never blocks)
-```
-
-**Behavior:**
-- Clears PyTorch/HIP allocator caches on ROCm nodes
-- Best-effort only - failures never block pipeline
-- Logs warnings if cleanup fails
-
-### 3.5.4 Module Availability
-
-Both integrations are optional - if modules aren't available, WATCHER proceeds normally:
-
-```python
-# Preflight
-try:
-    from preflight_check import PreflightChecker
-    PREFLIGHT_AVAILABLE = True
-except ImportError:
-    PREFLIGHT_AVAILABLE = False
-
-# GPU Cleanup
-try:
-    from gpu_cleanup import post_batch_cleanup, cleanup_all_nodes
-    GPU_CLEANUP_AVAILABLE = True
-except ImportError:
-    GPU_CLEANUP_AVAILABLE = False
-```
-
-### 3.5.5 Error Handling Examples
-
-**Example 1: SSH Failure (Hard Block)**
-```
-[ERROR] Preflight BLOCKED: SSH unreachable: 192.168.3.120
-Step 3 will NOT execute.
-```
-
-**Example 2: Ramdisk Missing (Hard Block)**
-```
-[ERROR] Preflight BLOCKED: Ramdisk not found: /dev/shm/prng/step3/train_history.json
-Step 3 will NOT execute.
-```
-
-**Example 3: GPU Count Mismatch (Warning Only)**
-```
-[WARNING] Preflight warnings: ['GPU_COUNT_MISMATCH: rig-6600 expected 12, found 10']
-Step 3 will execute (degraded capacity).
-```
-
-**Example 4: Cleanup Failure (Warning Only)**
-```
-[WARNING] [CLEANUP] Warning (non-blocking): Connection refused
-Pipeline continues normally.
-```
 
 ---
 
@@ -655,7 +520,7 @@ python3 test_watcher_agent.py
 | "LLM unavailable" | Server not running | Use `--no-llm` or start LLM |
 | "Halt flag exists" | Previous halt | Remove `watcher_halt.flag` |
 | "Max retries exceeded" | Persistent failure | Review logs, fix root cause |
-| "/shared/ml/ not found" | Step 2 using wrong script | Ensure STEP_SCRIPTS[2] uses `.sh` not `.py` |
+| "/shared/ml/ not found" | Step 2 using wrong script | Ensure line 138 uses `.sh` not `.py` |
 
 ### 10.2 Debug Mode
 
@@ -674,6 +539,8 @@ cat watcher_decisions.jsonl | jq .
 | `watcher_history.json` | Run history summary |
 | `watcher_decisions.jsonl` | Detailed decision audit (JSONL) |
 | `logs/watcher_agent.log` | Application logs |
+
+---
 
 ---
 
@@ -723,7 +590,6 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 2. SCP files to all configured nodes in `distributed_config.json`
 3. Verify files exist before proceeding
 
----
 
 ## 11. Chapter Summary
 
@@ -731,7 +597,7 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 
 | Component | Lines | Purpose |
 |-----------|-------|---------|
-| `watcher_agent.py` | ~1000 | Main orchestrator |
+| `watcher_agent.py` | ~500 | Main orchestrator |
 | `watcher_registry_hooks.py` | ~350 | Registry integration |
 | `fingerprint_registry.py` | ~250 | Dataset tracking |
 | Agent manifests | 6 files | Step configurations |
@@ -742,28 +608,12 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 - Fingerprint Registry prevents redundant PRNG attempts
 - Safety controls ensure human oversight
 - All 6 pipeline steps validated and working
-- **STEP_SCRIPTS dict (line 295) determines actual script execution**
+- **STEP_SCRIPTS dict (line 136) determines actual script execution**
 - **Step 2 must use `.sh` (PULL architecture) not `.py` (broken NFS paths)**
-- **Step 3 must use `run_step3_full_scoring.sh` (v2.0.0) not `run_full_scoring.sh` (v1.2)**
 
 ---
 
 ## 12. Changelog
-
-### v1.3.0 (January 25, 2026)
-- Added Section 3.5: Preflight & Cleanup Integration
-- Integrated `preflight_check.py` - validates cluster before step execution
-- Integrated `gpu_cleanup.py` - clears GPU memory after distributed steps
-- Hard blocks on SSH/ramdisk/input failures; warnings only for GPU count mismatches
-
-### v1.2.0 (January 23, 2026)
-- **CRITICAL FIX:** Corrected STEP_SCRIPTS in Section 3.4.1
-  - Step 3: `generate_full_scoring_jobs.py` → `run_step3_full_scoring.sh`
-  - Step 6: `reinforcement_engine.py` → `prediction_generator.py`
-- Fixed line number references (136 → 295)
-- Added Section 3.4.4: Why Step 3 uses `.sh` instead of `.py`
-- Added notes explaining Step 3 v2.0.0 and Step 6 script purposes
-- Updated Section 11 summary with correct line numbers
 
 ### v1.1.0 (January 9, 2026)
 - Added Section 3.4: Script Execution Mappings (CRITICAL)
@@ -777,3 +627,82 @@ TODO: Modify `run_step3_full_scoring.sh` ramdisk preload to:
 ---
 
 *End of Chapter 12: WATCHER Agent & Fingerprint Registry*
+
+
+---
+
+## 3.6 Manifest Parameter Precedence (CRITICAL)
+
+**Added: 2026-01-25** — Lesson learned from OOM debugging.
+
+### The Rule
+
+`agent_manifests/*.json` `default_params` **override** script defaults!
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 (highest) | CLI `--params '{...}'` | `--params '{"chunk_size": 500}'` |
+| 2 | `agent_manifests/*.json` `default_params` | `"chunk_size": 1000` |
+| 3 (lowest) | Script hardcoded default | `CHUNK_SIZE=5000` in .sh |
+
+### Why This Matters
+
+When WATCHER runs a step, it:
+1. Loads `agent_manifests/{step}.json`
+2. Reads `default_params` section
+3. Passes ALL params to the script
+4. Script's internal defaults are **never used**
+
+### Real Example (2026-01-25 OOM Bug)
+
+**Symptom:** Step 3 ran with `chunk_size=5000` despite script having `CHUNK_SIZE=1000`
+
+**Root cause:**
+```json
+// agent_manifests/full_scoring.json
+"default_params": {
+    "chunk_size": 5000,  // ← THIS overrode script default
+    ...
+}
+```
+
+**Fix:** Changed manifest to `"chunk_size": 1000`
+
+### Debugging Checklist
+
+When a WATCHER-run step uses unexpected parameters:
+
+1. ✅ Check `agent_manifests/{step}.json` `default_params` FIRST
+2. ✅ Check script hardcoded defaults SECOND
+3. ✅ Check CLI `--params` if passed
+
+### Best Practice
+
+Keep manifest `default_params` and script defaults **in sync**:
+
+```bash
+# Verify consistency
+grep "chunk_size" agent_manifests/full_scoring.json
+grep "CHUNK_SIZE" run_step3_full_scoring.sh
+```
+
+
+### ⚠️ CRITICAL LESSON (2026-01-25)
+
+**When fixing params via CLI testing, ALWAYS update the manifest too!**
+
+| What Happens | CLI Run | WATCHER Run |
+|--------------|---------|-------------|
+| Config source | Script defaults / CLI args | Manifest `default_params` |
+| Your fix applies? | ✅ Yes | ❌ NO! |
+
+**Pattern that burns you:**
+1. Test via CLI: `python3 script.py --param 450` → Works!
+2. Update shell script: `--param 450` → Works!
+3. Run via WATCHER → Uses manifest's old value (25000) → Fails!
+
+**Fix:** After ANY successful CLI parameter tuning:
+```bash
+# Immediately update the manifest
+sed -i 's/"param": OLD/"param": NEW/' agent_manifests/step.json
+```

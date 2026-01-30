@@ -45,7 +45,6 @@ BUG FIX 2: Temporal stability optimization (reuse seq, no duplicate generation)
 BUG FIX 3: Team Beta's targeted VRAM limit for RX 6600 rigs only
 BUG FIX 4: Consolidated launch contention fix (PYTORCH_HIP_ALLOC_CONF)
 BUG FIX 5: Explicit two-step NumPy to GPU tensor transfer (ROCm stability)
-BUG FIX 6: NPZ v3.0 metadata preservation (Jan 23, 2026) - all 22 fields now loaded
 ```
 
 ### 1.3 Key Features
@@ -58,7 +57,6 @@ BUG FIX 6: NPZ v3.0 metadata preservation (Jan 23, 2026) - all 22 fields now loa
 | **Batch Processing** | Vectorized scoring for entire pools |
 | **Memory Management** | VRAM limits for 8GB GPUs |
 | **Holdout Integration** | Computes y-label for Step 5 ML training |
-| **NPZ v3.0 Input** | Loads 22 metadata fields from binary format |
 
 ### 1.4 HOLDOUT_HITS Integration (v2.0)
 
@@ -92,6 +90,48 @@ offset = len(train_history)  # THE ONLY SOURCE
 This ensures temporal causality: holdout data is the CONTINUATION of training data in the PRNG sequence.
 
 ---
+
+---
+
+## 1.5 Configuration Sources (CRITICAL)
+
+**Added: 2026-01-25** — Understand where parameters come from.
+
+### Parameter Source by Run Method
+
+| Run Method | Config Source | chunk_size Location |
+|------------|---------------|---------------------|
+| Manual: `bash run_step3_full_scoring.sh` | Script default | Line 70: `CHUNK_SIZE=1000` |
+| Manual with override: `bash run_step3_full_scoring.sh --chunk-size 500` | CLI argument | Passed directly |
+| WATCHER: `--start-step 3 --end-step 3` | Manifest | `agent_manifests/full_scoring.json` |
+| WATCHER with override: `--params '{"chunk_size": 500}'` | CLI params | Overrides manifest |
+
+### Key Insight
+
+**WATCHER ignores script defaults.** It reads `default_params` from the manifest and passes them explicitly to the script.
+
+### To Change chunk_size Permanently
+
+Update **BOTH** files:
+
+```bash
+# 1. Update script default (for manual runs)
+sed -i 's/^CHUNK_SIZE=.*/CHUNK_SIZE=1000/' run_step3_full_scoring.sh
+
+# 2. Update manifest default (for WATCHER runs)
+sed -i 's/"chunk_size": [0-9]*/"chunk_size": 1000/' agent_manifests/full_scoring.json
+
+# 3. Verify
+grep "CHUNK_SIZE=" run_step3_full_scoring.sh
+grep '"chunk_size"' agent_manifests/full_scoring.json
+```
+
+### OOM Prevention Reminder
+
+Use `chunk_size=1000` (not 5000) to prevent OOM on 7.7GB mining rigs:
+- 1000 seeds/chunk × ~500MB = safe for 12 concurrent workers
+- 5000 seeds/chunk × ~1.5GB = OOM with 7+ concurrent workers
+
 
 ## 2. Environment Setup
 
