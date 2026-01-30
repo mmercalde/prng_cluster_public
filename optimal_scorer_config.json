@@ -1,13 +1,13 @@
 {
-  "residue_mod_1": 10,
-  "residue_mod_2": 131,
-  "residue_mod_3": 1475,
-  "max_offset": 15,
-  "temporal_window_size": 65,
-  "temporal_num_windows": 3,
-  "min_confidence_threshold": 0.11698178900695902,
-  "hidden_layers": "512_256_128",
-  "dropout": 0.44235536922617735,
-  "learning_rate": 0.0013614571267972005,
+  "residue_mod_1": 11,
+  "residue_mod_2": 71,
+  "residue_mod_3": 1170,
+  "max_offset": 2,
+  "temporal_window_size": 91,
+  "temporal_num_windows": 10,
+  "min_confidence_threshold": 0.18605317173423191,
+  "hidden_layers": "128_64",
+  "dropout": 0.19635968563175885,
+  "learning_rate": 0.00032092669385600094,
   "batch_size": 128
 }
