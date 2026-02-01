@@ -61,9 +61,9 @@ The GPU cluster infrastructure provides:
         │                 │                 │
         ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   rig-6600    │ │   rig-6600b   │ │  rig-6600c    │
-│ 8× RX 6600   │ │ 12× RX 6600   │ │ 12× RX 6600   │
-│   ROCm 6.4.3    │ │   ROCm 6.4.3    │ │   ROCm 6.4.3    │
+│   rig-6600    │ │   rig-6600b   │ │  (planned)    │
+│ 12× RX 6600   │ │ 12× RX 6600   │ │ 12× RX 6600   │
+│   ROCm 5.7    │ │   ROCm 5.7    │ │   ROCm 5.7    │
 │   96GB VRAM   │ │   96GB VRAM   │ │   96GB VRAM   │
 └───────────────┘ └───────────────┘ └───────────────┘
 
@@ -75,9 +75,8 @@ Total: 26 GPUs • ~285 TFLOPS • 216GB VRAM
 | Node | GPUs | Arch | TFLOPS | Role |
 |------|------|------|--------|------|
 | Zeus | 2× RTX 3080 Ti | CUDA | ~70 | Coordinator + Worker |
-| rig-6600 | 8× RX 6600 | ROCm | ~71 | Worker |
-| rig-6600b | 8× RX 6600 | ROCm | ~71 | Worker |
-| rig-6600c | 8× RX 6600 | ROCm | ~71 | Worker |
+| rig-6600 | 12× RX 6600 | ROCm | ~108 | Worker |
+| rig-6600b | 12× RX 6600 | ROCm | ~108 | Worker |
 
 ---
 
@@ -201,7 +200,6 @@ PER_NODE_CONCURRENCY = {
     'zeus': 2,        # Strong CPU, can handle 2 concurrent
     'rig-6600': 1,    # Weak CPU, limit to 1
     'rig-6600b': 1,   # Weak CPU, limit to 1
-    'rig-6600c': 1,   # Weak CPU, limit to 1
 }
 ```
 
@@ -255,7 +253,7 @@ import socket
 HOST = socket.gethostname()
 
 # ROCm environment for AMD mining rigs
-if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
+if HOST in ["rig-6600", "rig-6600b"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
 
@@ -563,7 +561,7 @@ Prior assumptions about ROCm instability (HIP initialization collisions, GPU con
 # Validated ROCm configuration (RX 6600)
 # Tested: 2026-01-18, 100 trials, 100% success rate
 
-max_concurrent_script_jobs: 8      # Full GPU utilization
+max_concurrent_script_jobs: 12     # Full GPU utilization
 sample_size: 450                   # Optimal operating point
 ppfeaturemask: 0xffff7fff          # GFXOFF disabled
 cleanup: enabled                   # Best-effort GPU allocator cleanup between jobs
@@ -639,7 +637,7 @@ Step 3 (Full Scoring) requires ramdisk files on all nodes before distributed exe
 
 ```bash
 # From Zeus - deploy to all nodes
-for node in localhost 192.168.3.120 192.168.3.154 192.168.3.162; do
+for node in localhost 192.168.3.120 192.168.3.154; do
     if [ "$node" = "localhost" ]; then
         mkdir -p /dev/shm/prng/step3
         cp train_history.json holdout_history.json /dev/shm/prng/step3/

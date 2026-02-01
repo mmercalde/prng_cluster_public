@@ -1,0 +1,98 @@
+======================================================================
+📋 DOCUMENTATION UPDATER — rig-6600c Integration
+   Root: .
+   Mode: DRY RUN (preview only)
+   Backup: Yes
+======================================================================
+
+📂 Found 9 documentation files:
+   • COMPLETE_OPERATING_GUIDE_v1_1.md
+   • Cluster_operating_manual.txt
+   • README.md
+   • docs/CHAPTER_12_WATCHER_AGENT.md
+   • docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md
+   • docs/CHAPTER_4_FULL_SCORING.md
+   • docs/CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md
+   • docs/proposals/README.md
+   • instructions.txt
+
+============================================================
+📄 COMPLETE_OPERATING_GUIDE_v1_1.md
+============================================================
+  ✅ ROCm version update (1x)
+  🔍 DRY RUN — 1 replacements would be applied
+
+============================================================
+📄 Cluster_operating_manual.txt
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (2x)
+  ✅ Expected GPU count in test commands (2x)
+  ✅ Zeus python_env path (1x)
+  ✅ AMD nodes section header (1x)
+  ✅ Cluster manual: Hardware list (unix)
+  ✅ Cluster manual: Add rig-6600c test command (unix)
+  🔍 DRY RUN — 8 replacements would be applied
+
+============================================================
+📄 README.md
+============================================================
+  ℹ️  No changes needed
+
+============================================================
+📄 docs/CHAPTER_12_WATCHER_AGENT.md
+============================================================
+  ✅ Ch12: Remote nodes ramdisk warning
+  ✅ Ch12: Ramdisk status table add rig-6600c
+  🔍 DRY RUN — 2 replacements would be applied
+
+============================================================
+📄 docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md
+============================================================
+  ℹ️  No changes needed
+
+============================================================
+📄 docs/CHAPTER_4_FULL_SCORING.md
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (2x)
+  ✅ Ch4: rig-6600 comment
+  🔍 DRY RUN — 3 replacements would be applied
+
+============================================================
+📄 docs/CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (1x)
+  ✅ ROCm version update (3x)
+  ✅ Ch9: rig-6600 performance table
+  ✅ Ch9: rig-6600b performance table + add rig-6600c
+  ✅ Ch9: GPU count with unicode ×
+  ✅ Ch9: PER_NODE_CONCURRENCY add rig-6600c
+  ✅ Ch9: Ramdisk deployment loop add rig-6600c
+  ✅ Ch9: Validated config concurrency
+  ✅ Ch9: Replace (planned) with rig-6600c
+  🔍 DRY RUN — 11 replacements would be applied
+
+============================================================
+📄 docs/proposals/README.md
+============================================================
+  ℹ️  No changes needed
+
+============================================================
+📄 instructions.txt
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (2x)
+  ✅ Expected GPU count in test commands (2x)
+  ✅ Zeus python_env path (3x)
+  ✅ AMD nodes section header (1x)
+  ✅ instructions.txt: Hardware list (unix newlines)
+  ✅ instructions.txt: config example gpu_count (unix)
+  ✅ instructions.txt: Add rig-6600c test command
+  🔍 DRY RUN — 11 replacements would be applied
+
+======================================================================
+📊 SUMMARY
+======================================================================
+   Files scanned:     9
+   Files changed:     6
+   Total replacements: 36
+
+   ⚡ Run with --apply to write changes

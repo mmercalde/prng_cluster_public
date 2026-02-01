@@ -100,6 +100,8 @@ HOSTNAME_MAP = {
     "192.168.3.154": "rig-6600b",
     "rig-6600": "rig-6600",
     "rig-6600b": "rig-6600b",
+    "192.168.3.162": "rig-6600c",
+    "rig-6600c": "rig-6600c",
     "zeus": "zeus"
 }
 
@@ -244,7 +246,7 @@ def get_cluster_chunk_config(
     Uses the most constrained node's chunk size to ensure all jobs can run anywhere.
     """
     if nodes is None:
-        nodes = ["zeus", "rig-6600", "rig-6600b"]
+        nodes = ["zeus", "rig-6600", "rig-6600b", "rig-6600c"]
     
     # Find minimum chunk size across all nodes
     min_chunk_size = None
@@ -273,6 +275,13 @@ def get_cluster_chunk_config(
         chunk_size=min_chunk_size,
         total_chunks=len(chunks),
         survivors_per_node={},  # Distribution happens at runtime
+    # rig-6600c - 8GB RAM, 8 GPUs (same specs as rig-6600b)
+    "rig-6600c": {
+        "chunk_size": 5000,
+        "max_concurrent": 8,
+        "ram_gb": 8,
+        "gpu_count": 8
+    },
         estimated_ram_per_worker_mb=ram_per_worker
     )
 

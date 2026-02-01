@@ -68,7 +68,7 @@ from models.global_state_tracker import GlobalStateTracker, GLOBAL_FEATURE_NAMES
 HOST = socket.gethostname()
 
 # ROCm setup for AMD GPUs (rig-6600, rig-6600b)
-if HOST in ["rig-6600", "rig-6600b"]:
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
     os.environ.setdefault("ROCM_PATH", "/opt/rocm")
@@ -77,7 +77,7 @@ if HOST in ["rig-6600", "rig-6600b"]:
 # GPU isolation - MUST be set before torch import
 def setup_gpu_environment(gpu_id: int):
     """Configure GPU isolation for this worker process."""
-    if HOST in ["rig-6600", "rig-6600b"]:
+    if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
         # AMD ROCm
         os.environ["HIP_VISIBLE_DEVICES"] = str(gpu_id)
         os.environ["ROCR_VISIBLE_DEVICES"] = str(gpu_id)

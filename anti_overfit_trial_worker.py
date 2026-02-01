@@ -50,7 +50,7 @@ for i, arg in enumerate(sys.argv):
 
 if gpu_id is not None:
     # AMD ROCm nodes: rig-6600, rig-6600b, rig-6600xt
-    if any(x in hostname for x in ["rig-6600", "rig-6600b", "rig-6600xt"]):
+    if any(x in hostname for x in ["rig-6600", "rig-6600b", "rig-6600c", "rig-6600xt"]):
         # On ROCm, ALWAYS set HIP from gpu_id, independent of CUDA env
         os.environ["HIP_VISIBLE_DEVICES"] = str(gpu_id)
         if os.environ.get("CUDA_VISIBLE_DEVICES") is None:

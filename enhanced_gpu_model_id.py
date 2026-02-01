@@ -2,7 +2,7 @@
 # ===== ROCm/NVIDIA environment prelude (MUST be first, before importing cupy) =====
 import os as _os, socket as _socket
 _HOST = _socket.gethostname()
-if _HOST in ("rig-6600", "rig-6600b"):
+if _HOST in ("rig-6600", "rig-6600b", "rig-6600c"):
     _os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     _os.environ.setdefault("HSA_ENABLE_SDMA", "0")
     _os.environ.setdefault("ROCM_PATH", "/opt/rocm")

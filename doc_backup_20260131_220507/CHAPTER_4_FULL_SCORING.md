@@ -144,7 +144,7 @@ import sys, os, socket
 HOST = socket.gethostname()
 
 # AMD ROCm fixes + CRITICAL VRAM LAUNCH FIX
-if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
+if HOST in ["rig-6600", "rig-6600b"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
     # Forces allocator to use small chunks (128MB) and aggressively free memory
@@ -160,7 +160,7 @@ os.environ.setdefault('CUPY_CUDA_MEMORY_POOL_TYPE', 'none')
 
 ```python
 # Team Beta's targeted VRAM limit for RX 6600 rigs only
-if HOST in ["rig-6600", "rig-6600b", "rig-6600c"] and TORCH_AVAILABLE:
+if HOST in ["rig-6600", "rig-6600b"] and TORCH_AVAILABLE:
     if torch.cuda.is_available():
         # Limit PyTorch to 80% (6.4GB of 8GB) VRAM
         torch.cuda.set_per_process_memory_fraction(0.8)
@@ -228,7 +228,7 @@ ls -la /dev/shm/prng/step3/  # Zeus
 mkdir -p /dev/shm/prng/step3
 cp train_history.json holdout_history.json /dev/shm/prng/step3/
 
-# On rig-6600 / rig-6600c
+# On rig-6600
 ssh 192.168.3.120 "mkdir -p /dev/shm/prng/step3"
 scp train_history.json holdout_history.json 192.168.3.120:/dev/shm/prng/step3/
 

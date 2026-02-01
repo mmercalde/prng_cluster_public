@@ -413,7 +413,7 @@ Your response must be valid JSON only, no markdown or explanation.
             'success_criteria_met': self.result.success if self.result else False,
             'retry_count': 0,
             'cluster_resources': {
-                'nodes': ['zeus', 'rig-6600', 'rig-6600b'],
+                'nodes': ['zeus', 'rig-6600', 'rig-6600b', 'rig-6600c'],
                 'total_gpus': 26,
                 'total_tflops': 285.69
             },

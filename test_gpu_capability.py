@@ -19,7 +19,7 @@ import time
 HOST = socket.gethostname()
 print(f"Host: {HOST}")
 
-if HOST in ["rig-6600", "rig-6600b"]:
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
     os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", 
@@ -68,7 +68,7 @@ try:
             print(f"  Device {i}: {torch.cuda.get_device_name(i)}")
         
         # Limit VRAM for RX 6600
-        if HOST in ["rig-6600", "rig-6600b"]:
+        if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
             torch.cuda.set_per_process_memory_fraction(0.8)
             print("VRAM limited to 80% (6.4GB)")
         

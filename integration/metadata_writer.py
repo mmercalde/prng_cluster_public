@@ -349,7 +349,7 @@ def get_default_cluster_resources() -> Dict[str, Any]:
     Can be overridden by passing custom cluster_resources to inject_agent_metadata.
     """
     return {
-        "nodes": ["zeus", "rig-6600", "rig-6600b"],
+        "nodes": ["zeus", "rig-6600", "rig-6600b", "rig-6600c"],
         "total_gpus": 26,
         "total_tflops": 285.69,
         "platform": "Mixed CUDA/ROCm"

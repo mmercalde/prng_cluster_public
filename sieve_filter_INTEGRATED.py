@@ -35,7 +35,7 @@ from typing import List, Dict, Any, Optional, Tuple
 # ROCm environment setup - MUST BE FIRST
 import socket
 HOST = socket.gethostname()
-if HOST in ["rig-6600", "rig-6600b"]:
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
 os.environ.setdefault("ROCM_PATH", "/opt/rocm")

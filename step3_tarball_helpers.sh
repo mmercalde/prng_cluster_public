@@ -131,7 +131,7 @@ distribute_chunks_all_rigs() {
     local remote_path="${2:-/home/michael/distributed_prng_analysis/scoring_chunks}"
     
     local rigs=("192.168.3.120" "192.168.3.154")
-    local rig_names=("rig-6600" "rig-6600b")
+    local rig_names=("rig-6600" "rig-6600b" "rig-6600c")
     
     echo ""
     echo "========================================"

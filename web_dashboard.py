@@ -928,6 +928,12 @@ STATS_CONTENT = """
                 <td>8GB</td>
                 <td>~113 TFLOPS</td>
             </tr>
+                <tr>
+                <td>rig-6600c (192.168.3.162)</td>
+                <td>8× RX 6600</td>
+                <td>ROCm</td>
+                <td>Worker Node 3</td>
+                </tr>
         </tbody>
     </table>
 </div>

@@ -561,7 +561,7 @@ When WATCHER runs Step 3, it performs ramdisk preload:
 
 **"Standalone mode" means:** Only the local node (Zeus) is populated.
 
-Remote nodes (rig-6600, rig-6600b, rig-6600c) are **NOT** automatically populated.
+Remote nodes (rig-6600, rig-6600b) are **NOT** automatically populated.
 
 ### Impact on Distributed Execution
 
@@ -570,7 +570,6 @@ Remote nodes (rig-6600, rig-6600b, rig-6600c) are **NOT** automatically populate
 | Zeus (local) | ✅ Yes | Work |
 | rig-6600 | ❌ No | Fail immediately |
 | rig-6600b | ❌ No | Fail immediately |
-| rig-6600c | ❌ No | Fail immediately |
 
 ### Workaround
 

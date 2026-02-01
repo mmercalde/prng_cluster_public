@@ -19,7 +19,7 @@ import sys, os, json, logging, time, socket
 HOST = socket.gethostname()
 
 # AMD ROCm fixes + CRITICAL VRAM LAUNCH FIX
-if HOST in ["rig-6600", "rig-6600b"]:
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
     # CRITICAL: Forces allocator to use small chunks (128MB) and aggressively free memory.
@@ -58,7 +58,7 @@ except ImportError:
 
 # BUG FIX 3: Team Beta's targeted VRAM limit for RX 6600 rigs only
 # This prevents OOM kills on 8GB AMD GPUs while leaving RTX 3080 Ti unrestricted
-if HOST in ["rig-6600", "rig-6600b"] and TORCH_AVAILABLE:
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"] and TORCH_AVAILABLE:
     if torch.cuda.is_available():
         # Limit PyTorch to 80% (6.4GB of 8GB) VRAM on RX 6600 rigs
         # This is the secondary safeguard, enforced by Python runtime.

@@ -59,7 +59,7 @@ The Distributed PRNG Analysis System is a sophisticated GPU-accelerated platform
 - Python 3.10+ with PyTorch, CuPy, NumPy, SciPy, Optuna, scikit-learn
 - XGBoost, LightGBM, CatBoost for multi-model comparison (NEW Session 9)
 - CUDA 12.x on Zeus for NVIDIA GPUs
-- ROCm 6.4.3 on mining rigs for AMD GPUs
+- ROCm 5.7+ on mining rigs for AMD GPUs
 - Paramiko for SSH connection pooling
 
 ## 1.4 Data Flow Overview

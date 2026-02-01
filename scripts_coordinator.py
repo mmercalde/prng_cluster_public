@@ -76,7 +76,7 @@ ROCM_ENV_VARS = [
 STAGGER_LOCALHOST = 3.0   # seconds - CUDA init collision prevention
 STAGGER_REMOTE = 2.0      # seconds - ROCm needs less separation
 
-ROCM_HOSTNAMES = ['192.168.3.120', '192.168.3.154', 'rig-6600', 'rig-6600b']
+ROCM_HOSTNAMES = ['192.168.3.120', '192.168.3.154', '192.168.3.162', 'rig-6600', 'rig-6600b', 'rig-6600c']
 # =============================================================================
 # JOB BATCHING (Team Beta Approved - 2026-01-22)
 # =============================================================================
@@ -106,7 +106,7 @@ DEFAULT_MAX_JOBS_PER_NODE_PER_BATCH = 6   # ROCm nodes crash with >6 simultaneou
 DEFAULT_INTER_BATCH_COOLDOWN = 5.0        # Seconds between batches
 
 # Step 3 (Full Scoring) - heavier workload requires conservative limits
-STEP3_MAX_JOBS_PER_NODE_PER_BATCH = 12     # Full GPU utilization (12 per node)
+STEP3_MAX_JOBS_PER_NODE_PER_BATCH = 8     # Full GPU utilization (8 per node)
 STEP3_INTER_BATCH_COOLDOWN = 5.0         # Standard cooldown (5s)
 
 # Legacy aliases (for backward compatibility with any direct references)

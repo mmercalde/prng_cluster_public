@@ -15,7 +15,7 @@ import os, socket
 HOST = socket.gethostname()
 
 # Apply ROCm overrides for AMD systems BEFORE any GPU library imports
-if HOST in ["rig-6600", "rig-6600b"]:
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
     # Harden library paths for subprocesses
@@ -97,7 +97,7 @@ def set_gpu_device(gpu_id: int):
         hostname = socket.gethostname()
         # Only set visibility if coordinator hasn't already done so.
         if 'CUDA_VISIBLE_DEVICES' not in os.environ and 'HIP_VISIBLE_DEVICES' not in os.environ:
-            if hostname in ["rig-6600", "rig-6600b"]:
+            if hostname in ["rig-6600", "rig-6600b", "rig-6600c"]:
                 os.environ['HIP_VISIBLE_DEVICES'] = str(gpu_id)
             else:
                 os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
@@ -127,7 +127,7 @@ def set_gpu_device(gpu_id: int):
 def detect_hardware():
     """Detect hardware type for optimization"""
     hostname = socket.gethostname()
-    if hostname in ["rig-6600", "rig-6600b"]:
+    if hostname in ["rig-6600", "rig-6600b", "rig-6600c"]:
         return "AMD", True  # AMD, mining_capable
     else:
         return "NVIDIA", False  # NVIDIA, not mining optimized
@@ -343,7 +343,7 @@ def execute_analysis_job(job_data: Dict[str, Any], args) -> Dict[str, Any]:
                         if args.gpu_id is not None:
                             hostname = socket.gethostname()
                             # ROCm remotes: ALWAYS set HIP (required for AMD GPUs)
-                            if hostname in ["rig-6600", "rig-6600b", "rig-6600xt"]:
+                            if hostname in ["rig-6600", "rig-6600b", "rig-6600c", "rig-6600xt"]:
                                 proc_env['HIP_VISIBLE_DEVICES'] = str(args.gpu_id)
                                 proc_env['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
                             else:

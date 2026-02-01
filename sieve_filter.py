@@ -24,7 +24,7 @@ Version 2.3 - October 29, 2025
 import os, socket
 HOST = socket.gethostname()
 # Force ROCm compatibility on RX 6600/XT rigs
-if HOST in ("rig-6600", "rig-6600b"):
+if HOST in ("rig-6600", "rig-6600b", "rig-6600c"):
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
 # Common ROCm include/lib search (harmless if already set)

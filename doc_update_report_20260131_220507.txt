@@ -1,0 +1,133 @@
+======================================================================
+📋 DOCUMENTATION UPDATER — rig-6600c Integration
+   Root: .
+   Mode: APPLY
+   Backup: Yes
+======================================================================
+
+📂 Found 9 documentation files:
+   • COMPLETE_OPERATING_GUIDE_v1_1.md
+   • Cluster_operating_manual.txt
+   • README.md
+   • docs/CHAPTER_12_WATCHER_AGENT.md
+   • docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md
+   • docs/CHAPTER_4_FULL_SCORING.md
+   • docs/CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md
+   • docs/proposals/README.md
+   • instructions.txt
+
+============================================================
+📄 COMPLETE_OPERATING_GUIDE_v1_1.md
+============================================================
+  ✅ ROCm version update (1x)
+  📦 Backup: doc_backup_20260131_220507/COMPLETE_OPERATING_GUIDE_v1_1.md
+  💾 WRITTEN — 1 replacements applied
+
+============================================================
+📄 Cluster_operating_manual.txt
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (2x)
+  ✅ Expected GPU count in test commands (2x)
+  ✅ Zeus python_env path (1x)
+  ✅ AMD nodes section header (1x)
+  ✅ Cluster manual: Hardware list (unix)
+  ✅ Cluster manual: Add rig-6600c test command (unix)
+  📦 Backup: doc_backup_20260131_220507/Cluster_operating_manual.txt
+  💾 WRITTEN — 8 replacements applied
+
+============================================================
+📄 README.md
+============================================================
+  ℹ️  No changes needed
+
+============================================================
+📄 docs/CHAPTER_12_WATCHER_AGENT.md
+============================================================
+  ✅ Ch12: Remote nodes ramdisk warning
+  ✅ Ch12: Ramdisk status table add rig-6600c
+  📦 Backup: doc_backup_20260131_220507/CHAPTER_12_WATCHER_AGENT.md
+  💾 WRITTEN — 2 replacements applied
+
+============================================================
+📄 docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md
+============================================================
+  ℹ️  No changes needed
+
+============================================================
+📄 docs/CHAPTER_4_FULL_SCORING.md
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (2x)
+  ✅ Ch4: rig-6600 comment
+  📦 Backup: doc_backup_20260131_220507/CHAPTER_4_FULL_SCORING.md
+  💾 WRITTEN — 3 replacements applied
+
+============================================================
+📄 docs/CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (1x)
+  ✅ ROCm version update (3x)
+  ✅ Ch9: rig-6600 performance table
+  ✅ Ch9: rig-6600b performance table + add rig-6600c
+  ✅ Ch9: GPU count with unicode ×
+  ✅ Ch9: PER_NODE_CONCURRENCY add rig-6600c
+  ✅ Ch9: Ramdisk deployment loop add rig-6600c
+  ✅ Ch9: Validated config concurrency
+  ✅ Ch9: Replace (planned) with rig-6600c
+  📦 Backup: doc_backup_20260131_220507/CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md
+  💾 WRITTEN — 11 replacements applied
+
+============================================================
+📄 docs/proposals/README.md
+============================================================
+  ℹ️  No changes needed
+
+============================================================
+📄 instructions.txt
+============================================================
+  ✅ ROCm prelude hostname check (list, double-quote) (2x)
+  ✅ Expected GPU count in test commands (2x)
+  ✅ Zeus python_env path (3x)
+  ✅ AMD nodes section header (1x)
+  ✅ instructions.txt: Hardware list (unix newlines)
+  ✅ instructions.txt: config example gpu_count (unix)
+  ✅ instructions.txt: Add rig-6600c test command
+  📦 Backup: doc_backup_20260131_220507/instructions.txt
+  💾 WRITTEN — 11 replacements applied
+
+============================================================
+🔍 POST-UPDATE VERIFICATION
+============================================================
+
+  ⚠️  REMAINING ISSUES in COMPLETE_OPERATING_GUIDE_v1_1.md:
+     → Remaining '12 GPU' reference: 12× RX 6600
+     → Line 8: rig-6600b without rig-6600c: Zeus (2× RTX 3080 Ti) + rig-6600 (12× RX 6600) + rig-6600b (12× RX 6600)
+     → Line 52: rig-6600b without rig-6600c: | rig-6600b | RX 6600 (8GB) | 12 | ROCm / HIP |
+     → Line 55: rig-6600b without rig-6600c: **IP Addresses:** rig-6600 (192.168.3.120), rig-6600b (192.168.3.154)
+
+  ⚠️  REMAINING ISSUES in Cluster_operating_manual.txt:
+     → Remaining '12 GPU' reference: gpu_count": 12
+     → Remaining '12 GPU' reference: "gpu_count": 12
+
+  ⚠️  REMAINING ISSUES in README.md:
+     → Remaining '12 GPU' reference: 12× RX 6600
+     → Line 132: rig-6600b without rig-6600c: | rig-6600b | 12× RX 6600 | ROCm | Worker Node 2 |
+
+  ⚠️  REMAINING ISSUES in CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md:
+     → Remaining '12 GPU' reference: 12× RX 6600
+
+  ⚠️  REMAINING ISSUES in README.md:
+     → Remaining '12 GPU' reference: 12× RX 6600
+     → Line 110: rig-6600b without rig-6600c: | rig-6600b | 12× RX 6600 | ROCm | Worker Node 2 |
+
+  ⚠️  REMAINING ISSUES in instructions.txt:
+     → Remaining '12 GPU' reference: 12x RX 6600
+     → Remaining '12 GPU' reference: gpu_count": 12
+     → Remaining '12 GPU' reference: "gpu_count": 12
+     → Line 1584: rig-6600b without rig-6600c: - **rig-6600b (192.168.3.154)**: 12x RX 6600 (ROCm)
+
+======================================================================
+📊 SUMMARY
+======================================================================
+   Files scanned:     9
+   Files changed:     6
+   Total replacements: 36

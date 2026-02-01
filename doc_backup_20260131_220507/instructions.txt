@@ -133,9 +133,8 @@ python3 create_xorshift32_hybrid_test.py
 ```
 ## Hardware Architecture
 - **Zeus (Coordinator)**: 2x RTX 3080 Ti (CUDA)
-- **rig-6600 (192.168.3.120)**: 8x RX 6600 (ROCm)
-- **rig-6600b (192.168.3.154)**: 8x RX 6600 (ROCm)
-- **rig-6600c (192.168.3.162)**: 8x RX 6600 (ROCm)
+- **rig-6600 (192.168.3.120)**: 12x RX 6600 (ROCm)
+- **rig-6600b (192.168.3.154)**: 12x RX 6600 (ROCm)
 - **Total**: 26 GPUs, ~285.69 TFLOPS computational power
 
 ## Core System Files
@@ -546,7 +545,7 @@ import os, socket
 HOST = socket.gethostname()
 
 # Apply ROCm overrides for AMD systems
-if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
+if HOST in ["rig-6600", "rig-6600b"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
 
@@ -651,7 +650,7 @@ python3 sieve_filter.py --job-file test_job.json --gpu-id 0
 # Expected: JSON output with survivor results
 ```
 
-### AMD Nodes (All rig-6600 systems)
+### AMD Nodes (Both rig-6600 systems)
 **Critical Requirement**: ROCm environment variables must be set BEFORE any GPU imports.
 
 **File Requirements**: All GPU-intensive files must contain ROCm prelude:
@@ -664,7 +663,7 @@ import os, socket
 HOST = socket.gethostname()
 
 # Apply ROCm overrides for AMD systems
-if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
+if HOST in ["rig-6600", "rig-6600b"]:
     os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     os.environ.setdefault("HSA_ENABLE_SDMA", "0")
 
@@ -686,15 +685,11 @@ import cupy as cp
 ```bash
 # Test rig-6600
 ssh 192.168.3.120 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
-# Expected: 8
+# Expected: 12
 
 # Test rig-6600b
 ssh 192.168.3.154 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
-# Expected: 8
-
-# Test rig-6600c
-ssh 192.168.3.162 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
-# Expected: 8
+# Expected: 12
 
 # NEW: Test sieve on AMD nodes
 ssh 192.168.3.120 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 sieve_filter.py --job-file test_job.json --gpu-id 0'
@@ -713,12 +708,12 @@ ssh 192.168.3.120 'source ~/rocm_env/bin/activate && cd distributed_prng_analysi
       "gpu_count": 2,
       "gpu_type": "RTX 3080 Ti",
       "script_path": "/home/michael/distributed_prng_analysis",
-      "python_env": "/home/michael/venvs/torch/bin/python"
+      "python_env": "/home/michael/venvs/tf/bin/python"
     },
     {
       "hostname": "192.168.3.120",
       "username": "michael",
-      "gpu_count": 8,
+      "gpu_count": 12,
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
@@ -2115,7 +2110,7 @@ Results saved: results/multi_gpu_analysis_1760850510.json
       "gpu_count": 2,
       "gpu_type": "RTX 3080 Ti",
       "script_path": "/home/michael/distributed_prng_analysis",
-      "python_env": "/home/michael/venvs/torch/bin/python"
+      "python_env": "/home/michael/venvs/tf/bin/python"
     },
     {
       "hostname": "192.168.3.120",
@@ -2172,7 +2167,7 @@ ssh 192.168.3.154 "ls -lh ~/distributed_prng_analysis/{coordinator,sieve_filter,
 ```bash
 # Check Python environment
 which python3
-# Should show: /home/michael/venvs/torch/bin/python3 (or torch)
+# Should show: /home/michael/venvs/tf/bin/python3 (or torch)
 
 # If not:
 source ~/venvs/tf/bin/activate
