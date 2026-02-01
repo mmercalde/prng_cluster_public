@@ -62,9 +62,9 @@ The GPU cluster infrastructure provides:
         ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
 │   rig-6600    │ │   rig-6600b   │ │  rig-6600c    │
-│ 8× RX 6600   │ │ 12× RX 6600   │ │ 12× RX 6600   │
+│ 8× RX 6600   │ │ 8× RX 6600   │ │ 8× RX 6600   │
 │   ROCm 6.4.3    │ │   ROCm 6.4.3    │ │   ROCm 6.4.3    │
-│   96GB VRAM   │ │   96GB VRAM   │ │   96GB VRAM   │
+│   64GB VRAM   │ │   64GB VRAM   │ │   64GB VRAM   │
 └───────────────┘ └───────────────┘ └───────────────┘
 
 Total: 26 GPUs • ~285 TFLOPS • 216GB VRAM

@@ -5,7 +5,7 @@
 **Updated: Session 17 (Dec 27, 2025)**
 
 ### 26-GPU Cluster Architecture
-Zeus (2× RTX 3080 Ti) + rig-6600 (12× RX 6600) + rig-6600b (12× RX 6600)  
+Zeus (2× RTX 3080 Ti) + rig-6600 (8× RX 6600) + rig-6600b (8× RX 6600)  
 ~285 TFLOPS Combined Computing Power
 
 ---
@@ -582,7 +582,7 @@ ROCm workers set both `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES` for PyTor
 
 ### Prerequisites
 
-- SSH keys configured for passwordless access to rig-6600 and rig-6600b
+- SSH keys configured for passwordless access to rig-6600, rig-6600b, and rig-6600c
 - ROCm drivers installed and working on mining rigs
 - Python environments activated (torch on Zeus, rocm_env on rigs)
 - Shared filesystem or synchronized code across nodes

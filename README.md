@@ -128,8 +128,8 @@ The system includes a complete AI agent framework for autonomous pipeline execut
 | Node | GPUs | Type | Purpose |
 |------|------|------|---------|
 | Zeus (Primary) | 2× RTX 3080 Ti | CUDA | Orchestration, LLM hosting, job generation |
-| rig-6600 | 12× RX 6600 | ROCm | Worker Node 1 |
-| rig-6600b | 12× RX 6600 | ROCm | Worker Node 2 |
+| rig-6600 | 8× RX 6600 | ROCm | Worker Node 1 |
+| rig-6600b | 8× RX 6600 | ROCm | Worker Node 2 |
 | **Total** | **26 GPUs** | | **~285 TFLOPS** |
 
 ### ROCm Activation (AMD rigs)
