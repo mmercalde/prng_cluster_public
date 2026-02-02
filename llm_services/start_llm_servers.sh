@@ -1,129 +1,106 @@
 #!/bin/bash
-# ============================================================================
-# LLM Server Startup Script v2.0.0
-# Starts DeepSeek-R1-14B as primary WATCHER agent
-# Backup (Claude Opus) is via Claude Code CLI - no server needed
-# ============================================================================
+# ============================================================
+# LLM Server Startup Script
+# Version: 2.1.0 (Session 57 — context window 8K → 32K)
+# Date: 2026-02-01
+# ============================================================
+#
+# Starts DeepSeek-R1-14B on llama.cpp server (port 8080)
+# Partitioned across BOTH RTX 3080 Ti GPUs (n_gpu_layers=99)
+#
+# Context: 32768 tokens (was 8192)
+# KV cache estimate: ~2.6GB per GPU
+# VRAM headroom: ~5.15GB per GPU
+# ============================================================
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MODEL_DIR="${PROJECT_DIR}/models"
-LLAMA_CPP="${HOME}/llama.cpp"
-LOG_DIR="${PROJECT_DIR}/logs/llm"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+CONFIG_FILE="$SCRIPT_DIR/llm_server_config.json"
 
-mkdir -p "$LOG_DIR"
+# Model path — adjust if model lives elsewhere
+MODEL_DIR="$HOME/models"
+MODEL_FILE="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
+MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
 
-echo "=============================================="
-echo "  Distributed PRNG Analysis - LLM Server v2.0"
-echo "=============================================="
-echo ""
-echo "Architecture: DeepSeek-R1-14B (primary) + Claude Opus (backup)"
-echo ""
-echo "Model Directory: $MODEL_DIR"
-echo "Log Directory: $LOG_DIR"
-echo ""
+# Server settings
+PORT=8080
+CTX_SIZE=32768
+N_GPU_LAYERS=99
+THREADS=4
 
-# Check primary model exists
-PRIMARY_MODEL="${MODEL_DIR}/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
+# ---- Pre-flight checks ----
 
-if [[ ! -f "$PRIMARY_MODEL" ]]; then
-    echo "❌ ERROR: Primary model not found: $PRIMARY_MODEL"
-    echo ""
-    echo "   Download with:"
-    echo "   huggingface-cli download bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF \\"
-    echo "       DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf --local-dir $MODEL_DIR"
+if [ ! -f "$MODEL_PATH" ]; then
+    echo "❌ Model not found: $MODEL_PATH"
+    echo "   Expected: $MODEL_FILE"
     exit 1
 fi
 
-echo "✅ Primary model found: $(basename $PRIMARY_MODEL)"
-echo "   Size: $(ls -lh "$PRIMARY_MODEL" | awk '{print $5}')"
-echo ""
+echo "✅ Primary model found: $MODEL_FILE"
 
-# Kill existing servers
-echo "Stopping any existing LLM servers..."
-pkill -f "llama-server.*port 8080" 2>/dev/null || true
-sleep 2
+# Check if server already running
+if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+    echo "⚠️  Server already running on port $PORT"
+    echo "   Kill with: pkill -f 'llama-server'"
+    exit 0
+fi
 
-# Start Primary on both GPUs (Vulkan auto-splits)
-echo "Starting Primary (DeepSeek-R1-14B) on port 8080..."
-echo "   Backend: Vulkan (auto GPU split)"
-echo ""
+# ---- Start primary (DeepSeek-R1-14B) ----
 
-nohup "${LLAMA_CPP}/llama-server" \
-    --model "$PRIMARY_MODEL" \
-    --port 8080 \
-    --ctx-size 8192 \
-    --n-gpu-layers 99 \
-    --threads 12 \
-    --batch-size 2048 \
-    --host 0.0.0.0 \
-    > "${LOG_DIR}/primary.log" 2>&1 &
+echo "Starting DeepSeek-R1-14B on port $PORT..."
+echo "  ctx_size=$CTX_SIZE, kv_cache_est≈2.6GB/GPU, n_gpu_layers=$N_GPU_LAYERS"
+
+nohup llama-server \
+    --model "$MODEL_PATH" \
+    --port $PORT \
+    --ctx-size $CTX_SIZE \
+    --n-gpu-layers $N_GPU_LAYERS \
+    --threads $THREADS \
+    --log-disable \
+    > /tmp/llm_server_primary.log 2>&1 &
 
 PRIMARY_PID=$!
-echo "   PID: $PRIMARY_PID"
+echo "  PID: $PRIMARY_PID"
 
-# Wait for server to initialize
-echo ""
-echo "Waiting for server to initialize (20 seconds)..."
-sleep 20
+# ---- Wait for health ----
 
-# Health check
-echo ""
-echo "Performing health check..."
-
-check_health() {
-    local name=$1
-    local port=$2
-    if curl -s --max-time 5 "http://localhost:${port}/health" > /dev/null 2>&1; then
-        echo "   ✅ $name (port $port): HEALTHY"
-        return 0
-    else
-        echo "   ❌ $name (port $port): NOT RESPONDING"
-        return 1
+echo -n "Waiting for health check..."
+MAX_WAIT=30
+for i in $(seq 1 $MAX_WAIT); do
+    if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+        echo " ready! (${i}s)"
+        break
     fi
-}
+    if [ $i -eq $MAX_WAIT ]; then
+        echo " TIMEOUT after ${MAX_WAIT}s"
+        echo "❌ Server failed to start. Check /tmp/llm_server_primary.log"
+        exit 1
+    fi
+    echo -n "."
+    sleep 1
+done
 
-HEALTHY=true
-check_health "Primary (DeepSeek-R1-14B)" 8080 || HEALTHY=false
+# ---- Verify backup ----
 
-# Check Claude Code availability
-echo ""
-echo "Checking backup availability..."
 if command -v claude &> /dev/null; then
-    echo "   ✅ Claude Code CLI: AVAILABLE"
+    echo "✅ Claude Code CLI: AVAILABLE"
 else
-    echo "   ⚠️  Claude Code CLI: NOT INSTALLED"
-    echo "      Install with: npm install -g @anthropic-ai/claude-code && claude login"
+    echo "⚠️  Claude Code CLI: NOT FOUND (backup unavailable)"
 fi
 
+# ---- Summary ----
+
 echo ""
-if $HEALTHY; then
-    echo "=============================================="
-    echo "  ✅ LLM Server started successfully!"
-    echo "=============================================="
-    echo ""
-    echo "Primary Endpoint:"
-    echo "  http://localhost:8080/completion"
-    echo ""
-    echo "Backup (Claude Opus 4.5):"
-    echo "  Via Claude Code CLI (no server needed)"
-    echo ""
-    echo "Benchmarks:"
-    echo "  Primary:  51 tok/s (prompt: 1472 tok/s)"
-    echo "  Backup:   38 tok/s (via Claude Code)"
-    echo ""
-    echo "Logs:"
-    echo "  ${LOG_DIR}/primary.log"
-    echo ""
-    echo "To stop server:"
-    echo "  pkill -f 'llama-server.*port 8080'"
-else
-    echo "=============================================="
-    echo "  ⚠️  Server failed to start!"
-    echo "=============================================="
-    echo ""
-    echo "Check logs: ${LOG_DIR}/primary.log"
-    exit 1
-fi
+echo "============================================================"
+echo "LLM Infrastructure Ready"
+echo "  Primary: DeepSeek-R1-14B (port $PORT)"
+echo "  Context: $CTX_SIZE tokens"
+echo "  GPU layers: $N_GPU_LAYERS (dual 3080 Ti partition)"
+echo "  Startup: ${i}s"
+echo "============================================================"
+echo ""
+echo "LLM ctx_size=$CTX_SIZE, kv_cache_est≈2.6GB/GPU"
+echo ""
+echo "Stop with: pkill -f 'llama-server'"

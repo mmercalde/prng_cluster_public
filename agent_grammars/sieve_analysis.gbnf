@@ -1,0 +1,43 @@
+# Sieve Analysis Grammar
+# Step 2: Bidirectional sieve result interpretation
+#
+# VERSION: 1.0.0
+# DATE: 2026-02-01
+# SESSION: 57
+#
+# Used by: WATCHER for Step 2 (Bidirectional Sieve) evaluation
+# Selfplay role: If selfplay outer episodes trigger re-sieving via coordinator,
+#                WATCHER evaluates the result with this grammar
+# Purpose: Force the LLM to interpret sieve results with structured assessment
+#
+# survivor_assessment levels:
+#   excellent ≥100K, adequate ≥50K, marginal ≥10K, insufficient <10K
+#
+# Example output:
+# {"decision":"proceed","confidence":0.85,"survivor_assessment":"adequate",
+#  "forward_reverse_balance":"balanced","recommended_seed_action":"keep_current",
+#  "reasoning":"73K bidirectional survivors with good forward/reverse overlap ratio."}
+
+root ::= "{" ws
+    "\"decision\"" ws ":" ws decision-value ws "," ws
+    "\"confidence\"" ws ":" ws confidence-value ws "," ws
+    "\"survivor_assessment\"" ws ":" ws survivor-assessment ws "," ws
+    "\"forward_reverse_balance\"" ws ":" ws balance-value ws "," ws
+    "\"recommended_seed_action\"" ws ":" ws seed-action ws "," ws
+    "\"reasoning\"" ws ":" ws string
+    ws "}"
+
+decision-value ::= "\"proceed\"" | "\"retry\"" | "\"escalate\""
+
+survivor-assessment ::= "\"excellent\"" | "\"adequate\"" | "\"marginal\"" | "\"insufficient\""
+
+balance-value ::= "\"balanced\"" | "\"forward_heavy\"" | "\"reverse_heavy\"" | "\"severe_imbalance\""
+
+seed-action ::= "\"keep_current\"" | "\"increase_seeds\"" | "\"decrease_seeds\"" | "\"adjust_thresholds\""
+
+confidence-value ::= "0" ("." [0-9]+)? | "1" (".0")? | "0." [0-9]+
+
+string ::= "\"" string-content "\""
+string-content ::= ([^"\\] | "\\" ["\\/bfnrt])*
+
+ws ::= [ \t\n\r]*

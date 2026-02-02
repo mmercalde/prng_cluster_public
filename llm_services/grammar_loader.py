@@ -1,259 +1,210 @@
 #!/usr/bin/env python3
 """
-Grammar Loader - GBNF Grammar Management for LLM Constrained Decoding
-File: llm_services/grammar_loader.py
-Version: 1.0.0
-Date: December 6, 2025
+GBNF Grammar Loader for LLM Constrained Decoding.
 
-Purpose:
-    Loads and manages GBNF grammar files for constraining LLM output.
-    Provides grammar selection based on request type.
+Version: 1.1.0 (was 1.0.0)
+Date: 2026-02-01 (Session 57)
+Chapter: 10 §7
 
-Usage:
-    from llm_services.grammar_loader import GrammarLoader
-    
-    loader = GrammarLoader()
-    grammar = loader.get_grammar("agent_decision")
-    
-    # In LLM call
-    response = llm.complete(prompt, grammar=grammar)
+Changes from v1.0.0:
+    - Fixed GRAMMAR_DIR to use os.path resolution instead of hardcoded relative path
+      (resolves to distributed_prng_analysis/agent_grammars/ regardless of CWD)
+    - Added explicit GRAMMAR_FILES mapping from GrammarType enum to filenames
+    - Added get_grammar_content() for direct grammar text loading
+    - Added list_available_grammars() for diagnostics
 
-Grammar Files:
-    - agent_decision.gbnf     : Agent evaluation responses (proceed/retry/escalate)
-    - sieve_analysis.gbnf     : Sieve result interpretation
-    - parameter_adjustment.gbnf: Parameter change suggestions
-    - json_generic.gbnf       : Fallback for any valid JSON
+Note: chapter_13.gbnf is NOT mapped through GrammarType — it's loaded directly
+by the Chapter 13 LLM advisor via filename. No change needed there.
 """
 
+import logging
 import os
-from pathlib import Path
-from typing import Optional, Dict
 from enum import Enum
+from pathlib import Path
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class GrammarType(str, Enum):
-    """Available grammar types for constrained decoding."""
+    """Available grammar types for constrained decoding.
+
+    Each type maps to a .gbnf file in agent_grammars/.
+    """
+
     AGENT_DECISION = "agent_decision"
     SIEVE_ANALYSIS = "sieve_analysis"
     PARAMETER_ADJUSTMENT = "parameter_adjustment"
     JSON_GENERIC = "json_generic"
 
 
-# Map request patterns to grammar types
-REQUEST_GRAMMAR_MAP = {
-    # Agent decision patterns
-    "evaluate": GrammarType.AGENT_DECISION,
-    "decision": GrammarType.AGENT_DECISION,
-    "success_condition": GrammarType.AGENT_DECISION,
-    "proceed": GrammarType.AGENT_DECISION,
-    "retry": GrammarType.AGENT_DECISION,
-    
-    # Sieve analysis patterns
-    "sieve": GrammarType.SIEVE_ANALYSIS,
-    "survivors": GrammarType.SIEVE_ANALYSIS,
-    "forward": GrammarType.SIEVE_ANALYSIS,
-    "reverse": GrammarType.SIEVE_ANALYSIS,
-    "bidirectional": GrammarType.SIEVE_ANALYSIS,
-    
-    # Parameter adjustment patterns
-    "adjust": GrammarType.PARAMETER_ADJUSTMENT,
-    "parameter": GrammarType.PARAMETER_ADJUSTMENT,
-    "window_size": GrammarType.PARAMETER_ADJUSTMENT,
-    "threshold": GrammarType.PARAMETER_ADJUSTMENT,
-    "suggest": GrammarType.PARAMETER_ADJUSTMENT,
+# ── Path Resolution (v1.1.0 fix) ────────────────────────────────────
+# Resolves to distributed_prng_analysis/agent_grammars/ regardless of CWD.
+# This file lives at llm_services/grammar_loader.py, so parent.parent
+# gives the project root.
+GRAMMAR_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "agent_grammars"
+)
+
+# ── Grammar File Mapping (v1.1.0 addition) ──────────────────────────
+GRAMMAR_FILES: Dict[GrammarType, str] = {
+    GrammarType.AGENT_DECISION: "agent_decision.gbnf",
+    GrammarType.SIEVE_ANALYSIS: "sieve_analysis.gbnf",
+    GrammarType.PARAMETER_ADJUSTMENT: "parameter_adjustment.gbnf",
+    GrammarType.JSON_GENERIC: "json_generic.gbnf",
 }
 
 
-class GrammarLoader:
-    """
-    Loads and manages GBNF grammar files for constrained LLM output.
-    
-    Attributes:
-        grammar_dir: Directory containing .gbnf files
-        cache: In-memory cache of loaded grammars
-    """
-    
-    def __init__(self, grammar_dir: Optional[str] = None):
-        """
-        Initialize grammar loader.
-        
-        Args:
-            grammar_dir: Path to grammar files. Defaults to ./grammars/
-        """
-        if grammar_dir is None:
-            # Default: look for grammars/ in same directory as this file
-            base_dir = Path(__file__).parent.parent
-            grammar_dir = base_dir / "grammars"
-        
-        self.grammar_dir = Path(grammar_dir)
-        self.cache: Dict[str, str] = {}
-        
-        # Validate grammar directory exists
-        if not self.grammar_dir.exists():
-            print(f"⚠️  Grammar directory not found: {self.grammar_dir}")
-            print("   Creating directory and expecting grammar files to be added.")
-            self.grammar_dir.mkdir(parents=True, exist_ok=True)
-    
-    def get_grammar(self, grammar_type: str) -> Optional[str]:
-        """
-        Load grammar by type name.
-        
-        Args:
-            grammar_type: One of: agent_decision, sieve_analysis, 
-                         parameter_adjustment, json_generic
-        
-        Returns:
-            Grammar string content, or None if not found
-        """
-        # Check cache first
-        if grammar_type in self.cache:
-            return self.cache[grammar_type]
-        
-        # Build file path
-        grammar_file = self.grammar_dir / f"{grammar_type}.gbnf"
-        
-        if not grammar_file.exists():
-            print(f"⚠️  Grammar file not found: {grammar_file}")
-            return None
-        
-        # Load and cache
-        try:
-            grammar_content = grammar_file.read_text()
-            self.cache[grammar_type] = grammar_content
-            return grammar_content
-        except Exception as e:
-            print(f"❌ Error loading grammar {grammar_file}: {e}")
-            return None
-    
-    def get_grammar_for_request(self, prompt: str) -> Optional[str]:
-        """
-        Auto-select grammar based on prompt content.
-        
-        Scans prompt for keywords and selects appropriate grammar.
-        Falls back to json_generic if no specific match.
-        
-        Args:
-            prompt: The prompt being sent to LLM
-        
-        Returns:
-            Grammar string content
-        """
-        prompt_lower = prompt.lower()
-        
-        # Check for keyword matches
-        for keyword, grammar_type in REQUEST_GRAMMAR_MAP.items():
-            if keyword in prompt_lower:
-                return self.get_grammar(grammar_type.value)
-        
-        # Default to generic JSON
-        return self.get_grammar(GrammarType.JSON_GENERIC.value)
-    
-    def list_available_grammars(self) -> list:
-        """List all available grammar files."""
-        if not self.grammar_dir.exists():
-            return []
-        
-        return [f.stem for f in self.grammar_dir.glob("*.gbnf")]
-    
-    def validate_grammar(self, grammar_type: str) -> bool:
-        """
-        Validate that a grammar file exists and is readable.
-        
-        Args:
-            grammar_type: Grammar type name
-        
-        Returns:
-            True if valid, False otherwise
-        """
-        grammar = self.get_grammar(grammar_type)
-        return grammar is not None and len(grammar) > 0
+def get_grammar_path(grammar_type: GrammarType) -> Optional[str]:
+    """Resolve filesystem path for a grammar type.
 
-
-# Singleton instance for easy import
-_loader_instance: Optional[GrammarLoader] = None
-
-
-def get_grammar_loader(grammar_dir: Optional[str] = None) -> GrammarLoader:
-    """
-    Get singleton GrammarLoader instance.
-    
     Args:
-        grammar_dir: Optional grammar directory override
-    
+        grammar_type: The grammar type to resolve.
+
     Returns:
-        GrammarLoader instance
+        Absolute path to the .gbnf file, or None if not found.
     """
-    global _loader_instance
-    
-    if _loader_instance is None or grammar_dir is not None:
-        _loader_instance = GrammarLoader(grammar_dir)
-    
-    return _loader_instance
+    filename = GRAMMAR_FILES.get(grammar_type)
+    if filename is None:
+        logger.error("Unknown grammar type: %s", grammar_type)
+        return None
+
+    path = os.path.join(GRAMMAR_DIR, filename)
+    abs_path = os.path.abspath(path)
+
+    if not os.path.isfile(abs_path):
+        logger.warning(
+            "Grammar file not found: %s (type=%s)", abs_path, grammar_type.value
+        )
+        return None
+
+    logger.debug("Resolved grammar %s → %s", grammar_type.value, abs_path)
+    return abs_path
 
 
-def get_grammar(grammar_type: str) -> Optional[str]:
-    """
-    Convenience function to get grammar by type.
-    
+def get_grammar_content(grammar_type: GrammarType) -> Optional[str]:
+    """Load grammar file content as a string.
+
     Args:
-        grammar_type: One of: agent_decision, sieve_analysis,
-                     parameter_adjustment, json_generic
-    
+        grammar_type: The grammar type to load.
+
     Returns:
-        Grammar string content
+        Grammar content string, or None if file not found.
     """
-    return get_grammar_loader().get_grammar(grammar_type)
+    path = get_grammar_path(grammar_type)
+    if path is None:
+        return None
+
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+        logger.debug("Loaded grammar %s (%d bytes)", grammar_type.value, len(content))
+        return content
+    except (IOError, OSError) as e:
+        logger.error("Failed to read grammar file %s: %s", path, e)
+        return None
 
 
-def get_grammar_for_prompt(prompt: str) -> Optional[str]:
-    """
-    Convenience function to auto-select grammar based on prompt.
-    
+def get_grammar_for_step(step_number: int) -> Optional[str]:
+    """Get the appropriate grammar path for a pipeline step.
+
+    Mapping:
+        Step 1: agent_decision (Window Optimizer evaluation)
+        Step 2: sieve_analysis (Bidirectional Sieve evaluation)
+        Step 3: agent_decision (Full Scoring evaluation)
+        Step 4: agent_decision (ML Meta evaluation)
+        Step 5: agent_decision (Anti-Overfit Training evaluation)
+        Step 6: agent_decision (Prediction Generation evaluation)
+
     Args:
-        prompt: The prompt being sent to LLM
-    
+        step_number: Pipeline step (1-6).
+
     Returns:
-        Grammar string content
+        Path to grammar file, or None if unavailable.
     """
-    return get_grammar_loader().get_grammar_for_request(prompt)
+    if step_number == 2:
+        grammar_type = GrammarType.SIEVE_ANALYSIS
+    elif 1 <= step_number <= 6:
+        grammar_type = GrammarType.AGENT_DECISION
+    else:
+        logger.warning("No grammar mapping for step %d", step_number)
+        return None
+
+    return get_grammar_path(grammar_type)
 
 
-# ============================================================================
-# TEST / DEMO
-# ============================================================================
+def get_chapter13_grammar_path() -> Optional[str]:
+    """Get path to chapter_13.gbnf (loaded directly, not via GrammarType enum).
+
+    Returns:
+        Absolute path to chapter_13.gbnf, or None if not found.
+    """
+    path = os.path.join(GRAMMAR_DIR, "chapter_13.gbnf")
+    abs_path = os.path.abspath(path)
+
+    if not os.path.isfile(abs_path):
+        logger.warning("chapter_13.gbnf not found at %s", abs_path)
+        return None
+
+    return abs_path
+
+
+def list_available_grammars() -> Dict[str, bool]:
+    """List all expected grammar files and their availability.
+
+    Returns:
+        Dict mapping grammar name to exists (True/False).
+    """
+    result = {}
+
+    # GrammarType-mapped grammars
+    for gtype, filename in GRAMMAR_FILES.items():
+        path = os.path.join(GRAMMAR_DIR, filename)
+        result[f"{gtype.value} ({filename})"] = os.path.isfile(path)
+
+    # Chapter 13 grammar (not in enum)
+    ch13_path = os.path.join(GRAMMAR_DIR, "chapter_13.gbnf")
+    result["chapter_13 (chapter_13.gbnf)"] = os.path.isfile(ch13_path)
+
+    return result
+
+
+# ------------------------------------------------------------------
+# Self-test
+# ------------------------------------------------------------------
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     print("=" * 60)
-    print("GBNF Grammar Loader - Test")
+    print("Grammar Loader v1.1.0 — Self-Test")
     print("=" * 60)
-    
-    loader = GrammarLoader()
-    
-    print(f"\nGrammar directory: {loader.grammar_dir}")
-    print(f"Available grammars: {loader.list_available_grammars()}")
-    
-    # Test loading each grammar
-    for grammar_type in GrammarType:
-        grammar = loader.get_grammar(grammar_type.value)
-        if grammar:
-            lines = len(grammar.split('\n'))
-            print(f"✅ {grammar_type.value}: {lines} lines loaded")
+
+    print(f"\nGrammar directory: {os.path.abspath(GRAMMAR_DIR)}")
+
+    print("\nAvailable grammars:")
+    for name, exists in list_available_grammars().items():
+        status = "✅" if exists else "❌ MISSING"
+        print(f"  {status}  {name}")
+
+    print("\nStep-to-grammar mapping:")
+    for step in range(1, 7):
+        path = get_grammar_for_step(step)
+        if path:
+            print(f"  Step {step} → {os.path.basename(path)}")
         else:
-            print(f"❌ {grammar_type.value}: NOT FOUND")
-    
-    # Test auto-selection
-    print("\n--- Auto-selection test ---")
-    test_prompts = [
-        "Evaluate the sieve results and decide whether to proceed",
-        "Analyze the bidirectional survivors from the forward pass",
-        "Suggest parameter adjustments for window_size",
-        "Generate a summary report",
-    ]
-    
-    for prompt in test_prompts:
-        grammar = loader.get_grammar_for_request(prompt)
-        grammar_name = "unknown"
-        for gt in GrammarType:
-            if loader.get_grammar(gt.value) == grammar:
-                grammar_name = gt.value
-                break
-        print(f"  '{prompt[:50]}...' → {grammar_name}")
+            print(f"  Step {step} → ❌ No grammar found")
+
+    # Test content loading
+    print("\nContent loading test:")
+    for gtype in GrammarType:
+        content = get_grammar_content(gtype)
+        if content:
+            lines = len(content.strip().split("\n"))
+            print(f"  ✅ {gtype.value}: {lines} lines loaded")
+        else:
+            print(f"  ❌ {gtype.value}: FAILED to load")
+
+    print("\n" + "=" * 60)
+    print("Self-test complete")
+    print("=" * 60)

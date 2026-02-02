@@ -1,0 +1,30 @@
+# Generic JSON Grammar
+# Fallback: Ensures any LLM output is valid JSON
+#
+# VERSION: 1.0.0
+# DATE: 2026-02-01
+# SESSION: 57
+#
+# Used by: Any LLM call that needs valid JSON but no specific schema
+# Purpose: Constrains output to valid JSON object (not array/scalar)
+#          so that downstream JSON parsing never fails on malformed output
+#
+# Use when no specific grammar is available.
+# This is the last line of defense before heuristic fallback.
+
+root ::= object
+
+object ::= "{" ws (pair (ws "," ws pair)*)? ws "}"
+
+pair ::= string ws ":" ws value
+
+value ::= string | number | object | array | "true" | "false" | "null"
+
+array ::= "[" ws (value (ws "," ws value)*)? ws "]"
+
+string ::= "\"" string-content "\""
+string-content ::= ([^"\\] | "\\" ["\\/bfnrt] | "\\u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])*
+
+number ::= "-"? [0-9]+ ("." [0-9]+)? ([eE] [+-]? [0-9]+)?
+
+ws ::= [ \t\n\r]*

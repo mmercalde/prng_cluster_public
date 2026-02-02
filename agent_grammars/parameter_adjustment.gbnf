@@ -1,0 +1,56 @@
+# Parameter Adjustment Grammar
+# Steps 1-6: Parameter change recommendations
+#
+# VERSION: 1.0.0
+# DATE: 2026-02-01
+# SESSION: 57
+#
+# Used by: WATCHER and Chapter 13 for parameter change proposals
+# Selfplay role: After selfplay produces a learned policy candidate,
+#                Chapter 13 may propose parameter adjustments as part
+#                of the promotion decision
+# Purpose: Structured parameter recommendations with bounds checking
+#
+# delta_string format matches Chapter 13: "+0.05", "-10", "*1.2"
+# risk_level vocabulary shared with Chapter 13
+#
+# Example output:
+# {"decision":"apply","confidence":0.78,"adjustments":[
+#   {"parameter":"forward_threshold","current_value":0.01,"proposed_value":0.008,
+#    "delta":"-0.002","rationale":"Lower threshold to capture more survivors after drift"}
+#  ],"risk_level":"low","reasoning":"Minor threshold adjustment based on declining survivor counts."}
+
+root ::= "{" ws
+    "\"decision\"" ws ":" ws decision-value ws "," ws
+    "\"confidence\"" ws ":" ws confidence-value ws "," ws
+    "\"adjustments\"" ws ":" ws adjustments-array ws "," ws
+    "\"risk_level\"" ws ":" ws risk-level ws "," ws
+    "\"reasoning\"" ws ":" ws string
+    ws "}"
+
+decision-value ::= "\"apply\"" | "\"defer\"" | "\"escalate\""
+
+adjustments-array ::= "[]" |
+    "[" ws adjustment (ws "," ws adjustment)* ws "]"
+
+adjustment ::= "{" ws
+    "\"parameter\"" ws ":" ws string ws "," ws
+    "\"current_value\"" ws ":" ws (number | "null") ws "," ws
+    "\"proposed_value\"" ws ":" ws number ws "," ws
+    "\"delta\"" ws ":" ws delta-string ws "," ws
+    "\"rationale\"" ws ":" ws string
+    ws "}"
+
+delta-string ::= "\"" delta-content "\""
+delta-content ::= ("+" | "-" | "*")? [0-9]+ ("." [0-9]+)?
+
+risk-level ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+confidence-value ::= "0" ("." [0-9]+)? | "1" (".0")? | "0." [0-9]+
+
+number ::= "-"? [0-9]+ ("." [0-9]+)?
+
+string ::= "\"" string-content "\""
+string-content ::= ([^"\\] | "\\" ["\\/bfnrt])*
+
+ws ::= [ \t\n\r]*
