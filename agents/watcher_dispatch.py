@@ -130,7 +130,7 @@ def dispatch_selfplay(self, request: dict, dry_run: bool = False) -> bool:
     # ── Pre-dispatch: free VRAM ──────────────────────────────────
     if hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
         logger.info(f"[{run_id}] Stopping LLM server (freeing VRAM for selfplay)")
-        self.llm_lifecycle.stop(f"selfplay dispatch {run_id}")
+        self.llm_lifecycle.stop()
 
     success = False
     candidate = None
@@ -189,7 +189,7 @@ def dispatch_selfplay(self, request: dict, dry_run: bool = False) -> bool:
         # ── Post-dispatch: restart LLM for evaluation ────────────
         if hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
             logger.info(f"[{run_id}] Restarting LLM server")
-            self.llm_lifecycle.start()
+            self.llm_lifecycle.ensure_running()
 
     # ── Post-dispatch: LLM evaluation of candidate (advisory) ────
     if success and candidate:
@@ -295,7 +295,7 @@ def dispatch_learning_loop(self, scope: str = "steps_3_5_6",
 
         # ── Free VRAM for GPU-heavy steps ────────────────────────
         if is_gpu_heavy and hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
-            self.llm_lifecycle.stop(f"learning loop step {step}")
+            self.llm_lifecycle.stop()
 
         # ── Execute step ─────────────────────────────────────────
         try:
@@ -313,12 +313,12 @@ def dispatch_learning_loop(self, scope: str = "steps_3_5_6",
                                     "completed": completed_steps})
             # Ensure LLM is restarted before returning
             if is_gpu_heavy and hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
-                self.llm_lifecycle.start()
+                self.llm_lifecycle.ensure_running()
             return False
 
         # ── Restart LLM for evaluation ───────────────────────────
         if is_gpu_heavy and hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
-            self.llm_lifecycle.start()
+            self.llm_lifecycle.ensure_running()
 
         # ── Evaluate step via bundle factory (Guardrail #1) ──────
         try:

@@ -20,7 +20,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="$SCRIPT_DIR/llm_server_config.json"
 
 # Model path — adjust if model lives elsewhere
-MODEL_DIR="$HOME/models"
+MODEL_DIR="$HOME/distributed_prng_analysis/models"
 MODEL_FILE="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
 MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
 
@@ -52,7 +52,7 @@ fi
 echo "Starting DeepSeek-R1-14B on port $PORT..."
 echo "  ctx_size=$CTX_SIZE, kv_cache_est≈2.6GB/GPU, n_gpu_layers=$N_GPU_LAYERS"
 
-nohup llama-server \
+nohup /home/michael/llama.cpp/build/bin/llama-server \
     --model "$MODEL_PATH" \
     --port $PORT \
     --ctx-size $CTX_SIZE \

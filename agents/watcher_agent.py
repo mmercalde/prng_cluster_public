@@ -55,7 +55,7 @@ except ImportError:
 
 # Try to import LLM Router v1.1.0 (preferred)
 try:
-    from llm_services.llm_router import LLMRouter, get_router, GrammarType
+    from llm_services.llm_router import LLMRouter, get_router
     LLM_ROUTER_AVAILABLE = True
 except ImportError:
     LLM_ROUTER_AVAILABLE = False
@@ -489,6 +489,17 @@ class WatcherAgent:
                 logger.info("LLMRouter v1.1.0 initialized with grammar support")
             except Exception as e:
                 logger.warning(f"Could not initialize LLMRouter: {e}")
+
+        # v1.1.1: Initialize LLM lifecycle manager
+        self.llm_lifecycle = None
+        try:
+            from llm_services.llm_lifecycle import get_lifecycle_manager
+            self.llm_lifecycle = get_lifecycle_manager()
+            logger.info("LLM lifecycle manager initialized")
+        except ImportError:
+            logger.debug("LLM lifecycle manager not available")
+        except Exception as e:
+            logger.warning(f"Could not initialize LLM lifecycle: {e}")
 
         logger.info(f"WatcherAgent v1.1.0 initialized with config: {self.config.to_dict()}")
 
