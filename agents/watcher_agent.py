@@ -346,6 +346,9 @@ STEP_NAMES = {
 import os as _os_module
 from datetime import datetime as _datetime_module
 
+# Phase 7 Part B: Dispatch wiring (Session 58)
+from agents.watcher_dispatch import bind_to_watcher
+
 # Derive REPO_ROOT from this file's location (not os.getcwd())
 REPO_ROOT = _os_module.path.dirname(_os_module.path.dirname(_os_module.path.abspath(__file__)))
 
@@ -1606,6 +1609,12 @@ class WatcherAgent:
             # Safety check
             if not check_safety():
                 logger.warning("Safety halt detected - pausing daemon")
+            # Phase 7 Part B: Scan for Chapter 13 requests
+            try:
+                self._scan_watcher_requests()
+            except Exception as _req_err:
+                logger.warning(f'Request scan error: {_req_err}')
+
                 time.sleep(self.config.poll_interval_seconds)
                 continue
 
@@ -1724,6 +1733,17 @@ def main():
         help="JSON string of params to override manifest defaults"
     )
 
+
+    # Phase 7 Part B: Dispatch commands
+    parser.add_argument("--dispatch-selfplay", action="store_true",
+                        help="Dispatch selfplay orchestrator")
+    parser.add_argument("--dispatch-learning-loop", type=str, nargs="?",
+                        const="steps_3_5_6", metavar="SCOPE",
+                        help="Dispatch learning loop (default: steps_3_5_6)")
+    parser.add_argument("--process-requests", action="store_true",
+                        help="Process pending watcher_requests/*.json")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Dry run (log without executing)")
     args = parser.parse_args()
 
     # Create config
@@ -1800,9 +1820,31 @@ def main():
             watcher.stop()
             print("\nDaemon stopped")
 
+    # Phase 7 Part B: Dispatch handling
+    elif hasattr(args, "dispatch_selfplay") and args.dispatch_selfplay:
+        request = {"episodes": getattr(args, "episodes", 5)}
+        dry = getattr(args, "dry_run", False)
+        ok = watcher.dispatch_selfplay(request, dry_run=dry)
+        sys.exit(0 if ok else 1)
+    elif hasattr(args, "dispatch_learning_loop") and args.dispatch_learning_loop:
+        dry = getattr(args, "dry_run", False)
+        ok = watcher.dispatch_learning_loop(
+            scope=args.dispatch_learning_loop, dry_run=dry)
+        sys.exit(0 if ok else 1)
+    elif hasattr(args, "process_requests") and args.process_requests:
+        dry = getattr(args, "dry_run", False)
+        count = watcher._scan_watcher_requests(dry_run=dry)
+        print(f"Processed {count} request(s)")
+        sys.exit(0)
     else:
         parser.print_help()
 
 
+
+# ── Phase 7 Part B: Bind dispatch methods to WatcherAgent ──
+bind_to_watcher(WatcherAgent)
+
 if __name__ == "__main__":
     main()
+
+
