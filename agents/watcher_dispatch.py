@@ -584,16 +584,14 @@ def _evaluate_step_via_bundle(self, prompt: str,
         3. Heuristic default (proceed, conf=0.50)
     """
     # ── Try 1: Grammar-constrained via LLM router ────────────────
+    # Router public API only supports watcher_decision.gbnf.
+    # For all other grammars, fall through to Try 2 (HTTP direct).
     if (hasattr(self, 'llm_router') and self.llm_router
-            and getattr(self.config, 'use_grammar', True)):
+            and getattr(self.config, 'use_grammar', True)
+            and grammar_name == 'watcher_decision.gbnf'):
         try:
-            # Load grammar file for the router
-            grammar_path = _resolve_grammar_path(grammar_name)
-            if grammar_path:
-                response = self.llm_router.route(
-                    prompt, grammar=grammar_path
-                )
-                return _parse_llm_response(response)
+            result = self.llm_router.evaluate_watcher_decision(prompt)
+            return result
         except Exception as e:
             logger.warning(f"LLM router evaluation failed: {e}")
 
