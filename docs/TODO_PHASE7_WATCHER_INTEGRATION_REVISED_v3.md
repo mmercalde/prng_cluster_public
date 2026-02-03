@@ -2,7 +2,7 @@
 
 **Created:** 2026-01-30  
 **Revised:** 2026-02-02 (Parts A, B0, B, C complete — Part D remains)  
-**Status:** Parts A, B0, B, C Complete → Part D In Progress  
+**Status:** ✅ ALL PARTS COMPLETE (Phase 7 Done)  
 **Goal:** Complete autonomous operation pipeline  
 **Authority:** Joint Alpha + Beta sequencing decision (Session 57)
 
@@ -115,15 +115,15 @@
 
 ---
 
-### Part D: Integration Testing (60 min) — 🔶 IN PROGRESS
+### Part D: Integration Testing (60 min) — ✅ COMPLETE (2026-02-02, Session 59)
 
 | # | Task | Action | Status | Evidence |
 |---|------|--------|--------|----------|
-| D1 | Test bundle factory self-test | `cd ~/distributed_prng_analysis && python3 agents/contexts/bundle_factory.py` | 🔲 | — |
+| D1 | Test bundle factory self-test | `cd ~/distributed_prng_analysis && python3 agents/contexts/bundle_factory.py` | ✅ | 7/7 bundles, render+token tests passed (Session 58) |
 | D2 | Test selfplay dispatch | `python3 agents/watcher_agent.py --dispatch-selfplay --dry-run` | ✅ | Passed Session 58 |
 | D3 | Test learning loop dispatch | `python3 agents/watcher_agent.py --dispatch-learning-loop steps_3_5_6 --dry-run` | ✅ | Passed Session 58 |
 | D4 | Test request processing | Create mock request, process via WATCHER | ✅ | 2 requests → DRY_RUN_OK, archived |
-| D5 | End-to-end: Chapter 13 → WATCHER → Selfplay | Full flow test (non-dry-run, reduced episodes) | 🔲 | — |
+| D5 | End-to-end: Chapter 13 → WATCHER → Selfplay | Full flow test (non-dry-run, reduced episodes) | ✅ | Clean pass: real LLM eval, lifecycle stop/restart, grammar-constrained JSON (Session 59) |
 
 ---
 
@@ -135,7 +135,7 @@
 | ~~B0: Bundle Factory~~ | ~~4~~ | ~~60-90 min~~ | ~~~1200~~ | ✅ Complete (`ffe397a`) |
 | ~~B: WATCHER Dispatch~~ | ~~4~~ | ~~60-90 min~~ | ~~~894~~ | ✅ Complete (`a145e28`) |
 | ~~C: File Organization~~ | ~~1~~ | ~~5 min~~ | ~~0~~ | ✅ Complete |
-| **D: Integration Testing** | **2 remaining** | **~30 min** | **0** | **🔶 D1 + D5 remain** |
+| ~~D: Integration Testing~~ | ~~5~~ | ~~60 min~~ | ~~0~~ | ✅ Complete (Session 58-59) |
 
 ---
 
