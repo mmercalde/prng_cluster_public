@@ -1,8 +1,8 @@
 # Chapter 10: Autonomous Agent Framework
 
-**Version:** 3.0.0 (Validated Working System)  
-**Date:** January 8, 2026  
-**Status:** ✅ LLM Integration Verified Working  
+**Version:** 3.1.0 (Full Autonomous Operation)  
+**Date:** February 3, 2026  
+**Status:** ✅ Full Autonomous Operation — Phase 7 Complete  
 **Autonomy:** ~85%  
 
 ---
@@ -15,13 +15,17 @@ The Autonomous Agent Framework is **fully implemented and working**. This chapte
 
 | Component | File | Status |
 |-----------|------|--------|
-| Watcher Agent | `agents/watcher_agent.py` | ✅ v1.1.0 Working |
+| Watcher Agent | `agents/watcher_agent.py` | ✅ v1.4.0 Working |
+| Watcher Dispatch | `agents/watcher_dispatch.py` | ✅ v1.0.0 Working (Session 58) |
+| Bundle Factory | `agents/contexts/bundle_factory.py` | ✅ v1.0.0 Working (Session 58) |
+| LLM Lifecycle | `llm_services/llm_lifecycle.py` | ✅ v1.0.0 Working (Session 57) |
 | LLM Router | `llm_services/llm_router.py` | ✅ v2.0.0 Working |
 | Grammar Loader | `llm_services/grammar_loader.py` | ✅ v1.0.0 Working |
-| Server Startup | `llm_services/start_llm_servers.sh` | ✅ v2.0.0 Working |
-| Step Contexts | `agents/contexts/*.py` | ✅ All 6 steps |
+| Server Startup | `llm_services/start_llm_servers.sh` | ✅ v2.1.0 Working |
+| Step Contexts | `agents/contexts/*.py` | ✅ All 6 steps + Chapter 13 |
 | Doctrine | `agents/doctrine.py` | ✅ v3.2.0 Working |
 | Prompt Builder | `agents/prompt_builder.py` | ✅ v3.2.0 Working |
+| GBNF Grammars | `agent_grammars/*.gbnf` | ✅ v1.1 (4 files, fixed Session 59) |
 
 ### 1.2 Live Test Results (January 8, 2026)
 
@@ -45,7 +49,7 @@ Parse method: llm_http_extracted
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    AUTONOMOUS AGENT FRAMEWORK v3.0.0                         │
+│                    AUTONOMOUS AGENT FRAMEWORK v3.1.0                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐        │
@@ -500,12 +504,16 @@ Version 1.0.0 - December 2025
 | File | Purpose |
 |------|---------|
 | `agents/watcher_agent.py` | Main orchestrator |
+| `agents/watcher_dispatch.py` | Dispatch: selfplay, learning loop, Ch13 requests |
+| `agents/contexts/bundle_factory.py` | Unified LLM context assembly (7 bundle types) |
 | `agents/doctrine.py` | Decision framework |
 | `agents/contexts/*.py` | Step-specific contexts |
 | `llm_services/llm_router.py` | LLM routing logic |
+| `llm_services/llm_lifecycle.py` | LLM server lifecycle management |
 | `llm_services/grammar_loader.py` | Grammar management |
-| `llm_services/start_llm_servers.sh` | Server startup |
+| `llm_services/start_llm_servers.sh` | Server startup (v2.1.0) |
 | `agent_manifests/*.json` | Step configurations |
+| `agent_grammars/*.gbnf` | Grammar constraint files (v1.1) |
 
 ---
 

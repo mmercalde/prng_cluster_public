@@ -2,8 +2,8 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.1.0  
-**Date:** January 9, 2026  
+**Version:** 1.4.0  
+**Date:** February 3, 2026  
 **Files:** `agents/watcher_agent.py`, `agents/watcher_registry_hooks.py`, `agents/fingerprint_registry.py`  
 **Purpose:** Autonomous pipeline orchestration with PRNG attempt tracking
 
@@ -45,6 +45,10 @@ The WATCHER Agent provides autonomous pipeline orchestration:
 | **Fingerprint Registry** | Track dataset + PRNG combinations |
 | **PRNG Priority Order** | Systematic PRNG family testing |
 | **Safety Controls** | Kill switch, max retries, escalation |
+| **Dispatch Module** | Selfplay, learning loop, request processing (v1.4.0) |
+| **Bundle Factory** | Unified LLM context assembly — 7 bundle types (v1.4.0) |
+| **LLM Lifecycle** | Auto stop/restart around GPU-intensive dispatch phases (v1.4.0) |
+| **Chapter 13 Integration** | Process watcher_requests/, dispatch retrain/selfplay (v1.4.0) |
 
 ### 1.3 Current Status
 
@@ -97,11 +101,16 @@ The WATCHER Agent provides autonomous pipeline orchestration:
 | File | Purpose |
 |------|---------|
 | `agents/watcher_agent.py` | Main WATCHER implementation |
+| `agents/watcher_dispatch.py` | Dispatch functions (selfplay, learning loop, requests) |
+| `agents/contexts/bundle_factory.py` | Step awareness bundle assembly engine |
 | `agents/watcher_registry_hooks.py` | Registry integration hooks |
 | `agents/fingerprint_registry.py` | Dataset fingerprint tracking |
+| `llm_services/llm_lifecycle.py` | LLM lifecycle management (stop/restart) |
 | `agent_manifests/*.json` | Step configurations |
+| `agent_grammars/*.gbnf` | GBNF grammar constraint files (v1.1) |
 | `watcher_history.json` | Decision history log |
 | `watcher_decisions.jsonl` | Detailed decision audit |
+| `watcher_requests/` | Chapter 13 request queue (JSON files) |
 
 ---
 

@@ -1,6 +1,6 @@
-# 🎲 Distributed PRNG Analysis & Seed Reconstruction System
+# 🎲 Distributed PRNG Analysis & Functional Mimicry System
 
-**Multi-GPU Cluster • AI Agent Architecture • ML Scoring • Optuna Meta-Optimization • Reinforcement Engine**
+**Multi-GPU Cluster • Autonomous AI Agents • ML Scoring • Selfplay Learning • Optuna Meta-Optimization**
 
 ---
 
@@ -18,25 +18,27 @@ A fully distributed, AI-driven analysis system designed to:
 
 ---
 
-## 🆕 Recent Updates (December 24, 2025)
+## 🆕 Recent Updates (February 2026)
 
-### Session 15: Step 6 Confidence Fix + Lineage
-- ✅ **CRITICAL FIX:** Confidence scores now differentiated (was all 1.0)
-- ✅ Raw scores preserved for automation cross-run comparability
-- ✅ Parent run ID lineage from Step 5 → Step 6
-- ✅ Score statistics for monitoring (min/max/mean/std/unique)
+### Sessions 57-59: Phase 7 WATCHER Integration — COMPLETE ✅
+- ✅ **FULL AUTONOMY ACHIEVED** — End-to-end Chapter 13 → WATCHER → Selfplay loop
+- ✅ Dispatch module (`watcher_dispatch.py`) — selfplay, learning loop, request processing
+- ✅ Bundle factory (`bundle_factory.py`) — unified LLM context assembly (7 bundle types)
+- ✅ LLM lifecycle management — automatic stop/restart around GPU-intensive phases
+- ✅ 5 integration bugs found and fixed in D5 end-to-end testing
+- ✅ Grammar-constrained LLM evaluation with real DeepSeek-R1 responses
 
-### Session 14: Step 6 Restoration v2.2
-- ✅ GlobalStateTracker module (14 global features, GPU-neutral)
-- ✅ Type-tolerant intersection (handles int and dict survivors)
-- ✅ Model loading from sidecar with feature schema
+### Session 56: Selfplay Validation + LLM Infrastructure
+- ✅ Selfplay system validated — 8 episodes, 3 candidates, policy-conditioned mode
+- ✅ LLM infrastructure upgraded — 8K → 32K context windows
+- ✅ LLM lifecycle management deployed
 
-### Session 11-12: Multi-Model Architecture
-- ✅ Subprocess isolation for OpenCL/CUDA conflict
-- ✅ 4 ML models: XGBoost, LightGBM, CatBoost, Neural Net
-- ✅ Model checkpoint persistence
+### Sessions 53-55: Chapter 13 + Selfplay Architecture
+- ✅ Policy transform module — stateless, deterministic, pure functional
+- ✅ Policy-conditioned episodes — filter, weight, mask transforms
+- ✅ Authority contract ratified: Chapter 13 decides, WATCHER executes, selfplay explores
 
-📄 See `CURRENT_Status.txt` for detailed session history.
+📄 See `docs/SESSION_CHANGELOG_*.md` for detailed session history.
 
 ---
 
@@ -81,8 +83,8 @@ The system includes a complete AI agent framework for autonomous pipeline execut
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                     ZEUS DUAL-LLM LAYER                                      │
 │  ┌─────────────────────────┐    ┌─────────────────────────┐                 │
-│  │   GPU0: ORCHESTRATOR    │    │   GPU1: MATH SPECIALIST │                 │
-│  │   Qwen2.5-Coder-14B     │    │   Qwen2.5-Math-7B       │                 │
+│  │   GPU0: PRIMARY LLM     │    │   GPU1: SPECIALIST LLM  │                 │
+│  │   DeepSeek-R1-14B        │    │   (Configurable)         │                 │
 │  │   Port: 8080            │    │   Port: 8081            │                 │
 │  └───────────┬─────────────┘    └───────────┬─────────────┘                 │
 │              └──────────────┬───────────────┘                                │
@@ -128,9 +130,10 @@ The system includes a complete AI agent framework for autonomous pipeline execut
 | Node | GPUs | Type | Purpose |
 |------|------|------|---------|
 | Zeus (Primary) | 2× RTX 3080 Ti | CUDA | Orchestration, LLM hosting, job generation |
-| rig-6600 | 8× RX 6600 | ROCm | Worker Node 1 |
-| rig-6600b | 8× RX 6600 | ROCm | Worker Node 2 |
-| **Total** | **26 GPUs** | | **~285 TFLOPS** |
+| rig-6600 | 12× RX 6600 | ROCm | Worker Node 1 |
+| rig-6600b | 12× RX 6600 | ROCm | Worker Node 2 |
+| rig-6600c | (deploying) | ROCm | Worker Node 3 (192.168.3.162) |
+| **Total** | **26+ GPUs** | | **~285 TFLOPS** |
 
 ### ROCm Activation (AMD rigs)
 
@@ -143,7 +146,7 @@ source ~/rocm_env/bin/activate
 
 ## 🧬 PRNG Support
 
-**44 PRNG Algorithms** across 11 families with 4 variants each:
+**46 PRNG Algorithms** across 11+ families with 4 variants each:
 
 | Family | Base | Hybrid | Reverse | Hybrid+Reverse |
 |--------|------|--------|---------|----------------|
@@ -169,8 +172,15 @@ All kernels in `prng_registry.py` (~174KB, 4000+ lines).
 distributed_prng_analysis/
 │
 ├── agents/                    # AI Agent implementations
-│   ├── agent_core.py          # BaseAgent class
-│   └── __init__.py
+│   ├── watcher_agent.py       # Main WATCHER orchestrator
+│   ├── watcher_dispatch.py    # Selfplay/learning dispatch
+│   └── contexts/
+│       └── bundle_factory.py  # LLM context assembly
+│
+├── agent_grammars/            # GBNF grammar constraints
+│   ├── chapter_13.gbnf
+│   ├── watcher_decision.gbnf
+│   └── agent_decision.gbnf
 │
 ├── agent_manifests/           # JSON configs for 6 pipeline agents
 │   ├── window_optimizer.json
@@ -203,7 +213,10 @@ distributed_prng_analysis/
 │
 ├── coordinator.py             # 26-GPU distributed controller
 ├── distributed_worker.py      # GPU worker script
-├── prng_registry.py           # 44 PRNG kernels
+├── prng_registry.py           # 46 PRNG kernels
+├── selfplay_orchestrator.py   # Selfplay learning loop
+├── policy_transform.py        # Pure-functional policy transforms
+├── policy_conditioned_episode.py  # Policy-conditioned episodes
 ├── reinforcement_engine.py    # ML training engine
 ├── window_optimizer.py        # Step 1
 ├── generate_scorer_jobs.py    # Step 2.5
@@ -291,13 +304,18 @@ git push   # No credentials required
 ## 🧭 Roadmap
 
 - [x] 26-GPU distributed architecture
-- [x] 44 PRNG algorithms (forward + reverse)
-- [x] 6-step pipeline
-- [x] Dual-LLM infrastructure
-- [x] Agent manifests
-- [x] Schema v1.0.4 with agent_metadata
-- [ ] Watcher Agent (autonomous pipeline)
-- [ ] optuna_agent_bridge.py (cross-run learning)
+- [x] 46 PRNG algorithms (forward + reverse)
+- [x] 6-step pipeline with autonomous execution
+- [x] LLM infrastructure (DeepSeek-R1-14B, 32K context)
+- [x] Agent manifests (6 pipeline steps)
+- [x] WATCHER Agent — autonomous pipeline orchestration
+- [x] Chapter 13 — live feedback loop (10 files, ~226KB)
+- [x] Selfplay system — policy-conditioned reinforcement learning
+- [x] Full WATCHER dispatch — Chapter 13 → Selfplay → Learning loop
+- [x] Bundle factory — unified LLM context assembly
+- [x] LLM lifecycle management (stop/restart around GPU phases)
+- [ ] Parameter advisor (LLM-advised recommendations for Steps 4-6)
+- [ ] Phase 9B.3 (automatic policy proposal heuristics)
 - [ ] WebUI for visualization
 
 ---
@@ -318,4 +336,4 @@ Open an issue, fork the repo, or propose improvements.
 
 ---
 
-*Distributed PRNG Analysis System — Functional mimicry through ML-enhanced pattern detection*
+*Distributed PRNG Analysis System — Functional mimicry through ML-enhanced pattern detection and autonomous selfplay learning*
