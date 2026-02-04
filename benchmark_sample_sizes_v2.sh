@@ -150,14 +150,14 @@ check_gpu_health() {
     local UNHEALTHY=0
     
     # Check rig-6600b for N/A in SCLK column (indicates hung GPU)
-    local BAD_GPUS=$(ssh michael@$RIG_6600B "rocm-smi 2>&1 | grep -E '^\s*[0-9]+' | grep -c 'unknown'" 2>/dev/null || echo "0")
+    local BAD_GPUS=$(ssh michael@$RIG_6600B "rocm-smi 2>&1 | grep -E '^\s*[0-9]+' | grep -c 'N/A.*N/A.*0%'" 2>/dev/null || echo "0")
     if [ "$BAD_GPUS" -gt 0 ]; then
         echo -e "${RED}WARNING: $BAD_GPUS unhealthy GPU(s) detected on rig-6600b${NC}"
         UNHEALTHY=1
     fi
     
     # Check rig-6600
-    BAD_GPUS=$(ssh michael@$RIG_6600 "rocm-smi 2>&1 | grep -E '^\s*[0-9]+' | grep -c 'unknown'" 2>/dev/null || echo "0")
+    BAD_GPUS=$(ssh michael@$RIG_6600 "rocm-smi 2>&1 | grep -E '^\s*[0-9]+' | grep -c 'N/A.*N/A.*0%'" 2>/dev/null || echo "0")
     if [ "$BAD_GPUS" -gt 0 ]; then
         echo -e "${RED}WARNING: $BAD_GPUS unhealthy GPU(s) detected on rig-6600${NC}"
         UNHEALTHY=1

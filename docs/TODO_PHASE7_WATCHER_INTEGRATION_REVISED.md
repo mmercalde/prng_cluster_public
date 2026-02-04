@@ -1,8 +1,8 @@
 # TODO: Phase 7 — WATCHER Integration (REVISED)
 
 **Created:** 2026-01-30  
-**Revised:** 2026-01-30 (after documentation audit)  
-**Status:** Planning  
+**Revised:** 2026-02-01 (Part A complete, Part C complete)  
+**Status:** Parts A & C Complete → Parts B & D Remain  
 **Goal:** Complete autonomous operation pipeline
 
 ---
@@ -39,15 +39,19 @@
 
 ## What's MISSING (Actual Work)
 
-### Part A: Selfplay Validation Testing (30-60 min)
+### Part A: Selfplay Validation Testing — ✅ COMPLETE (2026-02-01)
 
-| # | Task | Command | Status |
-|---|------|---------|--------|
-| A1 | Run multi-episode selfplay | `python3 selfplay_orchestrator.py --survivors survivors_with_scores.json --episodes 5 --policy-conditioned` | 🔲 |
-| A2 | Verify candidate emission | `cat learned_policy_candidate.json` | 🔲 |
-| A3 | Verify policy history archive | `ls -la policy_history/` | 🔲 |
-| A4 | Test with active policy | Create test policy, re-run | 🔲 |
-| A5 | Verify telemetry health | `cat telemetry/learning_health_latest.json` | 🔲 |
+| # | Task | Command | Status | Evidence |
+|---|------|---------|--------|----------|
+| A1 | Run multi-episode selfplay | `python3 selfplay_orchestrator.py --survivors survivors_with_scores.json --episodes 5 --policy-conditioned` | ✅ | 8 episodes (5+3), zero crashes |
+| A2 | Verify candidate emission | `cat learned_policy_candidate.json` | ✅ | Schema v1.1.0, 3 candidates emitted |
+| A3 | Verify policy history archive | `ls -la policy_history/` | ✅ | 3 files accumulated |
+| A4 | Test with active policy | Create test policy, re-run | ✅ | Filter: 75,396→47,614; Weight: 46,715 adjusted |
+| A5 | Verify telemetry health | `cat telemetry/learning_health_latest.json` | ✅ | 38 models tracked, JSON valid |
+
+**Bonus:** Created `configs/selfplay_config.json` (production-ready). Documented `enabled: true` schema requirement. Mapped 64-feature survivor data structure.
+
+**Git:** Commit `c0f5d32` — "docs: Part A selfplay testing COMPLETE, selfplay config created"
 
 ### Part B: WATCHER Dispatch Functions (60-90 min)
 
@@ -99,11 +103,11 @@ def process_chapter_13_request(self, request_path: str) -> str:
         return self.dispatch_learning_loop(request["scope"])
 ```
 
-### Part C: File Organization (5 min)
+### Part C: File Organization — ✅ COMPLETE (2026-01-30)
 
-| # | Task | Action | Status |
-|---|------|--------|--------|
-| C1 | Move GBNF grammar | `mkdir -p agent_grammars && mv chapter_13.gbnf agent_grammars/` | 🔲 |
+| # | Task | Action | Status | Evidence |
+|---|------|--------|--------|----------|
+| C1 | Move GBNF grammar | `mkdir -p agent_grammars && mv chapter_13.gbnf agent_grammars/` | ✅ | Commit 22abd7b (Jan 30) |
 
 ### Part D: Integration Testing (60 min)
 
@@ -116,26 +120,26 @@ def process_chapter_13_request(self, request_path: str) -> str:
 
 ---
 
-## Estimated Effort
+## Estimated Effort (Remaining)
 
 | Part | Tasks | Time | Lines |
 |------|-------|------|-------|
-| A: Selfplay Testing | 5 | 30-60 min | 0 |
+| ~~A: Selfplay Testing~~ | ~~5~~ | ~~30-60 min~~ | ~~0~~ |
 | B: WATCHER Dispatch | 4 | 60-90 min | ~180 |
-| C: File Organization | 1 | 5 min | 0 |
+| ~~C: File Organization~~ | ~~1~~ | ~~5 min~~ | ~~0~~ |
 | D: Integration Testing | 4 | 60 min | 0 |
-| **Total** | **14** | **~3 hours** | **~180** |
+| **Remaining** | **8** | **~2.5 hours** | **~180** |
 
 ---
 
 ## Dependency Chain
 
 ```
-Part A (Selfplay Testing)
+Part A (Selfplay Testing) ✅ DONE
        ↓
-Part B (WATCHER Dispatch Functions)
+Part B (WATCHER Dispatch Functions) ← NEXT
        ↓
-Part C (File Organization)
+Part C (File Organization) ✅ DONE
        ↓
 Part D (Integration Testing)
 ```
@@ -145,9 +149,9 @@ Part D (Integration Testing)
 ## Success Criteria
 
 ### Part A Complete When:
-- [ ] Selfplay runs 5+ episodes without error
-- [ ] Candidates emitted to `learned_policy_candidate.json`
-- [ ] Telemetry health file updated
+- [x] Selfplay runs 5+ episodes without error
+- [x] Candidates emitted to `learned_policy_candidate.json`
+- [x] Telemetry health file updated
 
 ### Part B Complete When:
 - [ ] `dispatch_selfplay()` spawns selfplay_orchestrator.py
@@ -175,7 +179,7 @@ No human in the loop for routine decisions.
 | File | Action | Location |
 |------|--------|----------|
 | `agents/watcher_agent.py` | MODIFY | Add dispatch functions |
-| `chapter_13.gbnf` | MOVE | → `agent_grammars/chapter_13.gbnf` |
+| ~~`chapter_13.gbnf`~~ | ~~MOVE~~ | ✅ Done — now at `agent_grammars/chapter_13.gbnf` |
 
 **Note:** No new files needed. Only ~180 lines of additions to existing WATCHER.
 
@@ -194,7 +198,8 @@ No human in the loop for routine decisions.
 | B12: `apply_parameter_changes()` | Already in acceptance.py |
 
 **Original estimate:** 27 tasks, 630 lines, 2-3 sessions  
-**Revised estimate:** 14 tasks, 180 lines, 1 session
+**Revised estimate:** 14 tasks, 180 lines, 1 session  
+**Current remaining:** 8 tasks, 180 lines, ~2.5 hours
 
 ---
 

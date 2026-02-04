@@ -1,0 +1,88 @@
+=== GPU Health Check: bench4_post ===
+Timestamp: Sun Feb  1 02:04:24 PM PST 2026
+
+--- Zeus (CUDA) ---
+0, 50, 26.34 W, 25 MiB, 12288 MiB, 0 %
+1, 50, 32.21 W, 11 MiB, 12288 MiB, 0 %
+
+--- rig-6600 (192.168.3.120) ---
+
+
+======================================== ROCm System Management Interface ========================================
+================================================== Concise Info ==================================================
+Device  Node  IDs              Temp    Power  Partitions          SCLK    MCLK   Fan  Perf  PwrCap  VRAM%  GPU%  
+[3m              (DID,     GUID)  (Edge)  (Avg)  (Mem, Compute, ID)                                                 [0m
+==================================================================================================================
+0       1     0x73ff,   54645  36.0°C  4.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  135.0W  0%     0%    
+1       2     0x73ff,   4221   32.0°C  3.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  145.0W  0%     0%    
+2       3     0x73ff,   3711   33.0°C  3.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  145.0W  0%     0%    
+3       4     0x73ff,   1794   35.0°C  3.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  135.0W  0%     0%    
+4       5     0x73ff,   60580  36.0°C  3.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  135.0W  0%     0%    
+5       6     0x73ff,   45517  34.0°C  3.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  135.0W  0%     0%    
+6       7     0x73ff,   15861  31.0°C  3.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  145.0W  0%     0%    
+7       8     0x73ff,   31929  36.0°C  5.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  135.0W  0%     0%    
+==================================================================================================================
+============================================== End of ROCm SMI Log ===============================================
+
+⚠️  WARNING: rig-6600 has 8 sensor anomalies!
+
+--- rig-6600b (192.168.3.154) ---
+Expected integer value from monitor, but got ""
+Expected integer value from monitor, but got ""
+Expected integer value from monitor, but got ""
+Expected integer value from monitor, but got ""
+
+
+========================================= ROCm System Management Interface =========================================
+=================================================== Concise Info ===================================================
+Device  Node  IDs              Temp    Power  Partitions          SCLK    MCLK   Fan  Perf     PwrCap  VRAM%  GPU%  
+[3m              (DID,     GUID)  (Edge)  (Avg)  (Mem, Compute, ID)                                                    [0m
+====================================================================================================================
+0       1     0x73ff,   32252  27.0°C  7.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     3%    
+1       2     0x73ff,   4630   30.0°C  8.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     4%    
+2       3     0x73ff,   10409  34.0°C  10.0W  N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     4%    
+3       4     0x73ff,   44939  29.0°C  21.0W  N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     4%    
+4       5     0x73ff,   17453  29.0°C  9.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     3%    
+5       6     0x73ff,   6468   29.0°C  8.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     4%    
+6       7     0x73ff,   16286  28.0°C  8.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto     100.0W  0%     3%    
+7       8     0x73ff,   54320  N/A     N/A    N/A, N/A, 0         N/A     N/A    0%   unknown  N/A     0%     0%    
+====================================================================================================================
+=============================================== End of ROCm SMI Log ================================================
+
+⚠️  WARNING: rig-6600b has 8 sensor anomalies!
+
+--- rig-6600c (192.168.3.162) ---
+
+
+======================================== ROCm System Management Interface ========================================
+================================================== Concise Info ==================================================
+Device  Node  IDs              Temp    Power  Partitions          SCLK    MCLK   Fan  Perf  PwrCap  VRAM%  GPU%  
+[3m              (DID,     GUID)  (Edge)  (Avg)  (Mem, Compute, ID)                                                 [0m
+==================================================================================================================
+0       1     0x73ff,   32252  29.0°C  9.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     4%    
+1       2     0x73ff,   4630   27.0°C  10.0W  N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     3%    
+2       3     0x73ff,   10409  28.0°C  10.0W  N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     3%    
+3       4     0x73ff,   44939  27.0°C  9.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     2%    
+4       5     0x73ff,   17453  28.0°C  8.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     2%    
+5       6     0x73ff,   6468   30.0°C  9.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     2%    
+6       7     0x73ff,   16286  28.0°C  8.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     2%    
+7       8     0x73ff,   54320  26.0°C  8.0W   N/A, N/A, 0         700Mhz  96Mhz  0%   auto  100.0W  0%     3%    
+==================================================================================================================
+============================================== End of ROCm SMI Log ===============================================
+
+⚠️  WARNING: rig-6600c has 8 sensor anomalies!
+
+--- Host Memory ---
+Zeus:
+               total        used        free      shared  buff/cache   available
+Mem:           63981        1184       61238           4        1557       62175
+rig-6600:
+               total        used        free      shared  buff/cache   available
+Mem:            7846        2026        3653           6        2166        5550
+rig-6600b:
+               total        used        free      shared  buff/cache   available
+Mem:            7846        3330        2761          37        1755        4214
+rig-6600c:
+               total        used        free      shared  buff/cache   available
+Mem:            7844        1790        4635         112        1418        5682
+
