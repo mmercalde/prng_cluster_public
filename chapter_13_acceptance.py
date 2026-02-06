@@ -471,8 +471,23 @@ class Chapter13AcceptanceEngine:
             if consecutive >= 3:
                 escalation_reasons.append(f"Consecutive failures: {consecutive}")
         
-        # If any escalation reasons, escalate
-        if escalation_reasons:
+        # If any escalation reasons, escalate (unless test mode skip enabled)
+        # === SOAK C PATCH v1.1: skip_escalation_in_test_mode ===
+        # Team Beta refinement: explicit logging with count + reasons
+        _skip_policies = self.policies if hasattr(self, 'policies') else {}
+        _test_mode = _skip_policies.get('test_mode', False)
+        _skip_esc = _skip_policies.get('skip_escalation_in_test_mode', False)
+        _suppress_escalation = _test_mode and _skip_esc
+        
+        if _suppress_escalation and escalation_reasons:
+            logger.warning(
+                "SOAK C: Escalation suppressed (%d reasons): %s",
+                len(escalation_reasons),
+                escalation_reasons
+            )
+        # === END SOAK C PATCH ===
+        
+        if escalation_reasons and not _suppress_escalation:
             return self._create_decision(
                 ValidationResult.ESCALATE,
                 "Mandatory escalation",
@@ -481,6 +496,22 @@ class Chapter13AcceptanceEngine:
                 timestamp,
                 escalation_reasons=escalation_reasons
             )
+        
+        # =====================================================================
+        # === SOAK C PATCH v1.1: auto_approve_in_test_mode ===
+        # Team Beta refinement: consistent policy access via self.policies
+        # =====================================================================
+        _auto_policies = self.policies if hasattr(self, 'policies') else {}
+        if _auto_policies.get('test_mode') and _auto_policies.get('auto_approve_in_test_mode'):
+            logger.info("SOAK C: Auto-approving proposal (test_mode + auto_approve_in_test_mode)")
+            return self._create_decision(
+                ValidationResult.ACCEPT,
+                "Auto-approved in test mode",
+                violations=[],
+                proposal_id=proposal_id,
+                timestamp=timestamp,
+            )
+        # === END SOAK C PATCH ===
         
         # =====================================================================
         # AUTOMATIC ACCEPTANCE (Section 13.2)
