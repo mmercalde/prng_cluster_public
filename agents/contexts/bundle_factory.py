@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bundle Factory â€” Step Awareness Bundle Assembly Engine.
+Bundle Factory — Step Awareness Bundle Assembly Engine.
 
 Version: 1.1.0
 Date: 2026-02-05 (Session 60)
@@ -28,7 +28,7 @@ DESIGN RULES (non-negotiable):
     7. No embeddings / vector DB / GPU resident services
 
 ARCHITECTURE:
-    Wraps existing build_full_context() â€” does NOT replace it.
+    Wraps existing build_full_context() — does NOT replace it.
     Adds: mission statements, grammar resolution, Ch.13 history (stubbed),
     token budget enforcement, provenance hashing.
 
@@ -46,13 +46,13 @@ ARCHITECTURE:
         render_prompt_from_bundle(bundle) â†’ str
             â””â”€â”€ structured prompt with tiered sections
 
-RETRIEVAL LAYER (Track 2 â€” stubbed):
+RETRIEVAL LAYER (Track 2 — stubbed):
     _retrieve_recent_outcomes() â†’ [] (will read Chapter 13 summaries)
     _retrieve_trend_summary() â†’ {} (will compute diagnostic deltas)
     _retrieve_open_incidents() â†’ [] (will read watcher_failures.jsonl)
 
     These stubs return empty data. The prompt renders without them.
-    Track 2 fills them in behind the same API â€” zero dispatch rework.
+    Track 2 fills them in behind the same API — zero dispatch rework.
 """
 
 from __future__ import annotations
@@ -86,27 +86,27 @@ MAIN_MISSION = (
     "selfplay exploration, and autonomous feedback loops."
 )
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # STEP MISSION STATEMENTS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 STEP_MISSIONS: Dict[int, str] = {
     1: (
-        "Step 1 â€” Window Optimizer: Find optimal window parameters (size, offset, "
+        "Step 1 — Window Optimizer: Find optimal window parameters (size, offset, "
         "skip range, thresholds) using Bayesian optimization (Optuna TPE). "
         "Delegates real sieving to coordinator.py across 26 GPUs. "
         "Output: bidirectional_survivors.json + optimal_window_config.json. "
         "Key metric: bidirectional survivor count (higher = more candidates for ML)."
     ),
     2: (
-        "Step 2/2.5 â€” Scorer Meta-Optimizer: Distributed hyperparameter tuning "
+        "Step 2/2.5 — Scorer Meta-Optimizer: Distributed hyperparameter tuning "
         "for the scoring model across 26 GPUs using Optuna. "
         "Optimizes residue modular arithmetic, hidden layers, dropout, learning rate. "
         "Output: optimal_scorer_config.json. "
         "Key metric: scorer accuracy on holdout data."
     ),
     3: (
-        "Step 3 â€” Full Scoring: Distributed 46-feature extraction and scoring "
+        "Step 3 — Full Scoring: Distributed 46-feature extraction and scoring "
         "of all survivors across 26 GPUs via scripts_coordinator.py. "
         "Extracts per-seed features (50) + global features (14) = 64 total. "
         "Output: survivors_with_scores.json + NPZ with full feature matrix. "
@@ -114,13 +114,13 @@ STEP_MISSIONS: Dict[int, str] = {
         "CRITICAL: holdout label integrity must be preserved (no leakage)."
     ),
     4: (
-        "Step 4 â€” ML Meta-Optimizer: Adaptive neural architecture optimization "
+        "Step 4 — ML Meta-Optimizer: Adaptive neural architecture optimization "
         "and capacity planning. Does NOT consume survivor data directly. "
         "Output: reinforcement_engine_config.json with pool sizing and architecture. "
-        "Key metric: validation RÂ² on architecture search."
+        "Key metric: validation R² on architecture search."
     ),
     5: (
-        "Step 5 â€” Anti-Overfit Training: K-fold cross-validated model training "
+        "Step 5 — Anti-Overfit Training: K-fold cross-validated model training "
         "with 4 model types (neural_net, xgboost, lightgbm, catboost). "
         "FIRST step to consume survivors_with_scores.json + holdout_hits. "
         "Output: best_model checkpoint + best_model.meta.json sidecar. "
@@ -128,17 +128,17 @@ STEP_MISSIONS: Dict[int, str] = {
         "CRITICAL: fail hard on feature schema mismatch."
     ),
     6: (
-        "Step 6 â€” Prediction Generator: Generate final predictions using "
+        "Step 6 — Prediction Generator: Generate final predictions using "
         "trained model loaded via sidecar metadata (best_model.meta.json). "
         "Validates feature_schema_hash before inference. "
         "Output: prediction_pool.json with confidence-ranked candidates. "
         "Key metrics: prediction confidence, pool size (tight/balanced/wide). "
-        "CONTRACT: sidecar-only model loading â€” no direct checkpoint access."
+        "CONTRACT: sidecar-only model loading — no direct checkpoint access."
     ),
 }
 
 CHAPTER_13_MISSION = (
-    "Chapter 13 â€” Live Feedback Loop: Monitors for new draws, runs diagnostics, "
+    "Chapter 13 — Live Feedback Loop: Monitors for new draws, runs diagnostics, "
     "evaluates retrain triggers, queries LLM advisor for analysis, validates "
     "proposals through acceptance engine, executes approved learning loops. "
     "SOLE AUTHORITY for policy promotion. Selfplay candidates are hypotheses "
@@ -147,9 +147,9 @@ CHAPTER_13_MISSION = (
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # STEP SCHEMA EXCERPTS (human-readable Pydantic summaries)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 STEP_SCHEMA_EXCERPTS: Dict[int, str] = {
     1: (
@@ -194,9 +194,9 @@ CHAPTER_13_SCHEMA_EXCERPT = (
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # STEP-TO-GRAMMAR MAPPING
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 STEP_GRAMMAR_NAMES: Dict[int, str] = {
     1: "agent_decision.gbnf",
@@ -210,33 +210,33 @@ STEP_GRAMMAR_NAMES: Dict[int, str] = {
 CHAPTER_13_GRAMMAR = "chapter_13.gbnf"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # STEP GUARDRAILS (per-step reminders injected into prompt)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 STEP_GUARDRAILS: Dict[int, List[str]] = {
     1: [
-        "Low thresholds (0.01-0.15) maximize seed discovery â€” do not recommend high thresholds.",
+        "Low thresholds (0.01-0.15) maximize seed discovery — do not recommend high thresholds.",
         "Bidirectional intersection handles filtering, not individual thresholds.",
     ],
     2: [
         "Scorer accuracy must be measured on holdout data, not training data.",
     ],
     3: [
-        "Holdout label integrity is paramount â€” no information leakage from holdout to training.",
+        "Holdout label integrity is paramount — no information leakage from holdout to training.",
         "Feature count must be exactly 64 (50 per-seed + 14 global) for schema compatibility.",
         "NPZ v3.0 must preserve all 22 metadata fields.",
     ],
     4: [
-        "Step 4 does NOT consume survivor data directly â€” it plans architecture only.",
+        "Step 4 does NOT consume survivor data directly — it plans architecture only.",
     ],
     5: [
-        "Overfit ratio >1.5 is a hard fail â€” do not recommend proceeding.",
+        "Overfit ratio >1.5 is a hard fail — do not recommend proceeding.",
         "Feature schema hash must match between training and inference.",
         "All 4 model types (neural_net, xgboost, lightgbm, catboost) should be compared.",
     ],
     6: [
-        "Model loading is sidecar-only â€” never load checkpoints directly.",
+        "Model loading is sidecar-only — never load checkpoints directly.",
         "Feature schema hash must be validated before inference.",
         "Prediction pool sizing: tight(100), balanced(500), wide(1000).",
     ],
@@ -244,7 +244,7 @@ STEP_GUARDRAILS: Dict[int, List[str]] = {
 
 CHAPTER_13_GUARDRAILS = [
     "Selfplay outputs are HYPOTHESES until Chapter 13 promotes them.",
-    "Promotion authority is Chapter 13 ONLY â€” never recommend self-promotion.",
+    "Promotion authority is Chapter 13 ONLY — never recommend self-promotion.",
     "Ground truth (live draws) is accessible to Chapter 13 ONLY.",
     "WATCHER executes; Chapter 13 decides; selfplay explores.",
 ]
@@ -294,18 +294,18 @@ SELFPLAY_GUARDRAILS = [
 
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # CONTRACT REFERENCES
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 AUTHORITY_CONTRACTS = [
     "CONTRACT_SELFPLAY_CHAPTER13_AUTHORITY_v1_0.md",
 ]
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # PYDANTIC MODELS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 class TokenBudget(BaseModel):
     """Token budget policy for bundle assembly.
@@ -445,9 +445,9 @@ class StepAwarenessBundle(BaseModel):
     model_config = {"frozen": True}  # Immutable after creation
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# RETRIEVAL STUBS (Track 2 â€” will be replaced with structured retriever)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
+# RETRIEVAL STUBS (Track 2 — will be replaced with structured retriever)
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _retrieve_recent_outcomes(step_id: int, max_results: int = 5) -> List[OutcomeRecord]:
     """Retrieve recent Chapter 13-curated outcomes for this step.
@@ -495,9 +495,9 @@ def _retrieve_open_incidents(step_id: int) -> List[str]:
     return []
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # TOKEN ESTIMATION
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _estimate_tokens(text: str) -> int:
     """Estimate token count using word-based approximation.
@@ -541,9 +541,9 @@ def _truncate_to_budget(text: str, max_tokens: int) -> str:
     return truncated + "\n[... truncated to fit token budget ...]"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # BUNDLE ASSEMBLY
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 def build_step_awareness_bundle(
     step_id: int,
@@ -571,7 +571,7 @@ def build_step_awareness_bundle(
         is_chapter_13: True if this is a Chapter 13 evaluation context.
 
     Returns:
-        StepAwarenessBundle â€” immutable, deterministic, token-budgeted.
+        StepAwarenessBundle — immutable, deterministic, token-budgeted.
     """
     if not run_id:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -608,7 +608,7 @@ def build_step_awareness_bundle(
         grammar_name = SELFPLAY_GRAMMAR
         guardrails = list(SELFPLAY_GUARDRAILS)
     else:
-        mission = STEP_MISSIONS.get(step_id, f"Step {step_id} â€” no mission defined.")
+        mission = STEP_MISSIONS.get(step_id, f"Step {step_id} — no mission defined.")
         schema_excerpt = STEP_SCHEMA_EXCERPTS.get(step_id, "No schema excerpt available.")
         grammar_name = STEP_GRAMMAR_NAMES.get(step_id, "json_generic.gbnf")
         guardrails = list(STEP_GUARDRAILS.get(step_id, []))
@@ -620,7 +620,7 @@ def build_step_awareness_bundle(
     evaluation_summary = {}
 
     if is_chapter_13 or step_id == 13:
-        # Chapter 13 has its own orchestrator â€” no step context to build.
+        # Chapter 13 has its own orchestrator — no step context to build.
         # Extract directly from results dict.
         inputs_summary = {
             k: v for k, v in results.items()
@@ -668,7 +668,7 @@ def build_step_awareness_bundle(
                 if not isinstance(v, (list, dict))
             }
     else:
-        # Unknown step â€” extract scalar values from results
+        # Unknown step — extract scalar values from results
         inputs_summary = {
             k: v for k, v in results.items()
             if not isinstance(v, (list, dict))
@@ -726,9 +726,9 @@ def build_step_awareness_bundle(
     return bundle
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # PROMPT RENDERING
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 def render_prompt_from_bundle(bundle: StepAwarenessBundle) -> str:
     """Render a Step Awareness Bundle into an LLM prompt string.
@@ -847,12 +847,12 @@ def render_prompt_from_bundle(bundle: StepAwarenessBundle) -> str:
     return prompt
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# CONVENIENCE: build_llm_context() â€” Team Beta Guardrail #1
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
+# CONVENIENCE: build_llm_context() — Team Beta Guardrail #1
+# ═════════════════════════════════════════════════════════════════════════════
 # This is the "single context entry point" that dispatch functions call.
 # Today it wraps build_step_awareness_bundle + render_prompt_from_bundle.
-# Tomorrow (Track 2) it adds retrieval â€” dispatch code never changes.
+# Tomorrow (Track 2) it adds retrieval — dispatch code never changes.
 
 def build_llm_context(
     step_id: int,
@@ -899,15 +899,15 @@ def build_llm_context(
     return prompt, grammar_name, bundle
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 # SELF-TEST
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     print("=" * 70)
-    print("Bundle Factory v1.1.0 â€” Self-Test")
+    print("Bundle Factory v1.1.0 — Self-Test")
     print("=" * 70)
 
     # Test 1: Build bundle for each step
