@@ -60,10 +60,10 @@ if [[ "${1:-}" == "--status" ]]; then
     if [[ -n "$LATEST_LOG" ]]; then
         echo -e "  Log: $LATEST_LOG"
         echo ""
-        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
-        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
-        ESCALATED=$(grep -c 'ESCALATE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
-        ERRORS=$(grep -c 'Traceback' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null || true)
+        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null || true)
+        ESCALATED=$(grep -c 'ESCALATE' "$LATEST_LOG" 2>/dev/null || true)
+        ERRORS=$(grep -c 'Traceback' "$LATEST_LOG" 2>/dev/null || true)
 
         echo "  Cycles completed:  $CYCLES"
         echo "  Auto-approved:     $AUTO"
@@ -113,10 +113,10 @@ if [[ "${1:-}" == "--stop" ]]; then
 
     LATEST_LOG=$(ls -t "$LOG_DIR"/soakC_*.log 2>/dev/null | head -1)
     if [[ -n "$LATEST_LOG" ]]; then
-        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
-        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
-        ESCALATED=$(grep -c 'ESCALATE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
-        ERRORS=$(grep -c 'Traceback' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null || true)
+        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null || true)
+        ESCALATED=$(grep -c 'ESCALATE' "$LATEST_LOG" 2>/dev/null || true)
+        ERRORS=$(grep -c 'Traceback' "$LATEST_LOG" 2>/dev/null || true)
 
         echo ""
         echo "  Log file:          $LATEST_LOG"
@@ -379,7 +379,7 @@ tmux new-window -t "$TMUX_SESSION" -n "orchestrator" \
 
 # Create a status window
 tmux new-window -t "$TMUX_SESSION" -n "monitor" \
-    "cd $WORKDIR && echo 'Soak C Monitor — updates every 60s' && echo ''; while true; do echo \"[\$(date '+%H:%M:%S')] Cycles: \$(grep -c 'CHAPTER 13 CYCLE' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || echo 0) | Auto-approved: \$(grep -c 'Auto-approv' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || echo 0) | Escalated: \$(grep -c 'ESCALATE' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || echo 0) | Errors: \$(grep -ci 'error' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || echo 0)\"; sleep 60; done"
+    "cd $WORKDIR && echo 'Soak C Monitor — updates every 60s' && echo ''; while true; do echo \"[\$(date '+%H:%M:%S')] Cycles: \$(grep -c 'CHAPTER 13 CYCLE' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || true) | Auto-approved: \$(grep -c 'Auto-approv' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || true) | Escalated: \$(grep -c 'ESCALATE' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || true) | Errors: \$(grep -ci 'error' $LOG_DIR/soakC_${TIMESTAMP}.log 2>/dev/null || true)\"; sleep 60; done"
 
 ok "tmux session '$TMUX_SESSION' created with 3 windows:"
 echo "    0: injector    — synthetic_draw_injector.py (60s interval)"
