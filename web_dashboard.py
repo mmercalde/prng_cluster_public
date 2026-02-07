@@ -916,24 +916,25 @@ STATS_CONTENT = """
             </tr>
             <tr>
                 <td>rig-6600 (192.168.3.120)</td>
-                <td>12</td>
+                <td>8</td>
                 <td>RX 6600</td>
                 <td>8GB</td>
-                <td>~113 TFLOPS</td>
+                <td>~75 TFLOPS</td>
             </tr>
             <tr>
                 <td>rig-6600b (192.168.3.154)</td>
-                <td>12</td>
+                <td>8</td>
                 <td>RX 6600</td>
                 <td>8GB</td>
-                <td>~113 TFLOPS</td>
+                <td>~75 TFLOPS</td>
             </tr>
-                <tr>
+            <tr>
                 <td>rig-6600c (192.168.3.162)</td>
-                <td>8× RX 6600</td>
-                <td>ROCm</td>
-                <td>Worker Node 3</td>
-                </tr>
+                <td>8</td>
+                <td>RX 6600</td>
+                <td>8GB</td>
+                <td>~75 TFLOPS</td>
+            </tr>
         </tbody>
     </table>
 </div>
@@ -1176,7 +1177,7 @@ SETTINGS_CONTENT = """
     <p style="color: var(--text-secondary); font-size: 12px;">
         PRNG Cluster Dashboard v2.1<br>
         HiveOS-inspired interface for distributed PRNG analysis<br>
-        26 GPUs • 3 Nodes • ~285 TFLOPS<br><br>
+        26 GPUs • 4 Nodes • ~285 TFLOPS<br><br>
         <span style="color: var(--text-muted);">
             Session 6: Functional settings with persistence</span><br><br>
         <button type="button" class="btn btn-secondary" onclick="shutdownServer()" style="background: var(--accent-red);">
