@@ -60,10 +60,10 @@ if [[ "${1:-}" == "--status" ]]; then
     if [[ -n "$LATEST_LOG" ]]; then
         echo -e "  Log: $LATEST_LOG"
         echo ""
-        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null 2>/dev/null || echo 0)
-        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null 2>/dev/null || echo 0)
-        ESCALATED=$(grep -c 'ESCALATE\|pending_approval' "$LATEST_LOG" 2>/dev/null 2>/dev/null || echo 0)
-        ERRORS=$(grep -c 'ERROR\|Exception\|Traceback' "$LATEST_LOG" 2>/dev/null || echo 0)
+        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        ESCALATED=$(grep -c 'ESCALATE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        ERRORS=$(grep -c 'Traceback' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
 
         echo "  Cycles completed:  $CYCLES"
         echo "  Auto-approved:     $AUTO"
@@ -113,10 +113,10 @@ if [[ "${1:-}" == "--stop" ]]; then
 
     LATEST_LOG=$(ls -t "$LOG_DIR"/soakC_*.log 2>/dev/null | head -1)
     if [[ -n "$LATEST_LOG" ]]; then
-        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null 2>/dev/null || echo 0)
-        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null 2>/dev/null || echo 0)
-        ESCALATED=$(grep -c 'ESCALATE\|pending_approval' "$LATEST_LOG" 2>/dev/null 2>/dev/null || echo 0)
-        ERRORS=$(grep -c 'ERROR\|Exception\|Traceback' "$LATEST_LOG" 2>/dev/null || echo 0)
+        CYCLES=$(grep -c 'CHAPTER 13 CYCLE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        AUTO=$(grep -c 'Auto-approv' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        ESCALATED=$(grep -c 'ESCALATE' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
+        ERRORS=$(grep -c 'Traceback' "$LATEST_LOG" 2>/dev/null | head -n1 || echo 0)
 
         echo ""
         echo "  Log file:          $LATEST_LOG"
