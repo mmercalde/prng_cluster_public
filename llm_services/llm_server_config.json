@@ -1,26 +1,29 @@
 {
     "schema_version": "2.1.0",
     "architecture": "primary_plus_backup",
-
     "primary": {
         "name": "DeepSeek-R1-14B",
         "model_file": "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
         "port": 8080,
         "context_length": 32768,
         "n_gpu_layers": 99,
-        "_note_context": "Upgraded 8192→32768 (Session 57, 2026-02-01). Dual 3080 Ti KV cache ≈2.6GB/GPU, headroom ≈5.15GB/GPU."
+        "_note_context": "Upgraded 8192\u219232768 (Session 57, 2026-02-01). Dual 3080 Ti KV cache \u22482.6GB/GPU, headroom \u22485.15GB/GPU.",
+        "stop_tokens": [
+            "<|im_end|>"
+        ]
     },
-
     "backup": {
         "name": "Claude Opus 4.5",
         "type": "external_api",
         "access_method": "claude_code_cli"
     },
-
     "routing": {
         "escalation_triggers": [
-            "UNCERTAIN", "LOW_CONFIDENCE",
-            "ESCALATE_TO_BACKUP", "REQUIRES_DEEP_ANALYSIS"
-        ]
+            "UNCERTAIN",
+            "LOW_CONFIDENCE",
+            "ESCALATE_TO_BACKUP",
+            "REQUIRES_DEEP_ANALYSIS"
+        ],
+        "request_timeout_seconds": 180
     }
 }

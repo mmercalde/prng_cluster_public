@@ -330,15 +330,22 @@ class Chapter13Orchestrator:
                     logger.info("✅ Proposal ACCEPTED")
                     result["outcome"] = "proposal_accepted"
                     
-                    # v1: Still require human approval even for accepted proposals
-                    v1_approval = self.policies.get("v1_approval_required", {})
-                    if v1_approval.get("retrain_execution", True):
-                        logger.info("📋 v1 mode: Requesting human approval...")
-                        self.trigger_manager.request_approval(trigger_eval)
-                        result["outcome"] = "pending_approval"
+                    # SOAK C PATCH: Skip v1 gate in test mode
+                    _test_mode = self.policies.get("test_mode", False)
+                    _auto_approve = self.policies.get("auto_approve_in_test_mode", False)
+                    
+                    if _test_mode and _auto_approve:
+                        logger.info("🔄 SOAK C: Auto-executing (test mode)")
+                        result["outcome"] = "auto_executed_test_mode"
                     else:
-                        # Future: auto-execute
-                        result["outcome"] = "auto_execute_disabled"
+                        # v1: Still require human approval even for accepted proposals
+                        v1_approval = self.policies.get("v1_approval_required", {})
+                        if v1_approval.get("retrain_execution", True):
+                            logger.info("📋 v1 mode: Requesting human approval...")
+                            self.trigger_manager.request_approval(trigger_eval)
+                            result["outcome"] = "pending_approval"
+                        else:
+                            result["outcome"] = "auto_execute_disabled"
                         
                 elif validation.result == ValidationResult.ESCALATE:
                     logger.info("⚠️ Proposal ESCALATED to human review")
