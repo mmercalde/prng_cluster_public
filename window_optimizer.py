@@ -674,6 +674,23 @@ def run_bayesian_optimization(
     print(f"✅ Saved {len(holdout_data)} holdout draws to holdout_history.json")
 
 
+    # === AUTO-CONSOLIDATION (2026-02-07) ===
+    # After optimization, run best config to produce bidirectional_survivors.json
+    # This bridges the two-mode gap: bayesian mode finds params, config mode emits survivors.
+    print("\n🔄 Running best configuration to generate bidirectional_survivors.json...")
+    try:
+        consolidation_result = run_with_config(
+            config_file=output_config,
+            lottery_file=lottery_file,
+            max_seeds=seed_count,
+            iterations=1,
+        )
+        print("✅ Auto-consolidation complete — bidirectional_survivors.json written")
+    except Exception as e:
+        print(f"⚠️  Auto-consolidation failed: {e}")
+        print("   bidirectional_survivors.json may need manual generation")
+    # === END AUTO-CONSOLIDATION ===
+
     return results
 
 
