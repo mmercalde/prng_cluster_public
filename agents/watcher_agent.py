@@ -1535,7 +1535,7 @@ class WatcherAgent:
                 # Update progress display
                 if progress:
                     # Get total trials from manifest if available
-                    total_trials = self._get_step_trials(step)
+                    total_trials = self._get_step_trials(step, params=params)
                     progress.start_step(step, total_trials=total_trials)
 
                 logger.info(f"\n{'='*60}")
@@ -1582,8 +1582,10 @@ class WatcherAgent:
         self.running = False
         logger.info("Pipeline execution finished")
 
-    def _get_step_trials(self, step: int) -> int:
+    def _get_step_trials(self, step: int, params: dict = None) -> int:
         """Get expected number of trials for a step from manifest."""
+        if params and "trials" in params:
+            return params["trials"]
         manifest_name = STEP_MANIFESTS.get(step)
         if not manifest_name:
             return 0
