@@ -121,7 +121,8 @@
       "choices": [
         "bayesian",
         "random",
-        "grid"
+        "grid",
+        "evolutionary"
       ],
       "default": "bayesian",
       "description": "Optuna search strategy for parameter space exploration.",

@@ -218,6 +218,7 @@ STEP_GUARDRAILS: Dict[int, List[str]] = {
     1: [
         "Low thresholds (0.01-0.15) maximize seed discovery — do not recommend high thresholds.",
         "Bidirectional intersection handles filtering, not individual thresholds.",
+        "search_strategy is adjustable: bayesian (default/narrowing), random (exploration/survey), grid (exhaustive near known params), evolutionary (complex spaces/escape local optima).",
     ],
     2: [
         "Scorer accuracy must be measured on holdout data, not training data.",

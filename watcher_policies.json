@@ -4,7 +4,7 @@
   "_schema": "watcher_policies/v1.0.0",
   "_description": "WATCHER Agent policy configuration for Chapter 13 Live Feedback Loop",
   "_updated": "2026-01-12",
-  "test_mode": true,
+  "test_mode": false,
   "_test_mode_note": "Set to true ONLY for synthetic injection testing. Production must be false.",
   "synthetic_injection": {
     "enabled": true,
@@ -98,5 +98,20 @@
     "min_survivor_count": 1000,
     "auto_promote": false,
     "require_human_approval": true
-  }
+  },
+  "auto_approve_in_test_mode": false,
+  "skip_escalation_in_test_mode": false,
+  "parameter_bounds": {
+    "search_strategy": {
+      "type": "choice",
+      "choices": [
+        "bayesian",
+        "random",
+        "grid",
+        "evolutionary"
+      ],
+      "default": "bayesian"
+    }
+  },
+  "strategy_change_cooldown_episodes": 5
 }
