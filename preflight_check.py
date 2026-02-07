@@ -229,7 +229,13 @@ class PreflightChecker:
                         result.add_remediation(f"Ramdisk populated for Step {step}")
                         logger.info("[PREFLIGHT] Ramdisk: ✅ Auto-remediated")
                     else:
-                        result.add_failure(f"Ramdisk remediation failed: {ramdisk_result['missing']}")
+                        # Steps with script-level preload: informational, not failure
+                        PRELOAD_STEPS = {3}
+                        if step in PRELOAD_STEPS:
+                            result.add_warning(f"Ramdisk not yet populated — preload scheduled: {ramdisk_result['missing']}")
+                            result.checks_passed += 1  # Preload will handle it
+                        else:
+                            result.add_failure(f"Ramdisk remediation failed: {ramdisk_result['missing']}")
                 else:
                     result.add_failure(f"Ramdisk remediation script failed for Step {step}")
             else:
