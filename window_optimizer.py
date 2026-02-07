@@ -534,7 +534,7 @@ def run_bayesian_optimization(
 
     # Lazy import to avoid circular dependency
     try:
-        from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+        from window_optimizer_integration_final import add_window_optimizer_to_coordinator, run_bidirectional_test
         integration_available = True
     except ImportError as e:
         integration_available = False
@@ -716,7 +716,7 @@ def run_with_config(
 
     # Lazy import to avoid circular dependency
     try:
-        from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+        from window_optimizer_integration_final import add_window_optimizer_to_coordinator, run_bidirectional_test
         integration_available = True
     except ImportError as e:
         integration_available = False
