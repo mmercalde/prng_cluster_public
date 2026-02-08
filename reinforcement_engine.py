@@ -3,7 +3,14 @@
 Reinforcement Engine - ML Training Orchestrator (DISTRIBUTED-READY)
 ====================================================================
 
-Version: 1.6.1 - CUDA WARMUP + LABEL LEAKAGE FIX + SAVE SPAM FIX
+Version: 1.7.0 - CHAPTER 14 TRAINING DIAGNOSTICS INTEGRATION
+
+Changes in v1.7.0:
+- Added enable_diagnostics parameter for Chapter 14 live training introspection
+- Integrated NNDiagnostics PyTorch hooks for per-epoch capture
+- Best-effort, non-fatal diagnostics (never blocks training)
+- Diagnostics auto-save to diagnostics_outputs/ after training
+- Added --enable-diagnostics CLI flag
 
 Changes in v1.6.1:
 - Fixed save spam: now saves best_model.pth only ONCE at end of training
@@ -97,6 +104,16 @@ except ImportError:
     print("Make sure survivor_scorer.py is in the same directory")
     sys.exit(1)
 
+# ============================================================================
+# TRAINING DIAGNOSTICS (Chapter 14 - v1.7.0)
+# ============================================================================
+try:
+    from training_diagnostics import NNDiagnostics
+    DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    DIAGNOSTICS_AVAILABLE = False
+    NNDiagnostics = None  # Placeholder for type hints
+
 
 # ============================================================================
 # CUDA INITIALIZATION (v1.6.0 - PROPER WARMUP)
@@ -168,6 +185,7 @@ class ReinforcementConfig:
     """
     Configuration for reinforcement engine
     
+    v1.7.0: Added diagnostics config block
     v1.6.0: Updated default input_features to 48 (removed score, confidence)
     """
     # Model architecture
@@ -250,6 +268,14 @@ class ReinforcementConfig:
         'find_unused_parameters': False
     })
 
+    # v1.7.0: Training diagnostics (Chapter 14)
+    diagnostics: Dict[str, Any] = field(default_factory=lambda: {
+        'enabled': False,
+        'capture_every_n': 5,
+        'output_dir': 'diagnostics_outputs',
+        'save_history': True
+    })
+
     @classmethod
     def from_json(cls, path: str) -> 'ReinforcementConfig':
         """Load configuration from JSON file"""
@@ -264,7 +290,8 @@ class ReinforcementConfig:
             normalization=data.get('normalization', {}),
             survivor_pool=data.get('survivor_pool', {}),
             output=data.get('output', {}),
-            distributed=data.get('distributed', {})
+            distributed=data.get('distributed', {}),
+            diagnostics=data.get('diagnostics', {})  # v1.7.0
         )
 
     def to_json(self, path: str):
@@ -311,6 +338,7 @@ class ReinforcementEngine:
     """
     Main ML training orchestrator
     
+    v1.7.0: Chapter 14 training diagnostics integration
     v1.6.0: CUDA warmup fix, updated feature count, reduced checkpoint spam
     """
 
@@ -318,7 +346,8 @@ class ReinforcementEngine:
                  logger: Optional[logging.Logger] = None,
                  scorer_config_dict: Optional[Dict] = None,
                  per_seed_feature_count: Optional[int] = None,
-                 excluded_features: Optional[List[str]] = None):
+                 excluded_features: Optional[List[str]] = None,
+                 enable_diagnostics: bool = False):
         """
         Initialize ReinforcementEngine.
         
@@ -329,6 +358,7 @@ class ReinforcementEngine:
             scorer_config_dict: Optional custom scorer parameters
             per_seed_feature_count: Override for per-seed feature count (default: 48)
             excluded_features: Features excluded from training (for logging)
+            enable_diagnostics: Enable Chapter 14 training diagnostics (v1.7.0)
         """
         self.config = config
         self.lottery_history = lottery_history
@@ -336,7 +366,7 @@ class ReinforcementEngine:
         self.excluded_features = excluded_features or ['score', 'confidence']
 
         self.logger.info("="*60)
-        self.logger.info("Initializing ReinforcementEngine v1.6.0")
+        self.logger.info("Initializing ReinforcementEngine v1.7.0")
         self.logger.info("="*60)
 
         # Distributed training state
@@ -439,6 +469,17 @@ class ReinforcementEngine:
 
         if self.normalization_enabled:
             self.logger.info("Feature normalization: ENABLED")
+
+        # v1.7.0: Training diagnostics (Chapter 14)
+        config_diagnostics_enabled = config.diagnostics.get('enabled', False)
+        self.enable_diagnostics = (enable_diagnostics or config_diagnostics_enabled) and DIAGNOSTICS_AVAILABLE
+        self._diagnostics: Optional['NNDiagnostics'] = None
+        self._last_diagnostics_path: Optional[str] = None
+        
+        if self.enable_diagnostics:
+            self.logger.info("Training diagnostics: ENABLED (Chapter 14)")
+        elif enable_diagnostics and not DIAGNOSTICS_AVAILABLE:
+            self.logger.warning("Training diagnostics requested but training_diagnostics.py not found")
 
         Path(config.output['models_dir']).mkdir(parents=True, exist_ok=True)
         Path(config.output['logs_dir']).mkdir(parents=True, exist_ok=True)
@@ -597,6 +638,7 @@ class ReinforcementEngine:
         """
         Train model.
         
+        v1.7.0: Integrated Chapter 14 diagnostics hooks
         v1.6.0: Only saves best_model.pth (no epoch spam)
         """
         if len(survivors) == 0 or len(actual_results) == 0:
@@ -651,6 +693,25 @@ class ReinforcementEngine:
         X_val_t = torch.tensor(X_val).to(self.device)
         y_val_t = torch.tensor(y_val).to(self.device)
 
+        # ====================================================================
+        # v1.7.0: Attach diagnostics hooks (best-effort, non-fatal)
+        # ====================================================================
+        if self.enable_diagnostics and should_log:
+            try:
+                capture_every_n = self.config.diagnostics.get('capture_every_n', 5)
+                self._diagnostics = NNDiagnostics(
+                    feature_names=self.per_seed_feature_names,
+                    capture_every_n=capture_every_n
+                )
+                # Get the underlying model if wrapped in DataParallel/DDP
+                model_to_hook = self.model.module if hasattr(self.model, 'module') else self.model
+                self._diagnostics.attach(model_to_hook)
+                self.logger.info(f"✅ Diagnostics hooks attached (capture every {capture_every_n} epochs)")
+            except Exception as e:
+                self.logger.warning(f"Diagnostics attach failed (non-fatal): {e}")
+                self._diagnostics = None
+        # ====================================================================
+
         best_val_loss = float('inf')
         best_epoch = 0
         patience_counter = 0
@@ -685,6 +746,16 @@ class ReinforcementEngine:
             self.training_history['epoch'].append(epoch)
             self.training_history['loss'].append(avg_loss)
             self.training_history['val_loss'].append(val_loss)
+
+            # ================================================================
+            # v1.7.0: Record diagnostics for this epoch (best-effort)
+            # ================================================================
+            if self._diagnostics is not None:
+                try:
+                    self._diagnostics.on_round_end(epoch, avg_loss, val_loss)
+                except Exception:
+                    pass  # Non-fatal - diagnostics failure never blocks training
+            # ================================================================
 
             # Pruning callback
             if epoch_callback is not None:
@@ -725,6 +796,29 @@ class ReinforcementEngine:
         self.best_val_loss = best_val_loss
         self.best_overfit_ratio = val_loss / avg_loss if avg_loss > 0 else float('inf')
 
+        # ====================================================================
+        # v1.7.0: Finalize and save diagnostics (best-effort)
+        # ====================================================================
+        if self._diagnostics is not None and should_log:
+            try:
+                self._diagnostics.detach()
+                self._diagnostics.set_final_metrics({
+                    'best_val_loss': best_val_loss,
+                    'best_epoch': best_epoch,
+                    'final_train_loss': avg_loss,
+                    'final_val_loss': val_loss,
+                    'overfit_ratio': self.best_overfit_ratio,
+                    'total_epochs': epoch + 1
+                })
+                diag_path = self._diagnostics.save()
+                self._last_diagnostics_path = diag_path
+                self.logger.info(f"✅ Training diagnostics saved to {diag_path}")
+            except Exception as e:
+                self.logger.warning(f"Diagnostics save failed (non-fatal): {e}")
+            finally:
+                self._diagnostics = None  # Clear reference
+        # ====================================================================
+
         # v1.6.1: Save best model ONCE at end of training (no spam)
         if save_best_only and should_log and getattr(self, '_pending_best_save', False):
             self.save_model("best_model.pth")
@@ -736,6 +830,15 @@ class ReinforcementEngine:
             self.logger.info(f"  Final train loss: {avg_loss:.4f}")
             self.logger.info(f"  Final val loss: {val_loss:.4f}")
             self.logger.info(f"  Overfit ratio: {val_loss / avg_loss:.2f}")
+
+    def get_last_diagnostics_path(self) -> Optional[str]:
+        """
+        Get path to most recent diagnostics file (v1.7.0).
+        
+        Returns:
+            Path to diagnostics JSON file, or None if diagnostics weren't generated
+        """
+        return self._last_diagnostics_path
 
     def predict_quality(
         self, 
@@ -936,7 +1039,7 @@ def main():
     """CLI interface for testing"""
     import argparse
     parser = argparse.ArgumentParser(
-        description='Reinforcement Engine v1.6.0 - ML Training Orchestrator'
+        description='Reinforcement Engine v1.7.0 - ML Training Orchestrator'
     )
     parser.add_argument('--config', type=str,
                        default='reinforcement_engine_config.json',
@@ -947,12 +1050,14 @@ def main():
                        help='Run self-test')
     parser.add_argument('--distributed', action='store_true',
                        help='Enable distributed training mode')
+    parser.add_argument('--enable-diagnostics', action='store_true',
+                       help='Enable Chapter 14 training diagnostics (v1.7.0)')
 
     args = parser.parse_args()
 
     if args.test:
         print("="*70)
-        print("REINFORCEMENT ENGINE v1.6.0 - SELF TEST")
+        print("REINFORCEMENT ENGINE v1.7.0 - SELF TEST")
         print("="*70)
 
         config = ReinforcementConfig()
@@ -966,7 +1071,11 @@ def main():
         lottery_history = np.random.randint(0, 1000, 5000).tolist()
 
         try:
-            engine = ReinforcementEngine(config, lottery_history)
+            engine = ReinforcementEngine(
+                config, 
+                lottery_history,
+                enable_diagnostics=args.enable_diagnostics
+            )
             print("✅ Engine initialized successfully")
             print(f"   Device: {engine.device}")
             print(f"   Distributed: {engine.is_distributed}")
@@ -976,6 +1085,8 @@ def main():
             print(f"   Per-seed features: {engine.per_seed_feature_count}")
             print(f"   Global features: {engine.global_feature_count}")
             print(f"   Excluded features: {engine.excluded_features}")
+            print(f"   Diagnostics enabled: {engine.enable_diagnostics}")
+            print(f"   Diagnostics available: {DIAGNOSTICS_AVAILABLE}")
 
             global_state = engine.global_tracker.get_global_state()
             print(f"✅ Global state computed: {len(global_state)} features")
@@ -1031,11 +1142,16 @@ def main():
 
     print(f"✅ Loaded {len(lottery_history)} lottery draws")
 
-    engine = ReinforcementEngine(config, lottery_history)
+    engine = ReinforcementEngine(
+        config, 
+        lottery_history,
+        enable_diagnostics=args.enable_diagnostics
+    )
     print("✅ ReinforcementEngine initialized")
     print(f"   Device: {engine.device}")
     print(f"   Distributed: {engine.is_distributed}")
     print(f"   Model: {sum(p.numel() for p in engine.model.parameters())} parameters")
+    print(f"   Diagnostics: {'ENABLED' if engine.enable_diagnostics else 'DISABLED'}")
 
     global_state = engine.global_tracker.get_global_state()
     print("\n=== Global Statistical State ===")
