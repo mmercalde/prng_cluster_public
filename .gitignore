@@ -87,3 +87,15 @@ survivors_with_scores.json.backup_*
 fix_*.py
 models/reinforcement/best_model_epoch_*.pth
 *.pre_*
+
+# --- Runtime data files (regenerated each run) ---
+acceptance_decisions.jsonl
+chapter13_cycle_history.jsonl
+watcher_decisions.jsonl
+.history_fingerprint
+
+# --- Runtime data files (regenerated each run) ---
+acceptance_decisions.jsonl
+chapter13_cycle_history.jsonl
+watcher_decisions.jsonl
+.history_fingerprint

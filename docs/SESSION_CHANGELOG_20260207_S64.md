@@ -132,34 +132,92 @@ The "auto-consolidation" feature Claude was trying to add is **unnecessary**:
 
 ---
 
+## Recovery Successful ✅
+
+### First Attempt (Manifest Defaults) - FAILED
+
+```bash
+PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline --start-step 1 --end-step 1 --no-llm
+```
+
+**Result:** 0 survivors, 2-byte file (empty `[]`), ESCALATE after 37 minutes.
+
+**Root cause:** Manifest defaults had insufficient search space.
+
+### Second Attempt (Custom Params) - SUCCESS
+
+```bash
+PYTHONPATH=. python3 agents/watcher_agent.py --clear-halt --run-pipeline --start-step 1 --end-step 1 --params '{"trials":100,"max_seeds":50000}'
+```
+
+**Result:**
+
+| Metric | Value |
+|--------|-------|
+| Bidirectional survivors | **24,628** |
+| Total unique (deduplicated) | **48,896** |
+| Best window | W3, O62, S[10-234] |
+| Skip mode distribution | 44,502 constant / 4,394 variable |
+| Time | 44:15 |
+| WATCHER evaluation | ✅ PROCEED (confidence 1.00) |
+
+### Schema Verification
+
+```
+Total survivors: 48896
+Element type: <class 'dict'>
+Keys: ['seed', 'window_size', 'offset', 'skip_min', 'skip_max', 'skip_range', 
+       'sessions', 'trial_number', 'prng_base', 'skip_mode', 'prng_type', 
+       'forward_count', 'reverse_count', 'bidirectional_count', 
+       'bidirectional_selectivity', 'score', 'intersection_count', 
+       'intersection_ratio', 'forward_only_count', 'reverse_only_count', 
+       'survivor_overlap_ratio', 'intersection_weight']
+✅ Schema is CORRECT (22 enriched fields)
+```
+
+### WATCHER Decision Log
+
+```json
+{"step": 1, "action": "proceed", "confidence": 1.0, "success": true, 
+ "reasoning": "All required files valid", "timestamp": "2026-02-07T19:08:51"}
+```
+
+---
+
 ## Current State
 
 | Item | Status |
 |------|--------|
 | `window_optimizer.py` | ✅ Reverted to 0b4e8f6 |
 | `window_optimizer_integration_final.py` | ✅ Reverted to 0b4e8f6 |
-| Step 1 | 🔄 Running via WATCHER |
-| Schema verification | ⏳ Pending Step 1 completion |
+| Step 1 execution | ✅ 48,896 survivors |
+| Schema validation | ✅ 22 enriched fields |
+| WATCHER state | ✅ PROCEED, ready for Step 2 |
 
 ---
 
-## Verification Commands (After Step 1 Completes)
+## Timeline
 
-```bash
-# Verify schema is correct
-python3 -c "
-import json
-d=json.load(open('bidirectional_survivors.json'))
-print(f'Total survivors: {len(d)}')
-if len(d) > 0:
-    print(f'Element type: {type(d[0])}')
-    if isinstance(d[0], dict):
-        print(f'Keys: {list(d[0].keys())}')
-        print('✅ Schema is CORRECT (enriched dicts)')
-    else:
-        print('❌ Schema is BROKEN (raw ints)')
-"
-```
+| Time (Local) | Event | Result |
+|--------------|-------|--------|
+| ~09:00 | Session start, schema regression discovered | - |
+| ~09:30 | Team Beta review, revert decision | - |
+| 09:32 | Git revert to 0b4e8f6 | Commit ac1e51e |
+| 10:24 | First re-run (manifest defaults) | ESCALATE (0 survivors) |
+| 10:24 | Second re-run (100 trials, 50K seeds) | Started |
+| 11:08 | Step 1 complete | ✅ PROCEED (48,896 survivors) |
+
+---
+
+## Parameter Discovery
+
+Working configuration for synthetic data:
+- **Trials:** 100 (Bayesian optimization)
+- **Seeds:** 50,000 per trial
+- **Total search:** 5M seed-trial combinations
+- **Time:** ~44 minutes
+
+This should be documented for future runs.
 
 ---
 
@@ -168,7 +226,19 @@ if len(d) > 0:
 ```bash
 cd ~/distributed_prng_analysis
 git add docs/SESSION_CHANGELOG_20260207_S64.md
-git commit -m "docs: Session 64 - Schema regression incident report"
+git commit -m "docs: Session 64 - Schema regression incident and recovery
+
+INCIDENT:
+- Claude introduced schema regression breaking Step 1 → Step 2 contract
+- bidirectional_survivors.json had raw integers instead of enriched dicts
+
+RECOVERY:
+- Reverted window_optimizer.py and window_optimizer_integration_final.py to 0b4e8f6
+- Re-ran Step 1 with params: trials=100, max_seeds=50000
+- Result: 48,896 survivors with correct 22-field schema
+
+WATCHER: PROCEED with confidence 1.0"
+
 git push origin main
 ```
 

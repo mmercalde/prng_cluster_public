@@ -169,6 +169,22 @@ if [[ "${1:-}" == "--cleanup" ]]; then
 
     echo ""
 
+    # Force production mode regardless of backup state
+    python3 -c "
+import json
+with open('watcher_policies.json') as f: p = json.load(f)
+p['test_mode'] = False
+p['auto_approve_in_test_mode'] = False
+p['skip_escalation_in_test_mode'] = False
+with open('watcher_policies.json','w') as f: json.dump(p,f,indent=2)
+"
+    ok "Forced test_mode=false in watcher_policies.json"
+    
+    # Clean stale pipeline files and halt flags
+    rm -f /tmp/agent_halt watcher_halt.flag new_draw.flag pending_approval.json
+    ok "Cleared halt/lock/flag files"
+    
+    echo ""
     # Optionally revert code patches
     read -p "  Revert code patches? (y/N): " REVERT
     if [[ "${REVERT,,}" == "y" ]]; then
