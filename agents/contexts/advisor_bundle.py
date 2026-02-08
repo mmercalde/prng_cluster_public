@@ -222,8 +222,10 @@ def build_advisor_bundle(
         sections.append(f"Draw {d.get('draw_number', '?')} ({d.get('timestamp', 'unknown')}):")
         sections.append(f"  Hit@20: {d.get('hit_at_20', 0.0):.4f}, Hit@100: {d.get('hit_at_100', 0.0):.4f}, Hit@300: {d.get('hit_at_300', 0.0):.4f}")
         if 'confidence_calibration' in d:
-            sections.append(f"  Confidence calibration: {d['confidence_calibration']:.4f}")
-        if 'feature_drift' in d:
+            cc = d['confidence_calibration']
+            cc_val = cc.get('mean_confidence', 0.0) if isinstance(cc, dict) else (cc or 0.0)
+            sections.append(f"  Confidence calibration: {cc_val:.4f}")
+        if 'feature_drift' in d and d['feature_drift'] is not None:
             sections.append(f"  Feature drift: {d['feature_drift']:.4f}")
     
     if len(diagnostics) > 5:

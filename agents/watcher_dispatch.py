@@ -143,7 +143,19 @@ def dispatch_selfplay(self, request: dict, dry_run: bool = False) -> bool:
             "--survivors", survivors_file,
             "--episodes", str(episodes),
             "--policy-conditioned",
+
         ]
+
+        # ── Apply Strategy Advisor overrides to CLI args ─────────
+        overrides = request.get("selfplay_overrides", {})
+        if overrides.get("min_fitness_threshold"):
+            cmd.extend(["--min-fitness", str(overrides["min_fitness_threshold"])])
+        if overrides.get("max_episodes"):
+            # Override episode count from advisor recommendation
+            for i, arg in enumerate(cmd):
+                if arg == "--episodes":
+                    cmd[i + 1] = str(overrides["max_episodes"])
+                    break
 
         logger.info(f"[{run_id}] Spawning: {' '.join(cmd)}")
         result = subprocess.run(
@@ -456,6 +468,39 @@ def process_chapter_13_request(self, request_path: str,
     except Exception as e:
         logger.warning(f"[{run_id}] Pre-validation failed: {e} — "
                        f"proceeding with heuristic safety checks")
+
+    # ── Strategy Advisor enrichment (before dispatch) ────────────
+    if request_type == "selfplay_retrain":
+        try:
+            from parameter_advisor import StrategyAdvisor
+            advisor = StrategyAdvisor(
+                state_dir=os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), ".."
+                )
+            )
+            rec = advisor.analyze()
+            if rec and rec.selfplay_overrides:
+                overrides = rec.selfplay_overrides.model_dump()
+                logger.info(
+                    f"[{run_id}] Strategy Advisor: focus={rec.focus_area.value}, "
+                    f"action={rec.recommended_action.value}, "
+                    f"mode={rec.advisor_model}"
+                )
+                # Merge overrides into request for dispatch_selfplay()
+                request.setdefault("selfplay_overrides", {}).update(overrides)
+            elif rec:
+                logger.info(
+                    f"[{run_id}] Strategy Advisor: action={rec.recommended_action.value} "
+                    f"(no selfplay overrides)"
+                )
+            else:
+                logger.info(f"[{run_id}] Strategy Advisor: gate not passed, skipping")
+        except Exception as e:
+            logger.warning(
+                f"[{run_id}] Strategy Advisor failed: {e} — "
+                f"proceeding without strategic guidance"
+            )
+
 
     # ── Route by request type ────────────────────────────────────
     status = "UNKNOWN_TYPE"

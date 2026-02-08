@@ -2,9 +2,9 @@
 """
 Strategy Advisor — LLM-Guided Selfplay Strategy Analysis.
 
-Version: 1.0.0
-Date: 2026-02-07
-Contract: CONTRACT_LLM_STRATEGY_ADVISOR_v1_0.md
+Version: 1.1.0
+Date: 2026-02-08
+Contract: CONTRACT_LLM_STRATEGY_ADVISOR_v1_0.md (+ Section 8.5)
 Authority: Team Beta
 
 PURPOSE:
@@ -23,9 +23,26 @@ ACTIVATION GATE:
     - ≥10 selfplay episodes with telemetry
     - ≥1 promoted policy exists
 
+LLM DECISION HIERARCHY (Section 8.5):
+    1. DeepSeek (primary) — routine analysis, grammar-constrained
+    2. Claude (backup) — escalation on low confidence + risky action
+    3. Heuristic (emergency) — ONLY when both LLMs unreachable
+       MUST log as DEGRADED_MODE warning
+
 OUTPUTS:
     - strategy_recommendation.json (overwritten each cycle)
     - strategy_history/ (archived recommendations)
+
+CHANGELOG:
+    v1.0.0 (2026-02-07): Initial implementation per contract
+    v1.1.0 (2026-02-08): Lifecycle integration, escalation chain, heuristic demotion
+        - Uses llm_lifecycle.ensure_running() before LLM calls
+        - Decision-type gated escalation to Claude backup
+        - Heuristic demoted to emergency-only with DEGRADED_MODE tagging
+        - _build_recommendation_llm() supports use_backup parameter
+        - Exceptions propagate instead of silent heuristic fallthrough
+        - Added metadata field to StrategyRecommendation
+        - Ref: PROPOSAL_STRATEGY_ADVISOR_LIFECYCLE_INTEGRATION_v1_0.md
 """
 
 from __future__ import annotations
@@ -137,7 +154,7 @@ class DiagnosticSummary(BaseModel):
 
 class StrategyRecommendation(BaseModel):
     """Complete strategy recommendation output."""
-    schema_version: str = "1.0.0"
+    schema_version: str = "1.1.0"
     generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     advisor_model: str = "deepseek-r1-14b"
     draws_analyzed: int = 0
@@ -161,6 +178,9 @@ class StrategyRecommendation(BaseModel):
     
     diagnostic_summary: DiagnosticSummary = Field(default_factory=DiagnosticSummary)
     alternative_hypothesis: Optional[str] = None
+    
+    # v1.1.0: Metadata for audit trail and degraded mode tracking
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ComputedMetrics(BaseModel):
@@ -544,11 +564,74 @@ class DiagnosticsLoader:
 # STRATEGY ADVISOR
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Risky actions that warrant escalation on low confidence
+_RISKY_ACTIONS = {AdvisorAction.RETRAIN, AdvisorAction.ESCALATE, AdvisorAction.FULL_RESET}
+
+# Confidence threshold below which risky actions trigger escalation
+_ESCALATION_CONFIDENCE_THRESHOLD = 0.3
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BOUNDS CLAMPING (Team Beta Option D - Session 68)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Operational bounds for LLM outputs (separate from Pydantic validation)
+_SELFPLAY_BOUNDS = {
+    "max_episodes": {"min": 1, "max": 50},
+    "min_fitness_threshold": {"min": 0.0, "max": 1.0},
+    "exploration_ratio": {"min": 0.0, "max": 1.0},
+}
+
+
+def _clamp_llm_recommendation(rec_data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Clamp out-of-bounds numeric fields from LLM response.
+    
+    Team Beta Decision (Session 68): Preserve LLM analysis while enforcing
+    safety bounds. Tag adjustments for auditability.
+    
+    Args:
+        rec_data: Raw parsed JSON from LLM response.
+        
+    Returns:
+        (clamped_data, bounds_adjustment) where bounds_adjustment contains
+        original values and applied limits for any adjusted fields.
+    """
+    bounds_adjustment = {
+        "fields": [],
+        "original_values": {},
+        "applied_limits": {},
+    }
+    
+    # Clamp selfplay_overrides if present
+    overrides = rec_data.get("selfplay_overrides", {})
+    if overrides:
+        for field, limits in _SELFPLAY_BOUNDS.items():
+            if field in overrides:
+                original = overrides[field]
+                clamped = max(limits["min"], min(limits["max"], original))
+                if clamped != original:
+                    bounds_adjustment["fields"].append(f"selfplay_overrides.{field}")
+                    bounds_adjustment["original_values"][field] = original
+                    bounds_adjustment["applied_limits"][field] = limits
+                    overrides[field] = clamped
+                    logger.info(
+                        "Bounds clamped: selfplay_overrides.%s: %s → %s (limits: %s)",
+                        field, original, clamped, limits
+                    )
+    
+    return rec_data, bounds_adjustment if bounds_adjustment["fields"] else {}
+
+
+
 class StrategyAdvisor:
     """Main Strategy Advisor class.
     
     Consumes Chapter 13 diagnostics and telemetry to produce
     strategy_recommendation.json for WATCHER consumption.
+    
+    LLM Decision Hierarchy (Section 8.5):
+        1. DeepSeek (primary) — grammar-constrained routine analysis
+        2. Claude (backup) — escalation on low confidence + risky action
+        3. Heuristic (emergency) — ONLY when both LLMs unreachable
     """
     
     GRAMMAR_FILE = "strategy_advisor.gbnf"
@@ -559,6 +642,7 @@ class StrategyAdvisor:
         Args:
             state_dir: Directory containing diagnostics, telemetry, policies.
             llm_router: Optional LLMRouter instance for grammar-constrained calls.
+                        If None, advisor will attempt lazy import at analysis time.
         """
         self.state_dir = Path(state_dir)
         self.llm_router = llm_router
@@ -573,8 +657,42 @@ class StrategyAdvisor:
         """Check if advisor has sufficient data to activate."""
         return self.gate.check()
     
+    def _get_llm_router(self):
+        """Get LLM router (lazy import to avoid circular deps).
+        
+        Returns router passed at init, or attempts to import the singleton.
+        """
+        if self.llm_router:
+            return self.llm_router
+        try:
+            from llm_services.llm_router import get_router
+            router = get_router()
+            logger.debug("LLM router acquired via lazy import")
+            return router
+        except ImportError:
+            logger.debug("llm_router not importable")
+            return None
+    
+    def _get_lifecycle_manager(self):
+        """Get LLM lifecycle manager (lazy import to avoid circular deps).
+        
+        Returns lifecycle manager or None if not available.
+        """
+        try:
+            from llm_services.llm_lifecycle import get_lifecycle_manager
+            return get_lifecycle_manager()
+        except ImportError:
+            logger.debug("llm_lifecycle not importable")
+            return None
+    
     def analyze(self, force: bool = False) -> Optional[StrategyRecommendation]:
-        """Run strategy analysis.
+        """Run strategy analysis with LLM-first decision hierarchy.
+        
+        Decision chain (Section 8.5):
+            1. ensure_running() — guarantee LLM availability
+            2. DeepSeek (primary) — grammar-constrained analysis
+            3. Claude (backup) — on low confidence + risky action
+            4. Heuristic (emergency) — ONLY if both LLMs unreachable
         
         Args:
             force: If True, bypass activation gate (for testing).
@@ -607,7 +725,7 @@ class StrategyAdvisor:
         # Extract diagnostic signals
         signals = self._extract_signals(diagnostics, telemetry, policy_history)
         
-        # Classify focus area
+        # Classify focus area (heuristic pre-classification for context)
         primary_focus, primary_conf, secondary_focus, secondary_conf = (
             FocusAreaClassifier.classify(
                 hit_at_20=signals.get("hit_at_20", 0.0),
@@ -621,18 +739,79 @@ class StrategyAdvisor:
             )
         )
         
-        # Build recommendation (either via LLM or heuristic fallback)
-        if self.llm_router:
-            recommendation = self._build_recommendation_llm(
-                diagnostics, telemetry, policy_history, metrics, signals,
-                primary_focus, primary_conf, secondary_focus, secondary_conf
+        # ── LLM-first decision hierarchy (Section 8.5) ──────────────────
+        recommendation = None
+        rec_mode = "unknown"
+        
+        # Step 1: Ensure LLM is available via lifecycle manager
+        llm_router = self._get_llm_router()
+        lifecycle = self._get_lifecycle_manager()
+        
+        if lifecycle:
+            try:
+                lifecycle.ensure_running()
+                logger.info("LLM server confirmed available for advisor analysis")
+            except Exception as e:
+                logger.warning("Lifecycle ensure_running() failed: %s", e)
+        
+        # Step 2: Try DeepSeek (primary)
+        if llm_router:
+            try:
+                recommendation = self._build_recommendation_llm(
+                    diagnostics, telemetry, policy_history, metrics, signals,
+                    primary_focus, primary_conf, secondary_focus, secondary_conf,
+                    llm_router=llm_router,
+                )
+                rec_mode = "deepseek_primary"
+                
+                # Step 3: Decision-type gated escalation
+                # Low confidence on risky actions → escalate to Claude
+                if (recommendation.focus_confidence < _ESCALATION_CONFIDENCE_THRESHOLD
+                        and recommendation.recommended_action in _RISKY_ACTIONS):
+                    logger.info(
+                        "DeepSeek low confidence (%.2f) on %s — escalating to Claude",
+                        recommendation.focus_confidence,
+                        recommendation.recommended_action.value,
+                    )
+                    recommendation = None  # Clear to trigger escalation
+                    
+            except Exception as e:
+                logger.warning("DeepSeek analysis failed: %s — attempting Claude", e)
+        
+        # Step 4: Try Claude (backup) if DeepSeek failed or low confidence
+        if recommendation is None and llm_router:
+            try:
+                recommendation = self._build_recommendation_llm(
+                    diagnostics, telemetry, policy_history, metrics, signals,
+                    primary_focus, primary_conf, secondary_focus, secondary_conf,
+                    llm_router=llm_router,
+                    use_backup=True,
+                )
+                rec_mode = "claude_backup"
+                logger.info("Claude backup produced recommendation: focus=%s, action=%s",
+                           recommendation.focus_area.value,
+                           recommendation.recommended_action.value)
+            except Exception as e:
+                logger.warning("Claude escalation also failed: %s", e)
+        
+        # Step 5: Heuristic — EMERGENCY ONLY
+        if recommendation is None:
+            logger.warning(
+                "DEGRADED_MODE — both LLMs unreachable. "
+                "Using heuristic fallback. Decision quality reduced."
             )
-        else:
             recommendation = self._build_recommendation_heuristic(
                 metrics, signals,
                 primary_focus, primary_conf, secondary_focus, secondary_conf,
-                len(diagnostics)
+                len(diagnostics),
             )
+            rec_mode = "heuristic_degraded"
+        
+        # Tag recommendation with mode
+        recommendation.advisor_model = rec_mode
+        if rec_mode == "heuristic_degraded":
+            recommendation.metadata = recommendation.metadata or {}
+            recommendation.metadata["degraded_reason"] = "both_llms_unreachable"
         
         # Validate against policy bounds
         recommendation = self._validate_bounds(recommendation, watcher_policies)
@@ -678,9 +857,9 @@ class StrategyAdvisor:
         # SCS from consecutive diagnostics
         scs = 0.0
         if len(diagnostics) >= 2:
-            current = set(diagnostics[0].get("top_survivors", []))
-            previous = set(diagnostics[1].get("top_survivors", []))
-            scs = MetricsComputer.compute_scs(current, previous)
+            current_ids = set(diagnostics[0].get("top_survivors", []))
+            previous_ids = set(diagnostics[1].get("top_survivors", []))
+            scs = MetricsComputer.compute_scs(current_ids, previous_ids)
         
         return ComputedMetrics(pcs=pcs, cc=cc, fpd=fpd, mdi=mdi, scs=scs)
     
@@ -690,52 +869,54 @@ class StrategyAdvisor:
         telemetry: List[Dict[str, Any]],
         policy_history: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Extract diagnostic signals from loaded data."""
-        signals = {
-            "hit_at_20": 0.0,
-            "hit_at_100": 0.0,
-            "hit_at_300": 0.0,
-            "model_dominance": 0.0,
-            "feature_drift": 0.0,
-            "window_decay": 0.0,
-            "best_model_type": "catboost",
-            "draws_since_last_promotion": 0,
+        """Extract diagnostic signals for focus classification."""
+        latest = diagnostics[0] if diagnostics else {}
+        
+        return {
+            "hit_at_20": latest.get("hit_at_20", 0.0),
+            "hit_at_100": latest.get("hit_at_100", 0.0),
+            "hit_at_300": latest.get("hit_at_300", 0.0),
+            "model_dominance": self._compute_model_dominance(telemetry),
+            "feature_drift": latest.get("feature_drift", 0.0),
+            "window_decay": latest.get("window_decay", 0.0),
+            "draws_since_last_promotion": self._draws_since_promotion(
+                diagnostics, policy_history
+            ),
         }
+    
+    def _compute_model_dominance(self, telemetry: List[Dict[str, Any]]) -> float:
+        """Compute fraction of episodes won by the most dominant model type."""
+        if not telemetry:
+            return 0.0
         
-        # Average hit rates from diagnostics
-        if diagnostics:
-            for key in ["hit_at_20", "hit_at_100", "hit_at_300"]:
-                values = [d.get(key, 0.0) for d in diagnostics if key in d]
-                if values:
-                    signals[key] = sum(values) / len(values)
-            
-            # Feature drift and window decay from latest
-            signals["feature_drift"] = diagnostics[0].get("feature_drift", 0.0)
-            signals["window_decay"] = diagnostics[0].get("window_decay", 0.0)
+        model_counts = {}
+        for t in telemetry:
+            model_type = t.get("best_model_type", "unknown")
+            model_counts[model_type] = model_counts.get(model_type, 0) + 1
         
-        # Model dominance from telemetry
-        if telemetry:
-            model_counts = {}
-            for t in telemetry:
-                model_type = t.get("best_model_type", "unknown")
-                model_counts[model_type] = model_counts.get(model_type, 0) + 1
-            
-            if model_counts:
-                total = sum(model_counts.values())
-                max_count = max(model_counts.values())
-                signals["model_dominance"] = max_count / total
-                signals["best_model_type"] = max(model_counts, key=model_counts.get)
+        if not model_counts:
+            return 0.0
         
-        # Draws since last promotion
-        last_promotion_draw = 0
-        for p in policy_history:
-            if p.get("status") == "promoted":
-                last_promotion_draw = max(last_promotion_draw, p.get("draw_number", 0))
+        total = sum(model_counts.values())
+        max_count = max(model_counts.values())
         
-        current_draw = diagnostics[0].get("draw_number", 0) if diagnostics else 0
-        signals["draws_since_last_promotion"] = current_draw - last_promotion_draw
+        return max_count / total
+    
+    def _draws_since_promotion(
+        self,
+        diagnostics: List[Dict[str, Any]],
+        policy_history: List[Dict[str, Any]],
+    ) -> int:
+        """Count draws since the most recent policy promotion."""
+        if not policy_history:
+            return len(diagnostics)
         
-        return signals
+        promoted = [p for p in policy_history if p.get("status") == "promoted"]
+        if not promoted:
+            return len(diagnostics)
+        
+        # Assume policies are sorted by recency
+        return min(len(diagnostics), promoted[0].get("draws_since", len(diagnostics)))
     
     def _build_recommendation_heuristic(
         self,
@@ -747,76 +928,92 @@ class StrategyAdvisor:
         secondary_conf: Optional[float],
         draws_analyzed: int,
     ) -> StrategyRecommendation:
-        """Build recommendation using heuristic rules (no LLM)."""
-        # Determine action based on focus
+        """Build recommendation using heuristic rules (emergency fallback only).
+        
+        NOTE: This method should ONLY be called when both LLMs are unreachable.
+        It uses simple threshold logic and discards most of the high-dimensional
+        signal from the diagnostic data. Decisions made here are tagged as
+        heuristic_degraded for audit purposes.
+        """
+        # Determine action based on focus area
         if primary_focus == FocusArea.REGIME_SHIFT:
             action = AdvisorAction.FULL_RESET
-            retrain_scope = RetrainScope.FULL_PIPELINE
-            risk_level = RiskLevel.HIGH
-        elif primary_focus == FocusArea.POOL_COVERAGE:
+            scope = RetrainScope.FULL_PIPELINE
+            risk = RiskLevel.HIGH
+        elif primary_focus in {FocusArea.POOL_COVERAGE, FocusArea.POOL_PRECISION}:
             action = AdvisorAction.RETRAIN
-            retrain_scope = RetrainScope.STEPS_3_5_6
-            risk_level = RiskLevel.MEDIUM
-        elif primary_focus in (FocusArea.POOL_PRECISION, FocusArea.CONFIDENCE_CALIBRATION):
+            scope = RetrainScope.STEPS_3_5_6
+            risk = RiskLevel.MEDIUM
+        elif primary_focus == FocusArea.CONFIDENCE_CALIBRATION:
             action = AdvisorAction.REFOCUS
-            retrain_scope = RetrainScope.SELFPLAY_ONLY
-            risk_level = RiskLevel.LOW
+            scope = RetrainScope.STEPS_5_6
+            risk = RiskLevel.MEDIUM
+        elif primary_focus == FocusArea.MODEL_DIVERSITY:
+            action = AdvisorAction.REFOCUS
+            scope = RetrainScope.SELFPLAY_ONLY
+            risk = RiskLevel.LOW
+        elif primary_focus == FocusArea.STEADY_STATE:
+            action = AdvisorAction.WAIT
+            scope = None
+            risk = RiskLevel.LOW
         else:
             action = AdvisorAction.WAIT
-            retrain_scope = None
-            risk_level = RiskLevel.LOW
+            scope = None
+            risk = RiskLevel.MEDIUM
         
-        # Classify fitness trend
-        if metrics.fpd > 0.5:
-            fitness_trend = FitnessTrend.IMPROVING
-        elif metrics.fpd < -0.3:
-            fitness_trend = FitnessTrend.DECLINING
-        elif abs(metrics.fpd) < 0.1:
-            fitness_trend = FitnessTrend.PLATEAU
-        else:
-            fitness_trend = FitnessTrend.VOLATILE
+        # Build selfplay overrides
+        selfplay_overrides = self._get_default_overrides(primary_focus)
         
-        # Build selfplay overrides based on focus
-        overrides = self._get_focus_overrides(primary_focus)
-        
-        # Build pool strategy guidance
+        # Build pool strategy
         pool_strategy = self._get_pool_strategy(signals)
         
+        # Build diagnostic summary
+        diagnostic_summary = DiagnosticSummary(
+            hit_at_20=signals.get("hit_at_20", 0.0),
+            hit_at_100=signals.get("hit_at_100", 0.0),
+            hit_at_300=signals.get("hit_at_300", 0.0),
+            calibration_correlation=metrics.cc,
+            survivor_churn=metrics.scs,
+            fitness_trend=self._classify_fitness_trend(metrics.fpd),
+            draws_since_last_promotion=signals.get("draws_since_last_promotion", 0),
+        )
+        
         return StrategyRecommendation(
-            draws_analyzed=draws_analyzed,
             focus_area=primary_focus,
             focus_confidence=primary_conf,
-            focus_rationale=f"Heuristic classification: {primary_focus.value}",
+            focus_rationale=f"Heuristic classification: {primary_focus.value} "
+                           f"(threshold-based, no LLM analysis available)",
             secondary_focus=secondary_focus,
             secondary_confidence=secondary_conf,
             recommended_action=action,
-            retrain_scope=retrain_scope,
-            selfplay_overrides=overrides,
-            parameter_proposals=[],  # LLM would fill these
+            retrain_scope=scope,
+            selfplay_overrides=selfplay_overrides,
             pool_strategy=pool_strategy,
-            risk_level=risk_level,
-            requires_human_review=risk_level == RiskLevel.HIGH,
-            diagnostic_summary=DiagnosticSummary(
-                hit_at_20=signals.get("hit_at_20", 0.0),
-                hit_at_100=signals.get("hit_at_100", 0.0),
-                hit_at_300=signals.get("hit_at_300", 0.0),
-                calibration_correlation=metrics.cc,
-                survivor_churn=1.0 - metrics.scs,
-                best_model_type=signals.get("best_model_type", "catboost"),
-                fitness_trend=fitness_trend,
-                draws_since_last_promotion=signals.get("draws_since_last_promotion", 0),
-            ),
-            alternative_hypothesis="Heuristic fallback — no LLM analysis available",
+            risk_level=risk,
+            requires_human_review=(risk == RiskLevel.HIGH),
+            diagnostic_summary=diagnostic_summary,
+            draws_analyzed=draws_analyzed,
         )
     
-    def _get_focus_overrides(self, focus: FocusArea) -> SelfplayOverrides:
-        """Get selfplay overrides for a given focus area."""
+    def _classify_fitness_trend(self, fpd: float) -> FitnessTrend:
+        """Classify fitness trend from FPD score."""
+        if fpd > 0.5:
+            return FitnessTrend.IMPROVING
+        elif fpd < -0.5:
+            return FitnessTrend.DECLINING
+        elif abs(fpd) < 0.1:
+            return FitnessTrend.PLATEAU
+        else:
+            return FitnessTrend.VOLATILE
+    
+    def _get_default_overrides(self, focus: FocusArea) -> SelfplayOverrides:
+        """Get default selfplay overrides for a focus area."""
         if focus == FocusArea.POOL_PRECISION:
             return SelfplayOverrides(
                 max_episodes=15,
                 model_types=["catboost", "xgboost"],
                 min_fitness_threshold=0.55,
-                priority_metrics=["pool_concentration", "model_agreement"],
+                priority_metrics=["pool_concentration", "top_k_accuracy"],
                 exploration_ratio=0.2,
             )
         elif focus == FocusArea.POOL_COVERAGE:
@@ -887,42 +1084,59 @@ class StrategyAdvisor:
         primary_conf: float,
         secondary_focus: Optional[FocusArea],
         secondary_conf: Optional[float],
+        llm_router=None,
+        use_backup: bool = False,
     ) -> StrategyRecommendation:
-        """Build recommendation via LLM with grammar constraint."""
-        # Import bundle builder
-        try:
-            from agents.contexts.advisor_bundle import build_advisor_bundle
-            prompt = build_advisor_bundle(
-                diagnostics=diagnostics,
-                telemetry=telemetry,
-                policy_history=policy_history,
-                metrics=metrics,
-                signals=signals,
-            )
-        except ImportError:
-            logger.warning("advisor_bundle not available, using heuristic fallback")
-            return self._build_recommendation_heuristic(
-                metrics, signals, primary_focus, primary_conf,
-                secondary_focus, secondary_conf, len(diagnostics)
-            )
+        """Build recommendation via LLM with grammar constraint.
         
-        # Call LLM with grammar constraint
-        try:
-            response = self.llm_router.evaluate_with_grammar(
-                prompt,
-                grammar_file=self.GRAMMAR_FILE,
-            )
+        v1.1.0: Exceptions propagate to caller for escalation chain handling.
+        No internal heuristic fallback — caller owns fallback policy.
+        
+        Args:
+            llm_router: LLM router instance (required).
+            use_backup: If True, route to Claude via force_backup=True.
             
-            # Parse response JSON
-            rec_data = json.loads(response)
-            return StrategyRecommendation(**rec_data)
-            
-        except Exception as e:
-            logger.error("LLM call failed, using heuristic fallback: %s", e)
-            return self._build_recommendation_heuristic(
-                metrics, signals, primary_focus, primary_conf,
-                secondary_focus, secondary_conf, len(diagnostics)
-            )
+        Raises:
+            ImportError: If advisor_bundle is not importable.
+            Exception: If LLM call fails (caller handles escalation).
+        """
+        router = llm_router or self.llm_router
+        if not router:
+            raise RuntimeError("No LLM router available for recommendation")
+        
+        # Import bundle builder — let ImportError propagate
+        from agents.contexts.advisor_bundle import build_advisor_bundle
+        prompt = build_advisor_bundle(
+            diagnostics=diagnostics,
+            telemetry=telemetry,
+            policy_history=policy_history,
+            metrics=metrics,
+            signals=signals,
+        )
+        
+        # Call LLM with grammar constraint — let exceptions propagate
+        response = router.evaluate_with_grammar(
+            prompt,
+            grammar_file=self.GRAMMAR_FILE,
+            force_backup=use_backup,
+        )
+        
+        # Parse response JSON
+        rec_data = json.loads(response)
+        
+        # Team Beta Option D: Clamp bounds + tag for auditability
+        rec_data, bounds_adj = _clamp_llm_recommendation(rec_data)
+        
+        # Create recommendation from clamped data
+        recommendation = StrategyRecommendation(**rec_data)
+        
+        # Tag if bounds were adjusted
+        if bounds_adj:
+            recommendation.metadata = recommendation.metadata or {}
+            recommendation.metadata["bounds_adjusted"] = bounds_adj
+            logger.info("LLM recommendation bounds-adjusted: %s", bounds_adj["fields"])
+        
+        return recommendation
     
     def _validate_bounds(
         self,
@@ -966,8 +1180,10 @@ class StrategyAdvisor:
         with open(self.recommendation_path, "w") as f:
             f.write(recommendation.model_dump_json(indent=2))
         
-        logger.info("Saved strategy recommendation: focus=%s, action=%s",
-                   recommendation.focus_area.value, recommendation.recommended_action.value)
+        logger.info("Saved strategy recommendation: focus=%s, action=%s, mode=%s",
+                   recommendation.focus_area.value,
+                   recommendation.recommended_action.value,
+                   recommendation.advisor_model)
         
         # Archive to history
         self.history_dir.mkdir(parents=True, exist_ok=True)

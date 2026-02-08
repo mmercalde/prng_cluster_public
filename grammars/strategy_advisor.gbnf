@@ -1,0 +1,42 @@
+# Strategy Advisor Grammar v1.1 - Fixed for llama.cpp (single-line rules)
+# Multi-line rule definitions cause parse failures in llama.cpp
+
+root ::= recommendation
+
+recommendation ::= "{" ws "\"schema_version\"" ws ":" ws "\"1.0.0\"" "," ws "\"focus_area\"" ws ":" ws focus-area "," ws "\"focus_confidence\"" ws ":" ws confidence-value "," ws "\"focus_rationale\"" ws ":" ws string "," ws "\"secondary_focus\"" ws ":" ws (focus-area | "null") "," ws "\"secondary_confidence\"" ws ":" ws (confidence-value | "null") "," ws "\"recommended_action\"" ws ":" ws advisor-action "," ws "\"retrain_scope\"" ws ":" ws (retrain-scope | "null") "," ws "\"selfplay_overrides\"" ws ":" ws selfplay-overrides "," ws "\"parameter_proposals\"" ws ":" ws parameter-proposals "," ws "\"pool_strategy\"" ws ":" ws pool-strategy "," ws "\"risk_level\"" ws ":" ws risk-level "," ws "\"requires_human_review\"" ws ":" ws boolean "," ws "\"diagnostic_summary\"" ws ":" ws diagnostic-summary "," ws "\"alternative_hypothesis\"" ws ":" ws (string | "null") ws "}"
+
+focus-area ::= "\"POOL_PRECISION\"" | "\"POOL_COVERAGE\"" | "\"CONFIDENCE_CALIBRATION\"" | "\"MODEL_DIVERSITY\"" | "\"FEATURE_RELEVANCE\"" | "\"REGIME_SHIFT\"" | "\"STEADY_STATE\""
+
+advisor-action ::= "\"RETRAIN\"" | "\"WAIT\"" | "\"ESCALATE\"" | "\"REFOCUS\"" | "\"FULL_RESET\""
+
+retrain-scope ::= "\"selfplay_only\"" | "\"steps_5_6\"" | "\"steps_3_5_6\"" | "\"full_pipeline\""
+
+selfplay-overrides ::= "{" ws "\"max_episodes\"" ws ":" ws integer "," ws "\"model_types\"" ws ":" ws model-types-array "," ws "\"min_fitness_threshold\"" ws ":" ws confidence-value "," ws "\"priority_metrics\"" ws ":" ws string-array "," ws "\"exploration_ratio\"" ws ":" ws confidence-value "," ws "\"search_strategy\"" ws ":" ws (search-strategy | "null") ws "}"
+
+model-types-array ::= "[" ws model-type (ws "," ws model-type)* ws "]"
+model-type ::= "\"neural_net\"" | "\"xgboost\"" | "\"lightgbm\"" | "\"catboost\""
+
+string-array ::= "[" ws string (ws "," ws string)* ws "]"
+
+search-strategy ::= "\"bayesian\"" | "\"random\"" | "\"grid\"" | "\"evolutionary\""
+
+pool-strategy ::= "{" ws "\"tight_pool_guidance\"" ws ":" ws string "," ws "\"balanced_pool_guidance\"" ws ":" ws string "," ws "\"wide_pool_guidance\"" ws ":" ws string ws "}"
+
+diagnostic-summary ::= "{" ws "\"hit_at_20\"" ws ":" ws confidence-value "," ws "\"hit_at_100\"" ws ":" ws confidence-value "," ws "\"hit_at_300\"" ws ":" ws confidence-value "," ws "\"calibration_correlation\"" ws ":" ws signed-float "," ws "\"survivor_churn\"" ws ":" ws confidence-value "," ws "\"best_model_type\"" ws ":" ws model-type "," ws "\"fitness_trend\"" ws ":" ws fitness-trend "," ws "\"draws_since_last_promotion\"" ws ":" ws integer ws "}"
+
+fitness-trend ::= "\"improving\"" | "\"plateau\"" | "\"declining\"" | "\"volatile\""
+
+risk-level ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+parameter-proposals ::= "[]" | "[" ws parameter-proposal (ws "," ws parameter-proposal)* ws "]"
+
+parameter-proposal ::= "{" ws "\"parameter\"" ws ":" ws string "," ws "\"current_value\"" ws ":" ws (number | "null") "," ws "\"proposed_value\"" ws ":" ws number "," ws "\"delta\"" ws ":" ws string "," ws "\"confidence\"" ws ":" ws confidence-value "," ws "\"rationale\"" ws ":" ws string ws "}"
+
+confidence-value ::= "0" ("." [0-9]+)? | "1" (".0")? | "0." [0-9]+
+signed-float ::= "-"? ("0" ("." [0-9]+)? | "1" (".0")? | "0." [0-9]+)
+boolean ::= "true" | "false"
+number ::= "-"? [0-9]+ ("." [0-9]+)?
+integer ::= [0-9]+
+string ::= "\"" string-content "\""
+string-content ::= ([^"\\] | "\\" ["\\/bfnrt])*
+ws ::= [ \t\n]*

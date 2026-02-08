@@ -15,7 +15,8 @@
     "backup": {
         "name": "Claude Opus 4.5",
         "type": "external_api",
-        "access_method": "claude_code_cli"
+        "access_method": "claude_code_cli",
+        "working_dir": "~/distributed_prng_analysis"
     },
     "routing": {
         "escalation_triggers": [

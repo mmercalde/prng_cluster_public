@@ -438,6 +438,59 @@ class LLMRouter:
         that may reference this method name.
         """
         return self.evaluate_watcher_decision(prompt, agent=agent, temperature=temperature)
+    def evaluate_with_grammar(
+        self,
+        prompt: str,
+        grammar_file: str = "strategy_advisor.gbnf",
+        force_backup: bool = False,
+        temperature: float = 0.3,
+        max_tokens: int = 2048,
+    ) -> str:
+        """Evaluate prompt with GBNF grammar constraint.
+        
+        General-purpose grammar-constrained LLM call. Used by Strategy Advisor
+        and any future component needing grammar-constrained output with a
+        custom grammar file.
+        
+        Args:
+            prompt: Full evaluation prompt
+            grammar_file: GBNF grammar filename in grammars/ directory
+            force_backup: If True, skip primary and use Claude directly
+            temperature: LLM temperature (default 0.3 for consistency)
+            max_tokens: Maximum tokens for response (default 2048 for complex JSON)
+            
+        Returns:
+            Raw response string (caller is responsible for JSON parsing)
+            
+        Raises:
+            FileNotFoundError: If grammar_file does not exist in grammars/
+            Exception: If LLM call fails
+        """
+        if force_backup:
+            logger.info("evaluate_with_grammar: force_backup=True, routing to Claude")
+            return self._call_backup(prompt)
+        
+        if self._is_primary_available():
+            # Verify grammar exists before calling
+            grammar_path = Path("grammars") / grammar_file
+            if not grammar_path.exists():
+                raise FileNotFoundError(
+                    f"Grammar not found: {grammar_path}. "
+                    f"Cannot proceed with grammar-constrained call."
+                )
+            
+            return self._call_primary_with_grammar(
+                prompt,
+                grammar=grammar_file,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        
+        # Primary unavailable — try backup
+        logger.info("Primary unavailable for grammar call (%s), using backup",
+                    grammar_file)
+        return self._call_backup(prompt)
+        return self._call_backup(prompt)
     
     # ══════════════════════════════════════════════════════════════════════════
     # Restored from v1.0.5: High-Level Methods
