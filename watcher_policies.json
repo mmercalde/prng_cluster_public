@@ -113,5 +113,59 @@
       "default": "bayesian"
     }
   },
-  "strategy_change_cooldown_episodes": 5
+  "strategy_change_cooldown_episodes": 5,
+  "training_diagnostics": {
+    "enabled": true,
+    "description": "Post-Step-5 training health check before proceeding to Step 6",
+    "severity_thresholds": {
+      "ok": {
+        "action": "PROCEED",
+        "log_level": "info",
+        "description": "Training healthy \u2014 proceed to Step 6"
+      },
+      "warning": {
+        "action": "PROCEED_WITH_NOTE",
+        "log_level": "warning",
+        "description": "Training has minor issues \u2014 proceed but log for Strategy Advisor"
+      },
+      "critical": {
+        "action": "RETRY_OR_SKIP",
+        "log_level": "error",
+        "max_retries": 2,
+        "description": "Training fundamentally broken \u2014 retry with different config or skip model type"
+      }
+    },
+    "metric_bounds": {
+      "nn_dead_neuron_pct": {
+        "warning": 25.0,
+        "critical": 50.0,
+        "description": "Dead ReLU neurons in any layer"
+      },
+      "nn_gradient_spread_ratio": {
+        "warning": 100.0,
+        "critical": 1000.0,
+        "description": "Max/min feature gradient ratio \u2014 indicates scaling issue"
+      },
+      "overfit_ratio": {
+        "warning": 1.3,
+        "critical": 1.5,
+        "description": "Val loss / train loss ratio"
+      },
+      "early_stop_ratio": {
+        "warning": 0.3,
+        "critical": 0.15,
+        "description": "best_round / total_rounds \u2014 low = peaked early and overfit rest"
+      },
+      "unused_feature_pct": {
+        "warning": 40.0,
+        "critical": 70.0,
+        "description": "Features with zero importance (trees) or zero gradient (NN)"
+      }
+    },
+    "model_skip_rules": {
+      "max_consecutive_critical": 3,
+      "skip_duration_hours": 24,
+      "description": "If a model type hits critical N times consecutively, skip it for N hours"
+    }
+  }
 }
