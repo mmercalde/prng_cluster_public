@@ -1,0 +1,213 @@
+# SESSION CHANGELOG — February 8, 2026 (S69)
+
+**Focus:** Chapter 14 Training Diagnostics — Phase 1 Implementation  
+**Outcome:** `training_diagnostics.py` created (~994 lines) with multi-model support
+
+---
+
+## Summary
+
+Implemented Chapter 14 Phase 1: the core `training_diagnostics.py` module that provides live training introspection across all 4 model types. Key design decisions:
+
+1. **Multi-model schema (Option D)** — Always captures diagnostics for all trained models during `--compare-models`, ensuring NN diagnostics are never discarded even when trees win
+2. **PyTorch dynamic graph hooks** — `register_forward_hook()` and `register_full_backward_hook()` for passive observation of NN training
+3. **Tree model native callbacks** — Wraps `evals_result()` for XGBoost/LightGBM/CatBoost
+4. **Best-effort, non-fatal** — All code paths wrapped in try/except; diagnostics failure never blocks training
+
+---
+
+## Work Completed
+
+| Item | Status |
+|------|--------|
+| Research PyTorch dynamic graph proposal from chat history | ✅ Complete |
+| Update memory with TODO items (web dashboard refactor, Ch14) | ✅ Complete |
+| Create Phase 1 implementation proposal | ✅ Complete |
+| Team Beta approval for Option D (layered approach) | ✅ Approved |
+| Implement `training_diagnostics.py` | ✅ Complete |
+| Syntax verification | ✅ Passed |
+| Unit test (tree diagnostics) | ✅ Passed |
+
+---
+
+## Files Created
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `training_diagnostics.py` | 994 | Core diagnostics module — all 4 model types |
+| `CHAPTER_14_IMPLEMENTATION_PROPOSAL_S69.md` | ~350 | Implementation proposal document |
+
+---
+
+## Key Design Decisions
+
+### 1. Option D: Layered Approach for NN Visibility
+
+**Problem:** Trees always win on tabular data, so NN diagnostics would never be acted upon.
+
+**Solution:** Three-layer approach:
+- **Layer 1 (Passive):** `--compare-models` always captures all 4 model diagnostics
+- **Layer 2 (Autonomous):** Strategy Advisor can trigger NN investigation when diversity drops
+- **Layer 3 (Manual):** `--diagnose-nn` flag for human-driven deep dives
+
+### 2. Multi-Model JSON Schema (v1.1.0)
+
+```json
+{
+  "schema_version": "1.1.0",
+  "mode": "compare_models",
+  "models": {
+    "neural_net": { "diagnosis": {"severity": "critical", ...} },
+    "catboost": { "diagnosis": {"severity": "ok", ...} },
+    ...
+  },
+  "comparison": {
+    "winner": "catboost",
+    "nn_gap_to_winner": 916.47
+  }
+}
+```
+
+### 3. Severity Classification
+
+| Severity | WATCHER Action |
+|----------|----------------|
+| `ok` | PROCEED |
+| `warning` | PROCEED + LOG |
+| `critical` | RETRY or SKIP_MODEL |
+| `absent` | PROCEED (non-fatal) |
+
+---
+
+## Class Structure
+
+```
+training_diagnostics.py
+├── TrainingDiagnostics (ABC)     # Base class with factory method
+│   ├── create(model_type)        # Factory → returns subclass
+│   ├── attach(model)             # Register hooks/callbacks
+│   ├── on_round_end(...)         # Per-epoch capture
+│   ├── detach()                  # Clean up
+│   ├── get_report()              # Generate diagnostics dict
+│   └── save(path)                # Write JSON
+│
+├── NNDiagnostics                 # PyTorch hooks for NN
+│   └── Captures: activations, gradients, dead neurons, feature attribution
+│
+├── XGBDiagnostics               # XGBoost wrapper
+├── LGBDiagnostics               # LightGBM wrapper  
+├── CatBoostDiagnostics          # CatBoost wrapper
+│   └── Tree models: evals_result, feature_importance, best_iteration
+│
+├── MinimalDiagnostics           # Fallback for unknown models
+│
+└── MultiModelDiagnostics        # Collector for --compare-models
+    ├── create_for_model()
+    ├── finalize_model()
+    ├── set_comparison_result()
+    └── get_nn_diagnostic_summary()  # For Strategy Advisor
+```
+
+---
+
+## Copy Commands
+
+```bash
+# From ser8 Downloads to Zeus
+scp ~/Downloads/training_diagnostics.py rzeus:~/distributed_prng_analysis/
+scp ~/Downloads/CHAPTER_14_IMPLEMENTATION_PROPOSAL_S69.md rzeus:~/distributed_prng_analysis/docs/
+scp ~/Downloads/SESSION_CHANGELOG_20260208_S69.md rzeus:~/distributed_prng_analysis/docs/
+```
+
+---
+
+## Verification Commands (on Zeus)
+
+```bash
+cd ~/distributed_prng_analysis
+
+# Verify syntax
+python3 -m py_compile training_diagnostics.py && echo "✅ Syntax OK"
+
+# Run tree test (doesn't require GPU)
+python3 training_diagnostics.py --test-tree
+
+# Run NN test (requires PyTorch)
+source ~/venvs/torch/bin/activate
+python3 training_diagnostics.py --test-nn
+
+# Verify output
+cat diagnostics_outputs/catboost_diagnostics.json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'Schema: {d[\"schema_version\"]}')
+print(f'Severity: {d[\"diagnosis\"][\"severity\"]}')
+print(f'Issues: {d[\"diagnosis\"][\"issues\"]}')
+"
+```
+
+---
+
+## Git Commands
+
+```bash
+cd ~/distributed_prng_analysis
+git add training_diagnostics.py docs/CHAPTER_14_IMPLEMENTATION_PROPOSAL_S69.md docs/SESSION_CHANGELOG_20260208_S69.md
+git commit -m "feat: Chapter 14 Phase 1 - training_diagnostics.py (S69)
+
+- Core diagnostics module for all 4 model types (~994 lines)
+- PyTorch dynamic graph hooks for NN (forward + backward)
+- Tree model wrappers for XGBoost/LightGBM/CatBoost
+- Multi-model schema v1.1.0 (Option D: layered approach)
+- MultiModelDiagnostics collector for --compare-models
+- Best-effort, non-fatal design (diagnostics never block training)
+- Severity classification: ok/warning/critical/absent
+
+Team Beta approved Option D for NN visibility:
+- Layer 1: Passive capture during compare-models
+- Layer 2: Strategy Advisor can trigger NN investigation
+- Layer 3: Manual --diagnose-nn flag
+
+Ref: Session 69, CHAPTER_14_IMPLEMENTATION_PROPOSAL_S69.md"
+git push origin main
+```
+
+---
+
+## Hot State (Next Session Pickup)
+
+**Where we left off:** Phase 1 `training_diagnostics.py` complete and tested. Ready for Phase 3 (pipeline wiring).
+
+**Next action:** 
+1. Deploy `training_diagnostics.py` to Zeus
+2. Implement Phase 3: Wire into `meta_prediction_optimizer_anti_overfit.py` and model wrappers
+3. Add `--enable-diagnostics` CLI flag
+4. Test with actual training run
+
+**Blockers:** None. Phase 1 is complete and tested.
+
+**Files to deploy:**
+- `training_diagnostics.py` → `rzeus:~/distributed_prng_analysis/`
+- `CHAPTER_14_IMPLEMENTATION_PROPOSAL_S69.md` → `rzeus:~/distributed_prng_analysis/docs/`
+- `SESSION_CHANGELOG_20260208_S69.md` → `rzeus:~/distributed_prng_analysis/docs/`
+
+---
+
+## Progress Tracker Update
+
+Chapter 14 Implementation Status:
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| **1. Core Module** | ✅ **COMPLETE** | `training_diagnostics.py` (994 lines) |
+| 2. Per-Survivor Attribution | ⬜ Not Started | Deferred |
+| **3. Pipeline Wiring** | 🔲 **NEXT** | `--enable-diagnostics` flag |
+| 4. Web Dashboard | ⬜ Not Started | Deferred (dashboard needs refactor) |
+| 5. TensorBoard | ⬜ Not Started | Optional |
+| **6. WATCHER Integration** | 🔲 Planned | After Phase 3 |
+| 7. LLM Integration | ⬜ Not Started | Requires Phase 1 data |
+| 8. Selfplay Wiring | ⬜ Not Started | Requires Phases 6, 7 |
+
+---
+
+*End of Session 69*
