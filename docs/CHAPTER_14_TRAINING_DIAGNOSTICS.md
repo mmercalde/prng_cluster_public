@@ -2,9 +2,9 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 1.1.2  
-**Status:** PLANNED — Implementation deferred until Soak Tests A, B, C complete  
-**Date:** February 3, 2026 (v1.1.2 update: February 4, 2026)  
+**Version:** 1.2.0  
+**Status:** IN PROGRESS — Phases 1-3 Complete, Phase 5-6 Pending  
+**Date:** February 8, 2026 (v1.2.0 update: Session 71)  
 **Author:** Team Beta  
 **Depends On:** Chapter 6 (Anti-Overfit Training), Chapter 11 (Feature Importance), Contract: Strategy Advisor v1.0  
 **Extends:** Chapter 6 Sections 5-8, Chapter 11 Sections 4-7
