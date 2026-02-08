@@ -38,15 +38,37 @@
 
 ## Changes Made
 
-### 1. Documentation Updates (S70 Debt Cleared)
+### 1. Documentation Updates (S70 Debt Cleared) ✅
 
 Created update packages for Zeus deployment:
 
 | Document | Change | Status |
 |----------|--------|--------|
-| CHAPTER_14_TRAINING_DIAGNOSTICS.md | v1.1.2 → v1.2.0, Status: PLANNED → IN PROGRESS | Ready |
-| CHAPTER_13_IMPLEMENTATION_PROGRESS | v3.3.0 → v3.4.0, Added Chapter 14 section | Ready |
-| DOCUMENTATION_UPDATES_S71.md | Instructions for applying updates | Ready |
+| CHAPTER_14_TRAINING_DIAGNOSTICS.md | v1.1.2 → v1.2.0, Status: PLANNED → IN PROGRESS | ✅ Deployed |
+| CHAPTER_13_IMPLEMENTATION_PROGRESS | v3.3.0 → v3.4.0, Added Chapter 14 section | ✅ Deployed |
+
+**Git commit:** `4c83159` — docs sync complete
+
+### 2. Phase 5: FIFO History Pruning ✅
+
+Implemented FIFO pruning for `diagnostics_outputs/history/` directory.
+
+| Component | Details |
+|-----------|---------|
+| Constant | `MAX_HISTORY_FILES = 100` |
+| Function | `_prune_history_fifo()` (~25 lines) |
+| Hook point | `MultiModelDiagnostics.save()` after history write |
+| Glob pattern | `compare_models_*.json` (narrowed per Team Beta) |
+| Safety | `is_dir()` check added (defensive) |
+| Logging | Single line per prune event |
+| Error handling | Non-fatal (debug log only) |
+
+**Team Beta Review:** ✅ Approved with refinements applied
+
+**Key design decisions:**
+- Uses `st_mtime` (not filename) for correct ordering with rsync/restore
+- Only prunes compare_models files (future-proof for other artifacts)
+- Synchronous, local, best-effort — no async/cloud complexity
 
 ---
 
@@ -56,6 +78,7 @@ Created update packages for Zeus deployment:
 |------|---------|-------------|
 | CHAPTER_14_TRAINING_DIAGNOSTICS.md | v1.1.2 → v1.2.0 | Header + checklist update |
 | CHAPTER_13_IMPLEMENTATION_PROGRESS | v3.3.0 → v3.4.0 | Major section addition |
+| `training_diagnostics.py` | v1.0.0 → v1.1.0 | Phase 5 FIFO pruning |
 
 ## Files Created This Session
 
@@ -70,8 +93,63 @@ Created update packages for Zeus deployment:
 
 ## Technical Notes
 
-*(To be filled during session)*
+### FIFO Pruning Design (Phase 5)
+
+```python
+def _prune_history_fifo(history_dir, max_files=100):
+    # Only compare_models files (not other artifacts)
+    files = [(f, f.stat().st_mtime) for f in history_path.glob("compare_models_*.json")]
+    
+    # Sort by mtime (oldest first) — robust to rsync/restore
+    files.sort(key=lambda x: x[1])
+    
+    # Delete oldest, keep newest max_files
+    to_delete = files[:len(files) - max_files]
+```
+
+**Why mtime not filename?**
+- Filenames use timestamps but rsync/restore can change them
+- `st_mtime` reflects actual modification time
+- Defensive against clock skew during file copy
+
+**Why narrow glob?**
+- Future artifacts: `nn_only_*.json`, skip registries, metadata
+- FIFO should only govern compare_models runs
+- Prevents accidental deletion of other history files
 
 ---
 
-*Session 71 in progress*
+## Next Session Priorities
+
+1. **Phase 6: WATCHER Integration** — `check_training_health()` consumes diagnostics
+2. **Update CHAPTER_14 checklist** — Mark Phase 5 complete
+3. **Bundle Factory Tier 2** — Fill 3 stub retrieval functions
+
+---
+
+## Git Commands (pending)
+
+```bash
+# On Zeus after deploying training_diagnostics.py
+git add training_diagnostics.py SESSION_CHANGELOG_20260208_S71.md
+git commit -m "Phase 5: FIFO history pruning (max 100 files, mtime-sorted)
+
+- Added MAX_HISTORY_FILES constant (100)
+- Added _prune_history_fifo() helper function
+- Called from MultiModelDiagnostics.save() after history write
+- Uses mtime for correct ordering with manual copies/restores
+- Glob narrowed to compare_models_*.json (future-proof)
+- Added is_dir() check (defensive)
+- Single log line per prune event
+- Non-fatal: pruning failures don't block diagnostics
+- Added --test-fifo CLI flag
+
+Ref: Team Beta Session 69 approval (Option E hybrid storage)
+Team Beta review: approved with refinements applied"
+
+git push origin main
+```
+
+---
+
+*Session 71 — Phase 5 complete, ready for deployment*

@@ -32,7 +32,20 @@ Usage:
 
 Author: Distributed PRNG Analysis System
 Date: February 2026
-Version: 1.0.0
+
+Version History:
+    1.0.0   2026-02-08  Session 69  Initial implementation (Phase 1-2)
+                                    - TrainingDiagnostics ABC with factory
+                                    - NNDiagnostics with PyTorch hooks
+                                    - TreeDiagnostics for XGB/LGB/CatBoost
+                                    - MultiModelDiagnostics collector
+                                    - Severity classification system
+    1.1.0   2026-02-08  Session 71  Phase 5: FIFO history pruning
+                                    - Added MAX_HISTORY_FILES constant (100)
+                                    - Added _prune_history_fifo() function
+                                    - Glob narrowed to compare_models_*.json
+                                    - Added is_dir() defensive check
+                                    - Team Beta approved with refinements
 """
 
 import json
@@ -56,6 +69,7 @@ SCHEMA_VERSION = "1.1.0"
 DEFAULT_OUTPUT_DIR = "diagnostics_outputs"
 DEFAULT_OUTPUT_FILE = "training_diagnostics.json"
 DEFAULT_HISTORY_DIR = "diagnostics_outputs/history"
+MAX_HISTORY_FILES = 100  # FIFO pruning limit (Team Beta Session 69)
 
 # Severity thresholds (can be overridden via config)
 SEVERITY_THRESHOLDS = {
@@ -815,6 +829,10 @@ class MultiModelDiagnostics:
             history_path = os.path.join(DEFAULT_HISTORY_DIR, f"compare_models_{timestamp}.json")
             with open(history_path, 'w') as f:
                 json.dump(report, f, indent=2, default=str)
+            
+            # FIFO pruning (Phase 5 - Session 71)
+            _prune_history_fifo()
+            
         except Exception as e:
             logger.debug(f"Failed to save to history: {e}")
         
@@ -897,6 +915,42 @@ def get_severity(path: str = None) -> str:
     return diag.get("diagnosis", {}).get("severity", "absent")
 
 
+def _prune_history_fifo(history_dir: str = DEFAULT_HISTORY_DIR, max_files: int = MAX_HISTORY_FILES) -> None:
+    """
+    FIFO pruning for diagnostics history directory.
+    
+    Keeps the newest max_files, deletes oldest by mtime.
+    Single log line per prune event (not per file).
+    
+    Args:
+        history_dir: Path to history directory
+        max_files: Maximum files to keep
+    """
+    try:
+        history_path = Path(history_dir)
+        if not history_path.exists() or not history_path.is_dir():
+            return
+        
+        # Get only compare_models history files (not other artifacts)
+        files = [(f, f.stat().st_mtime) for f in history_path.glob("compare_models_*.json")]
+        
+        if len(files) <= max_files:
+            return  # Nothing to prune
+        
+        # Sort by mtime (oldest first)
+        files.sort(key=lambda x: x[1])
+        
+        # Delete oldest files
+        to_delete = files[:len(files) - max_files]
+        for f, _ in to_delete:
+            f.unlink()
+        
+        logger.info(f"FIFO pruned {len(to_delete)} diagnostics files (kept {max_files})")
+        
+    except Exception as e:
+        logger.debug(f"History pruning failed (non-fatal): {e}")
+
+
 # =============================================================================
 # CLI INTERFACE (for testing)
 # =============================================================================
@@ -907,6 +961,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training Diagnostics CLI")
     parser.add_argument("--test-nn", action="store_true", help="Run NN diagnostics test")
     parser.add_argument("--test-tree", action="store_true", help="Run tree diagnostics test")
+    parser.add_argument("--test-fifo", action="store_true", help="Test FIFO pruning")
     parser.add_argument("--load", type=str, help="Load and display diagnostics from file")
     
     args = parser.parse_args()
@@ -989,6 +1044,25 @@ if __name__ == "__main__":
         
         path = diag.save()
         print(f"Saved to: {path}")
+    
+    elif args.test_fifo:
+        print("Testing FIFO Pruning...")
+        print(f"MAX_HISTORY_FILES = {MAX_HISTORY_FILES}")
+        print(f"History dir: {DEFAULT_HISTORY_DIR}")
+        
+        # Check current state
+        history_path = Path(DEFAULT_HISTORY_DIR)
+        if history_path.exists():
+            files = list(history_path.glob("*.json"))
+            print(f"Current files: {len(files)}")
+            
+            # Run pruning
+            _prune_history_fifo()
+            
+            files_after = list(history_path.glob("*.json"))
+            print(f"Files after prune: {len(files_after)}")
+        else:
+            print(f"History directory does not exist: {DEFAULT_HISTORY_DIR}")
     
     else:
         parser.print_help()
