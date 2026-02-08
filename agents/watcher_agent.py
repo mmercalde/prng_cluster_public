@@ -87,6 +87,21 @@ try:
 except ImportError:
     GPU_CLEANUP_AVAILABLE = False
 
+
+# Training Health Check Integration (Chapter 14 Phase 6)
+try:
+    from training_health_check import (
+        check_training_health,
+        reset_skip_registry,
+        get_retry_params_suggestions,
+    )
+    TRAINING_HEALTH_CHECK_AVAILABLE = True
+except ImportError:
+    TRAINING_HEALTH_CHECK_AVAILABLE = False
+    check_training_health = None
+    reset_skip_registry = None
+    get_retry_params_suggestions = None
+
 # Steps that use distributed GPU cluster (need cleanup)
 DISTRIBUTED_STEPS = {1, 2, 3}
 
@@ -969,6 +984,57 @@ class WatcherAgent:
         # Reset retry count for this step
         self.retry_counts[step] = 0
 
+        # ════════════════════════════════════════════════════════════════════
+        # CHAPTER 14 PHASE 6: Post-Step-5 Training Health Check
+        # Design: Best-effort, observational only — never blocks pipeline
+        # ════════════════════════════════════════════════════════════════════
+        if step == 5 and TRAINING_HEALTH_CHECK_AVAILABLE:
+            health = check_training_health()
+            
+            if health['action'] == 'PROCEED':
+                # Training healthy — reset skip registry and continue
+                reset_skip_registry(health['model_type'])
+                logger.info(f"🏥 Training health OK ({health['model_type']}) — proceeding to Step 6")
+            
+            elif health['action'] == 'PROCEED_WITH_NOTE':
+                # Minor issues — log for Strategy Advisor but continue
+                reset_skip_registry(health['model_type'])
+                logger.warning(
+                    f"🏥 Training health WARNING ({health['model_type']}): "
+                    f"{'; '.join(health['issues'][:3])}"
+                )
+                self._record_training_incident(health)
+            
+            elif health['action'] == 'RETRY':
+                # Critical issues detected
+                # NOTE: Automatic retry with param threading NOT YET IMPLEMENTED
+                # Current behavior: Log suggestions, record incident, proceed anyway
+                # Future: Wire suggestions into run_pipeline() param override
+                logger.warning(
+                    f"🏥 Training health CRITICAL ({health['model_type']}): "
+                    f"{'; '.join(health['issues'][:3])}"
+                )
+                suggestions = get_retry_params_suggestions(health)
+                logger.warning(
+                    f"🏥 Retry requested but param-threading not yet implemented. "
+                    f"Suggestions for manual review: {suggestions}"
+                )
+                self._record_training_incident(health)
+                # Proceed to Step 6 — diagnostics are observational, not gating
+            
+            elif health['action'] == 'SKIP_MODEL':
+                # Model type repeatedly failing — log and proceed
+                # Step 6 continues with remaining models (--compare-models mode)
+                logger.error(
+                    f"🏥 Model {health['model_type']} SKIPPED — "
+                    f"{health.get('consecutive_critical', 0)} consecutive critical failures"
+                )
+                self._record_training_incident(health)
+        
+        elif step == 5 and not TRAINING_HEALTH_CHECK_AVAILABLE:
+            logger.debug("Training health check not available — skipping")
+        # ════════════════════════════════════════════════════════════════════
+
         # Check if pipeline complete
         if step >= 6:
             logger.info("🎉 PIPELINE COMPLETE - all 6 steps finished!")
@@ -981,6 +1047,33 @@ class WatcherAgent:
 
         logger.info(f"Triggering Step {next_step}: {STEP_NAMES.get(next_step, 'Unknown')}")
         return True
+
+    def _record_training_incident(self, health: dict) -> None:
+        """
+        Record training health incident for Strategy Advisor consumption.
+        Best-effort — failures don't block pipeline.
+        
+        Schema v1.0.0 — incidents written to watcher_training_incidents.jsonl
+        """
+        try:
+            incident = {
+                'schema_version': '1.0.0',
+                'type': 'training_health',
+                'model_type': health.get('model_type', 'unknown'),
+                'severity': health.get('severity', 'unknown'),
+                'action': health.get('action', 'unknown'),
+                'issues': health.get('issues', [])[:5],
+                'confidence': health.get('confidence', 0.0),
+                'timestamp': datetime.now().isoformat(),
+            }
+            
+            incidents_path = "watcher_training_incidents.jsonl"
+            with open(incidents_path, 'a') as f:
+                f.write(json.dumps(incident) + '\n')
+            
+            logger.debug(f"Recorded training incident: {incident['severity']}")
+        except Exception as e:
+            logger.warning(f"Failed to record training incident (non-fatal): {e}")
 
     def _handle_retry(
         self,
