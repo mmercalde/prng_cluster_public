@@ -1,0 +1,146 @@
+# Strategy Advisor Grammar
+# GBNF grammar for llama.cpp grammar-constrained decoding
+#
+# This grammar ensures the LLM produces valid JSON matching
+# the strategy_recommendation schema defined in parameter_advisor.py
+#
+# VERSION: 1.0.0
+# DATE: 2026-02-07
+# CONTRACT: CONTRACT_LLM_STRATEGY_ADVISOR_v1_0.md
+#
+# Usage with llama.cpp:
+#   --grammar-file strategy_advisor.gbnf
+#
+# Usage with LLMRouter:
+#   router.evaluate_with_grammar(prompt, grammar_file="strategy_advisor.gbnf")
+
+# Root rule - complete recommendation object
+root ::= recommendation
+
+# Main recommendation object
+recommendation ::= "{" ws
+    "\"schema_version\"" ws ":" ws "\"1.0.0\"" "," ws
+    "\"focus_area\"" ws ":" ws focus-area "," ws
+    "\"focus_confidence\"" ws ":" ws confidence-value "," ws
+    "\"focus_rationale\"" ws ":" ws string "," ws
+    "\"secondary_focus\"" ws ":" ws (focus-area | "null") "," ws
+    "\"secondary_confidence\"" ws ":" ws (confidence-value | "null") "," ws
+    "\"recommended_action\"" ws ":" ws advisor-action "," ws
+    "\"retrain_scope\"" ws ":" ws (retrain-scope | "null") "," ws
+    "\"selfplay_overrides\"" ws ":" ws selfplay-overrides "," ws
+    "\"parameter_proposals\"" ws ":" ws parameter-proposals "," ws
+    "\"pool_strategy\"" ws ":" ws pool-strategy "," ws
+    "\"risk_level\"" ws ":" ws risk-level "," ws
+    "\"requires_human_review\"" ws ":" ws boolean "," ws
+    "\"diagnostic_summary\"" ws ":" ws diagnostic-summary "," ws
+    "\"alternative_hypothesis\"" ws ":" ws (string | "null")
+    ws "}"
+
+# Focus area enum (7 defined areas per Section 4.1)
+focus-area ::= "\"POOL_PRECISION\"" |
+               "\"POOL_COVERAGE\"" |
+               "\"CONFIDENCE_CALIBRATION\"" |
+               "\"MODEL_DIVERSITY\"" |
+               "\"FEATURE_RELEVANCE\"" |
+               "\"REGIME_SHIFT\"" |
+               "\"STEADY_STATE\""
+
+# Advisor action enum
+advisor-action ::= "\"RETRAIN\"" |
+                   "\"WAIT\"" |
+                   "\"ESCALATE\"" |
+                   "\"REFOCUS\"" |
+                   "\"FULL_RESET\""
+
+# Retrain scope enum
+retrain-scope ::= "\"selfplay_only\"" |
+                  "\"steps_5_6\"" |
+                  "\"steps_3_5_6\"" |
+                  "\"full_pipeline\""
+
+# Selfplay overrides object
+selfplay-overrides ::= "{" ws
+    "\"max_episodes\"" ws ":" ws integer "," ws
+    "\"model_types\"" ws ":" ws model-types-array "," ws
+    "\"min_fitness_threshold\"" ws ":" ws confidence-value "," ws
+    "\"priority_metrics\"" ws ":" ws priority-metrics-array "," ws
+    "\"exploration_ratio\"" ws ":" ws confidence-value "," ws
+    "\"search_strategy\"" ws ":" ws (search-strategy | "null")
+    ws "}"
+
+# Model types array
+model-types-array ::= "[" ws model-type (ws "," ws model-type)* ws "]"
+model-type ::= "\"neural_net\"" | "\"xgboost\"" | "\"lightgbm\"" | "\"catboost\""
+
+# Priority metrics array
+priority-metrics-array ::= "[" ws string (ws "," ws string)* ws "]"
+
+# Search strategy enum (for Step 1 recommendations)
+search-strategy ::= "\"bayesian\"" | "\"random\"" | "\"grid\"" | "\"evolutionary\""
+
+# Pool strategy object
+pool-strategy ::= "{" ws
+    "\"tight_pool_guidance\"" ws ":" ws string "," ws
+    "\"balanced_pool_guidance\"" ws ":" ws string "," ws
+    "\"wide_pool_guidance\"" ws ":" ws string
+    ws "}"
+
+# Diagnostic summary object
+diagnostic-summary ::= "{" ws
+    "\"hit_at_20\"" ws ":" ws confidence-value "," ws
+    "\"hit_at_100\"" ws ":" ws confidence-value "," ws
+    "\"hit_at_300\"" ws ":" ws confidence-value "," ws
+    "\"calibration_correlation\"" ws ":" ws signed-float "," ws
+    "\"survivor_churn\"" ws ":" ws confidence-value "," ws
+    "\"best_model_type\"" ws ":" ws model-type "," ws
+    "\"fitness_trend\"" ws ":" ws fitness-trend "," ws
+    "\"draws_since_last_promotion\"" ws ":" ws integer
+    ws "}"
+
+# Fitness trend enum
+fitness-trend ::= "\"improving\"" | "\"plateau\"" | "\"declining\"" | "\"volatile\""
+
+# Risk level enum
+risk-level ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+# Parameter proposals array (0-5 items per contract)
+parameter-proposals ::= "[]" |
+                        "[" ws parameter-proposal (ws "," ws parameter-proposal)* ws "]"
+
+# Single parameter proposal
+parameter-proposal ::= "{" ws
+    "\"parameter\"" ws ":" ws string "," ws
+    "\"current_value\"" ws ":" ws (number | "null") "," ws
+    "\"proposed_value\"" ws ":" ws number "," ws
+    "\"delta\"" ws ":" ws delta-string "," ws
+    "\"confidence\"" ws ":" ws confidence-value "," ws
+    "\"rationale\"" ws ":" ws string
+    ws "}"
+
+# Confidence value (0.0 to 1.0)
+confidence-value ::= "0" ("." [0-9]+)? |
+                     "1" (".0")? |
+                     "0." [0-9]+
+
+# Signed float (-1.0 to 1.0 for correlations)
+signed-float ::= "-"? ("0" ("." [0-9]+)? | "1" (".0")? | "0." [0-9]+)
+
+# Delta string (e.g., "+0.05", "-10", "*1.2")
+delta-string ::= "\"" delta-content "\""
+delta-content ::= ("+" | "-" | "*")? [0-9]+ ("." [0-9]+)?
+
+# Boolean
+boolean ::= "true" | "false"
+
+# Number (integer or float)
+number ::= "-"? [0-9]+ ("." [0-9]+)?
+
+# Integer (non-negative)
+integer ::= [0-9]+
+
+# String (JSON string)
+string ::= "\"" string-content "\""
+string-content ::= ([^"\\] | "\\" ["\\/bfnrt])*
+
+# Whitespace
+ws ::= [ \t\n\r]*
