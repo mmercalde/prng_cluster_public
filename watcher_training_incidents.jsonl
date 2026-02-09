@@ -1,0 +1,1 @@
+{"schema_version": "1.0.0", "type": "training_health", "model_type": "catboost", "severity": "critical", "action": "RETRY", "issues": ["Severe overfitting (gap ratio: 0.87)", "WATCHER: Early stop ratio 0.00 (peaked at round 0/24) \u2014 severe overfitting", "WATCHER: Overfit ratio 1.87 >= critical (val/train loss)"], "confidence": 0.3, "timestamp": "2026-02-08T18:58:38.338298"}

@@ -120,12 +120,14 @@ class SubprocessTrialCoordinator:
                  timeout: int = DEFAULT_TIMEOUT,
                  verbose: bool = True,
                  temp_dir: Optional[str] = None,
-                 output_dir: str = 'models/reinforcement'):
+                 output_dir: str = 'models/reinforcement',
+                 enable_diagnostics: bool = False):
         """
         Initialize coordinator with training data.
         """
         self.timeout = timeout
         self.verbose = verbose
+        self.enable_diagnostics = enable_diagnostics
         self.output_dir = Path(output_dir)
         self.logger = logging.getLogger(__name__)
         
@@ -243,6 +245,10 @@ class SubprocessTrialCoordinator:
             
             if self.verbose:
                 cmd.append('--verbose')
+            
+            # Chapter 14: Thread diagnostics flag to subprocess
+            if getattr(self, 'enable_diagnostics', False):
+                cmd.append('--enable-diagnostics')
             
             # Run subprocess
             result = subprocess.run(

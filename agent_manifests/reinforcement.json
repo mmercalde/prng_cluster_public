@@ -74,6 +74,10 @@
       "min": 10,
       "max": 200,
       "default": 50
+    },
+    "enable_diagnostics": {
+      "type": "bool",
+      "default": false
     }
   },
   "follow_up_agents": [
@@ -100,6 +104,7 @@
     "lottery_data": "train_history.json",
     "compare_models": true,
     "trials": 20,
-    "output_dir": "models/reinforcement"
+    "output_dir": "models/reinforcement",
+    "enable_diagnostics": false
   }
 }

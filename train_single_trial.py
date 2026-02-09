@@ -27,6 +27,17 @@ CRITICAL: NO imports at module level except stdlib!
           This ensures clean GPU state when subprocess starts.
 """
 
+
+# Chapter 14: Training diagnostics (best-effort, non-fatal)
+try:
+    from training_diagnostics import TrainingDiagnostics, TreeDiagnostics, NNDiagnostics
+    DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    DIAGNOSTICS_AVAILABLE = False
+    TreeDiagnostics = None
+    NNDiagnostics = None
+
+
 # ==============================================================================
 # STDLIB ONLY AT MODULE LEVEL - NO GPU LIBRARIES!
 # ==============================================================================
@@ -67,7 +78,84 @@ def setup_gpu_environment(model_type: str):
             os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 
 
-def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str = None) -> dict:
+
+# ------------------------------------------------------------------
+# Chapter 14: Canonical diagnostics handoff for health check
+# ------------------------------------------------------------------
+def _write_canonical_diagnostics(src_path: str):
+    """Write canonical diagnostics file for health check consumption."""
+    try:
+        import shutil, os
+        os.makedirs("diagnostics_outputs", exist_ok=True)
+        dst = "diagnostics_outputs/training_diagnostics.json"
+        shutil.copyfile(src_path, dst)
+    except Exception:
+        pass  # best-effort, non-fatal
+
+
+def _emit_tree_diagnostics(model, model_type: str, r2: float, mse: float, enable_diagnostics: bool):
+    """Chapter 14: Emit tree model diagnostics (best-effort, non-fatal)."""
+    if not enable_diagnostics or not DIAGNOSTICS_AVAILABLE:
+        return
+    try:
+        import os
+        os.makedirs('diagnostics_outputs', exist_ok=True)
+        diag = TrainingDiagnostics.create(model_type)
+        diag.attach(model)
+        
+        # Try to capture evals_result for models that support it
+        if model_type == 'catboost' and hasattr(model, 'get_evals_result'):
+            try:
+                evals = model.get_evals_result()
+                if evals:
+                    keys = list(evals.keys())
+                    learn_key = 'learn' if 'learn' in keys else keys[0]
+                    val_key = 'validation' if 'validation' in keys else (keys[-1] if len(keys) > 1 else keys[0])
+                    metric_keys = list(evals[learn_key].keys()) if evals.get(learn_key) else []
+                    if metric_keys:
+                        metric = metric_keys[0]
+                        for i in range(len(evals.get(val_key, {}).get(metric, []))):
+                            t = evals[learn_key][metric][i] if i < len(evals.get(learn_key, {}).get(metric, [])) else 0
+                            v = evals[val_key][metric][i]
+                            diag.on_round_end(i, t, v)
+            except Exception:
+                pass
+        
+        # Feature importance
+        if hasattr(model, 'feature_importances_'):
+            try:
+                imp = model.feature_importances_
+                importance = {f'f{i}': float(v) for i, v in enumerate(imp)}
+                diag.set_feature_importance(importance)
+            except Exception:
+                pass
+        
+        diag.set_final_metrics({'r2': r2, 'mse': mse})
+        diag.detach()
+        diag.save(f'diagnostics_outputs/{model_type}_diagnostics.json')
+        _write_canonical_diagnostics(f'diagnostics_outputs/{model_type}_diagnostics.json')
+        print(f"[DIAG] {model_type} diagnostics saved", file=sys.stderr)
+    except Exception as e:
+        print(f"[DIAG] {model_type} diagnostics failed (non-fatal): {e}", file=sys.stderr)
+
+
+def _emit_nn_diagnostics(model, r2: float, mse: float, enable_diagnostics: bool):
+    """Chapter 14: Emit neural net diagnostics (best-effort, non-fatal)."""
+    if not enable_diagnostics or not DIAGNOSTICS_AVAILABLE:
+        return
+    try:
+        import os
+        os.makedirs('diagnostics_outputs', exist_ok=True)
+        diag = NNDiagnostics()
+        diag.set_final_metrics({'r2': r2, 'mse': mse})
+        diag.save('diagnostics_outputs/neural_net_diagnostics.json')
+        _write_canonical_diagnostics(f'diagnostics_outputs/neural_net_diagnostics.json')
+        print(f"[DIAG] neural_net diagnostics saved", file=sys.stderr)
+    except Exception as e:
+        print(f"[DIAG] neural_net diagnostics failed (non-fatal): {e}", file=sys.stderr)
+
+
+def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
     """
     Train LightGBM model with GPU (OpenCL).
     
@@ -147,6 +235,10 @@ def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str 
         model.save_model(save_path)
         checkpoint_path = save_path
     
+
+    # Chapter 14: Emit diagnostics
+    _emit_tree_diagnostics(model, 'lightgbm', r2, val_mse, enable_diagnostics)
+
     return {
         'model_type': 'lightgbm',
         'device': device_used,
@@ -160,7 +252,7 @@ def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     }
 
 
-def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None) -> dict:
+def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
     """
     Train XGBoost model with GPU (CUDA).
     
@@ -237,6 +329,10 @@ def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str =
         model.save_model(save_path)
         checkpoint_path = save_path
     
+
+    # Chapter 14: Emit diagnostics
+    _emit_tree_diagnostics(model, 'xgboost', r2, val_mse, enable_diagnostics)
+
     return {
         'model_type': 'xgboost',
         'device': device_used,
@@ -250,7 +346,7 @@ def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str =
     }
 
 
-def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None) -> dict:
+def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
     """
     Train CatBoost model with GPU (CUDA).
     
@@ -312,6 +408,10 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
         model.save_model(save_path)
         checkpoint_path = save_path
     
+
+    # Chapter 14: Emit diagnostics
+    _emit_tree_diagnostics(model, 'catboost', r2, val_mse, enable_diagnostics)
+
     return {
         'model_type': 'catboost',
         'device': device_used,
@@ -325,7 +425,7 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     }
 
 
-def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None) -> dict:
+def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
     """
     Train PyTorch Neural Net with GPU (CUDA).
     
@@ -463,6 +563,10 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         }, save_path)
         checkpoint_path = save_path
     
+
+    # Chapter 14: Emit diagnostics
+    _emit_nn_diagnostics(model, r2, val_mse, enable_diagnostics)
+
     return {
         'model_type': 'neural_net',
         'device': device_used,
@@ -479,7 +583,7 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
 
 
 
-def train_random_forest(X_train, y_train, X_val, y_val, params: dict, save_path: str = None) -> dict:
+def train_random_forest(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
     """
     Train Random Forest model (CPU-based, no GPU conflicts).
     
@@ -557,6 +661,9 @@ def main():
                         help='Save trained model checkpoint')
     parser.add_argument('--model-output-dir', type=str, default=None,
                         help='Directory for model checkpoint (default: temp dir)')
+    # Chapter 14: Training diagnostics
+    parser.add_argument('--enable-diagnostics', action='store_true',
+                        help='Enable Chapter 14 training diagnostics')
     
     args = parser.parse_args()
     
@@ -621,15 +728,15 @@ def main():
     # Train based on model type
     try:
         if args.model_type == 'lightgbm':
-            result = train_lightgbm(X_train, y_train, X_val, y_val, params, save_path)
+            result = train_lightgbm(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         elif args.model_type == 'xgboost':
-            result = train_xgboost(X_train, y_train, X_val, y_val, params, save_path)
+            result = train_xgboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         elif args.model_type == 'catboost':
-            result = train_catboost(X_train, y_train, X_val, y_val, params, save_path)
+            result = train_catboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         elif args.model_type == 'neural_net':
-            result = train_neural_net(X_train, y_train, X_val, y_val, params, save_path)
+            result = train_neural_net(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         elif args.model_type == 'random_forest':
-            result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path)
+            result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         else:
             raise ValueError(f"Unknown model type: {args.model_type}")
         

@@ -469,8 +469,12 @@ def run_subprocess_comparison(
     
     results = {}
     
+    # Get enable_diagnostics from outer scope if available
+    _enable_diag = globals().get('_enable_diagnostics_flag', False)
+    
     with SubprocessTrialCoordinator(
         X_train, y_train, X_val, y_val,
+        enable_diagnostics=_enable_diag,
         worker_script='train_single_trial.py',
         timeout=timeout,
         verbose=True,
@@ -1558,6 +1562,10 @@ def main():
                        help='Number of holdout draws')
     parser.add_argument('--parent-run-id', type=str,
                        help='Parent run ID for provenance')
+    
+    # Chapter 14: Training diagnostics
+    parser.add_argument('--enable-diagnostics', action='store_true',
+                       help='Enable Chapter 14 training diagnostics (writes to diagnostics_outputs/)')
     
     args = parser.parse_args()
 
