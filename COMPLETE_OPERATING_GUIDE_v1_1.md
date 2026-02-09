@@ -244,6 +244,11 @@ Step 5 now supports 4 ML model types with subprocess isolation:
 
 ### Subprocess Isolation
 
+> ⚠️ **CRITICAL (Session 72):** The parent/coordinator process must NEVER initialize CUDA/GPU.
+> Set `CUDA_INITIALIZED = False` at module level and defer to subprocesses.
+> If parent touches GPU first, OpenCL fails with error -9999.
+
+
 Each trial runs in a separate subprocess to prevent OpenCL/CUDA conflicts:
 ```
 Main Process (subprocess_trial_coordinator.py)

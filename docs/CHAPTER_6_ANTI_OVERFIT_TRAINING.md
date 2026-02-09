@@ -401,7 +401,48 @@ class SubprocessTrialCoordinator:
 
 This resolves OpenCL/CUDA conflicts when comparing PyTorch neural nets with XGBoost/LightGBM/CatBoost.
 
----
+### 5.4 CRITICAL: GPU Isolation Design Invariant
+
+> ⚠️ **MANDATORY INVARIANT (Session 72, Feb 2026)**
+> 
+> **GPU-accelerated code must NEVER run in the coordinating process when using `--compare-models`.**
+
+**Why this matters:**
+- LightGBM uses OpenCL, CatBoost/XGBoost/PyTorch use CUDA
+- These runtimes do NOT coordinate VRAM ownership
+- Once CUDA initializes in parent process, OpenCL fails with error -9999
+- Cleanup APIs (`gc.collect()`, cache clears) are **ineffective**
+
+**Implementation:**
+```python
+# At module level - DO NOT initialize GPU
+CUDA_INITIALIZED = False  # Deferred to main()
+
+# In main() - conditional based on mode
+if args.compare_models:
+    CUDA_INITIALIZED = False  # Parent stays GPU-clean!
+else:
+    CUDA_INITIALIZED = initialize_cuda_early()
+```
+
+**Verification:** When `--compare-models` is active, you MUST see:
+```
+⚡ Mode: Multi-Model Comparison (Subprocess Isolation)
+   GPU initialization DEFERRED to subprocesses
+✅ CUDA initialized: False
+```
+
+**Key Files:**
+| File | Role |
+|------|------|
+| `meta_prediction_optimizer_anti_overfit.py` | Coordinator (NO GPU imports) |
+| `subprocess_trial_coordinator.py` | Subprocess orchestration |
+| `train_single_trial.py` | Single model worker (HAS GPU) |
+
+See `docs/DESIGN_INVARIANT_GPU_ISOLATION.md` for full documentation.
+
+
+
 
 ## 6. AntiOverfitMetaOptimizer Class
 

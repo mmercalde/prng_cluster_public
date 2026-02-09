@@ -47,8 +47,24 @@ import time
 from datetime import datetime
 import subprocess
 import sys
+import os
+import shutil
 import warnings
 import argparse
+
+# Subprocess isolation for multi-model comparison (fixes LightGBM OpenCL on Zeus)
+try:
+    from subprocess_trial_coordinator import (
+        SubprocessTrialCoordinator,
+        SAFE_MODEL_ORDER as SUBPROCESS_SAFE_ORDER,
+        TrialResult
+    )
+    SUBPROCESS_AVAILABLE = True
+except ImportError:
+    SUBPROCESS_AVAILABLE = False
+    SUBPROCESS_SAFE_ORDER = None
+    SubprocessTrialCoordinator = None
+    TrialResult = None
 
 # ============================================================================
 # EARLY CUDA INITIALIZATION
@@ -71,7 +87,7 @@ def initialize_cuda_early():
         pass
     return False
 
-CUDA_INITIALIZED = initialize_cuda_early()
+CUDA_INITIALIZED = False  # Deferred - set in main() based on --compare-models
 
 
 # ============================================================================
@@ -412,6 +428,138 @@ def load_survivors_with_features(
 # MULTI-MODEL TRAINING (Subprocess Isolation)
 # ============================================================================
 
+# =============================================================================
+# SUBPROCESS ISOLATION FOR MULTI-MODEL COMPARISON
+# =============================================================================
+
+
+def run_subprocess_comparison(
+    X_train, y_train, X_val, y_val,
+    output_dir: str = 'models/reinforcement',
+    timeout: int = 600,
+    logger = None
+) -> dict:
+    """
+    Run multi-model comparison using subprocess isolation.
+    
+    Each model trains in a fresh subprocess, preventing OpenCL/CUDA conflicts.
+    This allows LightGBM (OpenCL) to work alongside CUDA models on Zeus.
+    
+    Args:
+        X_train, y_train, X_val, y_val: Training/validation data
+        output_dir: Directory for model outputs
+        timeout: Per-model timeout in seconds
+        logger: Optional logger
+        
+    Returns:
+        Dict with results for each model and winner info
+    """
+    import logging
+    logger = logger or logging.getLogger(__name__)
+    
+    if not SUBPROCESS_AVAILABLE:
+        raise RuntimeError("subprocess_trial_coordinator not available")
+    
+    logger.info("=" * 70)
+    logger.info("SUBPROCESS ISOLATION MODE")
+    logger.info("=" * 70)
+    logger.info(f"Models: {SUBPROCESS_SAFE_ORDER}")
+    logger.info("Each model trains in isolated subprocess (fixes LightGBM OpenCL)")
+    logger.info("=" * 70)
+    
+    results = {}
+    
+    with SubprocessTrialCoordinator(
+        X_train, y_train, X_val, y_val,
+        worker_script='train_single_trial.py',
+        timeout=timeout,
+        verbose=True,
+        output_dir=output_dir
+    ) as coordinator:
+        
+        # Train each model type
+        for i, model_type in enumerate(SUBPROCESS_SAFE_ORDER):
+            if model_type == 'random_forest':
+                continue  # Skip random_forest for now
+                
+            logger.info(f"Training {model_type} (subprocess)...")
+            
+            try:
+                # Run isolated trial
+                trial_result = coordinator.run_trial(
+                    trial_number=i,
+                    model_type=model_type,
+                    params={}  # Use defaults
+                )
+                
+                if trial_result.success:
+                    results[model_type] = {
+                        'model': None,  # Model is in file, not memory
+                        'model_type': model_type,
+                        'metrics': {
+                            'train_mse': trial_result.train_mse,
+                            'val_mse': trial_result.val_mse,
+                            'r2': trial_result.r2
+                        },
+                        'hyperparameters': trial_result.params,
+                        'checkpoint_path': trial_result.checkpoint_path
+                    }
+                    logger.info(f"  {model_type}: R²={trial_result.r2:.4f}")
+                else:
+                    results[model_type] = {
+                        'model': None,
+                        'model_type': model_type,
+                        'metrics': {'error': trial_result.error},
+                        'hyperparameters': {}
+                    }
+                    logger.error(f"  {model_type} failed: {trial_result.error}")
+                    
+            except Exception as e:
+                logger.error(f"  {model_type} failed: {e}")
+                results[model_type] = {
+                    'model': None,
+                    'model_type': model_type,
+                    'metrics': {'error': str(e)},
+                    'hyperparameters': {}
+                }
+        
+        # Find winner
+        valid_results = {
+            k: v for k, v in results.items() 
+            if v.get('model') is not None or v.get('checkpoint_path')
+        }
+        
+        if not valid_results:
+            # Fall back to any result with r2 score
+            valid_results = {
+                k: v for k, v in results.items()
+                if 'r2' in v.get('metrics', {})
+            }
+        
+        if valid_results:
+            winner = max(
+                valid_results.keys(),
+                key=lambda k: valid_results[k]['metrics'].get('r2', float('-inf'))
+            )
+            results['winner'] = winner
+            results['winner_metrics'] = valid_results[winner]['metrics']
+            
+            # Copy winning model to output directory
+            if valid_results[winner].get('checkpoint_path'):
+                winner_path = valid_results[winner]['checkpoint_path']
+                if os.path.exists(winner_path):
+                    # Determine extension
+                    ext = os.path.splitext(winner_path)[1]
+                    dest_path = os.path.join(output_dir, f"best_model{ext}")
+                    shutil.copy(winner_path, dest_path)
+                    results[winner]['final_checkpoint_path'] = dest_path
+                    logger.info(f"Copied winning model to {dest_path}")
+        else:
+            raise ValueError("All models failed to train")
+    
+    return results
+
+
 class MultiModelTrainer:
     """
     Trains multiple model types with subprocess isolation.
@@ -421,7 +569,7 @@ class MultiModelTrainer:
     """
     
     SUPPORTED_MODELS = ['neural_net', 'xgboost', 'lightgbm', 'catboost']
-    SAFE_MODEL_ORDER = ['xgboost', 'neural_net', 'catboost', 'lightgbm']
+    SAFE_MODEL_ORDER = ['lightgbm', 'neural_net', 'xgboost', 'catboost']
     
     def __init__(self, device: str = 'cuda:0', logger: logging.Logger = None):
         self.device = device
@@ -711,7 +859,9 @@ class MultiModelTrainer:
         X_val: np.ndarray,
         y_val: np.ndarray,
         model_types: List[str] = None,
-        metric: str = 'r2'
+        metric: str = 'r2',
+        use_subprocess: bool = True,
+        output_dir: str = 'models/reinforcement'
     ) -> Dict:
         """
         Train all model types and compare performance.
@@ -721,10 +871,26 @@ class MultiModelTrainer:
             X_val, y_val: Validation data
             model_types: List of models to train (default: all)
             metric: Comparison metric ('r2', 'mse', 'mae')
+            use_subprocess: Use subprocess isolation (fixes LightGBM OpenCL)
+            output_dir: Output directory for models
             
         Returns:
             Dict with results for each model and winner
         """
+        # Try subprocess isolation first (fixes LightGBM OpenCL on Zeus)
+        if use_subprocess and SUBPROCESS_AVAILABLE:
+            self.logger.info("Using subprocess isolation for model comparison")
+            try:
+                return run_subprocess_comparison(
+                    X_train, y_train, X_val, y_val,
+                    output_dir=output_dir,
+                    logger=self.logger
+                )
+            except Exception as e:
+                self.logger.warning(f"Subprocess comparison failed: {e}")
+                self.logger.warning("Falling back to inline training")
+        
+        # Fallback: inline training (original behavior)
         model_types = model_types or self.SAFE_MODEL_ORDER
         
         results = {}
@@ -1394,6 +1560,18 @@ def main():
                        help='Parent run ID for provenance')
     
     args = parser.parse_args()
+
+    # Conditional CUDA initialization (Team Beta design invariant)
+    # GPU code must NEVER run in coordinating process when using subprocess isolation
+    global CUDA_INITIALIZED
+    if args.compare_models:
+        print("⚡ Mode: Multi-Model Comparison (Subprocess Isolation)")
+        print("   GPU initialization DEFERRED to subprocesses")
+        CUDA_INITIALIZED = False
+    else:
+        CUDA_INITIALIZED = initialize_cuda_early()
+        print(f"⚡ Mode: Single Model ({args.model_type})")
+
     
     print("=" * 70)
     print("ANTI-OVERFIT META-PREDICTION OPTIMIZER v3.3")

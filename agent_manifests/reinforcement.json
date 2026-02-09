@@ -98,7 +98,7 @@
   "default_params": {
     "survivors": "survivors_with_scores.json",
     "lottery_data": "train_history.json",
-    "model_type": "xgboost",
+    "compare_models": true,
     "trials": 20,
     "output_dir": "models/reinforcement"
   }

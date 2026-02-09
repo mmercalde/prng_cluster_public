@@ -730,3 +730,82 @@ sed -i 's/"chunk_size": [0-9]*/"chunk_size": 1000/' agent_manifests/full_scoring
 sed -i 's/^CHUNK_SIZE=.*/CHUNK_SIZE=1000/' run_step3_full_scoring.sh
 ```
 
+
+---
+
+## 6. GPU Process Isolation (Multi-Model Training)
+
+**Added: Session 72 (Feb 8, 2026)** — Critical design invariant for Step 5.
+
+### 6.1 The Problem: Mixed GPU Runtimes
+
+When running multiple ML frameworks in a single Python process:
+
+| Framework | GPU Runtime | Issue |
+|-----------|-------------|-------|
+| LightGBM | OpenCL | Must initialize FIRST |
+| CatBoost | CUDA | Retains VRAM context |
+| XGBoost | CUDA | Retains VRAM context |
+| PyTorch | CUDA | Caching allocator |
+
+**These runtimes do NOT coordinate VRAM ownership:**
+- CUDA frameworks retain VRAM via caching allocators
+- LightGBM's OpenCL cannot initialize after CUDA touches GPU
+- Cleanup APIs (`gc.collect()`, cache clears) are **ineffective**
+
+### 6.2 The Solution: Hard Process Isolation
+
+Each model type runs in its own subprocess:
+```
+Parent Process (meta_prediction_optimizer_anti_overfit.py)
+    ├── NO GPU imports
+    ├── NO torch.cuda calls  
+    ├── CUDA_INITIALIZED = False
+    │
+    └── Spawns via subprocess_trial_coordinator.py
+        │
+        ├── Subprocess 1: neural_net → exits (GPU released)
+        ├── Subprocess 2: lightgbm  → exits (GPU released)
+        ├── Subprocess 3: xgboost   → exits (GPU released)
+        └── Subprocess 4: catboost  → exits (GPU released)
+```
+
+### 6.3 Design Invariant
+
+> ⚠️ **MANDATORY: GPU-accelerated code must NEVER run in the coordinating process when using subprocess isolation.**
+
+**Violations cause:**
+- LightGBM: "Unknown OpenCL Error (-9999)"
+- CatBoost: "CUDA error 46: device busy/unavailable"
+- Neural net: Silent crashes
+- Non-deterministic failures
+
+### 6.4 Implementation Files
+
+| File | Role | GPU Code? |
+|------|------|-----------|
+| `meta_prediction_optimizer_anti_overfit.py` | Coordinator | ❌ NO |
+| `subprocess_trial_coordinator.py` | Subprocess orchestration | ❌ NO |
+| `train_single_trial.py` | Single model worker | ✅ YES |
+
+### 6.5 Verification
+
+When `--compare-models` is active, you MUST see:
+```
+⚡ Mode: Multi-Model Comparison (Subprocess Isolation)
+   GPU initialization DEFERRED to subprocesses
+✅ CUDA initialized: False
+```
+
+Each subprocess reports its own GPU:
+```
+Trial 0: NEURAL_NET
+  ✅ SUCCESS 🚀
+  Device: cuda:0,1 (DataParallel)
+
+Trial 1: LIGHTGBM
+  ✅ SUCCESS 🚀
+  Device: gpu  ← OpenCL works!
+```
+
+See `docs/DESIGN_INVARIANT_GPU_ISOLATION.md` for complete documentation.
