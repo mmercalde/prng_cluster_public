@@ -143,3 +143,40 @@ All models show weak signal (expected with current data).
 **Session 74: COMPLETE** ✅
 
 Team Beta sidecar fix verified. Pipeline working without band-aids.
+
+---
+
+## Session 74 Addendum - Late Session
+
+### Additional Accomplishments
+
+1. **syncfiles alias created on ser8**
+   - One command syncs docs to Zeus and pushes to GitHub
+   - Script: ~/sync_to_zeus.sh
+   - Only syncs .md and .txt files (no code)
+
+2. **GitHub repo cleaned up**
+   - Removed 16 .py files incorrectly placed in docs/
+   - Moved 4 unique files to project root
+   - Commit: f83dd8e
+
+3. **ser8 Downloads folder cleaned**
+   - Removed duplicate files
+   - Moved unique docs to CONCISE_OPERATING_GUIDE_v1.0/
+   - Code files moved to ~/Downloads/code_staging/
+
+4. **Removed incomplete HuggingFace download**
+   - Freed ~6 GB from models/.cache/
+
+### Updated Next Steps (Session 75)
+
+1. Strategy Advisor deployment - ~1070 lines ready, needs Zeus integration
+2. Param-threading for RETRY - Health check requests it
+3. Web dashboard refactor - Chapter 14 visualization
+4. Phase 9B.3 auto policy heuristics (deferred)
+
+### Additional Git Commits
+
+- f83dd8e - cleanup: remove .py from docs/, move unique files to root
+- da48e17 - Doc sync
+- 323b6fa - Doc sync
