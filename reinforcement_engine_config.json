@@ -17,7 +17,7 @@
   },
   "output": {},
   "_meta_optimizer": {
-    "last_calibration": "2026-02-07T14:48:49.191664",
+    "last_calibration": "2026-02-08T20:28:06.024526",
     "calibration_type": "full",
     "confidence": 0.24499999999999997,
     "weights_used": {
@@ -25,10 +25,5 @@
       "historical_patterns": 0.35,
       "reinforcement_feedback": 0.05
     }
-  },
-  "diagnostics": {
-    "enabled": false,
-    "capture_every_n": 5,
-    "output_dir": "diagnostics_outputs"
   }
 }
