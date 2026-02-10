@@ -124,3 +124,28 @@ Training health check: model=catboost severity=critical action=RETRY issues=3
 | 3.2.0 | 2026-02-06 | Soak C certified |
 | 3.1.0 | 2026-02-04 | Soak A/B passed |
 | 3.0.0 | 2026-02-05 | Phase 7 complete |
+
+---
+
+## Session 73 Addendum - February 9, 2026
+
+### Sidecar Bug Fix VERIFIED
+
+**Issue:** In `--compare-models` mode, Step 5 checked `self.best_model` (memory) instead of disk artifacts. Subprocess-trained models exist on disk, not in parent memory.
+
+**Fix:** Team Beta patch v1.3 - artifact-authoritative sidecar generation
+- Added `best_checkpoint_path` / `best_checkpoint_format` to `__init__`
+- Capture checkpoint path after `winner = results['winner']`
+- New `_save_existing_checkpoint_sidecar()` helper
+- Updated `save_best_model()` early guard
+
+**Verification:**
+```
+model_type: lightgbm ✅
+checkpoint_path: models/reinforcement/best_model.txt ✅
+outcome: SUCCESS ✅
+```
+
+**Commit:** `f391786`
+
+**Status:** PERMANENTLY FIXED

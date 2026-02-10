@@ -93,3 +93,44 @@ Training health check: model=catboost severity=critical action=RETRY issues=3
 
 ## Backups
 All modified files have `.bak_s73` backups (per Rule #1: never restore, always edit).
+
+---
+
+## Session 73 Addendum - February 9, 2026
+
+### Team Beta Sidecar Fix VERIFIED ✅
+
+**Test Run:** Steps 5-6 with `--compare-models`
+
+**Results:**
+```
+model_type: lightgbm
+checkpoint_path: models/reinforcement/best_model.txt
+outcome: SUCCESS
+```
+
+**Key Log Line:**
+```
+SUBPROCESS WINNER SIDECAR SAVED (Existing Checkpoint)
+  Model type: lightgbm
+  Checkpoint: models/reinforcement/best_model.txt
+```
+
+### Before vs After
+
+| Field | Before (Broken) | After (Fixed) |
+|-------|-----------------|---------------|
+| `model_type` | `null` | `lightgbm` |
+| `checkpoint_path` | `null` | `models/reinforcement/best_model.txt` |
+| `outcome` | `DEGENERATE_SIGNAL` | `SUCCESS` |
+
+### Files Modified by Fix
+- `meta_prediction_optimizer_anti_overfit.py` - Team Beta patch v1.3
+- `apply_team_beta_sidecar_fix_v1.3.py` - Patcher script
+
+### Git Commits
+- `f391786` - fix(step5): honor subprocess-trained checkpoints when writing sidecar
+
+### Bug Status: **PERMANENTLY FIXED** ✅
+
+No band-aids required. The fix is architectural and handles all subprocess comparison cases correctly.

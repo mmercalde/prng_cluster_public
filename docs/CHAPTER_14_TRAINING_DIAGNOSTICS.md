@@ -3131,3 +3131,29 @@ Version 1.1.2 — February 4, 2026 (Team Alpha review recommendations)
 ---
 
 **END OF CHAPTER 14**
+
+---
+
+## Session 73 Bugfix: Subprocess Sidecar Consistency
+
+### Issue Discovered
+When using `--compare-models` (subprocess isolation), Step 5 wrote a degenerate sidecar despite successful training. Root cause: code checked `self.best_model` (in-memory) instead of disk artifacts.
+
+### Fix Applied (Team Beta v1.3)
+- **Principle:** Disk artifacts are authoritative, not parent process memory
+- **Implementation:** Check `best_checkpoint_path` before declaring degenerate
+- **Invariant:** `prediction_allowed=True` ⇒ `checkpoint_path` must exist
+
+### Verification
+```
+model_type: lightgbm ✅
+checkpoint_path: models/reinforcement/best_model.txt ✅
+outcome: SUCCESS ✅
+```
+
+### Files
+- `meta_prediction_optimizer_anti_overfit.py` - Core fix
+- `apply_team_beta_sidecar_fix_v1.3.py` - Patcher script
+
+### Commit
+`f391786` - fix(step5): honor subprocess-trained checkpoints when writing sidecar
