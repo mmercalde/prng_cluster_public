@@ -1,0 +1,176 @@
+# DOCUMENTATION_UPDATES_S70.md
+
+## Required Documentation Updates After Session 70
+
+### Summary
+Session 70 completed Chapter 14 Phase 3 (Pipeline Wiring). The following documents need updates.
+
+---
+
+## 1. CHAPTER_14_TRAINING_DIAGNOSTICS.md
+
+**Current Status Line (Line 6):**
+```
+**Status:** PLANNED — Implementation deferred until Soak Tests A, B, C complete
+```
+
+**Should Be:**
+```
+**Status:** IN PROGRESS — Phase 1-3 COMPLETE, Phase 5-6 pending
+```
+
+**Add after Section 13 (Implementation Plan) or update Section 14 (Implementation Checklist):**
+
+```markdown
+### Implementation Progress
+
+| Phase | Description | Status | Session | Date |
+|-------|-------------|--------|---------|------|
+| 1 | Core diagnostics classes (ABC, factory) | ✅ Complete | S69 | 2026-02-08 |
+| 2 | Tree model diagnostics (XGB/LGB/CatBoost) | ✅ Complete | S69 | 2026-02-08 |
+| 3 | Pipeline wiring (reinforcement_engine.py) | ✅ Complete | S70 | 2026-02-08 |
+| 4 | Multi-model collector | ✅ Complete | S69 | 2026-02-08 |
+| 5 | FIFO history pruning | 📋 Pending | - | - |
+| 6 | WATCHER integration | 📋 Pending | - | - |
+| 7 | LLM integration | 📋 Future | - | - |
+| 8 | Selfplay wiring | 📋 Future | - | - |
+| 9 | Web dashboard | 📋 Future | - | - |
+
+### Files Created
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `training_diagnostics.py` | 995 | Core diagnostics module |
+| `reinforcement_engine.py` | 1168 | v1.7.0 with diagnostics wiring |
+
+### Usage
+
+```python
+# Enable diagnostics via constructor
+engine = ReinforcementEngine(config, lottery_history, enable_diagnostics=True)
+
+# Or via CLI
+python3 reinforcement_engine.py --test --enable-diagnostics
+
+# Or via config JSON
+{
+  "diagnostics": {
+    "enabled": true,
+    "capture_every_n": 5
+  }
+}
+```
+```
+
+---
+
+## 2. CHAPTER_13_IMPLEMENTATION_PROGRESS_v3_3.md → v3_4.md
+
+**Update Version History (add new row):**
+```markdown
+| **2026-02-08** | **3.4.0** | **Chapter 14 Phase 1-3 COMPLETE (S69-S70). training_diagnostics.py (995 lines), reinforcement_engine.py v1.7.0 (1168 lines).** |
+```
+
+**Update Next Steps section:**
+```markdown
+## Next Steps
+
+1. ~~**Soak Test C**~~ — ✅ PASSED + CERTIFIED (2026-02-06)
+2. ~~**Strategy Advisor Implementation**~~ — ✅ COMPLETE (2026-02-07, Session 66)
+3. ~~**Chapter 14 Phase 1-3**~~ — ✅ COMPLETE (2026-02-08, Sessions 69-70)
+4. **Chapter 14 Phase 5-6** — FIFO pruning + WATCHER integration
+5. **Bundle Factory Tier 2** — Fill 3 stub retrieval functions
+6. **Phase 9B.3** (Deferred) — Automatic policy proposal heuristics
+7. **`--save-all-models` flag** — Save all 4 models in Step 5 for post-hoc AI analysis
+```
+
+---
+
+## 3. PROJECT_FILE_CATALOG.md
+
+**Update entry for reinforcement_engine.py:**
+```markdown
+| `reinforcement_engine.py` | v1.7.0 | ML training orchestrator with Chapter 14 diagnostics |
+```
+
+**Add new entry:**
+```markdown
+| `training_diagnostics.py` | v1.0.0 | Chapter 14 training diagnostics module (NN + tree models) |
+```
+
+---
+
+## 4. COMPLETE_OPERATING_GUIDE_v1_1.md (Optional)
+
+**Add new section (suggested location: after Step 5 training documentation):**
+
+```markdown
+## Training Diagnostics (Chapter 14)
+
+### Enabling Diagnostics
+
+Add `--enable-diagnostics` to any training command to capture live introspection data:
+
+```bash
+# Step 5 with diagnostics
+python3 reinforcement_engine.py --test --enable-diagnostics
+```
+
+### Output
+
+Diagnostics are saved to `diagnostics_outputs/neural_net_diagnostics.json`:
+
+```json
+{
+  "status": "complete",
+  "training_summary": { "rounds_captured": 10, "overfit_gap": 0.19 },
+  "diagnosis": { "severity": "critical", "issues": [...] },
+  "model_specific": { "gradient_health": {...}, "layer_health": {...} }
+}
+```
+
+### Severity Levels
+
+| Severity | Meaning | Action |
+|----------|---------|--------|
+| ok | Training healthy | Proceed |
+| warning | Minor issues detected | Log and proceed |
+| critical | Major issues detected | Consider retry or skip |
+```
+
+---
+
+## Git Commands to Push These Updates
+
+```bash
+cd ~/distributed_prng_analysis
+
+# Add the session changelog
+git add SESSION_CHANGELOG_20260208_S70.md
+
+# Commit
+git commit -m "Session 70: Chapter 14 Phase 3 complete - Pipeline wiring verified
+
+- reinforcement_engine.py v1.7.0 deployed
+- NNDiagnostics hooks fully wired
+- Diagnostics JSON output verified working
+- CPU and GPU modes tested"
+
+# Push
+git push origin main
+```
+
+---
+
+## Summary of Documents Requiring Updates
+
+| Document | Priority | Type of Change |
+|----------|----------|----------------|
+| **CHAPTER_14_TRAINING_DIAGNOSTICS.md** | HIGH | Update status, add progress table |
+| **CHAPTER_13_IMPLEMENTATION_PROGRESS_v3_3.md** | HIGH | New version entry, update Next Steps |
+| **PROJECT_FILE_CATALOG.md** | MEDIUM | Update file versions |
+| **COMPLETE_OPERATING_GUIDE_v1_1.md** | LOW | Add diagnostics section |
+
+---
+
+*Generated by Session 70, 2026-02-08*
