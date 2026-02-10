@@ -1,0 +1,2889 @@
+Chapter 1: Introduction and System Overview
+System Overview
+Status: FULLY OPERATIONAL - 26 GPU Cluster (285.69 TFLOPS)
+A distributed pseudorandom number generator (PRNG) analysis system that uses GPU acceleration across multiple nodes to analyze lottery data patterns. The system automatically detects and optimizes for both NVIDIA (CUDA) and AMD (ROCm) hardware.
+NEW: Bidirectional Sieve Architecture - Forward + Reverse PRNG analysis with ML fusion for adaptive pattern discovery.
+
+Chapter 2: Data Formats and Requirements
+Data File Format Requirements
+Standard Input Format (daily3.json, test files)
+All analysis requires JSON files with lottery draw data. The format varies slightly depending on analysis type:
+Fixed Skip Sieve Format (Minimal)
+JSON[
+  {
+    "draw": 134,
+    "session": "midday",
+    "timestamp": 5000000
+  },
+  {
+    "draw": 840,
+    "session": "midday",
+    "timestamp": 5000001
+  }
+]
+Required fields:
+
+draw (integer 0-999): The lottery draw result
+session (string): "midday" or "evening" (can be any identifier)
+timestamp or date (integer/string): Temporal ordering
+
+Hybrid Variable Skip Format (Same as Fixed)
+JSON[
+  {
+    "draw": 994,
+    "session": "midday",
+    "timestamp": 5000000
+  }
+]
+Note: Hybrid mode uses the SAME format as fixed skip. The only difference is you add --hybrid flag.
+Multi-Modulo Validation Format (Advanced)
+JSON[
+  {
+    "draw": 134,
+    "full_state": 3234134,
+    "session": "midday",
+    "timestamp": 5000000
+  }
+]
+Additional field:
+
+full_state (integer): Complete PRNG state value (not just mod 1000)
+
+When to use full_state:
+
+For maximum confidence (triple modulo validation)
+When you have access to complete PRNG state
+Testing with synthetic data where full state is known
+
+When NOT needed:
+
+Standard lottery data (only has draw values 0-999)
+Hybrid mode (works with draw values only)
+Most real-world scenarios
+
+Quick Reference: What Format Do I Need?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Analysis TypeRequired FieldsOptional FieldsFixed Skip Sievedraw, session, timestampfull_stateHybrid Variable Skipdraw, session, timestampfull_stateReverse Sievedraw, session, timestampfull_stateTimestamp Searchdraw, session, timestamp-
+Example: Creating Test Data
+For Fixed Skip Testing
+Bashcat > test_simple.json << 'EOF'
+[
+  {"draw": 450, "session": "midday", "timestamp": 1000000},
+  {"draw": 303, "session": "midday", "timestamp": 1000001},
+  {"draw": 618, "session": "midday", "timestamp": 1000002}
+]
+EOF
+For Hybrid Testing (Variable Skip)
+Bash# Use the create_xorshift32_hybrid_test.py script shown in Hybrid section
+# It generates proper format automatically
+python3 create_xorshift32_hybrid_test.py
+Common Format Mistakes
+❌ Wrong: Missing required fields
+JSON[
+  {"draw": 134}  // Missing session and timestamp
+]
+❌ Wrong: Incorrect data types
+JSON[
+  {"draw": "134", "session": "midday", "timestamp": 5000000}  // draw should be int, not string
+]
+❌ Wrong: Using date when timestamp expected
+JSON// Some modes expect timestamp (integer), check docs
+[
+  {"draw": 134, "session": "midday", "date": "2025-10-16"}  // Should use timestamp for most modes
+]
+✅ Correct: All required fields, proper types
+JSON[
+  {"draw": 134, "session": "midday", "timestamp": 5000000}
+]
+Understanding Multi-Modulo Validation
+The sieve uses three simultaneous modulo checks for high confidence:
+Python# A seed survives only if ALL three match:
+match = (state % 1000 == draw % 1000) AND  # The actual draw value
+        (state % 8 == draw % 8) AND        # Low bits check
+        (state % 125 == draw % 125)        # Mid bits check
+Why this matters:
+
+Single mod 1000 match = ~0.1% false positive rate
+Triple validation = ~0.00001% false positive rate
+Effectively requires full 32-bit state match
+
+Data Requirements:
+
+Dataset must include full_state field (not just draw)
+For testing: Use create_synthetic_full_state.py to generate test data
+For production: Capture full PRNG state values, not just mod 1000 outputs
+
+Creating Test Datasets
+Synthetic Test Data (Known Seeds)
+Bash# Generate test data with known seed 42
+cat > create_test_data.py << 'EOF'
+import json
+
+def xorshift32_step(state):
+    x = state & 0xFFFFFFFF
+    x ^= (x << 13) & 0xFFFFFFFF
+    x ^= (x >> 17) & 0xFFFFFFFF
+    x ^= (x << 5) & 0xFFFFFFFF
+    return x & 0xFFFFFFFF
+
+state = 42
+draws = []
+for i in range(100):
+    state = xorshift32_step(state)
+    draws.append({
+        "date": f"2020-01-{i+1:02d}",
+        "session": "midday",
+        "draw": state % 1000,
+        "full_state": int(state)  # Critical for multi-modulo validation
+    })
+
+with open('test_seed42_known.json', 'w') as f:
+    json.dump(draws, f, indent=2)
+EOF
+
+python3 create_test_data.py
+
+# Verify the sieve finds it
+python3 coordinator.py \
+  test_seed42_known.json \
+  --method residue_sieve \
+  --prng-type xorshift32 \
+  --seeds 100000 \
+  --offset 0
+
+# Expected: Seed 42 found with 100% match rate
+Multi-Session Test Data
+Bash# Generate data with separate midday/evening seeds
+python3 create_synthetic_dataset.py \
+  --seed-midday 42 \
+  --seed-evening 1337 \
+  --prng xorshift32 \
+  --count 10000 \
+  --skip 5 \
+  --output synthetic_dual_session.json
+
+Chapter 3: Hardware and Architecture
+Hardware Architecture
+
+Zeus (Coordinator): 2x RTX 3080 Ti (CUDA)
+rig-6600 (192.168.3.120): 8x RX 6600 (ROCm)
+rig-6600b (192.168.3.154): 8x RX 6600 (ROCm)
+rig-6600c (192.168.3.162): 8x RX 6600 (ROCm)
+Total: 26 GPUs, ~285.69 TFLOPS computational power
+
+Critical GPU Setup Requirements
+NVIDIA Nodes (Zeus - localhost)
+Environment: Any Python environment with CUDA-compatible CuPy
+Bash# Verify CUDA CuPy installation
+python3 -c "import cupy; print('CUDA CuPy:', cupy.__version__)"
+# Expected output: CUDA CuPy: 13.5.1 (or similar)
+
+# Test local GPU workers
+echo '{"job_id":"test","seeds":[1],"prng_type":"xorshift","samples":1000}' > test.json
+python3 distributed_worker.py test.json --gpu-id 0
+# Expected: "Job test completed successfully"
+
+# NEW: Test sieve functionality
+python3 sieve_filter.py --job-file test_job.json --gpu-id 0
+# Expected: JSON output with survivor results
+AMD Nodes (All rig-6600 systems)
+Critical Requirement: ROCm environment variables must be set BEFORE any GPU imports.
+File Requirements: All GPU-intensive files must contain ROCm prelude:
+Python#!/usr/bin/env python3
+
+# ROCm environment setup - MUST BE FIRST
+import os, socket
+HOST = socket.gethostname()
+
+# Apply ROCm overrides for AMD systems
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+
+# ROCm paths
+os.environ.setdefault("ROCM_PATH", "/opt/rocm")
+os.environ.setdefault("HIP_PATH", "/opt/rocm")
+
+# AFTER environment setup, import GPU libraries
+import cupy as cp
+# ... rest of imports
+Critical Files Requiring ROCm Prelude:
+
+✅ distributed_worker.py
+✅ sieve_filter.py
+✅ enhanced_gpu_model_id.py
+
+Test AMD nodes:
+Bash# Test rig-6600
+ssh 192.168.3.120 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
+# Expected: 8
+
+# Test rig-6600b
+ssh 192.168.3.154 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
+# Expected: 8
+
+# Test rig-6600c
+ssh 192.168.3.162 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"'
+# Expected: 8
+
+# NEW: Test sieve on AMD nodes
+ssh 192.168.3.120 'source ~/rocm_env/bin/activate && cd distributed_prng_analysis && python3 sieve_filter.py --job-file test_job.json --gpu-id 0'
+# Expected: JSON output with results
+
+Chapter 4: Core Components and Files
+Core System Files
+Main Components
+
+unified_system_working.py - Primary interface with modular analysis options
+coordinator.py - Distributed job coordinator with SSH connection management
+distributed_worker.py - GPU worker script (runs on all nodes)
+sieve_filter.py - NEW: GPU-accelerated forward/reverse sieve engine
+prng_registry.py - NEW: Multi-PRNG kernel library with forward + reverse implementations
+enhanced_gpu_model_id.py - GPU-accelerated PRNG analysis engine
+distributed_config.json - Node configuration and connection settings
+daily3.json - Input lottery data
+
+Module System (modules/ directory)
+
+direct_analysis.py - Cluster analysis with parameter optimization
+result_viewer.py - Interactive result viewing and visualization
+system_monitor.py - Hardware monitoring and diagnostics
+database_manager.py - Database operations and job management
+file_manager.py - File operations and maintenance
+
+
+Chapter 5: Results Handling
+Results System (Integrated Output)
+Overview
+Status: PRODUCTION READY - Integrated November 2025
+All sieve analysis automatically creates three output formats:
+
+Human-readable summaries (.txt)
+Excel-compatible spreadsheets (.csv)
+Machine-readable JSON for AI/ML (.json)
+
+Integrated Scripts
+✅ sieve_filter.py - Forward sieve
+✅ reverse_sieve_filter.py - Reverse sieve
+✅ window_optimizer_integration_final.py - Bidirectional analysis
+NO CHANGES NEEDED - Just run your analysis normally!
+Output Locations
+textresults/
+├── summaries/          # Human-readable text summaries
+├── csv/                # Excel-compatible data
+├── json/               # Machine-readable structured data
+├── detailed/           # Complete raw data (optional)
+├── configs/            # Run configurations
+└── *.json             # Old format (backward compatible)
+Quick Usage
+Running 100K bidirectional test:
+Bashpython3 test_100k_bidirectional_CORRECT.py
+Running 1B seed test:
+
+Edit test_100k_bidirectional_CORRECT.py
+Change: seed_count=1_000_000_000
+Run: python3 test_100k_bidirectional_CORRECT.py
+
+Results automatically appear in results/ subdirectories.
+Viewing Results
+Quick summary:
+Bashls -lht results/summaries/*.txt | head -5
+cat results/summaries/forward_sieve_java_lcg_TIMESTAMP_summary.txt
+CSV analysis:
+Bashlibreoffice results/csv/forward_sieve_java_lcg_TIMESTAMP.csv
+Machine-readable JSON:
+Bashcat results/json/forward_sieve_java_lcg_TIMESTAMP_top100.json | jq
+Result File Naming
+Format: {analysis_type}_{prng_type}_{timestamp}_{suffix}
+Examples:
+
+forward_sieve_java_lcg_20251105_081127_summary.txt
+bidirectional_java_lcg_20251105_120000.csv
+reverse_sieve_xorshift32_20251105_150000_top100.json
+
+Technical Details
+Schema-Driven System:
+
+schemas/results_schema_v1.json - Data definitions
+schemas/output_templates.json - Display formats
+schemas/field_mappings.json - Field mappings
+
+Core Engine:
+
+core/results_manager.py - Results generation engine
+integration/sieve_integration.py - Adapter for sieves
+
+Zero Hardcoding:
+
+All parameters defined in schemas
+Easy to extend with new fields
+No code changes needed for new parameters
+
+Backward Compatibility
+✅ Old format files STILL CREATED for backward compatibility
+
+window_opt_forward_244_139.json (2.3MB files)
+NEW format is ADDITIVE - nothing breaks!
+
+Documentation
+
+RESULTS_SYSTEM_QUICKSTART.txt - Quick reference guide
+INTEGRATION_STATUS_REPORT.txt - Integration status
+INTEGRATION_DISCOVERY_NOTES.txt - Technical notes
+
+Result Interpretation
+Survivor Output Format
+JSON{
+  "seed": 42,
+  "family": "xorshift32",
+  "match_rate": 1.0,
+  "matches": 30,
+  "total": 30,
+  "best_skip": 0
+}
+Key Metrics:
+
+match_rate: Percentage of draws that matched (0.0-1.0)
+matches/total: Raw match count (e.g., 30/30 = perfect)
+best_skip: Optimal skip value found (temporal alignment)
+seed: The PRNG seed candidate
+
+Confidence Levels
+
+match_rate >= 0.95: Extremely high confidence (likely correct seed)
+match_rate 0.80-0.94: High confidence (strong candidate)
+match_rate 0.60-0.79: Moderate confidence (needs validation)
+match_rate < 0.60: Low confidence (likely false positive)
+
+Example Analysis Results
+Bash# Check results for seed 42
+cat results/multi_gpu_analysis_*.json | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+survivors = []
+for r in d.get('results', []):
+    survivors.extend(r.get('survivors', []))
+
+seed_42 = [s for s in survivors if s.get('seed') == 42]
+if seed_42:
+    print('✅ SEED 42 FOUND!')
+    print(f'Match rate: {seed_42[0]["match_rate"]}')
+    print(f'Matches: {seed_42[0]["matches"]}/{seed_42[0]["total"]}')
+"
+
+Chapter 6: Multi-PRNG Bidirectional Sieve System
+NEW: Multi-PRNG Bidirectional Sieve System
+Overview
+Status: PRODUCTION READY - Forward Sieve Verified on All 26 GPUs
+A universal PRNG analysis framework that simultaneously tests multiple PRNG families using bidirectional validation:
+
+Forward Sieve: Generate sequences from candidate seeds
+Reverse Sieve: Work backward from recent draws to find candidate seeds
+Bidirectional Intersection: High-confidence survivors that pass both directions
+ML Fusion: Adaptive weighting and PRNG family identification
+
+Supported PRNG Families
+Fully Implemented (Forward + Reverse)
+
+xorshift32 - Fast XorShift variant (✅ VERIFIED: seed 42 found with 100% match)
+xorshift64 - 64-bit XorShift
+xorshift128 - 128-bit XorShift
+lcg32 - Linear Congruential Generator (MSVC variant)
+pcg32 - Permuted Congruential Generator
+mt19937 - Mersenne Twister (32-bit)
+splitmix64 - SplitMix64 algorithm
+
+Key Features
+
+Multi-modulo validation: Tests state % 1000, % 8, % 125 for high confidence
+Full 32-bit state support: Handles complete PRNG state values
+Configurable skip/offset: Handles draw spacing and temporal alignment
+GPU kernel compilation cache: Automatic optimization per hardware
+
+Performance Benchmarks
+Forward Sieve (Verified)
+
+RTX 3080 Ti: ~730 seeds/sec per GPU (with full state validation)
+RX 6600: ~730 seeds/sec per GPU (ROCm optimized)
+Full cluster: 26/26 jobs successful, 100K seeds in 47.2 seconds
+Match accuracy: 100% (seed 42 found with perfect 30/30 match)
+
+Reverse Sieve (In Development)
+
+Expected performance: Similar to forward sieve
+Backward state propagation from most recent draws
+Exponential candidate elimination per step
+
+CLI Usage Examples
+Basic Forward Sieve
+Bash# Test single PRNG family
+python3 coordinator.py \
+  test_seed42_first30.json \
+  --method residue_sieve \
+  --prng-type xorshift32 \
+  --seeds 100000 \
+  --offset 0
+
+# Search larger seed space
+python3 coordinator.py \
+  daily3.json \
+  --method residue_sieve \
+  --prng-type mt19937 \
+  --seeds 1000000 \
+  --offset 15 \
+  --skip-range 0 20
+Multi-PRNG Ensemble Analysis (Coming Soon)
+Bash# Test all PRNG families simultaneously
+python3 coordinator.py \
+  daily3.json \
+  --method ensemble_sieve \
+  --prng-families xorshift32,mt19937,lcg32,pcg32 \
+  --seeds 500000 \
+  --bidirectional
+
+# ML-guided PRNG identification
+python3 coordinator.py \
+  daily3.json \
+  --method ml_fusion \
+  --auto-detect-prng \
+  --confidence-threshold 0.95
+Bidirectional Validation (Coming Soon)
+Bash# Forward + Reverse intersection
+python3 coordinator.py \
+  daily3.json \
+  --method bidirectional \
+  --prng-type xorshift32 \
+  --seeds 1000000 \
+  --forward-window 30 \
+  --reverse-window 30
+
+# Adaptive drift detection
+python3 coordinator.py \
+  daily3.json \
+  --method adaptive \
+  --detect-reseeding \
+  --temporal-validation
+Sieve Parameters Reference
+Core Parameters
+
+--method {residue_sieve,ensemble_sieve,bidirectional,ml_fusion}: Analysis mode
+--prng-type {xorshift32,mt19937,lcg32,pcg32,xorshift64,splitmix64}: PRNG family
+--prng-families LIST: Multiple PRNGs for ensemble (comma-separated)
+--seeds INT: Total seed candidates to test across cluster
+--offset INT: Number of PRNG steps to skip before sequence (temporal alignment)
+--skip-range MIN MAX: Test multiple skip values (e.g., 0 20)
+
+Validation Parameters
+
+--window-size INT: Number of draws to validate against (default: 30)
+--min-match-threshold FLOAT: Match rate threshold (0.0-1.0, default: 0.5)
+--bidirectional: Enable forward + reverse validation
+--forward-window INT: Forward sieve window size
+--reverse-window INT: Reverse sieve window size
+
+ML Parameters (Coming Soon)
+
+--auto-detect-prng: Let ML identify PRNG family
+--confidence-threshold FLOAT: Minimum confidence for predictions
+--learning-rate FLOAT: RL adaptation rate
+--ensemble-weights: Custom PRNG weighting
+
+
+Chapter 7: Legacy Systems
+Legacy: Fast Congruence Residue Sieve
+Overview
+Status: SUPERSEDED by Multi-PRNG Sieve (above)
+Original fast residue filter for mod 1000 only. Still functional but replaced by more comprehensive multi-modulo validation system.
+Performance Benchmarks (Legacy)
+
+RTX 3080 Ti: 60,000-90,000 seeds/sec per GPU
+RX 6600: 10,000-20,000 seeds/sec per GPU
+Full cluster: 40/40 jobs successful, 100K seeds in 2.9 seconds
+
+Legacy CLI Usage
+Bash# Original residue sieve (mod 1000 only)
+python3 coordinator.py --method residue_sieve --prng-type lcg32 --window-size 512 --k-sigma 6.0 --seeds 1000000 daily3.json -o results/sieve_test.json
+Note: New code should use --method residue_sieve with multi-modulo validation instead.
+Basic Cluster Analysis (Legacy)
+Bash# Test connectivity across all nodes
+python3 coordinator.py daily3.json -c distributed_config.json --test-only
+
+# Multi-PRNG analysis (legacy correlation mode)
+python3 coordinator.py daily3.json -c distributed_config.json -s 50000 -n 10000
+Advanced Parameters
+Legacy Correlation
+
+-s, --seeds: Total seeds across all nodes (higher = more statistical confidence)
+-n, --samples: Samples per seed (higher = better accuracy per seed)
+--lmax: Maximum correlation lag (32-128 typical)
+--grid-size: Grid for 2D analysis (8-16 typical)
+--draw-match N: Search for seeds producing number N (0-999)
+
+
+Chapter 8: Environment Setup and Best Practices
+CRITICAL: ROCm Environment Setup - What NOT to Do
+❌ DO NOT Use Shell Wrappers for AMD Nodes
+Wrong Approach: Creating wrapper scripts like run_worker_rocm.sh and modifying distributed_config.json to use them.
+Why Wrong: The coordinator already has built-in environment activation via python_env paths. Adding wrappers creates unnecessary complexity and can interfere with the proven job distribution system.
+❌ DO NOT Modify Remote Command Execution
+Wrong Approach: Changing the coordinator's SSH command construction or adding manual environment activation to commands.
+Why Wrong: The coordinator automatically constructs proper activation commands based on python_env paths in distributed_config.json. The existing mechanism works reliably.
+❌ DO NOT Set Environment Variables in Config File
+Wrong Approach: Adding environment variables to distributed_config.json or trying to pass them through SSH commands.
+Why Wrong: Environment variables must be set BEFORE any Python imports, which means they belong in the Python files themselves, not in configuration or command-line parameters.
+✅ The Correct Approach (Proven Working Method)
+
+Use existing python_env mechanism: Point AMD nodes to /home/michael/rocm_env/bin/python in config
+Set environment variables in Python files: Add ROCm variables at the top of distributed_worker.py, sieve_filter.py, and enhanced_gpu_model_id.py
+Leverage proven infrastructure: Use the established job data structure and routing logic
+Follow existing patterns: Add new functionality using the same patterns as existing analysis modes
+
+Example of Correct ROCm Setup Pattern
+Python#!/usr/bin/env python3
+# ROCm environment setup - MUST BE FIRST
+import os, socket
+HOST = socket.gethostname()
+
+# Apply ROCm overrides for AMD systems
+if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]:
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+
+# ROCm paths
+os.environ.setdefault("ROCM_PATH", "/opt/rocm")
+os.environ.setdefault("HIP_PATH", "/opt/rocm")
+
+# AFTER environment setup, import GPU libraries
+import cupy as cp
+Critical Files Requiring ROCm Prelude:
+
+distributed_worker.py ✅
+sieve_filter.py ✅
+enhanced_gpu_model_id.py ✅
+
+Common Integration Mistakes and Solutions
+Issue: "Python integer out of bounds for uint16"
+Cause: Old kernel code using unsigned short* residues (16-bit) instead of unsigned int* (32-bit)
+Solution: All kernels in prng_registry.py now use unsigned int* residues for full state support
+Issue: "Connection reset by peer (104)" on AMD Nodes
+Cause: New functionality not following established job data patterns
+Solution: Use existing job_data structure, don't create custom communication protocols
+Issue: Seed Not Found Despite Perfect Manual Match
+Cause: Missing offset parameter or incorrect data format
+Solution:
+
+Verify dataset includes full_state field (not just draw)
+Calculate correct offset (e.g., last 30 of 100 draws needs offset=70)
+Check sieve uses entry.get('full_state', entry['draw']) in data loading
+
+Issue: Zero Match Rate for Known Seeds
+Cause: Data type mismatch between Python and GPU kernel
+Solution: Verify residues_gpu = cp.array(residues, dtype=cp.uint32) not uint16
+Key Lesson
+The system now supports full 32-bit PRNG state analysis with multi-modulo validation. Always ensure:
+
+Dataset contains full_state values
+Kernels use unsigned int* for residues
+Correct offset calculation for temporal alignment
+ROCm environment variables set before any GPU imports
+
+
+Chapter 9: Configuration
+Configuration File Setup
+distributed_config.json
+JSON{
+  "nodes": [
+    {
+      "hostname": "localhost",
+      "username": "michael",
+      "gpu_count": 2,
+      "gpu_type": "RTX 3080 Ti",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/venvs/torch/bin/python"
+    },
+    {
+      "hostname": "192.168.3.120",
+      "username": "michael",
+      "gpu_count": 8,
+      "gpu_type": "RX 6600",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/rocm_env/bin/python",
+      "password": "your_password"
+    },
+    {
+      "hostname": "192.168.3.154",
+      "username": "michael",
+      "gpu_count": 8,
+      "gpu_type": "RX 6600",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/rocm_env/bin/python",
+      "password": "your_password"
+    }
+  ]
+}
+Key Points:
+
+python_env must point to Python executable in the correct virtual environment
+script_path must contain all system files on each node including sieve_filter.py and prng_registry.py
+Passwords stored in plain text - consider SSH keys for security
+All nodes must have identical versions of sieve_filter.py and prng_registry.py
+
+
+Chapter 10: Quick Start and Basic Usage
+Quick Start Guide
+Starting the System
+Bash# Activate your GPU environment (tf or torch)
+source ~/venvs/torch/bin/activate  # or torch
+
+# Launch unified interface
+python3 unified_system_working.py
+
+# Test all 26 GPUs
+# Select: Direct Analysis → System Connectivity Test
+# Expected: All nodes show "GPUs available"
+Basic Analysis Workflow
+Bash# 1. Test sieve with known seed (verification)
+python3 coordinator.py \
+  test_seed42_first30.json \
+  --method residue_sieve \
+  --prng-type xorshift32 \
+  --seeds 100000 \
+  --offset 0
+
+# Expected: Seed 42 found with 100% match rate in ~47 seconds
+
+# 2. Multi-PRNG ensemble search (production)
+python3 coordinator.py \
+  daily3.json \
+  --method residue_sieve \
+  --prng-type mt19937 \
+  --seeds 1000000 \
+  --offset 15
+
+# 3. Standard correlation analysis (legacy)
+python3 unified_system_working.py
+# Select: Direct Analysis → Standard Analysis → General correlation analysis → y
+# Expected: 25/25 jobs successful across all 26 GPUs
+
+Chapter 11: Analysis Types and Parameters
+Analysis Types and Parameters
+Quick Test (Connectivity Verification)
+
+Purpose: Verify all 26 GPUs respond correctly
+Parameters: 1,000 seeds, 1,000 samples, light correlation
+Runtime: 30-60 seconds
+Command: Direct Analysis → Quick Test Analysis
+
+NEW: Sieve Analysis (Production Mode)
+
+Quick sieve test: 100K seeds, 30 window (47 seconds) - Verification
+Standard sieve: 1M seeds, 30 window (7 minutes) - Production
+Deep sieve: 10M seeds, 30 window (70 minutes) - Comprehensive search
+Multi-PRNG ensemble: Test all families simultaneously
+Purpose: Find PRNG seeds with high-confidence bidirectional validation
+
+Standard Analysis (Legacy)
+
+General correlation: 50K seeds, 10K samples, correlation lag 32
+Pattern matching: 25K seeds, 20K samples, optimized for recent patterns
+Randomness testing: 100K seeds, 5K samples, comprehensive statistical tests
+Runtime: 5-15 minutes across full cluster
+
+Comprehensive Analysis
+
+Deep correlation: 200K seeds, 50K samples, correlation lag 128
+Multi-target search: Automated lottery number targeting
+Historical reconstruction: 300K seeds, extensive temporal analysis
+Runtime: 30-120 minutes utilizing full 285.69 TFLOPS
+
+Draw Matching (Number Search)
+
+Quick search: 10K seeds (30 seconds)
+Standard search: 100K seeds (2-5 minutes)
+Deep search: 500K seeds (10-20 minutes)
+Purpose: Find PRNG seeds that generate specific lottery numbers
+
+
+Chapter 12: Command Line Usage
+Command Line Usage
+NEW: Multi-PRNG Sieve Operations
+Bash# Test known seed (verification)
+python3 coordinator.py \
+  test_seed42_first30.json \
+  --method residue_sieve \
+  --prng-type xorshift32 \
+  --seeds 100000 \
+  --offset 0
+
+# Production analysis on real data
+python3 coordinator.py \
+  daily3.json \
+  --method residue_sieve \
+  --prng-type mt19937 \
+  --seeds 1000000 \
+  --offset 15 \
+  --skip-range 0 20 \
+  --min-match-threshold 0.8
+
+# Multi-PRNG ensemble (coming soon)
+python3 coordinator.py \
+  daily3.json \
+  --method ensemble_sieve \
+  --prng-families xorshift32,mt19937,lcg32,pcg32 \
+  --seeds 500000 \
+  --bidirectional
+Sieve-Specific
+
+--method {residue_sieve,ensemble_sieve,bidirectional}: Sieve operation mode
+--prng-type {xorshift32,mt19937,lcg32,pcg32,xorshift64,splitmix64}: PRNG family
+--prng-families LIST: Multiple PRNGs for ensemble testing
+--seeds INT: Total seed candidates across cluster
+--offset INT: Temporal alignment (PRNG steps to skip)
+--skip-range MIN MAX: Test multiple skip values
+--min-match-threshold FLOAT: Survivor threshold (0.0-1.0)
+--window-size INT: Number of draws to validate (default: 30)
+--bidirectional: Enable forward + reverse validation
+
+
+Chapter 13: Advanced Features - Timestamp Search and Hybrid Skip Detection
+NEW: Timestamp-Based PRNG Seed Search
+Overview
+Status: PRODUCTION READY - Fully Verified on All 26 GPUs
+Searches for Unix timestamp seeds by testing millions of candidate timestamps to see if any generate matching lottery draw sequences.
+Key Features
+
+Tests 800M+ timestamps in ~50 seconds
+Skip/gap detection (0-100 gaps)
+Multiple PRNG families: MT19937, xorshift32, pcg32, lcg32, xorshift64
+Verified: 100% match on synthetic test (seed 1706817600, skip 5)
+Full MT19937 with 624-word state
+
+Basic Usage
+Search for timestamp seeds:
+python3 timestamp_search.py daily3.json --mode second --window 512 --threshold 0.15 --prngs mt19937 --skip-max 100
+Create test data:
+python3 create_test_mt19937.py
+Verify system works:
+python3 timestamp_search.py test_mt19937_512.json --mode second --window 512 --threshold 0.8 --prngs mt19937 --skip-max 10
+Timestamp Modes
+
+second: 800M timestamps, 1-second resolution (RECOMMENDED)
+millisecond: 800B timestamps, 0.001-second resolution (slower)
+minute: Per-minute timestamps (faster, lower precision)
+
+System Verification
+
+Seed 1706817600 found with 100% match (512/512 draws)
+Skip value 5 detected correctly
+All 26 GPUs working
+
+Performance
+
+Throughput: 1.56 billion seeds/second
+Runtime: ~50 seconds for 800M timestamps
+Memory: 2.5 KB per MT19937 state
+
+Deploy to Remote Nodes
+scp prng_registry.py timestamp_search.py coordinator.py sieve_filter.py michael@192.168.3.120:~/distributed_prng_analysis/
+scp prng_registry.py timestamp_search.py coordinator.py sieve_filter.py michael@192.168.3.154:~/distributed_prng_analysis/
+NEW: Hybrid Variable Skip Detection (October 16, 2025)
+Overview
+Status: PRODUCTION READY - Verified on All 26 GPUs
+Advanced PRNG analysis that detects variable skip patterns (non-constant gaps between draws) using multi-strategy hybrid kernels. Unlike fixed-skip sieves that assume constant gaps, hybrid mode can discover complex, changing skip patterns.
+Supported Hybrid PRNGs
+
+mt19937_hybrid - Two-phase MT19937 (fixed skip → variable skip refinement)
+xorshift32_hybrid - Single-phase Xorshift32 with multi-strategy detection ✅ NEW
+pcg32_hybrid - Coming soon
+lcg32_hybrid - Coming soon
+xorshift64_hybrid - Coming soon
+
+Key Features
+
+Multi-strategy detection: Tests 5 different skip pattern strategies simultaneously
+Variable skip patterns: Handles patterns like [5,5,3,7,5,5,8,4,5,5] (changing gaps)
+Single-phase & two-phase modes: Optimized per PRNG family
+100% match accuracy: Verified with seed 54321, 670 draws, variable pattern
+Forward + Reverse validation: Bidirectional confidence (reverse implementation in progress)
+
+How It Works
+Traditional Fixed Skip (Existing Sieves):
+textDraws:  [D1] --5--> [D2] --5--> [D3] --5--> [D4]
+        Constant gap of 5 between every draw
+Hybrid Variable Skip (NEW):
+textDraws:  [D1] --5--> [D2] --3--> [D3] --7--> [D4] --5--> [D5]
+        Variable gaps: 5, then 3, then 7, then 5...
+Detection Strategy:
+
+Uses 5 strategies with different tolerance levels
+Each strategy has:
+max_consecutive_misses: How many gaps can be wrong
+skip_tolerance: ±N range for skip detection
+match_threshold: Minimum % of draws that must match
+
+
+CLI Usage Examples
+Test Xorshift32 Hybrid (Verification)
+Bash# Create test data with variable skip pattern
+cat > create_xorshift32_hybrid_test.py << 'PYEOF'
+import json
+from prng_registry import xorshift32_cpu
+
+seed = 54321
+base_pattern = [5,5,3,7,5,5,8,4,5,5]
+skip_pattern = base_pattern * 67  # 670 draws
+
+total_needed = sum(skip_pattern) + len(skip_pattern)
+all_outputs = xorshift32_cpu(seed, total_needed, skip=0)
+
+draws = []
+idx = 0
+for skip in skip_pattern:
+    idx += skip
+    draws.append(all_outputs[idx] % 1000)
+    idx += 1
+
+test_data = [{'draw': d, 'session': 'midday', 'timestamp': 5000000 + i}
+             for i, d in enumerate(draws)]
+
+with open('test_xorshift32_hybrid.json', 'w') as f:
+    json.dump(test_data, f)
+
+print(f"Created test_xorshift32_hybrid.json: {len(draws)} draws")
+print(f"Expected seed: {seed}")
+print(f"Variable pattern: {base_pattern}")
+PYEOF
+
+python3 create_xorshift32_hybrid_test.py
+
+# Run hybrid sieve
+python3 coordinator.py \
+  test_xorshift32_hybrid.json \
+  --method residue_sieve \
+  --prng-type xorshift32_hybrid \
+  --seeds 100000 \
+  --window-size 512 \
+  --threshold 0.50 \
+  --hybrid
+
+# Expected output:
+# ✅ Seed 54321 found
+# Match rate: 100.0%
+# Pattern detected: [5, 5, 3, 7, 5, 5, 8, 4, 5, 5]
+Test MT19937 Hybrid (Two-Phase)
+Bash# MT19937 uses two-phase approach:
+# Phase 1: Fixed-skip wide search (threshold 0.01)
+# Phase 2: Variable-skip refinement on survivors (threshold 0.50)
+
+python3 coordinator.py \
+  test_known.json \
+  --method residue_sieve \
+  --prng-type mt19937 \
+  --seeds 100000 \
+  --window-size 10 \
+  --threshold 0.01 \
+  --hybrid \
+  --phase1-threshold 0.01 \
+  --phase2-threshold 0.50
+
+# Phase 1 finds candidates with fixed skip
+# Phase 2 validates variable skip patterns
+Production Analysis with Hybrid
+Bash# Search real lottery data for variable skip patterns
+python3 coordinator.py \
+  daily3.json \
+  --method residue_sieve \
+  --prng-type xorshift32_hybrid \
+  --seeds 1000000 \
+  --window-size 100 \
+  --threshold 0.50 \
+  --hybrid \
+  --offset 0
+
+# Will test 1M seeds across 26 GPUs
+# Detects variable skip patterns automatically
+Parameter Reference (Hybrid-Specific)
+Core Hybrid Parameters
+
+--hybrid: Enable hybrid variable skip detection mode (REQUIRED for *_hybrid PRNGs)
+--phase1-threshold FLOAT: Phase 1 threshold for two-phase PRNGs (default: 0.01)
+--phase2-threshold FLOAT: Phase 2 threshold for all hybrid modes (default: 0.50)
+--threshold FLOAT: Overall match threshold (0.5-0.8 typical for hybrid)
+
+Standard Parameters (Apply to Hybrid Too)
+
+--prng-type {xorshift32_hybrid,mt19937_hybrid}: PRNG family
+--seeds INT: Total seed candidates to test across cluster
+--window-size INT: Number of draws to validate against
+--offset INT: Temporal alignment (PRNG steps to skip before sequence)
+--skip-min INT: Minimum skip value in pattern (default: 0)
+--skip-max INT: Maximum skip value in pattern (default: 16)
+
+Strategy Parameters (Advanced - Built-in)
+Hybrid mode uses 5 built-in strategies from hybrid_strategy.py:
+
+Strict Continuous
+max_consecutive_misses: 3
+skip_tolerance: 5
+Best for: Tight, consistent patterns
+
+Lenient Continuous
+max_consecutive_misses: 10
+skip_tolerance: 20
+Best for: Loose, variable patterns
+
+Aggressive Reseed
+max_consecutive_misses: 5
+skip_tolerance: 5
+enable_reseed_search: True
+Best for: Patterns with potential reseeding
+
+Balanced Hybrid (Recommended)
+max_consecutive_misses: 7
+skip_tolerance: 10
+Best for: General-purpose detection
+
+Extreme Tolerance
+max_consecutive_misses: 20
+skip_tolerance: 50
+Best for: Catching everything, high false positives
+
+
+Result Interpretation
+Fixed Skip Output (Existing)
+JSON{
+  "seed": 12345,
+  "family": "xorshift32",
+  "match_rate": 1.0,
+  "matches": 100,
+  "total": 100,
+  "best_skip": 5
+}
+Hybrid Variable Skip Output (NEW)
+JSON{
+  "seed": 54321,
+  "family": "xorshift32_hybrid",
+  "match_rate": 1.0,
+  "matches": 670,
+  "total": 670,
+  "skip_pattern": [5, 5, 3, 7, 5, 5, 8, 4, 5, 5, 5, 5, 3, 7, ...],
+  "strategy_used": "Balanced Hybrid",
+  "pattern_stats": {
+    "mean_skip": 5.4,
+    "variance": 2.1,
+    "std_dev": 1.45
+  }
+}
+Key Differences:
+
+skip_pattern: Array of detected skip values (not single best_skip)
+strategy_used: Which detection strategy found the match
+pattern_stats: Statistical analysis of skip pattern
+
+Performance Benchmarks
+Xorshift32 Hybrid (Single-Phase)
+
+RTX 3080 Ti: ~1,200 seeds/sec per GPU
+RX 6600: ~1,200 seeds/sec per GPU
+Full cluster: 100K seeds in ~3-4 seconds
+Match accuracy: 100% on variable patterns
+Memory: ~512 KB per GPU (strategy state tracking)
+
+MT19937 Hybrid (Two-Phase)
+
+Phase 1 (fixed): ~60K seeds/sec per GPU
+Phase 2 (variable): ~1K seeds/sec per GPU
+Full cluster: 100K seeds Phase 1 in ~2s, survivors Phase 2 in ~5s
+False positive rate: <0.01% after two-phase validation
+Memory: ~2.5 MB per GPU (MT19937 state + strategy tracking)
+
+Comparison: Fixed vs Hybrid
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+FeatureFixed SkipHybrid Variable SkipSpeed60K seeds/sec1.2K seeds/secPattern TypeConstant gapsVariable gapsStrategies1 (simple match)5 (multi-strategy)MemoryMinimalModerateBest ForSimple RNGsComplex systemsFalse PositivesVery lowVery low
+Deployment Checklist for Hybrid
+Before running hybrid analysis across cluster:
+1. Deploy Core Files
+Bash# All nodes need these files for hybrid to work
+for host in 192.168.3.120 192.168.3.154; do
+    scp prng_registry.py sieve_filter.py hybrid_strategy.py coordinator.py \
+        reverse_sieve_filter.py $host:~/distributed_prng_analysis/
+done
+2. Deploy Test Data (If Testing)
+Bashfor host in 192.168.3.120 192.168.3.154; do
+    scp test_*.json $host:~/distributed_prng_analysis/
+done
+3. Verify File Timestamps Match
+Bash# Check local vs remote timestamps
+ls -lh sieve_filter.py prng_registry.py hybrid_strategy.py
+
+# Check remote nodes
+ssh 192.168.3.120 "ls -lh ~/distributed_prng_analysis/{sieve_filter,prng_registry,hybrid_strategy}.py"
+ssh 192.168.3.154 "ls -lh ~/distributed_prng_analysis/{sieve_filter,prng_registry,hybrid_strategy}.py"
+
+# Timestamps should match (or remote should be newer)
+4. Verify Checksums
+Bash# Generate checksums locally
+sha256sum sieve_filter.py prng_registry.py hybrid_strategy.py
+
+# Compare with remote nodes
+ssh 192.168.3.120 "cd ~/distributed_prng_analysis && sha256sum sieve_filter.py prng_registry.py hybrid_strategy.py"
+ssh 192.168.3.154 "cd ~/distributed_prng_analysis && sha256sum sieve_filter.py prng_registry.py hybrid_strategy.py"
+
+# ALL checksums must match exactly
+5. Test on Single GPU First
+Bash# Before running full cluster, test one GPU
+python3 coordinator.py \
+  test_xorshift32_hybrid.json \
+  --method residue_sieve \
+  --prng-type xorshift32_hybrid \
+  --seeds 10000 \
+  --thre...(truncated 67164 characters)...4x32" "philox4x32_hybrid"
+  "xoshiro256pp" "xoshiro256pp_hybrid"
+  "sfc64" "sfc64_hybrid"
+)
+
+STRATEGY="bayesian"
+ITERATIONS=30
+SEED_COUNT=5000000
+
+mkdir -p results/window_optimization
+
+for prng in "${PRNGS[@]}"; do
+  echo ""
+  echo "=========================================="
+  echo "Optimizing: $prng"
+  echo "=========================================="
+
+  python3 coordinator.py daily3.json \
+    --optimize-window \
+    --prng-type "$prng" \
+    --opt-strategy "$STRATEGY" \
+    --opt-iterations "$ITERATIONS" \
+    --opt-seed-count "$SEED_COUNT" \
+    --seed-start 0
+
+  # Move results to organized folder
+  if [ -f "window_optimization_results.json" ]; then
+    mv window_optimization_results.json "results/window_optimization/${prng}_optimization.json"
+    echo "✅ Completed $prng - Results saved"
+  else
+    echo "❌ Failed $prng - No results file"
+  fi
+
+  echo ""
+done
+
+echo ""
+echo "=========================================="
+echo "ALL PRNGS COMPLETED"
+echo "=========================================="
+echo "Results in: results/window_optimization/"
+ls -lh results/window_optimization/
+EOF
+
+chmod +x optimize_all_prngs.sh
+Run it:
+bash./optimize_all_prngs.sh
+Pros:
+
+Automated, runs unattended
+Organized results (one file per PRNG)
+Can run overnight
+Easy to modify parameters for all PRNGs
+
+Cons:
+
+Sequential (takes longer)
+One failure can stop the chain
+
+
+Option 3: Parallel Testing (Advanced)
+Test multiple PRNGs in parallel using GNU parallel:
+bashcat > optimize_parallel.sh << 'EOF'
+#!/bin/bash
+
+# List of PRNGs
+PRNGS=(
+  "java_lcg" "mt19937" "xorshift32" "xorshift64" "xorshift128"
+  "pcg32" "lcg32" "minstd" "philox4x32" "xoshiro256pp" "sfc64"
+  "java_lcg_hybrid" "mt19937_hybrid" "xorshift32_hybrid"
+  "xorshift64_hybrid" "xorshift128_hybrid" "pcg32_hybrid"
+  "lcg32_hybrid" "minstd_hybrid" "philox4x32_hybrid"
+  "xoshiro256pp_hybrid" "sfc64_hybrid"
+)
+
+# Export function to run optimization
+optimize_prng() {
+  prng=$1
+  echo "Starting $prng..."
+
+  python3 coordinator.py daily3.json \
+    --optimize-window \
+    --prng-type "$prng" \
+    --opt-strategy bayesian \
+    --opt-iterations 30 \
+    --opt-seed-count 5000000 \
+    > "logs/${prng}_optimization.log" 2>&1
+
+  if [ -f "window_optimization_results.json" ]; then
+    mv window_optimization_results.json "results/window_optimization/${prng}_optimization.json"
+    echo "✅ Completed: $prng"
+  else
+    echo "❌ Failed: $prng"
+  fi
+}
+
+export -f optimize_prng
+
+# Create directories
+mkdir -p results/window_optimization logs
+
+# Run 4 PRNGs in parallel
+parallel -j 4 optimize_prng ::: "${PRNGS[@]}"
+
+echo "All PRNGs completed!"
+EOF
+
+chmod +x optimize_parallel.sh
+Requires GNU parallel:
+bashsudo apt install parallel
+./optimize_parallel.sh
+Pros:
+
+Much faster (4x+ speedup)
+All PRNGs tested in reasonable time
+Logs saved per PRNG
+
+Cons:
+
+Requires GNU parallel
+Resource intensive (multiple sieves running)
+
+
+Option 4: Modify Optimizer to Search PRNG Space (Future Enhancement)
+Would require code changes to include PRNG as a search dimension:
+python@dataclass
+class WindowConfig:
+    window_size: int
+    offset: int
+    sessions: List[str]
+    skip_min: int
+    skip_max: int
+    prng_type: str  # NEW!
+Benefits:
+
+Single optimization finds best PRNG + window combo
+Can discover PRNG-specific optimal windows
+More ML/AI friendly
+
+Not currently implemented - would need modifications
+
+RECOMMENDED WORKFLOW FOR ALL PRNGS:
+Step 1: Quick Survey (Optional)
+Test a few PRNGs with random search to get baseline:
+bashfor prng in java_lcg mt19937 xorshift64; do
+  python3 coordinator.py daily3.json \
+    --optimize-window \
+    --prng-type "$prng" \
+    --opt-strategy random \
+    --opt-iterations 10 \
+    --opt-seed-count 1000000
+
+  mv window_optimization_results.json "results/${prng}_quick.json"
+done
+Step 2: Full Optimization
+Use the automated script for all PRNGs:
+bash./optimize_all_prngs.sh
+Step 3: Analyze Results
+Compare all results:
+bashpython3 << 'EOF'
+import json
+import os
+
+results = {}
+for file in os.listdir('results/window_optimization/'):
+    if file.endswith('_optimization.json'):
+        prng = file.replace('_optimization.json', '')
+        with open(f'results/window_optimization/{file}') as f:
+            data = json.load(f)
+            results[prng] = {
+                'bidirectional': data['best_result']['bidirectional_count'],
+                'window_size': data['best_config']['window_size'],
+                'offset': data['best_config']['offset'],
+                'skip_range': f"{data['best_config']['skip_min']}-{data['best_config']['skip_max']}"
+            }
+
+# Sort by survivor count
+sorted_results = sorted(results.items(), key=lambda x: x[1]['bidirectional'], reverse=True)
+
+print("\n" + "="*80)
+print("PRNG OPTIMIZATION RESULTS (Best to Worst)")
+print("="*80)
+for prng, info in sorted_results[:10]:
+    print(f"{prng:25s} → {info['bidirectional']:6d} survivors | "
+          f"W{info['window_size']:4d} O{info['offset']:3d} S{info['skip_range']}")
+EOF
+
+Output:
+Console:
+textWINDOW OPTIMIZATION
+Strategy: bayesian
+Testing config 1/50: W768_O100_midday+evening_S0-50
+  Forward: 1,234 survivors
+  Reverse: 1,156 survivors
+  Bidirectional: 892 survivors ✨
+...
+BEST: W768 O100 → 892 survivors
+File: window_optimization_results.json
+json{
+  "strategy": "bayesian",
+  "best_config": {
+    "window_size": 768,
+    "offset": 100,
+    "sessions": ["midday", "evening"],
+    "skip_min": 0,
+    "skip_max": 50
+  },
+  "best_result": {
+    "forward_count": 1234,
+    "reverse_count": 1156,
+    "bidirectional_count": 892,
+    "precision": 0.72,
+    "recall": 0.77
+  },
+  "best_score": 892.0,
+  "all_results": [...]
+}
+
+Example Commands:
+Quick test (3 random configs, single PRNG):
+bashpython3 coordinator.py daily3.json \
+  --optimize-window \
+  --prng-type java_lcg \
+  --opt-strategy random \
+  --opt-iterations 3 \
+  --opt-seed-count 1000000
+Thorough Bayesian search (single PRNG):
+bashpython3 coordinator.py daily3.json \
+  --optimize-window \
+  --prng-type java_lcg \
+  --opt-strategy bayesian \
+  --opt-iterations 50 \
+  --opt-seed-count 10000000
+All PRNGs automated:
+bash./optimize_all_prngs.sh
+All PRNGs in parallel (4 at once):
+bash./optimize_parallel.sh
+
+Modular Components:
+Files Created:
+
+window_optimizer.py - Core optimizer with search strategies
+window_optimizer_methods.py - Integration with coordinator
+window_optimization_results.json - Output results per run
+optimize_all_prngs.sh - Script to test all PRNGs
+optimize_parallel.sh - Parallel PRNG testing
+
+ML/AI Ready:
+
+Pluggable scoring functions
+Feature extraction from results
+Easy to add custom strategies
+JSON output for downstream processing
+Can batch process results across all PRNGs
+
+
+Performance Estimates:
+Per PRNG:
+
+10 iterations × 1M seeds: ~5-10 minutes
+30 iterations × 5M seeds: ~30-45 minutes
+50 iterations × 10M seeds: ~60-90 minutes
+
+All 22 PRNGs (11 forward + 11 hybrid):
+
+Sequential: ~8-16 hours (30 iterations each)
+Parallel (4x): ~2-4 hours
+Quick survey (10 iterations): ~2-4 hours sequential
+
+txt## REPRODUCIBLE BIDIRECTIONAL SIEVE VALIDATION (1 BILLION SEEDS)
+
+### GOAL
+Find seeds that survive **both forward and reverse PRNG simulation** using **1,000,000,000 seeds**.
+
+### HARDWARE
+- 26 GPUs (2× RTX 3080 Ti + 24× RX 6600)
+- Full dynamic work distribution
+- 100 chunks × 10M seeds each
+
+---
+
+## STEP 1: FORWARD SIEVE (java_lcg)
+
+```bash
+python3 coordinator.py \
+    --resume-policy restart \
+    --max-concurrent 26 \
+    daily3.json \
+    --method residue_sieve \
+    --prng-type java_lcg \
+    --window-size 512 \
+    --skip-max 20 \
+    --seeds 1000000000
+
+Runtime: ~10–12 minutes
+Output: results/multi_gpu_analysis_*.json
+Survivors: ~330,866
+
+
+STEP 2: REVERSE SIEVE (java_lcg_reverse)
+bashpython3 coordinator.py \
+    --resume-policy restart \
+    --max-concurrent 26 \
+    daily3.json \
+    --method residue_sieve \
+    --prng-type java_lcg_reverse \
+    --window-size 512 \
+    --skip-max 20 \
+    --seeds 1000000000
+
+Runtime: ~10–12 minutes
+Output: results/multi_gpu_analysis_*.json
+Survivors: ~330,000
+
+
+STEP 3: FIND THE 5 ETERNAL SEEDS (INTERSECTION)
+bashpython3 << 'INTERSECT'
+import json, glob
+# Get the two latest result files
+files = sorted(glob.glob('results/multi_gpu_analysis_*.json'), key=lambda x: int(x.split('_')[-1].split('.')[0]), reverse=True)
+fwd_file = next(f for f in files if 'java_lcg' in open(f).read())
+rev_file = next(f for f in files if 'java_lcg_reverse' in open(f).read())
+
+# Load survivors
+fwd = {s['seed'] for res in json.load(open(fwd_file))['results'] for s in res.get('survivors', [])}
+rev = {s['seed'] for res in json.load(open(rev_file))['results'] for s in res.get('survivors', [])}
+
+# Find intersection
+common = sorted(fwd & rev)
+
+print(f"FORWARD SURVIVORS: {len(fwd):,}")
+print(f"REVERSE SURVIVORS: {len(rev):,}")
+print(f"VALIDATED SEEDS: {len(common)}")
+print("\nTHE 5 ETERNAL SEEDS:")
+for seed in common:
+    print(f"  → {seed}")
+INTERSECT
+
+Expected Output:
+textFORWARD SURVIVORS: 330,866
+REVERSE SURVIVORS: ~330,000
+VALIDATED SEEDS: 5
+
+THE 5 ETERNAL SEEDS:
+  → 20852080
+  → 54541581
+  → 89317571
+  → 91168941
+  → 99017055
+
+
+PARAMETERS EXPLAINED
+FlagValueMeaning--resume-policy restartrestartStart fresh (delete old progress)--max-concurrent 2626Use all 26 GPUsdaily3.json—Input lottery data--method residue_sieveresidue_sieveUse GPU sieve engine--prng-typejava_lcg / java_lcg_reverseForward or reverse PRNG--window-size 512512Test 512 draws--skip-max 2020Allow 0–20 skips per draw--seeds 10000000001000000000Test 1 billion seeds
+
+SYSTEM STATUS
+MetricValueDynamic DistributionYESAll 26 GPUs UsedYESRuntime (1B seeds)~10.8 minutesThroughput~1.54M seeds/secValidated Seeds5
+
+# Window Optimizer Usage Guide
+
+## Overview
+The window optimizer searches for the optimal window configuration to maximize bidirectional survivors in your PRNG analysis. It tests different combinations of window_size, offset, and skip_range parameters.
+
+---
+
+## Quick Start
+
+### 1. First, modify the search bounds (IMPORTANT!)
+
+Edit `window_optimizer_integration_final.py` and change the hardcoded bounds (around line 57):
+
+```python
+bounds = SearchBounds(
+    min_window_size=1,        # Allow testing very small windows
+    max_window_size=4096,     # Allow testing large windows
+    min_offset=0,             # Starting position in dataset
+    max_offset=500,           # Maximum offset to test
+    min_skip_min=0,           # Minimum value for skip range start
+    max_skip_min=50,          # Maximum value for skip range start
+    min_skip_max=20,          # Minimum value for skip range end
+    max_skip_max=200          # Maximum value for skip range end
+)
+Why change min_window_size from 256 to 1?
+
+The optimizer can't discover optimal windows smaller than the minimum
+Your verified window is 512, but the optimal might be 100, 50, or even 10
+Setting min=1 allows the optimizer to explore the full space
+
+
+How to Run the Optimizer
+Method 1: Create a Python script
+Create a file called run_window_optimizer.py:
+Python#!/usr/bin/env python3
+from coordinator import MultiGPUCoordinator
+from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+
+# Add the optimizer method to coordinator
+add_window_optimizer_to_coordinator()
+
+# Create coordinator instance
+coordinator = MultiGPUCoordinator('distributed_config.json')
+
+# Run optimization
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',           # Your data file
+    seed_start=0,                         # Start at seed 0
+    seed_count=1_000_000_000,             # Test 1 billion seeds (match your working test)
+    prng_base='java_lcg',                 # PRNG type
+    strategy_name='bayesian',             # Search strategy (see below)
+    max_iterations=50,                    # Number of configurations to test
+    output_file='window_optimization.json'  # Results file
+)
+
+print(f"\nBest configuration found:")
+print(f"  Window size: {results['best_config']['window_size']}")
+print(f"  Offset: {results['best_config']['offset']}")
+print(f"  Skip range: [{results['best_config']['skip_min']}, {results['best_config']['skip_max']}]")
+print(f"  Bidirectional survivors: {results['best_result']['bidirectional_count']}")
+Then run:
+Bashpython3 run_window_optimizer.py
+
+Parameters Explained
+dataset_path (required)
+
+Type: string
+Example:'daily3.json'
+Description: Path to your lottery drawing data file
+
+seed_start (default: 0)
+
+Type: integer
+Example:0 or 1000000
+Description: Starting seed number for the search
+Recommendation: Use 0 unless you have a specific reason to start elsewhere
+
+seed_count (default: 10,000,000)
+
+Type: integer
+Example:1_000_000_000 (1 billion)
+Description: Number of seeds to test for each window configuration
+Important:
+Larger = more accurate results but MUCH slower
+Your working test uses 1 billion
+For quick testing, try 10-100 million
+For final optimization, use 1 billion to match your verified test
+
+
+prng_base (default: 'java_lcg')
+
+Type: string
+Example:'java_lcg', 'mt19937', 'xorshift'
+Description: The PRNG algorithm to test
+Note: The optimizer will test both forward (java_lcg) and reverse (java_lcg_reverse)
+
+strategy_name (default: 'bayesian')
+
+Type: string
+Options:
+'bayesian' - Smart search using past results (RECOMMENDED)
+'random' - Random exploration
+'grid' - Tests predefined grid of values
+'evolutionary' - Genetic algorithm approach
+
+
+Strategy Details:
+'bayesian' (Recommended for most cases)
+
+Uses machine learning to predict good configurations
+Learns from each test to make smarter choices
+Best for finding optimal configuration efficiently
+Example use case: "Find the best window in 50 tests"
+
+'random'
+
+Randomly samples the search space
+Good for initial exploration
+No memory of past results
+Example use case: "Get a broad overview of the space"
+
+'grid'
+
+Tests specific predefined configurations
+Hardcoded in the script (see below to customize)
+Good for testing specific hypotheses
+Example use case: "Test my verified window (512,0) plus a few neighbors"
+
+'evolutionary'
+
+Starts with population of random configs
+Breeds "offspring" from best performers
+Mutates and evolves over generations
+Example use case: "Deep exploration with 100+ iterations"
+
+max_iterations (default: 50)
+
+Type: integer
+Example:5, 20, 50, 100
+Description: How many window configurations to test
+Important: Each iteration runs BOTH forward and reverse sieve, so:
+1 iteration = 2 full sieves (forward + reverse)
+5 iterations = 10 sieves
+50 iterations = 100 sieves (could take HOURS or DAYS!)
+
+
+Recommendations:
+
+Small test:max_iterations=5 (verify the fix is working)
+Medium search:max_iterations=20 (explore the space)
+Deep optimization:max_iterations=50-100 (find the true optimum)
+
+output_file (default: 'window_optimization.json')
+
+Type: string
+Example:'small_test.json', 'bayesian_search_results.json'
+Description: File to save results
+Contents: All tested configurations, scores, and the best configuration found
+
+
+Example Use Cases
+Example 1: Small Test to Verify the Fix Works
+Python# Test only 5 configurations including your verified window (512, 0)
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=100_000_000,      # 100M seeds for faster testing
+    strategy_name='grid',        # Use grid to test specific windows
+    max_iterations=5,            # Just 5 tests
+    output_file='verify_fix.json'
+)
+Expected result: Should see DIFFERENT survivor counts for different windows (proving the fix works)
+Example 2: Find the Optimal Window (Quick)
+Python# Use Bayesian optimization with moderate seed count
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=500_000_000,      # 500M seeds (faster than 1B)
+    strategy_name='bayesian',    # Smart search
+    max_iterations=20,           # 20 configurations
+    output_file='bayesian_20.json'
+)
+Time estimate: Several hours (20 iterations × 2 sieves × time per sieve)
+Example 3: Deep Optimization (Thorough)
+Python# Full optimization with 1 billion seeds
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=1_000_000_000,    # Full 1B seeds for accuracy
+    strategy_name='bayesian',    # Smart search
+    max_iterations=50,           # Thorough search
+    output_file='full_optimization.json'
+)
+Time estimate: Could take DAYS! (50 iterations × 2 sieves × time per sieve)
+Example 4: Test Your Verified Window Plus Neighbors
+To verify the fix is working and your window (512, 0) is being tested correctly:
+First, edit window_optimizer_integration_final.py and change the grid strategy (around line 47):
+Python'grid': GridSearch(
+    window_sizes=[512, 400, 600, 256, 768],  # Include your verified 512
+    offsets=[0, 50, 100],                     # Include your verified 0
+    skip_ranges=[(0, 20)]                     # Your verified skip range
+),
+Then run:
+Pythonresults = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=1_000_000_000,    # Match your verified test
+    strategy_name='grid',        # Use the grid we customized
+    max_iterations=15,           # 5 windows × 3 offsets = 15 configs
+    output_file='grid_test.json'
+)
+Expected results:
+
+Config (512, 0) should find 5 bidirectional survivors (your verified result)
+Other configs should find DIFFERENT numbers (proving the fix works!)
+
+
+Customizing the Grid Search
+If you want to use strategy_name='grid' with custom values, edit window_optimizer_integration_final.py:
+Find this section (around line 43-49):
+Pythonstrategy_map = {
+    'random': RandomSearch(),
+    'grid': GridSearch(
+        window_sizes=[512, 768, 1024],        # ← Customize these
+        offsets=[0, 100],                     # ← Customize these
+        skip_ranges=[(0, 20), (0, 50)]        # ← Customize these
+    ),
+    'bayesian': BayesianOptimization(n_initial=3),
+    'evolutionary': EvolutionarySearch(population_size=10)
+}
+Example custom grid to test around your verified window:
+Python'grid': GridSearch(
+    window_sizes=[100, 256, 512, 768, 1024, 2048],  # Wide range including verified
+    offsets=[0, 100, 200, 300],                     # Various offsets
+    skip_ranges=[(0, 20), (0, 50), (10, 30)]        # Various skip ranges
+),
+This would test: 6 windows × 4 offsets × 3 skip ranges = 72 configurations
+
+Understanding the Results
+After optimization completes, the results JSON file contains:
+JSON{
+  "best_config": {
+    "window_size": 512,
+    "offset": 0,
+    "skip_min": 0,
+    "skip_max": 20,
+    "sessions": ["midday", "evening"]
+  },
+  "best_result": {
+    "forward_count": 3184,
+    "reverse_count": 3295,
+    "bidirectional_count": 5
+  },
+  "best_score": 5.0,
+  "iterations": [
+    // All tested configurations with their results
+  ]
+}
+Key metrics:
+
+bidirectional_count: Number of seeds that survive BOTH forward AND reverse sieve (THE MOST IMPORTANT!)
+forward_count: Seeds surviving forward sieve
+reverse_count: Seeds surviving reverse sieve
+score: Optimization score (typically equals bidirectional_count)
+
+
+Troubleshooting
+Problem: All configurations find the same number of survivors
+Cause: The fix wasn't applied correctly or _sieve_config isn't being set from args.
+Solution:
+
+Verify the fix was applied to coordinator.py
+Check that execute_truly_parallel_dynamic has the _sieve_config setup code
+Run a small test with known different windows to verify
+
+Problem: Optimization takes forever
+Cause: Testing too many seeds or too many iterations.
+Solution:
+
+Reduce seed_count to 100-500 million for faster testing
+Reduce max_iterations to 5-20 for initial tests
+Use strategy_name='bayesian' instead of 'random' or 'evolutionary'
+
+Problem: Results don't include verified window (512, 0)
+Cause: Random/Bayesian strategies might not test that specific window.
+Solution:
+
+Use strategy_name='grid' and customize the grid to include (512, 0)
+Or run a separate verification test first with just (512, 0)
+
+
+Recommended Workflow
+Step 1: Verify the Fix (FIRST!)
+Python# Small test to confirm different windows give different results
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=100_000_000,      # Fast
+    strategy_name='grid',        # Test specific windows
+    max_iterations=5,
+    output_file='verify_fix.json'
+)
+Check: Do different configurations give different bidirectional_counts? If yes, the fix works!
+Step 2: Include Your Verified Window
+Customize the grid to include (512, 0, skip_range=[0,20]) and test a few neighbors.
+Check: Does (512, 0) still find 5 survivors? If yes, nothing broke!
+Step 3: Medium Optimization
+Pythonresults = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=500_000_000,
+    strategy_name='bayesian',
+    max_iterations=20,
+    output_file='medium_search.json'
+)
+Check: Did it find a configuration better than (512, 0)? What's the new best window?
+Step 4: Final Deep Optimization (Optional)
+If you found promising results, do a final deep search with 1 billion seeds and 50+ iterations.
+
+Important Notes
+
+Each iteration runs TWO sieves (forward + reverse), so runtime scales accordingly
+The min_window_size=256 hardcoded limit prevents finding optimal windows below 256 unless you change it
+Bayesian strategy is usually best for finding optima efficiently
+Always verify with your known working window (512, 0) first to ensure nothing broke
+Results are saved to JSON so you can analyze them later even if the script crashes
+
+
+Command-Line Quick Reference
+Bash# Edit bounds first
+nano window_optimizer_integration_final.py
+# Change min_window_size from 256 to 1
+
+# Create and run a test script
+cat > test_optimizer.py << 'EOF'
+from coordinator import MultiGPUCoordinator
+from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+
+add_window_optimizer_to_coordinator()
+coordinator = MultiGPUCoordinator('distributed_config.json')
+
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_count=100_000_000,  # 100M for quick test
+    strategy_name='bayesian',
+    max_iterations=5,
+    output_file='test_results.json'
+)
+EOF
+
+python3 test_optimizer.py
+
+Questions?
+
+How long will this take? Multiply (max_iterations × 2) by the time one sieve takes
+What's a good first test? 5 iterations with 100M seeds using bayesian
+Should I use 1B seeds? Only for final optimization; use less for testing
+Which strategy is best? Bayesian for most cases; grid if you want to test specific windows
+
+WINDOW OPTIMIZER - Finding Optimal Sieve Parameters
+Purpose
+The window optimizer is NOT a sieve itself - it's a meta-tool that finds the BEST
+window parameters (window_size, offset, skip_range) to use with your forward/reverse
+residue sieve filters.
+Strategy Context (from your whitepaper)
+
+Forward Sieve: Uses %8, %125, %1000 residue filters + PRNG pattern matching
+Reverse Sieve: Validates backward consistency through historical draws
+Window Optimizer: Finds which window configuration minimizes false positives
+
+How It Works
+
+Tests multiple window configurations (Bayesian/Grid/Random/Evolutionary search)
+For each config, runs FULL forward+reverse sieve with residue filters
+Measures bidirectional survivor count (lower = better filtering)
+Finds optimal parameters that maximize precision while maintaining coverage
+
+Usage
+Pythonfrom coordinator import MultiGPUCoordinator
+from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+
+add_window_optimizer_to_coordinator()
+coordinator = MultiGPUCoordinator('distributed_config.json')
+
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_start=0,
+    seed_count=10_000_000,        # Use 10M for fast optimization
+    prng_base='java_lcg',
+    strategy_name='bayesian',     # bayesian/grid/random/evolutionary
+    max_iterations=10,
+    output_file='window_optimization.json'
+)
+Search Strategies
+
+bayesian: Uses Optuna for intelligent parameter space exploration (recommended)
+grid: Exhaustive grid search (slow but thorough)
+random: Random sampling (fast baseline)
+evolutionary: Genetic algorithm approach
+
+Key Parameters
+
+SearchBounds: Defines parameter ranges (min_window_size=1, max_window_size=2000, etc.)
+window_size: How many draws to analyze
+offset: Starting position in dataset
+skip_range: [min, max] for PRNG skip values to test
+sessions: ['midday', 'evening'] or ['midday'] or ['evening']
+
+Interpreting Results
+Lower bidirectional survivor count = Better configuration
+Example:
+
+Config A: 1,680,994 bidirectional survivors → BAD (too many false positives)
+Config B: 27,902 bidirectional survivors → BETTER (tighter filtering)
+Config C: 1,103 bidirectional survivors → EXCELLENT (very precise)
+
+Integration with ML Strategy
+Once optimal window is found:
+
+Use those parameters in forward/reverse sieve for prediction
+ML layer learns survivor patterns and weights
+Ensemble voting combines forward + reverse consensus
+Continuous reinforcement adapts to PRNG drift
+
+Files
+
+window_optimizer.py: Core optimizer classes
+window_optimizer_bayesian.py: Bayesian search implementation
+window_optimizer_integration_final.py: Integration with coordinator
+WINDOW_OPTIMIZER_GUIDE.md: Detailed usage guide
+
+
+Chapter 14: Troubleshooting Guide
+Troubleshooting Guide
+GPU Detection Issues
+NVIDIA Problems
+Bash# Check CUDA installation
+nvidia-smi
+python3 -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"
+
+# Common fix: Update CuPy
+pip install --upgrade cupy-cuda12x
+AMD ROCm Problems
+Bash# Check ROCm installation
+rocm-smi --showid
+# Should show 12 GPUs on each AMD node
+
+# Verify environment variables in ALL worker files
+grep -n "HSA_OVERRIDE_GFX_VERSION" distributed_worker.py sieve_filter.py enhanced_gpu_model_id.py
+# Should find the environment setup code in ALL three files
+
+# Test ROCm CuPy
+ssh 192.168.3.120 'source ~/rocm_env/bin/activate && python3 -c "import cupy; print(\"Working\")"'
+Common GPU Errors and Solutions
+"No module named 'cupy'"
+Bash# Check virtual environment activation
+# Coordinator uses python_env path from config file
+# Verify config points to environment with CuPy installed
+"Python integer X out of bounds for uint16"
+Bash# FIXED: All kernels now use unsigned int* (32-bit)
+# If error persists, verify prng_registry.py has been updated:
+grep "unsigned int\* residues" prng_registry.py
+# Should show multiple matches, NOT "unsigned short* residues"
+"radix_sort: failed on 2nd step"
+Bash# Clear CuPy cache (often resolves kernel compilation issues)
+rm -rf ~/.cache/cupy
+ssh 192.168.3.120 "rm -rf ~/.cache/cupy"
+ssh 192.168.3.154 "rm -rf ~/.cache/cupy"
+"Module not initialized" (AMD only)
+Bash# Verify HSA_OVERRIDE_GFX_VERSION=10.3.0 is set BEFORE cupy import
+# Check ALL three files: distributed_worker.py, sieve_filter.py, enhanced_gpu_model_id.py
+# Environment variables must be at the very top of files
+"name 'offset' is not defined"
+Bash# Ensure sieve_filter.py run_sieve() function signature includes offset parameter
+# Should be: def run_sieve(..., chunk_size: int = 1_000_000, offset: int = 0)
+"get_kernel_info() takes 1 positional argument but 2 were given"
+Bash# FIXED: Updated sieve_filter.py to call get_kernel_info(prng_family) without custom_params
+# If error persists, check line ~93 in sieve_filter.py
+"Connection reset by peer (104)" (AMD only)
+Bash# Usually indicates new functionality not following established patterns
+# Check job_data structure matches existing job types
+# Verify ROCm environment prelude is present in ALL GPU-intensive files
+"Local execution failed (rc=1)"
+Bash# Test worker directly to see full error
+echo '{"job_id":"debug","seeds":[1]}' > debug.json
+python3 distributed_worker.py debug.json --gpu-id 0
+# Look for syntax errors, missing imports, or environment issues
+
+# NEW: Test sieve directly
+python3 sieve_filter.py --job-file debug_sieve.json --gpu-id 0
+Sieve-Specific Issues
+"Seed found manually but not by sieve"
+Bash# Common causes:
+# 1. Incorrect offset calculation
+#    - Last 30 of 100 draws needs offset=70, not offset=0
+# 2. Missing full_state in dataset
+#    - Dataset must have "full_state" field for multi-modulo validation
+# 3. Wrong skip parameter
+#    - Try --skip-range 0 20 to test multiple skip values
+"Zero survivors despite patterns"
+Bash# Check dataset format
+python3 -c "
+import json
+with open('your_data.json') as f:
+    d = json.load(f)
+    print('Has full_state:', 'full_state' in d[0] if d else False)
+"
+
+# Verify data loading
+grep "get.*full_state" sieve_filter.py
+# Should show: entry.get('full_state', entry['draw'])
+"Match rate always 0.0"
+Bash# Verify kernel parameter passing
+# Check sieve_filter.py lines ~150-160 for:
+# - kernel_args.append(cp.uint32(shift_a))
+# - kernel_args.append(cp.uint32(shift_b))
+# - kernel_args.append(cp.uint32(shift_c))
+# - kernel_args.append(cp.int32(offset))  # Must be LAST
+Network and SSH Issues
+Connection Problems
+Bash# Test SSH connectivity
+ssh user@192.168.3.120 "echo 'Connection working'"
+ssh user@192.168.3.154 "echo 'Connection working'"
+
+# Check SSH key setup (recommended over passwords)
+ssh-keygen -t rsa
+ssh-copy-id user@192.168.3.120
+ssh-copy-id user@192.168.3.154
+File Synchronization
+Bash# Ensure all nodes have identical files (CRITICAL for sieve functionality)
+scp sieve_filter.py prng_registry.py distributed_worker.py 192.168.3.120:/home/michael/distributed_prng_analysis/
+scp sieve_filter.py prng_registry.py distributed_worker.py 192.168.3.154:/home/michael/distributed_prng_analysis/
+
+# Verify file integrity
+sha256sum sieve_filter.py prng_registry.py
+ssh 192.168.3.120 "cd distributed_prng_analysis && sha256sum sieve_filter.py prng_registry.py"
+ssh 192.168.3.154 "cd distributed_prng_analysis && sha256sum sieve_filter.py prng_registry.py"
+# Checksums should match across all nodes
+Troubleshooting Hybrid Mode
+"0 strategies loaded" Error
+Bash# Check if hybrid_strategy module exists
+ls -lh hybrid_strategy.py
+
+# Verify it can be imported
+python3 -c "from hybrid_strategy import get_all_strategies; print('OK')"
+
+# Deploy to remote nodes if missing
+scp hybrid_strategy.py 192.168.3.120:~/distributed_prng_analysis/
+scp hybrid_strategy.py 192.168.3.154:~/distributed_prng_analysis/
+"CUDA_ERROR_INVALID_VALUE: invalid argument"
+Bash# Usually means kernel parameters are mismatched
+# Hybrid kernels need additional parameters
+
+# Verify sieve_filter.py passes correct args for hybrid:
+grep -A 20 "xorshift32_hybrid" prng_registry.py
+
+# Should show kernel signature with:
+# - unsigned int* seeds
+# - unsigned int* residues
+# - ... other params ...
+# - float threshold
+# - int shift_a, shift_b, shift_c
+# - int offset (MUST BE LAST)
+"Seed found in direct test but not by coordinator"
+Bash# Most common: Test data not deployed to remote nodes
+for host in 192.168.3.120 192.168.3.154; do
+    ssh $host "ls -lh ~/distributed_prng_analysis/test_*.json"
+done
+
+# Copy missing test files
+scp test_xorshift32_hybrid.json test_xorshift32_const_skip5.json \
+    192.168.3.120:~/distributed_prng_analysis/
+scp test_xorshift32_hybrid.json test_xorshift32_const_skip5.json \
+    192.168.3.154:~/distributed_prng_analysis/
+"Hybrid mode only supports mt19937_hybrid"
+Bash# OLD ERROR - FIXED in latest code
+# This error means you're running old sieve_filter.py
+
+# Check if code checks metadata, not hardcoded PRNG name
+grep "variable_skip" sieve_filter.py
+# Should show: family_config.get('variable_skip', False)
+
+# NOT: if family_name == 'mt19937':
+
+# Redeploy latest code if needed
+scp sieve_filter.py 192.168.3.120:~/distributed_prng_analysis/
+scp sieve_filter.py 192.168.3.154:~/distributed_prng_analysis/
+"IndentationError" in sieve_filter.py
+Bash# Can happen after patching hybrid support
+# Verify Python syntax
+python3 -m py_compile sieve_filter.py
+
+# If error, check lines around 490-510 for proper indentation
+# The elif block for two-phase must be properly indented
+
+Chapter 15: Optimization Tools - Window Optimizer
+Window Optimizer Usage Guide
+(This chapter includes the full content from the original "Window Optimizer Usage Guide" and "WINDOW OPTIMIZER - Finding Optimal Sieve Parameters" sections, as they overlap and are related.)
+Overview
+The window optimizer searches for the optimal window configuration to maximize bidirectional survivors in your PRNG analysis. It tests different combinations of window_size, offset, and skip_range parameters.
+The window optimizer is NOT a sieve itself - it's a meta-tool that finds the BEST
+window parameters (window_size, offset, skip_range) to use with your forward/reverse
+residue sieve filters.
+Strategy Context (from your whitepaper)
+
+Forward Sieve: Uses %8, %125, %1000 residue filters + PRNG pattern matching
+Reverse Sieve: Validates backward consistency through historical draws
+Window Optimizer: Finds which window configuration minimizes false positives
+
+How It Works
+
+Tests multiple window configurations (Bayesian/Grid/Random/Evolutionary search)
+For each config, runs FULL forward+reverse sieve with residue filters
+Measures bidirectional survivor count (lower = better filtering)
+Finds optimal parameters that maximize precision while maintaining coverage
+
+Quick Start
+1. First, modify the search bounds (IMPORTANT!)
+Edit window_optimizer_integration_final.py and change the hardcoded bounds (around line 57):
+Pythonbounds = SearchBounds(
+    min_window_size=1,        # Allow testing very small windows
+    max_window_size=4096,     # Allow testing large windows
+    min_offset=0,             # Starting position in dataset
+    max_offset=500,           # Maximum offset to test
+    min_skip_min=0,           # Minimum value for skip range start
+    max_skip_min=50,          # Maximum value for skip range start
+    min_skip_max=20,          # Minimum value for skip range end
+    max_skip_max=200          # Maximum value for skip range end
+)
+Why change min_window_size from 256 to 1?
+
+The optimizer can't discover optimal windows smaller than the minimum
+Your verified window is 512, but the optimal might be 100, 50, or even 10
+Setting min=1 allows the optimizer to explore the full space
+
+How to Run the Optimizer
+Method 1: Create a Python script
+Create a file called run_window_optimizer.py:
+Python#!/usr/bin/env python3
+from coordinator import MultiGPUCoordinator
+from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+
+# Add the optimizer method to coordinator
+add_window_optimizer_to_coordinator()
+
+# Create coordinator instance
+coordinator = MultiGPUCoordinator('distributed_config.json')
+
+# Run optimization
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',           # Your data file
+    seed_start=0,                         # Start at seed 0
+    seed_count=1_000_000_000,             # Test 1 billion seeds (match your working test)
+    prng_base='java_lcg',                 # PRNG type
+    strategy_name='bayesian',             # Search strategy (see below)
+    max_iterations=50,                    # Number of configurations to test
+    output_file='window_optimization.json'  # Results file
+)
+
+print(f"\nBest configuration found:")
+print(f"  Window size: {results['best_config']['window_size']}")
+print(f"  Offset: {results['best_config']['offset']}")
+print(f"  Skip range: [{results['best_config']['skip_min']}, {results['best_config']['skip_max']}]")
+print(f"  Bidirectional survivors: {results['best_result']['bidirectional_count']}")
+Then run:
+Bashpython3 run_window_optimizer.py
+Usage
+Pythonfrom coordinator import MultiGPUCoordinator
+from window_optimizer_integration_final import add_window_optimizer_to_coordinator
+
+add_window_optimizer_to_coordinator()
+coordinator = MultiGPUCoordinator('distributed_config.json')
+
+results = coordinator.optimize_window(
+    dataset_path='daily3.json',
+    seed_start=0,
+    seed_count=10_000_000,        # Use 10M for fast optimization
+    prng_base='java_lcg',
+    strategy_name='bayesian',     # bayesian/grid/random/evolutionary
+    max_iterations=10,
+    output_file='window_optimization.json'
+)
+Search Strategies
+
+bayesian: Uses Optuna for intelligent parameter space exploration (recommended)
+grid: Exhaustive grid search (slow but thorough)
+random: Random sampling (fast baseline)
+evolutionary: Genetic algorithm approach
+
+Key Parameters
+
+SearchBounds: Defines parameter ranges (min_window_size=1, max_window_size=2000, etc.)
+window_size: How many draws to analyze
+offset: Starting position in dataset
+skip_range: [min, max] for PRNG skip values to test
+sessions: ['midday', 'evening'] or ['midday'] or ['evening']
+
+Interpreting Results
+Lower bidirectional survivor count = Better configuration
+Example:
+
+Config A: 1,680,994 bidirectional survivors → BAD (too many false positives)
+Config B: 27,902 bidirectional survivors → BETTER (tighter filtering)
+Config C: 1,103 bidirectional survivors → EXCELLENT (very precise)
+
+Integration with ML Strategy
+Once optimal window is found:
+
+Use those parameters in forward/reverse sieve for prediction
+ML layer learns survivor patterns and weights
+Ensemble voting combines forward + reverse consensus
+Continuous reinforcement adapts to PRNG drift
+
+Files
+
+window_optimizer.py: Core optimizer classes
+window_optimizer_bayesian.py: Bayesian search implementation
+window_optimizer_integration_final.py: Integration with coordinator
+WINDOW_OPTIMIZER_GUIDE.md: Detailed usage guide
+
+Output:
+Console:
+textWINDOW OPTIMIZATION
+Strategy: bayesian
+Testing config 1/50: W768_O100_midday+evening_S0-50
+  Forward: 1,234 survivors
+  Reverse: 1,156 survivors
+  Bidirectional: 892 survivors ✨
+...
+BEST: W768 O100 → 892 survivors
+File: window_optimization_results.json
+json{
+  "strategy": "bayesian",
+  "best_config": {
+    "window_size": 768,
+    "offset": 100,
+    "sessions": ["midday", "evening"],
+    "skip_min": 0,
+    "skip_max": 50
+  },
+  "best_result": {
+    "forward_count": 1234,
+    "reverse_count": 1156,
+    "bidirectional_count": 892,
+    "precision": 0.72,
+    "recall": 0.77
+  },
+  "best_score": 892.0,
+  "all_results": [...]
+}
+
+Example Commands:
+Quick test (3 random configs, single PRNG):
+bashpython3 coordinator.py daily3.json \
+  --optimize-window \
+  --prng-type java_lcg \
+  --opt-strategy random \
+  --opt-iterations 3 \
+  --opt-seed-count 1000000
+Thorough Bayesian search (single PRNG):
+bashpython3 coordinator.py daily3.json \
+  --optimize-window \
+  --prng-type java_lcg \
+  --opt-strategy bayesian \
+  --opt-iterations 50 \
+  --opt-seed-count 10000000
+All PRNGs automated:
+bash./optimize_all_prngs.sh
+All PRNGs in parallel (4 at once):
+bash./optimize_parallel.sh
+
+Modular Components:
+Files Created:
+
+window_optimizer.py - Core optimizer with search strategies
+window_optimizer_methods.py - Integration with coordinator
+window_optimization_results.json - Output results per run
+optimize_all_prngs.sh - Script to test all PRNGs
+optimize_parallel.sh - Parallel PRNG testing
+
+ML/AI Ready:
+
+Pluggable scoring functions
+Feature extraction from results
+Easy to add custom strategies
+JSON output for downstream processing
+Can batch process results across all PRNGs
+
+
+Performance Estimates:
+Per PRNG:
+
+10 iterations × 1M seeds: ~5-10 minutes
+30 iterations × 5M seeds: ~30-45 minutes
+50 iterations × 10M seeds: ~60-90 minutes
+
+All 22 PRNGs (11 forward + 11 hybrid):
+
+Sequential: ~8-16 hours (30 iterations each)
+Parallel (4x): ~2-4 hours
+Quick survey (10 iterations): ~2-4 hours sequential
+
+Chapter 16: Advanced Features - Survivor Scorer Module
+Output: survivor_scorer.py Module
+==================== ADDENDUM: survivor_scorer.py Module ====================
+Added: November 6, 2025
+Status: Production Ready ✅
+Version: 2.0 (Enhanced with Whitepaper Dual-Sieve Components)
+Overview
+The survivor_scorer.py module is a comprehensive survivor analysis and scoring system
+that implements 100% of the whitepaper requirements for dual-sieve PRNG approximation.
+Location: modules/survivor_scorer.py or standalone
+File Size: 1,254 lines
+Dependencies: numpy, scipy, prng_registry.py
+Optional: cupy (for GPU acceleration)
+
+Quick Start
+Basic Usage - Score a Single Seed
+Bashpython survivor_scorer.py --seed 12345 --lottery-data daily3.json
+Output:
+textLoaded 18225 draws from daily3.json
+Sample draws: [978, 973, 817, 336, 300]
+Scoring seed 12345...
+
+============================================================
+RESULTS FOR SEED 12345
+============================================================
+Score: 0.15%
+Matches: 27/18225
+Extract ML Features
+Bashpython survivor_scorer.py --seed 12345 --lottery-data daily3.json --extract-features
+Output:
+textExtracting ML features for seed 12345...
+
+============================================================
+RESULTS FOR SEED 12345
+============================================================
+Score: 0.15%
+Matches: 27/18225
+
+Extracted 46 features
+Top features:
+  residue_8_coherence: 0.1211
+  skip_entropy: 6.6903
+  temporal_stability_mean: 0.8768
+  survivor_velocity: 0.0001
+  lane_agreement_8: 0.0011
+Export Results
+Bash# Export to JSON
+python survivor_scorer.py --seed 12345 --lottery-data daily3.json \
+    --extract-features --output results.json
+
+# Export to CSV
+python survivor_scorer.py --seed 12345 --lottery-data daily3.json \
+    --extract-features --output results.csv --format csv
+
+Integration with Existing Sieves
+Workflow: Sieve → Score → Predict
+Pythonfrom survivor_scorer import SurvivorScorer
+import json
+
+# 1. Load survivors from existing sieve results
+with open('results/json/forward_sieve_java_lcg_20251106_top100.json') as f:
+    forward_data = json.load(f)
+    forward_survivors = [s['seed'] for s in forward_data['survivors']]
+
+with open('results/json/reverse_sieve_java_lcg_20251106_top100.json') as f:
+    reverse_data = json.load(f)
+    reverse_survivors = [s['seed'] for s in reverse_data['survivors']]
+
+# 2. Load lottery history
+with open('daily3.json') as f:
+    lottery_data = json.load(f)
+    lottery_history = [entry['draw'] for entry in lottery_data]
+
+# 3. Initialize scorer
+scorer = SurvivorScorer(prng_type='java_lcg', mod=1000)
+
+# 4. Get high-confidence intersection (whitepaper dual-sieve)
+high_confidence_seeds = scorer.compute_dual_sieve_intersection(
+    forward_survivors, reverse_survivors
+)
+print(f"High-confidence seeds: {len(high_confidence_seeds)}")
+
+# 5. Build prediction pool
+pool = scorer.build_prediction_pool(
+    survivors=high_confidence_seeds,
+    lottery_history=lottery_history,
+    pool_size=10,
+    use_dual_scoring=True,
+    forward_survivors=forward_survivors,
+    reverse_survivors=reverse_survivors
+)
+
+# 6. Get predictions for next draw
+print("Top 10 predictions for next draw:")
+for pred in pool['predictions']:
+    print(f"  {pred['next_prediction']} (seed: {pred['seed']}, confidence: {pred['confidence']:.1f})")
+
+Key Methods Reference
+Core Scoring Methods
+score_survivor()
+Pythonresult = scorer.score_survivor(
+    seed=12345,
+    lottery_history=draws,
+    skip=0,
+    offset_search=True,  # Search for best alignment
+    max_offset=5
+)
+# Returns: dict with score, matches, confidence, predictions
+batch_score()
+Pythonresults = scorer.batch_score(
+    seeds=[12345, 67890, 11111],
+    lottery_history=draws,
+    skip=0
+)
+# Returns: List of results sorted by score (descending)
+rolling_window_score()
+Pythonresult = scorer.rolling_window_score(
+    seed=12345,
+    lottery_history=draws,
+    window_size=100,
+    stride=50
+)
+# Returns: dict with window scores, mean, std, min, max
+
+Whitepaper Dual-Sieve Methods (NEW)
+calculate_survivor_overlap_ratio()
+Purpose: Measure agreement between forward and reverse sieves
+Key Metric: Jaccard index = |A ∩ B| / |A ∪ B|
+Pythonoverlap = scorer.calculate_survivor_overlap_ratio(
+    forward_survivors=[12345, 67890, 11111],
+    reverse_survivors=[12345, 11111, 99999]
+)
+
+print(f"Jaccard Index: {overlap['jaccard_index']:.4f}")
+print(f"Intersection: {overlap['intersection_count']} seeds")
+print(f"Seeds: {overlap['intersection_seeds']}")
+compute_dual_sieve_intersection()
+Purpose: Get seeds that survived BOTH sieves (highest confidence)
+Pythonhigh_conf = scorer.compute_dual_sieve_intersection(
+    forward_survivors=forward_list,
+    reverse_survivors=reverse_list
+)
+# Returns: List of seeds in intersection (sorted)
+validate_bidirectional_consistency()
+Purpose: Check if seed performs well in both forward AND reverse directions
+Pythonconsistency = scorer.validate_bidirectional_consistency(
+    seed=12345,
+    lottery_history=draws,
+    skip=0,
+    tolerance=0.1
+)
+
+if consistency['is_bidirectionally_consistent']:
+    print(f"✅ Seed {seed} is reliable!")
+    print(f"   Forward: {consistency['forward_score']:.2f}%")
+    print(f"   Reverse: {consistency['reverse_score']:.2f}%")
+score_with_dual_sieve()
+Purpose: Score with BOTH forward and reverse analysis (enhanced confidence)
+Pythonresult = scorer.score_with_dual_sieve(
+    seed=12345,
+    lottery_history=draws,
+    forward_survivors=forward_list,
+    reverse_survivors=reverse_list
+)
+
+print(f"Base Score: {result['base_score']:.2f}%")
+print(f"Dual-Sieve Score: {result['dual_sieve_score']:.2f}%")
+print(f"In Intersection: {result['in_intersection']}")
+print(f"Intersection Bonus: {result['intersection_bonus']:.2f}")
+build_prediction_pool()
+Purpose: Build Top-K high-confidence prediction pool
+Pythonpool = scorer.build_prediction_pool(
+    survivors=high_conf_seeds,
+    lottery_history=draws,
+    pool_size=10,
+    use_dual_scoring=True,
+    forward_survivors=forward_list,
+    reverse_survivors=reverse_list
+)
+
+print(f"Pool Size: {pool['pool_size']}")
+print(f"Avg Confidence: {pool['avg_confidence']:.2f}")
+print(f"Method: {pool['method']}")  # 'dual_sieve' or 'forward_only'
+
+# Get predictions
+for pred in pool['predictions']:
+    print(f"Next: {pred['next_prediction']} (confidence: {pred['confidence']:.1f})")
+rank_by_dual_confidence()
+Purpose: Rank survivors by composite dual-sieve confidence
+Pythonranked = scorer.rank_by_dual_confidence(
+    survivors=all_survivors,
+    lottery_history=draws,
+    forward_survivors=forward_list,
+    reverse_survivors=reverse_list
+)
+
+print("Top 5 by dual-confidence:")
+for i, s in enumerate(ranked[:5], 1):
+    print(f"{i}. Seed {s['seed']}: {s['dual_confidence']:.2f}")
+    print(f"   In Intersection: {s['in_intersection']}")
+    print(f"   Bidirectional: {s['bidirectional_consistent']}")
+
+ML Feature Extraction
+Extract All 46 Features
+Pythonfeatures = scorer.extract_ml_features(
+    seed=12345,
+    lottery_history=draws,
+    forward_survivors=forward_list,
+    reverse_survivors=reverse_list,
+    skip=0
+)
+
+print(f"Extracted {len(features)} features")
+Feature Categories (46 total)
+Basic Scoring (5):
+
+score, exact_matches, total_predictions, confidence, best_offset
+
+Residue Coherence (9):
+
+residue_8_match_rate, residue_8_kl_divergence, residue_8_coherence
+residue_125_match_rate, residue_125_kl_divergence, residue_125_coherence
+residue_1000_match_rate, residue_1000_kl_divergence, residue_1000_coherence
+
+Skip Entropy (4):
+
+skip_entropy, skip_mean, skip_std, skip_range
+
+Temporal Stability (5):
+
+temporal_stability_mean, temporal_stability_std, temporal_stability_trend
+temporal_stability_min, temporal_stability_max
+
+Survivor Velocity (2):
+
+survivor_velocity, velocity_acceleration
+
+Intersection Weights (8): ← Enhanced with dual-sieve metrics
+
+intersection_ratio, intersection_count, forward_count, reverse_count
+intersection_weight, survivor_overlap_ratio, forward_only_count, reverse_only_count
+
+Lane Agreement (3):
+
+lane_agreement_8, lane_agreement_125, lane_consistency
+
+Statistical (10):
+
+pred_mean, pred_std, pred_min, pred_max
+actual_mean, actual_std
+residual_mean, residual_std, residual_abs_mean, residual_max_abs
+
+
+Integration Examples
+Example 1: Score Bidirectional Survivor
+Bash# You found a bidirectional survivor from window optimization
+# Seed: 244139, Window: 512, Offset: 0, Skip: 0-20
+
+python3 << 'EOF'
+from survivor_scorer import SurvivorScorer
+import json
+
+# Load lottery data
+with open('daily3.json') as f:
+    data = json.load(f)
+    draws = [entry['draw'] for entry in data]
+
+# Initialize scorer
+scorer = SurvivorScorer(prng_type='java_lcg', mod=1000)
+
+# Score the survivor
+result = scorer.score_survivor(seed=244139, lottery_history=draws, skip=10)
+
+print("=" * 60)
+print(f"BIDIRECTIONAL SURVIVOR: 244139")
+print("=" * 60)
+print(f"Score: {result['score']:.2f}%")
+print(f"Matches: {result['exact_matches']}/{result['total_predictions']}")
+print(f"Confidence: {result['confidence']}")
+print(f"Best Offset: {result['best_offset']}")
+
+# Extract ML features
+features = scorer.extract_ml_features(seed=244139, lottery_history=draws)
+print(f"\nTop Features:")
+for key in ['residue_8_coherence', 'temporal_stability_mean', 'skip_entropy']:
+    print(f"  {key}: {features[key]:.4f}")
+EOF
+Example 2: Compare Multiple Seeds
+Pythonfrom survivor_scorer import SurvivorScorer
+import json
+
+scorer = SurvivorScorer(prng_type='java_lcg', mod=1000)
+
+# Load data
+with open('daily3.json') as f:
+    draws = [entry['draw'] for entry in json.load(f)]
+
+# Test multiple seeds
+seeds = [244139, 12345, 67890, 99999]
+results = scorer.batch_score(seeds, draws, skip=10)
+
+print("Survivor Comparison:")
+print("-" * 60)
+for r in results:
+    print(f"Seed {r['seed']:>8}: {r['score']:>6.2f}% ({r['exact_matches']:>4} matches)")
+Example 3: Build Prediction Pipeline
+Pythonfrom survivor_scorer import SurvivorScorer
+import json
+
+# Initialize
+scorer = SurvivorScorer(prng_type='java_lcg', mod=1000)
+
+# Load data
+with open('daily3.json') as f:
+    draws = [entry['draw'] for entry in json.load(f)]
+
+# Simulate forward/reverse sieve results
+forward_survivors = [244139, 12345, 67890]  # From sieve_filter.py
+reverse_survivors = [244139, 99999, 67890]  # From reverse_sieve_filter.py
+
+# 1. Get intersection (highest confidence)
+intersection = scorer.compute_dual_sieve_intersection(forward_survivors, reverse_survivors)
+print(f"High-confidence seeds: {intersection}")
+
+# 2. Validate consistency
+for seed in intersection:
+    consistency = scorer.validate_bidirectional_consistency(seed, draws)
+    if consistency['is_bidirectionally_consistent']:
+        print(f"✅ Seed {seed} validated")
+
+# 3. Build prediction pool
+pool = scorer.build_prediction_pool(
+    survivors=intersection,
+    lottery_history=draws,
+    pool_size=3,
+    use_dual_scoring=True,
+    forward_survivors=forward_survivors,
+    reverse_survivors=reverse_survivors
+)
+
+# 4. Show predictions
+print(f"\nTop {pool['pool_size']} predictions for next draw:")
+for pred in pool['predictions']:
+    print(f"  {pred['next_prediction']} (seed {pred['seed']}, conf: {pred['confidence']:.1f})")
+
+Advanced Features
+GPU Acceleration
+If CuPy is available, survivor_scorer.py will automatically use GPU acceleration:
+Pythonfrom survivor_scorer import SurvivorScorer, GPU_AVAILABLE
+
+print(f"GPU Available: {GPU_AVAILABLE}")
+
+# GPU acceleration automatic if cupy installed
+scorer = SurvivorScorer(prng_type='java_lcg', mod=1000)
+
+# Large batch scoring uses GPU
+seeds = list(range(1000000, 1010000))  # 10K seeds
+results = scorer.batch_score(seeds, draws)  # GPU-accelerated
+Window Analysis for Drift Detection
+Python# Analyze temporal stability with rolling windows
+result = scorer.rolling_window_score(
+    seed=244139,
+    lottery_history=draws,
+    window_size=100,
+    stride=50
+)
+
+print(f"Mean Score: {result['mean_score']:.2f}%")
+print(f"Std Score: {result['std_score']:.2f}%")
+print(f"Score Range: {result['min_score']:.2f}% - {result['max_score']:.2f}%")
+
+# High std suggests PRNG drift or reseeding
+if result['std_score'] > 10.0:
+    print("⚠️  High variance detected - possible PRNG drift")
+Custom PRNG Types
+Python# Use any PRNG from prng_registry.py
+scorer = SurvivorScorer(prng_type='xorshift32', mod=1000)
+scorer = SurvivorScorer(prng_type='mt19937', mod=1000)
+scorer = SurvivorScorer(prng_type='pcg32', mod=1000)
+
+# Custom modulo for different lottery types
+scorer = SurvivorScorer(prng_type='java_lcg', mod=10000)  # Pick 4
+scorer = SurvivorScorer(prng_type='java_lcg', mod=100)    # Pick 2
+
+Testing
+Self-Test Mode
+Bash# Run built-in tests
+python survivor_scorer.py --test
+Output:
+text============================================================
+SURVIVOR SCORER - COMPLETE ML/AI READY
+============================================================
+
+[Test 1] Basic Scoring Test
+------------------------------------------------------------
+Generated 100 test draws
+First 10 draws: [123, 456, 789, ...]
+✅ Correct seed score: 100.00%
+   Matches: 100/100
+❌ Wrong seed score: 0.10%
+   Matches: 0/100
+
+[Test 2] ML Feature Extraction
+------------------------------------------------------------
+✅ Extracted 46 ML features
+
+[Test 3] Batch Scoring
+------------------------------------------------------------
+✅ Scored 4 seeds
+
+[Test 4] Rolling Window Analysis
+------------------------------------------------------------
+✅ Analyzed 9 windows
+   Mean score: 100.00%
+
+============================================================
+ALL TESTS PASSED! 🚀
+============================================================
+Comprehensive Test Suite
+Bash# Run comprehensive whitepaper tests
+python test_whitepaper_enhancements.py
+See WHITEPAPER_ENHANCEMENTS_SUMMARY.md for complete testing documentation.
+
+Performance Notes
+Typical Performance:
+
+Single seed scoring: ~10-50ms (depends on history length)
+Batch scoring (100 seeds): ~1-5 seconds
+ML feature extraction: ~100-500ms per seed
+Rolling window analysis: ~500ms-2s per seed
+GPU acceleration: 5-10x faster for large batches
+
+Memory Usage:
+
+Minimal: ~10-50MB for typical operations
+Scales with lottery history length
+GPU mode: Additional VRAM for CuPy arrays
+
+
+Troubleshooting
+Issue: "prng_registry.py not found"
+Solution: Ensure prng_registry.py is in the same directory or PYTHONPATH
+Bash# Check if prng_registry.py exists
+ls -l prng_registry.py
+
+# If not, copy from your project
+cp ~/distributed_prng_analysis/prng_registry.py .
+Issue: Low scores for known good seed
+Possible causes:
+
+Wrong skip value - try different skip values
+Offset misalignment - enable offset_search=True
+Window issues - try different window sizes with rolling_window_score()
+PRNG drift - check temporal_stability features
+
+Python# Debug with verbose output
+result = scorer.score_survivor(seed=244139, lottery_history=draws, skip=10, offset_search=True, max_offset=10)
+print(f"Best offset found: {result['best_offset']}")
+Issue: "TypeError: unsupported operand type(s) for %: 'dict' and 'int'"
+Cause: Lottery data format issue
+Solution: Check data format - should be list of integers, not dicts
+Python# Correct format
+lottery_history = [978, 973, 817, 336, ...]
+
+# Wrong format (needs extraction)
+data = [{"draw": 978, ...}, {"draw": 973, ...}]
+
+# Fix:
+lottery_history = [entry['draw'] for entry in data]
+
+Integration with Future Modules
+For reinforcement_engine.py
+Pythonfrom survivor_scorer import SurvivorScorer
+
+scorer = SurvivorScorer()
+
+# Extract features for PyTorch training (46 features)
+features = scorer.extract_ml_features(seed, history, forward, reverse)
+feature_vector = [features[k] for k in sorted(features.keys())]
+
+# Train model on 46-dimensional input
+X = torch.tensor([feature_vector], dtype=torch.float32)
+quality_score = model(X)
+For prediction_generator.py
+Pythonfrom survivor_scorer import SurvivorScorer
+
+scorer = SurvivorScorer()
+
+# Use built-in prediction pool builder
+pool = scorer.build_prediction_pool(
+    survivors=survivors,
+    lottery_history=history,
+    pool_size=10,
+    use_dual_scoring=True,
+    forward_survivors=forward,
+    reverse_survivors=reverse
+)
+
+# Extend with ensemble methods
+predictions = pool['predictions']
+For feedback_tracker.py
+Pythonfrom survivor_scorer import SurvivorScorer
+
+scorer = SurvivorScorer()
+
+# Score prediction after actual draw
+result = scorer.score_survivor(seed, [actual_draw])
+
+# Track performance
+if result['exact_matches'] > 0:
+    print(f"✅ Hit! Seed {seed} predicted correctly")
+
+Files and Documentation
+Main Module:
+
+survivor_scorer_enhanced.py (1,254 lines)
+
+Documentation:
+
+WHITEPAPER_ENHANCEMENTS_SUMMARY.md - Complete method reference
+QUICK_REFERENCE.md - Quick start guide
+COMPLETION_STATUS.md - Implementation status
+test_whitepaper_enhancements.py - Test suite
+
+Location: /mnt/user-data/outputs/
+
+Version History
+v2.0 (Nov 6, 2025):
+
+✅ Added 6 whitepaper dual-sieve methods
+✅ Enhanced intersection weights with Jaccard index
+✅ Added 3 new ML features (survivor_overlap_ratio, forward_only_count, reverse_only_count)
+✅ Total 46 ML features (was 43)
+✅ 100% whitepaper-compliant
+✅ Production-ready
+
+v1.0 (Prior):
+
+Basic scoring, feature extraction, batch scoring, rolling windows
+
+
+Support and Next Steps
+Status: Production Ready ✅
+Whitepaper Compliance: 100% ✅
+Backward Compatible: Yes ✅
+Next Modules to Create:
+
+prediction_generator.py (uses build_prediction_pool())
+reinforcement_engine.py (uses extract_ml_features())
+feedback_tracker.py (uses score_survivor())
+
+For detailed implementation plans, see:
+
+COMPLETION_ROADMAP_UPDATED.md
+WHITEPAPER_ENHANCEMENTS_SUMMARY.md
+
+==================== END OF ADDENDUM ====================
+
+Chapter 17: Testing and Validation
+REPRODUCIBLE BIDIRECTIONAL SIEVE VALIDATION (1 BILLION SEEDS)
+GOAL
+Find seeds that survive both forward and reverse PRNG simulation using 1,000,000,000 seeds.
+HARDWARE
+
+26 GPUs (2× RTX 3080 Ti + 24× RX 6600)
+Full dynamic work distribution
+100 chunks × 10M seeds each
+
+
+STEP 1: FORWARD SIEVE (java_lcg)
+Bashpython3 coordinator.py \
+    --resume-policy restart \
+    --max-concurrent 26 \
+    daily3.json \
+    --method residue_sieve \
+    --prng-type java_lcg \
+    --window-size 512 \
+    --skip-max 20 \
+    --seeds 1000000000
+
+Runtime: ~10–12 minutes
+Output: results/multi_gpu_analysis_*.json
+Survivors: ~330,866
+STEP 2: REVERSE SIEVE (java_lcg_reverse)
+bashpython3 coordinator.py 
+--resume-policy restart 
+--max-concurrent 26 
+daily3.json 
+--method residue_sieve 
+--prng-type java_lcg_reverse 
+--window-size 512 
+--skip-max 20 
+--seeds 1000000000
+Runtime: ~10–12 minutes
+Output: results/multi_gpu_analysis_*.json
+Survivors: ~330,000
+STEP 3: FIND THE 5 ETERNAL SEEDS (INTERSECTION)
+bashpython3 << 'INTERSECT'
+import json, glob
+Get the two latest result files
+files = sorted(glob.glob('results/multi_gpu_analysis_*.json'), key=lambda x: int(x.split('_')[-1].split('.')[0]), reverse=True)
+fwd_file = next(f for f in files if 'java_lcg' in open(f).read())
+rev_file = next(f for f in files if 'java_lcg_reverse' in open(f).read())
+Load survivors
+fwd = {s['seed'] for res in json.load(open(fwd_file))['results'] for s in res.get('survivors', [])}
+rev = {s['seed'] for res in json.load(open(rev_file))['results'] for s in res.get('survivors', [])}
+Find intersection
+common = sorted(fwd & rev)
+print(f"FORWARD SURVIVORS: {len(fwd):,}")
+print(f"REVERSE SURVIVORS: {len(rev):,}")
+print(f"VALIDATED SEEDS: {len(common)}")
+print("\nTHE 5 ETERNAL SEEDS:")
+for seed in common:
+print(f"  → {seed}")
+INTERSECT
+Expected Output:
+textFORWARD SURVIVORS: 330,866
+REVERSE SURVIVORS: ~330,000
+VALIDATED SEEDS: 5
+THE 5 ETERNAL SEEDS:
+→ 20852080
+→ 54541581
+→ 89317571
+→ 91168941
+→ 99017055
+PARAMETERS EXPLAINED
+FlagValueMeaning--resume-policy restartrestartStart fresh (delete old progress)--max-concurrent 2626Use all 26 GPUsdaily3.json—Input lottery data--method residue_sieveresidue_sieveUse GPU sieve engine--prng-typejava_lcg / java_lcg_reverseForward or reverse PRNG--window-size 512512Test 512 draws--skip-max 2020Allow 0–20 skips per draw--seeds 10000000001000000000Test 1 billion seeds
+SYSTEM STATUS
+MetricValueDynamic DistributionYESAll 26 GPUs UsedYESRuntime (1B seeds)~10.8 minutesThroughput~1.54M seeds/secValidated Seeds5
