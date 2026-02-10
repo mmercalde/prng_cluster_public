@@ -1450,6 +1450,108 @@ class WatcherAgent:
     # PIPELINE EXECUTION
     # ════════════════════════════════════════════════════════════════════════
 
+    def _handle_training_health(self, health: Dict[str, Any]) -> str:
+        """
+        Post-Step-5 training health check with RETRY param-threading.
+        
+        Session 76: Maps check_training_health() result to pipeline action.
+        Accepts pre-fetched health dict (caller caches -- no double call).
+        
+        Args:
+            health: Result dict from check_training_health()
+        
+        Returns:
+            "proceed" - continue to Step 6
+            "retry"   - re-run Step 5 with modified params (caller handles)
+            "skip"    - model skipped, continue to Step 6 anyway
+        """
+        action = health.get("action", "PROCEED")
+        model_type = health.get("model_type", "unknown")
+        severity = health.get("severity", "absent")
+        issues = health.get("issues", [])
+        
+        # -- PROCEED / PROCEED_WITH_NOTE --
+        if action in ("PROCEED", "PROCEED_WITH_NOTE"):
+            if severity != "critical":
+                reset_skip_registry(model_type)
+            if action == "PROCEED_WITH_NOTE":
+                logger.warning(
+                    "[WATCHER][HEALTH] Training health NOTE (%s): %s",
+                    model_type, "; ".join(issues[:3])
+                )
+            else:
+                logger.info("[WATCHER][HEALTH] Training health OK (%s) -- proceeding to Step 6", model_type)
+            return "proceed"
+        
+        # -- SKIP_MODEL --
+        if action == "SKIP_MODEL":
+            consecutive = health.get("consecutive_critical", "?")
+            logger.warning(
+                "[WATCHER][HEALTH] Training health SKIP_MODEL (%s): %s consecutive critical -- skipping",
+                model_type, consecutive
+            )
+            return "skip"
+        
+        # -- RETRY --
+        if action == "RETRY":
+            logger.warning(
+                "[WATCHER][HEALTH] Training health CRITICAL (%s): %s -- requesting RETRY",
+                model_type, "; ".join(issues[:3])
+            )
+            return "retry"
+        
+        # Unknown action -> proceed (best-effort)
+        logger.warning("[WATCHER][HEALTH] Unknown health action: %s -- proceeding", action)
+        return "proceed"
+
+    def _build_retry_params(self, health: Dict[str, Any], original_params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Build modified Step 5 params for retry based on diagnostics.
+        Session 76: Uses get_retry_params_suggestions() from training_health_check.
+        Accepts pre-fetched health dict (same instance as _handle_training_health).
+        """
+        suggestions = get_retry_params_suggestions(health)
+        
+        retry_params = dict(original_params or {})
+        
+        # Apply suggestions to retry params
+        if suggestions.get("model_type"):
+            retry_params["model_type"] = suggestions["model_type"]
+            logger.info("[WATCHER][RETRY] Switching model_type to %s", suggestions["model_type"])
+        
+        if suggestions.get("increase_regularization"):
+            current = retry_params.get("dropout", 0.3)
+            retry_params["dropout"] = min(current + 0.1, 0.7)
+            logger.info("[WATCHER][RETRY] Increasing dropout to %.2f", retry_params["dropout"])
+        
+        if suggestions.get("normalize_features"):
+            retry_params["normalize_features"] = True
+            logger.info("[WATCHER][RETRY] Enabling feature normalization")
+        
+        if suggestions.get("use_leaky_relu"):
+            retry_params["use_leaky_relu"] = True
+            logger.info("[WATCHER][RETRY] Enabling LeakyReLU activation")
+        
+        logger.info("[WATCHER][RETRY] Modified params: %s", {k: v for k, v in retry_params.items() if k != "reason"})
+        return retry_params
+
+    def _get_max_training_retries(self) -> int:
+        """
+        Read max_retries from watcher_policies.json (centralized).
+        Session 76: Single source of truth for training retry limit.
+        Path: training_diagnostics.severity_thresholds.critical.max_retries
+        """
+        try:
+            if os.path.isfile("watcher_policies.json"):
+                with open("watcher_policies.json") as pf:
+                    policies = json.load(pf)
+                td = policies.get("training_diagnostics", {})
+                st = td.get("severity_thresholds", {}).get("critical", {})
+                return st.get("max_retries", 2)
+        except Exception as e:
+            logger.debug("Could not read max_training_retries from policy: %s", e)
+        return 2
+
     def _run_step_streaming(self, cmd, step, timeout_seconds):
         """
         Run command with live output streaming.
@@ -1607,6 +1709,7 @@ class WatcherAgent:
             print("="*60 + "\n")
             return
         self.running = True
+        training_health_retries = 0  # Session 76: RETRY param-threading counter
         self.current_step = start_step
 
         # Use progress display if available
@@ -1664,6 +1767,41 @@ class WatcherAgent:
                 # if decision.recommended_action == "proceed":  # REMOVED: double-increment bug
                 #     self.current_step += 1  # Step advancement handled in _handle_proceed()
 
+                # -- Session 76: Post-Step-5 training health check ----------
+                if (step == 5
+                        and decision.recommended_action == "proceed"
+                        and TRAINING_HEALTH_AVAILABLE):
+
+                    # Single health check call -- cached for both helpers
+                    _health = check_training_health()
+                    _max_retries = self._get_max_training_retries()
+                    health_action = self._handle_training_health(_health)
+
+                    if health_action == "retry":
+                        if training_health_retries < _max_retries:
+                            training_health_retries += 1
+                            retry_params = self._build_retry_params(_health, params)
+                            logger.warning(
+                                "[WATCHER][HEALTH] Training health RETRY %d/%d -- re-running Step 5",
+                                training_health_retries, _max_retries
+                            )
+                            # Stay on Step 5 -- override current_step back
+                            # (_handle_proceed already advanced to 6)
+                            self.current_step = 5
+                            params = retry_params
+                            time.sleep(1)
+                            continue
+                        else:
+                            logger.error(
+                                "[WATCHER][HEALTH] Max training retries (%d) exhausted -- proceeding to Step 6",
+                                _max_retries
+                            )
+                    elif health_action == "skip":
+                        logger.warning("[WATCHER][HEALTH] Model type skipped -- proceeding to Step 6")
+                    else:
+                        # Reset only after successful health PROCEED
+                        training_health_retries = 0
+
                 # Small delay between steps
                 time.sleep(1)
 
@@ -1710,6 +1848,7 @@ class WatcherAgent:
 
         processed_files = set()
         self.running = True
+        training_health_retries = 0  # Session 76: RETRY param-threading counter
 
         while self.running:
             # Safety check
