@@ -167,5 +167,28 @@
       "skip_duration_hours": 24,
       "description": "If a model type hits critical N times consecutively, skip it for N hours"
     }
+  },
+  "notifications": {
+    "description": "Telegram notification policy (Session 77). Advisory only -- does not affect control flow.",
+    "telegram_enabled": true,
+    "script_path": "/usr/local/bin/cluster_notify.sh",
+    "classes": {
+      "critical": {
+        "enabled": true,
+        "description": "Human intervention required -- always notify",
+        "can_disable": false
+      },
+      "degraded": {
+        "enabled": true,
+        "description": "Autonomy self-corrected -- always notify",
+        "can_disable": false
+      },
+      "info": {
+        "enabled": false,
+        "description": "Pipeline completed cleanly -- optional",
+        "can_disable": true
+      }
+    },
+    "info_on_complete": false
   }
 }

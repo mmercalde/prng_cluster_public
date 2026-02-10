@@ -105,6 +105,27 @@ except ImportError:
 # Steps that use distributed GPU cluster (need cleanup)
 DISTRIBUTED_STEPS = {1, 2, 3}
 
+# Telegram Notification Integration (Session 77)
+def notify_telegram(message: str):
+    """Send a Telegram notification via cluster_notify.sh.
+    
+    Session 77: Best-effort, non-blocking, silent on failure.
+    Telegram is human attention routing, not logging.
+    
+    Notification classes:
+        A. CRITICAL -- human intervention required
+        B. DEGRADED -- autonomy self-corrected
+        C. INFO     -- pipeline completed cleanly (optional)
+    """
+    try:
+        subprocess.Popen(
+            ["/usr/local/bin/cluster_notify.sh", message],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # best-effort, never block
+
 from agents.safety import KillSwitch, check_safety, create_halt, clear_halt
 from agents.pipeline import get_step_info
 from agents.doctrine import validate_decision_against_doctrine
@@ -1126,10 +1147,36 @@ class WatcherAgent:
         # Notify human
         self._notify_escalation(step, decision, context)
 
+        # Session 77: Telegram Class A -- CRITICAL
+        notify_telegram(
+            "[WATCHER][CRITICAL][ACTION REQUIRED]\n"
+            f"Step {step}: {STEP_NAMES.get(step, 'Unknown')}\n"
+            f"Reason: {decision.reasoning[:200]}\n"
+            f"Confidence: {decision.confidence:.2f}\n"
+            "Pipeline HALTED -- human review required"
+        )
+
         return False
 
     def _notify_complete(self, context: FullAgentContext):
         """Notify that pipeline completed successfully."""
+        # Session 77: Telegram Class C -- INFO (policy-gated, disabled by default)
+        try:
+            import json as _json_nc
+            _notify_info = False
+            if os.path.isfile("watcher_policies.json"):
+                with open("watcher_policies.json") as _pf_nc:
+                    _pol_nc = _json_nc.load(_pf_nc)
+                _notify_info = _pol_nc.get("notifications", {}).get("info_on_complete", False)
+            if _notify_info:
+                notify_telegram(
+                    "[WATCHER][INFO]\n"
+                    "PIPELINE COMPLETE\n"
+                    f"Steps completed: {context.step}\n"
+                    f"Success rate: {self.history.get_success_rate():.1%}"
+                )
+        except Exception:
+            pass  # best-effort
         print("\n" + "=" * 60)
         print("🎉 PIPELINE COMPLETE")
         print("=" * 60)
@@ -1770,7 +1817,7 @@ class WatcherAgent:
                 # -- Session 76: Post-Step-5 training health check ----------
                 if (step == 5
                         and decision.recommended_action == "proceed"
-                        and TRAINING_HEALTH_AVAILABLE):
+                        and TRAINING_HEALTH_CHECK_AVAILABLE):
 
                     # Single health check call -- cached for both helpers
                     _health = check_training_health()
@@ -1785,6 +1832,15 @@ class WatcherAgent:
                                 "[WATCHER][HEALTH] Training health RETRY %d/%d -- re-running Step 5",
                                 training_health_retries, _max_retries
                             )
+                            # Session 77: Telegram Class B -- DEGRADED (RETRY)
+                            _health_issues_str = "; ".join(_health.get("issues", [])[:2])
+                            notify_telegram(
+                                "[WATCHER][DEGRADED]\n"
+                                "Step 5: Anti-Overfit Training\n"
+                                f"Issue: {_health_issues_str}\n"
+                                f"Action: RETRY with modified params\n"
+                                f"Attempt: {training_health_retries}/{_max_retries}"
+                            )
                             # Stay on Step 5 -- override current_step back
                             # (_handle_proceed already advanced to 6)
                             self.current_step = 5
@@ -1796,8 +1852,24 @@ class WatcherAgent:
                                 "[WATCHER][HEALTH] Max training retries (%d) exhausted -- proceeding to Step 6",
                                 _max_retries
                             )
+                            # Session 77: Telegram Class B -- DEGRADED (exhausted)
+                            notify_telegram(
+                                "[WATCHER][DEGRADED]\n"
+                                "Step 5: Anti-Overfit Training\n"
+                                f"Issue: Max training retries ({_max_retries}) exhausted\n"
+                                "Action: Proceeding to Step 6 (best-effort)\n"
+                                "Confidence: REDUCED"
+                            )
                     elif health_action == "skip":
                         logger.warning("[WATCHER][HEALTH] Model type skipped -- proceeding to Step 6")
+                        # Session 77: Telegram Class B -- DEGRADED (SKIP)
+                        notify_telegram(
+                            "[WATCHER][DEGRADED]\n"
+                            "Step 5: Anti-Overfit Training\n"
+                            f"Issue: Model type skipped (consecutive critical)\n"
+                            "Action: Proceeding to Step 6 without this model\n"
+                            "Confidence: REDUCED"
+                        )
                     else:
                         # Reset only after successful health PROCEED
                         training_health_retries = 0
