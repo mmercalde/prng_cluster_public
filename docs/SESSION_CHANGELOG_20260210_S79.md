@@ -243,3 +243,30 @@ Test 4 (archive verify):      ✅ Archived with audit fields, original removed
 
 ### Line Count
 - 2549 → 2792 (+243 lines)
+
+---
+
+## Chunk 2: Pending Approval Polling (Same Session)
+
+### Changes
+- `_poll_pending_approval()`: Detects `pending_approval.json` in daemon loop
+- `_archive_pending_approval()`: Archives to `watcher_requests/archive/` with request_id + timestamp
+- `--approve` CLI: Human approval path for production mode
+- TB-REQ-2.1: Processing lock (`processing_by_watcher`) prevents double execution
+- TB-REQ-2.2: Archive co-located with Ch13 artifacts
+- Notification spam guard via `_notified_approval_ids` tracking
+- **Closes Soak C Gap 5**
+
+### Test Results
+```
+Test 1 (--approve, no file):  ✅ "No pending approval request found"
+Test 2 (synthetic approval):  ✅ Created pending_approval.json
+Test 3 (CLI --approve):       ✅ Pipeline steps 5→6 dispatched, score 1.0
+Test 4 (archive verify):      ✅ Archived with audit fields, original removed
+```
+
+### Commits
+- `215312a` — Phase A Chunk 2 (243 insertions)
+
+### Line Count
+- 2549 → 2792 (+243 lines)
