@@ -196,3 +196,22 @@ deployment to Zeus. Needs scp + test + git commit.
 ---
 
 *End of Session 79*
+
+---
+
+## Post-Deployment Patch (Same Session)
+
+### Breakable Sleep Fix
+- **Issue:** Daemon took up to 30s to respond to SIGTERM (stuck in `time.sleep(30)`)
+- **Fix:** Replaced 3x `time.sleep(poll_interval)` in daemon loop with 1s breakable loop
+- **Result:** SIGTERM response < 1 second
+- **Lines:** 2166 → 2549 (was 2540 before sleep patch)
+- **Commit:** `0a28df6` (included in same commit)
+
+### Final Test Results
+```
+Test 1 (--status):  ✅ Shows "Daemon: NOT RUNNING"
+Test 2 (--explain): ✅ Shows 5 recent decisions from JSONL
+Test 3 (daemon):    ✅ Start → status shows RUNNING → stop < 1s
+Crash recovery:     ✅ "Recovered prior daemon state: 2 cycles"
+```
