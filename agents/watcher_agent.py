@@ -9,7 +9,15 @@ The Watcher Agent monitors pipeline outputs, evaluates results using
 the Pydantic Context Framework, and automatically triggers next steps
 or escalates to human review.
 
-Version: 1.1.0 (Grammar-Constrained LLM Integration)
+Version: 2.0.0 (Daemon Lifecycle + Grammar-Constrained LLM)
+
+Changes in v2.0.0:
+- PID file management (prevent double-daemon)
+- Signal handlers (SIGTERM/SIGINT graceful shutdown)
+- daemon_state.json persistence (crash recovery)
+- Enhanced --status (daemon PID, state, uptime)
+- New --stop command (SIGTERM via PID file)
+- New --explain command (decision artifact viewer)
 
 Changes in v1.1.0:
 - Integrated LLMRouter v1.1.0 with grammar-constrained decoding
@@ -38,6 +46,8 @@ import sys
 import time
 import subprocess
 import signal
+import atexit
+import errno
 import fnmatch
 import logging
 from datetime import datetime
@@ -328,6 +338,11 @@ class WatcherConfig:
     use_llm: bool = True
     use_grammar: bool = True  # v1.1.0: Enable grammar-constrained decoding
 
+    # Daemon (Phase A, Session 79)
+    pid_file: str = "watcher_daemon.pid"
+    daemon_state_file: str = "daemon_state.json"
+    graceful_shutdown_timeout: int = 300  # 5 min max wait for running work
+
     # Safety
     halt_file: str = "/tmp/agent_halt"
 
@@ -341,7 +356,9 @@ class WatcherConfig:
             "poll_interval_seconds": self.poll_interval_seconds,
             "step_timeout_minutes": self.step_timeout_minutes,
             "use_llm": self.use_llm,
-            "use_grammar": self.use_grammar
+            "use_grammar": self.use_grammar,
+            "pid_file": self.pid_file,
+            "daemon_state_file": self.daemon_state_file,
         }
 
 
@@ -537,7 +554,7 @@ class WatcherAgent:
         except Exception as e:
             logger.warning(f"Could not initialize LLM lifecycle: {e}")
 
-        logger.info(f"WatcherAgent v1.1.0 initialized with config: {self.config.to_dict()}")
+        logger.info(f"WatcherAgent v2.0.0 initialized with config: {self.config.to_dict()}")
 
     def _load_history(self) -> AnalysisHistory:
         """Load or create analysis history."""
@@ -1905,34 +1922,242 @@ class WatcherAgent:
             return 20  # Default
 
     # ════════════════════════════════════════════════════════════════════════
+    # DAEMON STATE & PID MANAGEMENT (Phase A, Session 79)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def _write_pid(self):
+        """Write PID file. Checks for stale/active daemon first."""
+        pid_path = Path(self.config.pid_file)
+
+        # Check for existing PID file
+        if pid_path.exists():
+            try:
+                old_pid = int(pid_path.read_text().strip())
+                # Signal 0 = existence check (does not send a signal)
+                os.kill(old_pid, 0)
+                logger.error(
+                    "Another daemon is running (PID %d). "
+                    "Use '--stop' to stop it first, or remove %s if stale.",
+                    old_pid, self.config.pid_file
+                )
+                return False
+            except OSError as e:
+                if e.errno == errno.ESRCH:
+                    logger.warning("Removing stale PID file (PID %d not running)", old_pid)
+                    pid_path.unlink()
+                elif e.errno == errno.EPERM:
+                    # Process exists but we can't signal it
+                    logger.error("Daemon PID %d exists but not owned by us", old_pid)
+                    return False
+                else:
+                    raise
+            except ValueError:
+                logger.warning("Corrupt PID file, removing")
+                pid_path.unlink()
+
+        # Write our PID atomically
+        temp_path = pid_path.with_suffix('.pid.tmp')
+        try:
+            temp_path.write_text(str(os.getpid()))
+            temp_path.rename(pid_path)  # Atomic on POSIX
+            logger.info("PID file written: %s (PID %d)", self.config.pid_file, os.getpid())
+        except Exception as e:
+            logger.error("Failed to write PID file: %s", e)
+            return False
+
+        # Register cleanup on any exit
+        atexit.register(self._remove_pid)
+        return True
+
+    def _remove_pid(self):
+        """Remove PID file if it contains our PID."""
+        pid_path = Path(self.config.pid_file)
+        try:
+            if pid_path.exists():
+                stored_pid = int(pid_path.read_text().strip())
+                if stored_pid == os.getpid():
+                    pid_path.unlink()
+                    logger.info("PID file removed")
+        except Exception as e:
+            logger.debug("PID file cleanup error: %s", e)
+
+    @staticmethod
+    def _read_pid(pid_file: str) -> Optional[int]:
+        """Read PID from file. Returns None if missing/corrupt/stale."""
+        pid_path = Path(pid_file)
+        if not pid_path.exists():
+            return None
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, 0)  # Check if alive
+            return pid
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                return None  # Process not found
+            elif e.errno == errno.EPERM:
+                return pid  # Process exists but not ours — still running
+            return None
+        except ValueError:
+            return None
+
+    def _save_daemon_state(self):
+        """Persist daemon state to disk (atomic write).
+
+        Called periodically and on shutdown. Enables crash recovery.
+        State file is authoritative (Principle 1.6: Artifacts Are Canonical).
+        """
+        state = {
+            "pid": os.getpid(),
+            "started_at": getattr(self, '_daemon_started_at', None),
+            "last_poll_at": datetime.utcnow().isoformat(),
+            "state": getattr(self, '_daemon_state', "UNKNOWN"),
+            "cycles_completed": getattr(self, '_daemon_cycles', 0),
+            "last_event": getattr(self, '_daemon_last_event', None),
+            "last_event_at": getattr(self, '_daemon_last_event_at', None),
+            "requests_processed": getattr(self, '_daemon_requests_processed', 0),
+            "results_processed": getattr(self, '_daemon_results_processed', 0),
+            "errors": getattr(self, '_daemon_errors', 0),
+            "version": "2.0.0",
+        }
+
+        state_path = Path(self.config.daemon_state_file)
+        temp_path = state_path.with_suffix('.json.tmp')
+        try:
+            with open(temp_path, 'w') as f:
+                json.dump(state, f, indent=2, default=str)
+            temp_path.rename(state_path)  # Atomic on POSIX
+        except Exception as e:
+            logger.warning("Failed to save daemon state: %s", e)
+
+    def _load_daemon_state(self) -> Dict[str, Any]:
+        """Load daemon state from disk (crash recovery).
+
+        Returns empty dict if no state file or parse error.
+        """
+        state_path = Path(self.config.daemon_state_file)
+        if not state_path.exists():
+            return {}
+        try:
+            with open(state_path) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load daemon state: %s", e)
+            return {}
+
+    def _setup_signal_handlers(self):
+        """Install signal handlers for graceful shutdown.
+
+        SIGTERM: Graceful shutdown (systemd, --stop command)
+        SIGINT:  Graceful shutdown (Ctrl+C)
+
+        Both trigger the same path: stop accepting work, wait for
+        running jobs, persist state, clean exit.
+        """
+        def _graceful_shutdown(signum, frame):
+            sig_name = signal.Signals(signum).name
+            logger.info("Received %s — initiating graceful shutdown", sig_name)
+            notify_telegram("🛑 WATCHER daemon received %s — shutting down" % sig_name)
+            self._daemon_state = "SHUTTING_DOWN"
+            self._save_daemon_state()
+            self.running = False
+            # Note: the daemon loop checks self.running each iteration.
+            # If we're mid-sleep, we'll exit at the next poll.
+            # If we're mid-work, it will finish the current operation first.
+
+        signal.signal(signal.SIGTERM, _graceful_shutdown)
+        signal.signal(signal.SIGINT, _graceful_shutdown)
+        logger.info("Signal handlers installed (SIGTERM, SIGINT → graceful shutdown)")
+
+    # ════════════════════════════════════════════════════════════════════════
     # DAEMON MODE
     # ════════════════════════════════════════════════════════════════════════
 
     def run_daemon(self, watch_dir: str = None):
         """
-        Run as a daemon, watching for new result files.
+        Run as long-running daemon with PID management and state persistence.
+
+        Phase A (Session 79): Proper daemon lifecycle with:
+        - PID file to prevent double-daemon
+        - Signal handlers for graceful shutdown
+        - daemon_state.json persistence (atomic writes)
+        - Crash recovery from prior state
+
+        The daemon's primary state is WAITING ON INFORMATION.
+        Learning is triggered by events, not schedules (Principle 1.2).
 
         Args:
             watch_dir: Directory to watch for results
         """
         watch_dir = watch_dir or self.config.results_dir
-        logger.info(f"Starting daemon mode, watching: {watch_dir}")
+
+        # ── Cold Start ──
+        # Step 1: PID file (prevent double-daemon)
+        if not self._write_pid():
+            logger.error("Cannot start daemon — PID conflict. Exiting.")
+            sys.exit(1)
+
+        # Step 2: Signal handlers
+        self._setup_signal_handlers()
+
+        # Step 3: Load prior state (crash recovery)
+        prior_state = self._load_daemon_state()
+        if prior_state:
+            logger.info(
+                "Recovered prior daemon state: %d cycles completed, last event: %s",
+                prior_state.get("cycles_completed", 0),
+                prior_state.get("last_event", "none"),
+            )
+
+        # Step 4: Initialize daemon runtime state
+        self._daemon_started_at = datetime.utcnow().isoformat()
+        self._daemon_state = "WAITING"
+        self._daemon_cycles = prior_state.get("cycles_completed", 0)
+        self._daemon_last_event = prior_state.get("last_event")
+        self._daemon_last_event_at = prior_state.get("last_event_at")
+        self._daemon_requests_processed = prior_state.get("requests_processed", 0)
+        self._daemon_results_processed = prior_state.get("results_processed", 0)
+        self._daemon_errors = prior_state.get("errors", 0)
 
         processed_files = set()
         self.running = True
         training_health_retries = 0  # Session 76: RETRY param-threading counter
 
+        logger.info(
+            "WATCHER_DAEMON operational — PID %d, watching: %s, poll: %ds",
+            os.getpid(), watch_dir, self.config.poll_interval_seconds
+        )
+        notify_telegram("✅ WATCHER daemon started (PID %d)" % os.getpid())
+        self._save_daemon_state()
+
+        # ── Steady State Loop ──
         while self.running:
             # Safety check
             if not check_safety():
-                logger.warning("Safety halt detected - pausing daemon")
+                logger.warning("Safety halt detected — pausing daemon")
+                self._daemon_state = "HALTED"
+                self._save_daemon_state()
+                for _ in range(self.config.poll_interval_seconds):
+                    if not self.running:
+                        break
+                    time.sleep(1)
+                continue
+
+            self._daemon_state = "WAITING"
+
             # Phase 7 Part B: Scan for Chapter 13 requests
             try:
-                self._scan_watcher_requests()
+                count = self._scan_watcher_requests()
+                if count and count > 0:
+                    self._daemon_requests_processed += count
+                    self._daemon_last_event = "watcher_request"
+                    self._daemon_last_event_at = datetime.utcnow().isoformat()
             except Exception as _req_err:
                 logger.warning(f'Request scan error: {_req_err}')
-
-                time.sleep(self.config.poll_interval_seconds)
+                self._daemon_errors += 1
+                for _ in range(self.config.poll_interval_seconds):
+                    if not self.running:
+                        break
+                    time.sleep(1)
                 continue
 
             # Scan for new result files
@@ -1942,8 +2167,27 @@ class WatcherAgent:
                     if str(result_file) not in processed_files:
                         self._process_result_file(result_file)
                         processed_files.add(str(result_file))
+                        self._daemon_results_processed += 1
+                        self._daemon_last_event = f"result:{result_file.name}"
+                        self._daemon_last_event_at = datetime.utcnow().isoformat()
 
-            time.sleep(self.config.poll_interval_seconds)
+            # Increment cycle counter and persist state periodically
+            self._daemon_cycles += 1
+            if self._daemon_cycles % 10 == 0:  # Every 10 polls (~5 min at 30s)
+                self._save_daemon_state()
+
+            for _ in range(self.config.poll_interval_seconds):
+                if not self.running:
+                    break
+                time.sleep(1)
+
+        # ── Graceful Shutdown ──
+        logger.info("Daemon loop exited — persisting final state")
+        self._daemon_state = "STOPPED"
+        self._save_daemon_state()
+        self._remove_pid()
+        notify_telegram("🛑 WATCHER daemon stopped cleanly (PID %d)" % os.getpid())
+        logger.info("WATCHER_DAEMON shutdown complete")
 
     def _process_result_file(self, result_file: Path):
         """Process a new result file."""
@@ -1980,7 +2224,7 @@ class WatcherAgent:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Watcher Agent v1.1.0 - Autonomous pipeline monitoring with grammar-constrained LLM"
+        description="Watcher Agent v2.0.0 - Autonomous pipeline daemon with grammar-constrained LLM"
     )
 
     parser.add_argument(
@@ -2061,6 +2305,11 @@ def main():
                         help="Process pending watcher_requests/*.json")
     parser.add_argument("--dry-run", action="store_true",
                         help="Dry run (log without executing)")
+    # Phase A (Session 79): Daemon management commands
+    parser.add_argument("--stop", action="store_true",
+                        help="Stop running daemon (sends SIGTERM via PID file)")
+    parser.add_argument("--explain", type=int, nargs="?", const=5, metavar="N",
+                        help="Show last N decision records (default: 5)")
     args = parser.parse_args()
 
     # Create config
@@ -2085,15 +2334,153 @@ def main():
 
     # Execute command
     if args.status:
-        print("\n=== Watcher Agent Status (v1.1.0) ===")
+        print("\n=== Watcher Agent Status (v2.0.0) ===")
         print(f"Safety: {'SAFE' if check_safety() else 'HALTED'}")
+
+        # Daemon status from PID file
+        daemon_pid = WatcherAgent._read_pid(config.pid_file)
+        if daemon_pid:
+            print(f"Daemon: RUNNING (PID {daemon_pid})")
+            # Read daemon state file for details
+            state_path = Path(config.daemon_state_file)
+            if state_path.exists():
+                try:
+                    with open(state_path) as f:
+                        ds = json.load(f)
+                    print(f"  State: {ds.get('state', '?')}")
+                    print(f"  Started: {ds.get('started_at', '?')}")
+                    print(f"  Cycles: {ds.get('cycles_completed', '?')}")
+                    print(f"  Last event: {ds.get('last_event', 'none')}"
+                          f" at {ds.get('last_event_at', '?')}")
+                    print(f"  Requests: {ds.get('requests_processed', 0)}"
+                          f"  Results: {ds.get('results_processed', 0)}"
+                          f"  Errors: {ds.get('errors', 0)}")
+                except Exception:
+                    print("  (daemon state file unreadable)")
+        else:
+            print("Daemon: NOT RUNNING")
+
         print(f"History runs: {len(watcher.history.runs)}")
         print(f"Success rate: {watcher.history.get_success_rate():.1%}")
         print(f"LLM enabled: {config.use_llm}")
         print(f"Grammar enabled: {config.use_grammar}")
         print(f"LLM Router: {'Available' if watcher.llm_router else 'Not available'}")
         print(f"Threshold: {config.auto_proceed_threshold}")
-        print("======================================\n")
+        print("========================================\n")
+
+    elif args.stop:
+        # Phase A: Stop running daemon via PID file
+        pid = WatcherAgent._read_pid(config.pid_file)
+        if pid is None:
+            print("No running daemon found (PID file missing or process dead)")
+            sys.exit(1)
+        print(f"Sending SIGTERM to daemon (PID {pid})...")
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # Wait briefly to confirm shutdown
+            for _ in range(10):
+                time.sleep(1)
+                try:
+                    os.kill(pid, 0)
+                except OSError as _e:
+                    if _e.errno == errno.ESRCH:
+                        print("Daemon stopped successfully")
+                        sys.exit(0)
+            print(f"Daemon still running after 10s — check manually (PID {pid})")
+            sys.exit(1)
+        except OSError as _stop_err:
+            if _stop_err.errno != errno.ESRCH:
+                print(f"OS error sending signal to PID {pid}: {_stop_err}")
+                sys.exit(1)
+            print("Daemon already stopped (process not found)")
+            # TB-REQ-1: Only clean PID file if daemon_state confirms shutdown
+            pid_path = Path(config.pid_file)
+            state_path = Path(config.daemon_state_file)
+            safe_to_clean = False
+            if pid_path.exists() and state_path.exists():
+                try:
+                    with open(state_path) as f:
+                        ds = json.load(f)
+                    stored_pid = int(pid_path.read_text().strip())
+                    if (ds.get("pid") == stored_pid and
+                            ds.get("state") in ("STOPPED", "SHUTTING_DOWN")):
+                        safe_to_clean = True
+                except Exception:
+                    pass
+            if safe_to_clean:
+                pid_path.unlink()
+                print("Stale PID file cleaned (state confirmed shutdown)")
+            else:
+                print(f"PID file retained — verify manually: {config.pid_file}")
+            sys.exit(0)
+        except PermissionError:
+            print(f"Permission denied sending signal to PID {pid}")
+            sys.exit(1)
+
+    elif args.explain is not None:
+        # Phase A: Show recent decision records
+        # TB-REQ-2: Read canonical decision artifacts first, log as fallback
+        records = []
+
+        # Source 1: decisions/*.json (Chapter 13 request completion artifacts)
+        decisions_dir = Path("decisions")
+        if decisions_dir.exists():
+            for dfile in sorted(decisions_dir.glob("*.json"), reverse=True):
+                try:
+                    with open(dfile) as f:
+                        entry = json.load(f)
+                    entry["_source"] = "decisions/"
+                    entry["_file"] = dfile.name
+                    records.append(entry)
+                except Exception:
+                    pass
+
+        # Source 2: watcher_decisions.jsonl (pipeline step decision log)
+        log_path = Path(config.log_file)
+        if log_path.exists():
+            try:
+                lines = log_path.read_text().strip().split('\n')
+                for line in reversed(lines):
+                    try:
+                        entry = json.loads(line)
+                        entry["_source"] = "jsonl"
+                        records.append(entry)
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
+
+        if not records:
+            print("No decision records found")
+            sys.exit(0)
+
+        # Sort by timestamp (newest first), take N
+        def _get_ts(rec):
+            ts = rec.get("timestamp", rec.get("completed_at", ""))
+            return ts if isinstance(ts, str) else ""
+        records.sort(key=_get_ts, reverse=True)
+        recent = records[:args.explain]
+
+        print(f"\n=== Last {len(recent)} Decision Record(s) ===")
+        for rec in recent:
+            src = rec.get("_source", "?")
+            ts = rec.get("timestamp", rec.get("completed_at", "?"))
+            step = rec.get("step", rec.get("request_type", "?"))
+            action = rec.get("action", rec.get("recommended_action",
+                     rec.get("status", "?")))
+            conf = rec.get("confidence", "—")
+            reason = rec.get("reasoning", rec.get("reason",
+                     rec.get("result", "")))
+            if isinstance(reason, str) and len(reason) > 120:
+                reason = reason[:117] + "..."
+            fname = rec.get("_file", "")
+            src_tag = f"[{src}]" if src != "jsonl" else ""
+            if fname:
+                src_tag = f"[{fname}]"
+            print(f"  [{ts}] Step {step}: {action} (conf={conf}) {src_tag}")
+            if reason:
+                print(f"           {reason}")
+        print("=" * 44 + "\n")
 
     elif args.evaluate:
         # Evaluate single file
@@ -2131,11 +2518,7 @@ def main():
         watcher.run_pipeline(args.start_step, args.end_step, override_params)
 
     elif args.daemon:
-        try:
-            watcher.run_daemon()
-        except KeyboardInterrupt:
-            watcher.stop()
-            print("\nDaemon stopped")
+        watcher.run_daemon()
 
     # Phase 7 Part B: Dispatch handling
     elif hasattr(args, "dispatch_selfplay") and args.dispatch_selfplay:
@@ -2163,5 +2546,4 @@ bind_to_watcher(WatcherAgent)
 
 if __name__ == "__main__":
     main()
-
 
