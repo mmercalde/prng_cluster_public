@@ -341,6 +341,7 @@ class WatcherConfig:
     # Daemon (Phase A, Session 79)
     pid_file: str = "watcher_daemon.pid"
     daemon_state_file: str = "daemon_state.json"
+    pending_approval_file: str = "pending_approval.json"
     graceful_shutdown_timeout: int = 300  # 5 min max wait for running work
 
     # Safety
@@ -2160,6 +2161,15 @@ class WatcherAgent:
                     time.sleep(1)
                 continue
 
+            # Poll for Chapter 13 pending approvals (Soak C Gap 5 fix)
+            try:
+                if self._poll_pending_approval():
+                    self._daemon_last_event = "pending_approval"
+                    self._daemon_last_event_at = datetime.utcnow().isoformat()
+            except Exception as _approval_err:
+                logger.warning(f'Approval poll error: {_approval_err}')
+                self._daemon_errors += 1
+
             # Scan for new result files
             results_path = Path(watch_dir)
             if results_path.exists():
@@ -2188,6 +2198,196 @@ class WatcherAgent:
         self._remove_pid()
         notify_telegram("🛑 WATCHER daemon stopped cleanly (PID %d)" % os.getpid())
         logger.info("WATCHER_DAEMON shutdown complete")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PENDING APPROVAL POLLING (Phase A Chunk 2, Session 79)
+    # ════════════════════════════════════════════════════════════════════════
+
+    def _poll_pending_approval(self) -> bool:
+        """Detect and optionally act on pending_approval.json.
+
+        Chapter 13 orchestrator creates this file when a retrain proposal
+        needs approval. WATCHER is the executor, not the judge.
+
+        WATCHER does NOT:
+        - Parse draw files
+        - Re-run diagnostics
+        - Mutate steps_to_run
+        - Alter policy thresholds
+
+        WATCHER does:
+        - Read pending_approval.json
+        - Validate schema minimally
+        - In test_mode+auto_approve: dispatch run_pipeline(), archive
+        - In production: notify Telegram, update daemon state
+
+        Returns:
+            True if an approval was processed (dispatched or notified)
+        """
+        approval_path = Path(self.config.pending_approval_file)
+        if not approval_path.exists():
+            return False
+
+        # ── Read and validate ──
+        try:
+            with open(approval_path) as f:
+                request = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                "[WATCHER][APPROVAL] Malformed pending_approval.json: %s — skipping", e
+            )
+            return False
+
+        # Only act on status == "pending"
+        status = request.get("status")
+        if status != "pending":
+            logger.debug(
+                "[WATCHER][APPROVAL] Ignoring pending_approval.json (status=%s)", status
+            )
+            return False
+
+        # Minimal schema validation
+        steps_to_run = request.get("steps_to_run")
+        request_id = request.get("request_id", "unknown")
+        if not isinstance(steps_to_run, list) or not steps_to_run:
+            logger.warning(
+                "[WATCHER][APPROVAL] Invalid steps_to_run in %s — skipping",
+                request_id
+            )
+            return False
+
+        action_required = request.get("action_required", "unknown")
+        logger.info(
+            "[WATCHER][APPROVAL] Detected pending approval: %s (action=%s, steps=%s)",
+            request_id, action_required, steps_to_run
+        )
+
+        # TB-REQ-2.1: Immediately mark as "processing" to prevent double execution
+        request["status"] = "processing_by_watcher"
+        try:
+            with open(approval_path, 'w') as f:
+                json.dump(request, f, indent=2)
+        except Exception as e:
+            logger.error("[WATCHER][APPROVAL] Could not mark as processing: %s", e)
+            return False
+
+        # ── Check auto-approve policy ──
+        is_test_mode = False
+        is_auto_approve = False
+        try:
+            policies_path = Path("watcher_policies.json")
+            if policies_path.exists():
+                with open(policies_path) as f:
+                    policies = json.load(f)
+                is_test_mode = policies.get("test_mode", False) is True
+                is_auto_approve = policies.get("auto_approve_in_test_mode", False) is True
+        except Exception as e:
+            logger.warning("[WATCHER][APPROVAL] Could not read policies: %s", e)
+
+        if is_test_mode and is_auto_approve:
+            # ── Auto-approve (test mode only) ──
+            logger.info(
+                "[WATCHER][APPROVAL] APPROVED_BY_WATCHER (test_mode auto): %s",
+                request_id
+            )
+            notify_telegram(
+                "🤖 WATCHER auto-approved %s (test_mode) — steps %s"
+                % (request_id, steps_to_run)
+            )
+
+            # Dispatch via existing run_pipeline()
+            start_step = min(steps_to_run)
+            end_step = max(steps_to_run)
+            try:
+                self.run_pipeline(start_step, end_step)
+                archive_status = "completed_by_watcher"
+            except Exception as e:
+                logger.error("[WATCHER][APPROVAL] Pipeline failed: %s", e)
+                archive_status = "failed_by_watcher"
+
+            # Archive: copy original + status update, then remove
+            self._archive_pending_approval(
+                request, approval_path, archive_status
+            )
+            return True
+
+        else:
+            # ── Production mode: notify human (once per request_id) ──
+            # Track notified requests to prevent repeated Telegram notifications
+            if not hasattr(self, '_notified_approval_ids'):
+                self._notified_approval_ids = set()
+
+            if request_id in self._notified_approval_ids:
+                logger.debug(
+                    "[WATCHER][APPROVAL] Already notified for %s — waiting for human",
+                    request_id
+                )
+                # Revert status back to "pending" for human/orchestrator
+                request["status"] = "pending"
+                try:
+                    with open(approval_path, 'w') as f:
+                        json.dump(request, f, indent=2)
+                except Exception:
+                    pass
+                return False
+
+            logger.info(
+                "[WATCHER][APPROVAL] Production mode — human approval required: %s",
+                request_id
+            )
+            notify_telegram(
+                "📋 PENDING APPROVAL: %s — action=%s steps=%s\n"
+                "Run: chapter_13_orchestrator.py --approve\n"
+                "Or:  watcher_agent.py --approve"
+                % (request_id, action_required, steps_to_run)
+            )
+            self._notified_approval_ids.add(request_id)
+
+            # Revert status back to "pending" so human can approve via orchestrator
+            request["status"] = "pending"
+            try:
+                with open(approval_path, 'w') as f:
+                    json.dump(request, f, indent=2)
+            except Exception:
+                pass  # best-effort revert
+            return True
+
+    def _archive_pending_approval(
+        self,
+        request: Dict[str, Any],
+        approval_path: Path,
+        final_status: str,
+    ) -> None:
+        """Archive pending_approval.json preserving original content.
+
+        Pattern: set status → copy to watcher_requests/archive/ → remove original.
+        Only status, approved_at, and approved_by are added.
+        No other fields are mutated.
+        """
+        request_id = request.get("request_id", "unknown")
+
+        # Add minimal audit fields (no mutation of original request fields)
+        request["status"] = final_status
+        request["approved_at"] = datetime.utcnow().isoformat()
+        request["approved_by"] = "watcher_daemon"
+
+        # TB-REQ-2.2: Archive to watcher_requests/archive/ (co-located with Ch13 artifacts)
+        archive_dir = Path("watcher_requests/archive")
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        archive_name = f"pending_approval_{request_id}_{ts}.json"
+        archive_path = archive_dir / archive_name
+
+        try:
+            with open(archive_path, 'w') as f:
+                json.dump(request, f, indent=2, default=str)
+            approval_path.unlink()
+            logger.info(
+                "[WATCHER][APPROVAL] Archived to %s, original removed",
+                archive_path
+            )
+        except Exception as e:
+            logger.error("[WATCHER][APPROVAL] Archive failed: %s", e)
 
     def _process_result_file(self, result_file: Path):
         """Process a new result file."""
@@ -2310,6 +2510,8 @@ def main():
                         help="Stop running daemon (sends SIGTERM via PID file)")
     parser.add_argument("--explain", type=int, nargs="?", const=5, metavar="N",
                         help="Show last N decision records (default: 5)")
+    parser.add_argument("--approve", action="store_true",
+                        help="Approve pending Chapter 13 request and execute pipeline")
     args = parser.parse_args()
 
     # Create config
@@ -2481,6 +2683,47 @@ def main():
             if reason:
                 print(f"           {reason}")
         print("=" * 44 + "\n")
+
+    elif args.approve:
+        # Phase A Chunk 2: Approve pending_approval.json and dispatch pipeline
+        approval_path = Path(config.pending_approval_file)
+        if not approval_path.exists():
+            print("No pending approval request found")
+            sys.exit(1)
+
+        try:
+            with open(approval_path) as f:
+                request = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Error reading pending_approval.json: {e}")
+            sys.exit(1)
+
+        if request.get("status") != "pending":
+            print(f"Approval request status is '{request.get('status')}', not 'pending'")
+            sys.exit(1)
+
+        steps = request.get("steps_to_run", [])
+        if not steps:
+            print("No steps_to_run in approval request")
+            sys.exit(1)
+
+        request_id = request.get("request_id", "unknown")
+        action = request.get("action_required", "unknown")
+        print(f"\n=== Approving Request: {request_id} ===")
+        print(f"Action: {action}")
+        print(f"Steps: {steps}")
+        print(f"WARNING: This will execute pipeline immediately.")
+        print(f"Dispatching pipeline: step {min(steps)} → {max(steps)}")
+        print()
+
+        # Dispatch
+        watcher.run_pipeline(min(steps), max(steps))
+
+        # Archive (uses watcher_requests/archive/ per TB-REQ-2.2)
+        watcher._archive_pending_approval(
+            request, approval_path, "completed_by_cli"
+        )
+        print(f"Approval archived. Pipeline complete.")
 
     elif args.evaluate:
         # Evaluate single file
