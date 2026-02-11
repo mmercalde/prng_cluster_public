@@ -2357,6 +2357,7 @@ class WatcherAgent:
         request: Dict[str, Any],
         approval_path: Path,
         final_status: str,
+        approved_by: str = "watcher_daemon",
     ) -> None:
         """Archive pending_approval.json preserving original content.
 
@@ -2369,7 +2370,7 @@ class WatcherAgent:
         # Add minimal audit fields (no mutation of original request fields)
         request["status"] = final_status
         request["approved_at"] = datetime.utcnow().isoformat()
-        request["approved_by"] = "watcher_daemon"
+        request["approved_by"] = approved_by
 
         # TB-REQ-2.2: Archive to watcher_requests/archive/ (co-located with Ch13 artifacts)
         archive_dir = Path("watcher_requests/archive")
@@ -2721,7 +2722,7 @@ def main():
 
         # Archive (uses watcher_requests/archive/ per TB-REQ-2.2)
         watcher._archive_pending_approval(
-            request, approval_path, "completed_by_cli"
+            request, approval_path, "completed_by_cli", approved_by="watcher_cli"
         )
         print(f"Approval archived. Pipeline complete.")
 
