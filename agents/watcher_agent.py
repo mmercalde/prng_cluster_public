@@ -534,6 +534,7 @@ class WatcherAgent:
         self.retry_counts: Dict[int, int] = {}
         self.total_retries = 0
         self.running = False
+        self._pipeline_running = False
 
         # v1.1.0: Initialize LLM Router if available
         self.llm_router = None
@@ -1773,7 +1774,7 @@ class WatcherAgent:
             print(f"\nTo resume: python3 -m agents.watcher_agent --clear-halt")
             print("="*60 + "\n")
             return
-        self.running = True
+        self._pipeline_running = True
         training_health_retries = 0  # Session 76: RETRY param-threading counter
         self.current_step = start_step
 
@@ -1784,7 +1785,7 @@ class WatcherAgent:
             progress.__enter__()
 
         try:
-            while self.running and self.current_step <= end_step:
+            while self._pipeline_running and self.current_step <= end_step:
                 # Safety check
                 if not check_safety():
                     logger.error("Safety halt detected - stopping pipeline")
@@ -1900,7 +1901,7 @@ class WatcherAgent:
             if progress:
                 progress.__exit__(None, None, None)
 
-        self.running = False
+        self._pipeline_running = False
         logger.info("Pipeline execution finished")
 
     def _get_step_trials(self, step: int, params: dict = None) -> int:
@@ -2061,6 +2062,7 @@ class WatcherAgent:
             self._daemon_state = "SHUTTING_DOWN"
             self._save_daemon_state()
             self.running = False
+            self._pipeline_running = False
             # Note: the daemon loop checks self.running each iteration.
             # If we're mid-sleep, we'll exit at the next poll.
             # If we're mid-work, it will finish the current operation first.

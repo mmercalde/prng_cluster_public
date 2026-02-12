@@ -334,9 +334,17 @@ class Chapter13Orchestrator:
                     _test_mode = self.policies.get("test_mode", False)
                     _auto_approve = self.policies.get("auto_approve_in_test_mode", False)
                     
-                    if _test_mode and _auto_approve:
-                        logger.info("🔄 SOAK C: Auto-executing (test mode)")
+                    _approval_route = self.policies.get("approval_route", "orchestrator")
+                    if _approval_route not in ("orchestrator", "watcher"):
+                        _approval_route = "orchestrator"
+
+                    if _test_mode and _auto_approve and _approval_route == "orchestrator":
+                        logger.info("🔄 Auto-executing (test mode, orchestrator route)")
                         result["outcome"] = "auto_executed_test_mode"
+                    elif _approval_route == "watcher":
+                        logger.info("📋 Routing to WATCHER daemon for approval")
+                        self.trigger_manager.request_approval(trigger_eval)
+                        result["outcome"] = "pending_approval"
                     else:
                         # v1: Still require human approval even for accepted proposals
                         v1_approval = self.policies.get("v1_approval_required", {})
