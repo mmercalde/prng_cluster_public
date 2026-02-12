@@ -925,6 +925,8 @@ This system is:
 | `parameter_change_limit` | `watcher_policies.json` | float | 0.1-0.3 | Max delta per change |
 | `cooldown_runs` | `watcher_policies.json` | int | 2-5 | Runs between changes |
 
+> **📋 Complete Policy Reference:** See `docs/WATCHER_POLICIES_REFERENCE.md` for full documentation of all `watcher_policies.json` flags including `test_mode`, `auto_approve_in_test_mode`, `skip_escalation_in_test_mode`, `approval_route`, and production vs test configurations.
+
 ### 18.8 Frozen (Never Autonomous)
 
 | Component | Location | Reason |

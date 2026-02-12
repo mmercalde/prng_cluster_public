@@ -517,6 +517,18 @@ Version 1.0.0 - December 2025
 
 ---
 
+### Policy Configuration
+
+WATCHER behavior is governed by `watcher_policies.json`. Key flags:
+
+| Flag | Values | Purpose |
+|------|--------|--------|
+| `approval_route` | `"orchestrator"` / `"watcher"` | Who owns execution authority |
+| `test_mode` | boolean | Master switch for test mode |
+| `auto_approve_in_test_mode` | boolean | WATCHER auto-approves (requires test_mode) |
+
+> **📋 Complete Policy Reference:** See `docs/WATCHER_POLICIES_REFERENCE.md` for all flags, safety invariants, and production vs test configurations.
+
 
 ### Parameter Bounds Authority
 
