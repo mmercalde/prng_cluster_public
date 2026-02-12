@@ -1,13 +1,13 @@
 # SESSION CHANGELOG — S80
 **Date:** 2026-02-11  
 **Session:** 80  
-**Focus:** Soak C v2.0.0 — Operational Autonomy Validation  
+**Focus:** Soak C v2.0.0 — Operational Autonomy Validation + Documentation Sweep  
 
 ---
 
 ## Summary
 
-Validated WATCHER v2.0.0 daemon through full operational autonomy soak test. Discovered and fixed lifecycle coupling bug (`self.running` shared between daemon and pipeline). Introduced `approval_route` policy for explicit authority routing between orchestrator and WATCHER. Deployed permanent GPU stability fixes to all 3 mining rigs.
+Validated WATCHER v2.0.0 daemon through full operational autonomy soak test. Discovered and fixed lifecycle coupling bug (`self.running` shared between daemon and pipeline). Introduced `approval_route` policy for explicit authority routing between orchestrator and WATCHER. Deployed permanent GPU stability fixes to all 3 mining rigs and rebooted. Completed comprehensive documentation sweep including Operating Guide v2.0, Policy Reference, Doc Index v1.1, and Implementation Progress v3.7.
 
 ---
 
@@ -53,9 +53,22 @@ Validated WATCHER v2.0.0 daemon through full operational autonomy soak test. Dis
 
 - **udev rule** (`/etc/udev/rules.d/99-amdgpu-perf.rules`): Auto-set `perf=high` when GPUs detected
 - **GFXOFF disable** (`amdgpu.gfxoff=0` in GRUB): Prevents soft lockup crashes from GPU sleep/wake storms
-- **Reboot required** on all rigs for GFXOFF to take effect
+- **All 3 rigs rebooted** — GFXOFF confirmed active
 
 **Root cause of rig-6600b crash:** Kernel soft lockup (`CPU#2 stuck for 26s` in `systemd-udevd`) during GPU enumeration on PCIe Gen1 with 8 GPUs.
+
+### 5. Documentation Sweep
+
+| Document | Version | Status |
+|---|---|---|
+| COMPLETE_OPERATING_GUIDE | v1.1 → v2.0 | Updated: Ch13, WATCHER, policies, version numbers, rig-6600c, NPZ v3.0 |
+| WATCHER_POLICIES_REFERENCE.md | v1.0 (NEW) | Canonical policy flag reference with copy-paste mode switching |
+| DOCUMENTATION_INDEX | v1.0 → v1.1 | Added policies reference, S79-80, new reading paths, deprecated old guide |
+| CHAPTER_13_IMPLEMENTATION_PROGRESS | v3.6 → v3.7 | Phase 10 WATCHER Daemon, Soak C v2.0.0, GPU infra status |
+| CHAPTER_10 | cross-ref added | Policy Configuration section + link to policies reference |
+| CHAPTER_13 | cross-ref added | Link to policies reference after configurable parameter table |
+| SESSION_CHANGELOG_20260211_S80.md | NEW | This file |
+| ser8 docs | synced | rsync from Zeus, all 25 missing files pulled |
 
 ---
 
@@ -117,6 +130,10 @@ PID file removed. daemon_state.json updated to state: STOPPED.
 | `d4bba47` | fix: audit clarity — CLI approval uses approved_by='watcher_cli' |
 | `66620be` | feat: Session 80 — approval_route, _pipeline_running fix, Soak C v2.0.0 PASSED |
 | `53ee6fc` | restore: production policies after Soak C v2.0.0 |
+| `e966e81` | docs: S80 changelog, WATCHER policies reference, Ch10+Ch13 cross-refs |
+| `06523c6` | docs: Implementation Progress v3.7 + Doc Index v1.1 |
+| `74c831f` | docs: COMPLETE_OPERATING_GUIDE v2.0 — Ch13, WATCHER, policies, version updates |
+| `666c64b` | docs: rename operating guide to v2.0 |
 
 ---
 
@@ -126,8 +143,15 @@ PID file removed. daemon_state.json updated to state: STOPPED.
 |---|---|---|
 | agents/watcher_agent.py | MODIFIED | _pipeline_running, approved_by param (+4 lines) |
 | chapter_13_orchestrator.py | MODIFIED | approval_route routing (~8 lines) |
-| watcher_policies.json | MODIFIED | Added approval_route field |
+| watcher_policies.json | MODIFIED | Added approval_route field, restored production |
 | fix_gpu_rigs.sh | NEW | GPU stability deployment script |
+| docs/WATCHER_POLICIES_REFERENCE.md | NEW | Canonical policy flag reference |
+| docs/DOCUMENTATION_INDEX_v1_1.md | NEW | Updated navigation guide |
+| docs/CHAPTER_13_IMPLEMENTATION_PROGRESS_v3_7.md | NEW | Phase 10 + Soak C v2.0.0 |
+| docs/COMPLETE_OPERATING_GUIDE_v2_0.md | NEW | Major update from v1.1 |
+| docs/CHAPTER_10_AUTONOMOUS_AGENT_FRAMEWORK_v3.md | MODIFIED | Policy cross-reference |
+| docs/CHAPTER_13_LIVE_FEEDBACK_LOOP_v1_1.md | MODIFIED | Policy cross-reference |
+| docs/SESSION_CHANGELOG_20260211_S80.md | NEW | This file |
 
 ---
 
@@ -150,14 +174,25 @@ This is the transition from "detection system" to "operational autonomous system
 | `skip_escalation_in_test_mode` | `false` | `true` | Suppress mandatory escalation |
 | `approval_route` | `"orchestrator"` | `"watcher"` | Who owns execution authority |
 
+> **📋 Full Reference:** See `docs/WATCHER_POLICIES_REFERENCE.md`
+
+---
+
+## Current System State
+
+- **Production mode:** test_mode=false, approval_route=orchestrator
+- **WATCHER:** v2.0.0 (2,795 lines), daemon-capable, not currently running
+- **All rigs:** Rebooted, GFXOFF active, udev perf=high, all 26 GPUs available
+- **Documentation:** Fully synced (Zeus + ser8 + Claude project)
+- **Git:** Clean, all changes pushed
+
 ---
 
 ## Next Steps
 
-1. **Documentation sweep** — Update COMPLETE_OPERATING_GUIDE, Chapter 10, Chapter 13
-2. **Reboot rigs** — Activate GFXOFF disable on all 3 mining rigs  
-3. **Real learning cycle** — Invalidate outputs, run full pipeline through WATCHER with actual GPU training
-4. **Chunk 3** (deferred) — APScheduler, scraper subprocess, decision chain persistence
+1. **Real learning cycle** — Invalidate stale outputs, run full pipeline through WATCHER with actual GPU training (Steps 3→6 with real computation, not freshness-skip)
+2. **Chunk 3** (deferred) — APScheduler, scraper subprocess, decision chain persistence
+3. **Phase 9B.3** (deferred) — Auto policy heuristics (pending 9B.2 validation)
 
 ---
 
