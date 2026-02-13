@@ -24,9 +24,9 @@ Follows the exact same pattern as the Strategy Advisor implementation
 | `diagnostics_analysis.gbnf` | ~85 | GBNF grammar constraining LLM output (Task 7.1) | `grammars/` |
 | `diagnostics_analysis_schema.py` | ~200 | Pydantic models mirroring GBNF grammar (Task 7.2) | project root |
 | `diagnostics_llm_analyzer.py` | ~640 | Bundle builder + end-to-end LLM call + WATCHER helper (Tasks 7.3-7.5) | project root |
-| `apply_s81_phase7_llm_wiring.sh` | ~220 | Watcher patch script — wires LLM into RETRY path | project root (run once) |
+| `apply_s81_phase7_watcher_patch.py` | ~250 | Python idempotent patcher — wires LLM into RETRY path | project root (run once) |
 
-**Total: ~1,145 lines across 4 files.**
+**Total: ~1,175 lines across 4 files.**
 
 ---
 
@@ -38,26 +38,42 @@ Three mandatory hardening measures from formal review:
 |---|-------------|---------------|--------|
 | 1 | Schema drift protection (`extra="forbid"`) | Added `model_config = ConfigDict(extra="forbid")` to all 3 Pydantic models | ✅ Tested |
 | 2 | LLM timeout enforcement | SIGALRM 120s timeout in `_request_llm_diagnostics_analysis_inner()` + `timeout` param on public API | ✅ Daemon-safe |
-| 3 | Retry parameter clamp in WATCHER | `_merge_retry_params_with_clamp()` method — hard clamp via `_is_within_policy_bounds()` after merge | ✅ In patch |
+| 3 | Retry parameter clamp in WATCHER | Per-proposal `_is_within_policy_bounds()` check — flat scalar values only | ✅ In patch |
 
 ---
 
-## Watcher Patch — `apply_s81_phase7_llm_wiring.sh`
+## Watcher Patch — `apply_s81_phase7_watcher_patch.py`
 
-Adds 3 elements to `agents/watcher_agent.py`:
+Python idempotent patcher using anchor markers. Replaces rejected bash/sed approach.
 
-| Element | Lines | What It Does |
-|---------|-------|-------------|
-| `LLM_DIAGNOSTICS_AVAILABLE` import guard | ~12 | Safe import with fallback flag |
-| `_request_diagnostics_llm(health)` | ~30 | Private wrapper — calls `request_llm_diagnostics_analysis()` with timeout=120s |
-| `_merge_retry_params_with_clamp(base, llm)` | ~40 | Merge LLM proposals into heuristic params with hard policy clamp |
-| `_build_retry_params()` modification | ~12 | Calls LLM analysis + merge before returning retry params |
+Modifies 2 locations in `agents/watcher_agent.py`:
 
-**Strict Step Gate:** LLM only fires when `_build_retry_params()` is called, which only happens on Step 5 RETRY. Never during idle loop, approval polling, other steps, or shutdown.
+| Location | Anchor Marker | What It Does |
+|----------|---------------|-------------|
+| Top-level imports | `S81_PHASE7_LLM_DIAGNOSTICS_IMPORT` | `try: from diagnostics_llm_analyzer import ...; LLM_DIAGNOSTICS_AVAILABLE = True` — no logger calls in import block |
+| `_build_retry_params()` body | `S81_PHASE7_LLM_REFINEMENT` | LLM analysis + clamp + merge, inserted before `return retry_params` |
 
-**Merge Order:** `heuristic_params → LLM_refine → hard_clamp → return`
+**P0 fixes from Team Beta review:**
 
-**Failure Mode:** Any LLM failure → logged as warning → heuristic params returned unmodified.
+| Issue | Fix |
+|-------|-----|
+| Step gate missing | Triple gate: `LLM_DIAGNOSTICS_AVAILABLE AND current_step == 5 AND health['action'] == 'RETRY'` |
+| Param shape corruption | Accesses `proposal.proposed_value` (scalar) directly — `retry_params[key] = scalar`, no structured dict |
+| Import-time logger crash | Import guard uses bare `try/except` with no logger calls |
+| sed/awk fragility | Python patcher with explicit anchor markers, backup, syntax verification, auto-restore |
+| Lifecycle thrashing | Opportunistic: `getattr(self, 'llm_lifecycle', None)` — uses `session()` context manager if present, skips cleanly if not |
+
+**VRAM lifecycle flow:**
+
+```
+Step 5 (LLM OFF, VRAM for training)
+  -> health check -> RETRY
+  -> lifecycle.session() starts (LLM ON, VRAM acquired)
+  -> diagnostics analysis (120s timeout)
+  -> session() exits (LLM OFF, VRAM freed)
+  -> merge heuristic + LLM (clamped) -> retry_params
+  -> Step 5 re-runs (VRAM available)
+```
 
 ---
 
@@ -158,8 +174,8 @@ scp ~/Downloads/diagnostics_analysis.gbnf rzeus:~/distributed_prng_analysis/gram
 scp ~/Downloads/diagnostics_analysis_schema.py rzeus:~/distributed_prng_analysis/
 scp ~/Downloads/diagnostics_llm_analyzer.py rzeus:~/distributed_prng_analysis/
 
-# Watcher patch script to project root
-scp ~/Downloads/apply_s81_phase7_llm_wiring.sh rzeus:~/distributed_prng_analysis/
+# Watcher patcher to project root
+scp ~/Downloads/apply_s81_phase7_watcher_patch.py rzeus:~/distributed_prng_analysis/
 
 # Changelog to docs/
 scp ~/Downloads/SESSION_CHANGELOG_20260211_S81.md rzeus:~/distributed_prng_analysis/docs/
@@ -175,8 +191,8 @@ python3 -c "import py_compile; py_compile.compile('diagnostics_analysis_schema.p
 python3 -c "import py_compile; py_compile.compile('diagnostics_llm_analyzer.py', doraise=True); print('analyzer OK')"
 ls grammars/diagnostics_analysis.gbnf
 
-# 2. Run watcher patch
-bash apply_s81_phase7_llm_wiring.sh
+# 2. Run Python patcher (creates backup, verifies syntax, auto-restores on failure)
+python3 apply_s81_phase7_watcher_patch.py
 
 # 3. Verify watcher still works
 PYTHONPATH=. python3 agents/watcher_agent.py --status
@@ -198,6 +214,7 @@ git add grammars/diagnostics_analysis.gbnf
 git add diagnostics_analysis_schema.py
 git add diagnostics_llm_analyzer.py
 git add agents/watcher_agent.py
+git add apply_s81_phase7_watcher_patch.py
 git add docs/SESSION_CHANGELOG_20260211_S81.md
 
 # Commit
@@ -233,14 +250,46 @@ git push origin main
 
 ---
 
-## Remaining Phase 7 Tasks
+## Live Deployment + Testing (S81 continued, 2026-02-12)
 
-| Task | Status | Notes |
-|------|--------|-------|
-| 7.7 | ⏳ | Live DeepSeek test — requires Zeus + LLM server running |
-| WATCHER wiring | ⏳ | Modify `_handle_retry()` to call `request_llm_diagnostics_analysis()` |
+### Deployment
 
-These are deployment-time tasks, not code creation tasks.
+Patcher ran successfully on Zeus (2,795 → 2,931 lines):
+- All 10 verification markers PASS
+- WATCHER `--status` confirms healthy initialization
+- LLM Router available, lifecycle manager active
+- Git commit: `c78a08b`
+
+### Bugs Found & Fixed During Live Test
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| Patcher prerequisite fail | Live code uses `TRAINING_HEALTH_CHECK_AVAILABLE`, not `TRAINING_HEALTH_AVAILABLE` | Updated prerequisite check |
+| Step gate inert | `self.current_step == 6` when `_build_retry_params` called (set to 5 AFTER) | Removed from gate; calling context enforces step==5 (Team Beta approved) |
+| `_is_within_policy_bounds` missing | Method never deployed to live watcher | Added as 3rd patcher step (Team Beta approved) |
+| `FileNotFoundError: grammars/grammars/...` | Analyzer resolved full path, router prepends `grammars/` internally | Pass bare filename only |
+| `400 Bad Request: Failed to parse grammar` | Multi-line GBNF rules unsupported by this llama.cpp version | Rewrote grammar v1.1 with single-line rules |
+
+### Live Test Result
+
+```
+INFO: Built diagnostics prompt: model=neural_net, severity=critical, ~720 tokens
+INFO: Calling LLM with grammar: diagnostics_analysis.gbnf (timeout=120s)
+INFO: Grammar-constrained response (diagnostics_analysis.gbnf)
+INFO: LLM diagnostics analysis: focus=MODEL_DIVERSITY, root_cause_confidence=0.85,
+      models=4 recommendations, params=4 proposals
+INFO: Archived to diagnostics_outputs/llm_proposals/diagnostics_analysis_20260213_015830.json
+
+Focus:      MODEL_DIVERSITY
+Confidence: 0.85
+Proposals:  4 (learning_rate, n_estimators, num_leaves, depth)
+Models:     neural_net=viable, xgboost=fixable, lightgbm=fixable, catboost=fixable
+```
+
+### What Has NOT Yet Been Tested
+
+The full WATCHER RETRY loop: Step 5 → health CRITICAL → RETRY → LLM refinement → clamp → re-run.
+Requires either a real training failure or a controlled threshold tweak.
 
 ---
 
@@ -248,9 +297,9 @@ These are deployment-time tasks, not code creation tasks.
 
 | Priority | Task | Status |
 |----------|------|--------|
-| 1 | Phase 7 — LLM Diagnostics Integration | ✅ Code complete |
-| 2 | Real Learning Cycle | ⏳ Next session |
-| 3 | Phase 8 — Selfplay + Ch13 Wiring | ⏳ Lower priority |
+| 1 | Phase 7 — LLM Diagnostics Integration | ✅ DEPLOYED + VERIFIED |
+| 2 | Real Learning Cycle (forced RETRY) | ⏳ Next session |
+| 3 | Phase 8 — Selfplay + Ch13 Wiring | 📋 Pending |
 
 ---
 
@@ -264,10 +313,10 @@ These are deployment-time tasks, not code creation tasks.
 | 4. RETRY Param-Threading | ✅ | S76 |
 | 5. FIFO Pruning | ✅ | S72 |
 | 6. Health Check | ✅ | S72 |
-| **7. LLM Integration** | **✅ Code complete** | **S81** |
+| **7. LLM Integration** | **✅ DEPLOYED + VERIFIED** | **S81** |
 | 8. Selfplay + Ch13 Wiring | 📋 Pending | — |
 | 9. First Diagnostic Investigation | 📋 Pending | — |
 
 ---
 
-*Session 81 — CHAPTER 14 PHASE 7 CODE COMPLETE*
+*Session 81 — CHAPTER 14 PHASE 7 DEPLOYED + LIVE TEST PASSED*

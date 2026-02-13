@@ -1,21 +1,23 @@
 # CHAPTER_13_IMPLEMENTATION_PROGRESS_v3_7.md
 
-**Last Updated:** 2026-02-11
+**Last Updated:** 2026-02-12
 **Document Version:** 3.7.0
-**Status:** ✅ ALL PHASES COMPLETE — Execution Autonomy Achieved & Soak Tested
-**Team Beta Endorsement:** ✅ Approved (Phase 7 S59, Soak C S63, Soak C v2.0.0 S80)
+**Status:** ✅ ALL PHASES COMPLETE — Full Autonomous Operation Achieved & Soak Tested
+**Team Beta Endorsement:** ✅ Approved (Phase 7 verified Session 59, Soak C certified Session 63)
 
 ---
 
-## ⚠️ Documentation Sync Notice (2026-02-11)
+## ⚠️ Documentation Sync Notice (2026-02-12)
 
-**Session 80 Update:** WATCHER v2.0.0 daemon infrastructure validated through Soak C v2.0.0. System has transitioned from **evaluation autonomy** (orchestrator logs and evaluates) to **execution autonomy** (WATCHER daemon detects, approves, dispatches, archives autonomously).
+**Session 81 Update:** Chapter 14 Phase 7 (LLM Diagnostics Integration) **DEPLOYED + VERIFIED ON ZEUS**.
 
-Key additions:
-- `_pipeline_running` lifecycle separation (daemon survives pipeline completion)
-- `approval_route` policy (explicit authority routing: orchestrator vs watcher)
-- `approved_by` audit trail (watcher_daemon vs watcher_cli)
-- GPU rig permanent fixes (udev rule + GFXOFF disable)
+Full end-to-end test confirmed: DeepSeek-R1-14B receives diagnostics prompt → grammar-constrained JSON → Pydantic validation → 4 model recommendations + 4 parameter proposals → archived to disk. Phase 4 (RETRY param-threading) also completed in Session 76.
+
+**Session 81 Bugs Found & Fixed:**
+- Grammar parse failure: multi-line → single-line rules (llama.cpp requirement)
+- Double path prefix: analyzer resolved full path, router prepended `grammars/` again
+- Patcher prerequisite: `TRAINING_HEALTH_AVAILABLE` → `TRAINING_HEALTH_CHECK_AVAILABLE`
+- Step gate: `self.current_step == 5` inert (set to 6 by `_handle_proceed` before `_build_retry_params` call)
 
 ---
 
@@ -34,101 +36,9 @@ Key additions:
 | 9A. Chapter 13 ↔ Selfplay Hooks | ✅ Complete | Team Beta | 2026-01-30 | 2026-01-30 |
 | 9B.1 Policy Transform Module | ✅ Complete | Claude | 2026-01-30 | 2026-01-30 |
 | 9B.2 Policy-Conditioned Mode | ✅ Complete | Claude | 2026-01-30 | 2026-01-30 |
-| 9B.3 Policy Proposal Heuristics | 📲 Future | TBD | — | — |
-| **10. WATCHER Daemon (Phase A)** | **✅ Complete** | **Team Alpha+Beta** | **2026-02-11** | **2026-02-11** |
+| 9B.3 Policy Proposal Heuristics | 🔲 Future | TBD | — | — |
 
-**Legend:** 📲 Not Started | 🟡 In Progress | ✅ Complete | ❌ Blocked/Missing
-
----
-
-## Phase 10: WATCHER Daemon — Phase A ✅ COMPLETE
-
-### Chunk 1: Foundation Layer (Session 79)
-| Component | Status | Lines | Notes |
-|-----------|--------|-------|-------|
-| PID file management | ✅ | ~30 | Stale detection, atomic write |
-| Signal handlers | ✅ | ~20 | SIGTERM/SIGINT → graceful shutdown |
-| daemon_state.json | ✅ | ~40 | Atomic writes, crash recovery |
-| `--status` command | ✅ | ~30 | PID, state, uptime, cycles |
-| `--stop` command | ✅ | ~20 | SIGTERM via PID, non-destructive |
-| `--explain N` command | ✅ | ~25 | Decision artifact viewer |
-| Breakable sleep | ✅ | ~10 | 1s loop replaces 30s sleep |
-
-### Chunk 2: Approval Polling (Session 79)
-| Component | Status | Lines | Notes |
-|-----------|--------|-------|-------|
-| `_poll_pending_approval()` | ✅ | ~60 | Detects pending_approval.json |
-| `_archive_pending_approval()` | ✅ | ~40 | Archives with audit trail |
-| `--approve` CLI | ✅ | ~25 | Human approval for production |
-| Processing lock | ✅ | ~10 | `processing_by_watcher` prevents double exec |
-| Notification spam guard | ✅ | ~10 | `_notified_approval_ids` set |
-| `approved_by` parameter | ✅ | ~5 | watcher_daemon vs watcher_cli |
-
-### Lifecycle Fix (Session 80)
-| Component | Status | Lines | Notes |
-|-----------|--------|-------|-------|
-| `_pipeline_running` | ✅ | +2 | Separate from `self.running` |
-| Pipeline start | ✅ | edit | `_pipeline_running = True` |
-| Pipeline loop | ✅ | edit | `while _pipeline_running` |
-| Pipeline finish | ✅ | edit | `_pipeline_running = False` |
-| Signal handler | ✅ | +1 | Kills both loops |
-
-### Approval Routing (Session 80)
-| Component | Status | Lines | Notes |
-|-----------|--------|-------|-------|
-| `approval_route` policy | ✅ | ~8 | "orchestrator" / "watcher" enum |
-| Orchestrator routing logic | ✅ | ~8 | chapter_13_orchestrator.py |
-| Policy validation | ✅ | ~2 | Fallback to "orchestrator" |
-
-### WATCHER Agent Summary
-| Metric | Value |
-|--------|-------|
-| File | agents/watcher_agent.py |
-| Version | v2.0.0 |
-| Total lines | 2,795 |
-| New daemon code | ~350 lines (Chunks 1+2 + fixes) |
-| CLI commands | --run-pipeline, --daemon, --stop, --status, --explain, --approve |
-
----
-
-## Soak Test History
-
-| Test | Session | Duration | Cycles | Result | What It Proved |
-|------|---------|----------|--------|--------|----------------|
-| Soak A | S60 | 56 cycles | 56 | ✅ PASSED | Preflight, freshness, orchestration |
-| Soak B | S60 | 25 cycles | 25 | ✅ PASSED | Failure recovery, retry logic |
-| Soak C v1 | S60-63 | 81 cycles | 81 | ✅ PASSED | Detection autonomy (orchestrator-only) |
-| **Soak C v2.0.0** | **S80** | **46 min** | **69** | **✅ PASSED** | **Execution autonomy (full daemon path)** |
-
-### Soak C v2.0.0 Detail (Session 80)
-
-**Full path validated:**
-```
-synthetic_draw_injector (60s)
-  → chapter_13_orchestrator (detect → diagnose → trigger → LLM → accept)
-    → pending_approval.json (approval_route = "watcher")
-      → WATCHER daemon (_poll_pending_approval, 30s poll)
-        → auto-approve (test_mode dual-flag check)
-          → run_pipeline(steps 3→6)
-            → archive to watcher_requests/archive/
-              → wait → repeat
-```
-
-**Metrics:**
-
-| Metric | Result | Pass Criteria |
-|--------|--------|---------------|
-| Duration | 46 minutes | >45 min ✅ |
-| Cycles | 69 | Sustained ✅ |
-| Archives | 39 | Accumulating ✅ |
-| RSS memory | 258→263 MB | No leak ✅ |
-| SIGTERM response | 1.558s | <2s ✅ |
-| PID cleanup | Removed | ✅ |
-| State persistence | 69 cycles saved | ✅ |
-| Double executions | 0 | ✅ |
-| Tracebacks | 0 | ✅ |
-| Telegram notifications | Working | ✅ |
-| Duplicate request_ids | 0 | ✅ |
+**Legend:** 🔲 Not Started | 🟡 In Progress | ✅ Complete | ❌ Blocked/Missing
 
 ---
 
@@ -144,131 +54,140 @@ synthetic_draw_injector (60s)
 | watcher_dispatch.py | ✅ Integrated | S68 | Advisor called before selfplay |
 | Bounds clamping | ✅ Implemented | S68 | Team Beta Option D |
 | DeepSeek primary | ✅ Verified | S68 | Grammar-constrained output |
-| Claude backup | ✅ Verified | S68 | Escalation path |
+| Claude backup | ✅ Verified | S68 | Fallback path tested |
 
 ---
 
-## Chapter 14 Training Diagnostics Status
+## Soak Testing Status — ALL PASSED ✅
 
-| Phase | Status | Session | Notes |
-|-------|--------|---------|-------|
-| Phase 1: Diagnostic Engine | ✅ Complete | S69 | training_diagnostics.py core |
-| Phase 2: GPU/CPU Collection | ✅ Complete | S70 | CUDA + ROCm metrics |
-| Phase 3: Engine Wiring | ✅ Complete | S70 | reinforcement_engine.py v1.7.0 |
-| Phase 4: RETRY Param-Threading | ✅ Complete | S76 | WATCHER health check integration |
-| Phase 5: FIFO Pruning | ✅ Complete | S72 | Unbounded growth prevention |
-| Phase 6: Health Check | ✅ Complete | S72 | check_training_health() deployed |
+| Test | Status | Date | Duration | Key Metrics |
+|------|--------|------|----------|-------------|
+| **Soak A: Daemon Endurance** | **✅ PASSED** | **2026-02-04** | **2h 4m** | **RSS 61,224 KB flat (245 samples), 4 FDs flat, zero drift** |
+| **Soak B: Sequential Requests** | **✅ PASSED + CERTIFIED** | **2026-02-04** | **42m** | **10/10 completed, 0 failures, 60MB flat, 0 heuristic fallbacks** |
+| **Soak C: Autonomous Loop** | **✅ PASSED + CERTIFIED** | **2026-02-06** | **~77m** | **81 cycles, 73 auto-executed, 6 rejected (frozen_param), 0 escalated, 0 tracebacks** |
 
 ---
 
-## GPU Infrastructure Status
+## Chapter 14 Training Diagnostics Progress — UPDATED S81
 
-| Rig | GPUs | udev Rule | GFXOFF | perf=high | Notes |
-|-----|------|-----------|--------|-----------|-------|
-| Zeus | 2× RTX 3080 Ti | N/A (CUDA) | N/A | N/A | Coordinator |
-| rig-6600 (120) | 8× RX 6600 | ✅ Installed | Pending reboot | ✅ Set | Session 80 |
-| rig-6600b (154) | 8× RX 6600 | ✅ Installed | ✅ Active | ✅ Set | Rebooted S80 |
-| rig-6600c (162) | 8× RX 6600 | ✅ Installed | Pending reboot | ✅ Set | Session 80 |
+| Phase | Description | Status | Session | Notes |
+|-------|-------------|--------|---------|-------|
+| Pre | Prerequisites (Soak A/B/C, Team Beta approval) | ✅ Complete | S63 | All soak tests passed |
+| 1 | Core diagnostics classes (ABC, factory, hooks) | ✅ Complete | S69 | training_diagnostics.py ~1069 lines |
+| 2 | Per-Survivor Attribution | 🔲 Deferred | — | Will implement when needed |
+| **3** | **Pipeline wiring (train_single_trial.py)** | **✅ VERIFIED** | **S70+S73** | **End-to-end under WATCHER** |
+| **4** | **RETRY param-threading** | **✅ Complete** | **S76** | **check_training_health → RETRY → modified params** |
+| **5** | **FIFO History Pruning** | **✅ Complete** | **S71** | **~20 lines, mtime-sorted** |
+| **6** | **WATCHER Integration (check_training_health)** | **✅ VERIFIED** | **S72+S73** | **Health check reads real diagnostics** |
+| **7** | **LLM Integration (DiagnosticsBundle)** | **✅ DEPLOYED + VERIFIED** | **S81** | **DeepSeek + grammar + Pydantic — live test passed** |
+| 8 | Selfplay + Chapter 13 Wiring | 📋 Next | — | Episode diagnostics + trend detection |
+| 9 | First Diagnostic Investigation | 📋 Pending | — | Real-world validation after Phase 8 |
+| — | Web Dashboard | 🔲 Future | — | Lower priority |
 
-**Fixes deployed (Session 80):**
-- udev rule: `/etc/udev/rules.d/99-amdgpu-perf.rules` → auto perf=high on boot
-- GFXOFF: `amdgpu.gfxoff=0` in GRUB → prevents soft lockup crashes
-- Root cause: CPU#2 soft lockup in systemd-udevd during 8-GPU enumeration on PCIe Gen1
+### Phase 7 Deployment Details (Session 81)
 
----
+**Files Deployed:**
 
-## Critical Design Invariants
+| File | Lines | Purpose |
+|------|-------|---------|
+| `grammars/diagnostics_analysis.gbnf` | 38 | GBNF grammar v1.1 (single-line rules) |
+| `diagnostics_analysis_schema.py` | 240 | Pydantic models with `extra="forbid"` |
+| `diagnostics_llm_analyzer.py` | 657 | Prompt builder + LLM call + 120s SIGALRM |
+| `apply_s81_phase7_watcher_patch.py` | 400 | 3-step Python idempotent patcher |
+| `agents/watcher_agent.py` | 2931 | Patched (+136 lines: import, clamp, refinement) |
 
-### Chapter 13 Invariant
-**Chapter 13 v1 does not alter model weights directly. All learning occurs through controlled re-execution of Step 5 with expanded labels.**
+**Watcher Integration (3 anchored patches):**
+1. `S81_PHASE7_LLM_DIAGNOSTICS_IMPORT` — import guard with `LLM_DIAGNOSTICS_AVAILABLE` flag
+2. `S81_PHASE7_POLICY_BOUNDS` — `_is_within_policy_bounds()` whitelist clamp with None guard
+3. `S81_PHASE7_LLM_REFINEMENT` — LLM analysis + clamp + merge inside `_build_retry_params()`
 
-### Selfplay Invariant
-**GPU sieving work MUST use coordinator.py / scripts_coordinator.py. Direct SSH to rigs for GPU work is FORBIDDEN.**
+**Team Beta Hardening (all applied):**
+- Schema drift protection: `extra="forbid"` on all Pydantic models
+- Timeout: 120s SIGALRM in analyzer (daemon-safe)
+- Whitelist clamp: every LLM proposal validated against policy bounds
+- Lifecycle: opportunistic `session()` context manager (no VRAM thrashing)
+- `hasattr` guards: defensive degradation if methods missing/renamed
+- Step gate: enforced by calling context + `health.get('action') == 'RETRY'` defense-in-depth
 
-### Learning Authority Invariant
-**Learning is statistical (tree models + bandit). Verification is deterministic (Chapter 13). LLM is advisory only. Telemetry is observational only.**
+**Live Test Result (2026-02-12):**
+```
+Focus:      MODEL_DIVERSITY
+Confidence: 0.85
+Proposals:  4 (learning_rate, n_estimators, num_leaves, depth)
+Models:     4 recommendations (neural_net viable, 3 fixable)
+Archived:   diagnostics_outputs/llm_proposals/diagnostics_analysis_20260213_015830.json
+```
 
-### Policy Transform Invariant
-**`apply_policy()` is pure functional: stateless, deterministic, never fabricates data. Same inputs always produce same outputs.**
-
-### Dispatch Guardrails
-**Guardrail #1:** Single context entry point — dispatch calls `build_llm_context()`, nothing else.
-**Guardrail #2:** No baked-in token assumptions — bundle_factory owns prompt structure.
-
-### Daemon Lifecycle Invariant (NEW — Session 80)
-**`self.running` controls daemon lifecycle ONLY. `self._pipeline_running` controls pipeline execution ONLY. SIGTERM kills both. Pipeline completion does NOT kill daemon.**
-
-### Approval Authority Invariant (NEW — Session 80)
-**`approval_route` determines execution authority. WATCHER never self-promotes. Chapter 13 never executes when route="watcher". Orchestrator never routes when route="orchestrator".**
-
-### Documentation Sync Invariant
-**When code is completed, update BOTH the progress tracker AND the original chapter checklist within the same session.**
-
----
-
-## Files Inventory (Updated 2026-02-11)
-
-### Chapter 13 Core Files
-
-| File | Size | Updated | Purpose |
-|------|------|---------|---------|
-| `chapter_13_diagnostics.py` | 39KB | Jan 29 | Diagnostics engine |
-| `chapter_13_llm_advisor.py` | 23KB | Jan 12 | LLM analysis module |
-| `chapter_13_triggers.py` | 36KB | Jan 29 | Retrain trigger logic |
-| `chapter_13_acceptance.py` | 41KB+ | Feb 06 | Proposal validation |
-| `chapter_13_orchestrator.py` | 23KB+ | Feb 11 | Main orchestrator (+ approval_route) |
-| `synthetic_draw_injector.py` | 20KB | Jan 12 | Test mode draws |
-| `llm_proposal_schema.py` | 14KB | Jan 12 | Pydantic models |
-| `chapter_13.gbnf` | 2.9KB | Jan 29 | Grammar constraint |
-| `watcher_policies.json` | 5KB+ | Feb 11 | Policy config (+ approval_route) |
-
-### WATCHER Agent Files
-
-| File | Size | Updated | Purpose |
-|------|------|---------|---------|
-| `agents/watcher_agent.py` | ~85KB | Feb 11 | v2.0.0 WATCHER daemon (2,795 lines) |
-| `agents/watcher_dispatch.py` | ~20KB | Feb 03 | Dispatch implementation |
-| `agents/contexts/bundle_factory.py` | ~25KB+ | Feb 06 | LLM context assembly v1.1.0 |
-
-### Documentation
-
-| File | Version | Updated | Purpose |
-|------|---------|---------|---------|
-| `DOCUMENTATION_INDEX_v1_1.md` | 1.1.0 | Feb 11 | Master navigation guide |
-| `WATCHER_POLICIES_REFERENCE.md` | 1.0.0 | Feb 11 | Policy flag canonical reference |
-| `SESSION_CHANGELOG_20260211_S80.md` | — | Feb 11 | Session 80 changelog |
-| `SESSION_CHANGELOG_20260210_S79.md` | — | Feb 10 | Session 79 changelog |
+**Git Commits:**
+- `c78a08b` — feat: Chapter 14 Phase 7 -- LLM Diagnostics Integration (S81)
+- (pending) — fix: Grammar single-line rules + bare filename for router (S81)
 
 ---
 
-## Version History
+## Post-Soak Fixes (Session 63)
 
-| Date | Version | Changes |
-|------|---------|---------|
-| 2026-01-12 | 1.0.0 | Initial document, Phases 1-6 code complete |
-| 2026-01-18 | 1.1.0 | Added Phase 7 testing framework |
-| 2026-01-23 | 1.2.0 | NPZ v3.0 integration notes |
-| 2026-01-27 | 1.3.0 | GPU stability improvements |
-| 2026-01-29 | 1.5.0 | Phase 8 Selfplay architecture approved |
-| 2026-01-30 | 1.8.0 | Phase 9B.1 COMPLETE |
-| 2026-01-30 | 2.0.0 | Documentation audit |
-| 2026-02-03 | 3.0.0 | Phase 7 COMPLETE — Full autonomous operation |
-| 2026-02-06 | 3.2.0 | Soak C certified, search_strategy visibility fix |
-| 2026-02-07 | 3.3.0 | Session 63 Soak C results |
-| 2026-02-08 | 3.4.0 | Chapter 14 Phase 1-3 complete |
-| 2026-02-09 | 3.5.0 | Strategy Advisor verified on Zeus |
-| 2026-02-09 | 3.6.0 | Chapter 14 Phase 4-6, RETRY param-threading |
-| **2026-02-11** | **3.7.0** | **Phase 10 WATCHER Daemon — execution autonomy, Soak C v2.0.0** |
+### search_strategy Visibility Gap — P0 Fix Applied
+
+**Issue:** `search_strategy` parameter (bayesian/random/grid/evolutionary) was missing from governance layers despite being a functional Step 1 parameter. Advisor could not see, recommend, or validate strategy changes.
+
+**Root Cause:** Integration chain gap — parameter existed in code (window_optimizer.py CLI) and partially in manifest, but was missing from policy bounds, GBNF grammar, and bundle factory guardrails.
 
 ---
 
 ## Next Steps
 
-1. **Phase 9B.3** (Deferred) — Automatic policy proposal heuristics (pending 9B.2 validation)
-2. **Chunk 3** (Deferred) — APScheduler, scraper subprocess, decision chain persistence
-3. **Real learning cycle** — Run full pipeline through WATCHER with actual GPU training
-4. **COMPLETE_OPERATING_GUIDE v2.0** — Major rewrite of stale December 2025 guide
+### Immediate
+1. ~~**Param-threading for RETRY**~~ — ✅ COMPLETE (S76)
+2. ~~**Strategy Advisor deployment**~~ — ✅ VERIFIED COMPLETE (S68)
+3. ~~**Chapter 14 Phase 7 LLM Integration**~~ — ✅ DEPLOYED + VERIFIED (S81)
+
+### Short-term
+4. **Chapter 14 Phase 8: Selfplay + Ch13 Wiring** — Episode diagnostics, trend detection, root cause analysis
+5. **Chapter 14 Phase 9: First Diagnostic Investigation** — Real `--compare-models --enable-diagnostics` run
+6. **Forced RETRY test** — Validate full WATCHER → health check → RETRY → LLM refinement → clamp → re-run loop
+
+### Deferred
+7. **Bundle Factory Tier 2** — Fill 3 stub retrieval functions
+8. **`--save-all-models` flag** — For post-hoc AI analysis
+9. **Web dashboard refactor** — Chapter 14 visualization
+10. **Phase 9B.3 auto policy heuristics** — After 9B.2 validation
 
 ---
 
-*Update this document as implementation progresses.*
+## Document History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| **3.7.0** | **2026-02-12** | **S76+S81: Phase 4 RETRY threading complete, Phase 7 LLM Integration DEPLOYED + VERIFIED. Grammar v1.1, patcher corrections, live DeepSeek test.** |
+| 3.6.0 | 2026-02-09 | S75: Strategy Advisor deployment VERIFIED on Zeus, documentation sync |
+| 3.5.0 | 2026-02-08 | S73: Phase 3+6 verified end-to-end, canonical diagnostics fix |
+| 3.4.0 | 2026-02-08 | S71-72: FIFO pruning, health check deployment |
+| 3.3.0 | 2026-02-07 | S66: Strategy Advisor complete |
+| 3.2.0 | 2026-02-06 | Soak C certified |
+| 3.1.0 | 2026-02-04 | Soak A/B passed |
+| 3.0.0 | 2026-02-05 | Phase 7 complete |
+
+---
+
+## Session 73 Addendum - February 9, 2026
+
+### Sidecar Bug Fix VERIFIED
+
+**Issue:** In `--compare-models` mode, Step 5 checked `self.best_model` (memory) instead of disk artifacts. Subprocess-trained models exist on disk, not in parent memory.
+
+**Fix:** Team Beta patch v1.3 - artifact-authoritative sidecar generation
+- Added `best_checkpoint_path` / `best_checkpoint_format` to `__init__`
+- Capture checkpoint path after `winner = results['winner']`
+- New `_save_existing_checkpoint_sidecar()` helper
+- Updated `save_best_model()` early guard
+
+**Verification:**
+```
+model_type: lightgbm ✅
+checkpoint_path: models/reinforcement/best_model.txt ✅
+outcome: SUCCESS ✅
+```
+
+**Commit:** `f391786`
+
+**Status:** PERMANENTLY FIXED
