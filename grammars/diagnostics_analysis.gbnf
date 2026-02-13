@@ -1,0 +1,88 @@
+# Training Diagnostics Analysis Grammar
+# GBNF grammar for llama.cpp grammar-constrained decoding
+#
+# Constrains LLM output to valid DiagnosticsAnalysis JSON.
+# Used when WATCHER or Strategy Advisor requests LLM interpretation
+# of training_diagnostics.json data.
+#
+# VERSION: 1.0.0
+# DATE: 2026-02-11
+# CHAPTER: 14 Phase 7 (LLM Integration)
+# SPEC: CHAPTER_14_TRAINING_DIAGNOSTICS.md Section 8.2
+#
+# Usage with llama.cpp:
+#   --grammar-file diagnostics_analysis.gbnf
+#
+# Usage with LLMRouter:
+#   router.evaluate_with_grammar(prompt, grammar_file="diagnostics_analysis.gbnf")
+
+# Root rule
+root ::= analysis
+
+# Main analysis object
+analysis ::= "{" ws
+    "\"focus_area\"" ws ":" ws focus-area "," ws
+    "\"root_cause\"" ws ":" ws string "," ws
+    "\"root_cause_confidence\"" ws ":" ws confidence-value "," ws
+    "\"model_recommendations\"" ws ":" ws model-recommendations "," ws
+    "\"parameter_proposals\"" ws ":" ws parameter-proposals "," ws
+    "\"selfplay_guidance\"" ws ":" ws string "," ws
+    "\"requires_human_review\"" ws ":" ws boolean
+    ws "}"
+
+# Focus area enum — maps directly to Strategy Advisor focus areas
+focus-area ::= "\"MODEL_DIVERSITY\"" |
+               "\"FEATURE_RELEVANCE\"" |
+               "\"POOL_PRECISION\"" |
+               "\"CONFIDENCE_CALIBRATION\"" |
+               "\"REGIME_SHIFT\""
+
+# Model recommendations array (1-4 items, one per model type)
+model-recommendations ::= "[" ws model-recommendation
+                          (ws "," ws model-recommendation)* ws "]"
+
+model-recommendation ::= "{" ws
+    "\"model_type\"" ws ":" ws model-type "," ws
+    "\"verdict\"" ws ":" ws model-verdict "," ws
+    "\"rationale\"" ws ":" ws string
+    ws "}"
+
+model-type ::= "\"neural_net\"" |
+               "\"xgboost\"" |
+               "\"lightgbm\"" |
+               "\"catboost\""
+
+model-verdict ::= "\"viable\"" |
+                  "\"fixable\"" |
+                  "\"skip\"" |
+                  "\"not_evaluated\""
+
+# Parameter proposals (0-5 items)
+parameter-proposals ::= "[]" |
+                        "[" ws parameter-proposal
+                        (ws "," ws parameter-proposal)* ws "]"
+
+parameter-proposal ::= "{" ws
+    "\"parameter\"" ws ":" ws string "," ws
+    "\"current_value\"" ws ":" ws (number | "null") "," ws
+    "\"proposed_value\"" ws ":" ws number "," ws
+    "\"rationale\"" ws ":" ws string
+    ws "}"
+
+# Confidence value (0.0 to 1.0)
+confidence-value ::= "0" ("." [0-9]+)? |
+                     "1" (".0")?  |
+                     "0." [0-9]+
+
+# Boolean
+boolean ::= "true" | "false"
+
+# Number (integer or float)
+number ::= "-"? [0-9]+ ("." [0-9]+)?
+
+# String (JSON string)
+string ::= "\"" string-content "\""
+string-content ::= ([^"\\] | "\\" ["\\/bfnrt])*
+
+# Whitespace
+ws ::= [ \t\n\r]*

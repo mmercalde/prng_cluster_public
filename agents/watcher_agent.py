@@ -108,6 +108,17 @@ try:
     TRAINING_HEALTH_CHECK_AVAILABLE = True
 except ImportError:
     TRAINING_HEALTH_CHECK_AVAILABLE = False
+
+# --- S81_PHASE7_LLM_DIAGNOSTICS_IMPORT ---
+try:
+    from diagnostics_llm_analyzer import (
+        request_llm_diagnostics_analysis,
+    )
+    LLM_DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    LLM_DIAGNOSTICS_AVAILABLE = False
+# --- S81_PHASE7_LLM_DIAGNOSTICS_IMPORT_END ---
+
     check_training_health = None
     reset_skip_registry = None
     get_retry_params_suggestions = None
@@ -1570,6 +1581,50 @@ class WatcherAgent:
         logger.warning("[WATCHER][HEALTH] Unknown health action: %s -- proceeding", action)
         return "proceed"
 
+
+    # --- S81_PHASE7_POLICY_BOUNDS ---
+    def _is_within_policy_bounds(self, param_name, proposed_value):
+        """Validate LLM parameter proposal against policy bounds.
+        
+        Returns True if proposed value is within allowed range.
+        Unknown parameters are rejected by default (whitelist approach).
+        
+        Chapter 14 Section 7.4 -- Session 81.
+        """
+        # None guard (Team Beta requirement)
+        if proposed_value is None:
+            return False
+
+        td_config = {}
+        if hasattr(self, 'config') and hasattr(self.config, 'get'):
+            td_config = self.config.get('training_diagnostics', {})
+        elif hasattr(self, 'policies'):
+            td_config = self.policies.get('training_diagnostics', {})
+
+        allowed_params = td_config.get('llm_adjustable_params', {
+            'normalize_features': {'type': 'bool'},
+            'nn_activation': {'type': 'enum', 'values': [0, 1, 2]},
+            'learning_rate': {'type': 'float', 'min': 1e-6, 'max': 0.1},
+            'dropout': {'type': 'float', 'min': 0.0, 'max': 0.5},
+            'n_estimators': {'type': 'int', 'min': 50, 'max': 2000},
+            'max_depth': {'type': 'int', 'min': 3, 'max': 15},
+        })
+
+        if param_name not in allowed_params:
+            return False
+
+        bounds = allowed_params[param_name]
+        if bounds.get('type') == 'bool':
+            return proposed_value in (0, 1, True, False)
+        if bounds.get('type') == 'enum':
+            return proposed_value in bounds.get('values', [])
+        if 'min' in bounds and proposed_value < bounds['min']:
+            return False
+        if 'max' in bounds and proposed_value > bounds['max']:
+            return False
+        return True
+    # --- S81_PHASE7_POLICY_BOUNDS_END ---
+
     def _build_retry_params(self, health: Dict[str, Any], original_params: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Build modified Step 5 params for retry based on diagnostics.
@@ -1599,6 +1654,87 @@ class WatcherAgent:
             logger.info("[WATCHER][RETRY] Enabling LeakyReLU activation")
         
         logger.info("[WATCHER][RETRY] Modified params: %s", {k: v for k, v in retry_params.items() if k != "reason"})
+
+        # --- S81_PHASE7_LLM_REFINEMENT ---
+        # Phase 7: LLM diagnostics refinement (Session 81)
+        # Step gate enforced by calling context (Step 5 retry path only).
+        # Defense-in-depth gate: health.get('action') == 'RETRY'.
+        # LLM proposals are advisory -- each value clamped via policy bounds.
+        # Lifecycle: opportunistic session() -- skip if LLM unavailable.
+        # Step gate: _build_retry_params() is only called from the Step 5
+        # RETRY path in run_pipeline() (line ~1849). The calling context
+        # enforces step==5 + health_action=='retry'. We gate on the health
+        # dict action value as defense-in-depth.
+        if (LLM_DIAGNOSTICS_AVAILABLE
+                and health.get('action') == 'RETRY'):
+            try:
+                _llm_analysis = None
+                _diag_path = 'diagnostics_outputs/training_diagnostics.json'
+                _tier_path = 'diagnostics_outputs/tier_comparison.json'
+
+                if os.path.isfile(_diag_path):
+                    # Opportunistic lifecycle: use session() if available
+                    _lifecycle = getattr(self, 'llm_lifecycle', None)
+                    if _lifecycle and hasattr(_lifecycle, 'session'):
+                        try:
+                            with _lifecycle.session():
+                                _llm_analysis = request_llm_diagnostics_analysis(
+                                    diagnostics_path=_diag_path,
+                                    tier_comparison_path=(
+                                        _tier_path if os.path.isfile(_tier_path) else None
+                                    ),
+                                    timeout=120,
+                                )
+                        except Exception as _sess_err:
+                            logger.warning(
+                                '[WATCHER][LLM_DIAG] Lifecycle session failed: %s',
+                                _sess_err,
+                            )
+                    else:
+                        # No lifecycle manager -- call directly (server may be up)
+                        _llm_analysis = request_llm_diagnostics_analysis(
+                            diagnostics_path=_diag_path,
+                            tier_comparison_path=(
+                                _tier_path if os.path.isfile(_tier_path) else None
+                            ),
+                            timeout=120,
+                        )
+
+                # Apply proposals with clamp -- flat values only
+                if _llm_analysis and hasattr(_llm_analysis, 'parameter_proposals'):
+                    if not hasattr(self, '_is_within_policy_bounds'):
+                        logger.warning(
+                            '[WATCHER][LLM_DIAG] _is_within_policy_bounds missing -- skipping all proposals'
+                        )
+                    else:
+                        for _prop in _llm_analysis.parameter_proposals:
+                            _pname = _prop.parameter
+                            _pval = _prop.proposed_value
+                            if self._is_within_policy_bounds(_pname, _pval):
+                                retry_params[_pname] = _pval
+                                logger.info(
+                                    '[WATCHER][LLM_DIAG] Applied: %s = %s (%s)',
+                                    _pname, _pval, _prop.rationale[:80],
+                                )
+                            else:
+                                logger.warning(
+                                    '[WATCHER][LLM_DIAG] REJECTED (bounds): %s = %s',
+                                    _pname, _pval,
+                                )
+
+                        logger.info(
+                            '[WATCHER][LLM_DIAG] focus=%s confidence=%.2f',
+                            _llm_analysis.focus_area.value,
+                            _llm_analysis.root_cause_confidence,
+                        )
+
+            except Exception as _llm_err:
+                logger.warning(
+                    '[WATCHER][LLM_DIAG] Refinement failed (non-fatal): %s',
+                    _llm_err,
+                )
+        # --- S81_PHASE7_LLM_REFINEMENT_END ---
+
         return retry_params
 
     def _get_max_training_retries(self) -> int:
