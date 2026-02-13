@@ -383,18 +383,17 @@ def _request_llm_diagnostics_analysis_inner(
             logger.error("LLMRouter not available — cannot perform diagnostics analysis")
             return None
 
-    # Step 3: Resolve grammar file path
-    grammar_file = DIAGNOSTICS_GRAMMAR
+    # Step 3: Resolve grammar file
+    # NOTE: llm_router.evaluate_with_grammar() expects a BARE FILENAME,
+    # not a path. The router prepends grammars/ internally.
+    grammar_file = DIAGNOSTICS_GRAMMAR  # bare filename
     grammar_full = os.path.join(GRAMMAR_DIR, DIAGNOSTICS_GRAMMAR)
-    if os.path.isfile(grammar_full):
-        grammar_file = grammar_full
-    elif os.path.isfile(DIAGNOSTICS_GRAMMAR):
-        grammar_file = DIAGNOSTICS_GRAMMAR
-    else:
-        # Check agent_grammars/ (legacy location)
+    if not os.path.isfile(grammar_full):
         legacy = os.path.join("agent_grammars", DIAGNOSTICS_GRAMMAR)
         if os.path.isfile(legacy):
-            grammar_file = legacy
+            logger.info("Grammar found in legacy location: %s", legacy)
+        else:
+            logger.warning("Grammar file not found: %s", grammar_full)
 
     logger.info("Calling LLM with grammar: %s (timeout=%ds)", grammar_file, timeout)
 
