@@ -2,7 +2,7 @@
 ## Distributed PRNG Analysis System
 **Version 2.0.0**  
 **February 2026**  
-**Updated: Session 80 (Feb 11, 2026)**
+**Updated: Session 83 (Feb 13, 2026)**
 
 ### 26-GPU Cluster Architecture
 Zeus (2× RTX 3080 Ti) + rig-6600 (8× RX 6600) + rig-6600b (8× RX 6600) + rig-6600c (8× RX 6600)  
@@ -48,6 +48,9 @@ The Distributed PRNG Analysis System is a sophisticated GPU-accelerated platform
 | WATCHER Agent | agents/watcher_agent.py | v2.0.0 autonomous pipeline executor (2,795 lines) |
 | Chapter 13 Orchestrator | chapter_13_orchestrator.py | Live feedback loop: detect → diagnose → trigger → approve |
 | Training Diagnostics | training_diagnostics.py | Chapter 14: model health monitoring (GPU/CPU metrics) |
+| Selfplay Orchestrator | selfplay_orchestrator.py | v1.2.0 hierarchical episode learning (outer GPU + inner ML) |
+| Inner Episode Trainer | inner_episode_trainer.py | v1.1.0 multi-model k-fold training with diagnostics capture |
+| WATCHER Dispatch | agents/watcher_dispatch.py | Selfplay/learning loop dispatch with LLM lifecycle |
 | Strategy Advisor | parameter_advisor.py | LLM-guided parameter recommendations |
 | Bundle Factory | agents/contexts/bundle_factory.py | Unified LLM context assembly (7 bundle types) |
 
@@ -820,6 +823,8 @@ Training diagnostics monitor model health during Step 5 execution, detecting iss
 | RETRY Param-Threading | WATCHER health check | ✅ Complete |
 | FIFO Pruning | Unbounded growth prevention | ✅ Complete |
 | Health Check | `check_training_health()` | ✅ Complete |
+| Selfplay Diagnostics | Phase 8A: eval_set + trend detection | ✅ Complete (S83) |
+| Episode Trend Detection | `_check_episode_training_trend()` | ✅ Complete (S83) |
 
 ---
 
@@ -849,6 +854,15 @@ PYTHONPATH=. python3 agents/watcher_agent.py --explain 5
 
 # Manually approve pending request
 PYTHONPATH=. python3 agents/watcher_agent.py --approve
+
+# Dispatch selfplay (1 episode, dry run)
+PYTHONPATH=. python3 agents/watcher_agent.py --dispatch-selfplay --episodes 1 --dry-run
+
+# Dispatch selfplay (production, 5 episodes)
+PYTHONPATH=. python3 agents/watcher_agent.py --dispatch-selfplay --episodes 5
+
+# Run selfplay directly (with diagnostics)
+python3 selfplay_orchestrator.py --config configs/selfplay_config.json --single-episode --no-emit-candidate
 ```
 
 ## 9.2 Daemon Mode

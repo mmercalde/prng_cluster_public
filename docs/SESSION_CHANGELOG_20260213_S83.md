@@ -1,192 +1,150 @@
-# SESSION_CHANGELOG_20260213_S83.md
+# SESSION CHANGELOG — 2026-02-13 (Session 83)
 
-## Session 83 -- February 13, 2026
-
-### Focus: Chapter 14 Phase 8A -- Selfplay Episode Diagnostics Wiring
+**Focus:** Chapter 14 Phase 8A — Selfplay Episode Diagnostics Wiring
+**Status:** ✅ DEPLOYED AND TESTED
+**Commits:** `87c5bf1`, `13ff15f`, `b40bda4`
 
 ---
 
 ## Summary
 
-**Objective:** Wire Chapter 14 training diagnostics into selfplay episodes (Tasks 8.1-8.3).
-
-**Outcome:** Patcher ready for deployment. All syntax checks pass. Idempotent.
-
-**Method:** Python idempotent patcher (`apply_s83_phase8a_diagnostics.py`) modifies 2 files with 17 precise anchor-based replacements.
-
----
-
-## What Phase 8A Does
-
-Adds three capabilities to the selfplay pipeline:
-
-1. **Per-fold diagnostics capture** (Task 8.1): `train_single_fold()` now trains with `eval_set` for all 3 tree models (LightGBM, XGBoost, CatBoost), creates `TreeDiagnostics` instances, captures round-by-round loss data, feature importance, and best iteration.
-
-2. **Diagnostics propagation** (Task 8.2): Diagnostics thread upward through `train_model_kfold()` -> `InnerEpisodeTrainer.train()` -> `train_best()` -> `selfplay_orchestrator._run_inner_episode()` -> `EpisodeResult.episode_diagnostics`.
-
-3. **Episode trend detection** (Task 8.3): `_check_episode_training_trend()` on `SelfplayOrchestrator` detects degrading training quality across episodes by monitoring `best_round_ratio` decline and critical severity accumulation. **Observe-only** -- no automatic intervention yet.
+Phase 8A wires Chapter 14 training diagnostics into the selfplay episode loop.
+Tree models now capture eval_set round data, fold diagnostics are aggregated
+via a side-channel pattern, and the orchestrator tracks training quality trends
+across episodes. Observe-only — no automatic intervention.
 
 ---
 
-## Files Modified
+## Deliverables
 
-| File | Version | Lines | Change |
-|------|---------|-------|--------|
-| `inner_episode_trainer.py` | 1.0.3 -> 1.1.0 | 800 -> 967 (+167) | eval_set, diagnostics capture, threading |
-| `selfplay_orchestrator.py` | 1.1.0 -> 1.2.0 | 1134 -> 1226 (+92) | EpisodeResult field, history tracking, trend detection |
+### Code Changes
 
-## Files Created
+| File | Version | Change |
+|------|---------|--------|
+| `inner_episode_trainer.py` | 1.0.3 → 1.1.0 | eval_set for LGB/XGB/CatBoost, TreeDiagnostics capture, side-channel aggregation |
+| `selfplay_orchestrator.py` | 1.1.0 → 1.2.0 | episode_diagnostics field, diagnostics_history, trend detection, enable_diagnostics config |
+| `agents/watcher_agent.py` | — | Added `--episodes` CLI argument (was missing from argparse) |
+| `docs/CHAPTER_13_SECTION_19_UPDATED.md` | — | Phase 7 status corrected: NOT COMPLETE → COMPLETE |
 
-| File | Purpose |
-|------|---------|
-| `apply_s83_phase8a_diagnostics.py` | Idempotent Python patcher |
-| `docs/SESSION_CHANGELOG_20260213_S83.md` | This changelog |
+### Patcher
 
----
+`apply_s83_phase8a_diagnostics.py` — Idempotent Python patcher (23 anchor-based replacements).
 
-## Patch Details
+### Architecture (Team Beta v2)
 
-### inner_episode_trainer.py Changes
+- `train_model_kfold()` return signature **UNCHANGED** (→ `ProxyMetrics`)
+- `train_single_fold()` return signature **UNCHANGED** (→ 6-tuple)
+- Diagnostics transported via `_FOLD_DIAGNOSTICS_COLLECTOR` module-level list (side-channel)
+- Aggregation performed in `InnerEpisodeTrainer.train()` after `train_model_kfold()` returns
+- Zero blast radius on existing callers
 
-| Step | Target | Change |
-|------|--------|--------|
-| 1a | Imports | Added `training_diagnostics` import with graceful fallback |
-| 1b | `TrainingResult` | Added `diagnostics: Optional[Dict]` field |
-| 1c | `TrainingResult.to_dict()` | Include diagnostics in serialization |
-| 1d | `train_single_fold()` | Added `enable_diagnostics` param, model-type-aware `eval_set` in `fit()`, `TreeDiagnostics` capture with round data + feature importance + best iteration |
-| 1e | `train_model_kfold()` | Added `enable_diagnostics` param, fold diagnostics collection, aggregation (worst severity, mean overfit gap, best round ratio, issues) |
-| 1f | `InnerEpisodeTrainer.train()` | Pass `enable_diagnostics`, capture `diag_report` |
-| 1g | `train_all()` | Pass `enable_diagnostics` through |
-| 1h | `train_best()` | Pass `enable_diagnostics` through |
+### Key Design Points
 
-### selfplay_orchestrator.py Changes
-
-| Step | Target | Change |
-|------|--------|--------|
-| 2a | `EpisodeResult` | Added `episode_diagnostics: Optional[Dict]` field |
-| 2b | `_run_inner_episode()` | Pass `enable_diagnostics` from config to `train_best()` |
-| 2c | `_run_inner_episode()` return | Populate `episode_diagnostics` from best model's diagnostics |
-| 2d | `run()` loop | Added `diagnostics_history` tracking, cap at 20, trend check after each episode |
-| 2e | New method | `_check_episode_training_trend()` -- observe-only degradation detector |
+- Diagnostics default OFF (`enable_diagnostics: false`)
+- All capture wrapped in try/except (best-effort, non-fatal — Ch14 invariant)
+- eval_set wired with model-type awareness + TypeError fallback
+- Trend detection is observe-only (no automatic intervention)
+- Worst-severity-wins aggregation across folds
 
 ---
 
-## Design Decisions
+## Issues Encountered
 
-1. **eval_set is model-type-aware**: LightGBM uses `eval_names`, XGBoost uses default, CatBoost uses tuple form. All wrapped in try/except TypeError fallback.
+### 1. R² Encoding Mismatch
 
-2. **Diagnostics are best-effort and non-fatal** (Ch14 invariant): Every diagnostics capture block is wrapped in try/except. Failure returns `None`, pipeline continues.
+**Problem:** Project copy of `inner_episode_trainer.py` had mojibake (`Â²`). Zeus live file had clean Unicode (`²`). Patcher anchors didn't match.
 
-3. **Default is OFF**: `enable_diagnostics=False` throughout. No behavioral change unless explicitly enabled via config.
+**Impact:** First deployment applied 8 of 15 trainer steps, then rolled back. Orchestrator patched correctly.
 
-4. **Observe-only trend detection**: `_check_episode_training_trend()` logs warnings but does not intervene. Future sessions can wire to WATCHER escalation.
+**Fix:** Corrected patcher anchors to use clean Unicode. Re-ran from clean state.
 
-5. **Aggregation uses worst-severity-wins**: If any fold is critical, episode is critical.
+**Commits:** `87c5bf1` (partial — orchestrator only), `13ff15f` (trainer completed)
 
----
+### 2. SelfplayConfig Missing Field
 
-## Invariants Preserved
+**Problem:** `SelfplayConfig` is a dataclass. `from_file()` uses `cls(**data)` which rejects unknown keys. Adding `"enable_diagnostics": true` to JSON config crashed.
 
-- S76 retry loop: Untouched (`run_pipeline()`, `_handle_training_health()`)
-- S80 daemon lifecycle: Untouched
-- S82 RETRY proof: Untouched
-- Ch14 non-fatal invariant: All diagnostics are best-effort
-- Contract authority separation: Selfplay explores, Chapter 13 decides, WATCHER enforces
+**Fix:** Added `enable_diagnostics: bool = False` field to `SelfplayConfig` dataclass.
 
----
+**Commit:** `b40bda4`
 
-## Activation
+### 3. --episodes CLI Argument Missing
 
-To enable diagnostics in selfplay, add to `selfplay_config.json`:
+**Problem:** `watcher_agent.py` dispatch block used `getattr(args, "episodes", 5)` but argparse never defined the flag. CLI call with `--episodes 1` failed.
 
-```json
-{
-  "enable_diagnostics": true
-}
-```
+**Root cause:** Session 58 wired the dispatch chain but missed the argparse declaration.
 
-Or pass in code:
-```python
-config = SelfplayConfig(enable_diagnostics=True)
-```
+**Fix:** Added `parser.add_argument("--episodes", ...)`.
 
----
+**Commit:** `b40bda4`
 
-## Deployment
+### 4. Stale Documentation — Section 19
 
-```bash
-# On ser8
-scp ~/Downloads/apply_s83_phase8a_diagnostics.py rzeus:~/distributed_prng_analysis/
-scp ~/Downloads/SESSION_CHANGELOG_20260213_S83.md rzeus:~/distributed_prng_analysis/docs/
+**Problem:** `CHAPTER_13_SECTION_19_UPDATED.md` (dated Jan 30) listed `dispatch_selfplay()` as NOT COMPLETE.
 
-# On Zeus
-cd ~/distributed_prng_analysis
-python3 apply_s83_phase8a_diagnostics.py
+**Reality:** Implemented Session 58 (commit `a145e28`), verified Session 59. TODO tracker v3 already showed Phase 7 COMPLETE.
 
-# Verify
-python3 -c "import py_compile; py_compile.compile('inner_episode_trainer.py', doraise=True); print('OK')"
-python3 -c "import py_compile; py_compile.compile('selfplay_orchestrator.py', doraise=True); print('OK')"
-wc -l inner_episode_trainer.py   # Should be ~967
-wc -l selfplay_orchestrator.py   # Should be ~1226
+**Fix:** Updated Section 19 — all Phase 7 items now marked COMPLETE.
 
-# Git
-git add inner_episode_trainer.py selfplay_orchestrator.py
-git add apply_s83_phase8a_diagnostics.py
-git add docs/SESSION_CHANGELOG_20260213_S83.md
-git commit -m "S83 Phase 8A: Episode diagnostics wiring (eval_set + trend detection)
-
-Tasks 8.1-8.3 from Chapter 14 Section 9.
-
-Changes:
-- inner_episode_trainer.py v1.1.0: eval_set for all 3 tree models,
-  TreeDiagnostics capture per fold, aggregation across folds
-- selfplay_orchestrator.py v1.2.0: episode_diagnostics field,
-  diagnostics_history tracking, _check_episode_training_trend()
-
-Design: Best-effort, non-fatal, default OFF. Observe-only trend detection.
-No interference with S76 retry, S80 daemon, S82 RETRY proof.
-
-Ref: Ch14 Phase 8A, Session 83"
-
-git push origin main
-```
+**Commit:** `b40bda4`
 
 ---
 
-## What's NOT in This Session
+## Verification
 
-- **Task 8.4** (`post_draw_root_cause_analysis()` in Ch13): Deferred -- depends on `per_survivor_attribution` module which doesn't exist yet.
-- **Tasks 8.5-8.7** (testing): Requires Zeus deployment and real/mock selfplay run.
-- **Backlog `_record_training_incident()`**: Not included -- separate concern, can be added next session.
+### Phase 8A Diagnostics Test (PASSED)
+
+- 9 fold diagnostics captured (3 models x 3 folds)
+- `training_diagnostics ... attached (post-training collection)` confirmed for all folds
+- CatBoost best model (fitness -0.0004)
+- No exceptions, no performance degradation
+
+### WATCHER Dispatch Test (PASSED)
+
+- `--dispatch-selfplay --episodes 1 --dry-run` succeeded
+- Full chain verified: argparse → request dict → dispatch_selfplay() → subprocess cmd
+
+### Code Verification (ALL PASSED)
+
+| Check | Result |
+|-------|--------|
+| Syntax (both files) | PASS |
+| Line count trainer (967) | PASS |
+| Line count orchestrator (1215) | PASS |
+| TrainingResult.diagnostics field | PASS |
+| train_best accepts enable_diagnostics | PASS |
+| EpisodeResult.episode_diagnostics field | PASS |
+| _check_episode_training_trend exists | PASS |
+
+---
+
+## Git History
+
+| Commit | Description |
+|--------|-------------|
+| `87c5bf1` | S83 Phase 8A: orchestrator + changelog + patcher (trainer rolled back) |
+| `13ff15f` | S83: Complete trainer patch (encoding fix) |
+| `b40bda4` | S83: --episodes CLI, enable_diagnostics config field, Section 19 update |
+
+---
+
+## Chapter 14 Phase Status
+
+| Phase | Status | Session |
+|-------|--------|---------|
+| 1-7b | COMPLETE | S69-S82 |
+| **8A (Tasks 8.1-8.3)** | **DEPLOYED + TESTED** | **S83** |
+| 8B (Task 8.4) | Deferred (needs per_survivor_attribution) | — |
+| 9 | Pending | — |
 
 ---
 
 ## Next Steps
 
-1. **Deploy patcher on Zeus** -- Run `apply_s83_phase8a_diagnostics.py`
-2. **Test with selfplay** -- Run a quick selfplay with `enable_diagnostics=True`
-3. **Backlog: `_record_training_incident()`** -- Add to S76 retry path in WATCHER
-4. **Phase 8B** (future) -- After `per_survivor_attribution` module exists
-5. **Phase 9: First Diagnostic Investigation** -- `--compare-models --enable-diagnostics` on Zeus
+1. Phase 8B: Root cause analysis wiring (blocked on `per_survivor_attribution` module)
+2. Phase 9: First diagnostic investigation
+3. Optional: Add `_record_training_incident()` to S76 retry path
 
 ---
 
-## Chapter 14 Phase Status (Updated)
-
-| Phase | Status | Session |
-|-------|--------|---------|
-| 1. Core Diagnostics | DONE | S69 |
-| 2. GPU/CPU Collection | DONE | S70 |
-| 3. Engine Wiring | DONE | S70+S73 |
-| 4. RETRY Param-Threading | DONE | S76 |
-| 5. FIFO Pruning | DONE | S72 |
-| 6. Health Check | DONE | S72 |
-| 7. LLM Integration | DONE | S81 |
-| 7b. RETRY Loop E2E | DONE -- PROVEN | S82 |
-| **8A. Selfplay Diagnostics (8.1-8.3)** | **READY TO DEPLOY** | **S83** |
-| 8B. Ch13 Root Cause (8.4) | Deferred (per_survivor_attribution needed) | -- |
-| 9. First Diagnostic Investigation | Pending | -- |
-
----
-
-*Session 83 -- Phase 8A PATCHER READY. Deploy on Zeus to activate.*
+*Session 83 — Team Alpha (Lead Dev/Implementation)*
