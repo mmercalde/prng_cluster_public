@@ -97,12 +97,28 @@ Feature divergence ≤ 0.5 → random_variance
 
 ---
 
-## Commits (Pending)
+## Commits
 
-| # | Description |
-|---|-------------|
-| 1 | feat: Ch14 Task 8.4 — post_draw_root_cause_analysis() observe-only (S85) |
-| 2 | docs: S85 changelog |
+| Hash | Description |
+|---|---|
+| `0cb6703` | feat: Ch14 Task 8.4 — post_draw_root_cause_analysis observe-only (S85) |
+| `e6fdf4a` | chore: gitignore catboost_info and backup files |
+| *pending* | test: Task 8.4 smoke test — all 6 methods verified with live LightGBM (S85) |
+
+---
+
+## Test Results (Zeus, live LightGBM model)
+
+```
+TEST 1: Import verification        ✅ No CUDA init
+TEST 2: Hit regression detection    ✅ 5/5 cases
+TEST 3: Predictions loader          ✅ 5/5 cases (incl. stale draw_id rejection)
+TEST 4: Model loader                ✅ LightGBM loaded from disk
+TEST 5: Root cause analysis         ✅ Full attribution — divergence=0.2857, diagnosis=random_variance
+TEST 6: Archive creation            ✅ root_cause_20260214_181425.json
+```
+
+**Key test finding:** Divergence 0.2857 on synthetic data correctly classified as `random_variance` (below 0.5 threshold). LightGBM `pred_contrib` attribution working end-to-end on Zeus CPU.
 
 ---
 
@@ -111,13 +127,16 @@ Feature divergence ≤ 0.5 → random_variance
 | File | Type | Change |
 |------|------|--------|
 | `chapter_13_orchestrator.py` | MODIFIED | +432 lines, 6 new methods, observe-only hook in run_cycle |
+| `test_task_8_4.py` | NEW | Smoke test covering all 6 new methods |
+| `.gitignore` | MODIFIED | Added catboost_info/ and *.s82_backup |
 | `SESSION_CHANGELOG_20260214_S85.md` | NEW | This file |
 
 ---
 
 ## Memory Updates
 
-- STATUS: Task 8.4 COMPLETE (observe-only). Next: Tasks 8.5-8.7 testing.
+- STATUS: Task 8.4 COMPLETE (observe-only, tested with live LightGBM). Next: Tasks 8.5-8.7 soak testing.
+- PATHS: Zeus venv is `~/venvs/torch/bin/activate` (NOT ~/torch/). SSH pattern: `ssh rzeus "source ~/venvs/torch/bin/activate && cd ~/distributed_prng_analysis && ..."`
 - Documentation audit completed, Claude project cleaned up.
 
 ---
