@@ -2,8 +2,8 @@
 """
 Selfplay Orchestrator
 =====================
-Version: 1.1.0
-Date: 2026-01-30
+Version: 1.2.0
+Date: 2026-02-13
 Status: Phase 9B.2 Policy-Conditioned Learning Integration
 
 PURPOSE:
@@ -78,6 +78,10 @@ USAGE:
     python3 selfplay_orchestrator.py --config configs/selfplay_config.json --dry-run
 
 CHANGELOG:
+    v1.2.0 (2026-02-13):
+        - S83 Phase 8A: Episode diagnostics (Team Beta v2 side-channel architecture)
+        - Added episode_diagnostics to EpisodeResult, trend detection
+    
     v1.1.0 (2026-01-30):
         - Phase 9B.2: Policy-conditioned learning integration
         - Added --policy-conditioned CLI flag
@@ -256,6 +260,9 @@ class EpisodeResult:
     active_policy_id: Optional[str] = None
     active_policy_fingerprint: Optional[str] = None
     conditioning_log: List[str] = field(default_factory=list)
+    
+    # Phase 8A: Episode diagnostics (Ch14)  # S83_PHASE8A_DIAG
+    episode_diagnostics: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -488,6 +495,9 @@ class SelfplayOrchestrator:
         if self.config.policy_conditioned:
             self.active_policy, _ = self._load_active_policy()
         
+        # S83 Phase 8A: Episode diagnostics history  # S83_PHASE8A_DIAG
+        diagnostics_history = []
+
         for episode_num in range(1, self.config.max_episodes + 1):
             print(f"\n{'─'*50}")
             print(f"📍 Episode {episode_num}/{self.config.max_episodes}")
@@ -498,6 +508,18 @@ class SelfplayOrchestrator:
                 results.append(result)
                 self.episodes_completed += 1
                 
+                # S83 Phase 8A: Collect episode diagnostics  # S83_PHASE8A_DIAG
+                if hasattr(result, 'episode_diagnostics') and result.episode_diagnostics:
+                    diagnostics_history.append({
+                        'episode': episode_num,
+                        'severity': result.episode_diagnostics.get('severity', 'absent'),
+                        'best_round_ratio': result.episode_diagnostics.get('best_round_ratio', 0.0),
+                        'fitness': result.fitness,
+                        'model_type': result.model_type,
+                    })
+                    diagnostics_history = diagnostics_history[-20:]
+                    self._check_episode_training_trend(diagnostics_history)
+
                 # Track best
                 if result.fitness > self.best_fitness:
                     self.best_fitness = result.fitness
@@ -748,7 +770,9 @@ class SelfplayOrchestrator:
         
         # Train and select best
         start_time = time.time()
-        best_result, all_results = trainer.train_best(X, y, feature_names)
+        # S83 Phase 8A: Pass enable_diagnostics from config  # S83_PHASE8A_DIAG
+        _enable_diag = self.config.__dict__.get('enable_diagnostics', False)
+        best_result, all_results = trainer.train_best(X, y, feature_names, enable_diagnostics=_enable_diag)
         training_time_ms = (time.time() - start_time) * 1000
         
         # Log all model results
@@ -765,6 +789,9 @@ class SelfplayOrchestrator:
         
         metrics = best_result.metrics
         
+        # S83 Phase 8A: Extract diagnostics from best model  # S83_PHASE8A_DIAG
+        _best_diag = getattr(best_result, 'diagnostics', None)
+
         return EpisodeResult(
             episode_id=episode_id,
             timestamp=timestamp,
@@ -784,8 +811,59 @@ class SelfplayOrchestrator:
             active_policy_id=active_policy_id,
             active_policy_fingerprint=active_policy_fingerprint,
             conditioning_log=conditioning_log,
+            # Phase 8A  # S83_PHASE8A_DIAG
+            episode_diagnostics=_best_diag,
         )
     
+
+    # =====================================================  # S83_PHASE8A_DIAG
+    # S83 PHASE 8A: Episode Training Trend Detection
+    # =====================================================
+
+    def _check_episode_training_trend(self, diagnostics_history: List[Dict]) -> Optional[str]:
+        """
+        Detect degrading training quality across episodes.
+        Ch14 Section 9.2. OBSERVE-ONLY -- no automatic intervention.
+        
+        Returns:
+            'STABLE', 'WARNING_OVERFIT', 'CRITICAL_OVERFIT', 'DEGRADING', or None.
+        """
+        if len(diagnostics_history) < 3:
+            return None
+        
+        recent = diagnostics_history[-3:]
+        ratios = [d.get('best_round_ratio', 0.0) for d in recent]
+        
+        if ratios[0] > ratios[1] > ratios[2] and ratios[2] < 0.2:
+            print(f"      [DIAG] Training quality DEGRADING: "
+                  f"best_round_ratios={[f'{r:.2f}' for r in ratios]}")
+            if self.telemetry:
+                try:
+                    self.telemetry.record_event(
+                        event_type='training_quality_degrading',
+                        details={
+                            'recent_ratios': ratios,
+                            'recent_severities': [d.get('severity', 'absent') for d in recent],
+                        },
+                    )
+                except Exception:
+                    pass
+            return 'DEGRADING'
+        
+        severities = [d.get('severity', 'ok') for d in recent]
+        critical_count = sum(1 for s in severities if s == 'critical')
+        
+        if critical_count >= 2:
+            print(f"      [DIAG] Majority critical episodes: "
+                  f"{critical_count}/{len(recent)}")
+            return 'CRITICAL_OVERFIT'
+        
+        warning_count = sum(1 for s in severities if s in ('critical', 'warning'))
+        if warning_count >= 2:
+            return 'WARNING_OVERFIT'
+        
+        return 'STABLE'
+
     def _load_survivors_raw(self, path: str) -> List[Dict]:
         """
         Load survivors from JSON file as raw dicts.
