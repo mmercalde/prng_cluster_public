@@ -464,7 +464,7 @@ def patch_trainer(path):
         "            )\n"
         "            \n"
         "            self.logger.info(\n"
-        '                f"Trained {model_type}: R\u00c2\u00b2={metrics.val_r2:.4f}, "\n'
+        '                f"Trained {model_type}: R\u00b2={metrics.val_r2:.4f}, "\n'
         '                f"MAE={metrics.val_mae:.4f}, time={metrics.training_time_ms:.0f}ms"\n'
         "            )\n"
         "            \n"
@@ -484,7 +484,7 @@ def patch_trainer(path):
         "            )\n"
         "            \n"
         "            self.logger.info(\n"
-        '                f"Trained {model_type}: R\u00c2\u00b2={metrics.val_r2:.4f}, "\n'
+        '                f"Trained {model_type}: R\u00b2={metrics.val_r2:.4f}, "\n'
         '                f"MAE={metrics.val_mae:.4f}, time={metrics.training_time_ms:.0f}ms"\n'
         "            )\n"
         "            \n"

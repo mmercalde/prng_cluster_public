@@ -12,10 +12,11 @@ Per CONTRACT_SELFPLAY_CHAPTER13_AUTHORITY_v1_0.md:
 - Output is hypothesis (learned_policy_candidate.json), NOT decision
 
 Author: Team Alpha
-Version: 1.0.3
+Version: 1.1.0
 Date: 2026-01-29
 
 Changelog:
+- v1.1.0: S83 Phase 8A -- episode diagnostics (eval_set + side-channel pattern)
 - v1.0.3: Cap train_val_gap at 5.0 to prevent numerical instability with near-zero MSE
 - v1.0.2: Fixed nested features loading for survivors_with_scores.json format
 - v1.0.1: Team Beta improvements (R² floor, NaN guard, OMP_NUM_THREADS safety)
@@ -43,6 +44,13 @@ import xgboost as xgb
 from catboost import CatBoostRegressor
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+# Chapter 14 Phase 8A: Training Diagnostics (best-effort, non-fatal)  # S83_PHASE8A_DIAG
+try:
+    from training_diagnostics import TrainingDiagnostics
+    DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    DIAGNOSTICS_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(
@@ -159,13 +167,15 @@ class TrainingResult:
     model_type: str
     metrics: Optional[ProxyMetrics] = None
     error: Optional[str] = None
+    diagnostics: Optional[Dict[str, Any]] = None  # S83_PHASE8A_DIAG
     
     def to_dict(self) -> Dict:
         return {
             'success': self.success,
             'model_type': self.model_type,
             'metrics': self.metrics.to_dict() if self.metrics else None,
-            'error': self.error
+            'error': self.error,
+            'diagnostics': self.diagnostics,  # S83_PHASE8A_DIAG
         }
 
 
@@ -226,6 +236,12 @@ MODEL_BUILDERS = {
 # Training Functions
 # =============================================================================
 
+# S83 Phase 8A: Module-level diagnostics side-channel  # S83_PHASE8A_DIAG
+# Fold diagnostics appended here by train_single_fold(), read by train().
+# Cleared before each train_model_kfold() call.
+_FOLD_DIAGNOSTICS_COLLECTOR: List[Dict] = []
+
+
 def train_single_fold(
     model_type: str,
     config: TrainerConfig,
@@ -233,10 +249,14 @@ def train_single_fold(
     y_train: np.ndarray,
     X_val: np.ndarray,
     y_val: np.ndarray,
-    feature_names: Optional[List[str]] = None
+    feature_names: Optional[List[str]] = None,
+    enable_diagnostics: bool = False,  # S83_PHASE8A_DIAG
 ) -> Tuple[float, float, float, float, np.ndarray, Optional[np.ndarray]]:
     """
     Train single fold and return metrics.
+    
+    Return signature UNCHANGED. If enable_diagnostics=True, fold diagnostics
+    are appended to _FOLD_DIAGNOSTICS_COLLECTOR (side-channel, best-effort).
     
     Returns:
         (train_mse, val_mse, val_mae, val_r2, predictions, feature_importance)
@@ -248,8 +268,32 @@ def train_single_fold(
     
     model = builder(config)
     
-    # Train
-    model.fit(X_train, y_train)
+    # -- S83 Phase 8A: Train with eval_set for round data --------  # S83_PHASE8A_DIAG
+    try:
+        if model_type == 'lightgbm':
+            model.fit(
+                X_train, y_train,
+                eval_set=[(X_val, y_val)],
+                eval_names=['validation'],
+            )
+        elif model_type == 'xgboost':
+            model.fit(
+                X_train, y_train,
+                eval_set=[(X_val, y_val)],
+                verbose=False,
+            )
+        elif model_type == 'catboost':
+            model.fit(
+                X_train, y_train,
+                eval_set=(X_val, y_val),
+                verbose=False,
+            )
+        else:
+            model.fit(X_train, y_train)
+    except TypeError:
+        # Fallback if eval_set not supported
+        model.fit(X_train, y_train)
+    # -- End eval_set wiring -------------------------------------
     
     # Predictions
     train_pred = model.predict(X_train)
@@ -268,6 +312,69 @@ def train_single_fold(
     elif hasattr(model, 'get_feature_importance'):
         importance = model.get_feature_importance()
     
+    # -- S83 Phase 8A: Capture fold diagnostics (side-channel) ---  # S83_PHASE8A_DIAG
+    if enable_diagnostics and DIAGNOSTICS_AVAILABLE:
+        try:
+            diag = TrainingDiagnostics.create(model_type, feature_names=feature_names)
+            diag.attach(model)
+            
+            # Feed eval results if available
+            if model_type == 'lightgbm' and hasattr(model, 'evals_result_'):
+                evals = model.evals_result_
+                if 'validation' in evals:
+                    metric_key = list(evals['validation'].keys())[0]
+                    train_losses = evals.get('training', {}).get(metric_key, [])
+                    for i, val_loss in enumerate(evals['validation'][metric_key]):
+                        t_loss = train_losses[i] if i < len(train_losses) else val_loss
+                        diag.on_round_end(i, float(t_loss), float(val_loss))
+            
+            elif model_type == 'xgboost' and hasattr(model, 'evals_result'):
+                evals_fn = model.evals_result
+                if callable(evals_fn):
+                    evals = evals_fn()
+                    val_key = 'validation_0'
+                    if val_key in evals:
+                        metric_key = list(evals[val_key].keys())[0]
+                        for i, val_loss in enumerate(evals[val_key][metric_key]):
+                            diag.on_round_end(i, float(val_loss), float(val_loss))
+            
+            elif model_type == 'catboost' and hasattr(model, 'get_evals_result'):
+                evals = model.get_evals_result()
+                if 'validation' in evals:
+                    metric_key = list(evals['validation'].keys())[0]
+                    learn_key = 'learn' if 'learn' in evals else None
+                    for i, val_loss in enumerate(evals['validation'][metric_key]):
+                        t_loss = evals[learn_key][metric_key][i] if learn_key else val_loss
+                        diag.on_round_end(i, float(t_loss), float(val_loss))
+            
+            # Set feature importance
+            if importance is not None and feature_names:
+                imp_len = min(len(feature_names), len(importance))
+                imp_dict = dict(zip(feature_names[:imp_len], [float(v) for v in importance[:imp_len]]))
+                diag.set_feature_importance(imp_dict)
+            
+            # Set best iteration if available
+            if hasattr(model, 'best_iteration_') and model.best_iteration_ is not None:
+                diag.set_best_iteration(model.best_iteration_)
+            elif hasattr(model, 'get_best_iteration'):
+                try:
+                    diag.set_best_iteration(model.get_best_iteration())
+                except Exception:
+                    pass
+            
+            diag.set_final_metrics({
+                'train_mse': float(train_mse),
+                'val_mse': float(val_mse),
+                'val_mae': float(val_mae),
+                'val_r2': float(val_r2),
+            })
+            
+            _FOLD_DIAGNOSTICS_COLLECTOR.append(diag.get_report())
+            diag.detach()
+        except Exception as e:
+            logger.debug(f"Fold diagnostics capture failed (non-fatal): {e}")
+    # -- End diagnostics capture ---------------------------------
+    
     return train_mse, val_mse, val_mae, val_r2, val_pred, importance
 
 
@@ -276,7 +383,8 @@ def train_model_kfold(
     X: np.ndarray,
     y: np.ndarray,
     config: TrainerConfig,
-    feature_names: Optional[List[str]] = None
+    feature_names: Optional[List[str]] = None,
+    enable_diagnostics: bool = False,  # S83_PHASE8A_DIAG
 ) -> ProxyMetrics:
     """
     Train model with K-fold cross-validation.
@@ -291,6 +399,8 @@ def train_model_kfold(
     
     kf = KFold(n_splits=config.k_folds, shuffle=True, random_state=config.random_state)
     
+    _FOLD_DIAGNOSTICS_COLLECTOR.clear()  # S83_PHASE8A_DIAG
+
     fold_metrics = {
         'train_mse': [],
         'val_mse': [],
@@ -305,7 +415,8 @@ def train_model_kfold(
         y_train, y_val = y[train_idx], y[val_idx]
         
         train_mse, val_mse, val_mae, val_r2, predictions, importance = train_single_fold(
-            model_type, config, X_train, y_train, X_val, y_val, feature_names
+            model_type, config, X_train, y_train, X_val, y_val, feature_names,
+            enable_diagnostics=enable_diagnostics,  # S83_PHASE8A_DIAG
         )
         
         fold_metrics['train_mse'].append(train_mse)
@@ -396,7 +507,8 @@ class InnerEpisodeTrainer:
         X: np.ndarray,
         y: np.ndarray,
         feature_names: Optional[List[str]] = None,
-        model_type: Optional[str] = None
+        model_type: Optional[str] = None,
+        enable_diagnostics: bool = False,  # S83_PHASE8A_DIAG
     ) -> TrainingResult:
         """
         Train a single model and return proxy metrics.
@@ -425,7 +537,8 @@ class InnerEpisodeTrainer:
                 X=X,
                 y=y,
                 config=self.config,
-                feature_names=feature_names
+                feature_names=feature_names,
+                enable_diagnostics=enable_diagnostics,  # S83_PHASE8A_DIAG
             )
             
             self.logger.info(
@@ -433,10 +546,62 @@ class InnerEpisodeTrainer:
                 f"MAE={metrics.val_mae:.4f}, time={metrics.training_time_ms:.0f}ms"
             )
             
+            # -- S83 Phase 8A: Collect diagnostics from side-channel --  # S83_PHASE8A_DIAG
+            aggregated_diag = None
+            if enable_diagnostics and _FOLD_DIAGNOSTICS_COLLECTOR:
+                try:
+                    fold_reports = list(_FOLD_DIAGNOSTICS_COLLECTOR)
+                    severities = [
+                        fd.get('diagnosis', {}).get('severity', 'absent')
+                        for fd in fold_reports
+                    ]
+                    severity_rank = {'critical': 3, 'warning': 2, 'ok': 1, 'absent': 0}
+                    worst_sev = max(severities, key=lambda s: severity_rank.get(s, 0))
+                    
+                    overfit_gaps = [
+                        fd.get('training_summary', {}).get('overfit_gap')
+                        for fd in fold_reports
+                        if fd.get('training_summary', {}).get('overfit_gap') is not None
+                    ]
+                    
+                    best_rounds = []
+                    total_rounds = []
+                    for fd in fold_reports:
+                        ts = fd.get('training_summary', {})
+                        bv = ts.get('best_val_round')
+                        rc = ts.get('rounds_captured')
+                        if bv is not None and rc:
+                            best_rounds.append(bv)
+                            total_rounds.append(rc)
+                    
+                    best_round_ratio = 0.0
+                    if best_rounds and total_rounds:
+                        best_round_ratio = float(np.mean([
+                            b / max(t, 1) for b, t in zip(best_rounds, total_rounds)
+                        ]))
+                    
+                    all_issues = []
+                    for fd in fold_reports:
+                        all_issues.extend(fd.get('diagnosis', {}).get('issues', []))
+                    
+                    aggregated_diag = {
+                        'model_type': model_type,
+                        'fold_count': len(fold_reports),
+                        'severity': worst_sev,
+                        'best_round_ratio': best_round_ratio,
+                        'mean_overfit_gap': float(np.mean(overfit_gaps)) if overfit_gaps else None,
+                        'issues': list(set(all_issues))[:10],
+                        'fold_severities': severities,
+                    }
+                except Exception as e:
+                    self.logger.debug(f"Diagnostics aggregation failed (non-fatal): {e}")
+            # -- End diagnostics collection --------------------------
+            
             return TrainingResult(
                 success=True,
                 model_type=model_type,
-                metrics=metrics
+                metrics=metrics,
+                diagnostics=aggregated_diag,  # S83_PHASE8A_DIAG
             )
             
         except Exception as e:
@@ -451,7 +616,8 @@ class InnerEpisodeTrainer:
         self,
         X: np.ndarray,
         y: np.ndarray,
-        feature_names: Optional[List[str]] = None
+        feature_names: Optional[List[str]] = None,
+        enable_diagnostics: bool = False,  # S83_PHASE8A_DIAG
     ) -> Dict[str, TrainingResult]:
         """
         Train all configured model types.
@@ -462,7 +628,7 @@ class InnerEpisodeTrainer:
         results = {}
         
         for model_type in self.config.model_types:
-            results[model_type] = self.train(X, y, feature_names, model_type)
+            results[model_type] = self.train(X, y, feature_names, model_type, enable_diagnostics)  # S83_PHASE8A_DIAG
         
         return results
     
@@ -470,7 +636,8 @@ class InnerEpisodeTrainer:
         self,
         X: np.ndarray,
         y: np.ndarray,
-        feature_names: Optional[List[str]] = None
+        feature_names: Optional[List[str]] = None,
+        enable_diagnostics: bool = False,  # S83_PHASE8A_DIAG
     ) -> Tuple[TrainingResult, Dict[str, TrainingResult]]:
         """
         Train all models and return the best one by fitness score.
@@ -478,7 +645,7 @@ class InnerEpisodeTrainer:
         Returns:
             (best_result, all_results)
         """
-        all_results = self.train_all(X, y, feature_names)
+        all_results = self.train_all(X, y, feature_names, enable_diagnostics)  # S83_PHASE8A_DIAG
         
         # Find best by fitness
         best_result = None
