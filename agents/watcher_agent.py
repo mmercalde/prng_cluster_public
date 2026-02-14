@@ -108,6 +108,9 @@ try:
     TRAINING_HEALTH_CHECK_AVAILABLE = True
 except ImportError:
     TRAINING_HEALTH_CHECK_AVAILABLE = False
+    check_training_health = None
+    reset_skip_registry = None
+    get_retry_params_suggestions = None
 
 # --- S81_PHASE7_LLM_DIAGNOSTICS_IMPORT ---
 try:
@@ -118,10 +121,6 @@ try:
 except ImportError:
     LLM_DIAGNOSTICS_AVAILABLE = False
 # --- S81_PHASE7_LLM_DIAGNOSTICS_IMPORT_END ---
-
-    check_training_health = None
-    reset_skip_registry = None
-    get_retry_params_suggestions = None
 
 # Steps that use distributed GPU cluster (need cleanup)
 DISTRIBUTED_STEPS = {1, 2, 3}
