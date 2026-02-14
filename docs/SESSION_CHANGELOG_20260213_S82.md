@@ -2,7 +2,7 @@
 
 ## Session 82 -- February 13, 2026
 
-### Focus: Forced RETRY Monkey Test -- Full WATCHER Retry Loop Validation
+### Focus: Forced RETRY Monkey Test + Dead Code Cleanup + Import Fix
 
 ---
 
@@ -11,211 +11,228 @@
 **Objective:** Prove the full WATCHER RETRY loop end-to-end:
 Step 5 → health CRITICAL → RETRY → LLM refinement → clamp → re-run Step 5
 
+**Outcome:** ✅ ALL ASSERTIONS PASSED. Three fixes applied. Phase 7 CLOSED.
+
 **Method:** Monkey-patch `training_health_check.py` to force a synthetic RETRY
-response, bypassing real diagnostics. Validates all wiring from S76 (RETRY
-param-threading) and S81 (LLM diagnostics integration) without requiring a
-real training failure.
-
-**Team Beta Review:** APPROVED -- architecturally safe, reversible, properly scoped.
-
----
-
-## Monkey Test Design
-
-### What It Does
-Injects a forced `return` into `check_training_health()` that:
-- Returns `action='RETRY'` with `severity='critical'`
-- Includes synthetic issues (gradient explosion, overfitting, dead neurons)
-- Returns `model_type='neural_net'` to trigger CatBoost switch logic
-- Returns `confidence=0.9` (contract-compatible)
-
-### What It Proves (When All Pass)
-
-| # | Assertion | Log Evidence |
-|---|-----------|-------------|
-| 1 | S76 retry threading works | `[WATCHER][HEALTH] ... requesting RETRY` |
-| 2 | `_handle_training_health()` returns "retry" | Step 5 re-dispatched |
-| 3 | S81 LLM refinement executes | `LLM diagnostics analysis:` log line |
-| 4 | Clamp enforcement works | `Applied:` or `REJECTED (bounds)` per proposal |
-| 5 | `_build_retry_params()` merges proposals | Modified params visible in retry log |
-| 6 | Lifecycle invocation works | LLM session start/stop around analysis |
-| 7 | Max retries (2) respected | After 2 retries, proceeds to Step 6 |
-| 8 | No daemon regression | `--status` healthy before and after |
-
-### Safety Properties
-
-| Property | Status |
-|----------|--------|
-| Only touches `training_health_check.py` | ✅ |
-| Does NOT modify WATCHER | ✅ |
-| Does NOT touch Phase 7 wiring | ✅ |
-| No policy mutation | ✅ |
-| No threshold mutation | ✅ |
-| No daemon state mutation | ✅ |
-| No LLM lifecycle mutation | ✅ |
-| Guard markers (BEGIN/END) | ✅ |
-| Idempotent apply | ✅ |
-| Clean revert | ✅ |
-| Backup created | ✅ |
+response. Initial run revealed misleading "param-threading not yet implemented"
+log from dead code. Analysis proved the real S76 retry loop WAS working all
+along. Dead code removed, latent import bug fixed, final validated run confirmed
+complete end-to-end operation.
 
 ---
 
-## Files Created
+## Session Timeline
 
-| File | Purpose | Deploy To |
-|------|---------|-----------|
-| `apply_s82_forced_retry_test.sh` | Apply monkey patch | project root |
-| `revert_s82_forced_retry_test.sh` | Revert monkey patch | project root |
-| `SESSION_CHANGELOG_20260213_S82.md` | This changelog | docs/ |
-
----
-
-## Deployment
-
-```bash
-# From ser8 Downloads to Zeus
-scp ~/Downloads/apply_s82_forced_retry_test.sh rzeus:~/distributed_prng_analysis/
-scp ~/Downloads/revert_s82_forced_retry_test.sh rzeus:~/distributed_prng_analysis/
-scp ~/Downloads/SESSION_CHANGELOG_20260213_S82.md rzeus:~/distributed_prng_analysis/docs/
-```
+| Time | Action | Result |
+|------|--------|--------|
+| Run 1 | Initial monkey test | "param-threading not yet implemented" logged |
+| Analysis | Team Alpha + Team Beta post-mortem | Identified dead Phase 6 callsite in `_handle_proceed()` |
+| Fix 1 | `apply_remove_dead_health_callsite.py` (v1.1 hardened) | Dead code removed, `79433d4` |
+| Run 2 | Re-run monkey test (no tee) | 3x Step 5 runs confirmed, Rich table hid log lines |
+| Fix 2 | `fix_s82_import_indentation.py` | Latent import bug fixed, `b12544d` |
+| Run 3 | Final monkey test with `tee` capture | **ALL ASSERTIONS PASSED** -- full log captured |
 
 ---
 
-## Test Procedure
+## Fix 1: Dead Phase 6 Callsite Removal
 
-### Pre-Test Sanity
-```bash
-cd ~/distributed_prng_analysis
+### Problem
+`_handle_proceed()` (lines 1039-1088) contained pre-S76 "observational" code that:
+- Called `check_training_health()` redundantly (double-call per iteration)
+- Logged "Retry requested but param-threading not yet implemented" (misleading)
+- Had no functional effect (fell through to Step 6 regardless)
 
-# Verify watcher is healthy
-PYTHONPATH=. python3 agents/watcher_agent.py --status
+### Root Cause
+Pre-S76 code was never removed when S76 added the real retry loop in
+`run_pipeline()`. Both call sites existed simultaneously.
+
+### Fix
+`apply_remove_dead_health_callsite.py` (v1.1, Team Beta hardened):
+- Dynamic indentation extraction (refactor-proof)
+- Scope guard confirms target is inside `_handle_proceed()`
+- Backup, syntax check, markers, revert support
+
+### Commit: `79433d4`
+
+---
+
+## Fix 2: Import Fallback Indentation Bug
+
+### Problem
+Lines 123-125 in `watcher_agent.py`:
+```python
+    check_training_health = None
+    reset_skip_registry = None
+    get_retry_params_suggestions = None
+```
+Were inside the **LLM diagnostics** `except ImportError` block instead of the
+**training health** `except ImportError` block. The S81 patcher inserted the
+LLM import block between the training health try/except and its fallback
+assignments, causing the fallbacks to attach to the wrong except.
+
+### Impact
+Latent timebomb: if `diagnostics_llm_analyzer.py` ever fails to import,
+training health functions get silently nullified. Harmless on Zeus currently
+(both imports succeed), but would break the retry loop without any warning.
+
+### Fix
+`fix_s82_import_indentation.py`: Moved fallback assignments into the correct
+`except ImportError` block via exact string replacement.
+
+### Commit: `b12544d`
+
+---
+
+## Final Validated Run (Run 3) -- Full Log Evidence
+
+### Iteration 1 (18:48:42)
+```
+S82 FORCED RETRY ACTIVE -- training_health_check returning synthetic RETRY
+[WATCHER][HEALTH] Training health CRITICAL (neural_net): gradient explosion; overfitting; dead ReLU -- requesting RETRY
+[WATCHER][RETRY] Switching model_type to catboost
+[WATCHER][RETRY] Increasing dropout to 0.40
+[WATCHER][RETRY] Enabling feature normalization
+[WATCHER][RETRY] Modified params: {model_type: catboost, dropout: 0.4, normalize_features: True}
+LLM server healthy after 3.3s (startup #1). ctx_size=32768
+Grammar-constrained response (diagnostics_analysis.gbnf): focus_area=MODEL_DIVERSITY
+[WATCHER][LLM_DIAG] Applied: learning_rate = 0.05
+[WATCHER][LLM_DIAG] REJECTED (bounds): momentum = 0.8
+[WATCHER][LLM_DIAG] REJECTED (bounds): batch_size = 64.0
+[WATCHER][LLM_DIAG] focus=MODEL_DIVERSITY confidence=0.95
+[WATCHER][HEALTH] Training health RETRY 1/2 -- re-running Step 5
 ```
 
-### Apply Patch
-```bash
-bash apply_s82_forced_retry_test.sh
+### Iteration 2 (18:48:54)
+```
+STEP 5: Anti-Overfit Training (run #1)  [Step 5 re-ran with modified params]
+S82 FORCED RETRY ACTIVE
+[WATCHER][HEALTH] Training health CRITICAL (neural_net) -- requesting RETRY
+[WATCHER][RETRY] Increasing dropout to 0.50  [cumulative: was 0.40]
+[WATCHER][RETRY] Modified params: {model_type: catboost, dropout: 0.5, normalize_features: True, learning_rate: 0.05}
+LLM server healthy after 3.3s (startup #2)
+[WATCHER][LLM_DIAG] Applied: n_estimators = 150.0
+[WATCHER][LLM_DIAG] Applied: learning_rate = 0.05
+[WATCHER][LLM_DIAG] Applied: max_depth = 8.0
+[WATCHER][LLM_DIAG] REJECTED (bounds): num_leaves = 50.0
+[WATCHER][LLM_DIAG] focus=MODEL_DIVERSITY confidence=0.85
+[WATCHER][HEALTH] Training health RETRY 2/2 -- re-running Step 5
 ```
 
-### Run Test
-```bash
-PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline \
-  --start-step 5 --end-step 6 \
-  --params '{"trials":3,"max_seeds":5000,"enable_diagnostics":true}'
+### Iteration 3 (18:49:10)
+```
+STEP 5: Anti-Overfit Training (run #1)  [Step 5 re-ran again]
+S82 FORCED RETRY ACTIVE
+[WATCHER][HEALTH] Training health CRITICAL (neural_net) -- requesting RETRY
+[WATCHER][HEALTH] Max training retries (2) exhausted -- proceeding to Step 6
 ```
 
-### Expected Log Sequence
+### Step 6 (18:49:15)
 ```
-1. Step 5 runs (Anti-Overfit Training)
-2. "S82 FORCED RETRY ACTIVE" -- monkey patch triggered
-3. "[WATCHER][HEALTH] Training health CRITICAL ... requesting RETRY"
-4. "_handle_training_health() -> retry"
-5. LLM lifecycle session starts
-6. "Built diagnostics prompt: model=neural_net, severity=critical"
-7. "LLM diagnostics analysis: focus=..., confidence=..."
-8. Per-proposal: "Applied: learning_rate=..." or "REJECTED (bounds): ..."
-9. "_build_retry_params() -> modified params"
-10. "Re-running Step 5 with updated params" (retry 1)
-11. Step 5 runs again with modified params
-12. "S82 FORCED RETRY ACTIVE" -- triggers again (retry 2)
-13. "[WATCHER][HEALTH] Max training retries (2) exhausted -- proceeding"
-14. Step 6 runs (Prediction Generator)
-15. Pipeline complete
-```
-
-### Revert (MANDATORY)
-```bash
-bash revert_s82_forced_retry_test.sh
-```
-
-### Post-Test Verification
-```bash
-# Verify watcher still healthy
-PYTHONPATH=. python3 agents/watcher_agent.py --status
-
-# Verify no monkey test code remains
-grep -r "S82_FORCED_RETRY" training_health_check.py && echo "FAIL: Markers remain!" || echo "PASS: Clean"
-
-# Optional: remove backup
-rm -f training_health_check.py.s82_backup
+STEP 6: Prediction Generator (run #1)
+Step 6 PASSED - proceeding to next step
+PIPELINE COMPLETE - all 6 steps finished!
 ```
 
 ---
 
-## Git Commands
+## All Assertions -- PASSED
 
-```bash
-cd ~/distributed_prng_analysis
-
-# After successful test AND revert:
-git add docs/SESSION_CHANGELOG_20260213_S82.md
-git add apply_s82_forced_retry_test.sh
-git add revert_s82_forced_retry_test.sh
-
-git commit -m "Session 82: Forced RETRY monkey test -- full WATCHER retry loop validation
-
-Monkey-patched training_health_check.py to force synthetic RETRY response.
-Validates complete loop: Step 5 -> health CRITICAL -> RETRY -> LLM refinement
--> clamp enforcement -> re-run Step 5 -> max retries -> Step 6.
-
-Proves S76 param-threading + S81 LLM integration + lifecycle management
-all work end-to-end under controlled conditions.
-
-Test scripts preserved for regression testing.
-Team Beta: APPROVED.
-
-Ref: Session 82, closes Priority 2 from Session 81"
-
-git push origin main
-```
+| # | Assertion | Result | Evidence |
+|---|-----------|--------|----------|
+| 1 | S76 retry threading works | PASS | `[WATCHER][HEALTH] ... requesting RETRY` x3 |
+| 2 | `_handle_training_health()` returns "retry" | PASS | Step 5 re-dispatched twice |
+| 3 | S81 LLM refinement executes | PASS | Grammar-constrained response x2 |
+| 4 | Clamp enforcement works | PASS | `Applied: learning_rate`, `REJECTED: momentum, batch_size, num_leaves` |
+| 5 | `_build_retry_params()` merges proposals | PASS | Params cumulative: dropout 0.3->0.4->0.5, learning_rate persisted |
+| 6 | Lifecycle invocation works | PASS | LLM start/stop x2 (startup #1, #2), VRAM freed |
+| 7 | Max retries (2) respected | PASS | "Max training retries (2) exhausted -- proceeding to Step 6" |
+| 8 | No daemon regression | PASS | `--status` SAFE before and after |
+| 9 | Dead code removed | PASS | "param-threading not yet implemented" absent from all runs |
+| 10 | Import isolation correct | PASS | Fallback in correct except block |
+| 11 | Monkey test reverts cleanly | PASS | No markers remain post-revert |
 
 ---
 
-## Results
+## Files Created / Modified
 
-*(Fill in after test execution)*
-
-| Assertion | Result | Evidence |
-|-----------|--------|----------|
-| S76 retry threading | | |
-| _handle_training_health | | |
-| LLM refinement executes | | |
-| Clamp enforcement | | |
-| _build_retry_params merges | | |
-| Lifecycle invocation | | |
-| Max retries respected | | |
-| No daemon regression | | |
+| File | Purpose | Commit |
+|------|---------|--------|
+| `apply_s82_forced_retry_test.sh` | Monkey patch (apply) | `79433d4` |
+| `revert_s82_forced_retry_test.sh` | Monkey patch (revert) | `79433d4` |
+| `apply_remove_dead_health_callsite.py` | Dead code removal (v1.1) | `79433d4` |
+| `fix_s82_import_indentation.py` | Import fallback fix | gitignored, `watcher_agent.py` in `b12544d` |
+| `agents/watcher_agent.py` | Dead code removed + import fix | `79433d4` + `b12544d` |
+| `SESSION_CHANGELOG_20260213_S82.md` | This changelog | `79433d4` |
 
 ---
 
-## Chapter 14 Phase Status (Updated)
+## Chapter 14 Phase Status (Final)
 
 | Phase | Status | Session |
 |-------|--------|---------|
-| 1. Core Diagnostics | ✅ | S69 |
-| 2. GPU/CPU Collection | ✅ | S70 |
-| 3. Engine Wiring | ✅ | S70+S73 |
-| 4. RETRY Param-Threading | ✅ | S76 |
-| 5. FIFO Pruning | ✅ | S72 |
-| 6. Health Check | ✅ | S72 |
-| 7. LLM Integration | ✅ | S81 |
-| **7b. RETRY Loop E2E Test** | **⏳ THIS SESSION** | **S82** |
-| 8. Selfplay + Ch13 Wiring | 📋 Pending | — |
-| 9. First Diagnostic Investigation | 📋 Pending | — |
+| 1. Core Diagnostics | DONE | S69 |
+| 2. GPU/CPU Collection | DONE | S70 |
+| 3. Engine Wiring | DONE | S70+S73 |
+| 4. RETRY Param-Threading | DONE | S76 |
+| 5. FIFO Pruning | DONE | S72 |
+| 6. Health Check | DONE | S72 |
+| 7. LLM Integration | DONE | S81 |
+| **7b. RETRY Loop E2E** | **DONE -- PROVEN** | **S82** |
+| 8. Selfplay + Ch13 Wiring | Pending | -- |
+| 9. First Diagnostic Investigation | Pending | -- |
 
 ---
 
-## Next Steps (After S82)
+## Key Findings
 
-### If Test PASSES
-1. ✅ Phase 7 is fully closed (Priority 1 from S81 proven)
-2. Move to Phase 8: Selfplay + Ch13 Wiring
-3. Or Phase 9: First real diagnostic investigation (`--compare-models --enable-diagnostics`)
+1. **S76 retry loop was functional all along** -- The "param-threading not yet
+   implemented" log came from dead pre-S76 code in `_handle_proceed()`, not
+   from the real retry loop in `run_pipeline()`. Team Beta initially
+   misdiagnosed S82 Run 1 as a failure; Team Alpha's code trace of the live
+   file proved the local variable `step` (captured at loop top) preserves the
+   value through `_handle_proceed()` mutation of `self.current_step`.
 
-### If Test FAILS
-1. Diagnose which assertion failed
-2. Fix the specific wiring issue
-3. Re-test (do not expand scope)
+2. **Rich progress table hides log lines** -- Terminal output is overwritten by
+   table redraws. Use `2>&1 | tee /tmp/log.log` to capture full output.
+
+3. **Patch layering creates subtle bugs** -- S81 patcher inserted the LLM
+   import between the training health try/except and its fallback assignments,
+   creating a latent timebomb. Caught during S82 post-mortem.
+
+4. **Monkey tests are essential validation** -- Without S82, the dead code and
+   import bug would have remained undetected indefinitely.
 
 ---
 
-*Session 82 -- FORCED RETRY MONKEY TEST*
+## Lessons Learned
+
+1. **Read the live file before building patches** -- The initial
+   `apply_s82_retry_threading_fix.py` was built blind against log output and
+   targeted the wrong problem. Always request the actual source.
+
+2. **Local variables vs instance state** -- `step = self.current_step` at
+   loop top means `step` survives mutation by `_handle_proceed()`. This is
+   intentional S76 design but caused confusion during diagnosis.
+
+3. **Test with output capture** -- `tee` to a log file prevents Rich/curses
+   terminal redraws from hiding critical log lines.
+
+4. **Import block ordering matters** -- When patchers insert code between a
+   try/except and its fallback assignments, the fallbacks can silently attach
+   to the wrong except block.
+
+---
+
+## Next Steps
+
+1. **Phase 8: Selfplay + Ch13 Wiring** -- Next architectural work
+2. **Phase 9: First Diagnostic Investigation** -- `--compare-models --enable-diagnostics`
+   with real training data to validate diagnostics under production conditions
+3. **Backlog: `_record_training_incident()`** -- The S76 retry path in
+   `run_pipeline()` does not call `_record_training_incident()` (was only in
+   the dead `_handle_proceed()` code). Consider adding incident recording to
+   `_handle_training_health()` for audit trail.
+
+---
+
+*Session 82 -- COMPLETE. Phase 7 CLOSED. S76+S81+S82 stack fully coherent.*
