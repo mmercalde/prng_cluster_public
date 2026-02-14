@@ -3003,25 +3003,25 @@ tensorboard            # pip install tensorboard --break-system-packages
 | # | Task | Phase | Status |
 |---|------|-------|--------|
 | | **PREREQUISITES** | | |
-| P.1 | Soak Test A (idle endurance) complete | Pre | ⬜ |
-| P.2 | Soak Test C (full autonomous loop) complete | Pre | ⬜ |
-| P.3 | Team Beta approval to begin Chapter 14 | Pre | ⬜ |
+| P.1 | Soak Test A (idle endurance) complete | Pre | ✅ S76 |
+| P.2 | Soak Test C (full autonomous loop) complete | Pre | ✅ S77 |
+| P.3 | Team Beta approval to begin Chapter 14 | Pre | ✅ S69 |
 | | **PHASE 1: Core Diagnostics** | | |
-| 1.1 | Create `training_diagnostics.py` — base class | 1 | ⬜ |
-| 1.2 | NNDiagnostics — PyTorch hooks | 1 | ⬜ |
-| 1.3 | TreeDiagnostics — eval_result wrappers | 1 | ⬜ |
-| 1.4 | Analysis engine (plateau, gradient flow, dead neurons) | 1 | ⬜ |
-| 1.5 | Diagnosis engine (severity, issues, fixes) | 1 | ⬜ |
-| 1.6 | JSON save/load | 1 | ⬜ |
-| 1.7 | Unit test | 1 | ⬜ |
+| 1.1 | Create `training_diagnostics.py` — base class | 1 | ✅ S69 |
+| 1.2 | NNDiagnostics — PyTorch hooks | 1 | ✅ S69 |
+| 1.3 | TreeDiagnostics — eval_result wrappers | 1 | ✅ S69 |
+| 1.4 | Analysis engine (plateau, gradient flow, dead neurons) | 1 | ✅ S69 |
+| 1.5 | Diagnosis engine (severity, issues, fixes) | 1 | ✅ S69 |
+| 1.6 | JSON save/load | 1 | ✅ S69 |
+| 1.7 | Unit test | 1 | ✅ S69 |
 | | **PHASE 2: Per-Survivor Attribution** | | |
-| 2.1 | Create `per_survivor_attribution.py` | 2 | ⬜ |
-| 2.2 | NN gradient attribution | 2 | ⬜ |
-| 2.3 | XGBoost pred_contribs | 2 | ⬜ |
-| 2.4 | LightGBM pred_contrib | 2 | ⬜ |
-| 2.5 | CatBoost ShapValues | 2 | ⬜ |
-| 2.6 | Unified interface + pool tier comparison | 2 | ⬜ |
-| 2.7 | Unit test | 2 | ⬜ |
+| 2.1 | Create `per_survivor_attribution.py` | 2 | ✅ S84 |
+| 2.2 | NN gradient attribution | 2 | ✅ S84 |
+| 2.3 | XGBoost pred_contribs | 2 | ✅ S84 |
+| 2.4 | LightGBM pred_contrib | 2 | ✅ S84 |
+| 2.5 | CatBoost ShapValues | 2 | ✅ S84 |
+| 2.6 | Unified interface + pool tier comparison | 2 | ✅ S84 |
+| 2.7 | Unit test | 2 | ✅ S84 |
 | | **PHASE 3: Pipeline Wiring** | | |
 | 3.1 | CLI flags (--enable-diagnostics, --enable-tensorboard) | 3 | ✅ S73 |
 | 3.2 | Wire NN hooks into reinforcement_engine.py | 3 | ✅ S73 |
@@ -3056,19 +3056,19 @@ tensorboard            # pip install tensorboard --break-system-packages
 | 6.7 | Test: severity=critical → RETRY | 6 | ✅ S73 |
 | 6.8 | Test: 3x critical → SKIP_MODEL | 6 | ✅ S73 |
 | | **PHASE 7: LLM Integration** | | |
-| 7.1 | Create `diagnostics_analysis.gbnf` | 7 | ⬜ |
-| 7.2 | Create `diagnostics_analysis_schema.py` | 7 | ⬜ |
-| 7.3 | Add mission + guardrails to bundle_factory.py | 7 | ⬜ |
-| 7.4 | Implement `build_diagnostics_bundle()` | 7 | ⬜ |
-| 7.5 | Implement `request_llm_diagnostics_analysis()` | 7 | ⬜ |
-| 7.6 | Test: bundle renders correct prompt | 7 | ⬜ |
-| 7.7 | Test: LLM + grammar → valid JSON | 7 | ⬜ |
-| 7.8 | Test: Pydantic parses LLM response | 7 | ⬜ |
+| 7.1 | Create `diagnostics_analysis.gbnf` | 7 | ✅ S75 |
+| 7.2 | Create `diagnostics_analysis_schema.py` | 7 | ✅ S75 |
+| 7.3 | Add mission + guardrails to bundle_factory.py | 7 | ✅ S75 |
+| 7.4 | Implement `build_diagnostics_bundle()` | 7 | ✅ S75 |
+| 7.5 | Implement `request_llm_diagnostics_analysis()` | 7 | ✅ S75 |
+| 7.6 | Test: bundle renders correct prompt | 7 | ✅ S75 |
+| 7.7 | Test: LLM + grammar → valid JSON | 7 | ✅ S75 |
+| 7.8 | Test: Pydantic parses LLM response | 7 | ✅ S75 |
 | | **PHASE 8: Selfplay + Chapter 13 Wiring** | | |
-| 8.1 | Episode diagnostics in inner_episode_trainer.py | 8 | ⬜ |
-| 8.2 | Episode aggregation in selfplay_orchestrator.py | 8 | ⬜ |
-| 8.3 | `_check_episode_training_trend()` | 8 | ⬜ |
-| 8.4 | `post_draw_root_cause_analysis()` in chapter_13 | 8 | ⬜ |
+| 8.1 | Episode diagnostics in inner_episode_trainer.py | 8 | ✅ S83 |
+| 8.2 | Episode aggregation in selfplay_orchestrator.py | 8 | ✅ S83 |
+| 8.3 | `_check_episode_training_trend()` | 8 | ✅ S83 |
+| 8.4 | `post_draw_root_cause_analysis()` in chapter_13 | 8 | 🔧 S84 |
 | 8.5 | Test: 10 episodes with diagnostics | 8 | ⬜ |
 | 8.6 | Test: declining trend detection | 8 | ⬜ |
 | 8.7 | Test: hit rate drop → root cause analysis | 8 | ⬜ |
