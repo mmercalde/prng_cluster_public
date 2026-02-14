@@ -1035,56 +1035,12 @@ class WatcherAgent:
         # Reset retry count for this step
         self.retry_counts[step] = 0
 
-        # ════════════════════════════════════════════════════════════════════
-        # CHAPTER 14 PHASE 6: Post-Step-5 Training Health Check
-        # Design: Best-effort, observational only — never blocks pipeline
-        # ════════════════════════════════════════════════════════════════════
-        if step == 5 and TRAINING_HEALTH_CHECK_AVAILABLE:
-            health = check_training_health()
-            
-            if health['action'] == 'PROCEED':
-                # Training healthy — reset skip registry and continue
-                reset_skip_registry(health['model_type'])
-                logger.info(f"🏥 Training health OK ({health['model_type']}) — proceeding to Step 6")
-            
-            elif health['action'] == 'PROCEED_WITH_NOTE':
-                # Minor issues — log for Strategy Advisor but continue
-                reset_skip_registry(health['model_type'])
-                logger.warning(
-                    f"🏥 Training health WARNING ({health['model_type']}): "
-                    f"{'; '.join(health['issues'][:3])}"
-                )
-                self._record_training_incident(health)
-            
-            elif health['action'] == 'RETRY':
-                # Critical issues detected
-                # NOTE: Automatic retry with param threading NOT YET IMPLEMENTED
-                # Current behavior: Log suggestions, record incident, proceed anyway
-                # Future: Wire suggestions into run_pipeline() param override
-                logger.warning(
-                    f"🏥 Training health CRITICAL ({health['model_type']}): "
-                    f"{'; '.join(health['issues'][:3])}"
-                )
-                suggestions = get_retry_params_suggestions(health)
-                logger.warning(
-                    f"🏥 Retry requested but param-threading not yet implemented. "
-                    f"Suggestions for manual review: {suggestions}"
-                )
-                self._record_training_incident(health)
-                # Proceed to Step 6 — diagnostics are observational, not gating
-            
-            elif health['action'] == 'SKIP_MODEL':
-                # Model type repeatedly failing — log and proceed
-                # Step 6 continues with remaining models (--compare-models mode)
-                logger.error(
-                    f"🏥 Model {health['model_type']} SKIPPED — "
-                    f"{health.get('consecutive_critical', 0)} consecutive critical failures"
-                )
-                self._record_training_incident(health)
-        
-        elif step == 5 and not TRAINING_HEALTH_CHECK_AVAILABLE:
-            logger.debug("Training health check not available — skipping")
-        # ════════════════════════════════════════════════════════════════════
+        # >>> S82_REMOVE_DEAD_HEALTH_CALLSITE_BEGIN <<<
+        # Removed dead Phase-6 training health callsite (S82 cleanup)
+        # Real health check logic lives in run_pipeline() S76 retry loop
+        # Team Alpha + Team Beta approved. See SESSION_CHANGELOG_20260213_S82.md
+        # >>> S82_REMOVE_DEAD_HEALTH_CALLSITE_END <<<
+
 
         # Check if pipeline complete
         if step >= 6:
