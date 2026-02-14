@@ -99,3 +99,5 @@ acceptance_decisions.jsonl
 chapter13_cycle_history.jsonl
 watcher_decisions.jsonl
 .history_fingerprint
+catboost_info/
+*.s82_backup
