@@ -2590,6 +2590,8 @@ def main():
 
 
     # Phase 7 Part B: Dispatch commands
+    parser.add_argument("--episodes", type=int, default=5,
+                        help="Number of selfplay episodes (default: 5)")
     parser.add_argument("--dispatch-selfplay", action="store_true",
                         help="Dispatch selfplay orchestrator")
     parser.add_argument("--dispatch-learning-loop", type=str, nargs="?",

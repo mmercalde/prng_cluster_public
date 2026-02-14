@@ -208,6 +208,9 @@ class SelfplayConfig:
     
     # Phase 9B.2: Policy-conditioned learning
     policy_conditioned: bool = False  # Enable via --policy-conditioned
+    
+    # Phase 8A: Training diagnostics capture (Ch14)
+    enable_diagnostics: bool = False  # S83_PHASE8A_DIAG
     emit_candidates: bool = True  # Disable via --no-emit-candidate
     
     def __post_init__(self):

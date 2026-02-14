@@ -1,7 +1,7 @@
 # CHAPTER 13 — Section 19 (UPDATED)
 
-**Last Verified:** 2026-01-30  
-**Status:** Phases 1-6 COMPLETE, Phase 7 Testing In Progress
+**Last Verified:** 2026-02-13 (Session 83)
+**Status:** Phases 1-7 COMPLETE — Full Autonomy Achieved
 
 ---
 
@@ -51,27 +51,26 @@
 - [x] Decision logging
 - [x] Audit trail
 
-### Phase 6: Testing 🟡 IN PROGRESS
+### Phase 6: Testing ✅ COMPLETE (Sessions 55-59)
 
 - [x] Synthetic draw injection (module exists)
 - [x] Proposal validation tests (in acceptance.py)
-- [ ] End-to-end convergence monitoring
-- [ ] Divergence detection tests
-- [ ] Live integration testing
+- [x] End-to-end convergence monitoring (Session 59)
+- [x] Divergence detection tests (Session 59)
+- [x] Live integration testing (Session 59 — WATCHER → Ch13 → Selfplay)
 
-### Phase 7: WATCHER Integration ❌ NOT COMPLETE
+### Phase 7: WATCHER Integration ✅ COMPLETE (Sessions 57-59)
 
-**This is the actual gap preventing full autonomy.**
-
-- [ ] `dispatch_selfplay()` in `watcher_agent.py`
-- [ ] `dispatch_learning_loop()` in `watcher_agent.py`
-- [ ] Wire Chapter 13 orchestrator into WATCHER daemon
-- [ ] Move `chapter_13.gbnf` to `agent_grammars/` directory
-- [ ] Integration tests: WATCHER → Chapter 13 → Selfplay
+- [x] `dispatch_selfplay()` — `agents/watcher_dispatch.py` (Session 58, commit a145e28)
+- [x] `dispatch_learning_loop()` — `agents/watcher_dispatch.py` (Session 58)
+- [x] Wire Chapter 13 orchestrator into WATCHER daemon — `bind_to_watcher()` (Session 58)
+- [x] Move `chapter_13.gbnf` to `agent_grammars/` directory (Session 57)
+- [x] Integration tests: WATCHER → Chapter 13 → Selfplay (Session 59, end-to-end verified)
+- [x] `--episodes` CLI argument wired to dispatch (Session 83)
 
 ---
 
-## Files Summary (Verified 2026-01-30)
+## Files Summary (Verified 2026-02-13)
 
 | File | Size | Phase | Status |
 |------|------|-------|--------|
@@ -85,25 +84,26 @@
 | `chapter_13_acceptance.py` | 41KB | 4,5 | ✅ |
 | `chapter_13_triggers.py` | 36KB | 4 | ✅ |
 | `chapter_13_orchestrator.py` | 23KB | 5 | ✅ |
+| `agents/watcher_dispatch.py` | 38KB | 7 | ✅ |
 
-**Total Chapter 13 Code:** ~235KB across 10 files
+**Total Chapter 13 Code:** ~273KB across 11 files
 
 ---
 
-## What Remains for Full Autonomy
-
+## Full Autonomy Status
 ```
 Chapter 13 Components          WATCHER                      Selfplay
 ─────────────────────          ───────                      ────────
-✅ diagnostics.py              ❌ dispatch_selfplay()       ✅ orchestrator.py
-✅ llm_advisor.py              ❌ dispatch_learning_loop()  ✅ policy_transform.py
-✅ triggers.py                 ❌ Chapter 13 daemon wire    ✅ policy_conditioned.py
+✅ diagnostics.py              ✅ dispatch_selfplay()       ✅ orchestrator.py
+✅ llm_advisor.py              ✅ dispatch_learning_loop()  ✅ policy_transform.py
+✅ triggers.py                 ✅ Chapter 13 daemon wire    ✅ policy_conditioned.py
 ✅ acceptance.py               ✅ Pipeline Steps 1-6        ✅ inner_episode_trainer.py
 ✅ orchestrator.py             ✅ Request validation        ✅ telemetry
 ```
 
-**Gap:** WATCHER can run Steps 1-6, but cannot yet dispatch Chapter 13 or Selfplay.
+**No gaps remaining.** Full autonomous loop verified Session 59.
 
 ---
 
 *This section replaces the original Section 19 in CHAPTER_13_LIVE_FEEDBACK_LOOP_v1_1.md*
+*Updated Session 83 (2026-02-13) to reflect Phase 7 completion (Sessions 57-59)*
