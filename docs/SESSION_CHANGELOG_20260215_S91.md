@@ -109,7 +109,22 @@
 1. **Category B implementation** — pending Team Beta review of proposal
 2. **Regression diagnostics** — create synthetic data for gate=True validation (deferred from S90)
 3. **Investigate stuck WATCHER** — why did PID 4717 hang after SKIP_MODEL?
-4. **Project cleanup** — remove 27 stale files (deferred)
+4. **Dead code audit and comment-out** — `MultiModelTrainer` inline path, old `_sample_config()`, Path 2 Optuna search space. Rule: comment out, NEVER delete. Requires full dependency analysis via `grep` across live codebase (public repo enables this). Map every call site before touching anything.
+5. **Project cleanup** — remove 27 stale files from project knowledge (deferred)
+6. **Phase 9B.3 heuristics** (deferred)
+
+---
+
+## 7. Decisions & Clarifications Made This Session
+
+- **BatchNorm1d is already in SurvivorQualityNet** (always-on, line 65). Not a toggle, not in Optuna search space. Category B adds INPUT normalization (StandardScaler), which is complementary.
+- **Normalization is internal to NN training** — does not affect pipeline inputs or outputs. Scaler saved in checkpoint for Step 6 prediction consistency.
+- **Category B aligns with WATCHER autonomy** — retry path already emits `normalize_features` and `use_leaky_relu` suggestions; Category B gives the downstream code the ability to consume them.
+- **Retry thresholds (2 retries, 3 skip) are adequate for post-Category-B** — currently wasteful because retries repeat same broken config. After Category B, each retry applies different fixes. May need upward adjustment once NN actually improves.
+- **Health check metrics are pathology-based** (dead neurons, gradient spread, overfit ratio, early stop ratio) — not prediction quality. Diagnoses the disease, not the symptom.
+- **Optuna persists across runs** via deterministic study name (`step5_{model}_{feature_hash}_{data_hash}`) + `load_if_exists=True`. TPE sampler accumulates knowledge. New data fingerprint = new study (correct behavior).
+- **Two training paths exist** (S88 subprocess vs legacy inline) — legacy is effectively dead code in production. Cleanup deferred to dedicated session with full dependency audit.
+- **Dead code policy: comment out, never delete** — requires thorough `grep` analysis across entire codebase before any changes.
 
 ---
 
