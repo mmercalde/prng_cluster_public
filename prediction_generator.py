@@ -280,6 +280,10 @@ class PredictionGenerator:
         self.feature_names = None
         self._signal_gate_blocked = False
         self._signal_gate_result = None
+        # Category B: scaler defaults (set properly after model load for NN)
+        self._scaler_mean = None
+        self._scaler_scale = None
+        self._normalize_features = False
 
         if MULTI_MODEL_AVAILABLE:
             # === STEP 1: Load sidecar metadata FIRST (no model yet) ===
@@ -350,6 +354,13 @@ class PredictionGenerator:
                 self.logger.info(f"  Model loaded: {self.model_meta.get('model_type', 'unknown')}")
                 self.model_checkpoint_path = checkpoint_path
                 
+                # Category B: Load scaler for NN normalization (Phase 3)
+                # Fix 3A-1: use self.model_checkpoint_path (the actual loaded path)
+                # Fix 3A-4: only for neural_net model type
+                model_type_loaded = self.model_meta.get('model_type', 'unknown')
+                if model_type_loaded == 'neural_net':
+                    self._load_nn_scaler(self.model_checkpoint_path)
+                
                 # v6.0: Extract and validate feature schema
                 fs = self.model_meta.get("feature_schema", {})
                 self.feature_names = fs.get("per_seed_feature_names", fs.get("feature_names", []))
@@ -371,6 +382,73 @@ class PredictionGenerator:
     # SIGNAL QUALITY GATE (v6.0 - Team Beta Approved)
     # =========================================================================
     
+    def _load_nn_scaler(self, checkpoint_path: str):
+        """
+        Category B Phase 3: Load scaler parameters from NN checkpoint.
+        
+        Args:
+            checkpoint_path: Path to the .pth checkpoint that was actually loaded.
+                             NOT guessed — passed from self.model_checkpoint_path.
+        
+        Team Beta decisions:
+          - Store mean/scale as arrays, not pickled sklearn (portable)
+          - Best-effort: if absent (old checkpoints), proceed without transform + warn
+          - Zero-scale elements clamped to 1.0 to prevent NaN/inf
+          - Only called when model_type == 'neural_net'
+        """
+        try:
+            import torch
+        except ImportError:
+            self.logger.warning("[CAT-B] PyTorch not available — cannot load NN scaler")
+            return
+        
+        if not checkpoint_path or not Path(checkpoint_path).exists():
+            self.logger.warning(f"[CAT-B] NN checkpoint not found: {checkpoint_path}")
+            self.logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
+            return
+        
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        except Exception as e:
+            self.logger.warning(f"[CAT-B] Cannot read checkpoint: {e}")
+            self.logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
+            return
+        
+        if not isinstance(checkpoint, dict):
+            self.logger.info("[CAT-B] Checkpoint is not a dict — no scaler metadata")
+            return
+        
+        normalize_flag = checkpoint.get('normalize_features', False)
+        if not normalize_flag:
+            self.logger.info("[CAT-B] NN checkpoint: normalize_features=False (no scaler needed)")
+            return
+        
+        scaler_mean = checkpoint.get('scaler_mean')
+        scaler_scale = checkpoint.get('scaler_scale')
+        
+        if scaler_mean is None or scaler_scale is None:
+            self.logger.warning("[CAT-B] normalize_features=True but scaler arrays missing!")
+            self.logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
+            return
+        
+        import numpy as np
+        self._scaler_mean = np.asarray(scaler_mean, dtype=np.float32)
+        self._scaler_scale = np.asarray(scaler_scale, dtype=np.float32)
+        
+        # Fix 3A-3: Clamp zero/tiny scale to 1.0 to prevent NaN/inf
+        zero_mask = self._scaler_scale < 1e-12
+        n_clamped = int(zero_mask.sum())
+        if n_clamped > 0:
+            self._scaler_scale[zero_mask] = 1.0
+            self.logger.warning(f"[CAT-B] Clamped {n_clamped} zero-scale features to 1.0")
+        
+        self._normalize_features = True
+        
+        use_leaky = checkpoint.get('use_leaky_relu', False)
+        self.logger.info(f"[CAT-B] NN scaler loaded: {len(self._scaler_mean)} features")
+        self.logger.info(f"[CAT-B]   scale range: [{self._scaler_scale.min():.4f}, {self._scaler_scale.max():.4f}]")
+        self.logger.info(f"[CAT-B]   use_leaky_relu: {use_leaky}")
+
     def _get_signal_explanation(self, status: str) -> str:
         """
         Human-readable explanation for signal status.
@@ -730,6 +808,20 @@ class PredictionGenerator:
 
         X = np.array(X_list, dtype=np.float32)
         self.logger.debug(f"Feature matrix shape: {X.shape}")
+
+        # Category B: Apply scaler normalization ONLY for neural_net
+        # Fix 3A-4: explicit model_type gate prevents accidental cross-model normalization
+        if (getattr(self, '_normalize_features', False)
+                and self._scaler_mean is not None
+                and self.model_meta.get("model_type") == "neural_net"):
+            if X.shape[1] == len(self._scaler_mean):
+                X = (X - self._scaler_mean) / self._scaler_scale
+                self.logger.debug(f"[CAT-B] Applied input normalization to {X.shape[0]} samples")
+            else:
+                self.logger.warning(
+                    f"[CAT-B] Scaler dimension mismatch: X has {X.shape[1]} features, "
+                    f"scaler has {len(self._scaler_mean)}. Skipping normalization."
+                )
 
         # Score using model or fallback
         if self.model is not None:

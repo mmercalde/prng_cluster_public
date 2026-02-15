@@ -2,7 +2,7 @@
   "agent_name": "reinforcement_agent",
   "description": "Step 5: Train ML models with anti-overfitting measures. Emits signal_quality to sidecar for Step 6 gate.",
   "pipeline_step": 5,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "required_inputs": [
     "survivors_with_scores.json",
     "train_history.json",
@@ -78,6 +78,30 @@
     "enable_diagnostics": {
       "type": "bool",
       "default": false
+    },
+    "normalize_features": {
+      "type": "bool",
+      "default": true,
+      "description": "Category B: StandardScaler input normalization for NN (Option A: default ON)"
+    },
+    "use_leaky_relu": {
+      "type": "bool",
+      "default": true,
+      "description": "Category B: LeakyReLU(0.01) activation for NN (default ON)"
+    },
+    "dropout_override": {
+      "type": "float",
+      "min": 0.0,
+      "max": 0.9,
+      "default": null,
+      "description": "Category B: NN dropout override (preferred key for WATCHER retry payloads)"
+    },
+    "dropout": {
+      "type": "float",
+      "min": 0.0,
+      "max": 0.9,
+      "default": null,
+      "description": "Category B: Alias for dropout_override (matches CLI --dropout). Phase 2 reads both."
     }
   },
   "follow_up_agents": [
@@ -89,6 +113,15 @@
       "date": "2026-01-01",
       "changes": [
         "Added signal_quality emission"
+      ]
+    },
+    {
+      "version": "1.6.0",
+      "date": "2026-02-15",
+      "changes": [
+        "Category B: Added normalize_features, use_leaky_relu parameter bounds (default ON)",
+        "Category B: Added dropout_override + dropout alias for NN training override",
+        "Fix 3B-1: Both dropout_override (preferred) and dropout (alias) declared for consistency"
       ]
     }
   ],
