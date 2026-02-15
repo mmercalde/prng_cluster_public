@@ -611,15 +611,15 @@ class ModeBReplaySoak:
                             sample[k] = str(type(v).__name__)
                     self.first_hook_result_sample = sample
 
-                raw_class = result.get("classification", "unknown")
+                raw_class = result.get("diagnosis") or result.get("classification", "unknown")
                 if raw_class in KNOWN_CLASSIFICATIONS:
                     classification = raw_class
                 else:
                     classification = "unknown"
                     self.unknown_raw_classifications.append(raw_class)
 
-                divergence = result.get("divergence")
-                hits = result.get("hits_in_top_20")
+                divergence = result.get("feature_divergence_ratio") or result.get("divergence")
+                hits = result.get("hit_count") if result.get("hit_count") is not None else result.get("hits_in_top_20")
 
                 self.classifications[classification] += 1
                 if divergence is not None:
