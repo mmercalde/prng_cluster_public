@@ -52,6 +52,205 @@ import shutil
 import warnings
 import argparse
 
+
+# === S88_COMPARE_MODELS_RUNNER_BEGIN ===
+def _s88_now_utc():
+    import datetime
+    return datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+def _s88_safe_mkdir(p):
+    import os
+    os.makedirs(p, exist_ok=True)
+
+def _s88_copy_if_exists(src, dst):
+    import os, shutil
+    if os.path.exists(src):
+        shutil.copy2(src, dst)
+        return True
+    return False
+
+def _s88_extract_score(meta_path):
+    """
+    Best-effort: pull a numeric score/r2 from best_model.meta.json.
+    We don't assume schema; we try common keys.
+    """
+    import json, os
+    if not os.path.exists(meta_path):
+        return None
+    try:
+        data = json.load(open(meta_path, "r"))
+    except Exception:
+        return None
+
+    # Common patterns (best effort)
+    candidates = [
+        ("training_metrics", "r2"),  # v3.3 schema
+        ("best_r2",),
+        ("r2",),
+        ("score",),
+        ("metrics","r2"),
+        ("metrics","best_r2"),
+        ("evaluation","r2"),
+        ("evaluation","score"),
+        ("best","r2"),
+        ("best","score"),
+    ]
+
+    def get_nested(d, path):
+        cur = d
+        for k in path:
+            if not isinstance(cur, dict) or k not in cur:
+                return None
+            cur = cur[k]
+        return cur
+
+    for path in candidates:
+        v = get_nested(data, path)
+        if isinstance(v, (int, float)):
+            return float(v)
+
+    # fallback: scan for any float-y key containing "r2"
+    for k, v in (data.items() if isinstance(data, dict) else []):
+        if isinstance(k, str) and "r2" in k.lower() and isinstance(v, (int, float)):
+            return float(v)
+
+    return None
+
+def _s88_run_compare_models(args_dict):
+    """
+    Runs single-model Optuna training for each model type in a subprocess using
+    the existing, correct path, and archives artifacts per model.
+    """
+    import os, sys, json, subprocess
+
+    model_list = ["neural_net", "lightgbm", "xgboost", "catboost"]
+
+    trials = int(args_dict.get("trials", 1))
+    if trials < 1:
+        raise ValueError(f"--trials must be >= 1, got {trials}")
+
+    run_id = f"S88_{_s88_now_utc()}"
+
+    models_root = os.path.join("models", "reinforcement", "compare_models", run_id)
+    diag_root   = os.path.join("diagnostics_outputs")
+    _s88_safe_mkdir(models_root)
+    _s88_safe_mkdir(diag_root)
+
+    # Preserve baseline outputs if present (best-effort)
+    baseline_backup = os.path.join(models_root, "baseline_backup")
+    _s88_safe_mkdir(baseline_backup)
+    for fn in ["best_model.cbm", "best_model.meta.json", "best_model.pt", "best_model.pth"]:
+        _s88_copy_if_exists(os.path.join("models","reinforcement",fn), os.path.join(baseline_backup, fn))
+
+    summary = {
+        "schema_version": "1.0.0",
+        "run_id": run_id,
+        "trials_per_model": trials,
+        "total_expected_trials": trials * len(model_list),
+        "models": {},
+        "timestamp_utc": run_id.replace("S88_", ""),
+        "note": "S88 hotfix: --compare-models now runs Optuna trials per model by invoking single-model path per model.",
+    }
+
+    # Build common argv for subprocess calls
+    # We re-invoke THIS script file with --model-type set, and --compare-models removed.
+    survivors = args_dict.get("survivors")
+    lottery_data = args_dict.get("lottery_data")
+    enable_diagnostics = bool(args_dict.get("enable_diagnostics", False))
+
+    if not survivors or not lottery_data:
+        raise RuntimeError("S88 compare-models runner requires --survivors and --lottery-data")
+
+    py = sys.executable
+    script = os.path.abspath(sys.argv[0])  # Always the executed script (resilient to refactoring)
+
+    for m in model_list:
+        model_out_dir = os.path.join(models_root, m)
+        _s88_safe_mkdir(model_out_dir)
+
+        cmd = [
+            py, script,
+            "--survivors", survivors,
+            "--lottery-data", lottery_data,
+            "--model-type", m,
+            "--trials", str(trials),
+        ]
+        if enable_diagnostics:
+            cmd.append("--enable-diagnostics")
+
+        # IMPORTANT: ensure compare-models is not set in subcall
+        # (we're in single-model mode)
+        env = os.environ.copy()
+        env["S88_COMPARE_MODELS_CHILD"] = "1"
+        if m == "lightgbm":
+            env["S88_FORCE_LGBM_CPU"] = "1"
+
+        print(f"[S88][COMPARE] Running {m} with {trials} trials via single-model Optuna path...")
+        proc = subprocess.run(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr)
+        rc = proc.returncode
+
+        # Archive artifacts best-effort
+        # (we don't assume exact artifact set; we grab common ones)
+        produced = {}
+        for fn in ["best_model.cbm", "best_model.meta.json", "best_model.pt", "best_model.pth", "best_model.txt", "best_model.json"]:
+            src = os.path.join("models","reinforcement",fn)
+            dst = os.path.join(model_out_dir, fn)
+            produced[fn] = _s88_copy_if_exists(src, dst)
+
+        score = _s88_extract_score(os.path.join(model_out_dir, "best_model.meta.json"))
+
+        summary["models"][m] = {
+            "returncode": rc,
+            "archived_artifacts": produced,
+            "score_best_effort": score,
+        }
+
+    # Determine winner best-effort by score
+    best_m = None
+    best_v = None
+    for m, rec in summary["models"].items():
+        v = rec.get("score_best_effort")
+        if isinstance(v, (int, float)):
+            if best_v is None or v > best_v:
+                best_v = v
+                best_m = m
+    
+    # Fallback if no score found: choose first successful model deterministically
+    if best_m is None:
+        for m, rec in summary["models"].items():
+            if rec.get("returncode") == 0 and rec.get("archived_artifacts", {}).get("best_model.meta.json"):
+                best_m = m
+                break
+        if best_m is None:
+            # Second fallback: any model with returncode 0
+            for m, rec in summary["models"].items():
+                if rec.get("returncode") == 0:
+                    best_m = m
+                    break
+    
+    summary["winner_best_effort"] = {"model_type": best_m, "score": best_v}
+
+    # Restore winner artifacts back to canonical models/reinforcement/
+    winner = summary["winner_best_effort"].get("model_type")
+    if winner:
+        winner_dir = os.path.join(models_root, winner)
+        for fn in ["best_model.cbm", "best_model.meta.json", "best_model.pt", "best_model.pth", "best_model.txt", "best_model.json"]:
+            src = os.path.join(winner_dir, fn)
+            dst = os.path.join("models","reinforcement", fn)
+            _s88_copy_if_exists(src, dst)
+        print(f"[S88][COMPARE] Restored winner artifacts to models/reinforcement/: {winner}")
+    else:
+        print("[S88][COMPARE][WARN] No winner determined (no score found). Leaving canonical artifacts unchanged.")
+
+    out_path = os.path.join(diag_root, f"compare_models_summary_{run_id}.json")
+    with open(out_path, "w") as f:
+        json.dump(summary, f, indent=2, sort_keys=True)
+    print(f"[S88][COMPARE] Summary written: {out_path}")
+    print(f"[S88][COMPARE] Artifacts archived under: {models_root}")
+
+    return 0
+# === S88_COMPARE_MODELS_RUNNER_END ===
+
 # Subprocess isolation for multi-model comparison (fixes LightGBM OpenCL on Zeus)
 try:
     from subprocess_trial_coordinator import (
@@ -766,7 +965,7 @@ class MultiModelTrainer:
             'learning_rate': params.get('learning_rate', 0.05),
             'subsample': params.get('subsample', 0.8),
             'colsample_bytree': params.get('colsample_bytree', 0.8),
-            'device': 'gpu' if 'cuda' in self.device else 'cpu',
+            'device': 'cpu' if os.environ.get('S88_FORCE_LGBM_CPU') == '1' else ('gpu' if 'cuda' in self.device else 'cpu'),
             'random_state': 42,
             'verbosity': -1
         }
@@ -1688,6 +1887,23 @@ def main():
     
     args = parser.parse_args()
 
+
+    
+    # S88 HOTFIX: --compare-models must run Optuna trials per model (4*N total)
+    
+    if getattr(args, 'compare_models', False) and not os.environ.get('S88_COMPARE_MODELS_CHILD'):
+    
+        return _s88_run_compare_models({
+    
+            'survivors': getattr(args, 'survivors', None),
+    
+            'lottery_data': getattr(args, 'lottery_data', None),
+    
+            'trials': getattr(args, 'trials', 1),
+    
+            'enable_diagnostics': getattr(args, 'enable_diagnostics', False),
+    
+        })
     # Conditional CUDA initialization (Team Beta design invariant)
     # GPU code must NEVER run in coordinating process when using subprocess isolation
     global CUDA_INITIALIZED
@@ -1775,4 +1991,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
+
+
