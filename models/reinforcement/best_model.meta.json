@@ -1,10 +1,10 @@
 {
-  "schema_version": "3.2.0",
-  "model_type": "catboost",
-  "checkpoint_path": "models/reinforcement/best_model.cbm",
-  "checkpoint_format": "cbm",
+  "schema_version": "3.4.0",
+  "model_type": "lightgbm",
+  "checkpoint_path": "models/reinforcement/best_model.txt",
+  "checkpoint_format": "txt",
   "feature_schema": {
-    "source_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+    "source_file": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
     "feature_count": 62,
     "feature_names": [
       "actual_mean",
@@ -106,7 +106,7 @@
     },
     "survivor_source": {
       "file": "survivors_with_scores.json",
-      "file_path": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+      "file_path": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
       "survivor_count": 98783
     },
     "prng_hypothesis": {
@@ -114,44 +114,44 @@
       "mod": 1000
     },
     "derived_by": "step5_anti_overfit",
-    "timestamp": "2026-02-14T19:00:56.251428"
+    "timestamp": "2026-02-15T11:37:25.115590"
   },
   "training_metrics": {
-    "r2": 6.626505005880023e-05,
-    "train_mae": 0.001004139542572175,
-    "val_mae": 0.0009911813333151511,
+    "r2": -0.0010863518388499749,
+    "train_mae": 0.0009843428841084724,
+    "val_mae": 0.0010069221651449883,
     "test_mae": 0.0,
-    "overfit_ratio": 1.0,
-    "status": "success"
+    "overfit_ratio": 1.0
   },
-  "hyperparameters": {},
+  "hyperparameters": {
+    "n_estimators": 421,
+    "max_depth": 9,
+    "learning_rate": 0.010629163512735422,
+    "subsample": 0.9787847505560597,
+    "colsample_bytree": 0.7773686484953347
+  },
   "hardware": {
     "device_requested": "cuda:0",
     "cuda_available": false
   },
   "training_info": {
-    "started_at": "2026-02-14T19:00:56.265209",
-    "completed_at": "2026-02-14T19:06:35.407548",
-    "duration_seconds": 339.14203,
-    "outcome": "SUCCESS"
+    "started_at": "2026-02-15T11:37:25.129370",
+    "completed_at": "2026-02-15T11:37:34.554789",
+    "duration_seconds": 9.420773
   },
   "agent_metadata": {
     "pipeline_step": 5,
     "pipeline_step_name": "anti_overfit_training",
-    "run_id": "step5_20260214_190056",
-    "parent_run_id": null,
-    "outcome": "SUCCESS",
-    "exit_code": 0
+    "run_id": "step5_20260215_113725",
+    "parent_run_id": null
   },
   "provenance": {
-    "run_id": "step5_20260214_190056",
-    "started_at": "2026-02-14T19:00:56.265209",
-    "duration_seconds": 339.14203,
-    "survivors_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+    "run_id": "step5_20260215_113725",
+    "started_at": "2026-02-15T11:37:25.129370",
+    "duration_seconds": 9.420773,
+    "survivors_file": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
     "n_survivors": 98783,
-    "model_type": "catboost",
-    "compare_models_used": true,
-    "checkpoint_path": "/home/michael/distributed_prng_analysis/models/reinforcement/best_model.cbm",
-    "outcome": "SUCCESS"
+    "model_type": "lightgbm",
+    "compare_models_used": false
   }
 }
