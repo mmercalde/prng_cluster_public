@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION (v3.3)
+Meta-Prediction Optimizer - ANTI-OVERFITTING VERSION (v3.4)
 =============================================================
 
 VERSION HISTORY:
@@ -1190,7 +1190,7 @@ class MultiModelTrainer:
         
         # Build sidecar
         sidecar = {
-            "schema_version": "3.2.0",
+            "schema_version": "3.4.0",
             "model_type": model_type,
             "checkpoint_path": str(checkpoint_path),
             "checkpoint_format": ext.lstrip('.'),
@@ -1555,8 +1555,191 @@ class AntiOverfitMetaOptimizer:
         
         return self.best_config, self.best_metrics
     
+
+    # ========================================================================
+    # OPTUNA OPTIMIZATION (v3.4 - Restored with Team Beta Guardrails)
+    # ========================================================================
+
+    def _run_optuna_optimization(self, n_trials: int) -> Tuple[Dict, ValidationMetrics]:
+        """
+        Run Optuna hyperparameter optimization with K-fold CV.
+
+        Team Beta:
+        - NO artifact writes during trials (memory only)
+        - single-writer: optimizer saves once (save_best_model)
+        - unique study naming (fingerprints truncated)
+        - hard-fail if Optuna unavailable when requested
+        """
+        try:
+            import optuna
+            from optuna.samplers import TPESampler
+        except Exception as e:
+            self.logger.error("=" * 70)
+            self.logger.error("CRITICAL: OPTUNA REQUESTED BUT UNAVAILABLE")
+            self.logger.error("=" * 70)
+            raise RuntimeError("Optuna requested but not installed") from e
+
+        from pathlib import Path
+        from sklearn.model_selection import KFold
+
+        self.logger.info("")
+        self.logger.info("=" * 70)
+        self.logger.info("OPTUNA MODE: ENABLED")
+        self.logger.info("=" * 70)
+        self.logger.info(f"  Model type: {self.model_type}")
+        self.logger.info(f"  Trials: {n_trials}")
+
+        # Unique (short) study name
+        feature_h = str(self.feature_schema.get("feature_schema_hash", "unknown"))[:10]
+        data_h = str(self.data_context.get("fingerprint_hash", "unknown"))[:10]
+        study_name = f"step5_{self.model_type}_{feature_h}_{data_h}"
+
+        Path("optuna_studies").mkdir(exist_ok=True)
+        storage = f"sqlite:///optuna_studies/{study_name}.db"
+
+        self.logger.info(f"  Study: {study_name}")
+        self.logger.info(f"  Storage: {storage}")
+        self.logger.info("=" * 70)
+
+        study = optuna.create_study(
+            study_name=study_name,
+            direction="maximize",
+            sampler=TPESampler(seed=42),
+            storage=storage,
+            load_if_exists=True
+        )
+
+        self.logger.info(f"\nRunning {n_trials} Optuna trials...")
+        study.optimize(self._optuna_objective, n_trials=n_trials)
+
+        self.logger.info("\n" + "=" * 70)
+        self.logger.info("OPTUNA COMPLETE")
+        self.logger.info("=" * 70)
+        self.logger.info(f"  Best trial: {study.best_trial.number}")
+        self.logger.info(f"  Best R²: {study.best_trial.value:.6f}")
+        self.logger.info("=" * 70)
+
+        # Store best config
+        self.best_config = dict(study.best_trial.params)
+
+        # Train FINAL model with best params (ONLY save happens here)
+        self.logger.info("\nTraining final model with best hyperparameters...")
+
+        n_val = int(len(self.X_train_val) * 0.2)
+        X_train = self.X_train_val[:-n_val]
+        y_train = self.y_train_val[:-n_val]
+        X_val = self.X_train_val[-n_val:]
+        y_val = self.y_train_val[-n_val:]
+
+        result = self.trainer.train_model(
+            self.model_type, X_train, y_train, X_val, y_val,
+            hyperparameters=self.best_config
+        )
+
+        self.best_model = result["model"]
+        self.best_model_type = self.model_type
+        self.best_metrics = self._compute_final_metrics(result["metrics"])
+
+        # Optuna metadata for sidecar
+        self.optuna_info = {
+            "enabled": True,
+            "n_trials": int(n_trials),
+            "best_trial_number": int(study.best_trial.number),
+            "best_value": float(study.best_trial.value),
+            "study_name": study_name,
+            "storage": storage
+        }
+
+        self.logger.info(f"✅ Final model: R²={result['metrics'].get('r2', 0.0):.4f}")
+
+        # Single writer: optimizer saves once
+        self.save_best_model()
+
+        return self.best_config, self.best_metrics
+
+    def _optuna_objective(self, trial) -> float:
+        """Optuna objective - trains in memory only, returns CV R²."""
+        import numpy as np
+        from sklearn.model_selection import KFold
+
+        config = self._sample_hyperparameters(trial)
+        self.logger.info(f"\nTRIAL {trial.number}")
+
+        kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
+        fold_r2 = []
+
+        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
+            result = self.trainer.train_model(
+                self.model_type,
+                self.X_train_val[train_idx], self.y_train_val[train_idx],
+                self.X_train_val[val_idx], self.y_train_val[val_idx],
+                hyperparameters=config
+            )
+            fold_r2.append(float(result["metrics"].get("r2", 0.0)))
+
+        avg_r2 = float(np.mean(fold_r2)) if fold_r2 else 0.0
+        self.logger.info(f"  R² (CV): {avg_r2:.6f}")
+        return avg_r2
+
+    def _sample_hyperparameters(self, trial) -> Dict:
+        """Sample hyperparameters for model type (model-specific)."""
+        if self.model_type == "neural_net":
+            n_layers = trial.suggest_int("n_layers", 2, 4)
+            layers = []
+            for i in range(n_layers):
+                if i == 0:
+                    layers.append(trial.suggest_int(f"layer_{i}", 64, 256))
+                else:
+                    layers.append(trial.suggest_int(f"layer_{i}", 32, layers[-1]))
+            return {
+                "hidden_layers": layers,
+                "dropout": trial.suggest_float("dropout", 0.2, 0.6),
+                "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
+                "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256]),
+                "epochs": trial.suggest_int("epochs", 50, 200),
+                "early_stopping_patience": trial.suggest_int("patience", 10, 30),
+            }
+
+        if self.model_type == "xgboost":
+            return {
+                "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+                "max_depth": trial.suggest_int("max_depth", 3, 12),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            }
+
+        if self.model_type == "lightgbm":
+            return {
+                "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+                "max_depth": trial.suggest_int("max_depth", 3, 12),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            }
+
+        if self.model_type == "catboost":
+            return {
+                "iterations": trial.suggest_int("iterations", 200, 800),
+                "depth": trial.suggest_int("depth", 3, 10),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            }
+
+        return {}
+
+
+
     def _run_single_model(self) -> Tuple[Dict, ValidationMetrics]:
         """Train single model type."""
+        
+        # Team Beta: Branch on n_trials_total
+        if getattr(self, "n_trials_total", None) and self.n_trials_total > 1:
+            self.logger.info("MODE: OPTUNA OPTIMIZATION")
+            return self._run_optuna_optimization(self.n_trials_total)
+        
+        # Single-shot mode (v3.3 preserved)
+        self.logger.info("MODE: SINGLE-SHOT (No Optimization)")
+        self.optuna_info = {"enabled": False}
         self.logger.info("=" * 70)
         self.logger.info(f"SINGLE MODEL: {self.model_type}")
         self.logger.info("=" * 70)
@@ -1702,7 +1885,7 @@ class AntiOverfitMetaOptimizer:
         checkpoint_format = ckpt.suffix.lstrip('.') if ckpt.suffix else None
 
         sidecar = {
-            "schema_version": "3.2.0",
+            "schema_version": "3.4.0",
             "model_type": model_type,
             "checkpoint_path": str(ckpt),
             "checkpoint_format": checkpoint_format,
@@ -1711,6 +1894,7 @@ class AntiOverfitMetaOptimizer:
             "data_context": self.data_context,
             "training_metrics": training_metrics,
             "hyperparameters": self.best_config or {},
+            "optuna": getattr(self, "optuna_info", {"enabled": False}),
             "hardware": {
                 "device_requested": self.device,
                 "cuda_available": CUDA_INITIALIZED
@@ -1769,7 +1953,7 @@ class AntiOverfitMetaOptimizer:
         duration = (datetime.now() - self.start_time).total_seconds()
         
         sidecar = {
-            "schema_version": "3.2.0",
+            "schema_version": "3.4.0",
             "model_type": None,
             "checkpoint_path": None,
             "checkpoint_format": None,

@@ -1,0 +1,157 @@
+{
+  "schema_version": "3.2.0",
+  "model_type": "catboost",
+  "checkpoint_path": "models/reinforcement/best_model.cbm",
+  "checkpoint_format": "cbm",
+  "feature_schema": {
+    "source_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+    "feature_count": 62,
+    "feature_names": [
+      "actual_mean",
+      "actual_std",
+      "best_offset",
+      "bidirectional_count",
+      "bidirectional_selectivity",
+      "exact_matches",
+      "forward_count",
+      "forward_only_count",
+      "global_frequency_bias_ratio",
+      "global_high_variance_count",
+      "global_marker_390_variance",
+      "global_marker_575_variance",
+      "global_marker_804_variance",
+      "global_power_of_two_bias",
+      "global_regime_age",
+      "global_regime_change_detected",
+      "global_reseed_probability",
+      "global_residue_1000_entropy",
+      "global_residue_125_entropy",
+      "global_residue_8_entropy",
+      "global_suspicious_gap_percentage",
+      "global_temporal_stability",
+      "intersection_count",
+      "intersection_ratio",
+      "intersection_weight",
+      "lane_agreement_125",
+      "lane_agreement_8",
+      "lane_consistency",
+      "pred_max",
+      "pred_mean",
+      "pred_min",
+      "pred_std",
+      "residual_abs_mean",
+      "residual_max_abs",
+      "residual_mean",
+      "residual_std",
+      "residue_1000_coherence",
+      "residue_1000_kl_divergence",
+      "residue_1000_match_rate",
+      "residue_125_coherence",
+      "residue_125_kl_divergence",
+      "residue_125_match_rate",
+      "residue_8_coherence",
+      "residue_8_kl_divergence",
+      "residue_8_match_rate",
+      "reverse_count",
+      "reverse_only_count",
+      "skip_entropy",
+      "skip_max",
+      "skip_mean",
+      "skip_min",
+      "skip_range",
+      "skip_std",
+      "survivor_overlap_ratio",
+      "survivor_velocity",
+      "temporal_stability_max",
+      "temporal_stability_mean",
+      "temporal_stability_min",
+      "temporal_stability_std",
+      "temporal_stability_trend",
+      "total_predictions",
+      "velocity_acceleration"
+    ],
+    "ordering": "lexicographic_by_key",
+    "feature_schema_hash": "e6c330d830511f17",
+    "excluded_features": [
+      "score",
+      "confidence",
+      "holdout_hits"
+    ]
+  },
+  "signal_quality": {
+    "target_name": "holdout_hits",
+    "signal_status": "weak",
+    "signal_confidence": 0.4,
+    "prediction_allowed": true,
+    "unique_target_values": 8,
+    "target_variance": 1.001e-06,
+    "target_mean": 0.001001,
+    "target_std": 0.001001,
+    "nonzero_count": 62381,
+    "nonzero_ratio": 0.6315,
+    "sample_size": 98783
+  },
+  "data_context": {
+    "fingerprint_hash": "c38adac3",
+    "fingerprint_version": "v2_data_only",
+    "training_window": {
+      "start_draw": 1,
+      "end_draw": 4000,
+      "draw_count": 4000
+    },
+    "holdout_window": {
+      "start_draw": 4001,
+      "end_draw": 5000,
+      "draw_count": 1000
+    },
+    "survivor_source": {
+      "file": "survivors_with_scores.json",
+      "file_path": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+      "survivor_count": 98783
+    },
+    "prng_hypothesis": {
+      "prng_type": "java_lcg",
+      "mod": 1000
+    },
+    "derived_by": "step5_anti_overfit",
+    "timestamp": "2026-02-14T19:00:56.251428"
+  },
+  "training_metrics": {
+    "r2": 6.626505005880023e-05,
+    "train_mae": 0.001004139542572175,
+    "val_mae": 0.0009911813333151511,
+    "test_mae": 0.0,
+    "overfit_ratio": 1.0,
+    "status": "success"
+  },
+  "hyperparameters": {},
+  "hardware": {
+    "device_requested": "cuda:0",
+    "cuda_available": false
+  },
+  "training_info": {
+    "started_at": "2026-02-14T19:00:56.265209",
+    "completed_at": "2026-02-14T19:06:35.407548",
+    "duration_seconds": 339.14203,
+    "outcome": "SUCCESS"
+  },
+  "agent_metadata": {
+    "pipeline_step": 5,
+    "pipeline_step_name": "anti_overfit_training",
+    "run_id": "step5_20260214_190056",
+    "parent_run_id": null,
+    "outcome": "SUCCESS",
+    "exit_code": 0
+  },
+  "provenance": {
+    "run_id": "step5_20260214_190056",
+    "started_at": "2026-02-14T19:00:56.265209",
+    "duration_seconds": 339.14203,
+    "survivors_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+    "n_survivors": 98783,
+    "model_type": "catboost",
+    "compare_models_used": true,
+    "checkpoint_path": "/home/michael/distributed_prng_analysis/models/reinforcement/best_model.cbm",
+    "outcome": "SUCCESS"
+  }
+}
