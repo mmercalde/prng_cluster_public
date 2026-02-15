@@ -215,6 +215,27 @@ def _s88_run_compare_models(args_dict):
         if enable_diagnostics:
             cmd.append("--enable-diagnostics")
 
+        # -- Category B: Inject NN-specific flags (Team Beta Option A) --
+        # normalize_features and use_leaky_relu are ALWAYS ON for neural_net.
+        # These are fixed policy, not CLI-toggleable in compare-models mode.
+        # Flags consumed by train_single_trial.py v1.1.0 (Phase 1).
+        if m == "neural_net":
+            cmd.append("--normalize-features")
+            cmd.append("--use-leaky-relu")
+            # Thread dropout override if WATCHER retry provided one (best-effort)
+            _dropout_override = args_dict.get("dropout_override") or args_dict.get("dropout")
+            if _dropout_override is not None:
+                try:
+                    _d = float(_dropout_override)
+                    cmd.extend(["--dropout", str(_d)])
+                except Exception:
+                    print(f"[CAT-B] Invalid dropout override: {_dropout_override!r} (ignored)")
+                    _d = None
+            else:
+                _d = None
+            print(f"[CAT-B] Option A: forcing normalize+leaky for NN"
+                  + (f", dropout={_d}" if _d is not None else ""))
+
         # IMPORTANT: ensure compare-models is not set in subcall
         # (we're in single-model mode)
         env = os.environ.copy()
@@ -2106,6 +2127,16 @@ def main():
     parser.add_argument('--enable-diagnostics', action='store_true',
                        help='Enable Chapter 14 training diagnostics (writes to diagnostics_outputs/)')
     
+    # Category B: Neural net training enhancements (passed through to train_single_trial.py)
+    # NOTE: In --compare-models mode, Option A forces these ON for neural_net
+    # regardless of CLI flags. These flags are for single-model WATCHER pass-through.
+    parser.add_argument('--normalize-features', action='store_true',
+                       help='Apply StandardScaler normalization before NN training')
+    parser.add_argument('--use-leaky-relu', action='store_true',
+                       help='Use LeakyReLU(0.01) instead of ReLU in neural net')
+    parser.add_argument('--dropout', type=float, default=None,
+                       help='Override dropout value for NN (CLI precedence)')
+    
     args = parser.parse_args()
 
 
@@ -2123,6 +2154,12 @@ def main():
             'trials': getattr(args, 'trials', 1),
     
             'enable_diagnostics': getattr(args, 'enable_diagnostics', False),
+    
+            'normalize_features': getattr(args, 'normalize_features', False),
+    
+            'use_leaky_relu': getattr(args, 'use_leaky_relu', False),
+    
+            'dropout': getattr(args, 'dropout', None),
     
         })
     # Conditional CUDA initialization (Team Beta design invariant)
