@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Chapter 13 Orchestrator — Phase 6
+Chapter 13 Orchestrator â€” Phase 6
 Main orchestration daemon for the live feedback loop
 
 RESPONSIBILITIES:
@@ -52,6 +52,10 @@ from chapter_13_llm_advisor import Chapter13LLMAdvisor
 from llm_proposal_schema import LLMProposal, RecommendedAction
 from chapter_13_acceptance import Chapter13AcceptanceEngine, ValidationResult
 
+# Chapter 14 imports (Task 8.4 — post-draw root cause analysis)
+import numpy as np
+from per_survivor_attribution import per_survivor_attribution, compare_pool_tiers
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -96,7 +100,7 @@ class Chapter13Orchestrator:
     - Trigger evaluation (chapter_13_triggers.py)
     - LLM analysis (chapter_13_llm_advisor.py)
     - Proposal validation (chapter_13_acceptance.py)
-    - Learning loop execution (Steps 3→5→6)
+    - Learning loop execution (Steps 3â†’5â†’6)
     
     v1 Behavior:
     - Human approval required for all executions
@@ -262,7 +266,7 @@ class Chapter13Orchestrator:
         cycle_id = f"cycle_{cycle_start.strftime('%Y%m%d_%H%M%S')}"
         
         logger.info(f"\n{'='*60}")
-        logger.info(f"CHAPTER 13 CYCLE — {cycle_id}")
+        logger.info(f"CHAPTER 13 CYCLE â€” {cycle_id}")
         logger.info(f"{'='*60}")
         
         result = {
@@ -274,7 +278,7 @@ class Chapter13Orchestrator:
         
         try:
             # Step 1: Generate diagnostics
-            logger.info("\n📊 Step 1: Generating diagnostics...")
+            logger.info("\nðŸ“Š Step 1: Generating diagnostics...")
             diagnostics = generate_diagnostics()
             result["steps"]["diagnostics"] = {
                 "success": True,
@@ -285,8 +289,44 @@ class Chapter13Orchestrator:
             # Save diagnostics
             save_diagnostics(diagnostics)
             
+            # Step 1b: Post-draw root cause analysis (observe-only, Ch14 Task 8.4)
+            # Runs if hit rate regression detected in diagnostics.
+            # Does NOT affect trigger evaluation — classification logged only.
+            root_cause = None
+            hit_regression = self._detect_hit_regression(diagnostics)
+            if hit_regression:
+                logger.info("\n🔬 Step 1b: Hit regression detected — running root cause analysis...")
+                predictions = self.load_predictions_from_disk(
+                    expected_draw_id=diagnostics.get("draw_id"),
+                )
+                if predictions:
+                    # Model loading deferred — root cause needs the trained model.
+                    # For now, log that we would analyze. Full model loading
+                    # requires Step 5 sidecar (best_model.meta.json).
+                    model_info = self._load_best_model_if_available()
+                    if model_info:
+                        root_cause = self.post_draw_root_cause_analysis(
+                            draw_result=diagnostics,
+                            predictions=predictions,
+                            model=model_info['model'],
+                            model_type=model_info['model_type'],
+                            feature_names=model_info.get('feature_names'),
+                        )
+                    else:
+                        logger.info("  Root cause skipped — no model available")
+                else:
+                    logger.info("  Root cause skipped — no predictions available")
+            
+            if root_cause:
+                result["steps"]["root_cause"] = {
+                    "diagnosis": root_cause.get("diagnosis"),
+                    "divergence": root_cause.get("feature_divergence_ratio"),
+                    "missed": root_cause.get("missed_count"),
+                    "hit": root_cause.get("hit_count"),
+                }
+            
             # Step 2: Evaluate triggers
-            logger.info("\n🔍 Step 2: Evaluating triggers...")
+            logger.info("\nðŸ” Step 2: Evaluating triggers...")
             trigger_eval = self.trigger_manager.evaluate_triggers(diagnostics)
             result["steps"]["triggers"] = trigger_eval.to_dict()
             
@@ -294,17 +334,17 @@ class Chapter13Orchestrator:
             self.trigger_manager.increment_run_counter()
             
             if not trigger_eval.should_trigger:
-                logger.info("✅ No triggers fired - system healthy")
+                logger.info("âœ… No triggers fired - system healthy")
                 result["outcome"] = "no_action_needed"
                 self._log_cycle(result)
                 return result
             
-            logger.info(f"⚠️ Trigger fired: {trigger_eval.trigger_type.value}")
+            logger.info(f"âš ï¸ Trigger fired: {trigger_eval.trigger_type.value}")
             
             # Step 3: LLM analysis (optional)
             proposal = None
             if self.use_llm and self.llm_advisor:
-                logger.info("\n🤖 Step 3: Getting LLM analysis...")
+                logger.info("\nðŸ¤– Step 3: Getting LLM analysis...")
                 
                 # Check LLM availability
                 if not self._check_llm_server():
@@ -318,16 +358,16 @@ class Chapter13Orchestrator:
                     result["steps"]["llm_analysis"] = proposal.to_dict()
                     logger.info(f"   LLM recommendation: {proposal.recommended_action.value}")
             else:
-                logger.info("\n🤖 Step 3: LLM analysis skipped (disabled)")
+                logger.info("\nðŸ¤– Step 3: LLM analysis skipped (disabled)")
             
             # Step 4: Validate proposal (if we have one)
             if proposal:
-                logger.info("\n✓ Step 4: Validating proposal...")
+                logger.info("\nâœ“ Step 4: Validating proposal...")
                 validation = self.acceptance_engine.validate_proposal(proposal, diagnostics)
                 result["steps"]["validation"] = validation.to_dict()
                 
                 if validation.result == ValidationResult.ACCEPT:
-                    logger.info("✅ Proposal ACCEPTED")
+                    logger.info("âœ… Proposal ACCEPTED")
                     result["outcome"] = "proposal_accepted"
                     
                     # SOAK C PATCH: Skip v1 gate in test mode
@@ -339,33 +379,33 @@ class Chapter13Orchestrator:
                         _approval_route = "orchestrator"
 
                     if _test_mode and _auto_approve and _approval_route == "orchestrator":
-                        logger.info("🔄 Auto-executing (test mode, orchestrator route)")
+                        logger.info("ðŸ”„ Auto-executing (test mode, orchestrator route)")
                         result["outcome"] = "auto_executed_test_mode"
                     elif _approval_route == "watcher":
-                        logger.info("📋 Routing to WATCHER daemon for approval")
+                        logger.info("ðŸ“‹ Routing to WATCHER daemon for approval")
                         self.trigger_manager.request_approval(trigger_eval)
                         result["outcome"] = "pending_approval"
                     else:
                         # v1: Still require human approval even for accepted proposals
                         v1_approval = self.policies.get("v1_approval_required", {})
                         if v1_approval.get("retrain_execution", True):
-                            logger.info("📋 v1 mode: Requesting human approval...")
+                            logger.info("ðŸ“‹ v1 mode: Requesting human approval...")
                             self.trigger_manager.request_approval(trigger_eval)
                             result["outcome"] = "pending_approval"
                         else:
                             result["outcome"] = "auto_execute_disabled"
                         
                 elif validation.result == ValidationResult.ESCALATE:
-                    logger.info("⚠️ Proposal ESCALATED to human review")
+                    logger.info("âš ï¸ Proposal ESCALATED to human review")
                     self.trigger_manager.request_approval(trigger_eval)
                     result["outcome"] = "escalated"
                     
                 else:  # REJECT
-                    logger.info(f"❌ Proposal REJECTED: {validation.reason}")
+                    logger.info(f"âŒ Proposal REJECTED: {validation.reason}")
                     result["outcome"] = "proposal_rejected"
             else:
                 # No LLM proposal, use trigger-based action
-                logger.info("\n✓ Step 4: Using trigger-based action (no LLM proposal)")
+                logger.info("\nâœ“ Step 4: Using trigger-based action (no LLM proposal)")
                 
                 # Request approval for trigger-based action
                 self.trigger_manager.request_approval(trigger_eval)
@@ -441,7 +481,7 @@ class Chapter13Orchestrator:
                 flag_data = self._check_new_draw_flag()
                 
                 if flag_data:
-                    logger.info(f"🚨 New draw detected!")
+                    logger.info(f"ðŸš¨ New draw detected!")
                     
                     # Run cycle
                     result = self.run_cycle()
@@ -460,6 +500,413 @@ class Chapter13Orchestrator:
         
         logger.info("Daemon stopped")
     
+    # =========================================================================
+    # POST-DRAW ROOT CAUSE HELPERS (Chapter 14, Task 8.4)
+    # =========================================================================
+
+    def _detect_hit_regression(self, diagnostics: Dict[str, Any]) -> bool:
+        """
+        Check if current diagnostics show a hit rate regression.
+
+        Looks for hit_at_20 drop compared to recent history.
+        This is the gate that decides whether root cause analysis runs.
+
+        Returns True if regression detected, False otherwise.
+        """
+        try:
+            # Check diagnostics for hit rate flags
+            flags = diagnostics.get("summary_flags", [])
+            if any("hit_rate" in str(f).lower() and "drop" in str(f).lower()
+                   for f in flags):
+                return True
+
+            # Check explicit hit metrics if present
+            current_hit = diagnostics.get("hit_at_20")
+            previous_hit = diagnostics.get("previous_hit_at_20")
+            if current_hit is not None and previous_hit is not None:
+                if current_hit < previous_hit:
+                    return True
+
+            return False
+        except Exception:
+            return False
+
+    def _load_best_model_if_available(self) -> Optional[Dict[str, Any]]:
+        """
+        Attempt to load the best model from Step 5 output for attribution.
+
+        Reads best_model.meta.json sidecar to determine model type,
+        then loads the corresponding checkpoint.
+
+        Returns dict with 'model', 'model_type', 'feature_names' or None.
+        Non-fatal — returns None if model unavailable.
+        """
+        meta_path = "models/reinforcement/best_model.meta.json"
+        if not os.path.isfile(meta_path):
+            return None
+
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+
+            model_type = meta.get("model_type")
+            feature_names = meta.get("feature_names")
+
+            if not model_type:
+                return None
+
+            # Load model based on type
+            model = None
+            model_dir = "models/reinforcement"
+
+            if model_type == "neural_net":
+                import torch
+                model_path = os.path.join(model_dir, "best_model.pth")
+                if os.path.isfile(model_path):
+                    # Load to CPU — attribution will move to correct device
+                    model = torch.load(model_path, map_location="cpu",
+                                       weights_only=False)
+                    model.eval()
+
+            elif model_type == "xgboost":
+                import xgboost as xgb
+                model_path = os.path.join(model_dir, "best_model.json")
+                if os.path.isfile(model_path):
+                    model = xgb.Booster()
+                    model.load_model(model_path)
+
+            elif model_type == "lightgbm":
+                import lightgbm as lgb
+                model_path = os.path.join(model_dir, "best_model.txt")
+                if os.path.isfile(model_path):
+                    model = lgb.Booster(model_file=model_path)
+
+            elif model_type == "catboost":
+                from catboost import CatBoostRegressor
+                model_path = os.path.join(model_dir, "best_model.cbm")
+                if os.path.isfile(model_path):
+                    model = CatBoostRegressor()
+                    model.load_model(model_path)
+
+            if model is None:
+                return None
+
+            # Fallback: extract feature_names from model if sidecar lacks them
+            if feature_names is None:
+                try:
+                    if hasattr(model, "feature_name"):
+                        feature_names = model.feature_name()  # LightGBM
+                    elif hasattr(model, "feature_names_in_"):
+                        feature_names = list(model.feature_names_in_)  # sklearn-style
+                    elif hasattr(model, "feature_names"):
+                        feature_names = model.feature_names  # XGBoost
+                    if feature_names:
+                        logger.info("Extracted %d feature names from model object", len(feature_names))
+                except Exception as e:
+                    logger.warning("Could not extract feature names from model: %s", e)
+
+            logger.info("Loaded %s model for root cause attribution", model_type)
+            return {
+                "model": model,
+                "model_type": model_type,
+                "feature_names": feature_names,
+            }
+
+        except Exception as e:
+            logger.warning("Failed to load model for root cause: %s", e)
+            return None
+
+    # =========================================================================
+    # POST-DRAW ROOT CAUSE ANALYSIS (Chapter 14, Task 8.4)
+    # =========================================================================
+
+    def post_draw_root_cause_analysis(
+        self,
+        draw_result: Dict[str, Any],
+        predictions: List[Dict[str, Any]],
+        model,
+        model_type: str,
+        feature_names: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Called when Chapter 13 detects Hit@20 dropped after a new draw.
+
+        Uses per-survivor attribution to determine if:
+        A) Top survivors relied on features that are now stale (regime shift)
+        B) Model training was poor (training diagnostics issue)
+        C) Random variance (wait for more draws)
+
+        Args:
+            draw_result: Actual draw outcome dict (must have 'draw_id')
+            predictions: Ranked predictions list, each with 'hit', 'features',
+                         'seed', 'rank' keys
+            model: Trained model from last Step 5
+            model_type: str — 'neural_net', 'xgboost', 'lightgbm', 'catboost'
+            feature_names: List[str] of feature names (uses self.feature_names
+                           if not provided)
+
+        Returns:
+            Analysis dict with diagnosis, or None on error
+        """
+        _feature_names = feature_names or getattr(self, 'feature_names', None)
+        if not _feature_names:
+            logger.warning("post_draw_root_cause: no feature_names available, skipping")
+            return None
+
+        if not predictions:
+            logger.warning("post_draw_root_cause: empty predictions list, skipping")
+            return None
+
+        try:
+            # — Step 1: Get attribution for Top 20 survivors that MISSED —
+            missed_top = [p for p in predictions[:20] if not p.get('hit')]
+
+            if not missed_top:
+                logger.info("post_draw_root_cause: all Top 20 hit — no analysis needed")
+                return None
+
+            missed_attributions = []
+            for survivor in missed_top:
+                features = survivor.get('features')
+                if features is None:
+                    continue
+                attr = per_survivor_attribution(
+                    model=model,
+                    model_type=model_type,
+                    features=np.asarray(features, dtype=np.float32),
+                    feature_names=_feature_names,
+                )
+                if attr:  # non-empty (best-effort invariant)
+                    missed_attributions.append({
+                        'seed': survivor.get('seed'),
+                        'rank': survivor.get('rank'),
+                        'top_3_features': sorted(
+                            attr.items(), key=lambda x: x[1], reverse=True
+                        )[:3],
+                    })
+
+            # — Step 2: Get attribution for Top 20 that HIT —
+            hit_top = [p for p in predictions[:20] if p.get('hit')]
+
+            hit_attributions = []
+            for survivor in hit_top:
+                features = survivor.get('features')
+                if features is None:
+                    continue
+                attr = per_survivor_attribution(
+                    model=model,
+                    model_type=model_type,
+                    features=np.asarray(features, dtype=np.float32),
+                    feature_names=_feature_names,
+                )
+                if attr:
+                    hit_attributions.append({
+                        'seed': survivor.get('seed'),
+                        'rank': survivor.get('rank'),
+                        'top_3_features': sorted(
+                            attr.items(), key=lambda x: x[1], reverse=True
+                        )[:3],
+                    })
+
+            # — Step 3: Classify the miss pattern —
+            # If missed survivors relied on DIFFERENT features than hits → regime shift
+            # If missed survivors relied on SAME features → random variance
+            missed_features = set()
+            for m in missed_attributions:
+                for feat_name, _ in m['top_3_features']:
+                    missed_features.add(feat_name)
+
+            hit_features = set()
+            for h in hit_attributions:
+                for feat_name, _ in h['top_3_features']:
+                    hit_features.add(feat_name)
+
+            union_size = len(missed_features | hit_features)
+            overlap = missed_features & hit_features
+            divergence_ratio = 1.0 - (len(overlap) / max(union_size, 1))
+
+            # Determine diagnosis
+            if not hit_attributions:
+                # No hits at all in Top 20 — can't compare, likely training issue
+                diagnosis = 'training_issue'
+            elif divergence_ratio > 0.5:
+                diagnosis = 'regime_shift'
+            else:
+                diagnosis = 'random_variance'
+
+            analysis = {
+                'type': 'post_draw_root_cause',
+                'draw_id': draw_result.get('draw_id'),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'missed_count': len(missed_top),
+                'hit_count': len(hit_top),
+                'attribution_success': {
+                    'missed': len(missed_attributions),
+                    'hit': len(hit_attributions),
+                },
+                'feature_divergence_ratio': round(divergence_ratio, 4),
+                'missed_relied_on': sorted(missed_features),
+                'hits_relied_on': sorted(hit_features),
+                'feature_overlap': sorted(overlap),
+                'diagnosis': diagnosis,
+                'missed_details': missed_attributions[:5],
+                'hit_details': hit_attributions[:5],
+            }
+
+            logger.info(
+                "Post-draw root cause: divergence=%.2f diagnosis=%s "
+                "missed=%d/%d hit=%d/%d",
+                divergence_ratio, diagnosis,
+                len(missed_attributions), len(missed_top),
+                len(hit_attributions), len(hit_top),
+            )
+
+            # — Step 4: If regime shift detected, trigger LLM + tier analysis —
+            if diagnosis == 'regime_shift':
+                logger.warning(
+                    "REGIME SHIFT detected — feature divergence %.2f",
+                    divergence_ratio,
+                )
+                self._run_regime_shift_analysis(
+                    analysis, model, model_type, predictions, _feature_names
+                )
+
+            # Archive
+            self._archive_post_draw_analysis(analysis)
+            return analysis
+
+        except Exception as e:
+            logger.error("post_draw_root_cause_analysis failed: %s", e)
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _run_regime_shift_analysis(
+        self,
+        analysis: Dict[str, Any],
+        model,
+        model_type: str,
+        predictions: List[Dict[str, Any]],
+        feature_names: List[str],
+    ) -> None:
+        """
+        On regime shift: write tier comparison and optionally request LLM analysis.
+        Mutates analysis dict in-place to add tier/LLM results.
+        Non-fatal — failures are logged but don't break the caller.
+        """
+        try:
+            tier_comparison = compare_pool_tiers(
+                model, model_type, predictions, feature_names,
+            )
+            tier_path = "diagnostics_outputs/tier_comparison.json"
+            os.makedirs("diagnostics_outputs", exist_ok=True)
+            with open(tier_path, 'w') as f:
+                json.dump(tier_comparison, f, indent=2, default=str)
+            analysis['tier_comparison_path'] = tier_path
+
+            # Request LLM analysis if diagnostics file exists
+            diag_path = "diagnostics_outputs/training_diagnostics.json"
+            if os.path.isfile(diag_path):
+                try:
+                    from parameter_advisor import StrategyAdvisor
+                    advisor = StrategyAdvisor()
+                    llm_result = advisor.request_diagnostics_analysis(
+                        diagnostics_path=diag_path,
+                        tier_comparison_path=tier_path,
+                    )
+                    if llm_result:
+                        analysis['llm_analysis'] = (
+                            llm_result.model_dump()
+                            if hasattr(llm_result, 'model_dump')
+                            else llm_result
+                        )
+                except ImportError:
+                    logger.debug("Strategy Advisor not available for LLM analysis")
+                except Exception as e:
+                    logger.warning("LLM diagnostics analysis failed (non-fatal): %s", e)
+
+        except Exception as e:
+            logger.warning("Regime shift analysis failed (non-fatal): %s", e)
+
+    def _archive_post_draw_analysis(self, analysis: Dict[str, Any]) -> None:
+        """Archive post-draw root cause analysis to diagnostics_outputs/history/."""
+        try:
+            archive_dir = "diagnostics_outputs/history"
+            os.makedirs(archive_dir, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+            archive_path = os.path.join(
+                archive_dir, f"root_cause_{ts}.json"
+            )
+            with open(archive_path, 'w') as f:
+                json.dump(analysis, f, indent=2, default=str)
+            logger.info("Root cause analysis archived: %s", archive_path)
+        except Exception as e:
+            logger.warning("Failed to archive root cause analysis: %s", e)
+
+    @staticmethod
+    def load_predictions_from_disk(
+        predictions_path: str = "predictions/ranked_predictions.json",
+        expected_draw_id: Optional[str] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load ranked predictions from Step 6 output for root cause analysis.
+
+        This bridges the gap between Chapter 13 (file-based diagnostics)
+        and post_draw_root_cause_analysis (which needs in-memory predictions).
+
+        Args:
+            predictions_path: Path to Step 6 ranked predictions
+            expected_draw_id: If provided, validates predictions correspond
+                              to this draw (prevents stale-data analysis)
+
+        Returns:
+            List of prediction dicts, or None if file missing/corrupt/stale
+        """
+        if not os.path.isfile(predictions_path):
+            logger.warning("Predictions file not found: %s", predictions_path)
+            return None
+        try:
+            with open(predictions_path, 'r') as f:
+                data = json.load(f)
+
+            # Handle both list format and dict-with-metadata format
+            if isinstance(data, dict):
+                # Check draw_id staleness if metadata present
+                file_draw_id = data.get('draw_id')
+                if expected_draw_id and file_draw_id and file_draw_id != expected_draw_id:
+                    logger.warning(
+                        "Predictions stale: file draw_id=%s != expected=%s",
+                        file_draw_id, expected_draw_id,
+                    )
+                    return None
+                predictions = data.get('predictions', data.get('ranked', []))
+            elif isinstance(data, list):
+                predictions = data
+            else:
+                logger.warning("Predictions file unexpected type: %s", type(data))
+                return None
+
+            if not predictions:
+                logger.warning("Predictions file empty: %s", predictions_path)
+                return None
+
+            # Minimal schema check on first 5 entries
+            sample = predictions[:min(5, len(predictions))]
+            if not all('features' in p for p in sample):
+                logger.warning(
+                    "Predictions missing 'features' key in sample — "
+                    "file may be corrupt: %s", predictions_path,
+                )
+                return None
+
+            logger.info(
+                "Loaded %d predictions from %s", len(predictions), predictions_path
+            )
+            return predictions
+        except Exception as e:
+            logger.warning("Failed to load predictions: %s", e)
+            return None
+
     # =========================================================================
     # STATUS & CONTROL
     # =========================================================================
@@ -504,7 +951,7 @@ class Chapter13Orchestrator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Chapter 13 Orchestrator — Live feedback loop daemon",
+        description="Chapter 13 Orchestrator â€” Live feedback loop daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Modes:
@@ -558,7 +1005,7 @@ Examples:
     if args.clear_halt:
         if os.path.exists(CHAPTER_13_HALT):
             os.remove(CHAPTER_13_HALT)
-            print("✅ Chapter 13 halt file cleared")
+            print("âœ… Chapter 13 halt file cleared")
         else:
             print("No halt file present")
         return 0
@@ -577,20 +1024,20 @@ Examples:
                 print(json.dumps(status, indent=2))
             else:
                 print(f"\n{'='*60}")
-                print("CHAPTER 13 ORCHESTRATOR — Status")
+                print("CHAPTER 13 ORCHESTRATOR â€” Status")
                 print(f"{'='*60}")
-                print(f"\n🔄 Runtime:")
+                print(f"\nðŸ”„ Runtime:")
                 print(f"   Running: {status['running']}")
                 print(f"   Cycles completed: {status['cycles_completed']}")
                 print(f"   Last cycle: {status['last_cycle'] or 'Never'}")
-                print(f"\n📊 State:")
+                print(f"\nðŸ“Š State:")
                 print(f"   New draw flag: {status['new_draw_flag_present']}")
                 print(f"   Halt active: {status['halt_active']}")
                 print(f"   Pending approval: {status['pending_approval']}")
-                print(f"\n🤖 LLM:")
+                print(f"\nðŸ¤– LLM:")
                 print(f"   Enabled: {status['llm_enabled']}")
                 print(f"   Server available: {status['llm_server_available']}")
-                print(f"\n📜 History:")
+                print(f"\nðŸ“œ History:")
                 print(f"   Total cycles: {status['total_cycles_logged']}")
                 if status['recent_outcomes']:
                     print(f"   Recent outcomes:")
@@ -635,7 +1082,7 @@ Examples:
         print("\nInterrupted")
         return 0
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nâŒ Error: {e}")
         import traceback
         traceback.print_exc()
         return 99
