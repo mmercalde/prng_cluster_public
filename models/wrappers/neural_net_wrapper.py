@@ -43,7 +43,7 @@ class SurvivorQualityNet(nn.Module):
     This matches the architecture from reinforcement_engine.py.
     """
     
-    def __init__(self, input_size: int, hidden_layers: List[int], dropout: float = 0.3):
+    def __init__(self, input_size: int, hidden_layers: List[int], dropout: float = 0.3, use_leaky_relu: bool = False):
         """
         Initialize network.
         
@@ -51,11 +51,13 @@ class SurvivorQualityNet(nn.Module):
             input_size: Number of input features (dynamic, NOT hardcoded)
             hidden_layers: List of hidden layer sizes e.g. [256, 128, 64]
             dropout: Dropout probability
+            use_leaky_relu: If True, use LeakyReLU(0.01) instead of ReLU (Category B)
         """
         super().__init__()
         
         self.input_size = input_size
         self.hidden_layers = hidden_layers
+        self.use_leaky_relu = use_leaky_relu
         
         layers = []
         prev_size = input_size
@@ -63,7 +65,7 @@ class SurvivorQualityNet(nn.Module):
         for i, hidden_size in enumerate(hidden_layers):
             layers.append(nn.Linear(prev_size, hidden_size))
             layers.append(nn.BatchNorm1d(hidden_size))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU(0.01) if self.use_leaky_relu else nn.ReLU())
             layers.append(nn.Dropout(dropout))
             prev_size = hidden_size
         
@@ -410,10 +412,13 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         wrapper._feature_count = feature_count
         
         # Build model with correct architecture
+        # Category B: restore activation mode from checkpoint
+        use_leaky_relu = checkpoint.get('use_leaky_relu', False)
         wrapper.model = SurvivorQualityNet(
             input_size=feature_count,
             hidden_layers=hidden_layers,
-            dropout=dropout
+            dropout=dropout,
+            use_leaky_relu=use_leaky_relu,
         ).to(wrapper.device)
         
         # Load weights

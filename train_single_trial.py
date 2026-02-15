@@ -51,7 +51,7 @@ from datetime import datetime
 import tempfile
 
 # Version for tracking
-__version__ = "1.0.1"
+__version__ = "1.1.0"  # Category B Phase 1: normalize + leaky_relu + dropout override
 
 # Model file extensions
 MODEL_EXTENSIONS = {
@@ -425,12 +425,19 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     }
 
 
-def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
+def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None,
+                     enable_diagnostics: bool = False, normalize_features: bool = False,
+                     use_leaky_relu: bool = False, dropout_override: float = None) -> dict:
     """
     Train PyTorch Neural Net with GPU (CUDA).
     
     Imports torch HERE to ensure clean GPU state.
     Uses architecture similar to existing SurvivorQualityNet.
+    
+    Category B enhancements (S92, Team Beta approved):
+      - normalize_features: StandardScaler on X_train, applied to X_val
+      - use_leaky_relu: LeakyReLU(0.01) instead of ReLU
+      - dropout_override: CLI value takes precedence over params/Optuna
     """
     import torch
     import torch.nn as nn
@@ -448,6 +455,21 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         device = torch.device('cpu')
         device_used = 'cpu'
     
+    # ── Category B: Input normalization (StandardScaler) ──────────────
+    # Team Beta Decision: store mean/scale arrays, NOT pickled sklearn
+    scaler_mean = None
+    scaler_scale = None
+    if normalize_features:
+        scaler_mean = X_train.mean(axis=0).astype(np.float32)
+        scaler_scale = X_train.std(axis=0).astype(np.float32)
+        # Guard: replace zero scale with 1.0 (Team Beta safety requirement)
+        scaler_scale[scaler_scale == 0] = 1.0
+        X_train = (X_train - scaler_mean) / scaler_scale
+        X_val = (X_val - scaler_mean) / scaler_scale
+        print(f"[CAT-B] Input normalization applied: {X_train.shape[1]} features, "
+              f"scale range [{scaler_scale.min():.4f}, {scaler_scale.max():.4f}]",
+              file=sys.stderr)
+    
     # Convert to tensors
     X_train_t = torch.FloatTensor(X_train).to(device)
     y_train_t = torch.FloatTensor(y_train).to(device)
@@ -457,17 +479,32 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     # Architecture from params (matches SurvivorQualityNet style)
     input_dim = X_train.shape[1]
     hidden_layers = params.get('hidden_layers', [256, 128, 64])
-    dropout = params.get('dropout', 0.3)
+    
+    # ── Category B: Dropout override precedence ──────────────────────
+    # CLI --dropout takes precedence over params/Optuna suggestion
+    if dropout_override is not None:
+        dropout = max(0.0, min(0.9, dropout_override))  # Clamp to [0.0, 0.9]
+        if dropout != dropout_override:
+            print(f"[CAT-B] Dropout clamped: {dropout_override} -> {dropout}", file=sys.stderr)
+        else:
+            print(f"[CAT-B] Dropout override: {dropout} (CLI precedence)", file=sys.stderr)
+    else:
+        dropout = params.get('dropout', 0.3)
     
     # Build model dynamically
     # Import and use existing SurvivorQualityNet for compatibility
     from models.wrappers.neural_net_wrapper import SurvivorQualityNet
     
+    # ── Category B: LeakyReLU toggle ─────────────────────────────────
     model = SurvivorQualityNet(
         input_size=input_dim,
         hidden_layers=hidden_layers,
-        dropout=dropout
+        dropout=dropout,
+        use_leaky_relu=use_leaky_relu,
     ).to(device)
+    
+    if use_leaky_relu:
+        print(f"[CAT-B] Activation: LeakyReLU(0.01)", file=sys.stderr)
     
     # Use DataParallel if multiple GPUs available
     if torch.cuda.device_count() > 1:
@@ -554,13 +591,21 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     if save_path:
         # Save the model state dict (handles DataParallel)
         state_to_save = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
-        torch.save({
+        checkpoint_data = {
             'state_dict': state_to_save,
             'feature_count': input_dim,
             'hidden_layers': hidden_layers,
             'dropout': dropout,
-            'best_epoch': best_epoch
-        }, save_path)
+            'best_epoch': best_epoch,
+            # Category B: normalization + activation metadata for Step 6 portability
+            'normalize_features': normalize_features,
+            'use_leaky_relu': use_leaky_relu,
+        }
+        # Team Beta Decision: store mean/scale as arrays, NOT pickled sklearn
+        if scaler_mean is not None:
+            checkpoint_data['scaler_mean'] = scaler_mean  # numpy array
+            checkpoint_data['scaler_scale'] = scaler_scale  # numpy array
+        torch.save(checkpoint_data, save_path)
         checkpoint_path = save_path
     
 
@@ -577,7 +622,11 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         'r2': r2,
         'best_iteration': best_epoch,
         'architecture': hidden_layers,
-        'checkpoint_path': checkpoint_path
+        'checkpoint_path': checkpoint_path,
+        # Category B metadata
+        'normalize_features': normalize_features,
+        'use_leaky_relu': use_leaky_relu,
+        'dropout_source': 'cli_override' if dropout_override is not None else 'params',
     }
 
 
@@ -664,6 +713,13 @@ def main():
     # Chapter 14: Training diagnostics
     parser.add_argument('--enable-diagnostics', action='store_true',
                         help='Enable Chapter 14 training diagnostics')
+    # Category B: Neural net training enhancements (S92, Team Beta approved)
+    parser.add_argument('--normalize-features', action='store_true',
+                        help='Apply StandardScaler normalization before NN training (NN-only)')
+    parser.add_argument('--use-leaky-relu', action='store_true',
+                        help='Use LeakyReLU(0.01) instead of ReLU in neural net (NN-only)')
+    parser.add_argument('--dropout', type=float, default=None,
+                        help='Override dropout value (takes precedence over params/Optuna)')
     
     args = parser.parse_args()
     
@@ -734,7 +790,13 @@ def main():
         elif args.model_type == 'catboost':
             result = train_catboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         elif args.model_type == 'neural_net':
-            result = train_neural_net(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
+            result = train_neural_net(
+                X_train, y_train, X_val, y_val, params, save_path,
+                getattr(args, 'enable_diagnostics', False),
+                normalize_features=getattr(args, 'normalize_features', False),
+                use_leaky_relu=getattr(args, 'use_leaky_relu', False),
+                dropout_override=getattr(args, 'dropout', None),
+            )
         elif args.model_type == 'random_forest':
             result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
         else:
