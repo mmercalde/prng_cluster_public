@@ -101,3 +101,5 @@ watcher_decisions.jsonl
 .history_fingerprint
 catboost_info/
 *.s82_backup
+models/reinforcement/compare_models/
+*.cbm

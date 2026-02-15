@@ -125,6 +125,43 @@ def _s88_run_compare_models(args_dict):
 
     model_list = ["neural_net", "lightgbm", "xgboost", "catboost"]
 
+    # --- S90: Skip registry integration ---
+    # Read model_skip_registry.json and exclude models with active skips.
+    # This prevents wasting compute on models that have hit consecutive
+    # critical failures (e.g., neural_net with 14 consecutive criticals).
+    skip_registry_path = os.path.join("diagnostics_outputs", "model_skip_registry.json")
+    skipped_models = []
+    if os.path.isfile(skip_registry_path):
+        try:
+            with open(skip_registry_path) as _sf:
+                _skip_reg = json.load(_sf)
+            # Default threshold matches training_health_check.py DEFAULT_SKIP_RULES
+            _skip_threshold = 3
+            # Try to read from watcher_policies.json for consistency
+            if os.path.isfile("watcher_policies.json"):
+                try:
+                    with open("watcher_policies.json") as _pf:
+                        _policies = json.load(_pf)
+                    _skip_threshold = (_policies
+                        .get("training_diagnostics", {})
+                        .get("model_skip_rules", {})
+                        .get("max_consecutive_critical", 3))
+                except Exception:
+                    pass
+            for _model, _entry in _skip_reg.items():
+                if _entry.get("consecutive_critical", 0) >= _skip_threshold:
+                    skipped_models.append(_model)
+            if skipped_models:
+                original_count = len(model_list)
+                model_list = [m for m in model_list if m not in skipped_models]
+                print(f"[S90][SKIP] Excluded {len(skipped_models)} model(s) via skip registry: {skipped_models}")
+                print(f"[S90][SKIP] Training {len(model_list)}/{original_count}: {model_list}")
+                if not model_list:
+                    raise RuntimeError("All model types are in skip state. Reset skip registry or investigate.")
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"[S90][SKIP] Warning: Could not read skip registry: {e}")
+    # --- End S90 skip registry integration ---
+
     trials = int(args_dict.get("trials", 1))
     if trials < 1:
         raise ValueError(f"--trials must be >= 1, got {trials}")

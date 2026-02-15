@@ -105,6 +105,7 @@
     "compare_models": true,
     "trials": 20,
     "output_dir": "models/reinforcement",
-    "enable_diagnostics": false
+    "enable_diagnostics": true,
+    "model_type": "catboost"
   }
 }
