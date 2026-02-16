@@ -1870,8 +1870,12 @@ class AntiOverfitMetaOptimizer:
                     f"train_single_trial.py subprocess failed (rc={proc.returncode}): {stderr_tail}"
                 )
             
-            # Load enriched checkpoint
+            # Load enriched checkpoint — subprocess saves as neural_net_trial-1.pth
+            trial_path = os.path.join(self.output_dir, "neural_net_trial-1.pth")
             checkpoint_path = os.path.join(self.output_dir, "best_model.pth")
+            if os.path.exists(trial_path):
+                os.rename(trial_path, checkpoint_path)
+                self.logger.info(f"[CAT-B 2.1] Renamed {trial_path} → {checkpoint_path}")
             if not os.path.exists(checkpoint_path):
                 raise RuntimeError(f"Expected checkpoint not found: {checkpoint_path}")
             
@@ -1895,26 +1899,23 @@ class AntiOverfitMetaOptimizer:
                     )
                 self.logger.info(f"[CAT-B 2.1] Scaler loaded: {len(scaler_mean)} features")
             
-            # Extract metrics from subprocess stdout (best effort)
+            # Extract metrics from subprocess stdout JSON (train_single_trial outputs JSON)
             r2 = 0.0
             train_mse = 0.0
             val_mse = 0.0
-            for line in (proc.stdout or "").split("\n"):
-                if "r2" in line.lower() and ":" in line:
-                    try:
-                        r2 = float(line.split(":")[-1].strip())
-                    except Exception:
-                        pass
-                if "val_mse" in line.lower() and ":" in line:
-                    try:
-                        val_mse = float(line.split(":")[-1].strip())
-                    except Exception:
-                        pass
-                if "train_mse" in line.lower() and ":" in line:
-                    try:
-                        train_mse = float(line.split(":")[-1].strip())
-                    except Exception:
-                        pass
+            try:
+                import json as _json
+                for line in (proc.stdout or "").strip().split("\n"):
+                    line = line.strip()
+                    if line.startswith("{") and line.endswith("}"):
+                        metrics_json = _json.loads(line)
+                        r2 = float(metrics_json.get("r2", 0.0))
+                        train_mse = float(metrics_json.get("train_mse", 0.0))
+                        val_mse = float(metrics_json.get("val_mse", 0.0))
+                        self.logger.info(f"[CAT-B 2.1] Metrics from subprocess: R²={r2:.6f}, val_mse={val_mse:.8f}")
+                        break
+            except Exception as _e:
+                self.logger.warning(f"[CAT-B 2.1] Could not parse subprocess metrics: {_e}")
             
             # Also try loading from sidecar if it exists
             sidecar_path = os.path.join(self.output_dir, "best_model.meta.json")
