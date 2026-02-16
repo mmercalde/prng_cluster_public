@@ -1,152 +1,175 @@
-# SESSION CHANGELOG — S92
-**Date:** 2026-02-15
-**Focus:** Category B Phase 1 Implementation — train_single_trial.py + neural_net_wrapper.py
+# SESSION CHANGELOG — S92 (2026-02-15)
+
+**Focus:** Category B Phase 2.1 — Close Inline NN Trainer Gap  
+**Duration:** ~3 hours  
+**Result:** COMPLETE — NN subprocess routing deployed and validated through WATCHER
 
 ---
 
-## 1. Team Beta Response — RECEIVED AND ACCEPTED
+## Summary
 
-**Document:** `PROPOSAL_CATEGORY_B_NN_TRAINING_ENHANCEMENTS_v1_0.md` (Team Beta reframing)
-
-### Key Decisions Made by Team Beta:
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Normalization policy | Option A: default ON, not Optuna-searched | We know we need it |
-| Scaler persistence | Store mean/scale arrays (portable) | Avoids sklearn pickle version fragility |
-| Activation | Toggle via `use_leaky_relu`, search later if desired | Start simple |
-| Dropout override | CLI `--dropout` takes precedence over Optuna | Clean and predictable |
-| Old checkpoints | Best-effort: no scaler = no transform + warning | No crashes |
-
-### Implementation Plan (4 Phases):
-| Phase | Scope | Files | Status |
-|-------|-------|-------|--------|
-| 1 | Core wiring | `train_single_trial.py`, `neural_net_wrapper.py` | **THIS SESSION** |
-| 2 | Orchestration | `meta_prediction_optimizer_anti_overfit.py` | Pending |
-| 3 | Manifest + Loader | `reinforcement.json`, Step 6 NN loader | Pending |
-| 4 | Verification | Test runs (single-model + compare-models) | Pending |
+Closed the architecture gap where single-shot NN training bypassed normalization/LeakyReLU
+by routing it through train_single_trial.py subprocess (same path as compare-models).
+Required three commits to resolve GPU isolation invariant violation and checkpoint naming bugs.
 
 ---
 
-## 2. Phase 1A — train_single_trial.py Patch
+## Commits
 
-**Patcher:** `apply_category_b_phase1_train_single_trial.py`
-**Version:** 1.0.1 → 1.1.0
-
-### 6 Patches Applied:
-
-| # | Change | Detail |
-|---|--------|--------|
-| 1 | Version bump | 1.0.1 → 1.1.0 |
-| 2 | 3 new argparse flags | `--normalize-features`, `--use-leaky-relu`, `--dropout` |
-| 3 | Updated train_neural_net() call | Passes new params from CLI |
-| 4 | train_neural_net() signature + body | StandardScaler normalization, dropout override precedence, LeakyReLU pass-through |
-| 5 | Checkpoint metadata | +normalize_features, +use_leaky_relu, +scaler_mean, +scaler_scale |
-| 6 | Return dict | +normalize_features, +use_leaky_relu, +dropout_source |
-
-### Normalization Logic:
-```python
-scaler_mean = X_train.mean(axis=0)
-scaler_scale = X_train.std(axis=0)
-scaler_scale[scaler_scale == 0] = 1.0  # Team Beta safety guard
-X_train = (X_train - scaler_mean) / scaler_scale
-X_val = (X_val - scaler_mean) / scaler_scale  # Fit on train, transform both
-```
-
-### Dropout Precedence:
-```
-CLI --dropout > params['dropout'] > default 0.3
-Clamped to [0.0, 0.9]
-```
-
-### Checkpoint Schema (v1.1.0):
-```python
-{
-    'state_dict': ...,
-    'feature_count': input_dim,
-    'hidden_layers': [256, 128, 64],
-    'dropout': 0.3,
-    'best_epoch': 42,
-    # Category B additions:
-    'normalize_features': True,
-    'use_leaky_relu': True,
-    'scaler_mean': np.array([...]),   # Only if normalize_features=True
-    'scaler_scale': np.array([...]),  # Only if normalize_features=True
-}
-```
+| Commit | Description |
+|--------|-------------|
+| dd34310 | feat(cat-b): Phase 2.1 — route single-shot NN through train_single_trial.py subprocess |
+| 3c8afca | fix(cat-b): Phase 2.1 hotfix — checkpoint rename + JSON metrics parsing |
+| 3dac87d | fix(cat-b): Phase 2.1 GPU isolation — defer CUDA for NN subprocess routing (Team Beta Option B-lite) |
 
 ---
 
-## 3. Phase 1B — neural_net_wrapper.py Patch
+## What Changed
 
-**Patcher:** `apply_category_b_phase1_neural_net_wrapper.py`
+### 1. Subprocess Routing for Single-Shot NN (dd34310)
 
-### Changes:
-- Added `use_leaky_relu=False` parameter to `SurvivorQualityNet.__init__()`
-- Added `self.use_leaky_relu` instance attribute
-- Replaced all `nn.ReLU()` with `(nn.LeakyReLU(0.01) if self.use_leaky_relu else nn.ReLU())`
-- `nn.BatchNorm1d` remains **always-on** (unchanged)
+Added _export_split_npz() and _run_nn_via_subprocess() methods to
+meta_prediction_optimizer_anti_overfit.py. When model_type == "neural_net",
+_run_single_model() now routes through train_single_trial.py subprocess
+instead of inline MultiModelTrainer._train_neural_net().
 
-### Backward Compatibility:
-- Default `use_leaky_relu=False` = exact same behavior as before
-- Existing checkpoints load identically (no new required fields)
-- Only neural_net training path affected; tree models untouched
+Team Beta Modifications Applied:
+- Mod A: Export exact train/val split (no new split heuristics)
+- Mod B: Atomic temp dir (outputs/tmp/) with cleanup on success, retain on fail
+- Mod C: Fail hard by default; --allow-inline-nn-fallback escape hatch
+- Mod D: Thread all Category B flags end-to-end
 
----
+### 2. Checkpoint Rename + JSON Metrics (3c8afca)
 
-## 4. Deployment Commands
+Two bugs found during acceptance testing:
+- train_single_trial.py saves as neural_net_trial-1.pth, patcher expected best_model.pth
+- Metrics parsing expected key:value lines but subprocess outputs JSON on stdout
 
-```bash
-# Copy patchers to Zeus
-scp ~/Downloads/apply_category_b_phase1_train_single_trial.py rzeus:~/distributed_prng_analysis/
-scp ~/Downloads/apply_category_b_phase1_neural_net_wrapper.py rzeus:~/distributed_prng_analysis/
+Fix: Rename after subprocess completion; parse JSON from stdout.
 
-# Activate venv and run Phase 1A
-ssh rzeus
-cd ~/distributed_prng_analysis
-source ~/venvs/torch/bin/activate
+### 3. GPU Isolation Fix (3dac87d)
 
-python3 apply_category_b_phase1_train_single_trial.py
-# Expected: 6/6 patches applied, syntax check PASSED
+Root cause: Session 72 GPU Isolation Design Invariant states GPU-accelerated code
+must NEVER run in the coordinating process when using subprocess isolation. The parent
+process called initialize_cuda_early() in single-model mode, poisoning the NN
+subprocess via CUDA context inheritance (1.6s crash, rc=1).
 
-# Run Phase 1B
-python3 apply_category_b_phase1_neural_net_wrapper.py
-# Expected: 4/4 patches applied, syntax check PASSED
+Fix (Team Beta Option B-lite): Extended CUDA deferral to cover NN subprocess routing:
 
-# Quick smoke test (no GPU needed for syntax)
-python3 train_single_trial.py --help | grep -E "normalize|leaky|dropout"
-# Expected: 3 new flags visible
+    will_use_subprocess = args.compare_models or (
+        args.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED
+    )
 
-# Git commit
-git add train_single_trial.py models/wrappers/neural_net_wrapper.py
-git commit -m "feat(cat-b): Phase 1 - normalize_features + use_leaky_relu + dropout override in NN training"
-git push origin main && git push public main
-```
+Added NN_SUBPROCESS_ROUTING_ENABLED = True flag for future-proofing.
+Added Option C defense-in-depth: env pass-through with logging (no invented device IDs).
 
 ---
 
-## 5. Files Created
+## Validation Results
 
-| File | Purpose |
-|------|---------|
-| `apply_category_b_phase1_train_single_trial.py` | Patcher for train_single_trial.py |
-| `apply_category_b_phase1_neural_net_wrapper.py` | Patcher for neural_net_wrapper.py |
+### WATCHER End-to-End Test (18:53 run)
 
-## Backups Created (by patchers)
+- Mode: Single Model (neural_net) (Subprocess Isolation)
+- GPU initialization DEFERRED to subprocess
+- CUDA initialized: False
+- NN subprocess: ~5 min runtime (previously 1.6s crash)
+- Enriched checkpoint: normalize_features=True, use_leaky_relu=True, scaler arrays=(62,)
+- All 4 model types trained in compare-models loop
+- CatBoost won (R2=0.0002), pipeline completed successfully
 
-| File | Purpose |
-|------|---------|
-| `train_single_trial.py.pre_category_b_phase1` | Pre-patch safety |
-| `models/wrappers/neural_net_wrapper.py.pre_category_b_phase1` | Pre-patch safety |
+### Enriched Checkpoint Verification
 
----
-
-## 6. Next Steps (This Session or Next)
-
-1. **Deploy Phase 1** — run patchers on Zeus, verify, commit
-2. **Phase 2** — Thread NN flags into subprocess command builder in `meta_prediction_optimizer_anti_overfit.py`
-3. **Phase 3** — Update `reinforcement.json` manifest + Step 6 loader
-4. **Phase 4** — End-to-end test: single-model NN + compare-models
+    normalize_features: True
+    use_leaky_relu: True
+    scaler_mean: shape=(62,)
+    scaler_scale: shape=(62,)
 
 ---
 
-*Session 92 — Category B Phase 1 (Core Wiring)*
+## Category B Complete Status
+
+| Phase | Description | Commit | Status |
+|-------|-------------|--------|--------|
+| 1 | train_single_trial.py normalization + LeakyReLU | 3c3f9ae | Done |
+| 2 | Compare-models subprocess flag injection | fb8561c | Done |
+| 3 | Step 6 scaler application + manifest | bc481f7 | Done |
+| 2.1 | Single-shot NN subprocess routing | dd34310 | Done |
+| 2.1a | Hotfix: checkpoint rename + JSON metrics | 3c8afca | Done |
+| 2.1b | GPU isolation: CUDA deferral for NN subprocess | 3dac87d | Done |
+
+---
+
+## Known Issues Found (Not Blockers)
+
+1. diagnostics_llm_analyzer.py line 255: 'str' has no attribute 'get' — blocks LLM retry refinement
+2. WATCHER retry switches to catboost instead of retrying NN with modified params
+3. NN diagnostic thresholds need recalibration post-Category-B normalization
+4. Optuna trials=1 gives zero exploration budget for TPE sampler
+
+---
+
+## Next Session (S93) Priorities
+
+### Priority 1: Increase NN Optuna Trials (HIGHEST IMPACT)
+
+Bump from 1 to 10-20 in manifest default_params. This is the single highest-impact
+change. TPE needs data to learn. With Category B normalization making the landscape
+smooth, Optuna can actually explore learning rate, dropout, architecture, and weight
+decay meaningfully. The Optuna DB accumulates across runs via deterministic study
+names with load_if_exists=True, so trials 11-20 in the next run benefit from trials
+1-10 in this run.
+
+### Priority 2: Fix diagnostics_llm_analyzer.py Line 255
+
+The 'str'.get() bug blocks smart LLM-guided retry refinement. History entries contain
+strings where dicts are expected. Quick fix, big unlock — this restores the "smart"
+half of the WATCHER retry loop where the LLM reads training_diagnostics.json and
+proposes parameter adjustments via grammar-constrained output.
+
+### Priority 3: Fix WATCHER Retry to Re-run NN
+
+Stop switching to catboost on critical. Instead, retry NN with Optuna's next suggestion.
+The whole retry-learn-retry loop only works if NN actually gets another shot. Currently:
+- Attempt 1: NN trains, diagnostics flags critical
+- WATCHER switches model_type to catboost (NN never retried)
+- Retries 2-3 see fresh catboost artifacts, skip
+
+After fix:
+- Attempt 1: NN trains with params A, diagnostics flags critical
+- Attempt 2: NN retries with modified params B (higher dropout, different LR)
+- Attempt 3: NN retries with params C
+- If still critical after 3: SKIP_MODEL fires, tree models take over
+
+### Priority 4: Recalibrate NN Diagnostic Thresholds
+
+"Early stop ratio 0.00" as automatic critical needs revisiting post-Category-B.
+The normalization changes what "healthy" training looks like. With normalized inputs
+and LeakyReLU, the gradient landscape is different — thresholds tuned for raw inputs
+with ReLU may be too aggressive.
+
+### Priority 5: Deferred Backlog
+
+- Regression diagnostics: create synthetic data for gate=True validation (deferred since S86)
+- Dead code audit: comment out old MultiModelTrainer inline NN path (never delete)
+- 27 stale files cleanup from project knowledge (S85/S86 audit)
+- Checkpoint rename -> explicit output path (Team Beta recommendation from S92)
+
+---
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| meta_prediction_optimizer_anti_overfit.py | +2 methods, subprocess routing, GPU isolation, hotfixes |
+
+## Patcher Files (cleanup candidates on Zeus)
+
+| File | Can Remove |
+|------|------------|
+| apply_category_b_phase2_1_nn_subprocess.py | Yes |
+| apply_phase2_1_hotfix.py | Yes |
+| apply_phase2_1_gpu_isolation_fix_v3.py | Yes |
+
+---
+
+Session 92 — Team Alpha
