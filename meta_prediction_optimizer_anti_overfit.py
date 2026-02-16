@@ -1787,6 +1787,188 @@ class AntiOverfitMetaOptimizer:
 
 
 
+    def _export_split_npz(self, X_train, y_train, X_val, y_val):
+        """
+        Category B Phase 2.1 (Team Beta Mod A): Export the EXACT split
+        already computed by _run_single_model to NPZ for subprocess.
+        
+        Team Beta Mod B: Uses atomic temp dir with unique prefix.
+        Cleaned up on success; kept on failure for debugging.
+        """
+        import tempfile
+        
+        tmp_dir = os.path.join(self.output_dir, "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pid = os.getpid()
+        npz_path = os.path.join(tmp_dir, f"step5_nn_inlinefix_{timestamp}_{pid}_data.npz")
+        
+        np.savez(npz_path,
+                 X_train=X_train, y_train=y_train,
+                 X_val=X_val, y_val=y_val)
+        
+        self.logger.info(f"[CAT-B 2.1] Exported split to NPZ: {npz_path}")
+        self.logger.info(f"[CAT-B 2.1]   X_train: {X_train.shape}, X_val: {X_val.shape}")
+        return npz_path
+
+    def _run_nn_via_subprocess(self, X_train, y_train, X_val, y_val):
+        """
+        Category B Phase 2.1: Route NN single-shot training through
+        train_single_trial.py subprocess.
+        
+        This ensures enriched checkpoints with scaler metadata, matching
+        the compare-models subprocess path.
+        
+        Team Beta Mod C: Fails hard if subprocess returns non-zero.
+                         --allow-inline-nn-fallback overrides this.
+        Team Beta Mod D: Threads all Category B flags.
+        
+        Returns:
+            Dict matching MultiModelTrainer.train_model() result schema
+        """
+        import torch
+        
+        # Export the exact split
+        npz_path = self._export_split_npz(X_train, y_train, X_val, y_val)
+        
+        try:
+            # Build subprocess command
+            cmd = [
+                sys.executable, "train_single_trial.py",
+                "--model-type", "neural_net",
+                "--data-path", npz_path,
+                "--save-model",
+                "--model-output-dir", self.output_dir,
+                "--normalize-features",     # Category B Option A: always ON
+                "--use-leaky-relu",         # Category B: always ON
+                "--verbose",
+            ]
+            
+            # Thread dropout if provided via CLI (Team Beta Mod D)
+            if getattr(self, '_cli_dropout', None) is not None:
+                try:
+                    _d = float(self._cli_dropout)
+                    cmd.extend(["--dropout", str(_d)])
+                except Exception:
+                    pass
+            
+            # Thread diagnostics flag
+            if getattr(self, '_cli_enable_diagnostics', False):
+                cmd.append("--enable-diagnostics")
+            
+            self.logger.info("[CAT-B 2.1] Routing NN through train_single_trial.py subprocess")
+            self.logger.info(f"[CAT-B 2.1] cmd: {' '.join(cmd)}")
+            
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            
+            if proc.returncode != 0:
+                stderr_tail = (proc.stderr or "")[-500:]
+                self.logger.error(f"[CAT-B 2.1] Subprocess failed (rc={proc.returncode})")
+                self.logger.error(f"[CAT-B 2.1] stderr tail: {stderr_tail}")
+                raise RuntimeError(
+                    f"train_single_trial.py subprocess failed (rc={proc.returncode}): {stderr_tail}"
+                )
+            
+            # Load enriched checkpoint
+            checkpoint_path = os.path.join(self.output_dir, "best_model.pth")
+            if not os.path.exists(checkpoint_path):
+                raise RuntimeError(f"Expected checkpoint not found: {checkpoint_path}")
+            
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            
+            # Team Beta acceptance: assert enriched keys exist
+            normalize_flag = checkpoint.get('normalize_features')
+            leaky_flag = checkpoint.get('use_leaky_relu')
+            if normalize_flag is None or leaky_flag is None:
+                raise RuntimeError(
+                    "Enriched checkpoint missing required keys: "
+                    f"normalize_features={normalize_flag}, use_leaky_relu={leaky_flag}"
+                )
+            
+            if normalize_flag:
+                scaler_mean = checkpoint.get('scaler_mean')
+                scaler_scale = checkpoint.get('scaler_scale')
+                if scaler_mean is None or scaler_scale is None:
+                    raise RuntimeError(
+                        "normalize_features=True but scaler arrays missing from checkpoint"
+                    )
+                self.logger.info(f"[CAT-B 2.1] Scaler loaded: {len(scaler_mean)} features")
+            
+            # Extract metrics from subprocess stdout (best effort)
+            r2 = 0.0
+            train_mse = 0.0
+            val_mse = 0.0
+            for line in (proc.stdout or "").split("\n"):
+                if "r2" in line.lower() and ":" in line:
+                    try:
+                        r2 = float(line.split(":")[-1].strip())
+                    except Exception:
+                        pass
+                if "val_mse" in line.lower() and ":" in line:
+                    try:
+                        val_mse = float(line.split(":")[-1].strip())
+                    except Exception:
+                        pass
+                if "train_mse" in line.lower() and ":" in line:
+                    try:
+                        train_mse = float(line.split(":")[-1].strip())
+                    except Exception:
+                        pass
+            
+            # Also try loading from sidecar if it exists
+            sidecar_path = os.path.join(self.output_dir, "best_model.meta.json")
+            if os.path.exists(sidecar_path):
+                try:
+                    with open(sidecar_path) as sf:
+                        sidecar_data = json.load(sf)
+                    tm = sidecar_data.get("training_metrics", {})
+                    if tm.get("r2") is not None:
+                        r2 = float(tm["r2"])
+                    if tm.get("val_mse") is not None:
+                        val_mse = float(tm["val_mse"])
+                    if tm.get("train_mse") is not None:
+                        train_mse = float(tm["train_mse"])
+                except Exception:
+                    pass
+            
+            self.logger.info(f"[CAT-B 2.1] NN subprocess complete: R²={r2:.4f}")
+            self.logger.info(f"[CAT-B 2.1] normalize_features={normalize_flag}, use_leaky_relu={leaky_flag}")
+            
+            # Store checkpoint path for sidecar generation
+            self.best_checkpoint_path = checkpoint_path
+            
+            # Clean up NPZ on success (Team Beta Mod B)
+            try:
+                os.remove(npz_path)
+                self.logger.debug(f"[CAT-B 2.1] Cleaned up NPZ: {npz_path}")
+            except Exception:
+                pass
+            
+            # Return result matching MultiModelTrainer.train_model() schema
+            return {
+                'model': None,  # Model is on disk, not in memory
+                'model_type': 'neural_net',
+                'metrics': {
+                    'train_mse': train_mse,
+                    'val_mse': val_mse,
+                    'r2': r2,
+                },
+                'hyperparameters': {
+                    'normalize_features': normalize_flag,
+                    'use_leaky_relu': leaky_flag,
+                    'hidden_layers': checkpoint.get('hidden_layers', [256, 128, 64]),
+                    'dropout': checkpoint.get('dropout', 0.3),
+                },
+                'checkpoint_path': checkpoint_path,
+            }
+            
+        except Exception as e:
+            # Keep NPZ for debugging on failure (Team Beta Mod B)
+            self.logger.error(f"[CAT-B 2.1] NN subprocess error: {e}")
+            self.logger.error(f"[CAT-B 2.1] NPZ retained at: {npz_path}")
+            raise
+
     def _run_single_model(self) -> Tuple[Dict, ValidationMetrics]:
         """Train single model type."""
         
@@ -1809,20 +1991,40 @@ class AntiOverfitMetaOptimizer:
         X_val = self.X_train_val[-n_val:]
         y_val = self.y_train_val[-n_val:]
         
-        # Train
-        result = self.trainer.train_model(
-            self.model_type, X_train, y_train, X_val, y_val
-        )
+        # Category B Phase 2.1: Route NN through subprocess for enriched checkpoints
+        if self.model_type == "neural_net":
+            self.logger.info("[CAT-B 2.1] Neural net detected — routing through train_single_trial.py")
+            try:
+                result = self._run_nn_via_subprocess(X_train, y_train, X_val, y_val)
+            except Exception as e:
+                if getattr(self, '_allow_inline_nn_fallback', False):
+                    self.logger.warning(f"[CAT-B 2.1] Subprocess failed, falling back to inline: {e}")
+                    result = self.trainer.train_model(
+                        self.model_type, X_train, y_train, X_val, y_val
+                    )
+                else:
+                    raise RuntimeError(
+                        f"[CAT-B 2.1] NN subprocess failed and --allow-inline-nn-fallback not set: {e}"
+                    ) from e
+        else:
+            # Tree models: use inline trainer as before
+            result = self.trainer.train_model(
+                self.model_type, X_train, y_train, X_val, y_val
+            )
         
         self.best_model = result['model']
         self.best_model_type = self.model_type
         self.best_config = result['hyperparameters']
         self.best_metrics = self._compute_final_metrics(result['metrics'])
         
+        # Store checkpoint path if subprocess provided one
+        if result.get('checkpoint_path'):
+            self.best_checkpoint_path = result['checkpoint_path']
+        
         # Log results
         self.logger.info(f"\nTraining complete: R²={result['metrics']['r2']:.4f}")
         
-        # Save model
+        # Save model (sidecar generation)
         self.save_best_model()
         
         return self.best_config, self.best_metrics
@@ -2136,6 +2338,8 @@ def main():
                        help='Use LeakyReLU(0.01) instead of ReLU in neural net')
     parser.add_argument('--dropout', type=float, default=None,
                        help='Override dropout value for NN (CLI precedence)')
+    parser.add_argument('--allow-inline-nn-fallback', action='store_true',
+                       help='If NN subprocess fails, fall back to inline trainer (default: OFF)')
     
     args = parser.parse_args()
 
@@ -2205,6 +2409,13 @@ def main():
         parent_run_id=args.parent_run_id
     )
     
+    # Category B Phase 2.1: Thread CLI flags into optimizer (Team Beta Mod D)
+    optimizer._cli_dropout = getattr(args, 'dropout', None)
+    optimizer._cli_normalize = getattr(args, 'normalize_features', False)
+    optimizer._cli_leaky = getattr(args, 'use_leaky_relu', False)
+    optimizer._cli_enable_diagnostics = getattr(args, 'enable_diagnostics', False)
+    optimizer._allow_inline_nn_fallback = getattr(args, 'allow_inline_nn_fallback', False)
+
     best_config, metrics = optimizer.run(n_trials=args.trials)
     
     # Check for degenerate exit
