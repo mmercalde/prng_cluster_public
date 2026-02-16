@@ -99,55 +99,96 @@ Added Option C defense-in-depth: env pass-through with logging (no invented devi
 
 ---
 
-## Known Issues Found (Not Blockers)
+## Team Beta Post-Run Analysis (Critical Findings)
 
-1. diagnostics_llm_analyzer.py line 255: 'str' has no attribute 'get' — blocks LLM retry refinement
-2. WATCHER retry switches to catboost instead of retrying NN with modified params
-3. NN diagnostic thresholds need recalibration post-Category-B normalization
-4. Optuna trials=1 gives zero exploration budget for TPE sampler
+Team Beta review of the WATCHER end-to-end run revealed three distinct bugs that were
+previously masquerading as a single "NN always fails" problem:
+
+### Bug A: WATCHER Retry Without Re-Execution (CRITICAL)
+
+After Step 5 succeeds and produces winner artifacts, WATCHER logs:
+- "Training health check: model=neural_net severity=critical action=RETRY"
+- Then immediately skips re-running Step 5 because output is "fresh"
+- Then repeats the same health evaluation again
+- Then hits 3 consecutive critical and SKIP_MODELs
+
+The skip registry reached 3 even though NN only actually trained ONCE. The retry
+semantics are applied, but Step 5 execution is bypassed by freshness gating, while
+the skip counter increments anyway. This is a logic defect: you cannot both "RETRY
+Step 5" and "skip Step 5 because outputs are fresh" and still count that as another
+consecutive failure.
+
+Fix options:
+- Option 1 (best): When action=RETRY, bypass freshness checks for that step
+  (delete/rename sentinel or pass --force-run)
+- Option 2 (quick): If action=RETRY and Step 5 was skipped due to "fresh output,"
+  do not increment consecutive critical (treat as "no new evidence")
+
+### Bug B: Health Check Evaluates Requested Model, Not Winner
+
+After compare-models selects catboost as winner and restores its artifacts, the health
+check still evaluates model=neural_net and triggers retries. The health check reads the
+CLI requested model_type rather than the actual winner model_type from the sidecar or
+compare-models summary.
+
+Fix: Health check should read the sidecar (or compare_models_summary) and evaluate the
+artifact model_type, not the CLI requested model_type.
+
+### Bug C: diagnostics_llm_analyzer.py Line 255 String-vs-Dict
+
+build_diagnostics_prompt() expects dict entries in history but sometimes receives strings.
+Causes: AttributeError: 'str' object has no attribute 'get'. Non-fatal by design (good)
+but triggers repeated LLM server startups with zero value.
+
+Fix: Coerce non-dict history entries or skip them with a warning.
+
+### Impact
+
+Bug A explains why NN has been hitting SKIP_MODEL so fast across multiple sessions —
+it was never actually getting 3 chances, just 1 real run counted 3 times. This is the
+primary reason the retry-learn-retry loop has been non-functional.
 
 ---
 
 ## Next Session (S93) Priorities
 
-### Priority 1: Increase NN Optuna Trials (HIGHEST IMPACT)
+### Priority 1: Fix WATCHER Retry-Without-Rerun Bug (Bug A)
 
-Bump from 1 to 10-20 in manifest default_params. This is the single highest-impact
-change. TPE needs data to learn. With Category B normalization making the landscape
-smooth, Optuna can actually explore learning rate, dropout, architecture, and weight
-decay meaningfully. The Optuna DB accumulates across runs via deterministic study
-names with load_if_exists=True, so trials 11-20 in the next run benefit from trials
-1-10 in this run.
+This is now the highest priority — without this fix, increasing Optuna trials is
+pointless because retries never actually re-execute. The WATCHER must either force
+Step 5 re-execution when action=RETRY, or stop counting stale results as new failures.
 
-### Priority 2: Fix diagnostics_llm_analyzer.py Line 255
+Team Beta requested three code snippets to start S93:
+1. WATCHER Step 5 freshness skip logic ("Step 5: Fresh ... skipping")
+2. Where consecutive critical is incremented / skip registry updated
+3. build_diagnostics_prompt() history loop around line ~255
 
-The 'str'.get() bug blocks smart LLM-guided retry refinement. History entries contain
-strings where dicts are expected. Quick fix, big unlock — this restores the "smart"
-half of the WATCHER retry loop where the LLM reads training_diagnostics.json and
-proposes parameter adjustments via grammar-constrained output.
+### Priority 2: Increase NN Optuna Trials
 
-### Priority 3: Fix WATCHER Retry to Re-run NN
+Bump from 1 to 10-20 in manifest default_params. TPE needs data to learn. With
+Category B normalization making the landscape smooth, Optuna can explore learning
+rate, dropout, architecture, and weight decay meaningfully. The Optuna DB accumulates
+across runs via deterministic study names with load_if_exists=True.
 
-Stop switching to catboost on critical. Instead, retry NN with Optuna's next suggestion.
-The whole retry-learn-retry loop only works if NN actually gets another shot. Currently:
-- Attempt 1: NN trains, diagnostics flags critical
-- WATCHER switches model_type to catboost (NN never retried)
-- Retries 2-3 see fresh catboost artifacts, skip
+This becomes effective AFTER Bug A is fixed (otherwise retries never re-execute).
 
-After fix:
-- Attempt 1: NN trains with params A, diagnostics flags critical
-- Attempt 2: NN retries with modified params B (higher dropout, different LR)
-- Attempt 3: NN retries with params C
-- If still critical after 3: SKIP_MODEL fires, tree models take over
+### Priority 3: Fix Health Check Model Mismatch (Bug B)
 
-### Priority 4: Recalibrate NN Diagnostic Thresholds
+Health check should evaluate the winner artifact model_type (from sidecar), not the
+CLI requested model_type. After compare-models selects catboost, triggering NN retries
+is wrong.
+
+### Priority 4: Fix diagnostics_llm_analyzer.py (Bug C)
+
+Harden build_diagnostics_prompt() history ingestion. Coerce string entries to dict
+or skip with warning. Unblocks LLM-guided retry refinement.
+
+### Priority 5: Recalibrate NN Diagnostic Thresholds
 
 "Early stop ratio 0.00" as automatic critical needs revisiting post-Category-B.
-The normalization changes what "healthy" training looks like. With normalized inputs
-and LeakyReLU, the gradient landscape is different — thresholds tuned for raw inputs
-with ReLU may be too aggressive.
+The normalization changes what "healthy" training looks like.
 
-### Priority 5: Deferred Backlog
+### Priority 6: Deferred Backlog
 
 - Regression diagnostics: create synthetic data for gate=True validation (deferred since S86)
 - Dead code audit: comment out old MultiModelTrainer inline NN path (never delete)
@@ -162,13 +203,12 @@ with ReLU may be too aggressive.
 |------|--------|
 | meta_prediction_optimizer_anti_overfit.py | +2 methods, subprocess routing, GPU isolation, hotfixes |
 
-## Patcher Files (cleanup candidates on Zeus)
+## Patcher Files (cleaned up)
 
-| File | Can Remove |
-|------|------------|
-| apply_category_b_phase2_1_nn_subprocess.py | Yes |
-| apply_phase2_1_hotfix.py | Yes |
-| apply_phase2_1_gpu_isolation_fix_v3.py | Yes |
+All S92 patchers removed from Zeus after final commit:
+- apply_category_b_phase2_1_nn_subprocess.py
+- apply_phase2_1_hotfix.py
+- apply_phase2_1_gpu_isolation_fix_v3.py
 
 ---
 
