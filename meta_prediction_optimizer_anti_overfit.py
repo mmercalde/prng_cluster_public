@@ -344,7 +344,10 @@ def initialize_cuda_early():
         pass
     return False
 
-CUDA_INITIALIZED = False  # Deferred - set in main() based on --compare-models
+# Phase 2.1: NN single-shot always routes through train_single_trial.py subprocess
+NN_SUBPROCESS_ROUTING_ENABLED = True  # Set False to revert to inline NN trainer
+
+CUDA_INITIALIZED = False  # Deferred - set in main() based on subprocess routing
 
 
 # ============================================================================
@@ -1860,7 +1863,16 @@ class AntiOverfitMetaOptimizer:
             self.logger.info("[CAT-B 2.1] Routing NN through train_single_trial.py subprocess")
             self.logger.info(f"[CAT-B 2.1] cmd: {' '.join(cmd)}")
             
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            # Option C defense-in-depth: pass-through env (Team Beta guardrail)
+            # Do NOT invent CUDA_VISIBLE_DEVICES — let subprocess inherit or set its own
+            import os
+            sub_env = os.environ.copy()
+            _cuda_vis = sub_env.get("CUDA_VISIBLE_DEVICES", "<unset>")
+            if hasattr(self, "logger"):
+                self.logger.info(f"[CAT-B 2.1] Subprocess CUDA_VISIBLE_DEVICES={_cuda_vis}")
+            else:
+                print(f"[CAT-B 2.1] Subprocess CUDA_VISIBLE_DEVICES={_cuda_vis}")
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=sub_env)
             
             if proc.returncode != 0:
                 stderr_tail = (proc.stderr or "")[-500:]
@@ -2370,9 +2382,15 @@ def main():
     # Conditional CUDA initialization (Team Beta design invariant)
     # GPU code must NEVER run in coordinating process when using subprocess isolation
     global CUDA_INITIALIZED
-    if args.compare_models:
-        print("⚡ Mode: Multi-Model Comparison (Subprocess Isolation)")
-        print("   GPU initialization DEFERRED to subprocesses")
+    will_use_subprocess = args.compare_models or (
+        args.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED
+    )
+    if will_use_subprocess:
+        if args.compare_models:
+            print("⚡ Mode: Multi-Model Comparison (Subprocess Isolation)")
+        else:
+            print(f"⚡ Mode: Single Model ({args.model_type}) (Subprocess Isolation)")
+        print("   GPU initialization DEFERRED to subprocess")
         CUDA_INITIALIZED = False
     else:
         CUDA_INITIALIZED = initialize_cuda_early()
