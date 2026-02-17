@@ -539,14 +539,30 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     best_epoch = 0
     best_state_dict = None
     
+    # S93: Wire NNDiagnostics hooks into training loop
+    _nn_diag = None
+    _base_model = model.module if hasattr(model, 'module') else model  # TB Fix #1: DataParallel
+    if enable_diagnostics and DIAGNOSTICS_AVAILABLE:
+        try:
+            _nn_diag = NNDiagnostics()
+            _nn_diag.attach(_base_model)
+            print(f"[DIAG] NNDiagnostics attached ({len(_nn_diag._layer_names)} layers)", file=sys.stderr)
+        except Exception as _diag_err:
+            print(f"[DIAG] NNDiagnostics attach failed (non-fatal): {_diag_err}", file=sys.stderr)
+            _nn_diag = None
+
     for epoch in range(epochs):
         model.train()
+        _epoch_train_loss = 0.0
+        _epoch_batches = 0
         for batch_X, batch_y in loader:
             optimizer.zero_grad()
             preds = model(batch_X)
             loss = criterion(preds, batch_y)
             loss.backward()
             optimizer.step()
+            _epoch_train_loss += loss.item()
+            _epoch_batches += 1
         
         # Validation
         model.eval()
@@ -554,6 +570,20 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
             val_preds = model(X_val_t)
             val_loss = criterion(val_preds, y_val_t).item()
         
+        # S93: Record epoch diagnostics
+        if _nn_diag is not None:
+            try:
+                _avg_train_loss = _epoch_train_loss / max(_epoch_batches, 1)
+                _nn_diag.on_round_end(
+                    round_num=epoch,
+                    train_loss=_avg_train_loss,
+                    val_loss=val_loss,
+                    learning_rate=lr,
+                )
+            except Exception as _rnd_err:
+                if epoch == 0:
+                    print(f"[DIAG] on_round_end failed (non-fatal): {_rnd_err}", file=sys.stderr)
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
@@ -610,7 +640,34 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     
 
     # Chapter 14: Emit diagnostics
-    _emit_nn_diagnostics(model, r2, val_mse, enable_diagnostics)
+    # S93: Save live diagnostics (replaces empty post-hoc stub)
+    # TB Fix C: Always detach hooks (separate try)
+    if _nn_diag is not None:
+        try:
+            _nn_diag.detach()
+        except Exception:
+            pass
+    # TB Fix #2: Robust MSE resolution (None if neither exists — v3 nice-to-have B)
+    if _nn_diag is not None and enable_diagnostics:
+        try:
+            _mse_val = locals().get('val_mse', locals().get('mse', None))
+            _nn_diag.set_final_metrics({'r2': r2, 'mse': _mse_val})
+            os.makedirs('diagnostics_outputs', exist_ok=True)
+            _nn_diag.save('diagnostics_outputs/neural_net_diagnostics.json')
+            # v3 nice-to-have A: check existence before calling
+            if '_write_canonical_diagnostics' in dir() or '_write_canonical_diagnostics' in globals():
+                _write_canonical_diagnostics('diagnostics_outputs/neural_net_diagnostics.json')
+            # TB Fix B: try-wrapped private attr access
+            try:
+                _rnd_count = len(_nn_diag._round_data)
+                _lyr_count = len(_nn_diag._layer_names)
+            except Exception:
+                _rnd_count = _lyr_count = '?'
+            print(f"[DIAG] NN diagnostics saved: {_rnd_count} rounds, {_lyr_count} layers", file=sys.stderr)
+        except Exception as _save_err:
+            print(f"[DIAG] NN diagnostics save failed (non-fatal): {_save_err}", file=sys.stderr)
+    elif enable_diagnostics:
+        _emit_nn_diagnostics(model, r2, locals().get('val_mse', locals().get('mse', None)), enable_diagnostics)
 
     return {
         'model_type': 'neural_net',
