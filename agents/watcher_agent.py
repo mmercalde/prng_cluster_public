@@ -1709,6 +1709,39 @@ class WatcherAgent:
             logger.debug("Could not read max_training_retries from policy: %s", e)
         return 2
 
+    def _invalidate_step_freshness(self, step: int) -> None:
+        """
+        Invalidate freshness for a step so it re-executes on next run_step() call.
+        
+        Bug A fix (S93): When health check requests RETRY, the existing output is
+        'fresh' but unhealthy. Touch the primary input to make output appear stale,
+        forcing run_step() to actually re-execute instead of skipping.
+        
+        Strategy: Touch the first required input to current time.
+        This makes check_output_freshness() return (False, "STALE: ...").
+        """
+        try:
+            required_inputs, primary_output = get_step_io_from_manifest(step)
+            if required_inputs and os.path.exists(required_inputs[0]):
+                target = required_inputs[0]
+                old_mtime = os.path.getmtime(target)
+                os.utime(target, None)  # Touch to current time
+                new_mtime = os.path.getmtime(target)
+                logger.info(
+                    "[S93][BUG-A] Invalidated freshness for Step %d: "
+                    "touched %s (mtime %.0f -> %.0f)",
+                    step, target, old_mtime, new_mtime
+                )
+            else:
+                logger.warning(
+                    "[S93][BUG-A] Could not invalidate freshness: "
+                    "no inputs found for Step %d", step
+                )
+        except Exception as e:
+            logger.warning(
+                "[S93][BUG-A] Freshness invalidation failed (non-fatal): %s", e
+            )
+
     def _run_step_streaming(self, cmd, step, timeout_seconds):
         """
         Run command with live output streaming.
@@ -1925,9 +1958,19 @@ class WatcherAgent:
                 #     self.current_step += 1  # Step advancement handled in _handle_proceed()
 
                 # -- Session 76: Post-Step-5 training health check ----------
+                # S93 defense-in-depth: Only run health check if Step 5
+                # actually executed (not skipped by freshness gate).
+                # Stale diagnostics = no new evidence = don't increment counter.
+                _step5_skipped = (results or {}).get("skipped", False)
+                if _step5_skipped and step == 5:
+                    logger.info(
+                        "[S93][A3] Step 5 was freshness-skipped — "
+                        "bypassing health check (no new training evidence)"
+                    )
                 if (step == 5
                         and decision.recommended_action == "proceed"
-                        and TRAINING_HEALTH_CHECK_AVAILABLE):
+                        and TRAINING_HEALTH_CHECK_AVAILABLE
+                        and not _step5_skipped):
 
                     # Single health check call -- cached for both helpers
                     _health = check_training_health()
@@ -1953,6 +1996,9 @@ class WatcherAgent:
                             )
                             # Stay on Step 5 -- override current_step back
                             # (_handle_proceed already advanced to 6)
+                            # S93 Bug A fix: Invalidate freshness so run_step()
+                            # actually re-executes instead of skipping
+                            self._invalidate_step_freshness(5)
                             self.current_step = 5
                             params = retry_params
                             time.sleep(1)

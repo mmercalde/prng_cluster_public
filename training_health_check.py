@@ -154,6 +154,29 @@ def _check_training_health_impl(diagnostics_path: str) -> Dict[str, Any]:
     policies = _load_policies()
     metric_bounds = policies.get('metric_bounds', DEFAULT_METRIC_BOUNDS)
     
+    # ── S93 Bug B: Check for compare-models winner override ─────────
+    # When compare-models was used, the winner model type should be
+    # evaluated, not whatever model_type is in the diagnostics file.
+    _compare_summary_path = os.path.join(
+        os.path.dirname(diagnostics_path), "compare_models_summary.json"
+    )
+    if os.path.isfile(_compare_summary_path):
+        try:
+            with open(_compare_summary_path) as _csf:
+                _cs = json.load(_csf)
+            _winner = _cs.get("winner_model_type", _cs.get("winner"))
+            if _winner and isinstance(_winner, str):
+                _diag_model = diag.get("model_type", "unknown")
+                if _diag_model != _winner:
+                    logger.info(
+                        "[S93][BUG-B] Overriding diagnostics model_type "
+                        "'%s' with compare-models winner '%s'",
+                        _diag_model, _winner
+                    )
+                    diag["model_type"] = _winner
+        except (json.JSONDecodeError, IOError) as _cs_err:
+            logger.debug("Could not read compare_models_summary: %s", _cs_err)
+
     # ── Determine if multi-model or single-model format ───────────────
     if 'models' in diag:
         # Multi-model format (from --compare-models)

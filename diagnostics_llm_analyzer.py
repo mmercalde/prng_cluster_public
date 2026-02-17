@@ -250,6 +250,13 @@ def build_diagnostics_prompt(
                 try:
                     with open(hp) as f:
                         hist = json.load(f)
+                    # S93 Bug C: Guard against non-dict entries (e.g. bare strings)
+                    if not isinstance(hist, dict):
+                        logger.warning(
+                            "Skipping non-dict history entry in %s: %s",
+                            hp, type(hist).__name__
+                        )
+                        continue
                     recent.append({
                         'run_id': os.path.basename(hp).replace('.json', ''),
                         'severity': hist.get('diagnosis', {}).get('severity',
@@ -257,7 +264,7 @@ def build_diagnostics_prompt(
                         'model_type': hist.get('model_type', 'unknown'),
                         'archived_at': hist.get('archived_at', ''),
                     })
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
                     continue
 
         if recent:
