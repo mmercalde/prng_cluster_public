@@ -1653,7 +1653,9 @@ class AntiOverfitMetaOptimizer:
         # Unique (short) study name
         feature_h = str(self.feature_schema.get("feature_schema_hash", "unknown"))[:10]
         data_h = str(self.data_context.get("fingerprint_hash", "unknown"))[:10]
-        study_name = f"step5_{self.model_type}_{feature_h}_{data_h}"
+        # TB #2: Fresh study for normalized NN (avoid contaminating old unnormalized trials)
+        _study_suffix = "_catb22" if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED else ""
+        study_name = f"step5_{self.model_type}_{feature_h}_{data_h}{_study_suffix}"
 
         Path("optuna_studies").mkdir(exist_ok=True)
         storage = f"sqlite:///optuna_studies/{study_name}.db"
@@ -1692,12 +1694,19 @@ class AntiOverfitMetaOptimizer:
         X_val = self.X_train_val[-n_val:]
         y_val = self.y_train_val[-n_val:]
 
-        result = self.trainer.train_model(
-            self.model_type, X_train, y_train, X_val, y_val,
-            hyperparameters=self.best_config
-        )
-
-        self.best_model = result["model"]
+        if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
+            # Phase 2.2: Final NN model via subprocess (enriched checkpoint)
+            result = self._run_nn_via_subprocess(
+                X_train, y_train, X_val, y_val,
+                hyperparameters=self.best_config
+            )
+            self.best_model = None  # Disk-first: model is checkpoint on disk
+        else:
+            result = self.trainer.train_model(
+                self.model_type, X_train, y_train, X_val, y_val,
+                hyperparameters=self.best_config
+            )
+            self.best_model = result["model"]
         self.best_model_type = self.model_type
         self.best_metrics = self._compute_final_metrics(result["metrics"])
 
@@ -1718,6 +1727,93 @@ class AntiOverfitMetaOptimizer:
 
         return self.best_config, self.best_metrics
 
+
+    def _run_nn_optuna_trial(self, X_train, y_train, X_val, y_val,
+                             config, trial_number, fold_idx):
+        """
+        Phase 2.2: Run single NN Optuna fold via train_single_trial.py subprocess.
+        
+        Unlike _run_nn_via_subprocess(), this does NOT save a model checkpoint.
+        Optuna trials are exploratory; only the final model is saved.
+        
+        Returns dict matching MultiModelTrainer.train_model() result schema.
+        """
+        npz_path = self._export_split_npz(X_train, y_train, X_val, y_val)
+        
+        try:
+            cmd = [
+                sys.executable, "train_single_trial.py",
+                "--model-type", "neural_net",
+                "--data-path", npz_path,
+                "--params", json.dumps(config),
+                "--trial-number", str(trial_number),
+                "--normalize-features",
+                "--use-leaky-relu",
+            ]
+            
+            # Thread dropout if provided via CLI
+            if getattr(self, '_cli_dropout', None) is not None:
+                try:
+                    cmd.extend(["--dropout", str(float(self._cli_dropout))])
+                except Exception:
+                    pass
+            
+            # TB Trim #1: No --enable-diagnostics on Optuna folds
+            # (diagnostics only on final model to avoid 100-file explosion)
+            
+            sub_env = os.environ.copy()
+            
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=600,
+                cwd=str(Path(__file__).parent)
+            )
+            
+            # Parse JSON from last stdout line
+            r2 = -999.0
+            train_mse = 0.0
+            val_mse = float('inf')
+            
+            if proc.returncode == 0:
+                try:
+                    for line in (proc.stdout or "").strip().split("\n"):
+                        line = line.strip()
+                        if line.startswith("{") and line.endswith("}"):
+                            output = json.loads(line)
+                            r2 = float(output.get("r2", -999.0))
+                            train_mse = float(output.get("train_mse", 0.0))
+                            val_mse = float(output.get("val_mse", float('inf')))
+                            break
+                except Exception as parse_err:
+                    self.logger.warning(
+                        f"[Phase 2.2] Could not parse subprocess output "
+                        f"(trial {trial_number} fold {fold_idx}): {parse_err}"
+                    )
+            else:
+                stderr_tail = (proc.stderr or "")[-300:]
+                self.logger.warning(
+                    f"[Phase 2.2] Subprocess failed (trial {trial_number} fold {fold_idx}, "
+                    f"rc={proc.returncode}): {stderr_tail}"
+                )
+            
+            return {
+                "model": None,
+                "model_type": "neural_net",
+                "metrics": {
+                    "train_mse": train_mse,
+                    "val_mse": val_mse,
+                    "r2": r2,
+                },
+                "hyperparameters": config,
+            }
+            
+        finally:
+            # Cleanup NPZ (TB Trim #2)
+            try:
+                os.remove(npz_path)
+            except OSError:
+                pass
+
     def _optuna_objective(self, trial) -> float:
         """Optuna objective - trains in memory only, returns CV R²."""
         import numpy as np
@@ -1730,12 +1826,22 @@ class AntiOverfitMetaOptimizer:
         fold_r2 = []
 
         for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
-            result = self.trainer.train_model(
-                self.model_type,
-                self.X_train_val[train_idx], self.y_train_val[train_idx],
-                self.X_train_val[val_idx], self.y_train_val[val_idx],
-                hyperparameters=config
-            )
+            X_tr = self.X_train_val[train_idx]
+            y_tr = self.y_train_val[train_idx]
+            X_vl = self.X_train_val[val_idx]
+            y_vl = self.y_train_val[val_idx]
+
+            if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
+                # Phase 2.2: Route NN through train_single_trial.py subprocess
+                result = self._run_nn_optuna_trial(
+                    X_tr, y_tr, X_vl, y_vl, config, trial.number, fold_idx
+                )
+            else:
+                # Tree models: inline trainer (unchanged)
+                result = self.trainer.train_model(
+                    self.model_type, X_tr, y_tr, X_vl, y_vl,
+                    hyperparameters=config
+                )
             fold_r2.append(float(result["metrics"].get("r2", 0.0)))
 
         avg_r2 = float(np.mean(fold_r2)) if fold_r2 else 0.0
@@ -1815,7 +1921,7 @@ class AntiOverfitMetaOptimizer:
         self.logger.info(f"[CAT-B 2.1]   X_train: {X_train.shape}, X_val: {X_val.shape}")
         return npz_path
 
-    def _run_nn_via_subprocess(self, X_train, y_train, X_val, y_val):
+    def _run_nn_via_subprocess(self, X_train, y_train, X_val, y_val, hyperparameters=None):
         """
         Category B Phase 2.1: Route NN single-shot training through
         train_single_trial.py subprocess.
@@ -1847,6 +1953,10 @@ class AntiOverfitMetaOptimizer:
                 "--use-leaky-relu",         # Category B: always ON
                 "--verbose",
             ]
+            
+            # Phase 2.2: Pass hyperparameters if provided (Optuna best config)
+            if hyperparameters:
+                cmd.extend(["--params", json.dumps(hyperparameters)])
             
             # Thread dropout if provided via CLI (Team Beta Mod D)
             if getattr(self, '_cli_dropout', None) is not None:
@@ -2063,7 +2173,8 @@ class AntiOverfitMetaOptimizer:
         """Save the best model with full sidecar metadata."""
         # Team Beta: subprocess comparison is disk-first (no in-memory model in parent)
         if self.best_model is None:
-            if getattr(self, 'compare_models', False) and getattr(self, 'best_checkpoint_path', None):
+            if getattr(self, 'best_checkpoint_path', None):
+                # Disk-first: checkpoint exists (Optuna NN, compare-models, etc.)
                 self._save_existing_checkpoint_sidecar(
                     checkpoint_path=self.best_checkpoint_path,
                     model_type=self.best_model_type or "unknown"
