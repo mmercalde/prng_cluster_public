@@ -74,8 +74,9 @@ def setup_gpu_environment(model_type: str):
     else:
         # CUDA models - set device visibility if needed
         # This runs before torch/xgboost/catboost imports
+        # [S95] Default to GPU 0 only. Dual-GPU leasing sets CVD explicitly.
         if 'CUDA_VISIBLE_DEVICES' not in os.environ:
-            os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+            os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 
 
@@ -366,12 +367,12 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
             border_count=params.get('border_count', 254),
             verbose=False,
             early_stopping_rounds=20,
-            # GPU settings (CUDA) - use both GPUs
+            # GPU settings (CUDA) - single visible GPU via CUDA_VISIBLE_DEVICES
             task_type='GPU',
-            devices='0:1',
+            devices='0',  # [S95] Defensive: subprocess sees one GPU
         )
         model.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
-        device_used = 'cuda:0:1'
+        device_used = 'cuda:0'  # [S95] Matches devices='0'
     except Exception as e:
         # Fallback to CPU if GPU fails
         print(f"CatBoost GPU failed ({e}), falling back to CPU", file=sys.stderr)
@@ -506,10 +507,8 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     if use_leaky_relu:
         print(f"[CAT-B] Activation: LeakyReLU(0.01)", file=sys.stderr)
     
-    # Use DataParallel if multiple GPUs available
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
-        device_used = f'cuda:0,1 (DataParallel)'
+    # [S95] DataParallel removed: subprocess is pinned to one GPU via CUDA_VISIBLE_DEVICES
+    device_used = f'cuda:0'
     
     # Training setup
     optimizer_name = params.get('optimizer', 'adam')

@@ -50,6 +50,8 @@ import sys
 import os
 import shutil
 import warnings
+import queue   # [S95] Dual-GPU parallel NN Optuna
+import uuid    # [S95] Collision-proof NPZ naming
 import argparse
 
 
@@ -1083,7 +1085,7 @@ class MultiModelTrainer:
             'depth': params.get('max_depth', 8),
             'learning_rate': params.get('learning_rate', 0.05),
             'task_type': 'GPU' if 'cuda' in self.device else 'CPU',
-            'devices': '0:1' if 'cuda' in self.device else None,
+            'devices': '0' if 'cuda' in self.device else None,  # [S95] Single GPU, consistent with subprocess
             'random_seed': 42,
             'verbose': False
         }
@@ -1621,6 +1623,56 @@ class AntiOverfitMetaOptimizer:
     # OPTUNA OPTIMIZATION (v3.4 - Restored with Team Beta Guardrails)
     # ========================================================================
 
+    # -----------------------------------------------------------------
+    # [S95] CUDA-clean GPU detection + GPU lease queue
+    # NO torch import, NO torch.cuda calls in parent (S72 invariant)
+    # -----------------------------------------------------------------
+    def _s95_detect_cuda_gpus_no_torch(self) -> int:
+        """
+        Detect available CUDA GPUs WITHOUT importing torch or touching
+        CUDA APIs in the parent process (S72 invariant).
+
+        Strategy:
+          1) If CUDA_VISIBLE_DEVICES is set, count the visible ids.
+          2) Else call nvidia-smi -L (safe subprocess) and count GPUs.
+          3) Fallback to 1.
+        """
+        # 1) Respect CUDA_VISIBLE_DEVICES if set
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None:
+            cvd = cvd.strip()
+            if cvd == "" or cvd.lower() in ("none", "-1"):
+                return 1
+            parts = [p.strip() for p in cvd.split(",") if p.strip()]
+            return max(1, len(parts))
+
+        # 2) Try nvidia-smi -L (subprocess, no CUDA init)
+        try:
+            proc = subprocess.run(
+                ["nvidia-smi", "-L"],
+                capture_output=True, text=True, timeout=3
+            )
+            if proc.returncode == 0:
+                lines = [ln for ln in (proc.stdout or "").splitlines()
+                         if ln.strip().startswith("GPU ")]
+                if lines:
+                    return max(1, len(lines))
+        except Exception:
+            pass
+
+        # 3) Fallback
+        return 1
+
+    def _s95_build_gpu_queue(self, n_gpus: int) -> queue.Queue:
+        """
+        Build a thread-safe queue of GPU id strings ("0", "1", ...),
+        used to lease a GPU to an Optuna trial for all its folds.
+        """
+        q = queue.Queue()
+        for i in range(max(1, int(n_gpus))):
+            q.put(str(i))
+        return q
+
     def _run_optuna_optimization(self, n_trials: int) -> Tuple[Dict, ValidationMetrics]:
         """
         Run Optuna hyperparameter optimization with K-fold CV.
@@ -1658,10 +1710,33 @@ class AntiOverfitMetaOptimizer:
         study_name = f"step5_{self.model_type}_{feature_h}_{data_h}{_study_suffix}"
 
         Path("optuna_studies").mkdir(exist_ok=True)
-        storage = f"sqlite:///optuna_studies/{study_name}.db"
+
+        # [S95] Detect GPUs and configure parallel NN Optuna
+        n_jobs = 1
+        if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
+            n_jobs = self._s95_detect_cuda_gpus_no_torch()
+            if n_jobs > 1:
+                self._s95_gpu_queue = self._s95_build_gpu_queue(n_jobs)
+            else:
+                self._s95_gpu_queue = None
+        else:
+            self._s95_gpu_queue = None
+
+        # [S95] JournalFileBackend when parallel (avoids SQLite lock flakiness)
+        storage_label = ""
+        if n_jobs > 1:
+            from optuna.storages import JournalStorage
+            from optuna.storages.journal import JournalFileBackend
+            journal_path = f"optuna_studies/{study_name}.log"
+            storage = JournalStorage(JournalFileBackend(journal_path))
+            storage_label = f"journal:{journal_path}"
+        else:
+            storage = f"sqlite:///optuna_studies/{study_name}.db"
+            storage_label = storage
 
         self.logger.info(f"  Study: {study_name}")
-        self.logger.info(f"  Storage: {storage}")
+        self.logger.info(f"  Parallel GPU Optuna: n_jobs={n_jobs}")
+        self.logger.info(f"  Storage: {storage_label}")
         self.logger.info("=" * 70)
 
         study = optuna.create_study(
@@ -1673,7 +1748,7 @@ class AntiOverfitMetaOptimizer:
         )
 
         self.logger.info(f"\nRunning {n_trials} Optuna trials...")
-        study.optimize(self._optuna_objective, n_trials=n_trials)
+        study.optimize(self._optuna_objective, n_trials=n_trials, n_jobs=n_jobs)
 
         self.logger.info("\n" + "=" * 70)
         self.logger.info("OPTUNA COMPLETE")
@@ -1714,10 +1789,11 @@ class AntiOverfitMetaOptimizer:
         self.optuna_info = {
             "enabled": True,
             "n_trials": int(n_trials),
+            "n_jobs": n_jobs,
             "best_trial_number": int(study.best_trial.number),
             "best_value": float(study.best_trial.value),
             "study_name": study_name,
-            "storage": storage
+            "storage": storage_label
         }
 
         self.logger.info(f"✅ Final model: R²={result['metrics'].get('r2', 0.0):.4f}")
@@ -1729,7 +1805,7 @@ class AntiOverfitMetaOptimizer:
 
 
     def _run_nn_optuna_trial(self, X_train, y_train, X_val, y_val,
-                             config, trial_number, fold_idx):
+                             config, trial_number, fold_idx, gpu_id=None):
         """
         Phase 2.2: Run single NN Optuna fold via train_single_trial.py subprocess.
         
@@ -1738,7 +1814,8 @@ class AntiOverfitMetaOptimizer:
         
         Returns dict matching MultiModelTrainer.train_model() result schema.
         """
-        npz_path = self._export_split_npz(X_train, y_train, X_val, y_val)
+        npz_path = self._export_split_npz(X_train, y_train, X_val, y_val,
+                                          trial_number=trial_number, fold_idx=fold_idx)
         
         try:
             cmd = [
@@ -1762,11 +1839,15 @@ class AntiOverfitMetaOptimizer:
             # (diagnostics only on final model to avoid 100-file explosion)
             
             sub_env = os.environ.copy()
+            # [S95] Pin subprocess to a single GPU if leased
+            if gpu_id is not None:
+                sub_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             
             proc = subprocess.run(
                 cmd, capture_output=True, text=True,
                 timeout=600,
-                cwd=str(Path(__file__).parent)
+                cwd=str(Path(__file__).parent),
+                env=sub_env
             )
             
             # Parse JSON from last stdout line
@@ -1808,45 +1889,67 @@ class AntiOverfitMetaOptimizer:
             }
             
         finally:
-            # Cleanup NPZ (TB Trim #2)
+            # Cleanup NPZ and its temp directory (TB Trim #2, S95 UUID dirs)
             try:
                 os.remove(npz_path)
+                # Remove the per-export temp dir if empty
+                export_dir = os.path.dirname(npz_path)
+                if export_dir and os.path.isdir(export_dir):
+                    os.rmdir(export_dir)  # only succeeds if empty
             except OSError:
                 pass
 
     def _optuna_objective(self, trial) -> float:
-        """Optuna objective - trains in memory only, returns CV R²."""
+        """Optuna objective - trains in memory only, returns CV R².
+
+        [S95] When self._s95_gpu_queue is set, leases one GPU for the
+        entire trial (all folds) and passes gpu_id to subprocess.
+        GPU is always returned via try/finally (Fix D).
+        """
         import numpy as np
         from sklearn.model_selection import KFold
 
         config = self._sample_hyperparameters(trial)
         self.logger.info(f"\nTRIAL {trial.number}")
 
-        kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
-        fold_r2 = []
+        # [S95] Lease a GPU for this trial (all folds)
+        gpu_id = None
+        _q = getattr(self, "_s95_gpu_queue", None)
+        if _q is not None:
+            gpu_id = _q.get()  # blocks until a GPU is free
+            self.logger.info(f"  [S95] Leased GPU {gpu_id} for trial {trial.number}")
 
-        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
-            X_tr = self.X_train_val[train_idx]
-            y_tr = self.y_train_val[train_idx]
-            X_vl = self.X_train_val[val_idx]
-            y_vl = self.y_train_val[val_idx]
+        try:
+            kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
+            fold_r2 = []
 
-            if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
-                # Phase 2.2: Route NN through train_single_trial.py subprocess
-                result = self._run_nn_optuna_trial(
-                    X_tr, y_tr, X_vl, y_vl, config, trial.number, fold_idx
-                )
-            else:
-                # Tree models: inline trainer (unchanged)
-                result = self.trainer.train_model(
-                    self.model_type, X_tr, y_tr, X_vl, y_vl,
-                    hyperparameters=config
-                )
-            fold_r2.append(float(result["metrics"].get("r2", 0.0)))
+            for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
+                X_tr = self.X_train_val[train_idx]
+                y_tr = self.y_train_val[train_idx]
+                X_vl = self.X_train_val[val_idx]
+                y_vl = self.y_train_val[val_idx]
 
-        avg_r2 = float(np.mean(fold_r2)) if fold_r2 else 0.0
-        self.logger.info(f"  R² (CV): {avg_r2:.6f}")
-        return avg_r2
+                if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
+                    # Phase 2.2: Route NN through train_single_trial.py subprocess
+                    result = self._run_nn_optuna_trial(
+                        X_tr, y_tr, X_vl, y_vl, config, trial.number, fold_idx,
+                        gpu_id=gpu_id
+                    )
+                else:
+                    # Tree models: inline trainer (unchanged)
+                    result = self.trainer.train_model(
+                        self.model_type, X_tr, y_tr, X_vl, y_vl,
+                        hyperparameters=config
+                    )
+                fold_r2.append(float(result["metrics"].get("r2", 0.0)))
+
+            avg_r2 = float(np.mean(fold_r2)) if fold_r2 else 0.0
+            self.logger.info(f"  R² (CV): {avg_r2:.6f}")
+            return avg_r2
+        finally:
+            # [S95] Always return GPU to pool (Fix D: exception safety)
+            if gpu_id is not None and _q is not None:
+                _q.put(gpu_id)
 
     def _sample_hyperparameters(self, trial) -> Dict:
         """Sample hyperparameters for model type (model-specific)."""
@@ -1896,22 +1999,29 @@ class AntiOverfitMetaOptimizer:
 
 
 
-    def _export_split_npz(self, X_train, y_train, X_val, y_val):
+    def _export_split_npz(self, X_train, y_train, X_val, y_val,
+                          trial_number=None, fold_idx=None):
         """
         Category B Phase 2.1 (Team Beta Mod A): Export the EXACT split
         already computed by _run_single_model to NPZ for subprocess.
         
-        Team Beta Mod B: Uses atomic temp dir with unique prefix.
-        Cleaned up on success; kept on failure for debugging.
+        [S95] Collision-proof under threaded Optuna (Fix B):
+          - per-export temp dir (mkdtemp) under output_dir/tmp
+          - UUID-based filename, includes trial/fold when provided
         """
         import tempfile
         
-        tmp_dir = os.path.join(self.output_dir, "tmp")
-        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_root = os.path.join(self.output_dir, "tmp")
+        os.makedirs(tmp_root, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pid = os.getpid()
-        npz_path = os.path.join(tmp_dir, f"step5_nn_inlinefix_{timestamp}_{pid}_data.npz")
+        # Per-export directory (safe for threaded writers)
+        export_dir = tempfile.mkdtemp(prefix="step5_nn_", dir=tmp_root)
+        
+        # UUID filename (collision-proof even with shared PID under threading)
+        u = uuid.uuid4().hex[:12]
+        t_tag = f"t{trial_number}" if trial_number is not None else "tNA"
+        f_tag = f"f{fold_idx}" if fold_idx is not None else "fNA"
+        npz_path = os.path.join(export_dir, f"split_{t_tag}_{f_tag}_{u}.npz")
         
         np.savez(npz_path,
                  X_train=X_train, y_train=y_train,

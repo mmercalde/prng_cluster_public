@@ -335,6 +335,14 @@ class WatcherConfig:
     # Timing
     poll_interval_seconds: int = 30
     step_timeout_minutes: int = 120
+    # [S95] Per-step timeout overrides (minutes). Steps not listed use default.
+    step_timeout_overrides: Optional[Dict[int, int]] = None  # e.g., {5: 360}
+
+    def get_step_timeout_minutes(self, step: int) -> int:
+        """Get timeout for a specific step, with per-step override support."""
+        if self.step_timeout_overrides and step in self.step_timeout_overrides:
+            return self.step_timeout_overrides[step]
+        return self.step_timeout_minutes
 
     # Paths
     results_dir: str = "results"
@@ -366,6 +374,7 @@ class WatcherConfig:
             "max_total_retries": self.max_total_retries,
             "poll_interval_seconds": self.poll_interval_seconds,
             "step_timeout_minutes": self.step_timeout_minutes,
+            "step_timeout_overrides": self.step_timeout_overrides,
             "use_llm": self.use_llm,
             "use_grammar": self.use_grammar,
             "pid_file": self.pid_file,
@@ -1392,10 +1401,12 @@ class WatcherAgent:
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
         try:
             # Run the script with live streaming (Team Beta approved)
+            # [S95] Per-step timeout support
+            _timeout_min = self.config.get_step_timeout_minutes(step)
             result = self._run_step_streaming(
                 cmd,
                 step,
-                self.config.step_timeout_minutes * 60
+                _timeout_min * 60
             )
             if result.returncode != 0:
                 logger.error(f"Step {step} failed with code {result.returncode}")
@@ -1422,7 +1433,7 @@ class WatcherAgent:
             }
 
         except subprocess.TimeoutExpired:
-            logger.error(f"Step {step} timed out after {self.config.step_timeout_minutes} minutes")
+            logger.error(f"Step {step} timed out after {_timeout_min} minutes")
             return {
                 "success": False,
                 "error": "Timeout"
@@ -2660,7 +2671,9 @@ def main():
     config = WatcherConfig(
         auto_proceed_threshold=args.threshold,
         use_llm=not args.no_llm,
-        use_grammar=not args.no_grammar
+        use_grammar=not args.no_grammar,
+        # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
+        step_timeout_overrides={5: 360}
     )
 
     # Handle halt commands
