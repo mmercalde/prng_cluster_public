@@ -114,32 +114,32 @@
       "mod": 1000
     },
     "derived_by": "step5_anti_overfit",
-    "timestamp": "2026-02-18T17:01:45.717054"
+    "timestamp": "2026-02-18T19:32:20.593562"
   },
   "training_metrics": {
-    "r2": 4.728727532476995e-05,
-    "train_mae": 0.002580533004171716,
-    "val_mae": 0.002575940530626064,
+    "r2": 0.00013590009994857155,
+    "train_mae": 0.001001247161449451,
+    "val_mae": 0.0010027469357915932,
     "test_mae": 0.0,
     "overfit_ratio": 1.0,
     "status": "success"
   },
   "hyperparameters": {
     "n_layers": 2,
-    "layer_0": 158,
-    "layer_1": 115,
-    "dropout": 0.41804138917525685,
-    "learning_rate": 0.008016202001390013,
-    "batch_size": 1024,
-    "epochs": 108,
-    "patience": 18
+    "layer_0": 115,
+    "layer_1": 68,
+    "dropout": 0.5692275354960836,
+    "learning_rate": 0.008756024065675827,
+    "batch_size": 256,
+    "epochs": 194,
+    "patience": 24
   },
   "optuna": {
     "enabled": true,
     "n_trials": 20,
     "n_jobs": 2,
-    "best_trial_number": 53,
-    "best_value": -0.6587775945663452,
+    "best_trial_number": 203,
+    "best_value": 0.00019551515579223632,
     "study_name": "step5_neural_net_e6c330d830_c38adac3_catb22",
     "storage": "journal:optuna_studies/step5_neural_net_e6c330d830_c38adac3_catb22.log"
   },
@@ -148,23 +148,23 @@
     "cuda_available": false
   },
   "training_info": {
-    "started_at": "2026-02-18T17:01:45.730958",
-    "completed_at": "2026-02-18T17:05:46.614187",
-    "duration_seconds": 240.883094,
+    "started_at": "2026-02-18T19:32:20.607651",
+    "completed_at": "2026-02-18T19:36:32.279116",
+    "duration_seconds": 251.671335,
     "outcome": "SUCCESS"
   },
   "agent_metadata": {
     "pipeline_step": 5,
     "pipeline_step_name": "anti_overfit_training",
-    "run_id": "step5_20260218_170145",
+    "run_id": "step5_20260218_193220",
     "parent_run_id": null,
     "outcome": "SUCCESS",
     "exit_code": 0
   },
   "provenance": {
-    "run_id": "step5_20260218_170145",
-    "started_at": "2026-02-18T17:01:45.730958",
-    "duration_seconds": 240.883094,
+    "run_id": "step5_20260218_193220",
+    "started_at": "2026-02-18T19:32:20.607651",
+    "duration_seconds": 251.671335,
     "survivors_file": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
     "n_survivors": 98783,
     "model_type": "neural_net",

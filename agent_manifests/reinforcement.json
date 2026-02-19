@@ -2,7 +2,7 @@
   "agent_name": "reinforcement_agent",
   "description": "Step 5: Train ML models with anti-overfitting measures. Emits signal_quality to sidecar for Step 6 gate.",
   "pipeline_step": 5,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "required_inputs": [
     "survivors_with_scores.json",
     "train_history.json",
@@ -102,6 +102,11 @@
       "max": 0.9,
       "default": null,
       "description": "Category B: Alias for dropout_override (matches CLI --dropout). Phase 2 reads both."
+    },
+    "persistent_workers": {
+      "type": "bool",
+      "default": false,
+      "description": "[S96B] Persistent GPU workers for NN trials (5-10x speedup)"
     }
   },
   "follow_up_agents": [
@@ -123,6 +128,13 @@
         "Category B: Added dropout_override + dropout alias for NN training override",
         "Fix 3B-1: Both dropout_override (preferred) and dropout (alias) declared for consistency"
       ]
+    },
+    {
+      "version": "1.7.0",
+      "date": "2026-02-19",
+      "changes": [
+        "S96B: Added persistent_workers param (default OFF, pass true to enable)"
+      ]
     }
   ],
   "evaluation_type": "file_exists",
@@ -139,6 +151,7 @@
     "trials": 20,
     "output_dir": "models/reinforcement",
     "enable_diagnostics": true,
-    "model_type": "catboost"
+    "model_type": "catboost",
+    "persistent_workers": false
   }
 }
