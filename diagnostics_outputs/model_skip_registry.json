@@ -1,7 +1,6 @@
 {
   "neural_net": {
-    "consecutive_critical": 4,
-    "last_critical": "2026-02-15T19:38:38.681562+00:00",
-    "reset_reason": "S90: Fresh start for RETRY path validation"
+    "consecutive_critical": 3,
+    "last_critical": "2026-02-19T01:09:56.756905+00:00"
   }
 }
