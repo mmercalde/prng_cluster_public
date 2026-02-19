@@ -28,14 +28,29 @@ CRITICAL: NO imports at module level except stdlib!
 """
 
 
-# Chapter 14: Training diagnostics (best-effort, non-fatal)
-try:
-    from training_diagnostics import TrainingDiagnostics, TreeDiagnostics, NNDiagnostics
-    DIAGNOSTICS_AVAILABLE = True
-except ImportError:
-    DIAGNOSTICS_AVAILABLE = False
-    TreeDiagnostics = None
-    NNDiagnostics = None
+# Chapter 14: Training diagnostics — LAZY import only (S96A Blocker A fix)
+# CRITICAL: Do NOT import training_diagnostics at module level.
+# It may transitively import torch/cuda, violating subprocess GPU isolation (S72/S73).
+# Instead, use _lazy_import_diagnostics() at point of use.
+DIAGNOSTICS_AVAILABLE = None  # tri-state: None=untested, True/False=result cached
+_DIAG_CLASSES = (None, None, None)  # cached (TrainingDiagnostics, TreeDiagnostics, NNDiagnostics)
+
+def _lazy_import_diagnostics():
+    """Lazy-import training_diagnostics. Returns cached (TrainingDiagnostics, TreeDiagnostics, NNDiagnostics) or Nones."""
+    global DIAGNOSTICS_AVAILABLE, _DIAG_CLASSES
+    if DIAGNOSTICS_AVAILABLE is True:
+        return _DIAG_CLASSES
+    elif DIAGNOSTICS_AVAILABLE is False:
+        return (None, None, None)
+    else:
+        try:
+            from training_diagnostics import TrainingDiagnostics, TreeDiagnostics, NNDiagnostics
+            DIAGNOSTICS_AVAILABLE = True
+            _DIAG_CLASSES = (TrainingDiagnostics, TreeDiagnostics, NNDiagnostics)
+            return _DIAG_CLASSES
+        except ImportError:
+            DIAGNOSTICS_AVAILABLE = False
+            return (None, None, None)
 
 
 # ==============================================================================
@@ -96,7 +111,10 @@ def _write_canonical_diagnostics(src_path: str):
 
 def _emit_tree_diagnostics(model, model_type: str, r2: float, mse: float, enable_diagnostics: bool):
     """Chapter 14: Emit tree model diagnostics (best-effort, non-fatal)."""
-    if not enable_diagnostics or not DIAGNOSTICS_AVAILABLE:
+    if not enable_diagnostics:
+        return
+    TrainingDiagnostics, TreeDiagnostics, NNDiagnostics = _lazy_import_diagnostics()
+    if TrainingDiagnostics is None:
         return
     try:
         import os
@@ -142,7 +160,10 @@ def _emit_tree_diagnostics(model, model_type: str, r2: float, mse: float, enable
 
 def _emit_nn_diagnostics(model, r2: float, mse: float, enable_diagnostics: bool):
     """Chapter 14: Emit neural net diagnostics (best-effort, non-fatal)."""
-    if not enable_diagnostics or not DIAGNOSTICS_AVAILABLE:
+    if not enable_diagnostics:
+        return
+    _, _, NNDiagnostics = _lazy_import_diagnostics()
+    if NNDiagnostics is None:
         return
     try:
         import os
@@ -428,7 +449,8 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
 
 def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None,
                      enable_diagnostics: bool = False, normalize_features: bool = False,
-                     use_leaky_relu: bool = False, dropout_override: float = None) -> dict:
+                     use_leaky_relu: bool = False, dropout_override: float = None,
+                     batch_mode: str = 'auto') -> dict:
     """
     Train PyTorch Neural Net with GPU (CUDA).
     
@@ -439,6 +461,7 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
       - normalize_features: StandardScaler on X_train, applied to X_val
       - use_leaky_relu: LeakyReLU(0.01) instead of ReLU
       - dropout_override: CLI value takes precedence over params/Optuna
+      - batch_mode: 'auto'|'mini'|'full' [S96A] controls DataLoader vs full-batch
     """
     import torch
     import torch.nn as nn
@@ -473,9 +496,9 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     
     # Convert to tensors
     X_train_t = torch.FloatTensor(X_train).to(device)
-    y_train_t = torch.FloatTensor(y_train).to(device)
+    y_train_t = torch.FloatTensor(y_train).to(device)  # (N,) matches model .squeeze(-1)
     X_val_t = torch.FloatTensor(X_val).to(device)
-    y_val_t = torch.FloatTensor(y_val).to(device)
+    y_val_t = torch.FloatTensor(y_val).to(device)      # (N,) matches model .squeeze(-1)
     
     # Architecture from params (matches SurvivorQualityNet style)
     input_dim = X_train.shape[1]
@@ -508,7 +531,7 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         print(f"[CAT-B] Activation: LeakyReLU(0.01)", file=sys.stderr)
     
     # [S95] DataParallel removed: subprocess is pinned to one GPU via CUDA_VISIBLE_DEVICES
-    device_used = f'cuda:0'
+    # device_used already set correctly above based on CUDA availability
     
     # Training setup
     optimizer_name = params.get('optimizer', 'adam')
@@ -524,12 +547,38 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         optimizer = optim.Adam(model.parameters(), lr=lr)
     
     criterion = nn.MSELoss()
-    
-    # DataLoader
+
+    # ── [S96A] Batch mode selection ──────────────────────────
+    # auto: full-batch if data < 200MB, else mini-batch
+    # mini: always use DataLoader (S95 behavior)
+    # full: always use full-batch (no DataLoader)
+    _S96A_THRESHOLD_BYTES = 200 * 1024 * 1024  # 200 MB
+    _data_bytes = X_train_t.nelement() * X_train_t.element_size() + \
+                  y_train_t.nelement() * y_train_t.element_size()
+
+    if batch_mode == 'auto':
+        _use_full_batch = (_data_bytes < _S96A_THRESHOLD_BYTES)
+    elif batch_mode == 'full':
+        _use_full_batch = True
+    else:  # 'mini'
+        _use_full_batch = False
+
     batch_size = params.get('batch_size', 128)
-    dataset = TensorDataset(X_train_t, y_train_t)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
+
+    if _use_full_batch:
+        # [S96A] Full-batch: no DataLoader, no Python loop over batches
+        loader = None
+        print(f"[S96A] Full-batch mode: {_data_bytes / (1024*1024):.1f}MB on GPU, "
+              f"no DataLoader (eliminates ~{max(1, X_train_t.shape[0] // batch_size)} "
+              f"batch iters/epoch)", file=sys.stderr)
+    else:
+        # [S95] Mini-batch: standard DataLoader path
+        dataset = TensorDataset(X_train_t, y_train_t)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        print(f"[S96A] Mini-batch mode: batch_size={batch_size}, "
+              f"~{max(1, X_train_t.shape[0] // batch_size)} batches/epoch",
+              file=sys.stderr)
+
     # Training loop with early stopping
     epochs = params.get('epochs', 100)
     patience = params.get('early_stopping_patience', 15)
@@ -537,38 +586,52 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     patience_counter = 0
     best_epoch = 0
     best_state_dict = None
-    
+
     # S93: Wire NNDiagnostics hooks into training loop
     _nn_diag = None
     _base_model = model.module if hasattr(model, 'module') else model  # TB Fix #1: DataParallel
-    if enable_diagnostics and DIAGNOSTICS_AVAILABLE:
-        try:
-            _nn_diag = NNDiagnostics()
-            _nn_diag.attach(_base_model)
-            print(f"[DIAG] NNDiagnostics attached ({len(_nn_diag._layer_names)} layers)", file=sys.stderr)
-        except Exception as _diag_err:
-            print(f"[DIAG] NNDiagnostics attach failed (non-fatal): {_diag_err}", file=sys.stderr)
-            _nn_diag = None
+    if enable_diagnostics:
+        _, _, _NNDiag = _lazy_import_diagnostics()
+        if DIAGNOSTICS_AVAILABLE and _NNDiag is not None:
+            try:
+                _nn_diag = _NNDiag()
+                _nn_diag.attach(_base_model)
+                print(f"[DIAG] NNDiagnostics attached ({len(_nn_diag._layer_names)} layers)", file=sys.stderr)
+            except Exception as _diag_err:
+                print(f"[DIAG] NNDiagnostics attach failed (non-fatal): {_diag_err}", file=sys.stderr)
+                _nn_diag = None
 
     for epoch in range(epochs):
         model.train()
-        _epoch_train_loss = 0.0
-        _epoch_batches = 0
-        for batch_X, batch_y in loader:
+
+        if _use_full_batch:
+            # [S96A] Full-batch: single forward/backward, all samples
             optimizer.zero_grad()
-            preds = model(batch_X)
-            loss = criterion(preds, batch_y)
+            preds = model(X_train_t)
+            loss = criterion(preds, y_train_t)
             loss.backward()
             optimizer.step()
-            _epoch_train_loss += loss.item()
-            _epoch_batches += 1
-        
-        # Validation
+            _epoch_train_loss = loss.item()
+            _epoch_batches = 1
+        else:
+            # [S95] Mini-batch: iterate DataLoader
+            _epoch_train_loss = 0.0
+            _epoch_batches = 0
+            for batch_X, batch_y in loader:
+                optimizer.zero_grad()
+                preds = model(batch_X)
+                loss = criterion(preds, batch_y)
+                loss.backward()
+                optimizer.step()
+                _epoch_train_loss += loss.item()
+                _epoch_batches += 1
+
+        # Validation (unchanged — always full-batch)
         model.eval()
         with torch.no_grad():
             val_preds = model(X_val_t)
             val_loss = criterion(val_preds, y_val_t).item()
-        
+
         # S93: Record epoch diagnostics
         if _nn_diag is not None:
             try:
@@ -683,6 +746,9 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         'normalize_features': normalize_features,
         'use_leaky_relu': use_leaky_relu,
         'dropout_source': 'cli_override' if dropout_override is not None else 'params',
+        # [S96A] Checkpoint validation — parent reads this instead of torch.load
+        'checkpoint_validated': checkpoint_path is not None,
+        'scaler_shape': list(scaler_mean.shape) if scaler_mean is not None else None,
     }
 
 
@@ -774,6 +840,9 @@ def main():
                         help='Apply StandardScaler normalization before NN training (NN-only)')
     parser.add_argument('--use-leaky-relu', action='store_true',
                         help='Use LeakyReLU(0.01) instead of ReLU in neural net (NN-only)')
+    parser.add_argument('--batch-mode', type=str, default='auto',
+                        choices=['auto', 'mini', 'full'],
+                        help='[S96A] auto=full-batch if <200MB, mini=DataLoader, full=always')
     parser.add_argument('--dropout', type=float, default=None,
                         help='Override dropout value (takes precedence over params/Optuna)')
     
@@ -852,6 +921,7 @@ def main():
                 normalize_features=getattr(args, 'normalize_features', False),
                 use_leaky_relu=getattr(args, 'use_leaky_relu', False),
                 dropout_override=getattr(args, 'dropout', None),
+                batch_mode=getattr(args, 'batch_mode', 'auto'),  # [S96A]
             )
         elif args.model_type == 'random_forest':
             result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))

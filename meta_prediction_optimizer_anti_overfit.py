@@ -1238,8 +1238,19 @@ class MultiModelTrainer:
         
         # Save model
         if model_type == 'neural_net':
-            import torch
-            torch.save(model.state_dict(), checkpoint_path)
+            if model is not None:
+                # Inline NN training path (legacy, non-subprocess)
+                import torch
+                torch.save(model.state_dict(), checkpoint_path)
+            else:
+                # [S96A] Subprocess path: checkpoint already saved by train_single_trial.py
+                # Look for existing .pth in output dir
+                existing = list(output_path.glob("*.pth"))
+                if existing and existing[0] != checkpoint_path:
+                    import shutil
+                    shutil.copy2(str(existing[0]), str(checkpoint_path))
+                elif not existing and not checkpoint_path.exists():
+                    self.logger.warning(f"[S96A] No .pth checkpoint found in {output_path}")
         elif model_type == 'xgboost':
             model.save_model(str(checkpoint_path))
         elif model_type == 'lightgbm':
@@ -1826,6 +1837,7 @@ class AntiOverfitMetaOptimizer:
                 "--trial-number", str(trial_number),
                 "--normalize-features",
                 "--use-leaky-relu",
+                "--batch-mode", "auto",  # [S96A]
             ]
             
             # Thread dropout if provided via CLI
@@ -1965,7 +1977,7 @@ class AntiOverfitMetaOptimizer:
                 "hidden_layers": layers,
                 "dropout": trial.suggest_float("dropout", 0.2, 0.6),
                 "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
-                "batch_size": trial.suggest_categorical("batch_size", [64, 128, 256]),
+                "batch_size": trial.suggest_categorical("batch_size", [256, 512, 1024]),  # [S96A] larger batches
                 "epochs": trial.suggest_int("epochs", 50, 200),
                 "early_stopping_patience": trial.suggest_int("patience", 10, 30),
             }
@@ -2046,7 +2058,7 @@ class AntiOverfitMetaOptimizer:
         Returns:
             Dict matching MultiModelTrainer.train_model() result schema
         """
-        import torch
+        # [S96A] NO torch import here — parent must stay CUDA-clean (S72/S73 invariant)
         
         # Export the exact split
         npz_path = self._export_split_npz(X_train, y_train, X_val, y_val)
@@ -2060,7 +2072,8 @@ class AntiOverfitMetaOptimizer:
                 "--save-model",
                 "--model-output-dir", self.output_dir,
                 "--normalize-features",     # Category B Option A: always ON
-                "--use-leaky-relu",         # Category B: always ON
+                "--use-leaky-relu",
+                "--batch-mode", "auto",  # [S96A]         # Category B: always ON
                 "--verbose",
             ]
             
@@ -2106,35 +2119,26 @@ class AntiOverfitMetaOptimizer:
             trial_path = os.path.join(self.output_dir, "neural_net_trial-1.pth")
             checkpoint_path = os.path.join(self.output_dir, "best_model.pth")
             if os.path.exists(trial_path):
+                if os.path.exists(checkpoint_path):
+                    os.remove(checkpoint_path)  # [S96A] Safe rename: prevent silent clobber
                 os.rename(trial_path, checkpoint_path)
                 self.logger.info(f"[CAT-B 2.1] Renamed {trial_path} → {checkpoint_path}")
             if not os.path.exists(checkpoint_path):
                 raise RuntimeError(f"Expected checkpoint not found: {checkpoint_path}")
             
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            # [S96A] Validate enriched checkpoint via subprocess JSON output
+            # NO torch.load in parent — preserves CUDA-clean invariant (S72/S73)
+            # train_single_trial.py already emits normalize_features, use_leaky_relu,
+            # checkpoint_validated, and scaler_shape in its stdout JSON.
             
-            # Team Beta acceptance: assert enriched keys exist
-            normalize_flag = checkpoint.get('normalize_features')
-            leaky_flag = checkpoint.get('use_leaky_relu')
-            if normalize_flag is None or leaky_flag is None:
-                raise RuntimeError(
-                    "Enriched checkpoint missing required keys: "
-                    f"normalize_features={normalize_flag}, use_leaky_relu={leaky_flag}"
-                )
-            
-            if normalize_flag:
-                scaler_mean = checkpoint.get('scaler_mean')
-                scaler_scale = checkpoint.get('scaler_scale')
-                if scaler_mean is None or scaler_scale is None:
-                    raise RuntimeError(
-                        "normalize_features=True but scaler arrays missing from checkpoint"
-                    )
-                self.logger.info(f"[CAT-B 2.1] Scaler loaded: {len(scaler_mean)} features")
-            
-            # Extract metrics from subprocess stdout JSON (train_single_trial outputs JSON)
+            # Extract metrics from subprocess stdout JSON
             r2 = 0.0
             train_mse = 0.0
             val_mse = 0.0
+            normalize_flag = None
+            leaky_flag = None
+            checkpoint_validated = False
+            scaler_shape = None
             try:
                 import json as _json
                 for line in (proc.stdout or "").strip().split("\n"):
@@ -2144,10 +2148,27 @@ class AntiOverfitMetaOptimizer:
                         r2 = float(metrics_json.get("r2", 0.0))
                         train_mse = float(metrics_json.get("train_mse", 0.0))
                         val_mse = float(metrics_json.get("val_mse", 0.0))
+                        normalize_flag = metrics_json.get("normalize_features")
+                        leaky_flag = metrics_json.get("use_leaky_relu")
+                        checkpoint_validated = metrics_json.get("checkpoint_validated", False)
+                        scaler_shape = metrics_json.get("scaler_shape")
                         self.logger.info(f"[CAT-B 2.1] Metrics from subprocess: R²={r2:.6f}, val_mse={val_mse:.8f}")
                         break
             except Exception as _e:
                 self.logger.warning(f"[CAT-B 2.1] Could not parse subprocess metrics: {_e}")
+            
+            # Assert enriched keys from subprocess output (replaces torch.load validation)
+            if normalize_flag is None or leaky_flag is None:
+                raise RuntimeError(
+                    "Subprocess output missing required Category B keys: "
+                    f"normalize_features={normalize_flag}, use_leaky_relu={leaky_flag}"
+                )
+            if normalize_flag and scaler_shape is None:
+                raise RuntimeError(
+                    "normalize_features=True but scaler_shape missing from subprocess output"
+                )
+            if scaler_shape:
+                self.logger.info(f"[CAT-B 2.1] Scaler validated: {scaler_shape[0]} features")
             
             # Also try loading from sidecar if it exists
             sidecar_path = os.path.join(self.output_dir, "best_model.meta.json")
@@ -2179,6 +2200,7 @@ class AntiOverfitMetaOptimizer:
                 pass
             
             # Return result matching MultiModelTrainer.train_model() schema
+            hp = dict(hyperparameters or {})
             return {
                 'model': None,  # Model is on disk, not in memory
                 'model_type': 'neural_net',
@@ -2188,10 +2210,11 @@ class AntiOverfitMetaOptimizer:
                     'r2': r2,
                 },
                 'hyperparameters': {
-                    'normalize_features': normalize_flag,
-                    'use_leaky_relu': leaky_flag,
-                    'hidden_layers': checkpoint.get('hidden_layers', [256, 128, 64]),
-                    'dropout': checkpoint.get('dropout', 0.3),
+                    **hp,
+                    'normalize_features': bool(normalize_flag),
+                    'use_leaky_relu': bool(leaky_flag),
+                    'hidden_layers': hp.get('hidden_layers', [256, 128, 64]),
+                    'dropout': hp.get('dropout', 0.3),
                 },
                 'checkpoint_path': checkpoint_path,
             }
