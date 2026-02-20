@@ -1681,7 +1681,7 @@ class AntiOverfitMetaOptimizer:
         """
         q = queue.Queue()
         for i in range(max(1, int(n_gpus))):
-            q.put(str(i))
+            q.put(i)  # [S98 fix] int to match _s96b_workers int keys
         return q
 
     def _run_optuna_optimization(self, n_trials: int) -> Tuple[Dict, ValidationMetrics]:
@@ -1759,9 +1759,9 @@ class AntiOverfitMetaOptimizer:
         )
 
         self.logger.info(f"\nRunning {n_trials} Optuna trials...")
-        # [S96B] Spawn persistent workers if --persistent-workers active
+        # [S96B] Spawn persistent workers if --persistent-workers active (NN only)
         _s96b_workers = {}
-        if getattr(self, '_s96b_use_persistent_workers', False):
+        if getattr(self, '_s96b_use_persistent_workers', False) and self.model_type == "neural_net":
             _s96b_gpu_count = self._s95_detect_cuda_gpus_no_torch()
             _s96b_gpu_ids = list(range(_s96b_gpu_count))
             if _s96b_gpu_ids:
@@ -2018,6 +2018,7 @@ class AntiOverfitMetaOptimizer:
                 and _gpu_id_for_batch in _s96b_workers
                 and _batch_size_nn > 1
             )
+            
 
             if _use_batch_path:
                 # [Phase 3A] Build all K fold jobs, export NPZs, batch-dispatch
