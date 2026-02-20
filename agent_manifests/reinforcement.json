@@ -2,7 +2,7 @@
   "agent_name": "reinforcement_agent",
   "description": "Step 5: Train ML models with anti-overfitting measures. Emits signal_quality to sidecar for Step 6 gate.",
   "pipeline_step": 5,
-  "version": "1.9.0",
+  "version": "1.10.0",
   "required_inputs": [
     "survivors_with_scores.json",
     "train_history.json",
@@ -112,6 +112,13 @@
       "type": "bool",
       "default": true,
       "description": "Enable vmap batched NN fold training (Phase 3A). False=serial S96B path."
+    },
+    "k_folds": {
+      "type": "int",
+      "min": 3,
+      "max": 20,
+      "default": 20,
+      "description": "[S100] K-fold CV splits. Sweet spot K=20 on 3080 Ti (0.60s/model). Runtime clamp pending S101."
     }
   },
   "follow_up_agents": [
@@ -147,6 +154,13 @@
       "changes": [
         "Phase 3A: Added batch_size_nn param (default 1=off, max 32). Feature-flag for vmap batched NN trials in persistent GPU worker. Enable by setting batch_size_nn=16 after Zeus smoke test passes."
       ]
+    },
+    {
+      "version": "1.10.0",
+      "date": "2026-02-20",
+      "changes": [
+        "S100: Added k_folds to default_params (20) and parameter_bounds [3,20]. Team Beta approved 2026-02-20. Runtime clamp deferred to S101."
+      ]
     }
   ],
   "evaluation_type": "file_exists",
@@ -165,7 +179,8 @@
     "enable_diagnostics": true,
     "model_type": "catboost",
     "persistent_workers": false,
-    "enable_vmap": true
+    "enable_vmap": true,
+    "k_folds": 20
   },
   "changelog": [
     "v1.9.0: Renamed batch_size_nn->enable_vmap (bool). Clarifies it is a feature flag not a batch dimension."
