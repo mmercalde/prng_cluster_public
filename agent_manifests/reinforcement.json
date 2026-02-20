@@ -2,7 +2,7 @@
   "agent_name": "reinforcement_agent",
   "description": "Step 5: Train ML models with anti-overfitting measures. Emits signal_quality to sidecar for Step 6 gate.",
   "pipeline_step": 5,
-  "version": "1.8.0",
+  "version": "1.9.0",
   "required_inputs": [
     "survivors_with_scores.json",
     "train_history.json",
@@ -108,12 +108,10 @@
       "default": false,
       "description": "[S96B] Persistent GPU workers for NN trials (5-10x speedup)"
     },
-    "batch_size_nn": {
-      "type": "int",
-      "min": 1,
-      "max": 32,
-      "default": 1,
-      "description": "[Phase 3A] vmap batch size for NN trials inside persistent GPU worker. Default 1 = serial (kill-switch OFF). Set to 16 after Zeus smoke test passes. Only active when model_type=neural_net AND persistent_workers=true. torch.func.vmap is beta \u2014 treat as feature-flag rollout."
+    "enable_vmap": {
+      "type": "bool",
+      "default": true,
+      "description": "Enable vmap batched NN fold training (Phase 3A). False=serial S96B path."
     }
   },
   "follow_up_agents": [
@@ -167,6 +165,9 @@
     "enable_diagnostics": true,
     "model_type": "catboost",
     "persistent_workers": false,
-    "batch_size_nn": 1
-  }
+    "enable_vmap": true
+  },
+  "changelog": [
+    "v1.9.0: Renamed batch_size_nn->enable_vmap (bool). Clarifies it is a feature flag not a batch dimension."
+  ]
 }

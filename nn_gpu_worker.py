@@ -39,7 +39,7 @@ Phase 3A additions (PROPOSAL_PHASE3A_VMAP_BATCHED_NN_TRIALS_v2_0.md):
        Assumption: all folds in a batch share the same survivor pool size.
     5. Scope: 3 files touched — worker (this file), parent
        (meta_prediction_optimizer_anti_overfit.py batch queue ~30 lines),
-       manifest (agent_manifests/reinforcement.json batch_size_nn param).
+       manifest (agent_manifests/reinforcement.json enable_vmap param).
 
   BatchNorm behavior in vmap path:
     Serial _train_fold() uses nn.BatchNorm1d with running stat accumulation.
@@ -56,7 +56,7 @@ Phase 3A additions (PROPOSAL_PHASE3A_VMAP_BATCHED_NN_TRIALS_v2_0.md):
     the existing _s96b_dispatch() (send once, read one line). The worker
     IPC format is unchanged; only the parent grows one new method.
 
-  Kill-switch: batch_size_nn=1 (default) → falls through to serial train.
+  Kill-switch: enable_vmap=0 (default) → falls through to serial train.
     Flip to 16 via WATCHER policy/CLI after Zeus smoke test passes.
     torch.func.vmap is beta — treat as feature-flag rollout.
 
@@ -1004,7 +1004,7 @@ def _run_worker() -> None:
         # in input order. Parent's _s96b_dispatch() / _s96b_read_worker_line()
         # are UNCHANGED — they read one line per call as before.
         #
-        # Kill-switch: batch_size_nn=1 arrives as jobs=[single_job].
+        # Kill-switch: enable_vmap=0 arrives as jobs=[single_job].
         # We route that directly to _train_fold() (serial path).
         # ------------------------------------------------------------------
         if command == "train_batch":
@@ -1014,7 +1014,7 @@ def _run_worker() -> None:
                 continue
 
             if len(batch_jobs) == 1:
-                # Kill-switch path: batch_size_nn=1 → serial, zero new code exercised
+                # Kill-switch path: enable_vmap=0 → serial, zero new code exercised
                 log.info("[3A] batch_size=1 → serial path (kill-switch)")
                 model = None
                 try:

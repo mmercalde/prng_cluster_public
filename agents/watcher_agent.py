@@ -2012,6 +2012,16 @@ class WatcherAgent:
                             self._invalidate_step_freshness(5)
                             self.current_step = 5
                             params = retry_params
+                            # [S99] Clear stale diagnostics before retry so health
+                            # check reads fresh data from the new model run, not
+                            # the previous model's cached diagnostics file.
+                            _diag_clear = 'diagnostics_outputs/training_diagnostics.json'
+                            try:
+                                if os.path.isfile(_diag_clear):
+                                    os.remove(_diag_clear)
+                                    logger.info("[S99] Cleared stale diagnostics before retry")
+                            except OSError as _e:
+                                logger.warning("[S99] Could not clear diagnostics (non-fatal): %s", _e)
                             time.sleep(1)
                             continue
                         else:

@@ -2005,18 +2005,18 @@ class AntiOverfitMetaOptimizer:
             kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
             fold_r2 = []
 
-            # [Phase 3A] NN + S96B + batch_size_nn > 1: collect all folds,
+            # [Phase 3A] NN + S96B + enable_vmap=True: collect all folds,
             # dispatch as one train_batch, read K results.
             # All other paths (tree models, serial NN, fallback) unchanged.
             _s96b_workers      = getattr(self, '_s96b_workers', {})
             _gpu_id_for_batch  = gpu_id if gpu_id is not None else 0
-            _batch_size_nn     = getattr(self, '_batch_size_nn', 1)
+            _enable_vmap       = getattr(self, '_enable_vmap', False)
             _use_batch_path    = (
                 self.model_type == "neural_net"
                 and NN_SUBPROCESS_ROUTING_ENABLED
                 and bool(_s96b_workers)
                 and _gpu_id_for_batch in _s96b_workers
-                and _batch_size_nn > 1
+                and _enable_vmap
             )
             
 
@@ -2066,7 +2066,7 @@ class AntiOverfitMetaOptimizer:
                             pass
 
             else:
-                # Serial path: tree models, batch_size_nn=1, or no worker
+                # Serial path: tree models, enable_vmap=False, or no worker
                 for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
                     X_tr = self.X_train_val[train_idx]
                     y_tr = self.y_train_val[train_idx]
@@ -2308,7 +2308,7 @@ class AntiOverfitMetaOptimizer:
         Falls back to serial _s96b_dispatch() calls if worker not alive or on
         any IPC failure, preserving the S96B "never worse than S96A" guarantee.
 
-        batch_size_nn kill-switch (default 1 → serial path, never reaches here).
+        enable_vmap kill-switch (default False → serial path, never reaches here).
         """
         import json as _json
 
@@ -3064,8 +3064,8 @@ def main():
     parser.add_argument('--persistent-workers', action='store_true',
                        default=False, dest='persistent_workers',
                        help='[S96B] Persistent GPU workers for NN trials (default OFF)')
-    parser.add_argument('--batch-size-nn', type=int, default=1,
-                        dest='batch_size_nn',
+    parser.add_argument('--enable-vmap', action='store_true', default=False,
+                        dest='enable_vmap',
                         help='[Phase 3A] vmap batch size for NN trials (default 1=off). '
                              'Set to 16 after Zeus smoke test passes.')
     parser.add_argument('--no-persistent-workers', action='store_false',
@@ -3156,8 +3156,8 @@ def main():
     # [S96B] Thread persistent-workers flag into optimizer
     optimizer._s96b_use_persistent_workers = getattr(args, 'persistent_workers', False)
     optimizer._allow_inline_nn_fallback = getattr(args, 'allow_inline_nn_fallback', False)
-    # [Phase 3A] Thread batch_size_nn into optimizer (kill-switch default=1)
-    optimizer._batch_size_nn = getattr(args, 'batch_size_nn', 1)
+    # [Phase 3A] Thread enable_vmap into optimizer (0=off, 1=on)
+    optimizer._enable_vmap = getattr(args, 'enable_vmap', False)
 
     best_config, metrics = optimizer.run(n_trials=args.trials)
     
