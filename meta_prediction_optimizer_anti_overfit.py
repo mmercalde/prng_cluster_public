@@ -2005,25 +2005,86 @@ class AntiOverfitMetaOptimizer:
             kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
             fold_r2 = []
 
-            for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
-                X_tr = self.X_train_val[train_idx]
-                y_tr = self.y_train_val[train_idx]
-                X_vl = self.X_train_val[val_idx]
-                y_vl = self.y_train_val[val_idx]
+            # [Phase 3A] NN + S96B + batch_size_nn > 1: collect all folds,
+            # dispatch as one train_batch, read K results.
+            # All other paths (tree models, serial NN, fallback) unchanged.
+            _s96b_workers      = getattr(self, '_s96b_workers', {})
+            _gpu_id_for_batch  = gpu_id if gpu_id is not None else 0
+            _batch_size_nn     = getattr(self, '_batch_size_nn', 1)
+            _use_batch_path    = (
+                self.model_type == "neural_net"
+                and NN_SUBPROCESS_ROUTING_ENABLED
+                and bool(_s96b_workers)
+                and _gpu_id_for_batch in _s96b_workers
+                and _batch_size_nn > 1
+            )
 
-                if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
-                    # Phase 2.2: Route NN through train_single_trial.py subprocess
-                    result = self._run_nn_optuna_trial(
-                        X_tr, y_tr, X_vl, y_vl, config, trial.number, fold_idx,
-                        gpu_id=gpu_id
+            if _use_batch_path:
+                # [Phase 3A] Build all K fold jobs, export NPZs, batch-dispatch
+                _fold_splits = list(kf.split(self.X_train_val))
+                _batch_jobs  = []
+                _npz_paths   = []
+                for fold_idx, (train_idx, val_idx) in enumerate(_fold_splits):
+                    X_tr = self.X_train_val[train_idx]
+                    y_tr = self.y_train_val[train_idx]
+                    X_vl = self.X_train_val[val_idx]
+                    y_vl = self.y_train_val[val_idx]
+                    npz  = self._export_split_npz(
+                        X_tr, y_tr, X_vl, y_vl,
+                        trial_number=trial.number, fold_idx=fold_idx,
                     )
-                else:
-                    # Tree models: inline trainer (unchanged)
-                    result = self.trainer.train_model(
-                        self.model_type, X_tr, y_tr, X_vl, y_vl,
-                        hyperparameters=config
+                    _npz_paths.append(npz)
+                    _batch_jobs.append({
+                        "command":            "train",   # worker re-labels for train_batch
+                        "X_train_path":       npz,
+                        "params":             config,
+                        "trial_number":       trial.number,
+                        "fold_idx":           fold_idx,
+                        "normalize_features": True,
+                        "use_leaky_relu":     True,
+                        "batch_mode":         "auto",
+                    })
+
+                try:
+                    _timeout_per_fold = 60
+                    _batch_results = self._s96b_dispatch_batch(
+                        _s96b_workers, _gpu_id_for_batch, _batch_jobs,
+                        timeout=_timeout_per_fold,
                     )
-                fold_r2.append(float(result["metrics"].get("r2", 0.0)))
+                    for _br in _batch_results:
+                        fold_r2.append(float(_br.get("r2", -999.0)))
+                finally:
+                    # Cleanup NPZs (mirrors _run_nn_optuna_trial finally block)
+                    for _p in _npz_paths:
+                        try:
+                            os.remove(_p)
+                            _d = os.path.dirname(_p)
+                            if _d and os.path.isdir(_d):
+                                os.rmdir(_d)
+                        except OSError:
+                            pass
+
+            else:
+                # Serial path: tree models, batch_size_nn=1, or no worker
+                for fold_idx, (train_idx, val_idx) in enumerate(kf.split(self.X_train_val)):
+                    X_tr = self.X_train_val[train_idx]
+                    y_tr = self.y_train_val[train_idx]
+                    X_vl = self.X_train_val[val_idx]
+                    y_vl = self.y_train_val[val_idx]
+
+                    if self.model_type == "neural_net" and NN_SUBPROCESS_ROUTING_ENABLED:
+                        # Phase 2.2: Route NN through train_single_trial.py subprocess
+                        result = self._run_nn_optuna_trial(
+                            X_tr, y_tr, X_vl, y_vl, config, trial.number, fold_idx,
+                            gpu_id=gpu_id
+                        )
+                    else:
+                        # Tree models: inline trainer (unchanged)
+                        result = self.trainer.train_model(
+                            self.model_type, X_tr, y_tr, X_vl, y_vl,
+                            hyperparameters=config
+                        )
+                    fold_r2.append(float(result["metrics"].get("r2", 0.0)))
 
             avg_r2 = float(np.mean(fold_r2)) if fold_r2 else 0.0
             self.logger.info(f"  R² (CV): {avg_r2:.6f}")
@@ -2229,6 +2290,142 @@ class AntiOverfitMetaOptimizer:
                         f"[S96B] GPU-{gpu_id} restart failed - subprocess fallback for remaining trials"
                     )
                 return fallback_fn()
+
+
+    def _s96b_dispatch_batch(self, workers: dict, gpu_id: int,
+                             jobs: list, timeout: float = 120) -> list:
+        """
+        [Phase 3A] Send K fold-jobs to worker as one train_batch command,
+        read K result lines back. Returns list of K result dicts in input order.
+
+        Protocol (send once, read N):
+          1. Send {"command":"train_batch","jobs":[job0,...,jobK-1]} to worker stdin
+          2. Read K lines from worker stdout via _s96b_read_worker_line()
+          3. Return results in input order
+
+        Timeout is per-read, not total. Total wall time ≤ timeout * K.
+        Falls back to serial _s96b_dispatch() calls if worker not alive or on
+        any IPC failure, preserving the S96B "never worse than S96A" guarantee.
+
+        batch_size_nn kill-switch (default 1 → serial path, never reaches here).
+        """
+        import json as _json
+
+        w = workers.get(gpu_id)
+        if not w or not w.get("alive"):
+            self.logger.warning(
+                f"[3A] GPU-{gpu_id} worker not alive - serial fallback for batch"
+            )
+            return self._s96b_dispatch_batch_serial_fallback(
+                workers, gpu_id, jobs, timeout)
+
+        K = len(jobs)
+        with w["lock"]:
+            try:
+                proc = w["proc"]
+                if proc.poll() is not None:
+                    raise RuntimeError(
+                        f"Worker GPU-{gpu_id} exited (rc={proc.poll()})"
+                    )
+
+                # Send one train_batch command containing all K fold jobs
+                batch_cmd = {"command": "train_batch", "jobs": jobs}
+                proc.stdin.write(_json.dumps(batch_cmd) + "\n")
+                proc.stdin.flush()
+                self.logger.info(
+                    f"[3A] GPU-{gpu_id} dispatched train_batch K={K}"
+                )
+
+                # Read K result lines
+                results = []
+                for k in range(K):
+                    line = self._s96b_read_worker_line(proc, timeout=timeout)
+                    if line is None:
+                        raise RuntimeError(
+                            f"[3A] GPU-{gpu_id} timeout on result {k+1}/{K}"
+                        )
+                    if line.get("status") == "error":
+                        # Worker reported per-fold error — record and continue
+                        self.logger.warning(
+                            f"[3A] GPU-{gpu_id} fold {k} error: "
+                            f"{line.get('error','?')[:200]}"
+                        )
+                    results.append(line)
+
+                return results
+
+            except Exception as exc:
+                self.logger.error(
+                    f"[3A] dispatch_batch GPU-{gpu_id} failed ({exc}) "
+                    f"- restart once then serial fallback"
+                )
+                w["alive"] = False
+                try:
+                    w["proc"].kill()
+                except Exception:
+                    pass
+
+                # Mirror S96B restart-once contract
+                restarted = self._spawn_persistent_workers([gpu_id])
+                if restarted:
+                    workers[gpu_id] = restarted[gpu_id]
+                    self.logger.info(
+                        f"[3A] GPU-{gpu_id} worker restarted - retrying batch"
+                    )
+                    try:
+                        w2 = workers[gpu_id]
+                        with w2["lock"]:
+                            proc2 = w2["proc"]
+                            import json as _json2
+                            batch_cmd2 = {"command": "train_batch", "jobs": jobs}
+                            proc2.stdin.write(_json2.dumps(batch_cmd2) + "\n")
+                            proc2.stdin.flush()
+                            results2 = []
+                            for k in range(K):
+                                line2 = self._s96b_read_worker_line(
+                                    proc2, timeout=timeout)
+                                if line2 is None:
+                                    raise RuntimeError(
+                                        f"[3A] restart timeout on result {k+1}/{K}"
+                                    )
+                                results2.append(line2)
+                            return results2
+                    except Exception as exc2:
+                        self.logger.error(
+                            f"[3A] GPU-{gpu_id} restart retry failed ({exc2}) "
+                            f"- serial fallback"
+                        )
+                        workers[gpu_id]["alive"] = False
+                else:
+                    self.logger.warning(
+                        f"[3A] GPU-{gpu_id} restart failed - serial fallback"
+                    )
+                return self._s96b_dispatch_batch_serial_fallback(
+                    workers, gpu_id, jobs, timeout)
+
+    def _s96b_dispatch_batch_serial_fallback(self, workers: dict, gpu_id: int,
+                                              jobs: list, timeout: float) -> list:
+        """[Phase 3A] Serial fallback: dispatch each job individually."""
+        results = []
+        for job in jobs:
+            try:
+                r = self._s96b_dispatch(
+                    workers, gpu_id, job,
+                    fallback_fn=lambda: {
+                        "r2": -999.0, "train_mse": 0.0,
+                        "val_mse": float("inf"), "status": "error",
+                        "error": "serial_fallback",
+                    },
+                    timeout=timeout,
+                )
+                results.append(r)
+            except Exception as exc:
+                self.logger.error(f"[3A] serial fallback fold failed: {exc}")
+                results.append({
+                    "r2": -999.0, "train_mse": 0.0,
+                    "val_mse": float("inf"), "status": "error",
+                })
+        return results
 
     def _sample_hyperparameters(self, trial) -> Dict:
         """Sample hyperparameters for model type (model-specific)."""
@@ -2866,6 +3063,10 @@ def main():
     parser.add_argument('--persistent-workers', action='store_true',
                        default=False, dest='persistent_workers',
                        help='[S96B] Persistent GPU workers for NN trials (default OFF)')
+    parser.add_argument('--batch-size-nn', type=int, default=1,
+                        dest='batch_size_nn',
+                        help='[Phase 3A] vmap batch size for NN trials (default 1=off). '
+                             'Set to 16 after Zeus smoke test passes.')
     parser.add_argument('--no-persistent-workers', action='store_false',
                        dest='persistent_workers',
                        help='[S96B] Disable persistent GPU workers (default)')
@@ -2954,6 +3155,8 @@ def main():
     # [S96B] Thread persistent-workers flag into optimizer
     optimizer._s96b_use_persistent_workers = getattr(args, 'persistent_workers', False)
     optimizer._allow_inline_nn_fallback = getattr(args, 'allow_inline_nn_fallback', False)
+    # [Phase 3A] Thread batch_size_nn into optimizer (kill-switch default=1)
+    optimizer._batch_size_nn = getattr(args, 'batch_size_nn', 1)
 
     best_config, metrics = optimizer.run(n_trials=args.trials)
     
@@ -3000,5 +3203,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main() or 0)
-
-
