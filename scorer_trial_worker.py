@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scorer_trial_worker.py (v3.5 - Spearman Objective + Per-Trial Sampling)
+scorer_trial_worker.py (v3.6 - NPZ prng_type config fix)
 ==================================================
 v3.5 (2026-02-20):
 - BUG FIX: Replace neg-MSE objective with Spearman rank correlation
@@ -182,7 +182,21 @@ def load_data(survivors_file: str, train_history_file: str, holdout_history_file
     mod = 1000
     if isinstance(survivors, dict) and 'seeds' in survivors:
         # NPZ format - prng_type from metadata if available
-        pass  # Keep defaults, NPZ doesn't store per-survivor prng_type
+        wc_path = os.path.join(os.path.dirname(os.path.abspath(survivors_file)), "optimal_window_config.json")
+        if os.path.exists(wc_path):
+            try:
+                with open(wc_path) as _wf:
+                    _wc = json.load(_wf)
+                prng_type = _wc.get("prng_type")
+                mod = _wc.get("mod")
+                logger.info(f"Pipeline config: prng_type={prng_type}, mod={mod} (from optimal_window_config.json)")
+            except Exception as _e:
+                logger.warning(f"Could not read optimal_window_config.json: {_e}")
+        if not prng_type:
+            logger.warning("prng_type not resolved from config -- defaulting to java_lcg")
+            prng_type = "java_lcg"
+        if not mod:
+            mod = 1000
     elif survivors and len(survivors) > 0 and isinstance(survivors[0], dict):
         prng_type = survivors[0].get('prng_type', 'java_lcg')
         if '_' in prng_type and prng_type.split('_')[-1].isdigit():
