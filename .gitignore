@@ -103,3 +103,5 @@ catboost_info/
 *.s82_backup
 models/reinforcement/compare_models/
 *.cbm
+*.db
+optuna_studies/

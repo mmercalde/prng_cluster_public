@@ -1,10 +1,10 @@
 {
   "schema_version": "3.4.0",
-  "model_type": "catboost",
-  "checkpoint_path": "models/reinforcement/best_model.cbm",
-  "checkpoint_format": "cbm",
+  "model_type": "neural_net",
+  "checkpoint_path": "models/reinforcement/best_model.pth",
+  "checkpoint_format": "pth",
   "feature_schema": {
-    "source_file": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
+    "source_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
     "feature_count": 62,
     "feature_names": [
       "actual_mean",
@@ -84,15 +84,15 @@
     "signal_confidence": 0.4,
     "prediction_allowed": true,
     "unique_target_values": 8,
-    "target_variance": 1.001e-06,
+    "target_variance": 1.0087e-06,
     "target_mean": 0.001001,
-    "target_std": 0.001001,
-    "nonzero_count": 62381,
-    "nonzero_ratio": 0.6315,
-    "sample_size": 98783
+    "target_std": 0.001004,
+    "nonzero_count": 23842,
+    "nonzero_ratio": 0.63,
+    "sample_size": 37846
   },
   "data_context": {
-    "fingerprint_hash": "c38adac3",
+    "fingerprint_hash": "7a4a3cd1",
     "fingerprint_version": "v2_data_only",
     "training_window": {
       "start_draw": 1,
@@ -106,50 +106,70 @@
     },
     "survivor_source": {
       "file": "survivors_with_scores.json",
-      "file_path": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
-      "survivor_count": 98783
+      "file_path": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+      "survivor_count": 37846
     },
     "prng_hypothesis": {
       "prng_type": "java_lcg",
       "mod": 1000
     },
     "derived_by": "step5_anti_overfit",
-    "timestamp": "2026-02-20T10:38:22.908424"
+    "timestamp": "2026-02-20T18:07:39.880030"
   },
   "training_metrics": {
-    "r2": -4.252711624319616e-05,
-    "train_mae": 0.0010026756956508548,
-    "val_mae": 0.0009954811291377804,
+    "r2": 0.00017965874434411333,
+    "train_mae": 0.018586025627074818,
+    "val_mae": 0.018576155496631584,
     "test_mae": 0.0,
-    "overfit_ratio": 1.0
+    "overfit_ratio": 1.0,
+    "status": "success"
   },
   "hyperparameters": {
-    "iterations": 511,
-    "depth": 3,
-    "learning_rate": 0.026140952565231513
+    "n_layers": 2,
+    "layer_0": 101,
+    "layer_1": 86,
+    "dropout": 0.5382282834227289,
+    "learning_rate": 0.007835339326624413,
+    "batch_size": 1024,
+    "epochs": 169,
+    "patience": 24
+  },
+  "optuna": {
+    "enabled": true,
+    "n_trials": 100,
+    "n_jobs": 2,
+    "best_trial_number": 251,
+    "best_value": 0.0001911759376525879,
+    "study_name": "step5_neural_net_e6c330d830_7a4a3cd1_catb22",
+    "storage": "journal:optuna_studies/step5_neural_net_e6c330d830_7a4a3cd1_catb22.log"
   },
   "hardware": {
     "device_requested": "cuda:0",
-    "cuda_available": true
+    "cuda_available": false
   },
   "training_info": {
-    "started_at": "2026-02-20T10:38:22.922210",
-    "completed_at": "2026-02-20T10:39:14.921339",
-    "duration_seconds": 51.996611
+    "started_at": "2026-02-20T18:07:39.886114",
+    "completed_at": "2026-02-20T18:26:58.566746",
+    "duration_seconds": 1158.680233,
+    "outcome": "SUCCESS"
   },
   "agent_metadata": {
     "pipeline_step": 5,
     "pipeline_step_name": "anti_overfit_training",
-    "run_id": "step5_20260220_103822",
-    "parent_run_id": null
+    "run_id": "step5_20260220_180739",
+    "parent_run_id": null,
+    "outcome": "SUCCESS",
+    "exit_code": 0
   },
   "provenance": {
-    "run_id": "step5_20260220_103822",
-    "started_at": "2026-02-20T10:38:22.922210",
-    "duration_seconds": 51.996611,
-    "survivors_file": "/home/michael/distributed_prng_analysis/test_survivors_10k.json",
-    "n_survivors": 98783,
-    "model_type": "catboost",
-    "compare_models_used": false
+    "run_id": "step5_20260220_180739",
+    "started_at": "2026-02-20T18:07:39.886114",
+    "duration_seconds": 1158.680233,
+    "survivors_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
+    "n_survivors": 37846,
+    "model_type": "neural_net",
+    "compare_models_used": true,
+    "checkpoint_path": "/home/michael/distributed_prng_analysis/models/reinforcement/best_model.pth",
+    "outcome": "SUCCESS"
   }
 }
