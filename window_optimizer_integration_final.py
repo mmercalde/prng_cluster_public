@@ -156,9 +156,9 @@ def run_bidirectional_test(coordinator,
     forward_records = extract_survivor_records(forward_result)
     print(f"      Forward: {len(forward_records):,} survivors")
 
-    print(f"    Running REVERSE sieve ({prng_base}) [CONSTANT SKIP]...")
+    print(f"    Running REVERSE sieve ({prng_base}_reverse) [CONSTANT SKIP]...")
     reverse_args = Args()
-    reverse_args.prng_type = prng_base
+    reverse_args.prng_type = prng_base + "_reverse"  # e.g. java_lcg_reverse
     reverse_args.threshold = reverse_threshold
     reverse_args.step_name = f"Reverse Sieve ({prng_base})"
 
@@ -280,11 +280,11 @@ def run_bidirectional_test(coordinator,
         forward_records_hybrid = extract_survivor_records(forward_result_hybrid)
         print(f"      Forward (variable): {len(forward_records_hybrid):,} survivors")
 
-        print(f"    Running REVERSE sieve ({prng_hybrid}) [VARIABLE SKIP]...")
+        print(f"    Running REVERSE sieve ({prng_hybrid}_reverse) [VARIABLE SKIP]...")
         reverse_args_hybrid = Args()
         reverse_args_hybrid.threshold = reverse_threshold
         reverse_args_hybrid.step_name = f"Reverse Sieve ({prng_hybrid}) [VARIABLE]"
-        reverse_args_hybrid.prng_type = prng_hybrid
+        reverse_args_hybrid.prng_type = prng_hybrid + "_reverse"  # e.g. java_lcg_hybrid_reverse
 
         reverse_result_hybrid = coordinator.execute_distributed_analysis(
             reverse_args_hybrid.target_file,
