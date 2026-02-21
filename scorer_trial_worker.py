@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
-scorer_trial_worker.py (v3.4 - Holdout Sampling Fix)
+scorer_trial_worker.py (v3.5 - Spearman Objective + Per-Trial Sampling)
+==================================================
+v3.5 (2026-02-20):
+- BUG FIX: Replace neg-MSE objective with Spearman rank correlation
+  (MSE collapsed to constant on low-variance score distributions — S101)
+- BUG FIX: Remove random.seed(42) — replaced with per-trial seed
+  (seed=42 locked all 100 trials to identical 450 seeds, 2.6% pool coverage)
+  New: random.seed(params['optuna_trial_number']) — unique per trial,
+  stable for retries, ~93% survivor pool coverage across 100 trials
+- Team Beta Mod 1: guard y_holdout degeneracy (constant scorer output)
+- Team Beta Mod 2: runtime SciPy import guard, best-effort non-fatal
 ==================================================
 Runs ONE pre-defined scorer trial on a remote worker with intelligent early stopping.
 
@@ -351,7 +361,7 @@ def run_trial(seeds_to_score: List[int], train_history: List[int], holdout_histo
         if sample_size and len(seeds_to_score) > sample_size:
             import random
             logger.info(f"📊 Sampling {sample_size:,} seeds from {len(seeds_to_score):,} for training")
-            random.seed(42)  # Reproducible sampling
+            random.seed(params.get('optuna_trial_number', 0))  # v3.5: per-trial seed
             sample_indices = random.sample(range(len(seeds_to_score)), sample_size)
             sampled_seeds = [seeds_to_score[i] for i in sample_indices]
             sampled_scores = [y_train[i] for i in sample_indices]
@@ -413,15 +423,32 @@ def run_trial(seeds_to_score: List[int], train_history: List[int], holdout_histo
         
         logger.info(f"🔍 [DEBUG] Holdout prediction completed, {len(y_pred_holdout)} predictions")
         
-        # Calculate MSE
-        holdout_mse = float(torch.nn.functional.mse_loss(
-            torch.tensor(y_pred_holdout),
-            torch.tensor(y_holdout)
-        ))
-        
-        accuracy = -holdout_mse  # Negative MSE (higher is better)
-        
-        logger.info(f"Holdout MSE: {holdout_mse:.6f}, Accuracy (NegMSE): {accuracy:.6f}")
+        # v3.5: Spearman rank correlation — correct objective for ranking
+        # Team Beta Mod 1: guard both y_pred AND y_holdout for degeneracy
+        # Team Beta Mod 2: runtime SciPy import guard (best-effort, non-fatal)
+        try:
+            from scipy.stats import spearmanr
+            _scipy_available = True
+        except ImportError:
+            _scipy_available = False
+            logger.error('scipy not available on this worker — accuracy = -1.0')
+
+        if not _scipy_available:
+            accuracy = -1.0
+        else:
+            y_pred_arr    = np.array(y_pred_holdout)
+            y_holdout_arr = np.array(y_holdout)
+
+            if np.std(y_pred_arr) < 1e-12:
+                accuracy = -1.0
+                logger.warning('Degenerate NN: all predictions identical. rho = -1.0')
+            elif np.std(y_holdout_arr) < 1e-12:
+                accuracy = -1.0
+                logger.warning('Degenerate scorer: y_holdout constant. rho = -1.0')
+            else:
+                correlation, p_value = spearmanr(y_pred_arr, y_holdout_arr)
+                accuracy = float(correlation) if not np.isnan(correlation) else -1.0
+                logger.info(f'Holdout Spearman rho: {accuracy:.6f}  (p={p_value:.4f})')
         
         return accuracy, y_pred_holdout if isinstance(y_pred_holdout, list) else y_pred_holdout.tolist()
 
