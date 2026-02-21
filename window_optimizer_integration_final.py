@@ -2,38 +2,54 @@
 """
 Window Optimizer Integration - WITH VARIABLE SKIP SUPPORT
 ==========================================================
-Version: 2.0
-Date: 2025-11-15
+Version: 3.0
+Date: 2026-02-21
 
-NEW IN V2.0:
-- Supports testing BOTH constant and variable skip patterns in a single optimization run
-- Adds skip_mode metadata to all survivors for ML feature engineering
-- Backward compatible: test_both_modes defaults to False (original behavior)
+CHANGELOG:
+  v3.0 (2026-02-21) - S103 FIX: Preserve per-seed match rates from sieve
+    CRITICAL BUG FIX: extract_survivors_from_result() was discarding per-seed
+    match_rate computed by the GPU kernel and returning only seed integers.
+    The accumulator then stamped trial-level aggregate counts onto every survivor,
+    making all quality fields (intersection_ratio, bidirectional_selectivity,
+    survivor_overlap_ratio, score) identical for all seeds in the same trial.
+
+    FIX:
+    - extract_survivors_from_result() renamed to extract_survivor_records()
+      Returns List[Dict] with {seed, match_rate} per survivor, not List[int]
+    - Accumulator now stores forward_match_rate and reverse_match_rate per seed
+    - score field is now the per-seed bidirectional match rate (avg fwd+rev)
+    - Trial-level counts retained as context fields (forward_count, etc.)
+    - Deduplication updated to use per-seed score (match rate) not trial count
+
+  v2.0 (2025-11-15) - Added variable skip support (test_both_modes flag)
+  v1.0 (2025-10-01) - Initial integration
 
 ACCUMULATES ALL BIDIRECTIONAL SURVIVORS WITH RICH METADATA
 Saves ALL survivors from ALL trials with window metadata for temporal diversity
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 import json
 from window_optimizer import WindowConfig, TestResult
 
-def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
+
+def extract_survivor_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Extract survivor seeds from coordinator result.
-    
-    The coordinator returns results in various formats depending on the job type.
-    This function handles all formats and extracts the unique survivor seeds.
-    
+    Extract survivor records (seed + match_rate) from coordinator result.
+
+    v3.0: Returns full records [{seed, match_rate}, ...] instead of [int, ...]
+    The sieve GPU kernel computes match_rate per seed - this must be preserved
+    as it is the primary per-seed quality signal for downstream ML.
+
     Args:
         result: Dictionary containing job results from coordinator
-        
-    Returns:
-        List of unique survivor seed integers
-    """
-    survivors = []
 
-    # Check if results contain survivors (format 1: direct results array)
+    Returns:
+        List of dicts: [{'seed': int, 'match_rate': float}, ...]
+        Deduped by seed, keeping highest match_rate per seed.
+    """
+    records = {}  # seed -> best match_rate record
+
     if 'results' in result:
         for job_result in result['results']:
             # Format 1a: Survivors directly in job result
@@ -41,7 +57,9 @@ def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
                 for survivor in job_result['survivors']:
                     seed = survivor.get('seed', survivor.get('id'))
                     if seed is not None:
-                        survivors.append(seed)
+                        rate = float(survivor.get('match_rate', 0.0))
+                        if seed not in records or rate > records[seed]['match_rate']:
+                            records[seed] = {'seed': seed, 'match_rate': rate}
 
             # Format 1b: Survivors grouped by PRNG family
             if 'per_family' in job_result:
@@ -50,58 +68,46 @@ def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
                         for survivor in family_data['survivors']:
                             seed = survivor.get('seed', survivor.get('id'))
                             if seed is not None:
-                                survivors.append(seed)
+                                rate = float(survivor.get('match_rate', 0.0))
+                                if seed not in records or rate > records[seed]['match_rate']:
+                                    records[seed] = {'seed': seed, 'match_rate': rate}
 
-    # Return unique survivors (remove duplicates)
-    return list(set(survivors))
+    return list(records.values())
+
+
+# Keep old name as alias for any callers that used it for seed-only access
+def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
+    """
+    Legacy compatibility wrapper - returns seed integers only.
+    New code should use extract_survivor_records() to preserve match_rate.
+    """
+    return [r['seed'] for r in extract_survivor_records(result)]
 
 
 def run_bidirectional_test(coordinator,
-                          config: WindowConfig,
-                          dataset_path: str,
-                          seed_start: int,
-                          seed_count: int,
-                          prng_base: str = 'java_lcg',
-                          test_both_modes: bool = False,
-                          forward_threshold: float = 0.01,
-                          reverse_threshold: float = 0.01,
-                          trial_number: int = 0,
-                          accumulator: Dict[str, List] = None) -> TestResult:
+                           config: WindowConfig,
+                           dataset_path: str,
+                           seed_start: int,
+                           seed_count: int,
+                           prng_base: str = 'java_lcg',
+                           test_both_modes: bool = False,
+                           forward_threshold: float = 0.01,
+                           reverse_threshold: float = 0.01,
+                           trial_number: int = 0,
+                           accumulator: Dict[str, List] = None) -> TestResult:
     """
     Run forward + reverse sieve and ACCUMULATE survivors with metadata.
-    
-    NEW IN V2.0: Optionally tests BOTH constant and variable skip patterns!
-    
-    When test_both_modes=True, this function:
-    1. Runs forward/reverse with constant skip (e.g., java_lcg)
-    2. Runs forward/reverse with variable skip (e.g., java_lcg_hybrid)
-    3. Tags all survivors with skip_mode metadata
-    4. Accumulates BOTH sets into the same accumulator
-    
-    This allows the ML system to learn which skip pattern produces better survivors.
-    
-    Args:
-        coordinator: MultiGPUCoordinator instance
-        config: WindowConfig with window_size, offset, sessions, skip_min/max
-        dataset_path: Path to lottery data JSON file
-        seed_start: Starting seed value
-        seed_count: Number of seeds to test
-        prng_base: Base PRNG name (e.g., 'java_lcg', 'xorshift32')
-        test_both_modes: If True, test BOTH constant and variable skip (NEW!)
-        threshold: Match threshold for sieves
-        trial_number: Current trial number (for metadata tracking)
-        accumulator: Dict to accumulate survivors across trials
-        
-    Returns:
-        TestResult with counts from the constant skip run
-        (Variable skip counts are added to accumulator but not returned)
+
+    v3.0: Survivors now carry per-seed forward_match_rate and reverse_match_rate
+    from the GPU sieve kernel. These are genuine quality signals (0.0-1.0) that
+    vary per seed, enabling downstream ML feature discrimination.
+
+    NEW IN V2.0: Optionally tests BOTH constant and variable skip patterns.
     """
 
     # ========================================================================
     # HELPER: Args Class for Coordinator
     # ========================================================================
-    # The coordinator expects an args object with specific attributes
-    # This class provides that interface
     class Args:
         def __init__(self):
             self.target_file = dataset_path
@@ -112,13 +118,12 @@ def run_bidirectional_test(coordinator,
             self.offset = config.offset
             self.skip_min = config.skip_min
             self.skip_max = config.skip_max
-            self.threshold = forward_threshold  # Use forward threshold for forward sieve
+            self.threshold = forward_threshold
             self.resume_policy = 'restart'
-            self.max_concurrent = 26  # Use all 26 GPUs
+            self.max_concurrent = 26
             self.analysis_type = 'statistical'
             self.draw_match = None
 
-            # Session filter determines which lottery draws to use
             if set(config.sessions) == {'midday', 'evening'}:
                 self.session_filter = 'both'
             elif 'midday' in config.sessions:
@@ -131,36 +136,32 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     # PART 1: CONSTANT SKIP TEST (Always runs)
     # ========================================================================
-    # This is the original behavior - test with constant skip pattern
-    
+
     print(f"    Running FORWARD sieve ({prng_base}) [CONSTANT SKIP]...")
     forward_args = Args()
     forward_args.step_name = f"Forward Sieve ({prng_base})"
-    forward_args.prng_type = prng_base  # e.g., 'java_lcg'
+    forward_args.prng_type = prng_base
 
-    # Execute distributed sieve across all 26 GPUs
     forward_result = coordinator.execute_distributed_analysis(
         forward_args.target_file,
         f'results/window_opt_forward_{config.window_size}_{config.offset}.json',
         forward_args,
         forward_args.seeds,
-        1000,  # samples
-        8,     # lmax
-        50     # grid_size
+        1000,
+        8,
+        50
     )
 
-    # Extract unique survivor seeds from results
-    forward_survivors = extract_survivors_from_result(forward_result)
-    print(f"      Forward: {len(forward_survivors):,} survivors")
+    # v3.0: Extract full records with per-seed match_rate
+    forward_records = extract_survivor_records(forward_result)
+    print(f"      Forward: {len(forward_records):,} survivors")
 
-    # REVERSE SIEVE (constant skip)
-    reverse_prng = prng_base
-    print(f"    Running REVERSE sieve ({reverse_prng}) [CONSTANT SKIP]...")
+    print(f"    Running REVERSE sieve ({prng_base}) [CONSTANT SKIP]...")
     reverse_args = Args()
-    reverse_args.prng_type = reverse_prng
-    reverse_args.threshold = reverse_threshold  # Use reverse threshold for reverse sieve
+    reverse_args.prng_type = prng_base
+    reverse_args.threshold = reverse_threshold
+    reverse_args.step_name = f"Reverse Sieve ({prng_base})"
 
-    reverse_args.step_name = f"Reverse Sieve ({reverse_prng})"
     reverse_result = coordinator.execute_distributed_analysis(
         reverse_args.target_file,
         f'results/window_opt_reverse_{config.window_size}_{config.offset}.json',
@@ -171,30 +172,32 @@ def run_bidirectional_test(coordinator,
         50
     )
 
-    reverse_survivors = extract_survivors_from_result(reverse_result)
-    print(f"      Reverse: {len(reverse_survivors):,} survivors")
+    reverse_records = extract_survivor_records(reverse_result)
+    print(f"      Reverse: {len(reverse_records):,} survivors")
 
-    # Find bidirectional survivors (seeds that survive BOTH forward and reverse)
-    forward_set = set(forward_survivors)
-    reverse_set = set(reverse_survivors)
+    # Build lookup dicts: seed -> match_rate
+    forward_map = {r['seed']: r['match_rate'] for r in forward_records}
+    reverse_map = {r['seed']: r['match_rate'] for r in reverse_records}
+
+    forward_set = set(forward_map.keys())
+    reverse_set = set(reverse_map.keys())
     bidirectional_constant = forward_set & reverse_set
 
     print(f"      ✨ Bidirectional (constant): {len(bidirectional_constant):,} survivors")
-    
-    # Update dashboard with live trial stats
+
+    # Update dashboard
     if hasattr(coordinator, "_progress_writer") and coordinator._progress_writer:
         best_so_far = getattr(coordinator, "_best_bidirectional", 0)
         if len(bidirectional_constant) > best_so_far:
             coordinator._best_bidirectional = len(bidirectional_constant)
             best_so_far = len(bidirectional_constant)
-        # Get accumulated totals if available
         acc_fwd = len(accumulator['forward']) if accumulator else 0
         acc_rev = len(accumulator['reverse']) if accumulator else 0
         acc_bid = len(accumulator['bidirectional']) if accumulator else 0
         coordinator._progress_writer.update_trial_stats(
             trial_num=trial_number,
-            forward_survivors=len(forward_survivors),
-            reverse_survivors=len(reverse_survivors),
+            forward_survivors=len(forward_records),
+            reverse_survivors=len(reverse_records),
             bidirectional=len(bidirectional_constant),
             best_bidirectional=best_so_far,
             config_desc=config.description(),
@@ -205,12 +208,10 @@ def run_bidirectional_test(coordinator,
 
     # ========================================================================
     # ACCUMULATE CONSTANT SKIP SURVIVORS WITH METADATA
+    # v3.0: Per-seed match rates stored individually, not trial aggregates
     # ========================================================================
-    # This metadata will be used by the ML system for feature engineering
-    
     if accumulator is not None:
-        # Prepare base metadata for this trial
-        # NEW: Added prng_type, prng_base, skip_mode fields
+        # Trial-level context (same for all seeds in this trial)
         metadata_base = {
             'window_size': config.window_size,
             'offset': config.offset,
@@ -219,56 +220,53 @@ def run_bidirectional_test(coordinator,
             'skip_range': config.skip_max - config.skip_min,
             'sessions': config.sessions,
             'trial_number': trial_number,
-            'prng_base': prng_base,  # NEW: Base PRNG name (e.g., 'java_lcg')
-        }
-
-        # Metadata specific to constant skip
-        # v1.9.1: Added 6 missing metadata fields for ML features
-        union_size = len(forward_set | reverse_set)
-        metadata_constant = {
-            **metadata_base,
-            'skip_mode': 'constant',  # NEW: Identifies this as constant skip
-            'prng_type': prng_base,   # NEW: Full PRNG name (same as base for constant)
-            'forward_count': len(forward_survivors),
-            'reverse_count': len(reverse_survivors),
+            'prng_base': prng_base,
+            'skip_mode': 'constant',
+            'prng_type': prng_base,
+            # Trial-level counts retained as context
+            'forward_count': len(forward_records),
+            'reverse_count': len(reverse_records),
             'bidirectional_count': len(bidirectional_constant),
-            'bidirectional_selectivity': len(forward_survivors) / max(len(reverse_survivors), 1),
-            'score': len(bidirectional_constant),
-            # v1.9.1: 6 new fields for ML feature completeness
-            'intersection_count': len(bidirectional_constant),
-            'intersection_ratio': len(bidirectional_constant) / max(union_size, 1),
-            'forward_only_count': len(forward_set - reverse_set),
-            'reverse_only_count': len(reverse_set - forward_set),
-            'survivor_overlap_ratio': len(bidirectional_constant) / max(len(forward_set), 1),
-            'intersection_weight': len(bidirectional_constant) / max(len(forward_set) + len(reverse_set), 1),
         }
 
-        # Accumulate survivors with metadata
-        # These will be saved to bidirectional_survivors.json at the end
-        for seed in forward_survivors:
-            accumulator['forward'].append({'seed': seed, **metadata_constant})
+        for record in forward_records:
+            seed = record['seed']
+            accumulator['forward'].append({
+                'seed': seed,
+                'forward_match_rate': record['match_rate'],  # v3.0: per-seed
+                **metadata_base
+            })
 
-        for seed in reverse_survivors:
-            accumulator['reverse'].append({'seed': seed, **metadata_constant})
+        for record in reverse_records:
+            seed = record['seed']
+            accumulator['reverse'].append({
+                'seed': seed,
+                'reverse_match_rate': record['match_rate'],  # v3.0: per-seed
+                **metadata_base
+            })
 
         for seed in bidirectional_constant:
-            accumulator['bidirectional'].append({'seed': seed, **metadata_constant})
+            fwd_rate = forward_map[seed]
+            rev_rate = reverse_map[seed]
+            accumulator['bidirectional'].append({
+                'seed': seed,
+                'forward_match_rate': fwd_rate,             # v3.0: per-seed
+                'reverse_match_rate': rev_rate,             # v3.0: per-seed
+                'score': (fwd_rate + rev_rate) / 2.0,      # v3.0: per-seed avg
+                **metadata_base
+            })
 
     # ========================================================================
-    # PART 2: VARIABLE SKIP TEST (NEW! Only if test_both_modes=True)
+    # PART 2: VARIABLE SKIP TEST (Only if test_both_modes=True)
     # ========================================================================
-    # This tests the same base PRNG but with variable skip pattern
-    # For example: java_lcg becomes java_lcg_hybrid
-    
     if test_both_modes and not prng_base.endswith('_hybrid'):
-        # Construct the hybrid PRNG name
         prng_hybrid = f"{prng_base}_hybrid"
-        
+
         print(f"\n    🔄 TESTING VARIABLE SKIP MODE...")
         print(f"    Running FORWARD sieve ({prng_hybrid}) [VARIABLE SKIP]...")
-        
+
         forward_args_hybrid = Args()
-        forward_args_hybrid.prng_type = prng_hybrid  # e.g., 'java_lcg_hybrid'
+        forward_args_hybrid.prng_type = prng_hybrid
         forward_args_hybrid.step_name = f"Forward Sieve ({prng_hybrid}) [VARIABLE]"
 
         forward_result_hybrid = coordinator.execute_distributed_analysis(
@@ -276,18 +274,15 @@ def run_bidirectional_test(coordinator,
             f'results/window_opt_forward_hybrid_{config.window_size}_{config.offset}.json',
             forward_args_hybrid,
             forward_args_hybrid.seeds,
-            1000,
-            8,
-            50
+            1000, 8, 50
         )
 
-        forward_survivors_hybrid = extract_survivors_from_result(forward_result_hybrid)
-        print(f"      Forward (variable): {len(forward_survivors_hybrid):,} survivors")
+        forward_records_hybrid = extract_survivor_records(forward_result_hybrid)
+        print(f"      Forward (variable): {len(forward_records_hybrid):,} survivors")
 
-        # REVERSE SIEVE (variable skip)
         print(f"    Running REVERSE sieve ({prng_hybrid}) [VARIABLE SKIP]...")
         reverse_args_hybrid = Args()
-        reverse_args_hybrid.threshold = reverse_threshold  # Use reverse threshold for reverse sieve
+        reverse_args_hybrid.threshold = reverse_threshold
         reverse_args_hybrid.step_name = f"Reverse Sieve ({prng_hybrid}) [VARIABLE]"
         reverse_args_hybrid.prng_type = prng_hybrid
 
@@ -296,81 +291,77 @@ def run_bidirectional_test(coordinator,
             f'results/window_opt_reverse_hybrid_{config.window_size}_{config.offset}.json',
             reverse_args_hybrid,
             reverse_args_hybrid.seeds,
-            1000,
-            8,
-            50
+            1000, 8, 50
         )
 
-        reverse_survivors_hybrid = extract_survivors_from_result(reverse_result_hybrid)
-        print(f"      Reverse (variable): {len(reverse_survivors_hybrid):,} survivors")
+        reverse_records_hybrid = extract_survivor_records(reverse_result_hybrid)
+        print(f"      Reverse (variable): {len(reverse_records_hybrid):,} survivors")
 
-        # Find bidirectional survivors for variable skip
-        forward_set_hybrid = set(forward_survivors_hybrid)
-        reverse_set_hybrid = set(reverse_survivors_hybrid)
+        forward_map_hybrid = {r['seed']: r['match_rate'] for r in forward_records_hybrid}
+        reverse_map_hybrid = {r['seed']: r['match_rate'] for r in reverse_records_hybrid}
+        forward_set_hybrid = set(forward_map_hybrid.keys())
+        reverse_set_hybrid = set(reverse_map_hybrid.keys())
         bidirectional_variable = forward_set_hybrid & reverse_set_hybrid
 
         print(f"      ✨ Bidirectional (variable): {len(bidirectional_variable):,} survivors")
 
-        # ====================================================================
-        # ACCUMULATE VARIABLE SKIP SURVIVORS WITH METADATA
-        # ====================================================================
-        # These get added to the SAME accumulator as constant skip survivors
-        # They are distinguished by the skip_mode='variable' field
-        
         if accumulator is not None:
-            # Metadata specific to variable skip
-            # v1.9.1: Added 6 missing metadata fields for ML features
-            union_size_hybrid = len(forward_set_hybrid | reverse_set_hybrid)
-            metadata_variable = {
-                **metadata_base,
-                'skip_mode': 'variable',  # NEW: Identifies this as variable skip
-                'prng_type': prng_hybrid, # NEW: Full PRNG name (e.g., 'java_lcg_hybrid')
-                'forward_count': len(forward_survivors_hybrid),
-                'reverse_count': len(reverse_survivors_hybrid),
+            metadata_base_hybrid = {
+                'window_size': config.window_size,
+                'offset': config.offset,
+                'skip_min': config.skip_min,
+                'skip_max': config.skip_max,
+                'skip_range': config.skip_max - config.skip_min,
+                'sessions': config.sessions,
+                'trial_number': trial_number,
+                'prng_base': prng_base,
+                'skip_mode': 'variable',
+                'prng_type': prng_hybrid,
+                'forward_count': len(forward_records_hybrid),
+                'reverse_count': len(reverse_records_hybrid),
                 'bidirectional_count': len(bidirectional_variable),
-                'bidirectional_selectivity': len(forward_survivors_hybrid) / max(len(reverse_survivors_hybrid), 1),
-                'score': len(bidirectional_variable),
-                # v1.9.1: 6 new fields for ML feature completeness
-                'intersection_count': len(bidirectional_variable),
-                'intersection_ratio': len(bidirectional_variable) / max(union_size_hybrid, 1),
-                'forward_only_count': len(forward_set_hybrid - reverse_set_hybrid),
-                'reverse_only_count': len(reverse_set_hybrid - forward_set_hybrid),
-                'survivor_overlap_ratio': len(bidirectional_variable) / max(len(forward_set_hybrid), 1),
-                'intersection_weight': len(bidirectional_variable) / max(len(forward_set_hybrid) + len(reverse_set_hybrid), 1),
             }
 
-            # Accumulate variable skip survivors
-            # These will be in the SAME bidirectional_survivors.json file
-            for seed in forward_survivors_hybrid:
-                accumulator['forward'].append({'seed': seed, **metadata_variable})
+            for record in forward_records_hybrid:
+                seed = record['seed']
+                accumulator['forward'].append({
+                    'seed': seed,
+                    'forward_match_rate': record['match_rate'],
+                    **metadata_base_hybrid
+                })
 
-            for seed in reverse_survivors_hybrid:
-                accumulator['reverse'].append({'seed': seed, **metadata_variable})
+            for record in reverse_records_hybrid:
+                seed = record['seed']
+                accumulator['reverse'].append({
+                    'seed': seed,
+                    'reverse_match_rate': record['match_rate'],
+                    **metadata_base_hybrid
+                })
 
             for seed in bidirectional_variable:
-                accumulator['bidirectional'].append({'seed': seed, **metadata_variable})
+                fwd_rate = forward_map_hybrid[seed]
+                rev_rate = reverse_map_hybrid[seed]
+                accumulator['bidirectional'].append({
+                    'seed': seed,
+                    'forward_match_rate': fwd_rate,
+                    'reverse_match_rate': rev_rate,
+                    'score': (fwd_rate + rev_rate) / 2.0,
+                    **metadata_base_hybrid
+                })
 
     # ========================================================================
     # PRINT ACCUMULATOR STATUS
     # ========================================================================
-    # Show running totals across all trials
-    
     if accumulator is not None:
         print(f"      📊 Accumulated totals:")
         print(f"         Forward: {len(accumulator['forward'])} total")
         print(f"         Reverse: {len(accumulator['reverse'])} total")
         print(f"         Bidirectional: {len(accumulator['bidirectional'])} total")
 
-    # ========================================================================
-    # RETURN RESULT
-    # ========================================================================
-    # Note: We only return the constant skip counts in the TestResult
-    # Variable skip counts are in the accumulator for later analysis
-    
     return TestResult(
         config=config,
-        forward_count=len(forward_survivors),
-        reverse_count=len(reverse_survivors),
+        forward_count=len(forward_records),
+        reverse_count=len(reverse_records),
         bidirectional_count=len(bidirectional_constant),
         iteration=trial_number
     )
@@ -379,50 +370,30 @@ def run_bidirectional_test(coordinator,
 def add_window_optimizer_to_coordinator():
     """
     Add window optimization method to coordinator.
-    
-    This function monkey-patches the MultiGPUCoordinator class to add
-    the optimize_window() method, which runs Bayesian optimization
-    with real sieves executing on all 26 GPUs.
+    Monkey-patches MultiGPUCoordinator with optimize_window().
     """
     from coordinator import MultiGPUCoordinator
     from window_optimizer import (WindowOptimizer, SearchBounds,
-                                  RandomSearch, GridSearch,
-                                  BayesianOptimization, EvolutionarySearch,
-                                  BidirectionalCountScorer)
+                                   RandomSearch, GridSearch,
+                                   BayesianOptimization, EvolutionarySearch,
+                                   BidirectionalCountScorer)
 
     def optimize_window(self,
-                       dataset_path: str,
-                       seed_start: int = 0,
-                       seed_count: int = 10_000_000,
-                       prng_base: str = 'java_lcg',
-                       test_both_modes: bool = False,  # NEW PARAMETER!
-                       strategy_name: str = 'bayesian',
-                       max_iterations: int = 50,
-                       output_file: str = 'window_optimization.json'):
-        """
-        Run window optimization with real sieve execution.
-        
-        NEW IN V2.0: Supports test_both_modes parameter!
-        
-        Args:
-            dataset_path: Path to lottery data JSON
-            seed_start: Starting seed value
-            seed_count: Number of seeds to test per trial
-            prng_base: Base PRNG name (e.g., 'java_lcg')
-            test_both_modes: If True, test BOTH constant and variable skip (NEW!)
-            strategy_name: Optimization strategy ('bayesian', 'random', etc.)
-            max_iterations: Number of optimization trials
-            output_file: Where to save optimization results
-        """
+                        dataset_path: str,
+                        seed_start: int = 0,
+                        seed_count: int = 10_000_000,
+                        prng_base: str = 'java_lcg',
+                        test_both_modes: bool = False,
+                        strategy_name: str = 'bayesian',
+                        max_iterations: int = 50,
+                        output_file: str = 'window_optimization.json'):
 
         print(f"\n{'='*80}")
         print(f"WINDOW OPTIMIZATION WITH SURVIVOR ACCUMULATION")
         print(f"Dataset: {dataset_path}")
         print(f"PRNG: {prng_base}")
         if test_both_modes:
-            print(f"Mode: TESTING BOTH CONSTANT AND VARIABLE SKIP")  # NEW!
-            print(f"  Constant: {prng_base}")
-            print(f"  Variable: {prng_base}_hybrid")
+            print(f"Mode: TESTING BOTH CONSTANT AND VARIABLE SKIP")
         else:
             print(f"Mode: CONSTANT SKIP ONLY")
         print(f"Seed range: {seed_start:,} → {seed_start + seed_count:,}")
@@ -430,11 +401,6 @@ def add_window_optimizer_to_coordinator():
         print(f"Max iterations: {max_iterations}")
         print(f"{'='*80}\n")
 
-        # ====================================================================
-        # CREATE SURVIVOR ACCUMULATOR
-        # ====================================================================
-        # This accumulates ALL survivors from ALL trials
-        # Survivors will have metadata including skip_mode, prng_type, etc.
         survivor_accumulator = {
             'forward': [],
             'reverse': [],
@@ -442,17 +408,13 @@ def add_window_optimizer_to_coordinator():
         }
 
         optimizer = WindowOptimizer(self, dataset_path)
-        # Define search bounds - loaded from distributed_config.json
         bounds = SearchBounds.from_config()
-
-        # Track trial number for metadata
         trial_counter = {'count': 0}
 
-        def test_config(config, ss=seed_start, sc=seed_count, ft=bounds.default_forward_threshold, rt=bounds.default_reverse_threshold):
-            """
-            Wrapper function that Optuna calls for each trial.
-            This passes through to run_bidirectional_test with test_both_modes.
-            """
+        def test_config(config,
+                        ss=seed_start, sc=seed_count,
+                        ft=bounds.default_forward_threshold,
+                        rt=bounds.default_reverse_threshold):
             trial_counter['count'] += 1
             return run_bidirectional_test(
                 coordinator=self,
@@ -461,7 +423,7 @@ def add_window_optimizer_to_coordinator():
                 seed_start=ss,
                 seed_count=sc,
                 prng_base=prng_base,
-                test_both_modes=test_both_modes,  # NEW: Pass through
+                test_both_modes=test_both_modes,
                 forward_threshold=ft,
                 reverse_threshold=rt,
                 trial_number=trial_counter['count'],
@@ -470,7 +432,6 @@ def add_window_optimizer_to_coordinator():
 
         optimizer.test_configuration = test_config
 
-        # Setup optimization strategy
         strategy_map = {
             'random': RandomSearch(),
             'grid': GridSearch(
@@ -484,14 +445,6 @@ def add_window_optimizer_to_coordinator():
 
         strategy = strategy_map.get(strategy_name, RandomSearch())
 
-
-        # ====================================================================
-        # RUN OPTIMIZATION
-        # ====================================================================
-        # This will call test_config() for each trial
-        # Which will call run_bidirectional_test()
-        # Which will accumulate survivors with metadata
-        
         results = optimizer.optimize(
             strategy=strategy,
             bounds=bounds,
@@ -503,92 +456,65 @@ def add_window_optimizer_to_coordinator():
 
         optimizer.save_results(results, output_file)
 
-        # ====================================================================
-        # PRINT OPTIMIZATION SUMMARY
-        # ====================================================================
         print(f"\n{'='*80}")
         print("OPTIMIZATION COMPLETE")
-        print(f"Best configuration:")
         best = results['best_config']
         print(f"  Window size: {best['window_size']}")
         print(f"  Offset: {best['offset']}")
         print(f"  Sessions: {', '.join(best['sessions'])}")
         print(f"  Skip range: [{best['skip_min']}, {best['skip_max']}]")
-        print(f"\nBest result:")
         print(f"  Bidirectional survivors: {results['best_result']['bidirectional_count']:,}")
-        print(f"  Score: {results['best_score']:.2f}")
         print(f"{'='*80}\n")
 
         # ====================================================================
         # SAVE ALL ACCUMULATED SURVIVORS WITH METADATA
         # ====================================================================
-        # NEW: Survivors now have skip_mode, prng_type, prng_base fields
-        
         print(f"\n{'='*80}")
         print("SAVING ALL ACCUMULATED SURVIVORS WITH METADATA")
         print(f"{'='*80}")
 
         try:
-            # Deduplicate survivors while preserving best metadata
             def deduplicate_survivors(survivor_list):
-                """
-                Keep survivor with highest score for each unique seed.
-                If a seed appears in both constant and variable mode,
-                keep the one with the higher score.
-                """
+                """Keep survivor with highest per-seed score for each unique seed."""
                 seed_map = {}
                 for survivor in survivor_list:
                     seed = survivor['seed']
-                    if seed not in seed_map or survivor['score'] > seed_map[seed]['score']:
+                    if seed not in seed_map or survivor.get('score', 0) > seed_map[seed].get('score', 0):
                         seed_map[seed] = survivor
                 return list(seed_map.values())
 
-            # Deduplicate each category
             forward_deduped = deduplicate_survivors(survivor_accumulator['forward'])
             reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
             bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
 
-            # Save forward survivors with metadata
             with open('forward_survivors.json', 'w') as f:
                 json.dump(sorted(forward_deduped, key=lambda x: x['seed']), f, indent=2)
-            print(f"✅ Saved forward_survivors.json:")
-            print(f"   Total: {len(forward_deduped)} unique seeds with metadata")
-            print(f"   (Accumulated from {len(survivor_accumulator['forward'])} total across trials)")
+            print(f"✅ Saved forward_survivors.json: {len(forward_deduped)} unique seeds")
 
-            # Save reverse survivors with metadata
             with open('reverse_survivors.json', 'w') as f:
                 json.dump(sorted(reverse_deduped, key=lambda x: x['seed']), f, indent=2)
-            print(f"✅ Saved reverse_survivors.json:")
-            print(f"   Total: {len(reverse_deduped)} unique seeds with metadata")
-            print(f"   (Accumulated from {len(survivor_accumulator['reverse'])} total across trials)")
+            print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped)} unique seeds")
 
-            # Save bidirectional survivors with metadata
             with open('bidirectional_survivors.json', 'w') as f:
                 json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f, indent=2)
-            print(f"✅ Saved bidirectional_survivors.json:")
-            print(f"   Total: {len(bidirectional_deduped)} unique seeds with metadata")
-            print(f"   (Accumulated from {len(survivor_accumulator['bidirectional'])} total across trials)")
+            print(f"✅ Saved bidirectional_survivors.json: {len(bidirectional_deduped)} unique seeds")
 
-            # Print metadata sample
+            # Print sample to confirm per-seed fields present
             if bidirectional_deduped:
-                print(f"\n📊 Sample survivor with metadata:")
                 sample = bidirectional_deduped[0]
-                print(f"   Seed: {sample['seed']}")
-                print(f"   Skip mode: {sample.get('skip_mode', 'N/A')}")  # NEW!
-                print(f"   PRNG type: {sample.get('prng_type', 'N/A')}")  # NEW!
-                print(f"   Window: {sample['window_size']}, Offset: {sample['offset']}")
-                print(f"   Skip range: [{sample['skip_min']}, {sample['skip_max']}]")
-                print(f"   Sessions: {sample['sessions']}")
-                print(f"   Trial: {sample['trial_number']}, Score: {sample['score']}")
+                print(f"\n📊 Sample survivor:")
+                print(f"   seed: {sample['seed']}")
+                print(f"   forward_match_rate: {sample.get('forward_match_rate', 'MISSING')}")
+                print(f"   reverse_match_rate: {sample.get('reverse_match_rate', 'MISSING')}")
+                print(f"   score: {sample.get('score', 'MISSING')}")
+                print(f"   window_size: {sample['window_size']}, trial: {sample['trial_number']}")
 
-            # NEW: Print skip mode distribution
             if test_both_modes:
                 constant_count = sum(1 for s in bidirectional_deduped if s.get('skip_mode') == 'constant')
                 variable_count = sum(1 for s in bidirectional_deduped if s.get('skip_mode') == 'variable')
                 print(f"\n📈 Skip Mode Distribution:")
                 print(f"   Constant skip: {constant_count} survivors")
                 print(f"   Variable skip: {variable_count} survivors")
-
 
             # Convert to NPZ binary format (required by Step 2)
             from subprocess import run as subprocess_run, CalledProcessError
@@ -601,6 +527,7 @@ def add_window_optimizer_to_coordinator():
             except CalledProcessError as e:
                 print(f"❌ NPZ conversion failed: {e}")
                 raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
+
             print(f"{'='*80}\n")
 
         except Exception as e:
@@ -608,7 +535,6 @@ def add_window_optimizer_to_coordinator():
             import traceback
             traceback.print_exc()
 
-        # Keep existing integration save (if available)
         try:
             from integration.sieve_integration import save_bidirectional_sieve_results
             save_bidirectional_sieve_results(
@@ -636,6 +562,5 @@ def add_window_optimizer_to_coordinator():
 
         return results
 
-    # Monkey-patch the coordinator class
     MultiGPUCoordinator.optimize_window = optimize_window
     print("✅ Window optimizer integrated into MultiGPUCoordinator")
