@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scorer_trial_worker.py (v4.0 - WSI objective, draw-history-free)
+scorer_trial_worker.py (v4.2 - Subset-Selection, bidirectional_count signal, TB S107)
 ==================================================
 v4.0 (2026-02-21):
 - ARCHITECTURE: Remove draw history from Step 2 (TB ruling S102/S103)
@@ -113,8 +113,11 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 survivors = None
 seeds_to_score = None
-npz_forward_matches = None   # float32 ndarray -- quality signal from NPZ
-npz_reverse_matches = None   # float32 ndarray -- quality signal from NPZ
+npz_forward_matches     = None   # float32 ndarray -- quality signal from NPZ
+npz_reverse_matches     = None   # float32 ndarray -- quality signal from NPZ
+npz_bidirectional_count = None   # float32 ndarray -- survival frequency (v4.2)
+npz_intersection_ratio  = None   # float32 ndarray -- bidirectional tightness (v4.2)
+npz_trial_number        = None   # int32   ndarray -- trial_number per seed (v4.1)
 
 
 
@@ -191,12 +194,53 @@ def load_data(survivors_file: str,
                     f'Available NPZ keys: {list(survivors.keys())}'
                 )
 
+            # v4.2: load bidirectional_count + intersection_ratio (TB ruling S107 Q1-Q3)
+            # bidirectional_selectivity dropped -- 98.8% at floor, unusable as signal
+            global npz_bidirectional_count, npz_intersection_ratio, npz_trial_number
+            if 'bidirectional_count' in survivors:
+                npz_bidirectional_count = survivors['bidirectional_count'].astype(_np.float32)
+                logger.info(
+                    f'NPZ bidirectional_count: min={npz_bidirectional_count.min():.0f}  '
+                    f'median={float(_np.median(npz_bidirectional_count)):.0f}  '
+                    f'max={npz_bidirectional_count.max():.0f}  '
+                    f'std={npz_bidirectional_count.std():.1f}'
+                )
+            else:
+                logger.warning('NPZ missing bidirectional_count -- using ones fallback')
+                npz_bidirectional_count = _np.ones(len(seeds_to_score), dtype=_np.float32)
+
+            if 'intersection_ratio' in survivors:
+                npz_intersection_ratio = survivors['intersection_ratio'].astype(_np.float32)
+                logger.info(
+                    f'NPZ intersection_ratio: min={npz_intersection_ratio.min():.4f}  '
+                    f'median={float(_np.median(npz_intersection_ratio)):.4f}  '
+                    f'max={npz_intersection_ratio.max():.4f}'
+                )
+            else:
+                logger.warning('NPZ missing intersection_ratio -- ir_score will be 0.0')
+                npz_intersection_ratio = _np.zeros(len(seeds_to_score), dtype=_np.float32)
+
+            if 'trial_number' in survivors:
+                npz_trial_number = survivors['trial_number'].astype(_np.int32)
+                logger.info(
+                    f'NPZ trial_number: min={npz_trial_number.min()}  '
+                    f'max={npz_trial_number.max()}  '
+                    f'unique={len(_np.unique(npz_trial_number))}'
+                )
+            else:
+                logger.warning('NPZ missing trial_number -- coverage bonus disabled')
+                npz_trial_number = _np.zeros(len(seeds_to_score), dtype=_np.int32)
+
         except Exception as e:
             logger.error(f'Failed to load data: {e}', exc_info=True)
             raise
 
     if npz_forward_matches is None or npz_reverse_matches is None:
         raise RuntimeError('NPZ quality signals are None after load -- cannot compute WSI.')
+    if npz_bidirectional_count is None or npz_trial_number is None:
+        raise RuntimeError(
+            'NPZ bidirectional_count/trial_number are None after load -- v4.2 cannot run.'
+        )
 
     # prng_type from optimal_window_config.json (canonical source, S102)
     prng_type = 'java_lcg'
@@ -217,118 +261,234 @@ def load_data(survivors_file: str,
         except Exception as _e:
             logger.warning(f'Could not read optimal_window_config.json: {_e} -- using defaults')
 
-    return seeds_to_score, npz_forward_matches, npz_reverse_matches, prng_type, mod
+    return seeds_to_score, npz_forward_matches, npz_reverse_matches, npz_bidirectional_count, npz_intersection_ratio, npz_trial_number, prng_type, mod
 
 
 
 def run_trial(seeds_to_score,
               npz_forward_matches,
               npz_reverse_matches,
+              npz_bidirectional_count,
+              npz_intersection_ratio,
+              npz_trial_number,
               params,
               prng_type='java_lcg',
               mod=1000,
               trial=None,
               use_legacy_scoring=False):
     """
-    v4.0: WSI (Weighted Separation Index) objective -- draw-history-free.
+    v4.2: Subset-Selection Objective -- bidirectional_count primary signal.
+    Last modified : 2026-02-22
+    Session       : S107
+    Expected lines: ~155
 
-    ALL 5 Optuna params affect the objective (TB issue 3 resolved):
-      rm1, rm2, rm3  -> normalized mixture weights for fwd/rev/interaction
-      max_offset     -> squared-interaction term weight (wi = offset/15)
-      temporal_window_size -> temporal smoothing weight (tw = size/200)
+    CHANGE FROM v4.1:
+        bidirectional_selectivity dropped (98.8% at floor -- unusable).
+        Primary: bidirectional_count (survival frequency, std=722).
+        Secondary bonus: intersection_ratio (bidirectional tightness, weight=0.10).
+        Median used (robust against heavy-tail counts -- TB Q2).
+        Percentile-rank vs full global arrays (stable across trials).
+        ir_disabled guard: if IR array all zeros, ir_score=0.0 with warning.
 
-    Scoring:
-        scores = wf*fwd + wr*rev + w3*(fwd*rev) + tw*(fwd+rev)/2 + wi*(fwd*rev)**2
+    TB FORMULA (final v4.2):
+        mask     = vote_count >= 2  (k-of-3 residue filter)
+        bc_stat  = median(bidirectional_count[mask])
+        bc_score = P(bc_global < bc_stat)              in [0,1]
+        ir_stat  = median(intersection_ratio[mask])
+        ir_score = P(ir_global < ir_stat)              in [0,1]
+        bal      = 1 - abs(mean(fwd[mask]) - mean(rev[mask]))
+        coverage = unique(trial_number[mask]) / unique(trial_number[sample])
+        tw_weight= clip(temporal_window_size/1000, 0.05, 0.20)
+        size_pen = min(|log(keep/0.10)|, 5.0)
+        objective= clip(bc_score*(0.75+0.25*bal) + tw_weight*coverage
+                        + 0.10*ir_score - 0.30*size_pen, -1, 1)
 
-    WSI formula (bounded [-1,1], TB-approved S103):
-        quality = fwd * rev
-        WSI = cov(scores,quality) / ((std_s+eps)*(std_q+eps))
-
-    Degenerate guard: std(scores) < 1e-12 -> WSI = -1.0
+    PRESERVED:
+        S101: random.seed(optuna_trial_number) per-trial unique sampling
+        All degenerate guards (too_small, keep_too_low, keep_too_high)
+        full-length scores array (Option B)
+        WATCHER CLI compatibility
     """
-    try:
-        import numpy as np
-        import random
+    import numpy as np
+    import random
+    import math
 
-        # Sampling -- per-trial RNG preserved from S101
-        n_seeds     = len(seeds_to_score)
-        sample_size = params.get('sample_size', 50000)
+    EPS            = 1e-9
+    TARGET_KEEP    = 0.10
+    MIN_KEEP_FRAC  = 0.01
+    MAX_KEEP_FRAC  = 0.40
+    MIN_KEEP_COUNT = 10
+    LAMBDA_SIZE    = 0.30
+    SIZE_PEN_CAP   = 5.0
+    IR_WEIGHT      = 0.10
 
-        if n_seeds > sample_size:
-            random.seed(params.get('optuna_trial_number', 0))
-            sample_idx  = random.sample(range(n_seeds), sample_size)
-            sample_idx  = np.array(sample_idx, dtype=np.int64)
-            sampled_fwd = npz_forward_matches[sample_idx]
-            sampled_rev = npz_reverse_matches[sample_idx]
-            logger.info(
-                f'Sampled {sample_size:,} / {n_seeds:,} seeds '
-                f'(rng_seed={params.get("optuna_trial_number", 0)})'
-            )
-        else:
-            sampled_fwd = npz_forward_matches
-            sampled_rev = npz_reverse_matches
-            logger.info(f'Using all {n_seeds:,} seeds')
+    rm1         = int(params.get('residue_mod_1',   10))
+    rm2         = int(params.get('residue_mod_2',  100))
+    rm3         = int(params.get('residue_mod_3', 1000))
+    max_offset  = int(params.get('max_offset',       5))
+    tw_size     = int(params.get('temporal_window_size', 100))
+    trial_num   = int(params.get('optuna_trial_number',   0))
+    sample_size = int(params.get('sample_size', 50000))
 
-        # Parametric scoring -- all 5 params active
-        rm1        = float(params.get('residue_mod_1',   10))
-        rm2        = float(params.get('residue_mod_2',  100))
-        rm3        = float(params.get('residue_mod_3', 1000))
-        max_offset = float(params.get('max_offset',       10))
-        tw_size    = float(params.get('temporal_window_size', 100))
+    n_seeds = len(seeds_to_score)
 
-        eps    = 1e-10
-        w_sum  = rm1 + rm2 + rm3 + eps
-        wf     = rm1 / w_sum          # forward weight
-        wr     = rm2 / w_sum          # reverse weight
-        w3     = rm3 / w_sum          # intersection weight
-        tw     = tw_size / 200.0      # temporal smoothing weight
-        wi     = max_offset / 15.0    # squared interaction weight
-
-        fwd_rev = sampled_fwd * sampled_rev
-
-        scores = (
-            wf * sampled_fwd
-            + wr * sampled_rev
-            + w3 * fwd_rev
-            + tw * (sampled_fwd + sampled_rev) / 2.0
-            + wi * fwd_rev ** 2
+    # S101: per-trial unique sampling
+    if n_seeds > sample_size:
+        random.seed(trial_num)
+        sample_idx = np.array(
+            random.sample(range(n_seeds), sample_size), dtype=np.int64
         )
+        seeds_arr = np.array(seeds_to_score, dtype=np.int64)[sample_idx]
+        bc_arr    = npz_bidirectional_count[sample_idx]
+        ir_arr    = npz_intersection_ratio[sample_idx]
+        fwd_arr   = npz_forward_matches[sample_idx]
+        rev_arr   = npz_reverse_matches[sample_idx]
+        tn_arr    = npz_trial_number[sample_idx]
+        logger.info(f'Sampled {sample_size:,} / {n_seeds:,} seeds (rng_seed={trial_num})')
+    else:
+        sample_idx = None
+        seeds_arr  = np.array(seeds_to_score, dtype=np.int64)
+        bc_arr     = npz_bidirectional_count
+        ir_arr     = npz_intersection_ratio
+        fwd_arr    = npz_forward_matches
+        rev_arr    = npz_reverse_matches
+        tn_arr     = npz_trial_number
 
-        logger.info(
-            f'Parametric scoring: wf={wf:.3f}  wr={wr:.3f}  w3={w3:.3f}  '
-            f'tw={tw:.3f}  wi={wi:.3f}  '
-            f'score_mean={scores.mean():.4f}  score_std={scores.std():.4f}'
-        )
+    N = len(seeds_arr)
 
-        # WSI objective -- bounded [-1, 1]
-        quality = fwd_rev
-        std_s   = float(scores.std())
-        std_q   = float(quality.std())
+    # Bound offset vs modulus so filter always has teeth (TB Tweak 6)
+    off1 = max(1, min(max_offset, max(rm1 - 1, 1)))
+    off2 = max(1, min(max_offset, max(rm2 - 1, 1)))
+    off3 = max(1, min(max_offset, max(rm3 - 1, 1)))
 
-        if std_s < 1e-12:
-            wsi = -1.0
-            logger.warning(
-                f'Degenerate scores (std={std_s:.2e}) -> WSI=-1.0.  '
-                f'rm1={rm1:.0f}  rm2={rm2:.0f}  rm3={rm3:.0f}  '
-                f'offset={max_offset:.0f}  tw={tw_size:.0f}'
-            )
-        else:
-            centered_s = scores  - scores.mean()
-            centered_q = quality - quality.mean()
-            covariance = float(np.mean(centered_s * centered_q))
-            wsi        = covariance / ((std_s + eps) * (std_q + eps))
-            wsi        = float(np.clip(wsi, -1.0, 1.0))
-            logger.info(
-                f'WSI = {wsi:.6f}  '
-                f'(cov={covariance:.6f}  std_s={std_s:.4f}  std_q={std_q:.4f}  '
-                f'quality_mean={quality.mean():.4f})'
-            )
+    # k-of-3 mask: seed passes if >= 2 of 3 residue conditions met
+    m1 = (seeds_arr % max(rm1, 1)) < off1
+    m2 = (seeds_arr % max(rm2, 1)) < off2
+    m3 = (seeds_arr % max(rm3, 1)) < off3
+    vote_count = m1.astype(np.int32) + m2.astype(np.int32) + m3.astype(np.int32)
+    mask = vote_count >= 2
 
-        return wsi, scores.tolist()
+    subset_n = int(mask.sum())
+    keep     = subset_n / max(N, 1)
 
-    except Exception as e:
-        logger.error(f'Trial execution failed: {e}', exc_info=True)
-        raise
+    logger.info(
+        f'Mask: rm=({rm1},{rm2},{rm3}) off=({off1},{off2},{off3}) '
+        f'subset_n={subset_n} keep={keep:.4f} ({keep*100:.1f}%)'
+    )
+
+    # Degenerate guards
+    def _reject(reason):
+        logger.warning(f'Rejected: {reason} subset_n={subset_n} keep={keep:.4f} -> -1.0')
+        _log_trial_metrics(trial_num, params, subset_n, keep,
+                           objective=-1.0, reason=reason)
+        return -1.0, np.zeros(n_seeds, dtype=np.float32).tolist()
+
+    if subset_n < MIN_KEEP_COUNT:
+        return _reject('too_small')
+    if keep < MIN_KEEP_FRAC:
+        return _reject('keep_too_low')
+    if keep > MAX_KEEP_FRAC:
+        return _reject('keep_too_high')
+
+    # Primary: bidirectional_count -- median (robust vs heavy tail, TB Q2)
+    bc_subset = bc_arr[mask]
+    bc_stat   = float(np.median(bc_subset))
+    bc_score  = float(np.mean(npz_bidirectional_count < bc_stat))  # global percentile
+
+    # Secondary: intersection_ratio (TB Q3, optional bonus weight=0.10)
+    ir_disabled = bool(np.all(npz_intersection_ratio == 0))
+    if ir_disabled:
+        logger.warning('intersection_ratio all zeros -- ir_score=0.0 for this trial')
+        ir_stat  = 0.0
+        ir_score = 0.0
+    else:
+        ir_subset = ir_arr[mask]
+        ir_stat   = float(np.median(ir_subset))
+        ir_score  = float(np.mean(npz_intersection_ratio < ir_stat))  # global percentile
+
+    # Balance bonus
+    fwd_mean = float(fwd_arr[mask].mean())
+    rev_mean = float(rev_arr[mask].mean())
+    bal      = float(np.clip(1.0 - abs(fwd_mean - rev_mean), 0.0, 1.0))
+
+    # Temporal coverage via trial_number
+    uniq_total = max(len(np.unique(tn_arr)), 1)
+    uniq_sel   = len(np.unique(tn_arr[mask]))
+    coverage   = uniq_sel / uniq_total
+    tw_weight  = float(np.clip(tw_size / 1000.0, 0.05, 0.20))
+
+    # Size penalty, capped
+    size_penalty = min(
+        abs(math.log((keep + EPS) / TARGET_KEEP)),
+        SIZE_PEN_CAP
+    )
+
+    # TB v4.2 composite objective
+    objective = (
+        bc_score * (0.75 + 0.25 * bal)
+        + tw_weight * coverage
+        + IR_WEIGHT * ir_score
+        - LAMBDA_SIZE * size_penalty
+    )
+    objective = float(np.clip(objective, -1.0, 1.0))
+
+    logger.info(
+        f'Objective={objective:.6f}  bc_stat={bc_stat:.0f}  bc_score={bc_score:.4f}  '
+        f'ir_stat={ir_stat:.4f}  ir_score={ir_score:.4f}  '
+        f'bal={bal:.4f}  coverage={coverage:.4f}  tw_weight={tw_weight:.3f}  '
+        f'size_pen={size_penalty:.4f}'
+    )
+
+    _log_trial_metrics(
+        trial_num, params, subset_n, keep,
+        bc_stat=bc_stat, bc_score=bc_score,
+        ir_stat=ir_stat, ir_score=ir_score,
+        fwd_mean=fwd_mean, rev_mean=rev_mean, bal=bal,
+        coverage=coverage, tw_weight=tw_weight,
+        size_penalty=size_penalty, objective=objective, reason='ok'
+    )
+
+    # Option B: full-length scores array
+    full = np.zeros(n_seeds, dtype=np.float32)
+    if sample_idx is not None:
+        full[sample_idx] = mask.astype(np.float32)
+    else:
+        full[:] = mask.astype(np.float32)
+
+    return objective, full.tolist()
+
+
+def _log_trial_metrics(trial_num, params, subset_n, keep,
+                       bc_stat=None, bc_score=None,
+                       ir_stat=None, ir_score=None,
+                       fwd_mean=None, rev_mean=None, bal=None,
+                       coverage=None, tw_weight=None,
+                       size_penalty=None, objective=None, reason='ok'):
+    """
+    Per-trial diagnostic metrics (TB S107 requirement).
+    v4.2: sel_* replaced with bc_* and ir_*.
+    Key signal: bc_score must vary across trials for real landscape.
+    Session: S107  Expected lines: ~25
+    """
+    metrics = {
+        'trial_num'   : trial_num,
+        'params'      : params,
+        'subset_n'    : subset_n,
+        'keep'        : round(keep, 6) if keep is not None else None,
+        'bc_stat'     : round(bc_stat, 2) if bc_stat is not None else None,
+        'bc_score'    : round(bc_score, 6) if bc_score is not None else None,
+        'ir_stat'     : round(ir_stat, 6) if ir_stat is not None else None,
+        'ir_score'    : round(ir_score, 6) if ir_score is not None else None,
+        'fwd_mean'    : round(fwd_mean, 6) if fwd_mean is not None else None,
+        'rev_mean'    : round(rev_mean, 6) if rev_mean is not None else None,
+        'bal'         : round(bal, 6) if bal is not None else None,
+        'coverage'    : round(coverage, 6) if coverage is not None else None,
+        'tw_weight'   : round(tw_weight, 6) if tw_weight is not None else None,
+        'size_penalty': round(size_penalty, 6) if size_penalty is not None else None,
+        'objective'   : round(objective, 6) if objective is not None else None,
+        'reason'      : reason,
+    }
+    logger.info(f'[TRIAL_METRICS] {metrics}')
 
 
 def save_local_result(trial_id: int, params: dict, accuracy: float, state: str, 
@@ -437,14 +597,14 @@ def main():
     # Run trial
     try:
         # v4.0: draw history files passed for compat but unused
-        seeds, fwd_matches, rev_matches, prng_type, mod = load_data(
+        seeds, fwd_matches, rev_matches, bc, ir, tn, prng_type, mod = load_data(
             survivors_file, train_history_file, holdout_history_file
         )
 
         trial = None  # No Optuna in PULL mode
 
         accuracy, scores = run_trial(
-            seeds, fwd_matches, rev_matches, params,
+            seeds, fwd_matches, rev_matches, bc, ir, tn, params,
             prng_type=prng_type, mod=mod, trial=trial,
             use_legacy_scoring=use_legacy_scoring
         )
