@@ -2,10 +2,18 @@
 """
 Window Optimizer Integration - WITH VARIABLE SKIP SUPPORT
 ==========================================================
-Version: 3.0
-Date: 2026-02-21
+Version: 3.1
+Date: 2026-02-22
 
 CHANGELOG:
+  v3.1 (2026-02-22) - S104 FIX: Restore 7 missing intersection fields
+    Fields lost during S103 rewrite: intersection_count, intersection_ratio,
+    forward_only_count, reverse_only_count, survivor_overlap_ratio,
+    bidirectional_selectivity, intersection_weight.
+    Formulas restored from v2.0 backup (bak_20260221_pre_s103).
+    Variable names updated to match v3.0 naming (forward_records not forward_survivors).
+    Applied to both constant skip and variable skip (hybrid) blocks.
+
   v3.0 (2026-02-21) - S103 FIX: Preserve per-seed match rates from sieve
     CRITICAL BUG FIX: extract_survivors_from_result() was discarding per-seed
     match_rate computed by the GPU kernel and returning only seed integers.
@@ -212,6 +220,8 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     if accumulator is not None:
         # Trial-level context (same for all seeds in this trial)
+        # v3.1: Compute trial-level intersection statistics
+        _union_size = len(forward_set | reverse_set)
         metadata_base = {
             'window_size': config.window_size,
             'offset': config.offset,
@@ -223,10 +233,18 @@ def run_bidirectional_test(coordinator,
             'prng_base': prng_base,
             'skip_mode': 'constant',
             'prng_type': prng_base,
-            # Trial-level counts retained as context
+            # Trial-level counts
             'forward_count': len(forward_records),
             'reverse_count': len(reverse_records),
             'bidirectional_count': len(bidirectional_constant),
+            # v3.1: Restored intersection fields (were in v2.0, lost in S103 rewrite)
+            'intersection_count': len(bidirectional_constant),
+            'intersection_ratio': len(bidirectional_constant) / max(_union_size, 1),
+            'forward_only_count': len(forward_set - reverse_set),
+            'reverse_only_count': len(reverse_set - forward_set),
+            'survivor_overlap_ratio': len(bidirectional_constant) / max(len(forward_set), 1),
+            'bidirectional_selectivity': len(forward_set) / max(len(reverse_set), 1),
+            'intersection_weight': len(bidirectional_constant) / max(len(forward_set) + len(reverse_set), 1),
         }
 
         for record in forward_records:
@@ -306,6 +324,8 @@ def run_bidirectional_test(coordinator,
         print(f"      ✨ Bidirectional (variable): {len(bidirectional_variable):,} survivors")
 
         if accumulator is not None:
+            # v3.1: Compute trial-level intersection statistics (variable skip)
+            _union_size_hybrid = len(forward_set_hybrid | reverse_set_hybrid)
             metadata_base_hybrid = {
                 'window_size': config.window_size,
                 'offset': config.offset,
@@ -317,9 +337,18 @@ def run_bidirectional_test(coordinator,
                 'prng_base': prng_base,
                 'skip_mode': 'variable',
                 'prng_type': prng_hybrid,
+                # Trial-level counts
                 'forward_count': len(forward_records_hybrid),
                 'reverse_count': len(reverse_records_hybrid),
                 'bidirectional_count': len(bidirectional_variable),
+                # v3.1: Restored intersection fields (were in v2.0, lost in S103 rewrite)
+                'intersection_count': len(bidirectional_variable),
+                'intersection_ratio': len(bidirectional_variable) / max(_union_size_hybrid, 1),
+                'forward_only_count': len(forward_set_hybrid - reverse_set_hybrid),
+                'reverse_only_count': len(reverse_set_hybrid - forward_set_hybrid),
+                'survivor_overlap_ratio': len(bidirectional_variable) / max(len(forward_set_hybrid), 1),
+                'bidirectional_selectivity': len(forward_set_hybrid) / max(len(reverse_set_hybrid), 1),
+                'intersection_weight': len(bidirectional_variable) / max(len(forward_set_hybrid) + len(reverse_set_hybrid), 1),
             }
 
             for record in forward_records_hybrid:

@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-scorer_trial_worker.py (v3.6 - NPZ prng_type config fix)
+scorer_trial_worker.py (v4.0 - WSI objective, draw-history-free)
 ==================================================
+v4.0 (2026-02-21):
+- ARCHITECTURE: Remove draw history from Step 2 (TB ruling S102/S103)
+- NEW OBJECTIVE: WSI bounded [-1,1]; all 5 Optuna params active
+- REMOVE: ReinforcementEngine, SurvivorScorer
+- PRESERVE: per-trial RNG (S101), prng_type from config (S102)
+- CLI: positional args 2+3 accepted but ignored
+
+v3.6 (2026-02-21):
+- BUG FIX: NPZ branch never read prng_type from config
+
 v3.5 (2026-02-20):
 - BUG FIX: Replace neg-MSE objective with Spearman rank correlation
   (MSE collapsed to constant on low-variance score distributions — S101)
@@ -90,8 +100,7 @@ if gpu_id is not None:
 # =============================================================================
 # Now safe to import CUDA-dependent modules
 # =============================================================================
-from reinforcement_engine import ReinforcementEngine, ReinforcementConfig
-from survivor_scorer import SurvivorScorer
+# v4.0: ReinforcementEngine + SurvivorScorer removed (WSI uses NPZ signals only)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,9 +112,9 @@ logger = logging.getLogger(__name__)
 # Global data cache (loaded once per worker)
 # =============================================================================
 survivors = None
-train_history = None
-holdout_history = None
 seeds_to_score = None
+npz_forward_matches = None   # float32 ndarray -- quality signal from NPZ
+npz_reverse_matches = None   # float32 ndarray -- quality signal from NPZ
 
 
 
@@ -135,339 +144,190 @@ def _best_effort_gpu_cleanup():
 # Register cleanup for crash safety
 atexit.register(_best_effort_gpu_cleanup)
 
-def load_data(survivors_file: str, train_history_file: str, holdout_history_file: str):
-    """Load data files (cached for reuse across trials on same worker)."""
-    global survivors, train_history, holdout_history, seeds_to_score
+def load_data(survivors_file: str,
+              train_history_file: str = None,
+              holdout_history_file: str = None):
+    """
+    v4.0: Load NPZ survivor data only -- draw history ignored.
+    train_history_file / holdout_history_file accepted for CLI compat.
+    """
+    global survivors, seeds_to_score, npz_forward_matches, npz_reverse_matches
 
     if survivors is None:
-        logger.info("Loading data (one time)...")
+        logger.info('Loading NPZ survivor data (one time)...')
         try:
             survivors_file = os.path.expanduser(survivors_file)
-            train_history_file = os.path.expanduser(train_history_file)
-            holdout_history_file = os.path.expanduser(holdout_history_file)
 
-            # Load survivors using modular loader (NPZ/JSON auto-detect)
-            survivor_result = load_survivors(survivors_file, return_format="array")
+            # survivor_loader.data is plain Dict[str, np.ndarray] (no structured array)
+            survivor_result = load_survivors(survivors_file, return_format='array')
             survivors = survivor_result.data
-            logger.info(f"Loaded {survivor_result.count:,} survivors from {survivor_result.format} "
-                       f"(fallback={survivor_result.fallback_used})")
+            logger.info(
+                f'Loaded {survivor_result.count:,} survivors from '
+                f'{survivor_result.format} (fallback={survivor_result.fallback_used})'
+            )
 
-            with open(train_history_file) as f:
-                train_data = json.load(f)
-                if isinstance(train_data, list) and len(train_data) > 0 and isinstance(train_data[0], dict):
-                    train_history = [d['draw'] for d in train_data]
-                else:
-                    train_history = train_data
+            if not isinstance(survivors, dict) or 'seeds' not in survivors:
+                raise ValueError(
+                    f'Unexpected survivors type: {type(survivors)}. '
+                    'Expected Dict[str, np.ndarray] from survivor_loader.'
+                )
 
-            with open(holdout_history_file) as f:
-                holdout_data = json.load(f)
-                if isinstance(holdout_data, list) and len(holdout_data) > 0 and isinstance(holdout_data[0], dict):
-                    holdout_history = [d['draw'] for d in holdout_data]
-                else:
-                    holdout_history = holdout_data
-
-            # Extract seeds (modular loader returns array format)
             seeds_to_score = survivors['seeds'].tolist()
+            logger.info(f'Loaded {len(seeds_to_score):,} seeds.')
 
-            logger.info(f"Loaded {len(seeds_to_score)} survivors/seeds from {survivors_file}.")
-            logger.info(f"Loaded {len(train_history)} training draws from {train_history_file}.")
-            logger.info(f"Loaded {len(holdout_history)} holdout draws from {holdout_history_file}.")
+            import numpy as _np
+            if 'forward_matches' in survivors and 'reverse_matches' in survivors:
+                npz_forward_matches = survivors['forward_matches'].astype(_np.float32)
+                npz_reverse_matches = survivors['reverse_matches'].astype(_np.float32)
+                logger.info(
+                    f'NPZ quality signals: '
+                    f'fwd mean={npz_forward_matches.mean():.4f}  '
+                    f'rev mean={npz_reverse_matches.mean():.4f}'
+                )
+            else:
+                raise RuntimeError(
+                    'NPZ missing forward_matches or reverse_matches. '
+                    'Re-run convert_survivors_to_binary.py with NPZ v3.0+ format. '
+                    f'Available NPZ keys: {list(survivors.keys())}'
+                )
 
         except Exception as e:
-            logger.error(f"Failed to load data: {e}", exc_info=True)
+            logger.error(f'Failed to load data: {e}', exc_info=True)
             raise
 
-    # Extract PRNG type from survivor metadata
+    if npz_forward_matches is None or npz_reverse_matches is None:
+        raise RuntimeError('NPZ quality signals are None after load -- cannot compute WSI.')
+
+    # prng_type from optimal_window_config.json (canonical source, S102)
     prng_type = 'java_lcg'
     mod = 1000
-    if isinstance(survivors, dict) and 'seeds' in survivors:
-        # NPZ format - prng_type from metadata if available
-        wc_path = os.path.join(os.path.dirname(os.path.abspath(survivors_file)), "optimal_window_config.json")
-        if os.path.exists(wc_path):
-            try:
-                with open(wc_path) as _wf:
-                    _wc = json.load(_wf)
-                prng_type = _wc.get("prng_type")
-                mod = _wc.get("mod")
-                logger.info(f"Pipeline config: prng_type={prng_type}, mod={mod} (from optimal_window_config.json)")
-            except Exception as _e:
-                logger.warning(f"Could not read optimal_window_config.json: {_e}")
-        if not prng_type:
-            logger.warning("prng_type not resolved from config -- defaulting to java_lcg")
-            prng_type = "java_lcg"
-        if not mod:
-            mod = 1000
-    elif survivors and len(survivors) > 0 and isinstance(survivors[0], dict):
-        prng_type = survivors[0].get('prng_type', 'java_lcg')
-        if '_' in prng_type and prng_type.split('_')[-1].isdigit():
-            mod = int(prng_type.split('_')[-1])
+    wc_path = os.path.join(
+        os.path.dirname(os.path.abspath(survivors_file)), 'optimal_window_config.json'
+    )
+    if os.path.exists(wc_path):
+        try:
+            with open(wc_path) as _wf:
+                _wc = json.load(_wf)
+            prng_type = _wc.get('prng_type') or 'java_lcg'
+            mod       = _wc.get('mod')       or 1000
+            logger.info(
+                f'Pipeline config: prng_type={prng_type}, mod={mod} '
+                '(from optimal_window_config.json)'
+            )
+        except Exception as _e:
+            logger.warning(f'Could not read optimal_window_config.json: {_e} -- using defaults')
 
-    return seeds_to_score, train_history, holdout_history, prng_type, mod
+    return seeds_to_score, npz_forward_matches, npz_reverse_matches, prng_type, mod
 
 
-def run_trial(seeds_to_score: List[int], train_history: List[int], holdout_history: List[int], 
-              params: dict, prng_type: str = 'java_lcg', mod: int = 1000, 
-              trial=None, use_legacy_scoring: bool = False) -> Tuple[float, List[float]]:
+
+def run_trial(seeds_to_score,
+              npz_forward_matches,
+              npz_reverse_matches,
+              params,
+              prng_type='java_lcg',
+              mod=1000,
+              trial=None,
+              use_legacy_scoring=False):
     """
-    Runs the full trial: score seeds, train model, evaluate on holdout.
-    
-    v3.4 FIX: Holdout evaluation now uses SAMPLED seeds (same as training).
-    
-    Args:
-        seeds_to_score: Full list of seed values
-        train_history: Training lottery draws
-        holdout_history: Holdout lottery draws  
-        params: Trial parameters dict
-        prng_type: PRNG type (from config, NOT hardcoded)
-        mod: Modulo value for PRNG
-        trial: Optional Optuna trial (disabled in PULL mode)
-        use_legacy_scoring: If True, use CPU scoring instead of GPU
-        
-    Returns:
-        Tuple[float, List[float]]: (accuracy, holdout_predictions)
+    v4.0: WSI (Weighted Separation Index) objective -- draw-history-free.
+
+    ALL 5 Optuna params affect the objective (TB issue 3 resolved):
+      rm1, rm2, rm3  -> normalized mixture weights for fwd/rev/interaction
+      max_offset     -> squared-interaction term weight (wi = offset/15)
+      temporal_window_size -> temporal smoothing weight (tw = size/200)
+
+    Scoring:
+        scores = wf*fwd + wr*rev + w3*(fwd*rev) + tw*(fwd+rev)/2 + wi*(fwd*rev)**2
+
+    WSI formula (bounded [-1,1], TB-approved S103):
+        quality = fwd * rev
+        WSI = cov(scores,quality) / ((std_s+eps)*(std_q+eps))
+
+    Degenerate guard: std(scores) < 1e-12 -> WSI = -1.0
     """
     try:
-        import torch
         import numpy as np
-        
-        # =============================================================================
-        # CONFIGURATION
-        # =============================================================================
-        config = ReinforcementConfig()
-        
-        config.training.update({
-            'epochs': 25,
-            'batch_size': params.get('batch_size', 128),
-            'learning_rate': params.get('learning_rate', 0.001),
-            'early_stopping_patience': 5,
-            'sample_size': params.get('sample_size', 50000)
-        })
-        
-        config.model.update({
-            'hidden_layers': [int(x) for x in params.get('hidden_layers', '128_64').split('_')],
-            'dropout': params.get('dropout', 0.3)
-        })
+        import random
 
-        # =============================================================================
-        # INITIALIZE ENGINE
-        # =============================================================================
-        logger.info("Initializing Mini-Run Engine...")
-        engine = ReinforcementEngine(config, lottery_history=train_history)
-        
-        # Determine device
-        device = engine.device if hasattr(engine, 'device') else ('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Configure scorer with trial parameters (PRNG type from config!)
-        trial_scorer_params = {
-            'residue_mod_1': params.get('residue_mod_1', 10),
-            'residue_mod_2': params.get('residue_mod_2', 100),
-            'residue_mod_3': params.get('residue_mod_3', 1000),
-            'max_offset': params.get('max_offset', 10),
-            'temporal_window_size': params.get('temporal_window_size', 100),
-            'temporal_num_windows': params.get('temporal_num_windows', 5),
-            'min_confidence_threshold': params.get('min_confidence_threshold', 0.15)
-        }
-        
-        engine.scorer = SurvivorScorer(prng_type=prng_type, mod=mod, config_dict=trial_scorer_params)
-        logger.info(f"Scorer configured with PRNG={prng_type}, mod={mod}, params={trial_scorer_params}")
+        # Sampling -- per-trial RNG preserved from S101
+        n_seeds     = len(seeds_to_score)
+        sample_size = params.get('sample_size', 50000)
 
-        # =============================================================================
-        # SCORING SECTION (GPU-Vectorized)
-        # =============================================================================
-        logger.info(f"🔍 [DEBUG] Scoring {len(seeds_to_score)} seeds on training data...")
-        logger.info(f"🔍 [DEBUG] Use legacy scoring: {use_legacy_scoring}")
-        
-        if use_legacy_scoring:
-            # Legacy CPU scoring (for debugging/comparison)
-            logger.info("⚠️ Using LEGACY CPU scoring method")
-            t_start = time.time()
-            y_train = engine.scorer.batch_score(
-                seeds=seeds_to_score,
-                lottery_history=train_history,
-                use_dual_gpu=False
+        if n_seeds > sample_size:
+            random.seed(params.get('optuna_trial_number', 0))
+            sample_idx  = random.sample(range(n_seeds), sample_size)
+            sample_idx  = np.array(sample_idx, dtype=np.int64)
+            sampled_fwd = npz_forward_matches[sample_idx]
+            sampled_rev = npz_reverse_matches[sample_idx]
+            logger.info(
+                f'Sampled {sample_size:,} / {n_seeds:,} seeds '
+                f'(rng_seed={params.get("optuna_trial_number", 0)})'
             )
-            if y_train and isinstance(y_train[0], dict):
-                y_train = [item["score"] for item in y_train]
-            logger.info(f"Legacy scoring completed in {time.time()-t_start:.2f}s")
         else:
-            # GPU-vectorized scoring (default - fast!)
-            logger.info("✅ [DEBUG-VECTOR] Using GPU-vectorized batch_score_vectorized() method")
-            logger.info(f"🔍 [DEBUG-VECTOR] PyTorch version: {torch.__version__}")
-            logger.info(f"🔍 [DEBUG-VECTOR] CUDA available: {torch.cuda.is_available()}")
-            logger.info(f"🔍 [DEBUG-VECTOR] Selected device: {device}")
-            
-            # Create tensors on GPU
-            logger.info(f"🔍 [DEBUG-VECTOR] Creating tensors...")
-            logger.info(f"🔍 [DEBUG-VECTOR]   seeds_to_score: {len(seeds_to_score)} items")
-            logger.info(f"🔍 [DEBUG-VECTOR]   train_history: {len(train_history)} items")
-            
-            t_start = time.time()
-            seeds_tensor = torch.tensor(seeds_to_score, dtype=torch.int64, device=device)
-            logger.info(f"🔍 [DEBUG-VECTOR] Seeds tensor created in {time.time()-t_start:.3f}s, shape={seeds_tensor.shape}, device={seeds_tensor.device}")
-            
-            t_start = time.time()
-            history_tensor = torch.tensor(train_history, dtype=torch.int64, device=device)
-            logger.info(f"🔍 [DEBUG-VECTOR] History tensor created in {time.time()-t_start:.3f}s, shape={history_tensor.shape}, device={history_tensor.device}")
-            
-            # Adaptive batching for memory safety
-            logger.info(f"🔍 [DEBUG-VECTOR] Using adaptive batching for memory safety...")
-            
-            if torch.cuda.is_available():
-                gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-                history_len = len(history_tensor)
-                bytes_per_seed = max(history_len, 100) * 8
-                allocated_gb = torch.cuda.memory_allocated(0) / 1e9
-                free_mem_gb = gpu_mem_gb - allocated_gb
-                usable_mem = free_mem_gb * 0.30 * 1e9
-                batch_size = int(usable_mem / bytes_per_seed)
-                batch_size = max(10_000, min(batch_size, 100_000))
-            else:
-                batch_size = 50_000
-            
-            # Process in batches
-            t_start = time.time()
-            total_seeds = len(seeds_tensor)
-            num_batches = (total_seeds + batch_size - 1) // batch_size
-            all_scores = []
-            
-            logger.info(f"🔍 [DEBUG-VECTOR] Processing {total_seeds:,} seeds in {num_batches} batch(es)...")
-            
-            for batch_idx in range(num_batches):
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, total_seeds)
-                batch_seeds = seeds_tensor[batch_start:batch_end]
-                
-                logger.info(f"🔍 [DEBUG-VECTOR] Batch {batch_idx+1}/{num_batches}: {batch_end - batch_start:,} seeds...")
-                
-                batch_t_start = time.time()
-                batch_scores = engine.scorer.batch_score_vectorized(
-                    seeds=batch_seeds,
-                    lottery_history=history_tensor,
-                    device=device,
-                    return_dict=False
-                )
-                batch_elapsed = time.time() - batch_t_start
-                
-                logger.info(f"🔍 [DEBUG-VECTOR] Batch {batch_idx+1} completed in {batch_elapsed:.2f}s ({(batch_end-batch_start)/batch_elapsed:.0f} seeds/sec)")
-                all_scores.append(batch_scores)
-                
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            # Concatenate all batch scores
-            scores_tensor = torch.cat(all_scores)
-            elapsed = time.time() - t_start
-            logger.info(f"🔍 [DEBUG-VECTOR] Total scoring completed in {elapsed:.2f}s ({total_seeds/elapsed:.0f} seeds/sec overall)")
-            logger.info(f"🔍 [DEBUG-VECTOR] scores_tensor shape: {scores_tensor.shape}, device: {scores_tensor.device}")
-            
-            # Convert to numpy
-            logger.info(f"🔍 [DEBUG-VECTOR] Converting scores to numpy...")
-            t_start = time.time()
-            y_train = scores_tensor.cpu().numpy().tolist()
-            logger.info(f"🔍 [DEBUG-VECTOR] Conversion complete in {time.time()-t_start:.3f}s")
-            logger.info(f"🔍 [DEBUG-VECTOR] y_train length: {len(y_train)}, mean score: {np.mean(y_train):.6f}")
+            sampled_fwd = npz_forward_matches
+            sampled_rev = npz_reverse_matches
+            logger.info(f'Using all {n_seeds:,} seeds')
 
-        # =============================================================================
-        # SAMPLING (if configured)
-        # =============================================================================
-        sample_size = config.training.get('sample_size', None)
-        
-        if sample_size and len(seeds_to_score) > sample_size:
-            import random
-            logger.info(f"📊 Sampling {sample_size:,} seeds from {len(seeds_to_score):,} for training")
-            random.seed(params.get('optuna_trial_number', 0))  # v3.5: per-trial seed
-            sample_indices = random.sample(range(len(seeds_to_score)), sample_size)
-            sampled_seeds = [seeds_to_score[i] for i in sample_indices]
-            sampled_scores = [y_train[i] for i in sample_indices]
-            
-            # v3.4 FIX: Create sampled tensor for holdout evaluation
-            sampled_seeds_tensor = torch.tensor(sampled_seeds, dtype=torch.int64, device=device)
-            logger.info(f"🔍 [DEBUG] Created sampled_seeds_tensor: {sampled_seeds_tensor.shape}")
-        else:
-            logger.info(f"📊 Using all {len(seeds_to_score):,} seeds for training")
-            sampled_seeds = seeds_to_score
-            sampled_scores = y_train
-            sampled_seeds_tensor = seeds_tensor  # Use full tensor
+        # Parametric scoring -- all 5 params active
+        rm1        = float(params.get('residue_mod_1',   10))
+        rm2        = float(params.get('residue_mod_2',  100))
+        rm3        = float(params.get('residue_mod_3', 1000))
+        max_offset = float(params.get('max_offset',       10))
+        tw_size    = float(params.get('temporal_window_size', 100))
 
-        # =============================================================================
-        # TRAINING SECTION
-        # =============================================================================
-        logger.info(f"🔍 [DEBUG] Starting mini-run training on {len(sampled_seeds):,} seeds...")
-        start_train = time.time()
-        
-        try:
-            engine.train(
-                survivors=sampled_seeds,
-                actual_results=sampled_scores,
-                lottery_history=train_history,
-                epoch_callback=None  # No Optuna pruning in PULL mode
+        eps    = 1e-10
+        w_sum  = rm1 + rm2 + rm3 + eps
+        wf     = rm1 / w_sum          # forward weight
+        wr     = rm2 / w_sum          # reverse weight
+        w3     = rm3 / w_sum          # intersection weight
+        tw     = tw_size / 200.0      # temporal smoothing weight
+        wi     = max_offset / 15.0    # squared interaction weight
+
+        fwd_rev = sampled_fwd * sampled_rev
+
+        scores = (
+            wf * sampled_fwd
+            + wr * sampled_rev
+            + w3 * fwd_rev
+            + tw * (sampled_fwd + sampled_rev) / 2.0
+            + wi * fwd_rev ** 2
+        )
+
+        logger.info(
+            f'Parametric scoring: wf={wf:.3f}  wr={wr:.3f}  w3={w3:.3f}  '
+            f'tw={tw:.3f}  wi={wi:.3f}  '
+            f'score_mean={scores.mean():.4f}  score_std={scores.std():.4f}'
+        )
+
+        # WSI objective -- bounded [-1, 1]
+        quality = fwd_rev
+        std_s   = float(scores.std())
+        std_q   = float(quality.std())
+
+        if std_s < 1e-12:
+            wsi = -1.0
+            logger.warning(
+                f'Degenerate scores (std={std_s:.2e}) -> WSI=-1.0.  '
+                f'rm1={rm1:.0f}  rm2={rm2:.0f}  rm3={rm3:.0f}  '
+                f'offset={max_offset:.0f}  tw={tw_size:.0f}'
             )
-            train_time = time.time() - start_train
-            logger.info(f"🔍 [DEBUG] Training completed in {train_time:.1f}s")
-            
-        except Exception as e:
-            logger.error(f"Training failed: {e}", exc_info=True)
-            raise
-
-        # =============================================================================
-        # HOLDOUT EVALUATION (v3.4 FIX: Use SAMPLED seeds!)
-        # =============================================================================
-        logger.info("🔍 [DEBUG] Evaluating on holdout (vectorized)...")
-        logger.info(f"🔍 [DEBUG] Using {len(sampled_seeds):,} SAMPLED seeds for holdout (NOT full {len(seeds_to_score):,})")
-        
-        # Create holdout history tensor
-        holdout_tensor = torch.tensor(holdout_history, dtype=torch.int64, device=device)
-        
-        # v3.4 FIX: Score SAMPLED seeds on holdout (not full set!)
-        holdout_scores_tensor = engine.scorer.batch_score_vectorized(
-            seeds=sampled_seeds_tensor,  # v3.4 FIX: Use sampled tensor!
-            lottery_history=holdout_tensor,
-            device=device,
-            return_dict=False
-        )
-        
-        y_holdout = holdout_scores_tensor.cpu().numpy().tolist()
-        logger.info(f"🔍 [DEBUG] Holdout scoring completed (vectorized), {len(y_holdout)} scores")
-        
-        # v3.4 FIX: Predict on SAMPLED seeds (not full set!)
-        y_pred_holdout = engine.predict_quality_batch(
-            survivors=sampled_seeds,  # v3.4 FIX: Use sampled seeds list!
-            lottery_history=holdout_history
-        )
-        
-        logger.info(f"🔍 [DEBUG] Holdout prediction completed, {len(y_pred_holdout)} predictions")
-        
-        # v3.5: Spearman rank correlation — correct objective for ranking
-        # Team Beta Mod 1: guard both y_pred AND y_holdout for degeneracy
-        # Team Beta Mod 2: runtime SciPy import guard (best-effort, non-fatal)
-        try:
-            from scipy.stats import spearmanr
-            _scipy_available = True
-        except ImportError:
-            _scipy_available = False
-            logger.error('scipy not available on this worker — accuracy = -1.0')
-
-        if not _scipy_available:
-            accuracy = -1.0
         else:
-            y_pred_arr    = np.array(y_pred_holdout)
-            y_holdout_arr = np.array(y_holdout)
+            centered_s = scores  - scores.mean()
+            centered_q = quality - quality.mean()
+            covariance = float(np.mean(centered_s * centered_q))
+            wsi        = covariance / ((std_s + eps) * (std_q + eps))
+            wsi        = float(np.clip(wsi, -1.0, 1.0))
+            logger.info(
+                f'WSI = {wsi:.6f}  '
+                f'(cov={covariance:.6f}  std_s={std_s:.4f}  std_q={std_q:.4f}  '
+                f'quality_mean={quality.mean():.4f})'
+            )
 
-            if np.std(y_pred_arr) < 1e-12:
-                accuracy = -1.0
-                logger.warning('Degenerate NN: all predictions identical. rho = -1.0')
-            elif np.std(y_holdout_arr) < 1e-12:
-                accuracy = -1.0
-                logger.warning('Degenerate scorer: y_holdout constant. rho = -1.0')
-            else:
-                correlation, p_value = spearmanr(y_pred_arr, y_holdout_arr)
-                accuracy = float(correlation) if not np.isnan(correlation) else -1.0
-                logger.info(f'Holdout Spearman rho: {accuracy:.6f}  (p={p_value:.4f})')
-        
-        return accuracy, y_pred_holdout if isinstance(y_pred_holdout, list) else y_pred_holdout.tolist()
+        return wsi, scores.tolist()
 
     except Exception as e:
-        logger.error(f"Trial execution failed: {e}", exc_info=True)
+        logger.error(f'Trial execution failed: {e}', exc_info=True)
         raise
 
 
@@ -503,10 +363,11 @@ def main():
         print(__doc__)
         sys.exit(1)
     
-    survivors_file = sys.argv[1]
-    train_history_file = sys.argv[2]
-    holdout_history_file = sys.argv[3]
-    trial_id = int(sys.argv[4])
+    survivors_file       = sys.argv[1]
+    # v4.0: args 2+3 accepted for WATCHER/shell compat but ignored in load_data
+    train_history_file   = sys.argv[2] if len(sys.argv) > 2 else None
+    holdout_history_file = sys.argv[3] if len(sys.argv) > 3 else None
+    trial_id             = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     
     params_json = None
     params_file = None
@@ -575,14 +436,15 @@ def main():
     
     # Run trial
     try:
-        seeds, train_hist, holdout_hist, prng_type, mod = load_data(
+        # v4.0: draw history files passed for compat but unused
+        seeds, fwd_matches, rev_matches, prng_type, mod = load_data(
             survivors_file, train_history_file, holdout_history_file
         )
-        
+
         trial = None  # No Optuna in PULL mode
-        
+
         accuracy, scores = run_trial(
-            seeds, train_hist, holdout_hist, params,
+            seeds, fwd_matches, rev_matches, params,
             prng_type=prng_type, mod=mod, trial=trial,
             use_legacy_scoring=use_legacy_scoring
         )
