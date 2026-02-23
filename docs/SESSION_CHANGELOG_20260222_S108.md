@@ -266,3 +266,115 @@ READY FOR STEP 3 (smoke test with synthetic data)"
 git push origin main
 git push public main
 ```
+
+---
+
+## Run 2 Results — Steps 1-2 Re-run (Clean Start)
+
+### Why Re-run
+Run 1 used `scorer_trials=500` in CLI params which was silently dropped by
+WATCHER (line 1221-1226: allowed_params filtered to default_params keys only).
+Step 2 ran 100 trials both times. Root cause documented — correct key is `trials`
+not `scorer_trials`. Fix: run Steps 1 and 2 separately with explicit `trials` param.
+
+### Run 2 Step 1 Results
+```
+window_size:           4        (was 3)
+offset:                89       (was 78)
+skip_min:              0        (was 8)
+skip_max:              196      (was 147, +49 wider)
+sessions:              [midday, evening]  (was [evening] only)
+best_trial:            #94 of 100  ⚠️ still improving at end
+bidirectional_count:   17,674   (was 11,131, +59%) ✅
+forward_count:         27,356   (was 17,029, +61%)
+reverse_count:         27,355   (was 16,930, +61%)
+NPZ seeds:             48,739   (was 44,647, +9%)
+run_id:                step1_20260222_175935_47420
+```
+
+### Run 2 Step 2 Results
+```
+best_trial:            #42 of 100
+best_accuracy:         0.3664   (was 0.3443, +6.4%) ✅
+residue_mod_1:         16       (was 18)
+residue_mod_2:         147      (was 57)
+residue_mod_3:         1370     (was 1499 ceiling — moved off ✅)
+max_offset:            12       (was 10)
+temporal_window_size:  99       (was 65, ⚠️ near ceiling 100)
+temporal_num_windows:  5        (was 9)
+min_confidence:        0.070    (was 0.177, more permissive)
+hidden_layers:         128_64   (was 512_256_128 — completely different regime)
+dropout:               0.258    (was 0.250)
+learning_rate:         0.000583 (was 0.007355, 12× lower)
+batch_size:            32       (was 128)
+```
+
+### Run 1 vs Run 2 Comparison
+
+| Metric | Run 1 | Run 2 | Delta |
+|--------|-------|-------|-------|
+| bidirectional_count | 11,131 | 17,674 | +59% |
+| Step 2 accuracy | 0.3443 | 0.3664 | +6.4% |
+| NPZ seeds | 44,647 | 48,739 | +9% |
+| rm3 at ceiling | YES (1499) | NO (1370) | ✅ |
+| tw_size at ceiling | NO (65) | YES (99/100) | ⚠️ |
+| best_trial Step 1 | #64 | #94 | still improving |
+
+### Key Observations
+
+**Best trial #94 of 100 in Step 1** — Optuna was still actively improving at
+the very last trials. This is a strong signal that 500 trials on Step 1 would
+yield materially better survivors, not just marginal gains. Recommend for next run.
+
+**temporal_window_size=99 ceiling pressure** — rm3 moved off its ceiling (1499→1370)
+but tw_size is now pressing the new ceiling (99/100). Recommend expanding
+temporal_window_size search bound from 100 to 150 before next serious run.
+
+**NN params regime shift** — hidden_layers flipped from 512_256_128 to 128_64,
+learning_rate dropped 12×. With only 100 trials across 11 dimensions, insufficient
+coverage to confidently settle on NN architecture. Another argument for 500 trials.
+
+**WATCHER param routing bug documented:**
+- `scorer_trials` key is silently dropped (not in manifest default_params allowlist)
+- Correct approach: run Step 1 and Step 2 as separate WATCHER calls
+- Step 1: `--params '{"trials":100,"max_seeds":50000}'`
+- Step 2: `--params '{"trials":500}'`
+
+### Data Quality Correction — Important
+
+Previous analysis incorrectly flagged "6 unique match values" and "16 trial groups"
+as data quality problems requiring "real lottery data."
+
+**This is wrong. The synthetic data IS real PRNG output.**
+
+`java_lcg` generates sequences according to its actual mathematical rules.
+Bidirectional survivors are mathematically validated against genuine LCG output.
+The discretization in forward/reverse_matches reflects real structure in the LCG's
+output distribution — this IS the signal the ML should be learning.
+
+Correct framing:
+- Data is valid — it is real LCG output ✅
+- Discretization is expected — LCG residue patterns are inherently structured ✅
+- 16 trial groups reflect the Optuna search breadth — not data poverty ✅
+- More trials = more groups = better ML signal landscape ✅
+
+The goal is functional mimicry of PRNG heuristics. The synthetic draw generator
+samples the same PRNG space as any "real" draw would. There is no meaningful
+distinction between synthetic and real draws for this system's purpose.
+
+---
+
+## TODOs Updated End of Session
+
+1. ~~TODO-S103-Q3~~ CLOSED — all Step 2 params are downstream consumers
+2. ~~TODO-A~~ CLOSED — rm1/2/3 confirmed as literal residue filter in Step 3
+3. ~~TODO-B~~ CLOSED — temporal_window_size confirmed as sliding window in Step 3
+4. Expand `temporal_window_size` search bound: 100 → 150 before next serious run
+5. Run Step 1 at 500 trials (best_trial #94 signals more headroom)
+6. Run Step 2 at 500 trials (separate WATCHER call, use `trials` key)
+7. Update S103 changelog Part2 fix — pending
+8. Regression diagnostics for gate_true — pending
+9. Remove 27 stale project files — pending
+10. `.sh` writer missing `_run_context` injection (low priority)
+11. Phase 9B.3 heuristics — deferred
+
