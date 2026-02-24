@@ -211,4 +211,44 @@ git push public main
 
 ---
 
+
+---
+
+## Phase 2: Repository Cleanup (Post-Pipeline Validation)
+
+### Documentation Patches Applied (commit 05b0e6b)
+- Chapter 1: v2.0 → v3.1 (4/5 patches, 1 cosmetic skip — values already correct)
+- Chapter 3: v3.4 → v4.2 (6/6 patches)
+- Operating Guide: v2.0.0 → v2.1.0 (3/3 patches)
+- Patcher: `apply_s109_documentation_updates.py` with backup + dry-run
+
+### Docs Consolidation (commit ca975f8)
+- Moved 58 stray .md files from project root → `docs/`
+- Session changelogs, proposals, addenda, specs, guides
+- Root now only retains `README.md` and `PROJECT_MAP.md`
+
+### Backup Directory Cleanup (disk-only, gitignored)
+- Deleted `archives/` (empty)
+- Deleted `doc_backup_20260131_220507/` (in git history)
+- Consolidated 4 Nov 2025 gitignored backup dirs → `backups/nov2025_legacy_backups.tar.gz` (117KB)
+
+### ser8 Documentation Sync
+- Full rsync from Zeus `docs/` → ser8 `~/Downloads/CONCISE_OPERATING_GUIDE_v1.0/`
+- 250 files synchronized
+
+### Root File Audit — S110 Prep
+- **884 total files** in project root
+- 116 test scripts, 111 .bak files, 59 apply/patch, 33 logs, 25 create_*, 17 benchmark
+- ~401 files categorized for S110 cleanup pass
+
+### 200-Trial Run Launched
+- `--params '{"trials":200,"max_seeds":50000}'`
+- LLM server (PID 14421) killed to free ~16GB VRAM across both RTX 3080 Ti
+- Pipeline running Steps 1-2 in background
+
+## Git Log (S109)
+- `05b0e6b` — docs(S109): Chapter 1 v3.1, Chapter 3 v4.2, Guide v2.1.0
+- `ca975f8` — chore(S109): move 58 stray docs from root to docs/
+
+---
 **END OF SESSION S109**
