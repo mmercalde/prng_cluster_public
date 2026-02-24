@@ -1,375 +1,244 @@
-# SESSION CHANGELOG - S88 FINAL
+# SESSION 88 FINAL CHANGELOG - OPTUNA REGRESSION DISCOVERED
 
 **Date:** 2026-02-15  
-**Session:** 88  
-**Duration:** ~4 hours  
-**Team:** Alpha (Lead Dev)  
-**Status:** ✅ COMPLETE - Bug Fixed & Validated
+**Session:** 88 (Extended - Critical Discovery)  
+**Status:** DISCOVERY PHASE COMPLETE - RESTORATION DEFERRED TO SESSION 89  
+**Severity:** CRITICAL - Affects all Step 5 training since Jan 2, 2026
 
 ---
 
 ## EXECUTIVE SUMMARY
 
-**Primary Goal:** Fix `--compare-models` bug where `--trials N` only ran 1 trial per model instead of N trials per model.
+**CRITICAL BUG DISCOVERED:** Optuna hyperparameter optimization was **completely removed** during v3.2 refactor (Jan 1, 2026). The `--trials N` parameter has been accepted but **silently ignored** for 6+ weeks.
 
-**Result:** ✅ Bug fixed, validated working, ready for production use.
+**Impact:** All Step 5 training since January 2 used **random/default hyperparameters** instead of optimized configurations. Expected R² > 0.85 degraded to R² ≈ 0.0-0.001.
 
-**Secondary Discoveries:**
-- Neural network performs equivalently to tree models when properly optimized (R² ≈ 0)
-- Test data has no predictive signal (expected for debugging data)
-- LightGBM OpenCL crash resolved via CPU enforcement
+**Root Cause:** Accidental deletion during signal quality feature implementation (commit `cbe58ee`).
+
+**Resolution:** Fix deferred to Session 89 for safe implementation with Team Beta approval.
 
 ---
 
-## THE BUG
+## FILES DELIVERED TO USER
 
-### **Problem Statement**
+### Documentation
+1. ✅ **TEAM_BETA_OPTUNA_REMOVAL_REPORT.md** - Comprehensive discovery report
+2. ✅ **SESSION_CHANGELOG_20260215_S88_FINAL.md** - This file
+
+### Code Artifacts  
+3. ⚠️ **apply_v3_4_safe.py** - Patch script (needs 3 Team Beta fixes before use)
+4. ⚠️ **create_v3_4_optuna_restore.py** - Initial patch generator (superseded by #3)
+
+### Reference Materials
+- Git commit history analysis
+- v1.2 and v2.0 backups with working Optuna
+- Evidence of missing methods and performance degradation
+
+---
+
+## COPY INSTRUCTIONS FOR USER
+
+**On ser8:**
 ```bash
-# User runs:
---compare-models --trials 20
+cd ~/Downloads
 
-# What happened:
-- Only 4 trials executed (1 per model)
-- No hyperparameter optimization occurred
-- Models compared with random starting parameters
+# Copy changelog to Zeus for reference
+scp SESSION_CHANGELOG_20260215_S88_FINAL.md rzeus:~/distributed_prng_analysis/docs/
 
-# What should happen:
-- 80 trials executed (20 per model: neural_net, lightgbm, xgboost, catboost)
-- Full Optuna hyperparameter optimization per model
-- Fair comparison of optimized models
+# Copy Team Beta report to Zeus
+scp TEAM_BETA_OPTUNA_REMOVAL_REPORT.md rzeus:~/distributed_prng_analysis/docs/
+
+# DO NOT copy apply_v3_4_safe.py yet - needs fixes per Team Beta
 ```
 
-### **Root Cause**
-1. `_s88_run_compare_models()` function inserted **after** `if __name__ == "__main__"` block (line 1797)
-2. Function undefined when `main()` tried to call it
-3. Patch script's regex anchor matched too late in file
+---
+
+## SESSION 89 HANDOFF
+
+### Critical Priority: Optuna Restoration (P0)
+
+**Estimated Effort:** 2-3 hours  
+**Prerequisites:** Fresh context window, Team Beta requirements document
+
+**Implementation Checklist:**
+
+**Phase 1: MultiModelTrainer Trial Mode (45 min)**
+- [ ] Add `trial_mode` parameter to `train_model()` method
+- [ ] Implement guard: `if trial_mode: return early before any saves`
+- [ ] Test: Verify no artifact writes during trial mode
+- [ ] Commit: "feat(step5): Add trial_mode to MultiModelTrainer"
+
+**Phase 2: Safe v3.4 Patch (60 min)**
+- [ ] Fix critical hole #1: Enforce `trial_mode=True` in objective
+- [ ] Fix critical hole #2: Verify/inject all required imports
+- [ ] Fix critical hole #3: Class-scoped regex anchoring
+- [ ] Add unique study namespacing
+- [ ] Add hard logging
+- [ ] Test patch on copy of file first
+- [ ] Commit: "feat(step5): Restore Optuna optimization v3.4"
+
+**Phase 3: Verification (30 min)**
+- [ ] Code grep tests (4 patterns)
+- [ ] Runtime scaling test (`--trials 1` vs `--trials 5`)
+- [ ] Artifact isolation test
+- [ ] Smoke test with all 4 model types
+- [ ] Update IMPLEMENTATION_CHECKLIST
+
+**Phase 4: Documentation (15 min)**
+- [ ] Session 89 changelog
+- [ ] Update version headers
+- [ ] Git commit messages
 
 ---
 
-## THE FIX
+## TEAM BETA REQUIREMENTS (MUST IMPLEMENT)
 
-### **Phase 1: Initial Hotfix Deployment**
-
-**Applied:** `apply_s88_compare_models_trials_fix.py` (Team Beta approved)
-
-**What it does:**
-1. Intercepts `--compare-models` mode before broken subprocess coordinator
-2. Loops through model types: `['neural_net', 'lightgbm', 'xgboost', 'catboost']`
-3. Invokes existing single-model Optuna path in subprocess per model
-4. Passes `--trials N` to each subprocess
-5. Archives artifacts per model in `models/reinforcement/compare_models/<RUN_ID>/<model>/`
-6. Generates summary JSON with winner determination
-7. Restores winner artifacts to canonical `models/reinforcement/`
-
-**Initial deployment:** ❌ Function inserted at wrong location (line 1797 instead of ~55)
-
-**Fix:** Manual Python script to **move** function block from line 1797 → line 55 (after imports)
-
-**Result:** ✅ Function now defined before `main()` calls it
-
----
-
-### **Phase 2: Follow-on Fixes**
-
-#### **Fix #1: Score Extraction (CRITICAL)**
-
-**Problem:** Summary JSON showed `R²=None` for all models
-
-**Root Cause:** `_s88_extract_score()` looked for wrong metadata keys
-- Searched for: `("best_r2",)`, `("r2",)`, `("metrics","r2")`
-- Actual location: `("training_metrics", "r2")` in v3.3 schema
-
-**Fix Applied:**
+### 1. Trial Mode Enforcement
 ```python
-# Line 87: Insert at top of candidates list
-("training_metrics", "r2"),  # v3.3 schema
-("best_r2",),
-("r2",),
-...
+# In _optuna_objective():
+result = self.trainer.train_model(..., trial_mode=True)  # ← No saves
+
+# In _run_optuna_optimization() after best params found:
+result = self.trainer.train_model(..., trial_mode=False)  # ← Final save only
 ```
 
-**Result:** ✅ Summary JSON now shows actual R² values
-
----
-
-#### **Fix #2: LightGBM OpenCL Crash (HIGH PRIORITY)**
-
-**Problem:** LightGBM crashed with `OpenCL Error (-9999)` even in subprocess isolation
-
-**Root Cause:** Subprocess isolation prevents cross-contamination but doesn't fix LightGBM's OpenCL initialization failure on Zeus
-
-**Fix Applied (2 parts):**
-
-**Part A: Subprocess env var**
+### 2. Import Guarantees
 ```python
-# Line 184-185: Set env var when launching LightGBM subprocess
-env["S88_COMPARE_MODELS_CHILD"] = "1"
-if m == "lightgbm":
-    env["S88_FORCE_LGBM_CPU"] = "1"
+import time                           # ← Add if missing
+from sklearn.model_selection import KFold  # ← Add if missing
+import optuna                         # ← Already present
+from optuna.samplers import TPESampler     # ← Add if missing
 ```
 
-**Part B: LightGBM params enforcement**
+### 3. Unique Study Naming
 ```python
-# Line 975: Force CPU when env var set
-'device': 'cpu' if os.environ.get('S88_FORCE_LGBM_CPU') == '1' else ('gpu' if 'cuda' in self.device else 'cpu'),
+study_name = (
+    f"step5_{self.model_type}_"
+    f"{self.feature_schema['feature_schema_hash']}_"
+    f"{self.data_context['fingerprint_hash']}"
+)
+storage_path = f"sqlite:///optuna_studies/{study_name}.db"
 ```
 
-**Result:** ✅ LightGBM completes without crash (rc=0)
+### 4. Class-Scoped Anchoring
+```python
+# Find class block first, then inject within it
+class_start = content.find("class AntiOverfitMetaOptimizer:")
+class_end = content.find("\nclass ", class_start + 1)  # Next class or EOF
+# Inject only within content[class_start:class_end]
+```
 
----
-
-## VALIDATION
-
-### **Smoke Test Results (trials=1)**
-
-**Command:**
+### 5. Verification Tests
 ```bash
-python3 meta_prediction_optimizer_anti_overfit.py \
-    --survivors survivors_with_scores.json \
-    --lottery-data train_history.json \
-    --compare-models \
-    --trials 1 \
-    --enable-diagnostics
-```
+# Must pass all 4:
+grep -n "optuna.create_study" meta_prediction_optimizer_anti_overfit.py
+grep -n "study.optimize" meta_prediction_optimizer_anti_overfit.py  
+grep -n "suggest_(int|float|categorical)" meta_prediction_optimizer_anti_overfit.py
+grep -n "trial_mode=True" meta_prediction_optimizer_anti_overfit.py
 
-**Results:**
+# Must scale:
+time ... --trials 1  # ~4 min
+time ... --trials 5  # ~20 min (5x longer)
 ```
-✅ Trials per model: 1
-✅ Total trials:     4
-✅ Score extraction: WORKING
-✅ LightGBM crash:   FIXED
-✅ Winner:           catboost (R²=0.0001)
-
-Per-Model Results:
-  ✅ neural_net  : rc=0, R²=-0.0012
-  ✅ lightgbm    : rc=0, R²=-0.0057  (no OpenCL crash!)
-  ✅ xgboost     : rc=0, R²=-0.0123
-  ✅ catboost    : rc=0, R²=+0.0001
-```
-
-**All success criteria met:**
-1. ✅ All 4 models completed (returncode=0)
-2. ✅ Actual R² scores extracted (not None)
-3. ✅ LightGBM no longer crashes
-4. ✅ Winner selected correctly (catboost)
-5. ✅ Artifacts archived per model
-6. ✅ Winner restored to canonical location
 
 ---
 
-## KEY FINDINGS
+## KEY DISCOVERY EVIDENCE
 
-### **Finding #1: Neural Net Architecture is NOT Broken**
-
-**Evidence:**
-- With random hyperparameters (before fix): R² = -121.97 (catastrophic)
-- With 1 Optuna trial (after fix): R² = -0.0012 (equivalent to tree models)
-
-**Conclusion:** Neural network performs equivalently to tree models when properly optimized. The poor performance was due to lack of hyperparameter optimization, not architectural issues.
-
-### **Finding #2: Test Data Has No Predictive Signal**
-
-**Evidence:**
-- All 4 models achieve R² ≈ 0
-- Signal quality: weak (confidence=0.40)
-- Tree models also fail (not just neural net)
-
-**Conclusion:** The `holdout_hits` target has no predictive relationship with the 62 features in this test data. This is expected for debugging/test data.
-
-### **Finding #3: Diagnostics Capture Still Limited**
-
-**Status:** `--enable-diagnostics` flag passes through but detailed training diagnostics (dead neurons, gradient flow) not captured in this run.
-
-**Evidence:** Diagnostic files exist but are stub files (750 bytes)
-
-**Action:** Deferred to future investigation - not blocking for bug fix validation
-
----
-
-## FILES MODIFIED
-
-### **Core File:**
-- `meta_prediction_optimizer_anti_overfit.py`
-  - Line 55-247: `_s88_run_compare_models()` function inserted
-  - Line 87: Score extraction fixed (added `training_metrics.r2`)
-  - Line 184-185: LightGBM subprocess env var
-  - Line 975: LightGBM CPU enforcement in params
-  - Line 1991: `sys.exit(main() or 0)` for clean exit
-
-### **Backups Created:**
-- `meta_prediction_optimizer_anti_overfit.py.pre_s88_20260215_035429`
-
----
-
-## ARTIFACTS GENERATED
-
-### **Validation Run Artifacts:**
-```
-models/reinforcement/compare_models/S88_20260215_044323/
-├── neural_net/
-│   ├── best_model.pth
-│   └── best_model.meta.json (R²=-0.0012)
-├── lightgbm/
-│   ├── best_model.txt
-│   └── best_model.meta.json (R²=-0.0057)
-├── xgboost/
-│   ├── best_model.json
-│   └── best_model.meta.json (R²=-0.0123)
-└── catboost/
-    ├── best_model.cbm
-    └── best_model.meta.json (R²=+0.0001) ← Winner
-```
-
-### **Summary JSON:**
-`diagnostics_outputs/compare_models_summary_S88_20260215_044323.json`
-
----
-
-## COMMITS
-
-**Recommended git commits:**
-
+### Evidence 1: Missing Optuna Execution
 ```bash
-# Commit 1: S88 hotfix - compare_models trials fix
-git add meta_prediction_optimizer_anti_overfit.py
-git commit -m "S88: Fix compare_models to run N trials per model (4×N total)
+# v3.3 has imports but no execution
+import optuna  # Line 38 ✅
+optuna.create_study(  # NOT FOUND ❌
+study.optimize(  # NOT FOUND ❌
+trial.suggest_  # NOT FOUND ❌
+```
 
-- Inserted _s88_run_compare_models() wrapper at correct location
-- Intercepts --compare-models mode and runs proper Optuna per model
-- Archives artifacts per model with summary JSON
-- Restores winner to canonical location
+### Evidence 2: Git History
+```bash
+commit cbe58eeb94f700146a2d9ddb0b5dbc0182f564ec
+Date:   Thu Jan 1 19:43:38 2026 -0800
+    Step 5 v3.2: Early exit on degenerate signal
+    
+git diff 7c981fb..cbe58ee -- meta_prediction_optimizer_anti_overfit.py | wc -l
+# 2546 lines changed ← Massive refactor where Optuna was lost
+```
 
-Fixes: --compare-models --trials N now runs N×4 total trials
-Tested: Smoke test with trials=1 (4 total) passed
-"
+### Evidence 3: Runtime Anomaly
+```
+Expected: 120-180 min (30 trials × 4 models)
+Actual:   5 min 55 sec (1 trial × 4 models)
+```
 
-# Commit 2: S88 fixes - score extraction + LightGBM CPU
-git add meta_prediction_optimizer_anti_overfit.py
-git commit -m "S88: Fix score extraction and LightGBM OpenCL crash
-
-Score extraction:
-- Added training_metrics.r2 to candidates list (v3.3 schema)
-- Summary JSON now shows actual R² values
-
-LightGBM CPU enforcement:
-- Set S88_FORCE_LGBM_CPU env var in subprocess
-- Force device='cpu' when env var set
-- Prevents OpenCL -9999 crash on Zeus
-
-Tested: All 4 models complete successfully with valid scores
-"
+### Evidence 4: Performance Degradation
+```
+Dec 2025 (with Optuna): R² = 0.85-0.99
+Feb 2026 (no Optuna):   R² = -121.97 to -0.001
+Degradation: ~99.9%
 ```
 
 ---
 
-## PRODUCTION READINESS
+## WHAT NOT TO DO
 
-### **Status:** ✅ READY FOR PRODUCTION USE
+❌ **DO NOT** restore from v1.2/v2.0 backup (loses v3.3 features)  
+❌ **DO NOT** use `apply_v3_4_safe.py` without fixing 3 Team Beta holes  
+❌ **DO NOT** rush the fix (broken fix worse than waiting)  
+❌ **DO NOT** run training without Optuna fix (wastes GPU time)
 
-**Validated features:**
-1. ✅ Compare-models runs N trials per model (4×N total)
-2. ✅ Score extraction reads correct metadata field
-3. ✅ LightGBM completes without OpenCL crash
-4. ✅ Winner selection and artifact restoration working
-5. ✅ All models achieve equivalent performance when optimized
+---
 
-### **Known Limitations:**
-1. ⚠️ Detailed training diagnostics (dead neurons, gradient flow) not captured yet
-2. ⚠️ Test data has no predictive signal (R² ≈ 0 for all models)
+## SUCCESS CRITERIA FOR SESSION 89
 
-### **Next Steps:**
-1. **Immediate:** Run production test with `--trials 30` (~2-3 hours)
-2. **Short-term:** Investigate diagnostics capture for detailed neural net analysis
-3. **Long-term:** Test with production data that has actual predictive signal
+**Definition of Done:**
+- ✅ All 4 code grep tests pass
+- ✅ Runtime scales with `--trials` parameter
+- ✅ No artifact writes during optimization trials
+- ✅ Smoke test shows trial logs
+- ✅ v3.4 deployed to Zeus
+- ✅ WATCHER compatibility verified
+- ✅ Documentation updated
 
 ---
 
 ## LESSONS LEARNED
 
-### **Architecture Decisions:**
+**What Went Right:**
+- Git history preserved evidence
+- Multiple backups existed
+- Team Beta caught safety holes
+- Made disciplined decision to defer
 
-1. **Reuse existing single-model path** instead of refactoring Optuna across subprocesses
-   - **Pro:** Minimal code changes, leverages known-good behavior
-   - **Pro:** Subprocess isolation maintained for GPU safety
-   - **Con:** Slower than native multi-model (sequential vs parallel)
+**What Went Wrong:**
+- No regression tests for Optuna
+- No runtime monitoring
+- Massive refactor without incremental testing
+- Silent failure mode (`--trials` accepted but ignored)
 
-2. **Fail-hard on missing anchors** (Team Beta requirement)
-   - **Pro:** No silent failures
-   - **Con:** Requires exact string matches
-
-3. **Env var for LightGBM CPU enforcement**
-   - **Pro:** Clean separation, only affects compare-models mode
-   - **Pro:** Doesn't break single-model GPU usage
-   - **Con:** Requires both subprocess env + param enforcement
-
-### **Debugging Workflow:**
-
-1. ✅ Always check actual file locations before applying fixes
-2. ✅ Use line numbers from `grep -n`, not assumptions
-3. ✅ Validate fixes with smoke tests before production runs
-4. ✅ Check both subprocess env vars AND function params
-
-### **Team Beta Review Process:**
-
-**What worked:**
-- Guardrails prevented silent failures
-- Hard fail requirement caught missing patches
-- Focus on reliable param-level enforcement (not just env vars)
-
-**What we learned:**
-- Regex anchors are brittle - exact line numbers more reliable
-- Two-part fixes (subprocess + function) need both parts verified
-- Score extraction needs schema-specific knowledge
+**Process Improvements:**
+- Add regression test: Verify Optuna study creation
+- Add runtime monitor: Alert on too-fast completion
+- Add integration test: Verify trial logs in output
+- Require incremental commits for large refactors
 
 ---
 
-## PRODUCTION RUN COMMAND
+## APPENDIX: VERSION COMPARISON
 
-**Ready to execute:**
-
-```bash
-cd ~/distributed_prng_analysis
-source ~/venvs/torch/bin/activate
-
-# Production run: 30 trials per model (120 total, ~2-3 hours)
-python3 meta_prediction_optimizer_anti_overfit.py \
-    --survivors survivors_with_scores.json \
-    --lottery-data train_history.json \
-    --compare-models \
-    --trials 30 \
-    --enable-diagnostics
-
-# Monitor progress:
-tail -f [output_log]
-
-# After completion, verify results:
-python3 << 'EOPYTH'
-import json
-from pathlib import Path
-files = sorted(Path('diagnostics_outputs').glob('compare_models_summary_S88_*.json'))
-data = json.load(open(files[-1]))
-print(f"Trials per model: {data['trials_per_model']}")
-print(f"Total trials: {data['total_expected_trials']}")
-print(f"Winner: {data['winner_best_effort']['model_type']} (R²={data['winner_best_effort']['score']})")
-for m in data['models']:
-    print(f"  {m}: R²={data['models'][m]['score_best_effort']}")
-EOPYTH
-```
+| Feature | v2.0 (Dec 22) | v3.3 (Current) | v3.4 (Target) |
+|---------|--------------|----------------|---------------|
+| Optuna optimization | ✅ | ❌ | ✅ |
+| Compare-models | ✅ | ✅ | ✅ |
+| Signal quality | ❌ | ✅ | ✅ |
+| Data fingerprint | ❌ | ✅ | ✅ |
+| S88 wrapper | ❌ | ✅ | ✅ |
+| Trial mode safety | ⚠️ | N/A | ✅ |
+| Study namespacing | ⚠️ | N/A | ✅ |
 
 ---
 
-## CONCLUSION
+**END SESSION 88 - DEFERRED TO SESSION 89**
 
-**Session 88 successfully:**
-1. ✅ Identified and fixed critical compare-models trials bug
-2. ✅ Fixed score extraction to read correct schema
-3. ✅ Resolved LightGBM OpenCL crash
-4. ✅ Validated all fixes with smoke tests
-5. ✅ Proved neural net architecture is not inherently broken
-6. ✅ System ready for production runs
-
-**The compare-models feature now works as designed: N Optuna trials per model for fair, optimized comparison.**
-
----
-
-*Session 88 complete - 2026-02-15*
+*Team Alpha: Discovery COMPLETE ✅*  
+*Team Beta: Safety requirements DEFINED ✅*  
+*Implementation: DEFERRED to Session 89 ⏸️*

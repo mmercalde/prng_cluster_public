@@ -1,8 +1,8 @@
 {
   "schema_version": "3.4.0",
-  "model_type": "neural_net",
-  "checkpoint_path": "models/reinforcement/best_model.pth",
-  "checkpoint_format": "pth",
+  "model_type": "catboost",
+  "checkpoint_path": "models/reinforcement/best_model.cbm",
+  "checkpoint_format": "cbm",
   "feature_schema": {
     "source_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
     "feature_count": 62,
@@ -84,15 +84,15 @@
     "signal_confidence": 0.4,
     "prediction_allowed": true,
     "unique_target_values": 8,
-    "target_variance": 1.0087e-06,
-    "target_mean": 0.001001,
-    "target_std": 0.001004,
-    "nonzero_count": 23842,
-    "nonzero_ratio": 0.63,
-    "sample_size": 37846
+    "target_variance": 1.006e-06,
+    "target_mean": 0.000984,
+    "target_std": 0.001003,
+    "nonzero_count": 5562,
+    "nonzero_ratio": 0.6229,
+    "sample_size": 8929
   },
   "data_context": {
-    "fingerprint_hash": "7a4a3cd1",
+    "fingerprint_hash": "e5b90611",
     "fingerprint_version": "v2_data_only",
     "training_window": {
       "start_draw": 1,
@@ -107,69 +107,49 @@
     "survivor_source": {
       "file": "survivors_with_scores.json",
       "file_path": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
-      "survivor_count": 37846
+      "survivor_count": 8929
     },
     "prng_hypothesis": {
       "prng_type": "java_lcg",
       "mod": 1000
     },
     "derived_by": "step5_anti_overfit",
-    "timestamp": "2026-02-20T18:07:39.880030"
+    "timestamp": "2026-02-23T18:16:20.253375"
   },
   "training_metrics": {
-    "r2": 0.00017965874434411333,
-    "train_mae": 0.018586025627074818,
-    "val_mae": 0.018576155496631584,
+    "r2": -0.0008005702957849525,
+    "train_mae": 0.0009870178815903734,
+    "val_mae": 0.001018766805357067,
     "test_mae": 0.0,
-    "overfit_ratio": 1.0,
-    "status": "success"
+    "overfit_ratio": 1.0
   },
   "hyperparameters": {
-    "n_layers": 2,
-    "layer_0": 101,
-    "layer_1": 86,
-    "dropout": 0.5382282834227289,
-    "learning_rate": 0.007835339326624413,
-    "batch_size": 1024,
-    "epochs": 169,
-    "patience": 24
-  },
-  "optuna": {
-    "enabled": true,
-    "n_trials": 100,
-    "n_jobs": 2,
-    "best_trial_number": 251,
-    "best_value": 0.0001911759376525879,
-    "study_name": "step5_neural_net_e6c330d830_7a4a3cd1_catb22",
-    "storage": "journal:optuna_studies/step5_neural_net_e6c330d830_7a4a3cd1_catb22.log"
+    "iterations": 340,
+    "depth": 3,
+    "learning_rate": 0.09450977710099222
   },
   "hardware": {
     "device_requested": "cuda:0",
-    "cuda_available": false
+    "cuda_available": true
   },
   "training_info": {
-    "started_at": "2026-02-20T18:07:39.886114",
-    "completed_at": "2026-02-20T18:26:58.566746",
-    "duration_seconds": 1158.680233,
-    "outcome": "SUCCESS"
+    "started_at": "2026-02-23T18:16:20.255423",
+    "completed_at": "2026-02-23T18:17:49.442884",
+    "duration_seconds": 89.184809
   },
   "agent_metadata": {
     "pipeline_step": 5,
     "pipeline_step_name": "anti_overfit_training",
-    "run_id": "step5_20260220_180739",
-    "parent_run_id": null,
-    "outcome": "SUCCESS",
-    "exit_code": 0
+    "run_id": "step5_20260223_181620",
+    "parent_run_id": null
   },
   "provenance": {
-    "run_id": "step5_20260220_180739",
-    "started_at": "2026-02-20T18:07:39.886114",
-    "duration_seconds": 1158.680233,
+    "run_id": "step5_20260223_181620",
+    "started_at": "2026-02-23T18:16:20.255423",
+    "duration_seconds": 89.184809,
     "survivors_file": "/home/michael/distributed_prng_analysis/survivors_with_scores.json",
-    "n_survivors": 37846,
-    "model_type": "neural_net",
-    "compare_models_used": true,
-    "checkpoint_path": "/home/michael/distributed_prng_analysis/models/reinforcement/best_model.pth",
-    "outcome": "SUCCESS"
+    "n_survivors": 8929,
+    "model_type": "catboost",
+    "compare_models_used": false
   }
 }

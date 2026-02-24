@@ -168,14 +168,9 @@ source /home/michael/venvs/torch/bin/activate
 # --- Parse Arguments ---
 TRIALS=""
 USE_LEGACY_SCORING=false
-SAMPLE_SIZE=5000
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --sample-size)
-            SAMPLE_SIZE=$2
-            shift 2
-            ;;
         --legacy-scoring)
             USE_LEGACY_SCORING=true
             shift
@@ -233,7 +228,9 @@ if [ "$USE_LEGACY_SCORING" = true ]; then
         --holdout-history $HOLDOUT_HISTORY \
         --study-name $STUDY_NAME \
         --study-db "$STUDY_DB" \
-        --sample-size $SAMPLE_SIZE
+        --sample-size 450    # TUNED 2026-01-17: 5000 seeds = ~60-90s trials
+                              # (vs 25000 default = 400-700s trials)
+                              # Benefits: Better Bayesian exploration, less GPU stress \
         --legacy-scoring
 else
     python3 generate_scorer_jobs.py \
@@ -243,7 +240,9 @@ else
         --holdout-history $HOLDOUT_HISTORY \
         --study-name $STUDY_NAME \
         --study-db "$STUDY_DB" \
-        --sample-size $SAMPLE_SIZE
+        --sample-size 450    # TUNED 2026-01-17: 5000 seeds = ~60-90s trials
+                              # (vs 25000 default = 400-700s trials)
+                              # Benefits: Better Bayesian exploration, less GPU stress
 fi
 
 echo "Generated scorer_jobs.json with $TRIALS pre-sampled jobs"
@@ -254,7 +253,7 @@ echo ""
 
 # CRITICAL: Push latest code so all 26 GPUs use the correct version
 echo "Pushing latest survivor_scorer.py and reinforcement_engine.py to all remote nodes..."
-for node in 192.168.3.120 192.168.3.154 192.168.3.162; do
+for node in 192.168.3.120 192.168.3.154; do
     echo "  → $node"
     scp survivor_scorer.py reinforcement_engine.py scorer_trial_worker.py \
         $node:~/distributed_prng_analysis/ && echo "    Updated on $node" || echo "    FAILED on $node"

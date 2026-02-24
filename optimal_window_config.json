@@ -1,28 +1,28 @@
 {
-  "window_size": 3,
-  "offset": 81,
-  "skip_min": 4,
-  "skip_max": 166,
+  "window_size": 4,
+  "offset": 26,
+  "skip_min": 1,
+  "skip_max": 108,
   "sessions": [
     "midday"
   ],
   "prng_type": "java_lcg",
   "test_both_modes": true,
   "seed_count": 50000,
-  "optimization_score": 13306.0,
-  "forward_count": 19424,
-  "reverse_count": 19466,
-  "bidirectional_count": 13306,
+  "optimization_score": 8912.0,
+  "forward_count": 17443,
+  "reverse_count": 17651,
+  "bidirectional_count": 8912,
   "status": "complete",
-  "completed_trials": 200,
-  "total_trials": 200,
-  "best_trial_number": 195,
-  "best_value": 13306.0,
-  "best_bidirectional_count": 13306,
-  "last_updated": "2026-02-22T08:59:50.579978",
-  "last_trial_number": 199,
-  "last_trial_value": 7323.0,
-  "completed_at": "2026-02-22T08:59:58.053754",
+  "completed_trials": 20,
+  "total_trials": 20,
+  "best_trial_number": 6,
+  "best_value": 8912.0,
+  "best_bidirectional_count": 8912,
+  "last_updated": "2026-02-23T16:32:06.170035",
+  "last_trial_number": 19,
+  "last_trial_value": 0.0,
+  "completed_at": "2026-02-23T16:32:08.984035",
   "agent_metadata": {
     "inputs": [
       {
@@ -42,13 +42,13 @@
     "follow_up_agent": "scorer_meta_agent",
     "confidence": 0.95,
     "suggested_params": {
-      "window_size": 3,
-      "forward_threshold": 0.43,
-      "reverse_threshold": 0.18,
+      "window_size": 4,
+      "forward_threshold": 0.49,
+      "reverse_threshold": 0.59,
       "k_folds": 5
     },
-    "reasoning": "Optimization found N/A survivors with score 13306.0000",
-    "timestamp_injected": "2026-02-22T16:59:58.054894+00:00"
+    "reasoning": "Optimization found N/A survivors with score 8912.0000",
+    "timestamp_injected": "2026-02-24T00:32:08.984210+00:00"
   },
-  "run_id": "step1_20260222_085958_28830"
+  "run_id": "step1_20260223_163208_92788"
 }

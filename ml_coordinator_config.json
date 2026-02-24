@@ -12,22 +12,32 @@
     {
       "hostname": "192.168.3.120",
       "username": "michael",
-      "gpu_count": 12,
+      "gpu_count": 8,
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
-      "max_concurrent_script_jobs": 12,
+      "max_concurrent_script_jobs": 8,
       "note": "4-core i3 CPU - limit to 1 job per core"
     },
     {
       "hostname": "192.168.3.154",
       "username": "michael",
-      "gpu_count": 12,
+      "gpu_count": 8,
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
-      "max_concurrent_script_jobs": 12,
+      "max_concurrent_script_jobs": 8,
       "note": "6-core i5 CPU - limit to 1 job per core"
+    },
+    {
+      "hostname": "192.168.3.162",
+      "username": "michael",
+      "gpu_count": 8,
+      "gpu_type": "RX 6600",
+      "script_path": "/home/michael/distributed_prng_analysis",
+      "python_env": "/home/michael/rocm_env/bin/python",
+      "max_concurrent_script_jobs": 8,
+      "note": "4-core i3 CPU - limit to 1 job per core"
     }
   ],
   "sieve_defaults": {
@@ -35,10 +45,18 @@
     "phase1_threshold": 0.01,
     "phase2_threshold": 0.01,
     "window_size": 512,
-    "skip_range": [0, 20],
+    "skip_range": [
+      0,
+      20
+    ],
     "offset": 0,
-    "sessions": ["midday", "evening"],
-    "prng_families": ["mt19937"]
+    "sessions": [
+      "midday",
+      "evening"
+    ],
+    "prng_families": [
+      "mt19937"
+    ]
   },
   "reverse_sieve_defaults": {
     "candidate_generation_method": "brute_force_sample",
