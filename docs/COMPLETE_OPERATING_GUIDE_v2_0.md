@@ -1,8 +1,8 @@
 # COMPLETE OPERATING GUIDE
 ## Distributed PRNG Analysis System
-**Version 2.0.0**  
+**Version 2.1.0**  
 **February 2026**  
-**Updated: Session 83 (Feb 13, 2026)**
+**Updated: Session 109 (Feb 23, 2026)**
 
 ### 26-GPU Cluster Architecture
 Zeus (2× RTX 3080 Ti) + rig-6600 (8× RX 6600) + rig-6600b (8× RX 6600) + rig-6600c (8× RX 6600)  
@@ -131,7 +131,9 @@ The complete prediction pipeline consists of 6 major steps, each building on the
 
 Search bounds are loaded from `distributed_config.json` → `search_bounds` section.
 
-**Key parameters:** window_size (2-500), offset (0-100), skip_min (0-10), skip_max (10-500), forward_threshold (0.001-0.1), reverse_threshold (0.001-0.1)
+**Key parameters:** window_size (2-500), offset (0-100), skip_min (0-10), skip_max (10-500), forward_threshold (0.15-0.60), reverse_threshold (0.15-0.60)
+
+**Integration layer:** `window_optimizer_integration_final.py` v3.1 — per-seed match rates + 7 intersection fields (S103/S104 fixes)
 
 ### Output
 
@@ -156,15 +158,23 @@ python3 window_optimizer.py --strategy bayesian --lottery-file daily3.json --tri
 
 Workers do NOT access the Optuna database directly. Instead, they write JSON results to local filesystem, and the coordinator (Zeus) pulls results via SCP. This prevents database contention with 26 concurrent workers.
 
-### Search Space
+### Search Space (v4.2 — S108 verified)
 
-| Parameter | Range | Purpose |
-|-----------|-------|---------|
-| residue_mod_1 | 5-20 | Small residue modulus |
-| residue_mod_2 | 50-150 | Medium residue modulus |
-| residue_mod_3 | 500-1500 | Large residue modulus |
-| max_offset | 1-15 | Temporal alignment offset |
-| temporal_window_size | [50,100,150,200] | Stability analysis window |
+| Parameter | Range | Purpose | Consumer |
+|-----------|-------|---------|----------|
+| residue_mod_1 | 5-20 | Small residue modulus | Step 3 |
+| residue_mod_2 | 50-150 | Medium residue modulus | Step 3 |
+| residue_mod_3 | 500-1500 | Large residue modulus | Step 3 |
+| max_offset | 1-15 | Temporal alignment offset | Step 3 |
+| temporal_window_size | 50-200 | Stability analysis window | Step 3 |
+| temporal_num_windows | 1-10 | Number of temporal windows | Step 3 |
+| min_confidence_threshold | 0.05-0.50 | Min confidence | Step 3 |
+| hidden_layers | categorical | NN architecture | Step 5 |
+| dropout | 0.1-0.5 | NN dropout | Step 5 |
+| learning_rate | 1e-4 to 1e-2 | NN learning rate | Step 5 |
+| batch_size | [32,64,128,256] | NN batch size | Step 5 |
+
+**v4.2 Objective:** `bidirectional_count` percentile rank + 0.10×`intersection_ratio` bonus (NPZ-based, no draw history dependency)
 
 ### Output
 

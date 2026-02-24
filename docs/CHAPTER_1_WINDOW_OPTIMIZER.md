@@ -2,9 +2,9 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 2.0  
-**File:** `window_optimizer.py`  
-**Lines:** 868  
+**Version:** 3.1  
+**File:** `window_optimizer.py` + `window_optimizer_integration_final.py`  
+**Lines:** ~868 + ~595  
 **Purpose:** Bayesian optimization of window parameters + survivor generation
 
 ---
@@ -37,10 +37,25 @@ The Window Optimizer is **Step 1** of the 6-step pipeline. It performs two criti
 1. **Parameter Optimization:** Uses Bayesian optimization (Optuna TPE) to find optimal window parameters
 2. **Survivor Generation:** Runs real sieves across all 26 GPUs and accumulates survivors
 
-### 1.2 Version 2.0 Features
+### 1.2 Version History
 
 ```
-NEW IN V2.0:
+VERSION 3.1 (S104, Feb 2026):
+- RESTORED: 7 intersection fields accidentally omitted in v3.0 rewrite
+  (intersection_count, intersection_ratio, forward_only_count,
+   reverse_only_count, survivor_overlap_ratio, bidirectional_selectivity,
+   intersection_weight)
+- These fields represent ~32% of ML feature importance (Chapter 6/11)
+
+VERSION 3.0 (S103, Feb 2026):
+- Per-seed match rates: forward_matches/reverse_matches now store per-seed
+  values from GPU sieve kernel, not trial-level aggregates
+- extract_survivor_records() preserves individual match_rate per seed
+- Legacy alias extract_survivors_from_result() retained for compatibility
+- convert_survivors_to_binary.py v3.1: maps to per-seed match rates
+- NPZ percentage-based variance health check added
+
+VERSION 2.0:
 - --test-both-modes flag: Test constant AND variable skip patterns
 - Survivors tagged with skip_mode metadata for ML feature engineering
 - Backward compatible: defaults to constant skip only
@@ -715,9 +730,9 @@ parser = argparse.ArgumentParser(
 # PRNG type
 --prng-type        # PRNG from registry (default: java_lcg)
 
-# Threshold parameters
---forward-threshold   # Override Optuna optimization (0.5-0.95)
---reverse-threshold   # Override Optuna optimization (0.6-0.98)
+# Threshold parameters (governance bounds: 0.15-0.60)
+--forward-threshold   # Override Optuna optimization (0.15-0.60)
+--reverse-threshold   # Override Optuna optimization (0.15-0.60)
 
 # NEW: Variable skip testing
 --test-both-modes  # Test BOTH constant and variable skip patterns
@@ -836,23 +851,37 @@ window_optimizer.py                    window_optimizer_integration_final.py
 }
 ```
 
-### 12.3 Survivor Record Structure
+### 12.3 Survivor Record Structure (v3.1)
 
 ```json
 {
     "seed": 12345678,
     "score": 0.85,
+    "forward_match_rate": 0.75,
+    "reverse_match_rate": 0.50,
     "prng_type": "java_lcg",
     "skip_mode": "constant",
     "window_config": {
-        "window_size": 256,
-        "offset": 50,
-        "skip_min": 0,
-        "skip_max": 30
+        "window_size": 4,
+        "offset": 26,
+        "skip_min": 1,
+        "skip_max": 108
     },
-    "trial_number": 23,
-    "timestamp": "2025-12-15T14:30:52"
+    "trial_number": 6,
+    "bidirectional_count": 8929,
+    "intersection_ratio": 0.488,
+    "forward_only_count": 8987,
+    "reverse_only_count": 8855,
+    "survivor_overlap_ratio": 0.498,
+    "bidirectional_selectivity": 1.007,
+    "intersection_weight": 0.244,
+    "timestamp": "2026-02-23T16:00:00"
 }
+
+# v3.0+: forward_match_rate and reverse_match_rate are PER-SEED
+# values from GPU sieve kernel (not trial-level aggregates).
+# v3.1: All 7 intersection fields restored (S104 fix).
+```
 ```
 
 ---

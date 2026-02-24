@@ -2,9 +2,9 @@
 
 ## PRNG Analysis Pipeline — Complete Operating Guide
 
-**Version:** 3.4  
+**Version:** 4.2  
 **File:** `scorer_trial_worker.py`  
-**Lines:** ~350  
+**Lines:** ~640  
 **Purpose:** Execute single scorer meta-optimization trial on remote GPU
 
 ---
@@ -48,6 +48,8 @@ The scorer trial worker executes a **single Optuna trial** for scorer hyperparam
 | **GPU-Vectorized Scoring** | PyTorch/CuPy batch processing |
 | **Adaptive Memory Batching** | Adjusts batch size for 8GB VRAM |
 | **Holdout Evaluation** | v3.4 critical fix for proper validation |
+| **NPZ-Based Objective** | v4.2: bidirectional_count from NPZ (no draw history) |
+| **Subset Selection** | v4.2: Per-trial survivor subsets with unique seeds |
 
 ### 1.3 Pipeline Position
 
@@ -163,7 +165,35 @@ Step 2.5: Scorer Meta-Optimizer
 ### 4.1 Version Timeline
 
 ```
-Version 3.4 - December 2025 (CURRENT)
+Version 4.2 - February 2026 (CURRENT — S107/S108)
+├── bidirectional_count as primary objective signal
+├── bidirectional_selectivity dropped (98.8% at floor — unusable)
+├── Secondary bonus: intersection_ratio (weight=0.10)
+├── Global percentile rank objective (stable across trials)
+├── Median for robustness (TB Q2 ruling)
+├── ir_disabled guard added
+└── 640 lines total
+
+Version 4.1 - February 2026 (S107 draft, superseded)
+├── Weighted Survivor Index (WSI) objective proposed
+├── Identified as tautological (batch_score measures same as sieve)
+└── Replaced by bidirectional_count in v4.2
+
+Version 4.0 - February 2026 (S105/S106)
+├── WSI + IQR composite objective designed
+├── IQR component confirmed tautological by Team Beta
+└── Blocked pending TB ruling → led to v4.1/v4.2
+
+Version 3.6 - February 2026 (S101)
+├── neg-MSE → Spearman correlation (rank-based, more robust)
+├── random.seed(42) → per-trial unique seed
+└── Fixed all-identical survivor sampling across trials
+
+Version 3.5 - January 2026 (S101)
+├── Degenerate guard: std < 1e-12 early exit
+└── Draw-history dependency still present (architectural issue)
+
+Version 3.4 - December 2025
 ├── CRITICAL FIX: Holdout evaluation uses sampled seeds
 ├── Previous: Holdout evaluated on ALL seeds (wrong!)
 └── Now: Holdout evaluated on SAME sampled seeds as training
@@ -175,8 +205,7 @@ Version 3.3 - November 2025
 
 Version 3.2 - November 2025
 ├── --params-file support for shorter SSH commands
-├── Previous: All params passed via CLI args (SSH command too long)
-└── Now: Params written to JSON file, worker reads file
+└── Params written to JSON file, worker reads file
 
 Version 3.1 - October 2025
 ├── ROCm environment setup at file top
@@ -185,6 +214,23 @@ Version 3.1 - October 2025
 Version 3.0 - October 2025
 ├── Initial distributed implementation
 └── Basic trial execution
+```
+
+### 4.2 v4.2 Architectural Redesign (S103-S108)
+
+**The Problem (v3.4-v3.6):** Step 2 scored survivors by comparing PRNG outputs
+to draw history — duplicating Chapter 13's function. Under mod1000, all scores
+were 0.0 (degenerate). Spearman correlation failed on zero-variance input.
+
+**The Fix (v4.2):** Step 2 now uses NPZ intrinsic fields as ground truth:
+- `bidirectional_count`: How many seeds survived both sieves (primary signal)
+- `intersection_ratio`: Jaccard overlap quality (secondary, weight=0.10)
+- NO draw history dependency. The sieve itself is the ground truth.
+
+**Clean Separation Restored:**
+```
+Step 2: Find optimal SCORING PARAMETERS using SIEVE QUALITY as ground truth
+Chapter 13: Compare predictions to real draws (post-prediction validation)
 ```
 
 ### 4.2 v3.4 Critical Fix Details
@@ -285,15 +331,26 @@ def main():
 
 ## 6. Trial Parameters
 
-### 6.1 Optuna Search Space
+### 6.1 Optuna Search Space (v4.2)
 
-| Parameter | Range | Purpose |
-|-----------|-------|---------|
-| `residue_mod_1` | 5-20 | Small residue modulus |
-| `residue_mod_2` | 50-150 | Medium residue modulus |
-| `residue_mod_3` | 500-1500 | Large residue modulus |
-| `max_offset` | 1-15 | Temporal alignment offset |
-| `temporal_window_size` | [50, 100, 150, 200] | Stability analysis window |
+| Parameter | Range | Purpose | Consumer |
+|-----------|-------|---------|----------|
+| `residue_mod_1` | 5-20 | Small residue modulus | Step 3 SurvivorScorer |
+| `residue_mod_2` | 50-150 | Medium residue modulus | Step 3 SurvivorScorer |
+| `residue_mod_3` | 500-1500 | Large residue modulus | Step 3 SurvivorScorer |
+| `max_offset` | 1-15 | Temporal alignment offset | Step 3 SurvivorScorer |
+| `temporal_window_size` | 50-200 | Stability analysis window | Step 3 SurvivorScorer |
+| `temporal_num_windows` | 1-10 | Number of temporal windows | Step 3 SurvivorScorer |
+| `min_confidence_threshold` | 0.05-0.50 | Min confidence for inclusion | Step 3 SurvivorScorer |
+| `hidden_layers` | categorical | NN architecture string | Step 5 anti_overfit |
+| `dropout` | 0.1-0.5 | NN dropout rate | Step 5 anti_overfit |
+| `learning_rate` | 1e-4 to 1e-2 | NN learning rate | Step 5 anti_overfit |
+| `batch_size` | [32,64,128,256] | NN batch size | Step 5 anti_overfit |
+
+**Note (S108 audit):** All parameters are downstream consumers. rm1/rm2/rm3 +
+max_offset + tw_size + tw_windows + min_conf feed Step 3 SurvivorScorer.
+hidden_layers + dropout + lr + batch_size feed Step 5 anti_overfit_trial_worker.
+Nothing to remove from the search space.
 
 ### 6.2 Parameter File Format (v3.2+)
 
@@ -366,68 +423,67 @@ Step 2.5 (Scorer Meta-Optimizer) uses:
     └── holdout_history for validation (unseen data)
 ```
 
-### 7.2 Holdout Evaluation (v3.4)
+### 7.2 Objective Function (v4.2)
+
+**v4.2 uses NPZ intrinsic fields — NO draw history dependency.**
 
 ```python
-def run_trial(survivors, train_history, holdout_history, params, trial_id):
+def run_trial(params, npz_data, trial_number):
     """
-    Run single scorer trial with proper holdout evaluation.
+    v4.2: Score using bidirectional_count from NPZ as ground truth.
     
-    v3.4 CRITICAL FIX: Use SAME sampled seeds for both train and holdout.
+    The sieve's own evidence (how many seeds survived both directions)
+    is the objective signal. No draw history needed.
     """
-    # Initialize scorer with trial params
-    scorer = SurvivorScorer(
-        prng_type='java_lcg',
-        mod=1000,
-        config_dict={
-            'residue_mod_1': params['residue_mod_1'],
-            'residue_mod_2': params['residue_mod_2'],
-            'residue_mod_3': params['residue_mod_3'],
-            'max_offset': params['max_offset'],
-            'temporal_window_size': params['temporal_window_size']
-        }
-    )
-    
-    # Sample survivors (same sample for both evaluations!)
-    sample_size = min(10000, len(survivors))
-    sampled_seeds = random.sample([s['seed'] for s in survivors], sample_size)
-    
-    # Score on training data
-    train_features = scorer.extract_ml_features_batch(
-        seeds=sampled_seeds,
-        lottery_history=train_history
-    )
-    train_scores = [f['score'] for f in train_features]
-    
-    # Score on holdout data (SAME seeds, different history)
-    holdout_features = scorer.extract_ml_features_batch(
-        seeds=sampled_seeds,  # v3.4 FIX: Same seeds!
-        lottery_history=holdout_history
-    )
-    holdout_scores = [f['score'] for f in holdout_features]
-    
-    # Compute metrics
+    # Load NPZ fields for this trial's survivor subset
+    trial_mask = npz_data['trial_number'] == trial_number
+    bid_counts = npz_data['bidirectional_count'][trial_mask]
+    ir_values = npz_data['intersection_ratio'][trial_mask]
+
+    if len(bid_counts) == 0:
+        return {'accuracy': 0.0, 'params': params}
+
+    # Primary signal: bidirectional_count (survival frequency)
+    # Use median for robustness against heavy-tail distributions (TB Q2)
+    bid_score = np.median(bid_counts)
+
+    # Normalize to global percentile rank (stable across trials)
+    all_bid = npz_data['bidirectional_count']
+    percentile = np.searchsorted(np.sort(all_bid), bid_score) / len(all_bid)
+
+    # Secondary bonus: intersection_ratio (quality of overlap)
+    ir_bonus = 0.0
+    if np.std(ir_values) > 1e-12:  # ir_disabled guard
+        ir_bonus = 0.10 * np.median(ir_values)
+
+    accuracy = percentile + ir_bonus
+
     return {
-        'trial_id': trial_id,
+        'accuracy': accuracy,
         'params': params,
-        'mean_train_score': np.mean(train_scores),
-        'mean_holdout_score': np.mean(holdout_scores),
-        'generalization_gap': np.mean(train_scores) - np.mean(holdout_scores),
-        'std_train_score': np.std(train_scores),
-        'std_holdout_score': np.std(holdout_scores),
-        'n_survivors_scored': len(sampled_seeds),
-        'top_k_holdout_score': np.mean(sorted(holdout_scores, reverse=True)[:100])
+        'bid_median': float(bid_score),
+        'ir_median': float(np.median(ir_values)),
+        'n_survivors': int(trial_mask.sum()),
     }
 ```
 
-### 7.3 Why Holdout Matters
+**Key Design Decisions (S103-S108):**
+- `bidirectional_selectivity` dropped (98.8% at floor — unusable signal)
+- Median over mean: robust to heavy-tail count distributions
+- Global percentile: stable across different trial sizes
+- `ir_disabled` guard: prevents NaN when intersection_ratio is constant
+
+### 7.3 Trial Metrics (v4.2)
 
 | Metric | Meaning |
 |--------|---------|
-| `mean_train_score` | How well params fit the training data |
-| `mean_holdout_score` | How well params generalize to unseen data |
-| `generalization_gap` | Train - Holdout (large = overfitting) |
-| `top_k_holdout_score` | Best survivors on holdout (what we care about) |
+| `accuracy` | Primary objective: percentile(bid_count) + 0.10×ir_bonus |
+| `bid_median` | Median bidirectional_count for this trial's survivors |
+| `ir_median` | Median intersection_ratio for this trial's survivors |
+| `n_survivors` | Number of survivors in this trial's subset |
+
+**Note:** v3.4's holdout train/test split is no longer relevant in v4.2
+since the objective uses NPZ intrinsic fields, not draw-based scoring.
 
 ---
 
