@@ -55,6 +55,26 @@ import uuid    # [S95] Collision-proof NPZ naming
 import argparse
 
 
+# --- S111_AUTOCORR_DIAGNOSTICS ---
+def _s111_write_autocorr_if_available(survivors, out_path='diagnostics_outputs/holdout_feature_autocorr.json'):
+    try:
+        import os, json
+        from holdout_quality import compute_autocorrelation_diagnostics
+        if not survivors or not isinstance(survivors, list) or not isinstance(survivors[0], dict):
+            return None
+        if survivors[0].get('holdout_features') is None:
+            return None
+        out = compute_autocorrelation_diagnostics(survivors)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, 'w') as f:
+            json.dump(out, f, indent=2)
+        return out
+    except Exception:
+        return None
+# --- S111_AUTOCORR_DIAGNOSTICS_END ---
+
+
+
 # === S88_COMPARE_MODELS_RUNNER_BEGIN ===
 def _s88_now_utc():
     import datetime
@@ -356,7 +376,8 @@ CUDA_INITIALIZED = False  # Deferred - set in main() based on subprocess routing
 # SIGNAL QUALITY COMPUTATION (v3.0)
 # ============================================================================
 
-def compute_signal_quality(y: np.ndarray, target_name: str = "holdout_hits") -> Dict:
+def compute_signal_quality(y: np.ndarray, target_name: str = "holdout_quality") -> Dict:
+    # --- S111_TARGET_HOLDOUT_QUALITY ---
     """
     Compute signal quality metrics for the training target.
     
@@ -588,7 +609,7 @@ def compute_feature_schema_hash(feature_names: List[str]) -> str:
 
 def load_survivors_with_features(
     survivors_file: str,
-    target_field: str = "holdout_hits",
+    target_field: str = "holdout_quality",
     exclude_features: List[str] = None
 ) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
     """
@@ -605,7 +626,7 @@ def load_survivors_with_features(
         feature_schema: Feature schema dict
         y_metadata: Target variable metadata
     """
-    exclude_features = exclude_features or ['score', 'confidence', 'holdout_hits']
+    exclude_features = exclude_features or ['score', 'confidence', 'holdout_hits', 'holdout_quality']
     
     # Get feature schema
     feature_schema = get_feature_schema_from_data(survivors_file, exclude_features)
@@ -1458,7 +1479,7 @@ class AntiOverfitMetaOptimizer:
         self.X, self.y, self.feature_schema, self.y_metadata = load_survivors_with_features(
             self.survivors_file,
             target_field='holdout_hits',
-            exclude_features=['score', 'confidence', 'holdout_hits']
+            exclude_features=['score', 'confidence', 'holdout_hits', 'holdout_quality']
         )
         
         self.logger.info(f"Loaded {len(self.X)} survivors with {self.feature_schema['feature_count']} features")

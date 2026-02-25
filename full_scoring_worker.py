@@ -59,6 +59,25 @@ import logging
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+# --- S111_HOLDOUT_QUALITY_INTEGRATION ---
+# S111: Holdout quality computation (TFM-consistent)
+from holdout_quality import compute_holdout_quality, get_survivor_skip
+import inspect as _s111_inspect
+
+def _s111_extract_features_with_optional_skip(scorer, *, seed, lottery_history, skip_val):
+    """Call scorer.extract_ml_features with skip if supported by signature."""
+    fn = getattr(scorer, 'extract_ml_features', None)
+    if fn is None:
+        raise AttributeError('SurvivorScorer missing extract_ml_features')
+    try:
+        sig = _s111_inspect.signature(fn)
+        if 'skip' in sig.parameters:
+            return fn(seed=seed, lottery_history=lottery_history, skip=skip_val)
+    except Exception:
+        pass
+    return fn(seed=seed, lottery_history=lottery_history)
+
 # GlobalStateTracker - GPU-neutral module for global features (14 features)
 from models.global_state_tracker import GlobalStateTracker, GLOBAL_FEATURE_NAMES
 
@@ -386,6 +405,30 @@ def score_survivors(
                 result["features"][f"global_{gkey}"] = float(gval) if isinstance(gval, (int, float)) else gval
             # v2.0: Add holdout_hits (y-label for Step 5)
             result["holdout_hits"] = holdout_hits_map.get(seed, 0.0)
+            # S111: Compute holdout_quality + holdout_features (holdout-only, TFM-consistent)
+            if holdout_history is not None and len(holdout_history) > 0:
+                try:
+                    meta = survivor_metadata.get(seed, {}) if survivor_metadata else {}
+                    skip_val = get_survivor_skip(meta)
+                    holdout_feats = _s111_extract_features_with_optional_skip(
+                        scorer,
+                        seed=seed,
+                        lottery_history=holdout_history,
+                        skip_val=skip_val,
+                    )
+                    result['holdout_features'] = {
+                        k: (float(v) if isinstance(v, (int, float)) else v)
+                        for k, v in (holdout_feats or {}).items()
+                    }
+                    result['holdout_quality'] = compute_holdout_quality(holdout_feats)
+                except Exception as e:
+                    logger.warning(f"[S111] holdout_quality failed for seed {seed}: {e}")
+                    result['holdout_features'] = {}
+                    result['holdout_quality'] = 0.0
+            else:
+                result['holdout_features'] = {}
+                result['holdout_quality'] = 0.0
+
             results.append(result)
         
         elapsed = time.time() - start_time
@@ -415,14 +458,38 @@ def score_survivors(
                 # Merge global features (14 features with global_ prefix)
                 for gkey, gval in global_features.items():
                     features[f"global_{gkey}"] = float(gval) if isinstance(gval, (int, float)) else gval
-                results.append({
+                fallback_result = {
                     'seed': seed,
                     'score': float(score),
                     'features': features,
-                    'metadata': {'prng_type': prng_type, 'mod': mod, 
+                    'metadata': {'prng_type': prng_type, 'mod': mod,
                                 'worker_hostname': HOST, 'timestamp': time.time()},
                     'holdout_hits': holdout_hits_map.get(seed, 0.0),
-                })
+                }
+                # S111: Compute holdout_quality in fallback path
+                if holdout_history is not None and len(holdout_history) > 0:
+                    try:
+                        meta = survivor_metadata.get(seed, {}) if survivor_metadata else {}
+                        skip_val = get_survivor_skip(meta)
+                        holdout_feats = _s111_extract_features_with_optional_skip(
+                            scorer,
+                            seed=seed,
+                            lottery_history=holdout_history,
+                            skip_val=skip_val,
+                        )
+                        fallback_result['holdout_features'] = {
+                            k: (float(v) if isinstance(v, (int, float)) else v)
+                            for k, v in (holdout_feats or {}).items()
+                        }
+                        fallback_result['holdout_quality'] = compute_holdout_quality(holdout_feats)
+                    except Exception as e2_hq:
+                        logger.warning(f'[S111] holdout_quality fallback failed for seed {seed}: {e2_hq}')
+                        fallback_result['holdout_features'] = {}
+                        fallback_result['holdout_quality'] = 0.0
+                else:
+                    fallback_result['holdout_features'] = {}
+                    fallback_result['holdout_quality'] = 0.0
+                results.append(fallback_result)
             except Exception as e2:
                 logger.warning(f"Failed to score seed {seed}: {e2}")
                 results.append({'seed': seed, 'score': 0.0, 'features': {}, 'error': str(e2)})
