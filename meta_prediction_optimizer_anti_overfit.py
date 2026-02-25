@@ -1478,7 +1478,7 @@ class AntiOverfitMetaOptimizer:
         # Load data
         self.X, self.y, self.feature_schema, self.y_metadata = load_survivors_with_features(
             self.survivors_file,
-            target_field='holdout_hits',
+            target_field='holdout_quality',
             exclude_features=['score', 'confidence', 'holdout_hits', 'holdout_quality']
         )
         
@@ -1486,7 +1486,7 @@ class AntiOverfitMetaOptimizer:
         self.logger.info(f"Feature schema hash: {self.feature_schema['feature_schema_hash']}")
         
         # Compute signal quality (v3.0)
-        self.signal_quality = compute_signal_quality(self.y, target_name="holdout_hits")
+        self.signal_quality = compute_signal_quality(self.y, target_name="holdout_quality")
         
         self.logger.info(f"Signal quality: {self.signal_quality['signal_status']} "
                         f"(confidence={self.signal_quality['signal_confidence']:.2f})")
