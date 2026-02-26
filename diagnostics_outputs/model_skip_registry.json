@@ -1,6 +1,8 @@
 {
   "neural_net": {
-    "consecutive_critical": 4,
-    "last_critical": "2026-02-24T02:17:50.215462+00:00"
+    "consecutive_critical": 3,
+    "last_critical": "2026-02-26T05:33:08.708102+00:00",
+    "consecutive_failures": 0,
+    "skip_active": false
   }
 }

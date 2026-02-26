@@ -1,0 +1,13 @@
+{
+  "residue_mod_1": 19,
+  "residue_mod_2": 83,
+  "residue_mod_3": 1083,
+  "max_offset": 12,
+  "temporal_window_size": 96,
+  "temporal_num_windows": 6,
+  "min_confidence_threshold": 0.128479132428794,
+  "hidden_layers": "512_256_128",
+  "dropout": 0.2678100758041373,
+  "learning_rate": 0.0002760582130808362,
+  "batch_size": 32
+}
