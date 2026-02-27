@@ -1,11 +1,12 @@
 # SESSION_CHANGELOG_20260224_S110.md
 
-## Session 110 — February 24, 2026 (Retroactive)
+## Session 110 — February 24, 2026 (Updated)
 
-### Focus: Phase 0 Baseline Establishment + Root Cleanup Planning
+### Focus: Phase 0 Baseline + Battery-Inspired Statistical Features Proposal
 
-**Note:** This changelog was created retroactively in S111. No Claude chat session
-was conducted for S110 — work was performed directly on Zeus.
+**Note:** This changelog was created retroactively in S111 and updated in S112
+to include the battery-inspired statistical features proposal (v1.0→v1.3 FINAL)
+which was developed across multiple S110/S111 chat sessions but originated here.
 
 ---
 
@@ -41,7 +42,55 @@ integer draw matches (Poisson noise), providing no gradient signal for ML
 models to learn from. This motivated the v1.1 holdout validation redesign
 proposal (approved by Team Beta, implemented in S111).
 
-### 2. Root Cleanup Assessment
+### 2. Battery-Inspired Statistical Features Proposal (v1.0→v1.3 FINAL)
+
+Developed a comprehensive proposal for PRNG-agnostic statistical features
+inspired by NIST SP 800-22 and Diehard battery tests. The proposal evolved
+through 4 revisions with Team Beta review at each stage:
+
+**Evolution:**
+- **v1.0** — LCG-centric, SciPy dependencies, variable column counts
+- **v1.1** — PRNG-agnostic reframe, still had SciPy in workers
+- **v1.2** — SciPy-free (numpy-only for Tier 1), runtime budget added,
+  leakage guardrail (`seq` invariant assertion)
+- **v1.3 FINAL** — Fixed-width autocorr columns (10 lags always, zero-filled),
+  popcount optimization, all TB nits resolved
+
+**Tier 1A Features (23 fixed columns, <0.2ms/survivor):**
+
+| ID | Feature Group | Columns | Description |
+|----|---------------|---------|-------------|
+| F1 | Spectral (FFT + diff) | 5 | peak_magnitude, secondary_peak, spectral_concentration, diff_peak, diff_concentration |
+| F5 | Autocorrelation | 12 | 10 lag values (zero-filled) + decay_rate + significant_lag_count |
+| F7 | Cumulative Sum | 3 | max_excursion, mean_excursion, zero_crossings |
+| F6 | Bit Frequency (32-bit) | 3 | hamming_mean, hamming_std, popcount_bias |
+
+**Tier 1B Features (6 columns, after 1A validation):**
+
+| ID | Feature Group | Columns |
+|----|---------------|---------|
+| F3 | Runs Analysis (SciPy-free) | 3 |
+| F4 | Linear Complexity (LSB, cap=256) | 3 |
+
+**Tier 2+ (gated behind `enable_expensive_features`):**
+
+| ID | Feature Group | Columns |
+|----|---------------|---------|
+| F2 | Approximate Entropy (cap=64, Numba) | 2 |
+
+**Key Design Principles (TB requirements):**
+- Battery-inspired, NOT verbatim NIST tests (operates on skip-subsampled, mod-reduced sequences)
+- Features computed ONLY from `seq`, never from `lottery_history` (leakage guardrail)
+- Fixed column count regardless of tuning params (prevents dimension drift)
+- No SciPy in workers (numpy only for Tier 1)
+- Seq invariant assertions in both CPU and GPU paths
+- Runtime budget: Tier 1A < 5ms/survivor on CPU
+
+**Deliverable:** `PROPOSAL_BATTERY_STATISTICAL_FEATURES_v1_3_FINAL.md`
+
+**Status:** TB approved, awaiting implementation after Phase 1 baseline.
+
+### 3. Root Cleanup Assessment
 
 Identified 884 files in project root needing organization.
 **Status:** Assessment only — cleanup deferred to future session.
@@ -52,7 +101,8 @@ Identified 884 files in project root needing organization.
 
 | File | Type | Change |
 |------|------|--------|
-| (no code changes) | — | Baseline run only |
+| PROPOSAL_BATTERY_STATISTICAL_FEATURES_v1_3_FINAL.md | New | Battery features proposal |
+| (no code changes) | — | Baseline run + proposal only |
 
 ---
 
@@ -63,24 +113,27 @@ Identified 884 files in project root needing organization.
 3. The consistent scoring rule violation (training features ≠ holdout evaluation)
    is the root cause — features measure residue coherence, lane agreement, etc.
    but target counts raw integer matches
+4. **Battery-inspired features** identified as the primary lever for LCG pattern
+   detection after holdout validation redesign
 
 ---
 
 ## TODOs (from S110)
 
-1. ~~S111: Implement holdout_quality redesign~~ → IN PROGRESS
+1. ~~S111: Implement holdout_quality redesign~~ → DONE (S111)
 2. S110 root cleanup (884 files) — deferred
 3. sklearn warnings Step 5 — deferred
 4. Remove CSV writer from coordinator.py (dead weight) — deferred
 5. Regression diag gate=True — deferred
 6. S103 Part2 — deferred
 7. Phase 9B.3 — deferred
+8. **Battery features Tier 1A implementation** — after Phase 1 baseline
 
 ---
 
 ## Git Commits
 
-*(No commits this session — baseline run only, no code changes)*
+*(No commits this session — baseline run + proposal only, no code changes)*
 
 ---
 
@@ -94,5 +147,6 @@ Implement v1.1 holdout validation redesign:
 
 ---
 
-*Session 110 — Retroactive changelog created during S111*
-*Phase 0 baseline established. Holdout validation redesign approved.*
+*Session 110 — Retroactive changelog updated during S112*
+*Phase 0 baseline established. Battery features proposal v1.3 FINAL delivered.*
+*Holdout validation redesign approved.*
