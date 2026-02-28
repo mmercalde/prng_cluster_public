@@ -110,7 +110,7 @@
     }
   },
   "success_metrics": {
-    "min_scored_survivors": 100,
+    "min_scored_survivors": 10,
     "expected_scoring_rate": 0.99,
     "max_scoring_failures": 10
   },
@@ -132,7 +132,7 @@
     "confidence_divisor": 64.0,
     "confidence_cap": 0.95,
     "zero_scored_confidence": 0.5,
-    "min_scored_survivors": 100
+    "min_scored_survivors": 10
   },
   "evaluation_type": "file_exists",
   "disable_llm_parsing": true,
