@@ -82,10 +82,21 @@
 
 ### PRNG Registry Extensions
 
-- [ ] **Add XOR-shift variants to PRNG registry** — `xorshift32`, `xorshift64`,
-  `xorshift128`, `xorshift128+` as candidate PRNG types. If linear complexity
-  test confirms XOR mixing, re-run Step 1 with these types to see if survivor
-  count improves dramatically.
+- [x] **XOR-shift variants already in registry** — `xorshift32`, `xorshift64`,
+  `xorshift128` (plus hybrid/reverse variants) are fully implemented with GPU
+  kernels in `prng_registry.py`. NO new implementation needed. ✅
+
+- [ ] **Run Step 1 with xorshift variants** — If linear complexity test confirms
+  XOR mixing is present, simply pass `--prng-type xorshift64` (or xorshift32,
+  xorshift128) to Step 1. Compare survivor counts vs `java_lcg`. Zero code
+  changes required — parameter change only.
+
+- [ ] **WATCHER PRNG autonomy policy** — Define policy for WATCHER to
+  autonomously switch `prng_type` between runs. Required additions: (1) add
+  `prng_type` to WATCHER GBNF grammar as valid action, (2) PRNG performance
+  tracking sidecar, (3) Strategy Advisor PRNG context, (4) escalation policy
+  e.g. "3 consecutive 0-survivor runs → try next PRNG family". Infrastructure
+  already complete — purely a policy/decision layer addition.
 
 - [ ] **Java LCG + XOR post-processing hybrid** — Implement `java_lcg_xor` in
   registry: standard LCG state update + XOR-shift output transformation. Test
