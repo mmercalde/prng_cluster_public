@@ -901,6 +901,10 @@ def main():
                        help='Reverse sieve threshold (0.6-0.98). If not set, Optuna optimizes it.')
 
     # NEW: Variable skip testing flag
+    parser.add_argument('--resume-study', action='store_true',
+                       help='Resume most recent incomplete Optuna study DB instead of starting fresh. '
+                            'Skips warm-start enqueue if study already has trials. '
+                            'Default: False (fresh study every run).')
     parser.add_argument('--test-both-modes', action='store_true',
                        help='Test BOTH constant and variable skip patterns (NEW!)')
 
@@ -920,7 +924,8 @@ def main():
             output_config=args.output,
             seed_count=args.max_seeds if args.max_seeds else 10_000_000,
             prng_type=args.prng_type,
-            test_both_modes=args.test_both_modes  # NEW: Pass through
+            test_both_modes=args.test_both_modes,
+            resume_study=getattr(args, 'resume_study', False)  # NEW: Pass through
         )
 
         print("\n✅ Bayesian optimization complete!")
@@ -944,6 +949,7 @@ def main():
             seed_count=args.max_seeds if args.max_seeds else 10_000_000,
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
+            resume_study=getattr(args, 'resume_study', False),
             strategy_name='random'  # Override to use RandomSearch
         )
         print("\n✅ Random search complete!")
@@ -962,6 +968,7 @@ def main():
             seed_count=args.max_seeds if args.max_seeds else 10_000_000,
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
+            resume_study=getattr(args, 'resume_study', False),
             strategy_name='grid'
         )
         print("\n✅ Grid search complete!")
@@ -980,6 +987,7 @@ def main():
             seed_count=args.max_seeds if args.max_seeds else 10_000_000,
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
+            resume_study=getattr(args, 'resume_study', False),
             strategy_name='evolutionary'
         )
         print("\n✅ Evolutionary search complete!")

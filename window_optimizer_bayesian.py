@@ -247,7 +247,8 @@ class OptunaBayesianSearch:
                objective_function: Callable,
                bounds: 'SearchBounds',
                max_iterations: int,
-               scorer: ResultScorer) -> Dict:
+               scorer: ResultScorer,
+               resume_study: bool = False) -> Dict:
         """
         Run Bayesian optimization using Optuna
         
@@ -343,17 +344,78 @@ class OptunaBayesianSearch:
         
         # Create persistent storage for the study
         import time
+        import glob as _glob
+        import os as _os
+
+        # --- Resume logic (S114 patch) ---
+        # resume_study=True: find most recent incomplete DB and continue
+        # resume_study=False (default): always create fresh study
+        _resume = False
+        _resumed_completed = 0
         study_name = f"window_opt_{int(time.time())}"
         storage_path = f"sqlite:////home/michael/distributed_prng_analysis/optuna_studies/{study_name}.db"
-        
+
+        if resume_study:
+            _existing_dbs = sorted(
+                _glob.glob("optuna_studies/window_opt_*.db"),
+                key=_os.path.getmtime,
+                reverse=True
+            )
+            if _existing_dbs:
+                _candidate_db = _existing_dbs[0]
+                _candidate_name = _os.path.splitext(_os.path.basename(_candidate_db))[0]
+                _candidate_storage = f"sqlite:////home/michael/distributed_prng_analysis/{_candidate_db}"
+                try:
+                    _candidate_study = optuna.load_study(
+                        study_name=_candidate_name,
+                        storage=_candidate_storage
+                    )
+                    _candidate_completed = len([
+                        t for t in _candidate_study.trials
+                        if t.state.name == "COMPLETE"
+                    ])
+                    if _candidate_completed > 0 and _candidate_completed < max_iterations:
+                        _resume = True
+                        _resumed_completed = _candidate_completed
+                        study_name = _candidate_name
+                        storage_path = _candidate_storage
+                        print(f"   🔄 RESUMING study: {_candidate_name}")
+                        print(f"   🔄 Completed: {_candidate_completed}/{max_iterations} trials")
+                        print(f"   🔄 Remaining: {max_iterations - _candidate_completed} trials")
+                    else:
+                        print(f"   📊 No resumable study found — starting fresh")
+                except Exception as _e:
+                    print(f"   ⚠️  Could not load existing study ({_e}) — starting fresh")
+            else:
+                print(f"   📊 No existing study DBs found — starting fresh")
+
         study = optuna.create_study(
             study_name=study_name,
             storage=storage_path,
             direction='maximize',
             sampler=sampler,
-            load_if_exists=False
+            load_if_exists=_resume
         )
-        print(f"   📊 Optuna study saved to: optuna_studies/{study_name}.db")
+        print(f"   📊 Optuna study: optuna_studies/{study_name}.db")
+
+        # Warm-start: enqueue known-good S112 config as trial 0
+        # Skipped on resume — trial already exists in DB
+        # Only runs on fresh study starts
+        if not _resume:
+            study.enqueue_trial({
+                'window_size': 8,
+                'offset': 43,
+                'skip_min': 5,
+                'skip_max': 56,
+                'forward_threshold': 0.49,
+                'reverse_threshold': 0.49
+            })
+            print("   🌡️  Warm-start: enqueued W8_O43_S5-56 as trial 0 (S112 known-good config)")
+        else:
+            print(f"   ✅ Resume mode: skipping warm-start (already in DB)")
+
+        # Trials remaining: full count on fresh, remainder on resume
+        _trials_to_run = max_iterations - _resumed_completed
         
         # Run optimization with incremental save callback
         _incremental_callback = create_incremental_save_callback(
@@ -361,7 +423,7 @@ class OptunaBayesianSearch:
             output_survivors_path="bidirectional_survivors.json",
             total_trials=max_iterations
         )
-        study.optimize(optuna_objective, n_trials=max_iterations, callbacks=[_incremental_callback])
+        study.optimize(optuna_objective, n_trials=_trials_to_run, callbacks=[_incremental_callback])
         
         # Finalize output (mark status=complete)
         finalize_incremental_output(study, "optimal_window_config.json")

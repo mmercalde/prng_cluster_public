@@ -2683,7 +2683,7 @@ def main():
         use_llm=not args.no_llm,
         use_grammar=not args.no_grammar,
         # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
-        step_timeout_overrides={5: 360}
+        step_timeout_overrides={1: 480, 5: 360}
     )
 
     # Handle halt commands

@@ -146,11 +146,12 @@
   "default_params": {
     "lottery_file": "daily3.json",
     "strategy": "bayesian",
-    "trials": 50,
+    "trials": 100,
     "max_seeds": 10000000,
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json",
-    "test_both_modes": true
+    "test_both_modes": true,
+    "resume_study": false
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
