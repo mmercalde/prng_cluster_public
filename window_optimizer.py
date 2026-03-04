@@ -504,7 +504,8 @@ def run_bayesian_optimization(
     seed_count: int = 10_000_000,
     prng_type: str = 'java_lcg',
     test_both_modes: bool = False,
-    strategy_name: str = 'bayesian'  # 'bayesian' or 'random'
+    strategy_name: str = 'bayesian',  # 'bayesian' or 'random'
+    resume_study: bool = False
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
