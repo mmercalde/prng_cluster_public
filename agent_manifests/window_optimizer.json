@@ -146,12 +146,13 @@
   "default_params": {
     "lottery_file": "daily3.json",
     "strategy": "bayesian",
-    "trials": 100,
     "max_seeds": 10000000,
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json",
     "test_both_modes": true,
-    "resume_study": false
+    "resume_study": false,
+    "window_trials": 100,
+    "study_name": ""
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
@@ -163,5 +164,16 @@
   "evaluation_type": "file_exists",
   "disable_llm_parsing": true,
   "disable_heuristic_parsing": true,
-  "retry_policy": "none"
+  "retry_policy": "none",
+  "args_map": {
+    "study-name": "study_name"
+  },
+  "param_docs": {
+    "study_name": {
+      "type": "str",
+      "default": "",
+      "description": "Optuna study DB name to resume (e.g. 'window_opt_1772507547'). Empty = auto-select most recent incomplete study.",
+      "optimized_by": "Manual"
+    }
+  }
 }

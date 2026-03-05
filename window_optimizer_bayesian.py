@@ -248,7 +248,8 @@ class OptunaBayesianSearch:
                bounds: 'SearchBounds',
                max_iterations: int,
                scorer: ResultScorer,
-               resume_study: bool = False) -> Dict:
+               resume_study: bool = False,
+               study_name: str = '') -> Dict:
         """
         Run Bayesian optimization using Optuna
         
@@ -352,17 +353,25 @@ class OptunaBayesianSearch:
         # resume_study=False (default): always create fresh study
         _resume = False
         _resumed_completed = 0
-        study_name = f"window_opt_{int(time.time())}"
-        storage_path = f"sqlite:////home/michael/distributed_prng_analysis/optuna_studies/{study_name}.db"
+        _fresh_study_name = f"window_opt_{int(time.time())}"
+        _fresh_storage_path = f"sqlite:////home/michael/distributed_prng_analysis/optuna_studies/{_fresh_study_name}.db"
 
         if resume_study:
-            _existing_dbs = sorted(
-                _glob.glob("optuna_studies/window_opt_*.db"),
-                key=_os.path.getmtime,
-                reverse=True
-            )
-            if _existing_dbs:
-                _candidate_db = _existing_dbs[0]
+            # specific study_name takes priority over auto-select
+            if study_name:
+                _candidate_dbs = [f"optuna_studies/{study_name}.db"]
+                print(f"   🔄 Requested study: {study_name}")
+            else:
+                _candidate_dbs = sorted(
+                    _glob.glob("optuna_studies/window_opt_*.db"),
+                    key=_os.path.getmtime,
+                    reverse=True
+                )
+            _resume_found = False
+            for _candidate_db in _candidate_dbs:
+                if not _os.path.exists(_candidate_db):
+                    print(f"   ⚠️  Study DB not found: {_candidate_db}")
+                    continue
                 _candidate_name = _os.path.splitext(_os.path.basename(_candidate_db))[0]
                 _candidate_storage = f"sqlite:////home/michael/distributed_prng_analysis/{_candidate_db}"
                 try:
@@ -374,7 +383,7 @@ class OptunaBayesianSearch:
                         t for t in _candidate_study.trials
                         if t.state.name == "COMPLETE"
                     ])
-                    if _candidate_completed > 0 and _candidate_completed < max_iterations:
+                    if _candidate_completed > 0 and (_candidate_completed < max_iterations or study_name):
                         _resume = True
                         _resumed_completed = _candidate_completed
                         study_name = _candidate_name
@@ -382,13 +391,18 @@ class OptunaBayesianSearch:
                         print(f"   🔄 RESUMING study: {_candidate_name}")
                         print(f"   🔄 Completed: {_candidate_completed}/{max_iterations} trials")
                         print(f"   🔄 Remaining: {max_iterations - _candidate_completed} trials")
+                        _resume_found = True
+                        break
                     else:
-                        print(f"   📊 No resumable study found — starting fresh")
+                        print(f"   📊 Study {_candidate_name}: {_candidate_completed} trials — skipping")
                 except Exception as _e:
-                    print(f"   ⚠️  Could not load existing study ({_e}) — starting fresh")
-            else:
-                print(f"   📊 No existing study DBs found — starting fresh")
+                    print(f"   ⚠️  Could not load {_candidate_name} ({_e})")
+            if not _resume_found:
+                print(f"   📊 No resumable study found — starting fresh")
 
+        if not _resume:
+            study_name = _fresh_study_name
+            storage_path = _fresh_storage_path
         study = optuna.create_study(
             study_name=study_name,
             storage=storage_path,

@@ -380,11 +380,13 @@ class BayesianOptimization(SearchStrategy):
             except Exception as e:
                 print(f"⚠️  Could not initialize Optuna: {e}")
 
-    def search(self, objective_function, bounds, max_iterations, scorer):
+    def search(self, objective_function, bounds, max_iterations, scorer,
+               resume_study: bool = False, study_name: str = ''):
         """Run Bayesian optimization"""
         if self.optuna_search:
             # Use real Optuna implementation
-            return self.optuna_search.search(objective_function, bounds, max_iterations, scorer)
+            return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
+                                             resume_study=resume_study, study_name=study_name)
         else:
             # Fallback to random search
             print("⚠️  Optuna not available, using random search fallback")
@@ -446,7 +448,8 @@ class WindowOptimizer:
 
     def optimize(self, strategy: SearchStrategy, bounds: SearchBounds,
                 max_iterations: int = 50, scorer: ScoringFunction = None,
-                seed_start: int = 0, seed_count: int = 10_000_000) -> Dict[str, Any]:
+                seed_start: int = 0, seed_count: int = 10_000_000,
+                resume_study: bool = False, study_name: str = '') -> Dict[str, Any]:
         """
         Run optimization using the provided strategy.
         
@@ -459,7 +462,7 @@ class WindowOptimizer:
         def objective(config: WindowConfig) -> TestResult:
             return self.test_configuration(config, seed_start, seed_count)
 
-        return strategy.search(objective, bounds, max_iterations, scorer)
+        return strategy.search(objective, bounds, max_iterations, scorer, resume_study=resume_study, study_name=study_name)
 
     def save_results(self, results: Dict[str, Any], output_path: str):
         """Save optimization results to JSON file"""
@@ -505,7 +508,8 @@ def run_bayesian_optimization(
     prng_type: str = 'java_lcg',
     test_both_modes: bool = False,
     strategy_name: str = 'bayesian',  # 'bayesian' or 'random'
-    resume_study: bool = False
+    resume_study: bool = False,
+    study_name: str = ''
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -580,7 +584,9 @@ def run_bayesian_optimization(
         test_both_modes=test_both_modes,  # NEW: Pass through to integration layer
         strategy_name=strategy_name,
         max_iterations=trials,
-        output_file='window_optimization_results.json'
+        output_file='window_optimization_results.json',
+        resume_study=resume_study,
+        study_name=study_name
     )
 
     # Save optimal config for downstream use
@@ -906,6 +912,10 @@ def main():
                        help='Resume most recent incomplete Optuna study DB instead of starting fresh. '
                             'Skips warm-start enqueue if study already has trials. '
                             'Default: False (fresh study every run).')
+    parser.add_argument('--study-name', type=str, default='',
+                       help='Optuna study DB name to resume (e.g. window_opt_1772507547). '
+                            'Empty string = auto-select most recent incomplete study. '
+                            'Only used when --resume-study is set.')
     parser.add_argument('--test-both-modes', action='store_true',
                        help='Test BOTH constant and variable skip patterns (NEW!)')
 
@@ -926,7 +936,8 @@ def main():
             seed_count=args.max_seeds if args.max_seeds else 10_000_000,
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
-            resume_study=getattr(args, 'resume_study', False)  # NEW: Pass through
+            resume_study=getattr(args, 'resume_study', False),
+            study_name=getattr(args, 'study_name', '')  # NEW: Pass through
         )
 
         print("\n✅ Bayesian optimization complete!")
@@ -951,6 +962,7 @@ def main():
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
             resume_study=getattr(args, 'resume_study', False),
+            study_name=getattr(args, 'study_name', ''),
             strategy_name='random'  # Override to use RandomSearch
         )
         print("\n✅ Random search complete!")
@@ -970,6 +982,7 @@ def main():
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
             resume_study=getattr(args, 'resume_study', False),
+            study_name=getattr(args, 'study_name', ''),
             strategy_name='grid'
         )
         print("\n✅ Grid search complete!")
@@ -989,6 +1002,7 @@ def main():
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
             resume_study=getattr(args, 'resume_study', False),
+            study_name=getattr(args, 'study_name', ''),
             strategy_name='evolutionary'
         )
         print("\n✅ Evolutionary search complete!")

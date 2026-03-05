@@ -415,7 +415,9 @@ def add_window_optimizer_to_coordinator():
                         test_both_modes: bool = False,
                         strategy_name: str = 'bayesian',
                         max_iterations: int = 50,
-                        output_file: str = 'window_optimization.json'):
+                        output_file: str = 'window_optimization.json',
+                        resume_study: bool = False,
+                        study_name: str = ''):
 
         print(f"\n{'='*80}")
         print(f"WINDOW OPTIMIZATION WITH SURVIVOR ACCUMULATION")
@@ -480,7 +482,9 @@ def add_window_optimizer_to_coordinator():
             max_iterations=max_iterations,
             scorer=BidirectionalCountScorer(),
             seed_start=seed_start,
-            seed_count=seed_count
+            seed_count=seed_count,
+            resume_study=resume_study,
+            study_name=study_name
         )
 
         optimizer.save_results(results, output_file)
