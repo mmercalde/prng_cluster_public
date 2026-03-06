@@ -436,7 +436,8 @@ def add_window_optimizer_to_coordinator():
                         output_file: str = 'window_optimization.json',
                         resume_study: bool = False,
                         study_name: str = '',
-                        n_parallel: int = 1):  # S115 M1
+                        n_parallel: int = 1,
+                        enable_pruning: bool = False):  # S115 M1 / S118 sig fix
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -515,7 +516,8 @@ def add_window_optimizer_to_coordinator():
                 forward_threshold=ft,
                 reverse_threshold=rt,
                 trial_number=trial_counter['count'],
-                accumulator=survivor_accumulator
+                accumulator=survivor_accumulator,
+                optuna_trial=optuna_trial          # S119 Gap5
             )
 
         optimizer.test_configuration = test_config

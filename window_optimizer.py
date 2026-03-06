@@ -432,14 +432,16 @@ class WindowOptimizer:
         self.test_configuration_func = None
 
     def test_configuration(self, config: WindowConfig, seed_start: int = 0,
-                          seed_count: int = 10_000_000) -> TestResult:
+                          seed_count: int = 10_000_000,
+                          optuna_trial=None) -> TestResult:  # S119
         """
         Test a configuration.
         This will be overridden by the integration layer to run real sieves.
         Thresholds are now taken from config.forward_threshold and config.reverse_threshold.
         """
         if self.test_configuration_func:
-            return self.test_configuration_func(config, seed_start, seed_count)
+            return self.test_configuration_func(config, seed_start, seed_count,
+                                                optuna_trial=optuna_trial)  # S119
 
         # Fallback placeholder (should never be called in integrated mode)
         return TestResult(
@@ -463,8 +465,9 @@ class WindowOptimizer:
         if scorer is None:
             scorer = BidirectionalCountScorer()
 
-        def objective(config: WindowConfig) -> TestResult:
-            return self.test_configuration(config, seed_start, seed_count)
+        def objective(config: WindowConfig, optuna_trial=None) -> TestResult:  # S118
+            return self.test_configuration(config, seed_start, seed_count,
+                                           optuna_trial=optuna_trial)  # S118
 
         return strategy.search(objective, bounds, max_iterations, scorer, resume_study=resume_study, study_name=study_name)
 
