@@ -368,15 +368,19 @@ class BayesianOptimization(SearchStrategy):
     This is the recommended strategy - it learns from previous trials
     to intelligently explore the search space.
     """
-    def __init__(self, n_initial=5):
+    def __init__(self, n_initial=5, enable_pruning=False, n_parallel=1):  # S115 R3
         self.n_initial = n_initial
+        self.enable_pruning = enable_pruning
+        self.n_parallel = n_parallel
         self.optuna_search = None
 
         # Try to use real Optuna implementation
         if BAYESIAN_AVAILABLE:
             try:
                 from window_optimizer_bayesian import OptunaBayesianSearch
-                self.optuna_search = OptunaBayesianSearch(n_startup_trials=n_initial, seed=None)
+                self.optuna_search = OptunaBayesianSearch(
+                    n_startup_trials=n_initial, seed=None,
+                    enable_pruning=enable_pruning, n_parallel=n_parallel)  # S115 R3
             except Exception as e:
                 print(f"⚠️  Could not initialize Optuna: {e}")
 
@@ -509,7 +513,9 @@ def run_bayesian_optimization(
     test_both_modes: bool = False,
     strategy_name: str = 'bayesian',  # 'bayesian' or 'random'
     resume_study: bool = False,
-    study_name: str = ''
+    study_name: str = '',
+    enable_pruning: bool = False,     # S115 R3
+    n_parallel: int = 1               # S115 M1
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -918,6 +924,11 @@ def main():
                             'Only used when --resume-study is set.')
     parser.add_argument('--test-both-modes', action='store_true',
                        help='Test BOTH constant and variable skip patterns (NEW!)')
+    # S115 R3: pruning + parallelism flags
+    parser.add_argument('--enable-pruning', action='store_true', default=False,
+                       help='Enable forward_count==0 pruning (~1.7x speedup alone).')
+    parser.add_argument('--n-parallel', type=int, default=1,
+                       help='Parallel partitions: 1=serial (default), 2=dual-partition split.')
 
     args = parser.parse_args()
 

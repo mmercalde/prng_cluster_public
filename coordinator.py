@@ -232,7 +232,10 @@ class MultiGPUCoordinator:
     def __init__(self, config_file: str = "distributed_config.json",
                  seed_cap_nvidia: int = 40000, seed_cap_amd: int = 19000, seed_cap_default: int = 19000,
                  max_concurrent: int = 8, max_per_node: int = 4, max_local_concurrent: Optional[int] = None,
-                 job_timeout: int = 600, resume_policy: str = 'prompt'):
+                 job_timeout: int = 600, resume_policy: str = 'prompt',
+                 node_allowlist: Optional[List[str]] = None):
+        # S115 M1/M4: CRITICAL — set before load_configuration() which runs inside __init__
+        self.node_allowlist = node_allowlist
         self.config_file = config_file
         self.nodes: List[WorkerNode] = []
         self.gpu_workers: List[GPUWorker] = []
@@ -293,6 +296,18 @@ class MultiGPUCoordinator:
                 )
                 self.nodes.append(node)
                 print(f"Configured node {node.hostname}: {node.gpu_count}x {node.gpu_type}")
+            # S115 M1/M4: apply allowlist filter after all nodes loaded
+            if getattr(self, 'node_allowlist', None) is not None:
+                _all = list(self.nodes)
+                self.nodes = [n for n in self.nodes if n.hostname in self.node_allowlist]
+                print(f"   Node allowlist active: {len(self.nodes)}/{len(_all)} nodes "
+                      f"({[n.hostname for n in self.nodes]})")
+                if not self.nodes:
+                    raise ValueError(
+                        f"node_allowlist {self.node_allowlist} matched no nodes.\n"
+                        f"Available hostnames: {[n.hostname for n in _all]}\n"
+                        f"Check for hostname vs IP mismatch in distributed_config.json."
+                    )
             # Load sieve defaults from config
             self.sieve_defaults = config.get("sieve_defaults", {
                 "min_match_threshold": 0.01,

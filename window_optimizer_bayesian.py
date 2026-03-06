@@ -230,12 +230,17 @@ def finalize_incremental_output(study, output_config_path: str = "optimal_window
 class OptunaBayesianSearch:
     """Bayesian optimization using Optuna's TPE sampler"""
     
-    def __init__(self, n_startup_trials=5, seed=None):
+    def __init__(self, n_startup_trials=5, seed=None,
+                 enable_pruning=False, n_parallel=1):  # S115 R3
         """
         Args:
             n_startup_trials: Number of random trials before using TPE
             seed: Random seed for reproducibility
+            enable_pruning: If True enable forward_count==0 pruning (S115 M2)
+            n_parallel: Number of parallel partitions (S115 M1)
         """
+        self.enable_pruning = enable_pruning
+        self.n_parallel = n_parallel
         if not OPTUNA_AVAILABLE:
             raise ImportError("Optuna not available. Install with: pip install optuna")
         
@@ -311,8 +316,8 @@ class OptunaBayesianSearch:
                 reverse_threshold=round(reverse_threshold, 2)
             )
             
-            # Evaluate configuration
-            result = objective_function(config)
+            # Evaluate configuration — S115 M2: pass trial for pruning hook
+            result = objective_function(config, optuna_trial=trial)
             result.iteration = trial.number
             
             # Store result
@@ -348,9 +353,10 @@ class OptunaBayesianSearch:
         import glob as _glob
         import os as _os
 
-        # --- Resume logic (S114 patch) ---
+        # --- Resume logic (S114/S116 patch, upgraded S115 R4) ---
         # resume_study=True: find most recent incomplete DB and continue
         # resume_study=False (default): always create fresh study
+        # S115 R4: n_parallel>1 uses JournalFileBackend (no SQLite write-lock contention)
         _resume = False
         _resumed_completed = 0
         _fresh_study_name = f"window_opt_{int(time.time())}"
@@ -401,13 +407,29 @@ class OptunaBayesianSearch:
                 print(f"   📊 No resumable study found — starting fresh")
 
         if not _resume:
-            study_name = _fresh_study_name
-            storage_path = _fresh_storage_path
+            # S115 R4: JournalFileBackend for n_parallel>1 (no SQLite write-lock)
+            if self.n_parallel > 1:
+                _journal_path = f"/home/michael/distributed_prng_analysis/optuna_studies/{_fresh_study_name}.jsonl"
+                if _os.path.exists(_journal_path):
+                    raise RuntimeError(f"Journal file already exists: {_journal_path}")
+                storage_path = optuna.storages.JournalStorage(
+                    optuna.storages.journal.JournalFileBackend(_journal_path)
+                )
+                study_name = _fresh_study_name
+                print(f"   📊 Optuna study (journal): {_journal_path}")
+            else:
+                study_name = _fresh_study_name
+                storage_path = _fresh_storage_path
+
+        # S115 M2: ThresholdPruner as secondary safety net
+        _pruner = optuna.pruners.ThresholdPruner(lower=1.0) if self.enable_pruning else optuna.pruners.NopPruner()
+
         study = optuna.create_study(
             study_name=study_name,
             storage=storage_path,
             direction='maximize',
             sampler=sampler,
+            pruner=_pruner,
             load_if_exists=_resume
         )
         print(f"   📊 Optuna study: optuna_studies/{study_name}.db")
@@ -430,6 +452,8 @@ class OptunaBayesianSearch:
 
         # Trials remaining: full count on fresh, remainder on resume
         _trials_to_run = max_iterations - _resumed_completed
+        if self.n_parallel > 1 and not _resume:
+            _trials_to_run = max_iterations  # journal storage handles its own count
         
         # Run optimization with incremental save callback
         _incremental_callback = create_incremental_save_callback(
@@ -437,7 +461,22 @@ class OptunaBayesianSearch:
             output_survivors_path="bidirectional_survivors.json",
             total_trials=max_iterations
         )
-        study.optimize(optuna_objective, n_trials=_trials_to_run, callbacks=[_incremental_callback])
+        # S115 R1: prune telemetry callback
+        def _prune_telemetry(study, trial):
+            _nt = len(study.trials)
+            if _nt > 0 and _nt % 10 == 0:
+                _np = sum(1 for t in study.trials if t.state.name=='PRUNED')
+                _nc = sum(1 for t in study.trials if t.state.name=='COMPLETE')
+                print(f"   📊 Prune telemetry ({_nt} trials): complete={_nc}  pruned={_np}  rate={_np/_nt*100:.0f}%")
+
+        study.optimize(optuna_objective, n_trials=_trials_to_run,
+                       callbacks=[_incremental_callback, _prune_telemetry],
+                       n_jobs=self.n_parallel)
+
+        _nt = len(study.trials); _np = sum(1 for t in study.trials if t.state.name=='PRUNED')
+        _nc = sum(1 for t in study.trials if t.state.name=='COMPLETE')
+        if _nt > 0:
+            print(f"\nPRUNING SUMMARY\n  Total: {_nt}  Pruned: {_np} ({_np/_nt*100:.1f}%)  Complete: {_nc}")
         
         # Finalize output (mark status=complete)
         finalize_incremental_output(study, "optimal_window_config.json")

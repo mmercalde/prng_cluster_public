@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# S115 N2: guarded optuna import — pruning only fires if optuna present
+try:
+    import optuna as _optuna_module
+    _OPTUNA_AVAILABLE = True
+except ImportError:
+    _optuna_module = None
+    _OPTUNA_AVAILABLE = False
 """
 Window Optimizer Integration - WITH VARIABLE SKIP SUPPORT
 ==========================================================
@@ -102,7 +109,8 @@ def run_bidirectional_test(coordinator,
                            forward_threshold: float = 0.01,
                            reverse_threshold: float = 0.01,
                            trial_number: int = 0,
-                           accumulator: Dict[str, List] = None) -> TestResult:
+                           accumulator: Dict[str, List] = None,
+                           optuna_trial=None) -> TestResult:  # S115 M2
     """
     Run forward + reverse sieve and ACCUMULATE survivors with metadata.
 
@@ -152,7 +160,7 @@ def run_bidirectional_test(coordinator,
 
     forward_result = coordinator.execute_distributed_analysis(
         forward_args.target_file,
-        f'results/window_opt_forward_{config.window_size}_{config.offset}.json',
+        f'results/window_opt_forward_{config.window_size}_{config.offset}_t{trial_number}.json',  # S115 M3
         forward_args,
         forward_args.seeds,
         1000,
@@ -164,6 +172,16 @@ def run_bidirectional_test(coordinator,
     forward_records = extract_survivor_records(forward_result)
     print(f"      Forward: {len(forward_records):,} survivors")
 
+    # S115 M2: prune dead trials (forward==0) before expensive reverse sieve
+    if optuna_trial is not None:
+        if not _OPTUNA_AVAILABLE:
+            print("      ⚠️  optuna_trial passed but Optuna not installed — pruning disabled.")
+        elif len(forward_records) == 0:
+            print(f"      ✂️  PRUNED  trial={optuna_trial.number}  "
+                  f"window={config.window_size}  offset={config.offset}  "
+                  f"skip={config.skip_min}-{config.skip_max}  forward_count=0")
+            raise _optuna_module.exceptions.TrialPruned()
+
     print(f"    Running REVERSE sieve ({prng_base}_reverse) [CONSTANT SKIP]...")
     reverse_args = Args()
     reverse_args.prng_type = prng_base + "_reverse"  # e.g. java_lcg_reverse
@@ -172,7 +190,7 @@ def run_bidirectional_test(coordinator,
 
     reverse_result = coordinator.execute_distributed_analysis(
         reverse_args.target_file,
-        f'results/window_opt_reverse_{config.window_size}_{config.offset}.json',
+        f'results/window_opt_reverse_{config.window_size}_{config.offset}_t{trial_number}.json',  # S115 M3
         reverse_args,
         reverse_args.seeds,
         1000,
@@ -289,7 +307,7 @@ def run_bidirectional_test(coordinator,
 
         forward_result_hybrid = coordinator.execute_distributed_analysis(
             forward_args_hybrid.target_file,
-            f'results/window_opt_forward_hybrid_{config.window_size}_{config.offset}.json',
+            f'results/window_opt_forward_hybrid_{config.window_size}_{config.offset}_t{trial_number}.json',  # S115 M3
             forward_args_hybrid,
             forward_args_hybrid.seeds,
             1000, 8, 50
@@ -306,7 +324,7 @@ def run_bidirectional_test(coordinator,
 
         reverse_result_hybrid = coordinator.execute_distributed_analysis(
             reverse_args_hybrid.target_file,
-            f'results/window_opt_reverse_hybrid_{config.window_size}_{config.offset}.json',
+            f'results/window_opt_reverse_hybrid_{config.window_size}_{config.offset}_t{trial_number}.json',  # S115 M3
             reverse_args_hybrid,
             reverse_args_hybrid.seeds,
             1000, 8, 50
@@ -417,7 +435,38 @@ def add_window_optimizer_to_coordinator():
                         max_iterations: int = 50,
                         output_file: str = 'window_optimization.json',
                         resume_study: bool = False,
-                        study_name: str = ''):
+                        study_name: str = '',
+                        n_parallel: int = 1):  # S115 M1
+        # S115 M1/M4: Partition map (IPs from distributed_config.json)
+        # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
+        # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
+        # M5: imbalance documented — TFLOPS near-equal; logged per trial
+        _PARALLEL_PARTITIONS = {
+            0: ['localhost', '192.168.3.120'],
+            1: ['192.168.3.154', '192.168.3.162'],
+        }
+        _partition_coordinators = {}
+
+        def _get_partition_coordinator(idx):
+            if idx not in _partition_coordinators:
+                from coordinator import MultiGPUCoordinator as _MCC
+                coord = _MCC(
+                    config_file=getattr(self, 'config_file', 'distributed_config.json'),
+                    node_allowlist=_PARALLEL_PARTITIONS[idx % len(_PARALLEL_PARTITIONS)]
+                )
+                coord.load_configuration()
+                coord.create_gpu_workers()
+                _partition_coordinators[idx] = coord
+                print(f"   🔀 Partition {idx} coordinator ready: {_PARALLEL_PARTITIONS[idx % len(_PARALLEL_PARTITIONS)]}")
+            return _partition_coordinators[idx]
+
+        def _shutdown_partition_coordinators():
+            for c in _partition_coordinators.values():
+                try: c.ssh_pool.cleanup_all()
+                except Exception: pass
+            _partition_coordinators.clear()
+
+        if False: pass  # indent anchor
 
         print(f"\n{'='*80}")
         print(f"WINDOW OPTIMIZATION WITH SURVIVOR ACCUMULATION")
@@ -445,8 +494,16 @@ def add_window_optimizer_to_coordinator():
         def test_config(config,
                         ss=seed_start, sc=seed_count,
                         ft=bounds.default_forward_threshold,
-                        rt=bounds.default_reverse_threshold):
+                        rt=bounds.default_reverse_threshold,
+                        optuna_trial=None):  # S115 M2
             trial_counter['count'] += 1
+            # S115 M1/M5: route to partition coordinator
+            if optuna_trial is not None and n_parallel > 1:
+                _part = optuna_trial.number % n_parallel
+                _coord = _get_partition_coordinator(_part)
+                print(f"   🔀 Trial {optuna_trial.number} → Partition {_part} ({_PARALLEL_PARTITIONS[_part]})")
+            else:
+                _coord = self
             return run_bidirectional_test(
                 coordinator=self,
                 config=config,
@@ -483,8 +540,8 @@ def add_window_optimizer_to_coordinator():
             scorer=BidirectionalCountScorer(),
             seed_start=seed_start,
             seed_count=seed_count,
-            resume_study=resume_study,
-            study_name=study_name
+            resume_study=resume_study,   # S116-Bug5 confirmed
+            study_name=study_name        # S116-Bug5 confirmed
         )
 
         optimizer.save_results(results, output_file)
