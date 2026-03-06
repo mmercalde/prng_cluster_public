@@ -343,10 +343,16 @@ class OptunaBayesianSearch:
             return score
         
         # Create study with TPE sampler
-        sampler = TPESampler(
-            n_startup_trials=self.n_startup_trials,
-            seed=self.seed
-        )
+        # S119: multivariate=True — models param correlations jointly (window_size↔skip_max etc.)
+        # Safe: search space is static (skip_max lower bound always=10), Optuna 4.4.0 tested.
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.filterwarnings('ignore', message='.*multivariate.*')
+            sampler = TPESampler(
+                n_startup_trials=self.n_startup_trials,
+                seed=self.seed,
+                multivariate=True   # S119
+            )
         
         # Create persistent storage for the study
         import time
