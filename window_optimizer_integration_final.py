@@ -527,7 +527,7 @@ def add_window_optimizer_to_coordinator():
                 offsets=[0, 100],
                 skip_ranges=[(0, 20), (0, 50)]
             ),
-            'bayesian': BayesianOptimization(n_initial=3),
+            'bayesian': BayesianOptimization(n_initial=3, enable_pruning=enable_pruning, n_parallel=n_parallel),  # S115 wire-up
             'evolutionary': EvolutionarySearch(population_size=10)
         }
 

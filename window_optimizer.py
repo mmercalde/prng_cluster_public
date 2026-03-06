@@ -592,7 +592,9 @@ def run_bayesian_optimization(
         max_iterations=trials,
         output_file='window_optimization_results.json',
         resume_study=resume_study,
-        study_name=study_name
+        study_name=study_name,
+        enable_pruning=enable_pruning,  # S115 wire-up
+        n_parallel=n_parallel           # S115 wire-up
     )
 
     # Save optimal config for downstream use
@@ -948,7 +950,9 @@ def main():
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
             resume_study=getattr(args, 'resume_study', False),
-            study_name=getattr(args, 'study_name', '')  # NEW: Pass through
+            study_name=getattr(args, 'study_name', ''),
+            enable_pruning=getattr(args, 'enable_pruning', False),  # S115 wire-up
+            n_parallel=getattr(args, 'n_parallel', 1)               # S115 wire-up
         )
 
         print("\n✅ Bayesian optimization complete!")
