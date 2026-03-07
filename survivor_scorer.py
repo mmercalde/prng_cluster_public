@@ -423,6 +423,18 @@ class SurvivorScorer:
         })
         features['lane_consistency'] = (features['lane_agreement_8'] + features['lane_agreement_125']) / 2
 
+        # Digit-wise agreement features (S119) — CA Lottery spec 03:00-09r
+        # Daily 3 = three independent Z10 draws; score each digit position directly.
+        # Additive alongside CRT lanes — do not remove CRT until ablation confirms redundancy.
+        _h = float(((pred // 100) % 10 == (act // 100) % 10).float().mean().item())
+        _t = float(((pred // 10)  % 10 == (act // 10)  % 10).float().mean().item())
+        _o = float(((pred)        % 10 == (act)        % 10).float().mean().item())
+        features['hundreds_digit_agreement']   = _h
+        features['tens_digit_agreement']       = _t
+        features['ones_digit_agreement']       = _o
+        # expected_digit_match_count: mean matched digit positions per draw (0.0-3.0)
+        features['expected_digit_match_count'] = _h + _t + _o
+
         # Compute pred_min/max and residual features (FIX: these were never computed!)
         features['pred_min'] = float(pred.float().min().item())
         features['pred_max'] = float(pred.float().max().item())
@@ -461,7 +473,10 @@ class SurvivorScorer:
         keys += ['temporal_stability_mean','temporal_stability_std','temporal_stability_min',
                  'temporal_stability_max','temporal_stability_trend',
                  'pred_mean','pred_std','actual_mean','actual_std',
-                 'lane_agreement_8','lane_agreement_125','lane_consistency']
+                 'lane_agreement_8','lane_agreement_125','lane_consistency',
+                 # Digit-wise features (S119)
+                 'hundreds_digit_agreement','tens_digit_agreement',
+                 'ones_digit_agreement','expected_digit_match_count']
         # Battery Tier 1A (23 columns) — S113
         keys += [
             'batt_fft_peak_mag','batt_fft_secondary_peak','batt_fft_spectral_conc',
@@ -597,6 +612,13 @@ class SurvivorScorer:
         lane_8 = ((predictions % 8) == (hist_expanded % 8)).float().mean(dim=1)
         lane_125 = ((predictions % 125) == (hist_expanded % 125)).float().mean(dim=1)
         lane_consistency = (lane_8 + lane_125) / 2
+
+        # Digit-wise agreement features (S119) — CA Lottery spec 03:00-09r
+        # Vectorized: operates on (batch_size, n) tensors, result is (batch_size,)
+        _hd = ((predictions // 100) % 10 == (hist_expanded // 100) % 10).float().mean(dim=1)
+        _td = ((predictions // 10)  % 10 == (hist_expanded // 10)  % 10).float().mean(dim=1)
+        _od = ((predictions)        % 10 == (hist_expanded)        % 10).float().mean(dim=1)
+        _edc = _hd + _td + _od  # expected_digit_match_count: 0.0-3.0
         
         # Residue features - batch compute for each mod
         residue_features = {}
@@ -696,6 +718,11 @@ class SurvivorScorer:
             'lane_agreement_8': lane_8,
             'lane_agreement_125': lane_125,
             'lane_consistency': lane_consistency,
+            # Digit-wise features (S119)
+            'hundreds_digit_agreement':   _hd,
+            'tens_digit_agreement':       _td,
+            'ones_digit_agreement':       _od,
+            'expected_digit_match_count': _edc,
             'temporal_stability_mean': temporal_mean,
             'temporal_stability_std': temporal_std,
             'temporal_stability_min': temporal_min,
