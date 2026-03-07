@@ -113,6 +113,8 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         self.config = config or {}
         self.model = None
         self._fitted = False
+        self._y_mean = None   # [S121] Y normalization — set by load()
+        self._y_std = None    # [S121] Y normalization — set by load()
         self._feature_count = None  # Will be set from data
         
         # Determine device
@@ -349,7 +351,13 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         with torch.no_grad():
             X_tensor = torch.FloatTensor(X).to(self.device)
             predictions = self.model(X_tensor).cpu().numpy()
-        
+
+        # [S121] Inverse-transform: convert normalized outputs back to original scale
+        # Only applied if checkpoint was trained with S121 y-normalization
+        # Backward compatible: _y_mean is None for old checkpoints → no-op
+        if getattr(self, '_y_mean', None) is not None:
+            predictions = predictions * self._y_std + self._y_mean
+
         return predictions
     
     def save(self, path: str) -> None:
@@ -424,7 +432,14 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         # Load weights
         wrapper.model.load_state_dict(checkpoint.get('state_dict') or checkpoint.get('model_state_dict'))
         wrapper._fitted = True
-        
+
+        # [S121] Restore Y normalization params for inverse-transform in predict()
+        # Backward compatible: old checkpoints have no y_mean/y_std → predict() unchanged
+        wrapper._y_mean = checkpoint.get('y_mean', None)
+        wrapper._y_std = checkpoint.get('y_std', None)
+        if wrapper._y_mean is not None:
+            logger.info(f"Y normalization loaded: mean={wrapper._y_mean:.6f} std={wrapper._y_std:.6f}")
+
         logger.info(f"Neural network loaded from {path} (features: {feature_count})")
         return wrapper
     

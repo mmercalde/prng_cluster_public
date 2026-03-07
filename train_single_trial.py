@@ -494,11 +494,28 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
               f"scale range [{scaler_scale.min():.4f}, {scaler_scale.max():.4f}]",
               file=sys.stderr)
     
+    # ── [S121] Y-label normalization ─────────────────────────────────
+    # Normalize targets to zero-mean unit-variance before training.
+    # Without this, NN output scale diverges wildly (raw scores ~18914
+    # instead of calibrated 0.0-1.0 range) because MSE loss with 54-85
+    # training samples gives no implicit scale constraint.
+    # y_mean/y_std saved to checkpoint → inverse-transform applied in
+    # neural_net_wrapper.predict() for correct Step 6 confidence scores.
+    y_mean = float(np.mean(y_train))
+    y_std = float(np.std(y_train))
+    if y_std < 1e-8:
+        y_std = 1.0  # Guard: constant target (degenerate — train normally)
+    y_train_norm = (y_train - y_mean) / y_std
+    y_val_norm = (y_val - y_mean) / y_std
+    print(f"[S121] Y normalization: mean={y_mean:.6f} std={y_std:.6f} "
+          f"range=[{y_train_norm.min():.3f}, {y_train_norm.max():.3f}]",
+          file=sys.stderr)
+
     # Convert to tensors
     X_train_t = torch.FloatTensor(X_train).to(device)
-    y_train_t = torch.FloatTensor(y_train).to(device)  # (N,) matches model .squeeze(-1)
+    y_train_t = torch.FloatTensor(y_train_norm).to(device)  # (N,) normalized
     X_val_t = torch.FloatTensor(X_val).to(device)
-    y_val_t = torch.FloatTensor(y_val).to(device)      # (N,) matches model .squeeze(-1)
+    y_val_t = torch.FloatTensor(y_val_norm).to(device)      # (N,) normalized
     
     # Architecture from params (matches SurvivorQualityNet style)
     input_dim = X_train.shape[1]
@@ -664,9 +681,14 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
     # Final predictions
     model.eval()
     with torch.no_grad():
-        train_preds = model(X_train_t).cpu().numpy().flatten()
-        val_preds = model(X_val_t).cpu().numpy().flatten()
-    
+        train_preds_norm = model(X_train_t).cpu().numpy().flatten()
+        val_preds_norm = model(X_val_t).cpu().numpy().flatten()
+
+    # [S121] Inverse-transform predictions back to original scale for metrics
+    # Metrics must be on original scale so R² is comparable across model types
+    train_preds = train_preds_norm * y_std + y_mean
+    val_preds = val_preds_norm * y_std + y_mean
+
     # Metrics
     train_mse = float(np.mean((train_preds - y_train) ** 2))
     val_mse = float(np.mean((val_preds - y_val) ** 2))
@@ -692,6 +714,9 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
             # Category B: normalization + activation metadata for Step 6 portability
             'normalize_features': normalize_features,
             'use_leaky_relu': use_leaky_relu,
+            # [S121] Y-label normalization params for inverse-transform at inference
+            'y_mean': y_mean,
+            'y_std': y_std,
         }
         # Team Beta Decision: store mean/scale as arrays, NOT pickled sklearn
         if scaler_mean is not None:
@@ -749,6 +774,9 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         # [S96A] Checkpoint validation — parent reads this instead of torch.load
         'checkpoint_validated': checkpoint_path is not None,
         'scaler_shape': list(scaler_mean.shape) if scaler_mean is not None else None,
+        # [S121] Y normalization params for parent to log/validate
+        'y_mean': y_mean,
+        'y_std': y_std,
     }
 
 
