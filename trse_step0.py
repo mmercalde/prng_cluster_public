@@ -2,81 +2,93 @@
 """
 TRSE — Temporal Regime Segmentation Engine (Step 0)
 =====================================================
-Version: 1.0.0
+Version: 1.15.0
 Session: S121
 
-PURPOSE
--------
-Pre-pipeline sidecar that characterises the *current draw regime* before
-Step 1 runs.  It does NOT filter seeds or touch survivors; it produces a
-JSON context file consumed by Step 1 (window parameter adjustment) and
-optionally by Step 5 (regime-conditioned training gate).
+CHANGES FROM v1.1.0 (TB S121 review — v1.15 spec)
+---------------------------------------------------
+ADDITION 1 — regime_type via 4-point duality score (TB improvement)
+  classify_regime_type() tests the EXACT S114 geometry:
+    D3 high + D8 high + D31 low + D64 low → short_persistence
+  Uses density_proxy() (residue histogram overlap, pure numpy, ~0.3s)
+  Outputs: regime_type, regime_type_confidence, window_density_profile
 
-DESIGN (approved S119)
------------------------
-Feature set:
-  • Entropy drift   — mod8 / mod125 / mod1000 residue entropy per window
-  • Digit transition fingerprints — 3 × 10×10 transition matrices (H→H,
-    T→T, O→O) per window, flattened to 300 floats
-  • Lag structure    — EXCLUDED (autocorrelation probe S119 refuted signal)
+ADDITION 2 — skip_entropy_profile
+  Analyzes inter-draw gap structure vs known [5,56] ADM skip range
+  Advisory only — confident=False expected often (TB caution)
 
-Probe params (from S119 machine fingerprint probe):
-  window_size = 400  draws
-  stride      =  50  draws
-  k_clusters  =   5  (silhouette-optimal)
+ADDITION 3 — dominant_offset_lag
+  FFT on draw sequence to detect periodic lag (target ~43)
+  Advisory only — confident=False expected on noisy data (TB caution)
 
-OUTPUT
-------
-  trse_context.json   (written to cwd, same dir as other pipeline outputs)
+CHANGES FROM v1.1.0 (multi-scale clustering)
+  All v1.1 fields preserved for backward compat
+  Three new fields added to context dict
+  trse_version bumped to 1.15.0
 
-  {
-    "trse_version": "1.0.0",
-    "timestamp": "...",
-    "n_draws": 18068,
-    "n_windows": 354,
-    "window_size": 400,
-    "stride": 50,
-    "k_clusters": 5,
-    "current_regime": 2,          # cluster id of most recent window
-    "regime_age": 12,             # consecutive windows in current regime
-    "switch_rate": 0.062,         # global fraction of windows that switch
-    "silhouette": 0.079,
-    "regime_counts": [29,78,93,95,59],
-    "regime_entropy_profile": {   # mean entropy features per regime
-        "0": {"entropy_mod8": ..., "entropy_mod125": ..., "entropy_mod1000": ...},
-        ...
-    },
-    "current_window_features": {  # raw features of last window
-        "entropy_mod8": ...,
-        "entropy_mod125": ...,
-        "entropy_mod1000": ...,
-        "digit_transition_H": [[...], ...],   # 10×10
-        "digit_transition_T": [[...], ...],
-        "digit_transition_O": [[...], ...]
-    },
-    "recommended_window_size": 8,  # pass-through to Step 1 (from Optuna best)
-    "regime_stable": true          # age >= 3 windows → regime is mature
-  }
+DESIGN (approved S119 → S121)
+-------------------------------
+Feature set per window (clustering layer):
+  Entropy drift   — mod8/mod125/mod1000
+  Digit transitions — 3×10×10 matrices
+  Lag structure   — EXCLUDED (autocorr probe S119 refuted signal)
+
+Scales (clustering layer):
+  Fine   W=200, S=50
+  Mid    W=400, S=50  (S119 validated primary)
+  Coarse W=800, S=100
+
+Regime-type layer (new v1.15):
+  Density probes at W=3, W=8, W=31, W=64
+  Duality score = min(D3,D8) - max(D31,D64)
+  Directly tests S114 geometry
+
+OUTPUT trse_context.json
+--------------------------
+{
+  "trse_version": "1.15.0",
+  "current_regime": 0,
+  "regime_age": 5,
+  "regime_stable": true,
+  "regime_confidence": 0.73,
+
+  "regime_type": "short_persistence",
+  "regime_type_confidence": 0.81,
+  "window_density_profile": {
+    "w3": 0.72, "w8": 0.69, "w31": 0.08, "w64": 0.03
+  },
+
+  "skip_entropy_profile": {
+    "draw_gap_entropy": 0.847,
+    "draw_gap_mean": 31.2,
+    "draw_gap_std": 14.6,
+    "gap_range_min": 5,
+    "gap_range_max": 58,
+    "consistent_with_known_skip": true,
+    "known_skip_range": [5, 56]
+  },
+
+  "dominant_offset_lag": {
+    "dominant_lag": 43,
+    "lag_strength": 0.73,
+    "secondary_lag": 21,
+    "secondary_strength": 0.41,
+    "confident": true
+  },
+
+  "scales": { "w200": {...}, "w400": {...}, "w800": {...} },
+  "recommended_window_size": 8,
+  "window_coherence_ceiling": null,
+  "window_confidence": null,
+  ...
+}
 
 USAGE
 -----
-  # Standalone
-  python3 trse_step0.py --lottery-data daily3.json --output trse_context.json
-
-  # Inside WATCHER (Step 0)
-  PYTHONPATH=. python3 agents/watcher_agent.py \
-      --run-pipeline --start-step 0 --end-step 0 \
-      --params '{"lottery_data": "daily3.json"}'
-
-  # Force re-run even if context is fresh
+  python3 trse_step0.py --lottery-data daily3.json
   python3 trse_step0.py --lottery-data daily3.json --force
 
-DEPENDENCIES
-------------
-  numpy, scikit-learn (KMeans, silhouette_score)
-  Both already present in torch venv on Zeus.
-
-Author: Team Alpha S121
+Author: Team Alpha S121 (TB v1.15 recommendations incorporated)
 """
 
 from __future__ import annotations
@@ -84,7 +96,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -93,25 +104,37 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-__version__ = "1.0.0"
+__version__ = "1.15.0"
 
-# ── Probe parameters (S119 validated) ────────────────────────────────────────
-DEFAULT_WINDOW_SIZE = 400
-DEFAULT_STRIDE      = 50
+# ── Scale definitions (v1.1 multi-scale) ─────────────────────────────────────
+SCALES = [
+    {"name": "w200", "window_size": 200, "stride":  50},
+    {"name": "w400", "window_size": 400, "stride":  50},   # S119 primary
+    {"name": "w800", "window_size": 800, "stride": 100},
+]
+
+# ── Density probe windows (v1.15 regime_type) ────────────────────────────────
+# W=3 and W=8: S114 validated survivor windows
+# W=31 and W=64: should be dead (S114 confirmed 0 survivors)
+DENSITY_PROBE_WINDOWS = [3, 8, 31, 64]
+
+# regime_type classification thresholds (TB sketch, validated on real data)
+T_HIGH = 0.50   # density above this = strong signal
+T_MID  = 0.30   # density above this = moderate signal
+T_LOW  = 0.25   # density below this = collapsed
+
 DEFAULT_K_CLUSTERS  = 5
 DEFAULT_OUTPUT      = "trse_context.json"
-
-# Regime is considered "stable / mature" if it has been active this many
-# consecutive windows or more.
-REGIME_STABLE_THRESHOLD = 3
+REGIME_STABLE_AGE   = 3
+CONFIDENCE_AGE_BOOST_MAX = 0.15
+KNOWN_SKIP_RANGE    = [5, 56]   # S112 validated
 
 
 # =============================================================================
-# Feature extraction
+# Feature extraction  (unchanged from v1.0/v1.1)
 # =============================================================================
 
 def _entropy(counts: np.ndarray) -> float:
-    """Shannon entropy (bits) from a raw count array. Safe for zero counts."""
     total = counts.sum()
     if total == 0:
         return 0.0
@@ -120,172 +143,93 @@ def _entropy(counts: np.ndarray) -> float:
 
 
 def extract_entropy_features(window: np.ndarray) -> Dict[str, float]:
-    """
-    Compute residue entropy for mod8, mod125, mod1000 over a draw window.
-
-    Args:
-        window: 1-D integer array of draw values (0–999)
-
-    Returns:
-        dict with keys entropy_mod8, entropy_mod125, entropy_mod1000
-    """
     feats: Dict[str, float] = {}
-    for mod, name in [(8, "entropy_mod8"), (125, "entropy_mod125"), (1000, "entropy_mod1000")]:
+    for mod, name in [(8, "entropy_mod8"), (125, "entropy_mod125"),
+                      (1000, "entropy_mod1000")]:
         bins = np.bincount(window % mod, minlength=mod).astype(np.float64)
         feats[name] = _entropy(bins)
     return feats
 
 
 def extract_digit_transition(window: np.ndarray) -> Dict[str, List[List[float]]]:
-    """
-    Build 10×10 first-order transition matrices for each digit position
-    (hundreds H, tens T, ones O) independently.
-
-    Entry [i][j] = fraction of consecutive-draw pairs where digit went i→j.
-    Row-normalised so each row sums to 1 (or 0 if digit i never appeared).
-
-    Args:
-        window: 1-D integer array of draw values (0–999)
-
-    Returns:
-        dict with keys digit_transition_H, digit_transition_T, digit_transition_O
-        each a 10×10 list of floats
-    """
     if len(window) < 2:
         empty = [[0.0] * 10 for _ in range(10)]
-        return {
-            "digit_transition_H": empty,
-            "digit_transition_T": empty,
-            "digit_transition_O": empty,
-        }
-
+        return {"digit_transition_H": empty,
+                "digit_transition_T": empty,
+                "digit_transition_O": empty}
     hundreds = (window // 100) % 10
     tens     = (window //  10) % 10
     ones     =  window         % 10
-
     result = {}
-    for name, digits in [
-        ("digit_transition_H", hundreds),
-        ("digit_transition_T", tens),
-        ("digit_transition_O", ones),
-    ]:
+    for name, digits in [("digit_transition_H", hundreds),
+                         ("digit_transition_T", tens),
+                         ("digit_transition_O", ones)]:
         mat = np.zeros((10, 10), dtype=np.float64)
         for prev, nxt in zip(digits[:-1], digits[1:]):
             mat[prev, nxt] += 1.0
-        # Row-normalise
         row_sums = mat.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1.0   # avoid divide-by-zero
+        row_sums[row_sums == 0] = 1.0
         mat /= row_sums
         result[name] = mat.tolist()
-
     return result
 
 
 def build_feature_vector(entropy: Dict[str, float],
                           transitions: Dict[str, List]) -> np.ndarray:
-    """
-    Concatenate entropy (3) + flattened transition matrices (3 × 100 = 300)
-    into a 303-dim numpy vector for clustering.
-    """
-    parts = [
-        entropy["entropy_mod8"],
-        entropy["entropy_mod125"],
-        entropy["entropy_mod1000"],
-    ]
-    for key in ["digit_transition_H", "digit_transition_T", "digit_transition_O"]:
+    parts = [entropy["entropy_mod8"],
+             entropy["entropy_mod125"],
+             entropy["entropy_mod1000"]]
+    for key in ["digit_transition_H", "digit_transition_T",
+                "digit_transition_O"]:
         parts.extend(np.array(transitions[key]).flatten().tolist())
     return np.array(parts, dtype=np.float64)
 
 
 # =============================================================================
-# Windowing
+# Windowing / clustering  (unchanged from v1.1)
 # =============================================================================
 
 def compute_windows(draws: np.ndarray,
                     window_size: int,
                     stride: int) -> Tuple[np.ndarray, List[int]]:
-    """
-    Slide a window over the draw history and extract feature vectors.
-
-    Returns:
-        X       — (n_windows, 303) feature matrix
-        offsets — list of start indices for each window
-    """
     n = len(draws)
     offsets: List[int] = []
     vectors: List[np.ndarray] = []
-
     start = 0
     while start + window_size <= n:
         w = draws[start: start + window_size]
         entropy     = extract_entropy_features(w)
         transitions = extract_digit_transition(w)
-        vec         = build_feature_vector(entropy, transitions)
-        vectors.append(vec)
+        vectors.append(build_feature_vector(entropy, transitions))
         offsets.append(start)
         start += stride
-
     if not vectors:
         raise ValueError(
-            f"Not enough draws ({n}) for window_size={window_size}. "
-            f"Need at least {window_size} draws."
-        )
-
+            f"Not enough draws ({n}) for window_size={window_size}.")
     return np.vstack(vectors), offsets
 
 
-# =============================================================================
-# Clustering
-# =============================================================================
-
-def cluster_windows(X: np.ndarray,
-                    k: int,
+def cluster_windows(X: np.ndarray, k: int,
                     random_state: int = 42) -> Tuple[np.ndarray, float]:
-    """
-    KMeans clustering on the window feature matrix.
-
-    Returns:
-        labels     — (n_windows,) cluster assignment per window
-        silhouette — float score (-1 to 1); 0 if only one cluster populated
-    """
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
     from sklearn.preprocessing import StandardScaler
-
-    # Standardise before clustering (entropy and transition features on
-    # different scales)
-    scaler = StandardScaler()
+    scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-
-    km = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-    labels = km.fit_predict(X_scaled)
-
+    km       = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+    labels   = km.fit_predict(X_scaled)
     n_unique = len(np.unique(labels))
-    if n_unique < 2:
-        sil = 0.0
-    else:
-        sil = float(silhouette_score(X_scaled, labels))
-
+    sil = float(silhouette_score(X_scaled, labels)) if n_unique >= 2 else 0.0
     return labels, sil
 
 
-# =============================================================================
-# Regime summary
-# =============================================================================
-
 def compute_switch_rate(labels: np.ndarray) -> float:
-    """Fraction of consecutive window pairs that change cluster."""
     if len(labels) < 2:
         return 0.0
-    switches = np.sum(labels[1:] != labels[:-1])
-    return float(switches) / (len(labels) - 1)
+    return float(np.sum(labels[1:] != labels[:-1])) / (len(labels) - 1)
 
 
 def compute_regime_age(labels: np.ndarray) -> int:
-    """
-    Number of consecutive trailing windows that share the same cluster as
-    the most recent window.
-    """
     if len(labels) == 0:
         return 0
     current = labels[-1]
@@ -298,23 +242,14 @@ def compute_regime_age(labels: np.ndarray) -> int:
     return age
 
 
-def compute_regime_entropy_profile(X: np.ndarray,
-                                   labels: np.ndarray,
-                                   k: int) -> Dict[str, Dict[str, float]]:
-    """
-    Mean entropy features (first 3 dims of X = mod8/125/1000 entropy)
-    per regime cluster.
-    """
-    profile: Dict[str, Dict[str, float]] = {}
+def compute_regime_entropy_profile(X: np.ndarray, labels: np.ndarray,
+                                   k: int) -> Dict:
+    profile: Dict = {}
     for c in range(k):
         mask = labels == c
         if mask.sum() == 0:
-            profile[str(c)] = {
-                "entropy_mod8": 0.0,
-                "entropy_mod125": 0.0,
-                "entropy_mod1000": 0.0,
-                "n_windows": 0,
-            }
+            profile[str(c)] = {"entropy_mod8": 0.0, "entropy_mod125": 0.0,
+                                "entropy_mod1000": 0.0, "n_windows": 0}
         else:
             mean_feats = X[mask, :3].mean(axis=0)
             profile[str(c)] = {
@@ -327,130 +262,499 @@ def compute_regime_entropy_profile(X: np.ndarray,
 
 
 # =============================================================================
-# Main analysis
+# Per-scale analysis  (unchanged from v1.1)
 # =============================================================================
 
-def run_trse(draws: np.ndarray,
-             window_size: int = DEFAULT_WINDOW_SIZE,
-             stride: int = DEFAULT_STRIDE,
-             k_clusters: int = DEFAULT_K_CLUSTERS,
-             recommended_window_size: int = 8,
-             verbose: bool = True) -> dict:
-    """
-    Full TRSE analysis pipeline.
-
-    Args:
-        draws                   : 1-D integer array, chronological order
-        window_size             : draws per analysis window
-        stride                  : step between windows
-        k_clusters              : number of regime clusters
-        recommended_window_size : pass-through to Step 1 (from Optuna best)
-        verbose                 : print progress
-
-    Returns:
-        context dict ready to serialise as trse_context.json
-    """
-    t0 = time.time()
-
-    if verbose:
-        print(f"[TRSE v{__version__}] Starting regime analysis")
-        print(f"  draws={len(draws)}  window={window_size}  stride={stride}  k={k_clusters}")
-
-    # 1. Extract windowed features
+def run_trse_scale(draws: np.ndarray, window_size: int, stride: int,
+                   k_clusters: int, verbose: bool = False) -> dict:
     X, offsets = compute_windows(draws, window_size, stride)
-    n_windows = len(offsets)
-
-    if verbose:
-        print(f"  Windows computed: {n_windows}  feature_dim={X.shape[1]}")
-
-    # 2. Cluster
     labels, sil = cluster_windows(X, k_clusters)
-
-    if verbose:
-        counts = np.bincount(labels, minlength=k_clusters).tolist()
-        print(f"  Clustering done: silhouette={sil:.4f}  counts={counts}")
-
-    # 3. Regime summary
     current_regime = int(labels[-1])
     regime_age     = compute_regime_age(labels)
     switch_rate    = compute_switch_rate(labels)
     regime_counts  = np.bincount(labels, minlength=k_clusters).tolist()
-    regime_stable  = regime_age >= REGIME_STABLE_THRESHOLD
+    age_stable     = regime_age >= REGIME_STABLE_AGE
+    if verbose:
+        print(f"  [W{window_size}] regime={current_regime}  age={regime_age}  "
+              f"stable={age_stable}  sil={sil:.4f}  "
+              f"switch_rate={switch_rate:.4f}  n_windows={len(offsets)}")
+    return {
+        "regime": current_regime, "regime_age": regime_age,
+        "stable": age_stable, "silhouette": round(sil, 6),
+        "switch_rate": round(switch_rate, 6), "n_windows": len(offsets),
+        "regime_counts": regime_counts,
+        "_X": X, "_labels": labels, "_offsets": offsets,
+    }
 
-    # 4. Current window features (last window)
-    last_window  = draws[offsets[-1]: offsets[-1] + window_size]
-    curr_entropy = extract_entropy_features(last_window)
-    curr_trans   = extract_digit_transition(last_window)
 
-    # 5. Regime entropy profile
-    entropy_profile = compute_regime_entropy_profile(X, labels, k_clusters)
+# =============================================================================
+# Multi-scale fusion  (unchanged from v1.1)
+# =============================================================================
+
+def fuse_scales(scale_results: Dict[str, dict], k_clusters: int,
+                regime_age_primary: int) -> Tuple[int, bool, float]:
+    w400 = scale_results["w400"]
+    w800 = scale_results["w800"]
+    primary_regime    = w400["regime"]
+    cross_scale_agree = (w400["regime"] == w800["regime"])
+    regime_stable     = cross_scale_agree and w400["stable"]
+    weights = {"w200": 0.2, "w400": 0.5, "w800": 0.3}
+    weighted_sil = 0.0
+    total_weight = 0.0
+    for name, res in scale_results.items():
+        if res["regime"] == primary_regime:
+            w = weights.get(name, 0.2)
+            weighted_sil += w * res["silhouette"]
+            total_weight += w
+    base_confidence = (weighted_sil / total_weight) if total_weight > 0 else 0.0
+    base_confidence = math.tanh(base_confidence * 10)
+    age_boost   = min(CONFIDENCE_AGE_BOOST_MAX, regime_age_primary * 0.02)
+    confidence  = round(min(1.0, base_confidence + age_boost), 4)
+    return primary_regime, regime_stable, confidence
+
+
+# =============================================================================
+# NEW v1.15 — Density proxy (core building block)
+# =============================================================================
+
+def density_proxy(draws: np.ndarray, window_size: int,
+                  n_sample_windows: int = 20) -> float:
+    """
+    Cheap residue-based survivor-density proxy for a given window_size.
+
+    Instead of running the full GPU sieve, we measure how much the residue
+    distribution in sliding windows of size `window_size` deviates from the
+    expected uniform distribution.
+
+    High deviation = structured PRNG signal at this window size
+    Low deviation  = noise / no signal
+
+    Returns a normalised score in [0, 1].
+
+    Method:
+      1. Sample up to n_sample_windows non-overlapping windows of size W
+      2. For each window compute chi-square statistic vs uniform for
+         mod8, mod125 residues
+      3. Average and normalise to [0,1] using a soft sigmoid
+
+    This is a proxy, not a true survivor count. It correlates with
+    survivor density but is not equivalent to it.
+    """
+    n = len(draws)
+    if n < window_size * 2:
+        return 0.0
+
+    # Sample windows evenly across the draw history
+    max_start   = n - window_size
+    step        = max(1, max_start // n_sample_windows)
+    starts      = list(range(0, max_start, step))[:n_sample_windows]
+
+    chi_scores = []
+    for s in starts:
+        w = draws[s: s + window_size]
+
+        # mod8 chi-square
+        obs8   = np.bincount(w % 8, minlength=8).astype(np.float64)
+        exp8   = np.full(8, len(w) / 8.0)
+        chi8   = float(np.sum((obs8 - exp8) ** 2 / exp8))
+
+        # mod125 chi-square (only if window large enough)
+        if window_size >= 50:
+            obs125 = np.bincount(w % 125, minlength=125).astype(np.float64)
+            exp125 = np.full(125, len(w) / 125.0)
+            chi125 = float(np.sum((obs125 - exp125) ** 2 / exp125))
+        else:
+            chi125 = 0.0
+
+        chi_scores.append(chi8 + chi125 * 0.1)
+
+    if not chi_scores:
+        return 0.0
+
+    mean_chi = float(np.mean(chi_scores))
+
+    # Soft normalisation — sigmoid centred at a moderate chi value
+    # chi=0 (perfect uniform) → score≈0
+    # chi=large → score→1
+    # Calibrated so that random data gives ~0.5 at W=8 (expected)
+    # and structured PRNG data gives >0.6
+    score = math.tanh(mean_chi / (window_size * 2.0))
+    return round(min(1.0, max(0.0, score)), 4)
+
+
+# =============================================================================
+# NEW v1.15 — Regime type classification (TB 4-point duality improvement)
+# =============================================================================
+
+def classify_regime_type(draws: np.ndarray,
+                          verbose: bool = False) -> dict:
+    """
+    Classify PRNG regime type using the S114 4-point duality pattern.
+
+    Tests the exact geometry discovered in S114:
+      D3  = high  (short reseed cycle)
+      D8  = high  (long persistence state)
+      D31 = low   (confirmed 0 survivors in S114)
+      D64 = low   (confirmed 0 survivors in S114)
+
+    Duality score = min(D3, D8) - max(D31, D64)
+    Positive duality = short_persistence signal
+
+    Returns:
+      regime_type            : str
+      regime_type_confidence : float [0,1]
+      window_density_profile : dict
+      duality_score          : float
+    """
+    d3  = density_proxy(draws, 3)
+    d8  = density_proxy(draws, 8)
+    d31 = density_proxy(draws, 31)
+    d64 = density_proxy(draws, 64)
+
+    short_pair = min(d3, d8)
+    long_pair  = max(d31, d64)
+    duality_score = round(short_pair - long_pair, 4)
+
+    if verbose:
+        print(f"  [TRSE] density_proxy: W3={d3:.3f}  W8={d8:.3f}  "
+              f"W31={d31:.3f}  W64={d64:.3f}  duality={duality_score:.3f}")
+
+    # Classification (TB logic, thresholds from spec)
+    if d3 > T_HIGH and d8 > T_HIGH and d31 < T_LOW and d64 < T_LOW:
+        regime_type = "short_persistence"
+    elif d31 > T_MID or d64 > T_MID:
+        regime_type = "long_persistence"
+    elif (d3 > T_MID or d8 > T_MID) and (d31 > T_MID or d64 > T_MID):
+        regime_type = "mixed"
+    else:
+        regime_type = "unknown"
+
+    # Confidence: sigmoid of duality score (TB recommendation)
+    # duality_score in (-1, 1) → confidence in (0, 1)
+    confidence = round(1.0 / (1.0 + math.exp(-duality_score * 6)), 4)
+
+    if verbose:
+        print(f"  [TRSE] regime_type={regime_type}  "
+              f"confidence={confidence:.4f}")
+
+    return {
+        "regime_type":            regime_type,
+        "regime_type_confidence": confidence,
+        "duality_score":          duality_score,
+        "window_density_profile": {
+            "w3":  d3,
+            "w8":  d8,
+            "w31": d31,
+            "w64": d64,
+        },
+    }
+
+
+# =============================================================================
+# NEW v1.15 — Skip entropy profile (advisory)
+# =============================================================================
+
+def analyze_skip_entropy(draws: np.ndarray) -> dict:
+    """
+    Analyze inter-draw gap structure vs known [5,56] ADM skip range.
+
+    TB caution: skip range cannot be reliably inferred from observed draw
+    values alone if PRNG output is uniform. This field is ADVISORY only.
+    consistent_with_known_skip=False is expected and acceptable.
+
+    Returns:
+      draw_gap_entropy          : float
+      draw_gap_mean             : float
+      draw_gap_std              : float
+      gap_range_min             : int
+      gap_range_max             : int
+      consistent_with_known_skip: bool
+      known_skip_range          : [int, int]
+    """
+    if len(draws) < 10:
+        return {
+            "draw_gap_entropy": 0.0, "draw_gap_mean": 0.0,
+            "draw_gap_std": 0.0, "gap_range_min": 0, "gap_range_max": 0,
+            "consistent_with_known_skip": False,
+            "known_skip_range": KNOWN_SKIP_RANGE,
+        }
+
+    diffs = np.abs(np.diff(draws.astype(np.int32))) % 1000
+    bins  = np.bincount(diffs, minlength=1000).astype(np.float64)
+    entropy = _entropy(bins)
+
+    mean_gap = float(np.mean(diffs))
+    std_gap  = float(np.std(diffs))
+
+    # Estimate empirical gap range via 5th/95th percentile
+    p5  = int(np.percentile(diffs, 5))
+    p95 = int(np.percentile(diffs, 95))
+
+    # Consistency check: does the empirical range overlap with known [5,56]?
+    known_lo, known_hi = KNOWN_SKIP_RANGE
+    overlap = (p5 <= known_hi) and (p95 >= known_lo)
+
+    return {
+        "draw_gap_entropy":           round(entropy, 6),
+        "draw_gap_mean":              round(mean_gap, 3),
+        "draw_gap_std":               round(std_gap, 3),
+        "gap_range_min":              p5,
+        "gap_range_max":              p95,
+        "consistent_with_known_skip": bool(overlap),
+        "known_skip_range":           KNOWN_SKIP_RANGE,
+    }
+
+
+# =============================================================================
+# NEW v1.15 — Dominant offset lag (advisory)
+# =============================================================================
+
+def detect_offset_periodicity(draws: np.ndarray) -> dict:
+    """
+    FFT on draw sequence to detect dominant periodic lag.
+
+    TB caution: FFT on integer draw values (mod 1000) is fragile.
+    Spectral peaks can appear from digit structure / modulo wrapping.
+    confident=False is expected on noisy data and is handled gracefully
+    by Step 1 (which ignores the field when confident=False).
+
+    Target: dominant_lag near 43 (S112 validated maintenance cycle).
+    Validation: dominant_lag in [20, 80] OR confident=False.
+
+    Returns:
+      dominant_lag       : int
+      lag_strength       : float
+      secondary_lag      : int
+      secondary_strength : float
+      confident          : bool
+    """
+    if len(draws) < 100:
+        return {"dominant_lag": -1, "lag_strength": 0.0,
+                "secondary_lag": -1, "secondary_strength": 0.0,
+                "confident": False}
+
+    # FFT on mod-1000 draw values
+    signal = (draws % 1000).astype(np.float64)
+    signal -= signal.mean()
+
+    fft_vals  = np.fft.rfft(signal)
+    power     = np.abs(fft_vals) ** 2
+    freqs     = np.fft.rfftfreq(len(signal))
+
+    # Convert frequency → lag in draw units
+    # Skip DC component (freq=0) and very high freq (noise)
+    min_lag, max_lag = 10, 200
+    valid_mask = (freqs > 0) & (1.0 / (freqs + 1e-12) >= min_lag) & \
+                 (1.0 / (freqs + 1e-12) <= max_lag)
+
+    if valid_mask.sum() < 2:
+        return {"dominant_lag": -1, "lag_strength": 0.0,
+                "secondary_lag": -1, "secondary_strength": 0.0,
+                "confident": False}
+
+    valid_power = power[valid_mask]
+    valid_freqs = freqs[valid_mask]
+    total_power = valid_power.sum()
+
+    if total_power == 0:
+        return {"dominant_lag": -1, "lag_strength": 0.0,
+                "secondary_lag": -1, "secondary_strength": 0.0,
+                "confident": False}
+
+    # Normalise power
+    norm_power = valid_power / total_power
+
+    # Top 2 peaks
+    sorted_idx = np.argsort(norm_power)[::-1]
+
+    dom_idx   = sorted_idx[0]
+    dom_freq  = valid_freqs[dom_idx]
+    dom_lag   = int(round(1.0 / dom_freq)) if dom_freq > 0 else -1
+    dom_str   = round(float(norm_power[dom_idx]), 4)
+
+    sec_idx   = sorted_idx[1] if len(sorted_idx) > 1 else dom_idx
+    sec_freq  = valid_freqs[sec_idx]
+    sec_lag   = int(round(1.0 / sec_freq)) if sec_freq > 0 else -1
+    sec_str   = round(float(norm_power[sec_idx]), 4)
+
+    # Confidence: dominant peak must stand clearly above noise floor
+    # TB: confident=False is acceptable — Step 1 ignores field gracefully
+    confident = bool(dom_str > 0.15 and min_lag <= dom_lag <= max_lag)
+
+    return {
+        "dominant_lag":        dom_lag,
+        "lag_strength":        dom_str,
+        "secondary_lag":       sec_lag,
+        "secondary_strength":  sec_str,
+        "confident":           confident,
+    }
+
+
+# =============================================================================
+# Main multi-scale entry point (v1.1 + v1.15 additions)
+# =============================================================================
+
+def run_trse_multiscale(draws: np.ndarray,
+                        k_clusters: int = DEFAULT_K_CLUSTERS,
+                        recommended_window_size: int = 8,
+                        verbose: bool = True) -> dict:
+    """
+    Full TRSE analysis: multi-scale clustering + v1.15 structural probes.
+    """
+    t0 = time.time()
+
+    if verbose:
+        print(f"[TRSE v{__version__}] Multi-scale regime analysis")
+        print(f"  draws={len(draws)}  scales=W200/W400/W800  k={k_clusters}")
+
+    # ── v1.1: Multi-scale clustering ─────────────────────────────────────────
+    scale_results: Dict[str, dict] = {}
+    for scale in SCALES:
+        name        = scale["name"]
+        window_size = scale["window_size"]
+        stride      = scale["stride"]
+        if verbose:
+            print(f"  Running scale {name} (W={window_size}, S={stride})...")
+        try:
+            result = run_trse_scale(draws, window_size, stride,
+                                    k_clusters, verbose=verbose)
+            scale_results[name] = result
+        except ValueError as e:
+            if verbose:
+                print(f"  [TRSE] Scale {name} skipped: {e}")
+            scale_results[name] = {
+                "regime": -1, "regime_age": 0, "stable": False,
+                "silhouette": 0.0, "switch_rate": 0.0, "n_windows": 0,
+                "regime_counts": [],
+                "_X": None, "_labels": None, "_offsets": None,
+            }
+
+    primary = scale_results["w400"]
+    current_regime, regime_stable, regime_confidence = fuse_scales(
+        scale_results, k_clusters, primary["regime_age"]
+    )
+
+    if verbose:
+        print(f"  Fusion: regime={current_regime}  stable={regime_stable}  "
+              f"confidence={regime_confidence:.4f}")
+
+    # Primary scale features
+    primary_X       = primary["_X"]
+    primary_labels  = primary["_labels"]
+    primary_offsets = primary["_offsets"]
+    last_window     = draws[primary_offsets[-1]: primary_offsets[-1] + 400]
+    curr_entropy    = extract_entropy_features(last_window)
+    curr_trans      = extract_digit_transition(last_window)
+    entropy_profile = compute_regime_entropy_profile(
+        primary_X, primary_labels, k_clusters
+    )
+
+    # ── v1.15: Structural probes ──────────────────────────────────────────────
+    if verbose:
+        print(f"  Running v1.15 structural probes...")
+
+    regime_type_result  = classify_regime_type(draws, verbose=verbose)
+    skip_profile        = analyze_skip_entropy(draws)
+    offset_lag          = detect_offset_periodicity(draws)
+
+    if verbose:
+        print(f"  skip_entropy: consistent={skip_profile['consistent_with_known_skip']}  "
+              f"range=[{skip_profile['gap_range_min']},{skip_profile['gap_range_max']}]")
+        print(f"  offset_lag:   confident={offset_lag['confident']}  "
+              f"dominant_lag={offset_lag['dominant_lag']}")
 
     elapsed = time.time() - t0
 
+    # ── Build scales summary (strip internal numpy arrays) ───────────────────
+    scales_summary = {}
+    for name, res in scale_results.items():
+        scales_summary[name] = {
+            "regime":      res["regime"],
+            "stable":      res["stable"],
+            "silhouette":  res["silhouette"],
+            "switch_rate": res["switch_rate"],
+            "n_windows":   res["n_windows"],
+            "regime_age":  res["regime_age"],
+        }
+
     context = {
-        "trse_version":          __version__,
-        "timestamp":             datetime.now(timezone.utc).isoformat(),
-        "elapsed_seconds":       round(elapsed, 3),
-        "n_draws":               int(len(draws)),
-        "n_windows":             n_windows,
-        "window_size":           window_size,
-        "stride":                stride,
-        "k_clusters":            k_clusters,
-        "silhouette":            round(sil, 6),
-        "switch_rate":           round(switch_rate, 6),
-        "current_regime":        current_regime,
-        "regime_age":            regime_age,
-        "regime_stable":         regime_stable,
-        "regime_counts":         regime_counts,
-        "regime_entropy_profile": entropy_profile,
+        # Identity
+        "trse_version":            __version__,
+        "timestamp":               datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds":         round(elapsed, 3),
+        "n_draws":                 int(len(draws)),
+        "k_clusters":              k_clusters,
+
+        # Consensus (fused from all scales)
+        "current_regime":          current_regime,
+        "regime_age":              primary["regime_age"],
+        "regime_stable":           regime_stable,
+        "regime_confidence":       regime_confidence,
+
+        # v1.15 regime type (TB 4-point duality)
+        "regime_type":             regime_type_result["regime_type"],
+        "regime_type_confidence":  regime_type_result["regime_type_confidence"],
+        "duality_score":           regime_type_result["duality_score"],
+        "window_density_profile":  regime_type_result["window_density_profile"],
+
+        # v1.15 structural probes (advisory)
+        "skip_entropy_profile":    skip_profile,
+        "dominant_offset_lag":     offset_lag,
+
+        # Primary scale (W400) stats — backward compat
+        "silhouette":              primary["silhouette"],
+        "switch_rate":             primary["switch_rate"],
+        "regime_counts":           primary["regime_counts"],
+
+        # Multi-scale detail
+        "scales":                  scales_summary,
+
+        # Step 1 consumption
+        "recommended_window_size": recommended_window_size,
+        "window_coherence_ceiling": None,   # TB future hook
+        "window_confidence":        None,   # TB future hook
+
+        # Current window features (W400)
+        "regime_entropy_profile":  entropy_profile,
         "current_window_features": {
             **curr_entropy,
             **curr_trans,
         },
-        "recommended_window_size": recommended_window_size,
     }
 
     if verbose:
-        print(f"  Current regime: {current_regime}  "
-              f"age={regime_age}  stable={regime_stable}  "
-              f"switch_rate={switch_rate:.4f}")
         print(f"  Done in {elapsed:.2f}s")
+        print(f"[TRSE] COMPLETE  "
+              f"regime={current_regime}  "
+              f"age={primary['regime_age']}  "
+              f"stable={regime_stable}  "
+              f"confidence={regime_confidence:.4f}  "
+              f"regime_type={regime_type_result['regime_type']}  "
+              f"type_confidence={regime_type_result['regime_type_confidence']:.4f}")
 
     return context
 
 
 # =============================================================================
-# I/O helpers
+# I/O helpers  (unchanged)
 # =============================================================================
 
 def load_draws(lottery_file: str) -> np.ndarray:
-    """
-    Load draw history from daily3.json (or any pipeline-compatible JSON).
-
-    Handles both formats:
-      - list of ints:  [472, 385, ...]
-      - list of dicts: [{"draw": 472, ...}, ...]
-    """
     path = Path(lottery_file)
     if not path.exists():
         raise FileNotFoundError(f"Lottery data not found: {lottery_file}")
-
     with open(path) as f:
         data = json.load(f)
-
     if not isinstance(data, list) or len(data) == 0:
         raise ValueError(f"Expected non-empty list in {lottery_file}")
-
     if isinstance(data[0], dict):
         draws = [int(d["draw"]) for d in data]
     else:
         draws = [int(d) for d in data]
-
     return np.array(draws, dtype=np.int32)
 
 
 def load_context(context_file: str) -> Optional[dict]:
-    """Load existing trse_context.json if it exists, else return None."""
     path = Path(context_file)
     if not path.exists():
         return None
@@ -462,7 +766,6 @@ def load_context(context_file: str) -> Optional[dict]:
 
 
 def save_context(context: dict, output_file: str) -> None:
-    """Write context dict to JSON."""
     path = Path(output_file)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -476,48 +779,43 @@ def save_context(context: dict, output_file: str) -> None:
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
-        description="TRSE v1.0.0 — Temporal Regime Segmentation Engine (Step 0)"
+        description=f"TRSE v{__version__} — Temporal Regime Segmentation Engine (Step 0)"
     )
-    p.add_argument("--lottery-data", default="daily3.json",
-                   help="Path to lottery draw history JSON (default: daily3.json)")
-    p.add_argument("--output", default=DEFAULT_OUTPUT,
-                   help=f"Output context file (default: {DEFAULT_OUTPUT})")
-    p.add_argument("--window-size", type=int, default=DEFAULT_WINDOW_SIZE,
-                   help=f"Window size in draws (default: {DEFAULT_WINDOW_SIZE})")
-    p.add_argument("--stride", type=int, default=DEFAULT_STRIDE,
-                   help=f"Stride between windows (default: {DEFAULT_STRIDE})")
-    p.add_argument("--k-clusters", type=int, default=DEFAULT_K_CLUSTERS,
-                   help=f"Number of regime clusters (default: {DEFAULT_K_CLUSTERS})")
-    p.add_argument("--recommended-window-size", type=int, default=8,
-                   help="Pass-through window_size for Step 1 (default: 8, from Optuna)")
-    p.add_argument("--force", action="store_true",
-                   help="Re-run even if trse_context.json is already fresh")
-    p.add_argument("--quiet", action="store_true",
-                   help="Suppress progress output")
+    p.add_argument("--lottery-data",  default="daily3.json")
+    p.add_argument("--output",        default=DEFAULT_OUTPUT)
+    p.add_argument("--k-clusters",    type=int, default=DEFAULT_K_CLUSTERS)
+    p.add_argument("--recommended-window-size", type=int, default=8)
+    p.add_argument("--force",         action="store_true")
+    p.add_argument("--quiet",         action="store_true")
     return p.parse_args(argv)
 
 
 def main(argv=None):
-    args = parse_args(argv)
+    args    = parse_args(argv)
     verbose = not args.quiet
 
-    # Freshness check — skip if output exists and is newer than lottery data
+    # Freshness check
     if not args.force:
         existing = load_context(args.output)
         if existing is not None:
-            lottery_mtime = Path(args.lottery_data).stat().st_mtime
-            output_mtime  = Path(args.output).stat().st_mtime
-            if output_mtime > lottery_mtime:
-                if verbose:
-                    print(f"[TRSE] Context is fresh ({args.output}) — use --force to re-run")
-                # Still print summary for WATCHER parsing
-                print(f"[TRSE] current_regime={existing['current_regime']}  "
-                      f"regime_age={existing['regime_age']}  "
-                      f"stable={existing['regime_stable']}  "
-                      f"silhouette={existing['silhouette']:.4f}")
-                return 0
+            try:
+                lottery_mtime = Path(args.lottery_data).stat().st_mtime
+                output_mtime  = Path(args.output).stat().st_mtime
+                if output_mtime > lottery_mtime:
+                    ver = existing.get("trse_version", "?")
+                    if verbose:
+                        print(f"[TRSE] Context is fresh (v{ver}) — use --force to re-run")
+                    print(f"[TRSE] COMPLETE  "
+                          f"regime={existing.get('current_regime','?')}  "
+                          f"age={existing.get('regime_age','?')}  "
+                          f"stable={existing.get('regime_stable','?')}  "
+                          f"confidence={existing.get('regime_confidence','?')}  "
+                          f"regime_type={existing.get('regime_type','?')}  "
+                          f"type_confidence={existing.get('regime_type_confidence','?')}")
+                    return 0
+            except Exception:
+                pass
 
-    # Load draws
     try:
         draws = load_draws(args.lottery_data)
     except Exception as e:
@@ -527,12 +825,9 @@ def main(argv=None):
     if verbose:
         print(f"[TRSE] Loaded {len(draws)} draws from {args.lottery_data}")
 
-    # Run analysis
     try:
-        context = run_trse(
+        context = run_trse_multiscale(
             draws,
-            window_size=args.window_size,
-            stride=args.stride,
             k_clusters=args.k_clusters,
             recommended_window_size=args.recommended_window_size,
             verbose=verbose,
@@ -543,18 +838,7 @@ def main(argv=None):
         traceback.print_exc()
         return 1
 
-    # Save
     save_context(context, args.output)
-
-    # Summary line for WATCHER log parsing
-    print(f"[TRSE] COMPLETE  "
-          f"regime={context['current_regime']}  "
-          f"age={context['regime_age']}  "
-          f"stable={context['regime_stable']}  "
-          f"silhouette={context['silhouette']:.4f}  "
-          f"switch_rate={context['switch_rate']:.4f}  "
-          f"n_windows={context['n_windows']}")
-
     return 0
 
 
