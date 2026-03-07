@@ -25,7 +25,7 @@ class StepStatus(str, Enum):
 class PipelineStep(BaseModel):
     """Definition of a single pipeline step."""
     
-    step_number: int = Field(ge=1, le=6)
+    step_number: int = Field(ge=0, le=6)  # [S121] ge=0 allows Step 0 (TRSE)
     name: str
     description: str = ""
     
@@ -62,6 +62,19 @@ class PipelineStep(BaseModel):
 
 # Pre-defined pipeline steps
 PIPELINE_STEPS = {
+    0: PipelineStep(                        # [S121] TRSE Step 0
+        step_number=0,
+        name="Regime Segmentation (TRSE)",
+        description="Characterise the current draw regime before window optimization. Produces trse_context.json consumed passively by Step 1.",
+        required_inputs=["daily3.json"],
+        expected_outputs=["trse_context.json"],
+        typical_duration_minutes=1,
+        max_duration_minutes=5,
+        requires_gpu=False,
+        min_gpu_memory_mb=0,
+        distributed_capable=False,
+        depends_on=[]
+    ),
     1: PipelineStep(
         step_number=1,
         name="Window Optimizer",
@@ -151,7 +164,7 @@ class PipelineStepContext(BaseModel):
     and what's expected at each step.
     """
     
-    current_step: int = Field(ge=1, le=6)
+    current_step: int = Field(ge=0, le=6)  # [S121] ge=0 allows Step 0 (TRSE)
     total_steps: int = 6
     
     # Step statuses

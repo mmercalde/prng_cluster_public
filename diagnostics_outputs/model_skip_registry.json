@@ -1,8 +1,9 @@
 {
   "neural_net": {
-    "consecutive_critical": 3,
-    "last_critical": "2026-02-26T05:33:08.708102+00:00",
+    "consecutive_critical": 0,
+    "last_critical": "2026-03-07T05:32:40.801601+00:00",
     "consecutive_failures": 0,
-    "skip_active": false
+    "skip_active": false,
+    "reset_reason": "S121: Y-norm fix confirmed working, R2=+0.02"
   }
 }

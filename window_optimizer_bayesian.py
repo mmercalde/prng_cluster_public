@@ -20,6 +20,32 @@ def _get_search_bounds():
     from window_optimizer import SearchBounds, load_search_bounds_from_config
     return SearchBounds, load_search_bounds_from_config
 
+
+# [S121] TRSE context loader — passive, never raises
+def _load_trse_context(context_file: str = 'trse_context.json') -> Optional[dict]:
+    """
+    Load trse_context.json if present. Returns None silently if absent or invalid.
+    Step 1 runs normally with full default bounds when context is absent.
+    """
+    if not context_file:
+        return None
+    try:
+        import os
+        if not os.path.exists(context_file):
+            return None
+        with open(context_file) as f:
+            ctx = json.load(f)
+        # Version guard — require v1.15+ for regime_type field
+        version = ctx.get('trse_version', '0.0.0')
+        major, minor = int(version.split('.')[0]), int(version.split('.')[1])
+        if (major, minor) < (1, 15):
+            print(f"[TRSE] Context version {version} < 1.15 — skipping bounds narrowing")
+            return None
+        return ctx
+    except Exception as e:
+        print(f"[TRSE] Could not load context: {e} — running with default bounds")
+        return None
+
 # Try importing Optuna (preferred)
 try:
     import optuna
@@ -254,7 +280,8 @@ class OptunaBayesianSearch:
                max_iterations: int,
                scorer: ResultScorer,
                resume_study: bool = False,
-               study_name: str = '') -> Dict:
+               study_name: str = '',
+               trse_context_file: str = 'trse_context.json') -> Dict:  # S121
         """
         Run Bayesian optimization using Optuna
         
@@ -342,6 +369,56 @@ class OptunaBayesianSearch:
             
             return score
         
+        # [S121] TRSE Step 0 — Load regime context and narrow search bounds if available
+        # Passive: if context absent or confidence low, bounds unchanged.
+        # Rule A only: window ceiling narrowed when regime_type=short_persistence
+        #              AND regime_type_confidence >= 0.70 (TB guardrail).
+        # Rules B (skip) and C (offset) are logged only — not applied.
+        # Shuffle test (S121) confirmed density_proxy measures digit bias, not
+        # temporal correlation, so skip/offset advisory fields are unreliable
+        # as hard bounds constraints.
+        trse_ctx = _load_trse_context(trse_context_file)
+        if trse_ctx:
+            _regime_type  = trse_ctx.get('regime_type', 'unknown')
+            _type_conf    = trse_ctx.get('regime_type_confidence', 0.0)
+            _regime_stable = trse_ctx.get('regime_stable', False)
+            _rec_ws       = trse_ctx.get('recommended_window_size', None)
+            _w3_w8_ratio  = trse_ctx.get('w3_w8_ratio', None)
+
+            print(f"\n[TRSE] Context loaded — regime={trse_ctx.get('current_regime')} "
+                  f"stable={_regime_stable} type={_regime_type} "
+                  f"type_conf={_type_conf:.3f} w3_w8_ratio={_w3_w8_ratio}")
+
+            # Rule A — window ceiling from regime_type (TB approved, S121)
+            if (_regime_type == 'short_persistence'
+                    and _type_conf >= 0.70
+                    and _regime_stable):
+                old_max = bounds.max_window_size
+                new_max = max(bounds.min_window_size + 1,
+                              min(32, bounds.max_window_size))
+                bounds = bounds._replace(max_window_size=new_max)
+                print(f"[TRSE] Rule A ACTIVE: short_persistence "
+                      f"(conf={_type_conf:.3f}) → "
+                      f"window_size ceiling {old_max} → {new_max}")
+            else:
+                print(f"[TRSE] Rule A SKIPPED: type={_regime_type} "
+                      f"conf={_type_conf:.3f} stable={_regime_stable} "
+                      f"(requires short_persistence + conf>=0.70 + stable)")
+
+            # Rule B — skip bounds advisory (logged only, disabled per TB S121)
+            _skip_prof = trse_ctx.get('skip_entropy_profile', {})
+            if _skip_prof.get('consistent_with_known_skip'):
+                print(f"[TRSE] Rule B (skip): consistent with [5,56] — "
+                      f"LOGGED ONLY (disabled: shuffle test refuted temporal correlation)")
+
+            # Rule C — offset advisory (logged only, disabled per TB S121)
+            _off = trse_ctx.get('dominant_offset_lag', {})
+            if _off.get('confident'):
+                print(f"[TRSE] Rule C (offset): dominant_lag={_off.get('dominant_lag')} — "
+                      f"LOGGED ONLY (disabled: FFT on digit-bias signal is fragile)")
+        else:
+            print("[TRSE] No context found — running Step 1 with default bounds")
+
         # Create study with TPE sampler
         # S119: multivariate=True — models param correlations jointly (window_size↔skip_max etc.)
         # Safe: search space is static (skip_max lower bound always=10), Optuna 4.4.0 tested.

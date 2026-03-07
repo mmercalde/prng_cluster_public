@@ -406,6 +406,7 @@ class WatcherProgress:
     """
     
     STEP_NAMES = {
+        0: "Regime Segmentation",    # [S121] TRSE
         1: "Window Optimizer",
         2: "Scorer Meta-Optimizer", 
         3: "Full Scoring",
@@ -416,7 +417,7 @@ class WatcherProgress:
     
     def __init__(self):
         self.steps: Dict[int, PipelineStepStatus] = {}
-        for i in range(1, 7):
+        for i in range(0, 7):   # [S121] Step 0 added
             self.steps[i] = PipelineStepStatus(
                 step_num=i,
                 step_name=self.STEP_NAMES[i]
@@ -443,7 +444,7 @@ class WatcherProgress:
             "skipped": "⏭️"
         }
         
-        for i in range(1, 7):
+        for i in range(0, 7):   # [S121] Step 0 added
             step = self.steps[i]
             icon = status_icons.get(step.status, "❓")
             
@@ -544,7 +545,7 @@ class WatcherProgress:
         # Print final summary
         print("\n" + "="*60)
         print("  Pipeline Summary:")
-        for i in range(1, 7):
+        for i in range(0, 7):   # [S121] Step 0 added
             step = self.steps[i]
             icon = "✅" if step.status == "complete" else "❌" if step.status == "failed" else "⬜"
             score = f" (score: {step.best_score:.4f})" if step.best_score > 0 else ""

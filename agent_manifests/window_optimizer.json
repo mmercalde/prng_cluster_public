@@ -152,7 +152,8 @@
     "test_both_modes": true,
     "resume_study": false,
     "window_trials": 100,
-    "study_name": ""
+    "study_name": "",
+    "trse_context": "trse_context.json"
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",

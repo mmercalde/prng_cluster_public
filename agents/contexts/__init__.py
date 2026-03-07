@@ -26,7 +26,9 @@ from typing import Dict, Any, Optional
 
 
 # Context class mapping by step
+# Context class mapping by step
 CONTEXT_CLASSES = {
+    0: WindowOptimizerContext,   # [S121] Step 0 reuses Step 1 context (no survivors)
     1: WindowOptimizerContext,
     2: ScorerMetaContext,
     3: FullScoringContext,
@@ -37,6 +39,7 @@ CONTEXT_CLASSES = {
 
 # Factory functions mapping by step
 CONTEXT_FACTORIES = {
+    0: create_window_optimizer_context,  # [S121] Step 0 reuses Step 1 factory
     1: create_window_optimizer_context,
     2: create_scorer_meta_context,
     3: create_full_scoring_context,
@@ -68,7 +71,7 @@ def get_context_for_step(
         ValueError: If step number is invalid
     """
     if step not in CONTEXT_FACTORIES:
-        raise ValueError(f"Invalid step number: {step}. Must be 1-6.")
+        raise ValueError(f"Invalid step number: {step}. Must be 0-6.")
     
     factory = CONTEXT_FACTORIES[step]
     return factory(results, run_number, manifest_path)
@@ -77,5 +80,5 @@ def get_context_for_step(
 def get_context_class(step: int) -> type:
     """Get the context class for a pipeline step."""
     if step not in CONTEXT_CLASSES:
-        raise ValueError(f"Invalid step number: {step}. Must be 1-6.")
+        raise ValueError(f"Invalid step number: {step}. Must be 0-6.")
     return CONTEXT_CLASSES[step]

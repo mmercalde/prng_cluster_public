@@ -39,7 +39,7 @@ class FullAgentContext(BaseModel):
     """
     
     # Core identifiers
-    step: int = Field(ge=1, le=6)
+    step: int = Field(ge=0, le=6)  # [S121] ge=0 to allow Step 0 (TRSE)
     run_number: int = 1
     run_id: str = ""
     

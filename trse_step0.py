@@ -104,7 +104,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-__version__ = "1.15.0"
+__version__ = "1.15.1"  # S121: relative normalization + w3_w8_ratio
 
 # ── Scale definitions (v1.1 multi-scale) ─────────────────────────────────────
 SCALES = [
@@ -118,10 +118,18 @@ SCALES = [
 # W=31 and W=64: should be dead (S114 confirmed 0 survivors)
 DENSITY_PROBE_WINDOWS = [3, 8, 31, 64]
 
-# regime_type classification thresholds (TB sketch, validated on real data)
-T_HIGH = 0.50   # density above this = strong signal
-T_MID  = 0.30   # density above this = moderate signal
-T_LOW  = 0.25   # density below this = collapsed
+# regime_type classification thresholds
+# S121 calibration probe (5/5 verdict): relative normalization justified.
+# Absolute T_HIGH=0.50 caused W8=0.364 to fail despite correct geometry.
+# Thresholds now applied AFTER normalising by max(d3,d8,d31,d64).
+# T_LOW_REL=0.22 accounts for W31/W64 rebound artifact (W64>W31 due to
+# ~50-draw cycle aliasing — confirmed by S121 probe, still firmly collapsed).
+T_HIGH_REL = 0.35   # normalised score above this = strong signal
+T_MID_REL  = 0.20   # normalised score above this = moderate signal
+T_LOW_REL  = 0.22   # normalised score below this = collapsed
+# W3/W8 ratio ~2.0 stable across 26 years (S121 probe) — two consumption layers
+# Significant drift from this baseline may indicate procedural change
+W3_W8_RATIO_BASELINE = 2.0
 
 DEFAULT_K_CLUSTERS  = 5
 DEFAULT_OUTPUT      = "trse_context.json"
@@ -411,41 +419,59 @@ def classify_regime_type(draws: np.ndarray,
     d31 = density_proxy(draws, 31)
     d64 = density_proxy(draws, 64)
 
-    short_pair = min(d3, d8)
-    long_pair  = max(d31, d64)
+    # [S121] Relative normalization — calibration probe 5/5 justified this.
+    # Absolute T_HIGH=0.50 caused W8=0.364 to fail despite correct S114 geometry.
+    # Normalising by max score recovers correct classification across all eras.
+    # The ranking W3/W8 >> W31/W64 is what matters, not absolute values.
+    norm_factor = max(d3, d8, d31, d64, 1e-9)
+    n3  = d3  / norm_factor
+    n8  = d8  / norm_factor
+    n31 = d31 / norm_factor
+    n64 = d64 / norm_factor
+
+    short_pair    = min(n3, n8)
+    long_pair     = max(n31, n64)
     duality_score = round(short_pair - long_pair, 4)
+
+    # [S121] W3/W8 ratio — stable ~2.0 across 26 years (S121 calibration probe).
+    # Reflects two-layer RNG consumption: micro-draw (W3) vs persistence (W8).
+    # Logged for future use — not used in classification.
+    w3_w8_ratio = round(d3 / (d8 + 1e-9), 4)
 
     if verbose:
         print(f"  [TRSE] density_proxy: W3={d3:.3f}  W8={d8:.3f}  "
               f"W31={d31:.3f}  W64={d64:.3f}  duality={duality_score:.3f}")
+        print(f"  [TRSE] normalised:    N3={n3:.3f}  N8={n8:.3f}  "
+              f"N31={n31:.3f}  N64={n64:.3f}  w3_w8_ratio={w3_w8_ratio:.3f}")
 
-    # Classification (TB logic, thresholds from spec)
-    if d3 > T_HIGH and d8 > T_HIGH and d31 < T_LOW and d64 < T_LOW:
+    # Classification using relative thresholds (TB confidence gate: >= 0.70)
+    if n3 > T_HIGH_REL and n8 > T_HIGH_REL and n31 < T_LOW_REL and n64 < T_LOW_REL:
         regime_type = "short_persistence"
-    elif d31 > T_MID or d64 > T_MID:
+    elif n31 > T_MID_REL or n64 > T_MID_REL:
         regime_type = "long_persistence"
-    elif (d3 > T_MID or d8 > T_MID) and (d31 > T_MID or d64 > T_MID):
+    elif (n3 > T_MID_REL or n8 > T_MID_REL) and (n31 > T_MID_REL or n64 > T_MID_REL):
         regime_type = "mixed"
     else:
         regime_type = "unknown"
 
     # Confidence: sigmoid of duality score (TB recommendation)
-    # duality_score in (-1, 1) → confidence in (0, 1)
+    # TB guardrail: Step 1 Rule A only fires if confidence >= 0.70
     confidence = round(1.0 / (1.0 + math.exp(-duality_score * 6)), 4)
 
     if verbose:
         print(f"  [TRSE] regime_type={regime_type}  "
-              f"confidence={confidence:.4f}")
+              f"confidence={confidence:.4f}  w3_w8_ratio={w3_w8_ratio:.3f}")
 
     return {
         "regime_type":            regime_type,
         "regime_type_confidence": confidence,
         "duality_score":          duality_score,
+        "w3_w8_ratio":            w3_w8_ratio,
         "window_density_profile": {
-            "w3":  d3,
-            "w8":  d8,
-            "w31": d31,
-            "w64": d64,
+            "w3":  round(d3,  4),
+            "w8":  round(d8,  4),
+            "w31": round(d31, 4),
+            "w64": round(d64, 4),
         },
     }
 
@@ -695,6 +721,7 @@ def run_trse_multiscale(draws: np.ndarray,
         "regime_type":             regime_type_result["regime_type"],
         "regime_type_confidence":  regime_type_result["regime_type_confidence"],
         "duality_score":           regime_type_result["duality_score"],
+        "w3_w8_ratio":             regime_type_result["w3_w8_ratio"],   # [S121] two-layer signal
         "window_density_profile":  regime_type_result["window_density_profile"],
 
         # v1.15 structural probes (advisory)

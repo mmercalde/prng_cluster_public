@@ -24,6 +24,7 @@ The key feature: This runs REAL sieves on all 26 GPUs!
 """
 
 import json
+import os
 from datetime import datetime
 import sys
 import argparse
@@ -518,7 +519,8 @@ def run_bayesian_optimization(
     resume_study: bool = False,
     study_name: str = '',
     enable_pruning: bool = False,     # S115 R3
-    n_parallel: int = 1               # S115 M1
+    n_parallel: int = 1,              # S115 M1
+    trse_context_file: str = 'trse_context.json'  # S121 Step 0 context
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -597,7 +599,8 @@ def run_bayesian_optimization(
         resume_study=resume_study,
         study_name=study_name,
         enable_pruning=enable_pruning,  # S115 wire-up
-        n_parallel=n_parallel           # S115 wire-up
+        n_parallel=n_parallel,          # S115 wire-up
+        trse_context_file=trse_context_file  # S121 Step 0 context
     )
 
     # Save optimal config for downstream use
@@ -669,6 +672,37 @@ def run_bayesian_optimization(
         json.dump(optimal_config, f, indent=2)
 
     print(f"\n✅ Optimal configuration saved to: {output_config}")
+
+    # [S121] Feed winning window back into TRSE context as confirmed_windows entry.
+    # Builds a regime→window lookup table over multiple runs.
+    # Passive: never raises, never blocks pipeline if trse_context.json is absent.
+    try:
+        _trse_path = trse_context_file if trse_context_file else 'trse_context.json'
+        if os.path.exists(_trse_path) and bidirectional_count > 0:
+            with open(_trse_path, 'r') as _f:
+                _ctx = json.load(_f)
+            _entry = {
+                "window_size":            best_config['window_size'],
+                "offset":                 best_config['offset'],
+                "skip_min":               best_config['skip_min'],
+                "skip_max":               best_config['skip_max'],
+                "bidirectional_survivors": bidirectional_count,
+                "optimization_score":     results['best_score'],
+                "regime_at_time":         _ctx.get('current_regime'),
+                "regime_type":            _ctx.get('regime_type', 'unknown'),
+                "regime_stable":          _ctx.get('regime_stable', False),
+                "timestamp":              datetime.now().isoformat()
+            }
+            _confirmed = _ctx.get('confirmed_windows', [])
+            _confirmed.append(_entry)
+            # Keep last 50 confirmed entries — avoids unbounded growth
+            _ctx['confirmed_windows'] = _confirmed[-50:]
+            with open(_trse_path, 'w') as _f:
+                json.dump(_ctx, _f, indent=2)
+            print(f"   [TRSE] Confirmed window W{best_config['window_size']}_O{best_config['offset']} "
+                  f"({bidirectional_count} survivors) logged to {_trse_path}")
+    except Exception as _e:
+        logger.warning(f"[TRSE] confirmed_windows update failed (non-fatal): {_e}")
 
     # Create train/holdout split from lottery data
     print("\n📊 Splitting lottery data for train/holdout...")
@@ -934,6 +968,10 @@ def main():
                        help='Enable forward_count==0 pruning (~1.7x speedup alone).')
     parser.add_argument('--n-parallel', type=int, default=1,
                        help='Parallel partitions: 1=serial (default), 2=dual-partition split.')
+    parser.add_argument('--trse-context', type=str, default='trse_context.json',
+                       help='[S121] TRSE regime context file (Step 0 output). '
+                            'If present and regime stable, narrows Step 1 search bounds. '
+                            'Default: trse_context.json. Pass empty string to disable.')
 
     args = parser.parse_args()
 
@@ -955,7 +993,8 @@ def main():
             resume_study=getattr(args, 'resume_study', False),
             study_name=getattr(args, 'study_name', ''),
             enable_pruning=getattr(args, 'enable_pruning', False),  # S115 wire-up
-            n_parallel=getattr(args, 'n_parallel', 1)               # S115 wire-up
+            n_parallel=getattr(args, 'n_parallel', 1),              # S115 wire-up
+            trse_context_file=getattr(args, 'trse_context', 'trse_context.json')  # S121
         )
 
         print("\n✅ Bayesian optimization complete!")

@@ -153,9 +153,9 @@ class AgentManifest(BaseModel):
     
     pipeline_step: int = Field(
         ...,
-        ge=1,
+        ge=0,  # [S121] 0 = Step 0 (TRSE)
         le=6,
-        description="Position in the 6-step pipeline (1-6)"
+        description="Position in the pipeline (0-6); 0 = TRSE regime segmentation"
     )
     
     # ══════════════════════════════════════════════════════════════════════
