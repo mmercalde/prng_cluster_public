@@ -29,7 +29,11 @@
         "strategy": "search_strategy",
         "forward-threshold": "forward_threshold",
         "reverse-threshold": "reverse_threshold",
-        "test-both-modes": "test_both_modes"
+        "test-both-modes": "test_both_modes",
+        "enable-pruning": "enable_pruning",
+        "n-parallel": "n_parallel",
+        "resume-study": "resume_study",
+        "study-name": "study_name"
       },
       "distributed": true,
       "timeout_minutes": 240
@@ -153,7 +157,9 @@
     "resume_study": false,
     "window_trials": 100,
     "study_name": "",
-    "trse_context": "trse_context.json"
+    "trse_context": "trse_context.json",
+    "enable_pruning": false,
+    "n_parallel": 1
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
