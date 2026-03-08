@@ -2023,7 +2023,15 @@ class AntiOverfitMetaOptimizer:
             self.logger.info(f"  [S95] Leased GPU {gpu_id} for trial {trial.number}")
 
         try:
-            kf = KFold(n_splits=self.k_folds, shuffle=True, random_state=42)
+            # [S124] Guard: clamp n_splits so n_splits <= n_samples (sklearn invariant)
+            _n_samples = len(self.X_train_val)
+            _effective_folds = max(2, min(self.k_folds, _n_samples))
+            if _effective_folds < self.k_folds:
+                self.logger.warning(
+                    f"[S124] n_samples={_n_samples} < k_folds={self.k_folds} — "
+                    f"clamping to n_splits={_effective_folds}"
+                )
+            kf = KFold(n_splits=_effective_folds, shuffle=True, random_state=42)
             fold_r2 = []
 
             # [Phase 3A] NN + S96B + enable_vmap=True: collect all folds,

@@ -295,6 +295,9 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     # PART 2: VARIABLE SKIP TEST (Only if test_both_modes=True)
     # ========================================================================
+    # [S124] Track variable-skip bidirectional count separately so Optuna score
+    # reflects BOTH constant AND variable survivors.
+    _variable_bidi_count = 0  # stays 0 when test_both_modes=False
     if test_both_modes and not prng_base.endswith('_hybrid'):
         prng_hybrid = f"{prng_base}_hybrid"
 
@@ -338,6 +341,7 @@ def run_bidirectional_test(coordinator,
         forward_set_hybrid = set(forward_map_hybrid.keys())
         reverse_set_hybrid = set(reverse_map_hybrid.keys())
         bidirectional_variable = forward_set_hybrid & reverse_set_hybrid
+        _variable_bidi_count = len(bidirectional_variable)   # [S124] wire into Optuna score
 
         print(f"      ✨ Bidirectional (variable): {len(bidirectional_variable):,} survivors")
 
@@ -405,11 +409,13 @@ def run_bidirectional_test(coordinator,
         print(f"         Reverse: {len(accumulator['reverse'])} total")
         print(f"         Bidirectional: {len(accumulator['bidirectional'])} total")
 
+    # [S124] Combined bidirectional score: constant + variable skip survivors
+    _total_bidi = len(bidirectional_constant) + _variable_bidi_count
     return TestResult(
         config=config,
         forward_count=len(forward_records),
         reverse_count=len(reverse_records),
-        bidirectional_count=len(bidirectional_constant),
+        bidirectional_count=_total_bidi,   # constant + variable (S124)
         iteration=trial_number
     )
 
