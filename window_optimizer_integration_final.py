@@ -437,7 +437,8 @@ def add_window_optimizer_to_coordinator():
                         resume_study: bool = False,
                         study_name: str = '',
                         n_parallel: int = 1,
-                        enable_pruning: bool = False):  # S115 M1 / S118 sig fix
+                        enable_pruning: bool = False,
+                        trse_context_file: str = 'trse_context.json'):  # S123 TRSE thread
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -543,7 +544,8 @@ def add_window_optimizer_to_coordinator():
             seed_start=seed_start,
             seed_count=seed_count,
             resume_study=resume_study,   # S116-Bug5 confirmed
-            study_name=study_name        # S116-Bug5 confirmed
+            study_name=study_name,       # S116-Bug5 confirmed
+            trse_context_file=trse_context_file  # S123 TRSE thread
         )
 
         optimizer.save_results(results, output_file)

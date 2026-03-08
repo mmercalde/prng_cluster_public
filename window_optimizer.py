@@ -386,12 +386,14 @@ class BayesianOptimization(SearchStrategy):
                 print(f"⚠️  Could not initialize Optuna: {e}")
 
     def search(self, objective_function, bounds, max_iterations, scorer,
-               resume_study: bool = False, study_name: str = ''):
+               resume_study: bool = False, study_name: str = '',
+               trse_context_file: str = 'trse_context.json'):
         """Run Bayesian optimization"""
         if self.optuna_search:
             # Use real Optuna implementation
             return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
-                                             resume_study=resume_study, study_name=study_name)
+                                             resume_study=resume_study, study_name=study_name,
+                                             trse_context_file=trse_context_file)
         else:
             # Fallback to random search
             print("⚠️  Optuna not available, using random search fallback")
@@ -456,7 +458,8 @@ class WindowOptimizer:
     def optimize(self, strategy: SearchStrategy, bounds: SearchBounds,
                 max_iterations: int = 50, scorer: ScoringFunction = None,
                 seed_start: int = 0, seed_count: int = 10_000_000,
-                resume_study: bool = False, study_name: str = '') -> Dict[str, Any]:
+                resume_study: bool = False, study_name: str = '',
+                trse_context_file: str = 'trse_context.json') -> Dict[str, Any]:
         """
         Run optimization using the provided strategy.
         
@@ -470,7 +473,7 @@ class WindowOptimizer:
             return self.test_configuration(config, seed_start, seed_count,
                                            optuna_trial=optuna_trial)  # S118
 
-        return strategy.search(objective, bounds, max_iterations, scorer, resume_study=resume_study, study_name=study_name)
+        return strategy.search(objective, bounds, max_iterations, scorer, resume_study=resume_study, study_name=study_name, trse_context_file=trse_context_file)
 
     def save_results(self, results: Dict[str, Any], output_path: str):
         """Save optimization results to JSON file"""
