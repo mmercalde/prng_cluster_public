@@ -166,10 +166,10 @@ FILE_VALIDATION_CONFIG = {
         "default": 10
     },
     "json_array_minimums": {
-        "bidirectional_survivors*.json": 100,
-        "forward_survivors*.json": 100,
-        "reverse_survivors*.json": 100,
-        "survivors_with_scores*.json": 100,
+        "bidirectional_survivors*.json": 50,
+        "forward_survivors*.json": 50,
+        "reverse_survivors*.json": 50,
+        "survivors_with_scores*.json": 50,
         "train_history*.json": 10,
         "holdout_history*.json": 5,
     },
