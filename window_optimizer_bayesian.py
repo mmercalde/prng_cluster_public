@@ -396,7 +396,7 @@ class OptunaBayesianSearch:
                 old_max = bounds.max_window_size
                 new_max = max(bounds.min_window_size + 1,
                               min(32, bounds.max_window_size))
-                bounds = bounds._replace(max_window_size=new_max)
+                bounds.max_window_size = new_max  # SearchBounds is a dataclass, not namedtuple
                 print(f"[TRSE] Rule A ACTIVE: short_persistence "
                       f"(conf={_type_conf:.3f}) → "
                       f"window_size ceiling {old_max} → {new_max}")
