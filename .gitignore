@@ -105,6 +105,5 @@ models/reinforcement/compare_models/
 *.cbm
 *.db
 optuna_studies/
-bidirectional_survivors_binary.npz
 optimal_window_config.json
 watcher_decisions.jsonl
