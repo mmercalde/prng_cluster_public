@@ -1410,7 +1410,13 @@ class MultiGPUCoordinator:
                 work_items_by_id[work_item['job_id']] = work_item  # v1.8.1: Track for retries
         else:
             # Original seed-based job creation
-            base_chunk_size = max(19000, total_seeds // 100) # Dynamic chunk sizing
+            # S129B-A: Use seed_cap_amd as base chunk size (measured optimal).
+            # Fallback chain: amd_cap -> nvidia_cap -> original formula.
+            # Zero regression risk: if caps not set, behavior identical to today.
+            _amd_cap    = getattr(self, 'seed_cap_amd', None)
+            _nvidia_cap = getattr(self, 'seed_cap_nvidia', None)
+            _default    = max(19000, total_seeds // 100)
+            base_chunk_size = _amd_cap or _nvidia_cap or _default
             current_seed = 0 # <-- CORRECTED: Start from 0
             job_id = 0
             print(f"Creating work chunks (base size: {base_chunk_size:,})...")
@@ -2651,10 +2657,10 @@ def main():
     parser.add_argument('-o', '--output', help='Output results file')
     parser.add_argument('--test-only', action='store_true', help='Test connectivity only')
     # Job-splitting parameters for memory management based on capacity probe results
-    parser.add_argument('--seed-cap-nvidia', type=int, default=40000,
-                       help='Max seeds per job on NVIDIA GPUs (40K from RTX 3080 Ti probe)')
-    parser.add_argument('--seed-cap-amd', type=int, default=19000,
-                       help='Max seeds per job on AMD GPUs (19K from RX 6600 probe)')
+    parser.add_argument('--seed-cap-nvidia', type=int, default=5000000,
+                       help='Max seeds per job on NVIDIA GPUs (5M from S128 Phase A measurement)')
+    parser.add_argument('--seed-cap-amd', type=int, default=2000000,
+                       help='Max seeds per job on AMD GPUs (2M from S128 Phase C; reduce to 500K after S130 persistent workers)')
     parser.add_argument('--seed-cap-default', type=int, default=19000,
                        help='Max seeds per job for other/unknown GPUs')
     # System stability parameters
