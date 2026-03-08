@@ -166,10 +166,10 @@ FILE_VALIDATION_CONFIG = {
         "default": 10
     },
     "json_array_minimums": {
-        "bidirectional_survivors*.json": 50,   # [S122] lowered from 100 — real data yields 85
-        "forward_survivors*.json": 50,          # [S122] lowered from 100
-        "reverse_survivors*.json": 50,          # [S122] lowered from 100
-        "survivors_with_scores*.json": 50,      # [S122] lowered from 100
+        "bidirectional_survivors*.json": 100,
+        "forward_survivors*.json": 100,
+        "reverse_survivors*.json": 100,
+        "survivors_with_scores*.json": 100,
         "train_history*.json": 10,
         "holdout_history*.json": 5,
     },
@@ -384,7 +384,6 @@ class WatcherConfig:
 
 # Step to script mapping
 STEP_SCRIPTS = {
-    0: "trse_step0.py",           # [S121] Step 0: Regime Segmentation (TRSE)
     1: "window_optimizer.py",
     2: "run_scorer_meta_optimizer.sh",
     3: "run_step3_full_scoring.sh",
@@ -395,7 +394,6 @@ STEP_SCRIPTS = {
 
 # Step to manifest mapping
 STEP_MANIFESTS = {
-    0: "trse.json",              # [S121] Step 0: Regime Segmentation (TRSE)
     1: "window_optimizer.json",
     2: "scorer_meta.json",
     3: "full_scoring.json",
@@ -406,7 +404,6 @@ STEP_MANIFESTS = {
 
 # Step names
 STEP_NAMES = {
-    0: "Regime Segmentation (TRSE)",   # [S121]
     1: "Window Optimizer",
     2: "Scorer Meta-Optimizer",
     3: "Full Scoring",
@@ -653,38 +650,14 @@ class WatcherAgent:
                 else:
                     for f in failed:
                         logger.warning(f"File validation failed: {f['file']} - {f['reason']}")
-
-                # [S121] skip_on_fail — advisory/optional steps continue pipeline on failure
-                # rather than escalating. Step 0 (TRSE) uses this: absent context = default bounds.
-                _skip_on_fail = manifest_data.get('skip_on_fail', False)
-                if not success and _skip_on_fail:
-                    _skip_reason = manifest_data.get(
-                        'skip_on_fail_reason',
-                        f'Step {step} failed but skip_on_fail=true — advancing to next step'
-                    )
-                    logger.warning(
-                        f"[SKIP_ON_FAIL] Step {step} output missing but skip_on_fail=true. "
-                        f"Reason: {_skip_reason}"
-                    )
-                    print(f"\n⚠️  [SKIP_ON_FAIL] Step {step} ({STEP_NAMES.get(step,'?')}): "
-                          f"output not produced — continuing with defaults\n"
-                          f"   → {_skip_reason}\n")
-                    decision = AgentDecision(
-                        success_condition_met=True,   # treated as pass for pipeline flow
-                        confidence=0.0,
-                        reasoning=f"skip_on_fail: {_skip_reason}",
-                        recommended_action="proceed",
-                        parse_method="skip_on_fail",
-                        warnings=[f"Step {step} output absent — downstream step runs with defaults"]
-                    )
-                else:
-                    decision = AgentDecision(
-                        success_condition_met=success,
-                        confidence=1.0 if success else 0.0,
-                        reasoning="All required files valid" if success else f"File validation failed: {[r['file'] + ': ' + r['reason'] for r in failed]}",
-                        recommended_action="proceed" if success else "escalate",
-                        parse_method="file_exists"
-                    )
+                
+                decision = AgentDecision(
+                    success_condition_met=success,
+                    confidence=1.0 if success else 0.0,
+                    reasoning="All required files valid" if success else f"File validation failed: {[r['file'] + ': ' + r['reason'] for r in failed]}",
+                    recommended_action="proceed" if success else "escalate",
+                    parse_method="file_exists"
+                )
                 # Build minimal context for return
                 context = build_full_context(
                     step=step,
@@ -1413,16 +1386,30 @@ class WatcherAgent:
                     cmd.append(f"--{arg_name.replace('_', '-')}")
         else:
             # Python scripts with named args (--key value)
+            # Build reverse lookup from actions[0].args_map: param_name -> cli-arg
+            # args_map is defined as {"cli-arg": "param_name"}, so reverse it.
+            # Also merge top-level args_map if present (legacy placement).
+            _param_to_cli = {}
+            if manifest_data:
+                for action in manifest_data.get("actions", []):
+                    for cli_arg, param_name in action.get("args_map", {}).items():
+                        _param_to_cli[param_name] = cli_arg
+                # Also pick up any top-level args_map entries
+                for cli_arg, param_name in manifest_data.get("args_map", {}).items():
+                    _param_to_cli[param_name] = cli_arg
+
             for key, value in final_params.items():
-                cli_key = key.replace("_", "-")
-                
+                # Use manifest-declared CLI arg name if available,
+                # otherwise fall back to underscore->hyphen conversion.
+                cli_key = _param_to_cli.get(key, key.replace("_", "-"))
+
                 # Boolean flag-only behavior
                 if isinstance(value, bool):
                     if value:
                         cmd.append(f"--{cli_key}")
                     # If False, omit the flag entirely
                     continue
-                
+
                 cmd.extend([f"--{cli_key}", str(value)])
 
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
@@ -2710,8 +2697,7 @@ def main():
         use_llm=not args.no_llm,
         use_grammar=not args.no_grammar,
         # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
-        # [S121] Step 0 TRSE is fast (~5s) — explicit override prevents default 120min wait
-        step_timeout_overrides={0: 1, 1: 480, 5: 360}
+        step_timeout_overrides={1: 480, 5: 360}
     )
 
     # Handle halt commands
