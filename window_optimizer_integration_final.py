@@ -474,6 +474,309 @@ def add_window_optimizer_to_coordinator():
                 except Exception: pass
             _partition_coordinators.clear()
 
+        # ====================================================================
+        # S125 Bug B fix: multiprocessing dispatcher for n_parallel > 1
+        # Each Process owns one partition and its own isolated CUDA/ROCm context.
+        # Both share the same SQLite Optuna DB via RDBStorage(timeout=20s).
+        # Replaces the broken n_jobs=N threading approach (shared CUDA context).
+        # ====================================================================
+        if n_parallel > 1:
+            import multiprocessing as _mp
+            import glob as _mpglob
+            import time as _mptime
+
+            def _partition_worker(partition_idx, allowlist, config_file_w,
+                                   dataset_path_w, seed_start_w, seed_count_w,
+                                   prng_base_w, test_both_modes_w,
+                                   storage_url, study_name_w, trials_for_worker,
+                                   result_queue):
+                # Runs in a separate process; has its own CUDA context.
+                import sys as _sys, os as _os2
+                _sys.path.insert(0, _os2.dirname(_os2.abspath(__file__)))
+                try:
+                    from coordinator import MultiGPUCoordinator as _WMCC
+                    from window_optimizer_integration_final import run_bidirectional_test as _wbt
+                    from window_optimizer import (
+                        WindowConfig, SearchBounds, BidirectionalCountScorer,
+                    )
+                    import optuna as _opt2
+
+                    _opt2.logging.set_verbosity(_opt2.logging.WARNING)
+
+                    # Isolated coordinator -- only this partition's nodes
+                    _wcoord = _WMCC(
+                        config_file=config_file_w,
+                        node_allowlist=allowlist
+                    )
+                    _wcoord.load_configuration()
+                    _wcoord.create_gpu_workers()
+
+                    _local_acc = {'forward': [], 'reverse': [], 'bidirectional': []}
+                    _local_bounds = SearchBounds.from_config()
+                    _tctr = {'n': 0}
+
+                    def _local_test(cfg, optuna_trial=None):
+                        _tctr['n'] += 1
+                        return _wbt(
+                            coordinator=_wcoord,
+                            config=cfg,
+                            dataset_path=dataset_path_w,
+                            seed_start=seed_start_w,
+                            seed_count=seed_count_w,
+                            prng_base=prng_base_w,
+                            test_both_modes=test_both_modes_w,
+                            forward_threshold=_local_bounds.default_forward_threshold,
+                            reverse_threshold=_local_bounds.default_reverse_threshold,
+                            trial_number=_tctr['n'],
+                            accumulator=_local_acc,
+                            optuna_trial=optuna_trial,
+                        )
+
+                    _pstorage = _opt2.storages.RDBStorage(
+                        url=storage_url,
+                        engine_kwargs={"connect_args": {"timeout": 20}}
+                    )
+                    _pstudy = _opt2.load_study(
+                        study_name=study_name_w,
+                        storage=_pstorage,
+                    )
+
+                    def _worker_obj(trial):
+                        ws  = trial.suggest_int('window_size',
+                                                _local_bounds.min_window_size,
+                                                _local_bounds.max_window_size)
+                        off = trial.suggest_int('offset',
+                                                _local_bounds.min_offset,
+                                                _local_bounds.max_offset)
+                        si  = trial.suggest_int('session_idx', 0,
+                                                len(_local_bounds.session_options) - 1)
+                        skn = trial.suggest_int('skip_min',
+                                                _local_bounds.min_skip_min,
+                                                _local_bounds.max_skip_min)
+                        skx = trial.suggest_int('skip_max',
+                                                max(skn, _local_bounds.min_skip_max),
+                                                _local_bounds.max_skip_max)
+                        ft  = trial.suggest_float('forward_threshold',
+                                                  _local_bounds.min_forward_threshold,
+                                                  _local_bounds.max_forward_threshold)
+                        rt  = trial.suggest_float('reverse_threshold',
+                                                  _local_bounds.min_reverse_threshold,
+                                                  _local_bounds.max_reverse_threshold)
+                        cfg = WindowConfig(
+                            window_size=ws, offset=off,
+                            sessions=_local_bounds.session_options[si],
+                            skip_min=skn, skip_max=skx,
+                            forward_threshold=round(ft, 2),
+                            reverse_threshold=round(rt, 2),
+                        )
+                        result = _local_test(cfg, optuna_trial=trial)
+                        result.iteration = trial.number
+                        score = float(result.bidirectional_count)
+                        trial.set_user_attr("result_dict", result.to_dict())
+                        print(f"   [P{partition_idx}] Trial {trial.number}: "
+                              f"{cfg.description()} score={score:.0f}")
+                        return score
+
+                    _pstudy.optimize(_worker_obj, n_trials=trials_for_worker, n_jobs=1)
+
+                    result_queue.put({
+                        'partition': partition_idx,
+                        'accumulator': _local_acc,
+                        'status': 'ok',
+                    })
+                except Exception:
+                    import traceback as _tb
+                    result_queue.put({
+                        'partition': partition_idx,
+                        'accumulator': {'forward': [], 'reverse': [], 'bidirectional': []},
+                        'status': 'error',
+                        'error': _tb.format_exc(),
+                    })
+
+            # ----------------------------------------------------------------
+            # Determine shared Optuna study name + storage URL
+            # ----------------------------------------------------------------
+            if resume_study and study_name:
+                _mp_study_name = study_name
+                _mp_storage_url = (
+                    "sqlite:////home/michael/distributed_prng_analysis/"
+                    f"optuna_studies/{_mp_study_name}.db"
+                )
+                print(f"   [n_parallel] Workers RESUME study: {_mp_study_name}")
+            elif resume_study:
+                _mp_dbs = sorted(
+                    _mpglob.glob("optuna_studies/window_opt_*.db"),
+                    key=os.path.getmtime, reverse=True
+                )
+                if _mp_dbs:
+                    _mp_study_name = os.path.splitext(os.path.basename(_mp_dbs[0]))[0]
+                    _mp_storage_url = (
+                        "sqlite:////home/michael/distributed_prng_analysis/"
+                        f"optuna_studies/{_mp_study_name}.db"
+                    )
+                    print(f"   [n_parallel] Workers RESUME most recent: {_mp_study_name}")
+                else:
+                    _mp_study_name = f"window_opt_{int(_mptime.time())}"
+                    _mp_storage_url = (
+                        "sqlite:////home/michael/distributed_prng_analysis/"
+                        f"optuna_studies/{_mp_study_name}.db"
+                    )
+                    print(f"   [n_parallel] No DB found -- fresh: {_mp_study_name}")
+            else:
+                _mp_study_name = f"window_opt_{int(_mptime.time())}"
+                _mp_storage_url = (
+                    "sqlite:////home/michael/distributed_prng_analysis/"
+                    f"optuna_studies/{_mp_study_name}.db"
+                )
+                print(f"   [n_parallel] Fresh study: {_mp_study_name}")
+
+            # Create study + warm-start if fresh
+            if not os.path.exists(f"optuna_studies/{_mp_study_name}.db"):
+                import optuna as _osetup
+                import warnings as _ws2
+                from optuna.samplers import TPESampler as _TPS
+                _setup_storage = _osetup.storages.RDBStorage(
+                    url=_mp_storage_url,
+                    engine_kwargs={"connect_args": {"timeout": 20}}
+                )
+                with _ws2.catch_warnings():
+                    _ws2.filterwarnings('ignore', message='.*multivariate.*')
+                    _setup_sampler = _TPS(n_startup_trials=3, multivariate=True)
+                _setup_study = _osetup.create_study(
+                    study_name=_mp_study_name,
+                    storage=_setup_storage,
+                    direction='maximize',
+                    sampler=_setup_sampler,
+                    load_if_exists=True,
+                )
+                if len(_setup_study.trials) == 0:
+                    _setup_study.enqueue_trial({
+                        'window_size': 8, 'offset': 43,
+                        'skip_min': 5, 'skip_max': 56,
+                        'forward_threshold': 0.49, 'reverse_threshold': 0.49
+                    })
+                    print("   [n_parallel] Warm-start enqueued (W8_O43_S5-56)")
+                print(f"   [n_parallel] Study ready: {_mp_study_name} "
+                      f"({len(_setup_study.trials)} trials)")
+
+            # ----------------------------------------------------------------
+            # Divide trials and launch worker processes
+            # ----------------------------------------------------------------
+            _trials_per_worker = [max_iterations // n_parallel] * n_parallel
+            for _ri in range(max_iterations % n_parallel):
+                _trials_per_worker[_ri] += 1
+
+            print(f"\n{'='*60}")
+            print(f"LAUNCHING {n_parallel} PARTITION WORKERS (multiprocessing.Process)")
+            for _pi in range(n_parallel):
+                print(f"   P{_pi}: {_PARALLEL_PARTITIONS[_pi]}  -> {_trials_per_worker[_pi]} trials")
+            print(f"   Study: {_mp_study_name}")
+            print(f"{'='*60}\n")
+
+            try:
+                _mp.set_start_method('spawn', force=True)
+            except RuntimeError:
+                pass  # already set in this process
+
+            _rq = _mp.Queue()
+            _procs = []
+            for _pi in range(n_parallel):
+                _proc = _mp.Process(
+                    target=_partition_worker,
+                    args=(
+                        _pi,
+                        _PARALLEL_PARTITIONS[_pi],
+                        getattr(self, 'config_file', 'distributed_config.json'),
+                        dataset_path, seed_start, seed_count,
+                        prng_base, test_both_modes,
+                        _mp_storage_url, _mp_study_name,
+                        _trials_per_worker[_pi],
+                        _rq,
+                    ),
+                    daemon=False,
+                )
+                _proc.start()
+                _procs.append(_proc)
+                print(f"   Started Process-{_pi} (pid={_proc.pid}) -> {_PARALLEL_PARTITIONS[_pi]}")
+
+            # Collect results from both worker processes
+            _collected = 0
+            while _collected < n_parallel:
+                try:
+                    _res = _rq.get(timeout=7200)  # 2-hour hard timeout per worker
+                    _pi = _res['partition']
+                    if _res['status'] == 'ok':
+                        print(f"\n   Process-{_pi} complete -- merging survivors")
+                        for _k in ('forward', 'reverse', 'bidirectional'):
+                            survivor_accumulator[_k].extend(_res['accumulator'][_k])
+                    else:
+                        print(f"\n   Process-{_pi} ERROR:")
+                        print(_res.get('error', 'unknown error'))
+                    _collected += 1
+                except Exception as _qe:
+                    print(f"   Queue timeout/error: {_qe}")
+                    break
+
+            for _proc in _procs:
+                _proc.join(timeout=60)
+                if _proc.is_alive():
+                    print(f"   Process {_proc.pid} still alive -- terminating")
+                    _proc.terminate()
+
+            print(f"\n   All partition workers complete.")
+            print(f"      Forward:       {len(survivor_accumulator['forward'])}")
+            print(f"      Reverse:       {len(survivor_accumulator['reverse'])}")
+            print(f"      Bidirectional: {len(survivor_accumulator['bidirectional'])}")
+
+            # Load best result from study for results dict
+            import optuna as _ofin
+            _fin_storage = _ofin.storages.RDBStorage(
+                url=_mp_storage_url,
+                engine_kwargs={"connect_args": {"timeout": 20}}
+            )
+            _fin_study = _ofin.load_study(
+                study_name=_mp_study_name, storage=_fin_storage
+            )
+            _best_t = _fin_study.best_trial
+            print(f"\n   Best trial: #{_best_t.number}  score={_best_t.value:.1f}")
+
+            from window_optimizer import WindowConfig as _WC2
+            _bp = _best_t.params
+            _si_list = (bounds.session_options
+                        if hasattr(bounds, 'session_options')
+                        else [['midday'], ['evening']])
+            _best_cfg2 = _WC2(
+                window_size=_bp['window_size'],
+                offset=_bp['offset'],
+                sessions=_si_list[_bp.get('session_idx', 0)],
+                skip_min=_bp['skip_min'],
+                skip_max=_bp['skip_max'],
+                forward_threshold=round(_bp.get('forward_threshold', 0.49), 2),
+                reverse_threshold=round(_bp.get('reverse_threshold', 0.49), 2),
+            )
+            results = {
+                'strategy': 'optuna_bayesian_parallel',
+                'best_config': _best_cfg2.to_dict(),
+                'best_result': {
+                    'config': _best_cfg2.to_dict(),
+                    'bidirectional_count': int(_best_t.value or 0),
+                    'forward_count': 0,
+                    'reverse_count': 0,
+                },
+                'best_score': _best_t.value or 0,
+                'all_results': [],
+                'iterations': len(_fin_study.trials),
+                'optuna_study': {
+                    'best_trial': _best_t.number,
+                    'best_value': _best_t.value,
+                    'best_params': _best_t.params,
+                }
+            }
+            optimizer.save_results(results, output_file)
+            # Falls through to the dedup+save survivor block below
+            # (that block reads survivor_accumulator directly, not 'results')
+
+
         if False: pass  # indent anchor
 
         print(f"\n{'='*80}")
@@ -513,7 +816,7 @@ def add_window_optimizer_to_coordinator():
             else:
                 _coord = self
             return run_bidirectional_test(
-                coordinator=self,
+                coordinator=_coord,   # S125: was 'self' -- dead routing var fixed (Bug A)
                 config=config,
                 dataset_path=dataset_path,
                 seed_start=ss,

@@ -490,19 +490,10 @@ class OptunaBayesianSearch:
                 print(f"   📊 No resumable study found — starting fresh")
 
         if not _resume:
-            # S115 R4: JournalFileBackend for n_parallel>1 (no SQLite write-lock)
-            if self.n_parallel > 1:
-                _journal_path = f"/home/michael/distributed_prng_analysis/optuna_studies/{_fresh_study_name}.jsonl"
-                if _os.path.exists(_journal_path):
-                    raise RuntimeError(f"Journal file already exists: {_journal_path}")
-                storage_path = optuna.storages.JournalStorage(
-                    optuna.storages.journal.JournalFileBackend(_journal_path)
-                )
-                study_name = _fresh_study_name
-                print(f"   📊 Optuna study (journal): {_journal_path}")
-            else:
-                study_name = _fresh_study_name
-                storage_path = _fresh_storage_path
+            # S125: always SQLite (JournalFileBackend removed -- n_parallel parallelism
+            # now owned by multiprocessing dispatcher in integration layer; n_jobs=1 here)
+            study_name = _fresh_study_name
+            storage_path = _fresh_storage_path
 
         # S115 M2: ThresholdPruner as secondary safety net
         _pruner = optuna.pruners.ThresholdPruner(lower=1.0) if self.enable_pruning else optuna.pruners.NopPruner()
@@ -534,9 +525,8 @@ class OptunaBayesianSearch:
             print(f"   ✅ Resume mode: skipping warm-start (already in DB)")
 
         # Trials remaining: full count on fresh, remainder on resume
+        # S125: n_parallel>1 dispatched externally; this path always n_jobs=1
         _trials_to_run = max_iterations - _resumed_completed
-        if self.n_parallel > 1 and not _resume:
-            _trials_to_run = max_iterations  # journal storage handles its own count
         
         # Run optimization with incremental save callback
         _incremental_callback = create_incremental_save_callback(
@@ -554,7 +544,7 @@ class OptunaBayesianSearch:
 
         study.optimize(optuna_objective, n_trials=_trials_to_run,
                        callbacks=[_incremental_callback, _prune_telemetry],
-                       n_jobs=self.n_parallel)
+                       n_jobs=1)  # S125: always 1 -- parallelism via multiprocessing.Process
 
         _nt = len(study.trials); _np = sum(1 for t in study.trials if t.state.name=='PRUNED')
         _nc = sum(1 for t in study.trials if t.state.name=='COMPLETE')
