@@ -2,7 +2,7 @@
   "agent_name": "window_optimizer_agent",
   "description": "Step 1: Bayesian window optimization using Optuna TPE. Runs real forward/reverse sieves across 26 GPUs to find optimal window_size, offset, and skip_range parameters.",
   "pipeline_step": 1,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "required_inputs": [
     "daily3.json"
   ],
@@ -33,7 +33,9 @@
         "enable-pruning": "enable_pruning",
         "n-parallel": "n_parallel",
         "resume-study": "resume_study",
-        "study-name": "study_name"
+        "study-name": "study_name",
+        "use-persistent-workers": "use_persistent_workers",
+        "worker-pool-size": "worker_pool_size"
       },
       "distributed": true,
       "timeout_minutes": 240
@@ -139,6 +141,22 @@
       "description": "Test BOTH constant AND variable skip patterns (V2.0 feature).",
       "optimized_by": "Manual",
       "effect": "Doubles search space but discovers variable skip patterns."
+    },
+    "use_persistent_workers": {
+      "type": "bool",
+      "default": false,
+      "description": "[S130] Use persistent GPU sieve workers (sieve_gpu_worker.py) instead of per-job subprocess launch. Eliminates per-job ROCm init overhead. Requires soak test validation before enabling in production.",
+      "optimized_by": "Manual",
+      "effect": "Expected 4-5x throughput gain on AMD rigs by keeping ROCm initialized across jobs."
+    },
+    "worker_pool_size": {
+      "type": "int",
+      "min": 1,
+      "max": 8,
+      "default": 8,
+      "description": "[S130] Number of persistent worker processes to spawn per AMD rig (1 per GPU). Zeus always uses execute_local_job regardless of this setting.",
+      "optimized_by": "Manual",
+      "effect": "Set to 8 for full rig utilization. Reduce for debugging or partial-rig testing."
     }
   },
   "success_metrics": {
@@ -159,7 +177,9 @@
     "study_name": "",
     "trse_context": "trse_context.json",
     "enable_pruning": false,
-    "n_parallel": 1
+    "n_parallel": 1,
+    "use_persistent_workers": false,
+    "worker_pool_size": 8
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
