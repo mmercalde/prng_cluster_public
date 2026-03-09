@@ -460,7 +460,9 @@ def add_window_optimizer_to_coordinator():
                 from coordinator import MultiGPUCoordinator as _MCC
                 coord = _MCC(
                     config_file=getattr(self, 'config_file', 'distributed_config.json'),
-                    node_allowlist=_PARALLEL_PARTITIONS[idx % len(_PARALLEL_PARTITIONS)]
+                    node_allowlist=_PARALLEL_PARTITIONS[idx % len(_PARALLEL_PARTITIONS)],
+                    seed_cap_nvidia=5_000_000,
+                    seed_cap_amd=2_000_000,
                 )
                 coord.load_configuration()
                 coord.create_gpu_workers()
@@ -506,7 +508,9 @@ def add_window_optimizer_to_coordinator():
                     # Isolated coordinator -- only this partition's nodes
                     _wcoord = _WMCC(
                         config_file=config_file_w,
-                        node_allowlist=allowlist
+                        node_allowlist=allowlist,
+                        seed_cap_nvidia=5_000_000,
+                        seed_cap_amd=2_000_000,
                     )
                     _wcoord.load_configuration()
                     _wcoord.create_gpu_workers()

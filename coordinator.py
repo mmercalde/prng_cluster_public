@@ -230,7 +230,7 @@ def stop_web_dashboard():
 @dataclass
 class MultiGPUCoordinator:
     def __init__(self, config_file: str = "distributed_config.json",
-                 seed_cap_nvidia: int = 40000, seed_cap_amd: int = 19000, seed_cap_default: int = 19000,
+                 seed_cap_nvidia: int = 5000000, seed_cap_amd: int = 2000000, seed_cap_default: int = 2000000,
                  max_concurrent: int = 8, max_per_node: int = 4, max_local_concurrent: Optional[int] = None,
                  job_timeout: int = 600, resume_policy: str = 'prompt',
                  node_allowlist: Optional[List[str]] = None,
@@ -1225,10 +1225,7 @@ class MultiGPUCoordinator:
         if proc is None:
             runtime = time.time() - start_time
             # Gate 1: spawn failure → fall back to execute_remote_job (deterministic requeue)
-            self.logger.warning(
-                f"[S130][FALLBACK] worker={key} job_id={job.job_id} "
-                f"reason=spawn_failure recovery=execute_remote_job"
-            )
+            self.logger.warning(f"[S130] Worker spawn failed for {key}, falling back to SSH path")
             return self.execute_remote_job(job, worker)
 
         # Send job
@@ -1237,10 +1234,7 @@ class MultiGPUCoordinator:
             proc.stdin.flush()
         except (BrokenPipeError, OSError) as e:
             # Gate 1: dead pipe → remove from registry, fall back to SSH path
-            self.logger.warning(
-                f"[S130][FALLBACK] worker={key} job_id={job.job_id} "
-                f"reason=broken_pipe error={e} recovery=execute_remote_job"
-            )
+            self.logger.warning(f"[S130] Broken pipe writing to {key}: {e}, falling back to SSH")
             try:
                 del self._persistent_worker_registry[key]
             except KeyError:
@@ -1252,10 +1246,7 @@ class MultiGPUCoordinator:
         while time.time() < result_deadline:
             if proc.poll() is not None:
                 # Gate 1: worker died mid-job → fall back
-                self.logger.warning(
-                    f"[S130][FALLBACK] worker={key} job_id={job.job_id} "
-                    f"reason=worker_dead recovery=execute_remote_job"
-                )
+                self.logger.warning(f"[S130] Worker {key} died mid-job, falling back to SSH")
                 try:
                     del self._persistent_worker_registry[key]
                 except KeyError:
@@ -1265,24 +1256,10 @@ class MultiGPUCoordinator:
             try:
                 line = proc.stdout.readline()
             except Exception as e:
-                self.logger.warning(
-                    f"[S130][FALLBACK] worker={key} job_id={job.job_id} "
-                    f"reason=read_error error={e} recovery=execute_remote_job"
-                )
+                self.logger.warning(f"[S130] Read error from {key}: {e}, falling back")
                 return self.execute_remote_job(job, worker)
 
             if not line:
-                # Empty readline can mean pipe closed (worker died) — check immediately
-                if proc.poll() is not None:
-                    self.logger.warning(
-                        f"[S130][FALLBACK] worker={key} job_id={job.job_id} "
-                        f"reason=worker_dead recovery=execute_remote_job"
-                    )
-                    try:
-                        del self._persistent_worker_registry[key]
-                    except KeyError:
-                        pass
-                    return self.execute_remote_job(job, worker)
                 time.sleep(0.02)
                 continue
 

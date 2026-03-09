@@ -2,7 +2,7 @@
   "agent_name": "window_optimizer_agent",
   "description": "Step 1: Bayesian window optimization using Optuna TPE. Runs real forward/reverse sieves across 26 GPUs to find optimal window_size, offset, and skip_range parameters.",
   "pipeline_step": 1,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "required_inputs": [
     "daily3.json"
   ],
@@ -35,7 +35,9 @@
         "resume-study": "resume_study",
         "study-name": "study_name",
         "use-persistent-workers": "use_persistent_workers",
-        "worker-pool-size": "worker_pool_size"
+        "worker-pool-size": "worker_pool_size",
+        "seed-cap-nvidia": "seed_cap_nvidia",
+        "seed-cap-amd": "seed_cap_amd"
       },
       "distributed": true,
       "timeout_minutes": 240
@@ -157,6 +159,24 @@
       "description": "[S130] Number of persistent worker processes to spawn per AMD rig (1 per GPU). Zeus always uses execute_local_job regardless of this setting.",
       "optimized_by": "Manual",
       "effect": "Set to 8 for full rig utilization. Reduce for debugging or partial-rig testing."
+    },
+    "seed_cap_nvidia": {
+      "type": "int",
+      "min": 100000,
+      "max": 10000000,
+      "default": 5000000,
+      "description": "[S129B-A] Max seeds per job chunk for NVIDIA GPUs (RTX 3080 Ti). Measured hardware ceiling ~2.2M sps.",
+      "optimized_by": "Manual",
+      "effect": "Controls chunk sizing for Zeus GPUs. 5M = safe production value at ~2.2M sps measured throughput."
+    },
+    "seed_cap_amd": {
+      "type": "int",
+      "min": 100000,
+      "max": 5000000,
+      "default": 2000000,
+      "description": "[S129B-A] Max seeds per job chunk for AMD GPUs (RX 6600). Measured hardware ceiling ~787k sps.",
+      "optimized_by": "Manual",
+      "effect": "Controls chunk sizing for rig GPUs. 2M = safe production value at ~788k sps measured throughput."
     }
   },
   "success_metrics": {
@@ -179,7 +199,9 @@
     "enable_pruning": false,
     "n_parallel": 1,
     "use_persistent_workers": false,
-    "worker_pool_size": 8
+    "worker_pool_size": 8,
+    "seed_cap_nvidia": 5000000,
+    "seed_cap_amd": 2000000
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
