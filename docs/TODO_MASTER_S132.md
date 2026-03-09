@@ -40,9 +40,13 @@
 ### Bundle Factory Track 2
 - [ ] **Fill 3 stub retrieval functions in `bundle_factory.py`** — All 3 confirmed stubs returning empty: `_retrieve_recent_outcomes()`, `_retrieve_trend_summary()`, `_retrieve_open_incidents()`. Reads Chapter 13 summaries, run_history.jsonl, watcher_failures.jsonl.
 
-### Chapter 14 Remaining
-- [ ] **Chapter 14 Phase 8B: `per_survivor_attribution` wiring** — File exists. Phase 8A done S83, Phase 8B blocked on wiring into diagnostics.
-- [ ] **Chapter 14 Phase 9: First Diagnostic Investigation** — Real `--compare-models --enable-diagnostics` run on real data.
+### Chapter 14 Remaining Phases (verified against live code)
+- [ ] **Phase 4: Dashboard visualization** — `chart_loss_curves()`, `chart_feature_importance()`, `chart_survivor_attribution()`, `chart_nn_health()`, `chart_diagnosis_panel()` — 0 hits in `web_visualizer.py`/`web_dashboard.py`. Not implemented.
+- [ ] **Phase 5: TensorBoard** — `SummaryWriter`, `add_scalars`, `add_histogram`, `add_graph` — 0 hits in live code. Optional but designed. `--enable-tensorboard` flag not wired.
+- [ ] **Phase 8: Selfplay + Ch13 diagnostics wiring** — `post_draw_root_cause_analysis()`, episode diagnostics — 0 hits in live code. `per_survivor_attribution.py` exists (17KB, PyTorch dynamic graph + grad_x_input + CatBoost SHAP confirmed) but not wired into selfplay loop or Chapter 13.
+- [ ] **Phase 9: First Diagnostic Investigation** — Real `--compare-models --enable-diagnostics` run on real data. Requires Phase 8 first.
+
+**Note — `diagnostics_analysis.gbnf` missing from repo** — Phase 7 LLM integration calls `request_llm_diagnostics_analysis()` (wired in `watcher_agent.py` lines 1688/1702) but the grammar file is absent. Needs investigation — may be on Zeus only or may need to be created.
 
 ### Phase 3B
 - [ ] **Phase 3B: Tree parallel workers** — 2 tree trials simultaneously with pinned `CUDA_VISIBLE_DEVICES`. Trees = 93% of wall clock (~24 min). Target: ~12 min. Requires Team Beta review. No implementation in live code.
@@ -96,7 +100,11 @@
 | Bayesian window optimizer resume (7 bugs) | `window_optimizer_bayesian.py` | S115/S116 | confirmed |
 | Strategy Advisor fully deployed | `parameter_advisor.py` etc. | S66/S68/S75 | confirmed |
 | Chapter 13 full implementation | `chapter_13_orchestrator.py` | S57-S83 | confirmed |
-| Chapter 14 Phases 1–7b (RETRY loop E2E proven) | `training_health_check.py` etc. | S69-S82 | confirmed |
+| Ch14 Phase 1: Core diagnostics (NNDiagnostics, TreeDiagnostics) | `training_diagnostics.py` | S69 | 41KB, confirmed |
+| Ch14 Phase 2: Per-survivor attribution (grad_x_input, CatBoost SHAP) | `per_survivor_attribution.py` | S70+ | 17KB, confirmed |
+| Ch14 Phase 3: Engine wiring (--enable-diagnostics, subprocess hooks) | `train_single_trial.py`, `meta_prediction_optimizer_anti_overfit.py` | S70/S73 | confirmed |
+| Ch14 Phase 6: WATCHER integration (check_training_health, skip registry) | `agents/watcher_agent.py:104` | S76/S82 | confirmed |
+| Ch14 Phase 7: LLM diagnostics integration (request_llm_diagnostics_analysis) | `agents/watcher_agent.py:1688` | S81 | confirmed wired |
 | Selfplay A1–A5 validated (isolation) | `selfplay_orchestrator.py` | S116 | confirmed |
 | Real CA Daily 3 data (18,068 draws) | `daily3.json` on Zeus | S112 | confirmed |
 
