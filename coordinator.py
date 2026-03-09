@@ -1120,6 +1120,14 @@ class MultiGPUCoordinator:
             f"python3 sieve_gpu_worker.py --gpu-id {worker.gpu_id}\""
         )
 
+        # Stagger worker spawn to prevent parallel HIP init collision on ROCm
+        # Approved pattern: gpu_id * 2.0s (same as script job stagger at line ~1738)
+        if node.gpu_type and "6600" in node.gpu_type:
+            stagger_delay = worker.gpu_id * 2.0
+            if stagger_delay > 0:
+                self.logger.info(f"[S130] Staggering worker {key} by {stagger_delay}s (HIP init protection)")
+                time.sleep(stagger_delay)
+
         self.logger.info(f"[S130] Spawning persistent worker: {key}")
         try:
             proc = subprocess.Popen(
