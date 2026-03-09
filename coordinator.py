@@ -1298,13 +1298,22 @@ class MultiGPUCoordinator:
         hostname = worker.node.hostname
         acquired_local = False
 
-        # S130 — Persistent worker path (additive, residue_sieve only, flag-gated)
-        # Bypasses SSH/semaphore machinery — worker manages its own concurrency.
-        # Existing localhost and remote paths are UNCHANGED below.
+        # S133-A — Persistent worker path (additive, residue_sieve only, flag-gated)
+        # Throttled via ssh_pool semaphore (max_per_node) — same limit as the
+        # non-persistent remote path. Semaphore covers the entire in-flight job
+        # duration, not worker lifetime. Workers remain alive and HIP-warm between
+        # jobs; only concurrent dispatch is capped. Fixes S130 regression where
+        # unbounded dispatch to slow nodes (e.g. rig-6600c) caused queue eviction
+        # cascades under ROCm. Stagger in _get_or_spawn_worker() intentionally
+        # retained — see S134 for removal decision after soak.
         if (self.use_persistent_workers
                 and job.search_type == 'residue_sieve'
                 and not self.is_localhost(hostname)):
-            return self.execute_persistent_worker_job(job, worker)
+            self.ssh_pool.acquire(hostname)
+            try:
+                return self.execute_persistent_worker_job(job, worker)
+            finally:
+                self.ssh_pool.release(hostname)
 
         try:
             # Acquire SSH connection slot for remote jobs
