@@ -233,9 +233,7 @@ class MultiGPUCoordinator:
                  seed_cap_nvidia: int = 5000000, seed_cap_amd: int = 2000000, seed_cap_default: int = 2000000,
                  max_concurrent: int = 8, max_per_node: int = 4, max_local_concurrent: Optional[int] = None,
                  job_timeout: int = 600, resume_policy: str = 'prompt',
-                 node_allowlist: Optional[List[str]] = None,
-                 use_persistent_workers: bool = False,  # S130
-                 worker_pool_size: int = 8):             # S130
+                 node_allowlist: Optional[List[str]] = None):
         # S115 M1/M4: CRITICAL — set before load_configuration() which runs inside __init__
         self.node_allowlist = node_allowlist
         self.config_file = config_file
@@ -271,11 +269,6 @@ class MultiGPUCoordinator:
         self._localhost_semaphore = threading.Semaphore(self.max_local_concurrent)
         # Resume/Restart policy
         self.resume_policy = resume_policy
-
-        # S130 — Persistent worker flags (disabled by default until soak test passes)
-        self.use_persistent_workers = use_persistent_workers
-        self.worker_pool_size = worker_pool_size
-        self._persistent_worker_registry = {}  # {(hostname, gpu_id): WorkerHandle}
 
         # --- ADDED: Logger for new methods ---
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -1065,255 +1058,10 @@ class MultiGPUCoordinator:
             current = self._node_active_jobs.get(hostname, 0)
             self._node_active_jobs[hostname] = max(0, current - 1)
 
-    # =========================================================================
-    # S130 — PERSISTENT WORKER SUPPORT
-    # Gate: self.use_persistent_workers == True AND job.search_type == 'residue_sieve'
-    # All methods below are ADDITIVE. Existing execute_local_job / execute_remote_job
-    # are never called from this path and remain completely unchanged.
-    # GPU-clean invariant (S72): coordinator manages subprocess handles only.
-    # No CuPy / HIP imports here or in any method below.
-    # =========================================================================
-
-    def _get_or_spawn_worker(self, worker: 'GPUWorker') -> Optional[subprocess.Popen]:
-        """
-        Return existing live worker process for (hostname, gpu_id), or spawn a new one.
-        Workers run sieve_gpu_worker.py on remote AMD rigs via SSH with stdin/stdout piped.
-        Zeus (localhost) always uses execute_local_job — never spawned here.
-
-        Returns Popen handle or None if spawn failed.
-        """
-        key = (worker.node.hostname, worker.gpu_id)
-
-        # Check if existing worker is still alive
-        existing = self._persistent_worker_registry.get(key)
-        if existing is not None:
-            if existing.poll() is None:  # process still running
-                return existing
-            else:
-                self.logger.warning(f"[S130] Dead worker detected: {key}, respawning")
-                try:
-                    existing.stdin.close()
-                except Exception:
-                    pass
-                del self._persistent_worker_registry[key]
-
-        # Spawn new worker via SSH
-        node = worker.node
-        activate = f"source {node.python_env.replace('/python', '/../activate').replace('/python3', '/../activate')}"
-        # Reconstruct activate path robustly
-        activate = f"source {os.path.join(os.path.dirname(node.python_env), 'activate')}"
-
-        rocm_env = ""
-        if node.gpu_type and "6600" in node.gpu_type:
-            rocm_env = (
-                "HSA_OVERRIDE_GFX_VERSION=10.3.0 "
-                "HSA_ENABLE_SDMA=0 "
-            )
-
-        cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o BatchMode=yes "
-            f"{node.username}@{node.hostname} "
-            f"\"cd {node.script_path} && "
-            f"{activate} && "
-            f"{rocm_env}"
-            f"ROCR_VISIBLE_DEVICES={worker.gpu_id} "
-            f"python3 sieve_gpu_worker.py --gpu-id {worker.gpu_id}\""
-        )
-
-        # Stagger worker spawn to prevent parallel HIP init collision on ROCm
-        # Approved pattern: gpu_id * 2.0s (same as script job stagger at line ~1738)
-        if node.gpu_type and "6600" in node.gpu_type:
-            stagger_delay = worker.gpu_id * 2.0
-            if stagger_delay > 0:
-                self.logger.info(f"[S130] Staggering worker {key} by {stagger_delay}s (HIP init protection)")
-                time.sleep(stagger_delay)
-
-        self.logger.info(f"[S130] Spawning persistent worker: {key}")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                shell=True,
-                executable="/bin/bash",
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                bufsize=1  # line-buffered
-            )
-
-            # Wait for ready signal (worker emits {"status": "ready", ...})
-            ready_deadline = time.time() + 30.0  # 30s spawn timeout
-            while time.time() < ready_deadline:
-                if proc.poll() is not None:
-                    stderr_tail = ""
-                    try:
-                        stderr_tail = proc.stderr.read(500)
-                    except Exception:
-                        pass
-                    self.logger.error(f"[S130] Worker {key} died during startup: {stderr_tail}")
-                    return None
-                line = proc.stdout.readline()
-                if not line:
-                    time.sleep(0.05)
-                    continue
-                try:
-                    msg = json.loads(line.strip())
-                    if msg.get("status") == "ready":
-                        self.logger.info(f"[S130] Worker ready: {key} device={msg.get('device','?')}")
-                        self._persistent_worker_registry[key] = proc
-                        return proc
-                except json.JSONDecodeError:
-                    continue  # Skip non-JSON startup noise
-
-            self.logger.error(f"[S130] Worker {key} spawn timed out waiting for ready signal")
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            return None
-
-        except Exception as e:
-            self.logger.error(f"[S130] Worker spawn failed for {key}: {e}")
-            return None
-
-    def _shutdown_all_persistent_workers(self):
-        """Send shutdown command to all live persistent workers and reap processes."""
-        for key, proc in list(self._persistent_worker_registry.items()):
-            if proc.poll() is None:
-                try:
-                    proc.stdin.write(json.dumps({"command": "shutdown"}) + "\n")
-                    proc.stdin.flush()
-                    proc.wait(timeout=5)
-                except Exception:
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
-            self.logger.info(f"[S130] Worker shut down: {key}")
-        self._persistent_worker_registry.clear()
-
-    def execute_persistent_worker_job(self, job: 'JobSpec', worker: 'GPUWorker') -> 'JobResult':
-        """
-        Send a residue_sieve job to a persistent sieve_gpu_worker.py process via stdin/stdout.
-
-        Gate 4 (additive): Only called when use_persistent_workers=True and
-        job.search_type='residue_sieve' and not localhost.
-        Gate 3 (GPU-clean): No CuPy/HIP here. All GPU work is in the worker subprocess.
-        Gate 1 (fault tolerance): Dead worker → requeue via deterministic requeue path.
-        """
-        start_time = time.time()
-        key = (worker.node.hostname, worker.gpu_id)
-
-        # Build job payload (same structure as execute_remote_job residue_sieve branch)
-        seed_start = job.seeds[0] if isinstance(job.seeds, list) and len(job.seeds) == 2 else 0
-        seed_end   = job.seeds[1] if isinstance(job.seeds, list) and len(job.seeds) == 2 else 100000
-
-        job_payload = {
-            "job_id":              job.job_id,
-            "search_type":         "residue_sieve",
-            "dataset_path":        self.current_target_file or "daily3.json",
-            "seed_start":          seed_start,
-            "seed_end":            seed_end,
-            "window_size":         self._sieve_config.get("window_size", self.sieve_defaults.get("window_size", 512)) if hasattr(self, "_sieve_config") else self.sieve_defaults.get("window_size", 512),
-            "min_match_threshold": self._sieve_config.get("min_match_threshold", self.sieve_defaults.get("min_match_threshold", 0.01)) if hasattr(self, "_sieve_config") else self.sieve_defaults.get("min_match_threshold", 0.01),
-            "skip_range":          self._sieve_config.get("skip_range", self.sieve_defaults.get("skip_range", [0, 20])) if hasattr(self, "_sieve_config") else self.sieve_defaults.get("skip_range", [0, 20]),
-            "offset":              self._sieve_config.get("offset", self.sieve_defaults.get("offset", 0)) if hasattr(self, "_sieve_config") else self.sieve_defaults.get("offset", 0),
-            "prng_families":       [job.prng_type] if job.prng_type else self.sieve_defaults.get("prng_families", ["mt19937"]),
-            "sessions":            self._sieve_config.get("sessions", self.sieve_defaults.get("sessions", ["midday", "evening"])) if hasattr(self, "_sieve_config") else self.sieve_defaults.get("sessions", ["midday", "evening"]),
-            "hybrid":              "_hybrid" in (job.prng_type if hasattr(job, "prng_type") else ""),
-            "phase1_threshold":    self._sieve_config.get("phase1_threshold") if hasattr(self, "_sieve_config") else None,
-            "phase2_threshold":    self._sieve_config.get("phase2_threshold") if hasattr(self, "_sieve_config") else None,
-        }
-        ipc_msg = json.dumps({"command": "sieve", "job": job_payload}) + "\n"
-
-        # Get or spawn worker
-        proc = self._get_or_spawn_worker(worker)
-        if proc is None:
-            runtime = time.time() - start_time
-            # Gate 1: spawn failure → fall back to execute_remote_job (deterministic requeue)
-            self.logger.warning(f"[S130] Worker spawn failed for {key}, falling back to SSH path")
-            return self.execute_remote_job(job, worker)
-
-        # Send job
-        try:
-            proc.stdin.write(ipc_msg)
-            proc.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
-            # Gate 1: dead pipe → remove from registry, fall back to SSH path
-            self.logger.warning(f"[S130] Broken pipe writing to {key}: {e}, falling back to SSH")
-            try:
-                del self._persistent_worker_registry[key]
-            except KeyError:
-                pass
-            return self.execute_remote_job(job, worker)
-
-        # Read result line
-        result_deadline = time.time() + self.job_timeout
-        while time.time() < result_deadline:
-            if proc.poll() is not None:
-                # Gate 1: worker died mid-job → fall back
-                self.logger.warning(f"[S130] Worker {key} died mid-job, falling back to SSH")
-                try:
-                    del self._persistent_worker_registry[key]
-                except KeyError:
-                    pass
-                return self.execute_remote_job(job, worker)
-
-            try:
-                line = proc.stdout.readline()
-            except Exception as e:
-                self.logger.warning(f"[S130] Read error from {key}: {e}, falling back")
-                return self.execute_remote_job(job, worker)
-
-            if not line:
-                time.sleep(0.02)
-                continue
-
-            try:
-                msg = json.loads(line.strip())
-            except json.JSONDecodeError:
-                continue  # Skip non-JSON lines (worker stderr noise shouldn't appear here)
-
-            runtime = time.time() - start_time
-
-            if msg.get("status") == "ok":
-                result_data = msg.get("result", {})
-                return JobResult(job.job_id, worker.node.hostname, True, result_data, None, runtime)
-
-            elif msg.get("status") == "error":
-                err = msg.get("error", "unknown error from persistent worker")
-                self.logger.error(f"[S130] Worker {key} job error: {err}")
-                return JobResult(job.job_id, worker.node.hostname, False, None, err, runtime)
-
-        # Timeout
-        runtime = time.time() - start_time
-        self.logger.error(f"[S130] Persistent worker job timed out: {key} job={job.job_id}")
-        return JobResult(job.job_id, worker.node.hostname, False, None,
-                         f"[S130] Persistent worker timed out after {self.job_timeout}s", runtime)
-
     def execute_gpu_job(self, job: JobSpec, worker: GPUWorker) -> JobResult:
         """Execute a single job on a specific GPU worker with connection management"""
         hostname = worker.node.hostname
         acquired_local = False
-
-        # S133-A — Persistent worker path (additive, residue_sieve only, flag-gated)
-        # Throttled via ssh_pool semaphore (max_per_node) — same limit as the
-        # non-persistent remote path. Semaphore covers the entire in-flight job
-        # duration, not worker lifetime. Workers remain alive and HIP-warm between
-        # jobs; only concurrent dispatch is capped. Fixes S130 regression where
-        # unbounded dispatch to slow nodes (e.g. rig-6600c) caused queue eviction
-        # cascades under ROCm. Stagger in _get_or_spawn_worker() intentionally
-        # retained — see S134 for removal decision after soak.
-        if (self.use_persistent_workers
-                and job.search_type == 'residue_sieve'
-                and not self.is_localhost(hostname)):
-            self.ssh_pool.acquire(hostname)
-            try:
-                return self.execute_persistent_worker_job(job, worker)
-            finally:
-                self.ssh_pool.release(hostname)
 
         try:
             # Acquire SSH connection slot for remote jobs
@@ -1662,7 +1410,13 @@ class MultiGPUCoordinator:
                 work_items_by_id[work_item['job_id']] = work_item  # v1.8.1: Track for retries
         else:
             # Original seed-based job creation
-            base_chunk_size = max(19000, total_seeds // 100) # Dynamic chunk sizing
+            # S129B-A: Use seed_cap_amd as base chunk size (measured optimal).
+            # Fallback chain: amd_cap -> nvidia_cap -> original formula.
+            # Zero regression risk: if caps not set, behavior identical to today.
+            _amd_cap    = getattr(self, 'seed_cap_amd', None)
+            _nvidia_cap = getattr(self, 'seed_cap_nvidia', None)
+            _default    = max(19000, total_seeds // 100)
+            base_chunk_size = _amd_cap or _nvidia_cap or _default
             current_seed = 0 # <-- CORRECTED: Start from 0
             job_id = 0
             print(f"Creating work chunks (base size: {base_chunk_size:,})...")
@@ -2903,19 +2657,12 @@ def main():
     parser.add_argument('-o', '--output', help='Output results file')
     parser.add_argument('--test-only', action='store_true', help='Test connectivity only')
     # Job-splitting parameters for memory management based on capacity probe results
-    parser.add_argument('--seed-cap-nvidia', type=int, default=40000,
-                       help='Max seeds per job on NVIDIA GPUs (40K from RTX 3080 Ti probe)')
-    parser.add_argument('--seed-cap-amd', type=int, default=19000,
-                       help='Max seeds per job on AMD GPUs (19K from RX 6600 probe)')
+    parser.add_argument('--seed-cap-nvidia', type=int, default=5000000,
+                       help='Max seeds per job on NVIDIA GPUs (5M from S128 Phase A measurement)')
+    parser.add_argument('--seed-cap-amd', type=int, default=2000000,
+                       help='Max seeds per job on AMD GPUs (2M from S128 Phase C; reduce to 500K after S130 persistent workers)')
     parser.add_argument('--seed-cap-default', type=int, default=19000,
                        help='Max seeds per job for other/unknown GPUs')
-    # S130 — Persistent worker flags
-    parser.add_argument('--use-persistent-workers', action='store_true', default=False,
-                       help='[S130] Use persistent sieve_gpu_worker.py processes instead of '
-                            'per-job subprocess launch. Eliminates per-job ROCm init overhead. '
-                            'Default: False (disabled until soak test passes).')
-    parser.add_argument('--worker-pool-size', type=int, default=8,
-                       help='[S130] Number of persistent worker processes per AMD rig. Default: 8.')
     # System stability parameters
     parser.add_argument('--max-concurrent', type=int, default=26, # <-- INCREASED DEFAULT
                        help='Maximum concurrent jobs across entire cluster')
@@ -3014,9 +2761,7 @@ def main():
             max_per_node=args.max_per_node,
             max_local_concurrent=args.max_local_concurrent,
             job_timeout=args.job_timeout,
-            resume_policy=args.resume_policy,
-            use_persistent_workers=args.use_persistent_workers,  # S130
-            worker_pool_size=args.worker_pool_size,               # S130
+            resume_policy=args.resume_policy, # NEW
         )
 
 
@@ -3052,9 +2797,6 @@ def main():
         try:
             if 'coordinator' in locals():
                 coordinator.ssh_pool.cleanup_all()
-                # S130: shut down any live persistent workers
-                if getattr(coordinator, 'use_persistent_workers', False):
-                    coordinator._shutdown_all_persistent_workers()
         except:
             pass
 if __name__ == "__main__":

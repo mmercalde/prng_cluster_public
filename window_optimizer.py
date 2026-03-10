@@ -523,9 +523,7 @@ def run_bayesian_optimization(
     study_name: str = '',
     enable_pruning: bool = False,     # S115 R3
     n_parallel: int = 1,              # S115 M1
-    trse_context_file: str = 'trse_context.json',  # S121 Step 0 context
-    use_persistent_workers: bool = False,  # S130
-    worker_pool_size: int = 8              # S130
+    trse_context_file: str = 'trse_context.json'  # S121 Step 0 context
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -584,12 +582,7 @@ def run_bayesian_optimization(
 
     # Initialize coordinator
     print("🔧 Initializing 26-GPU coordinator...")
-    coordinator = MultiGPUCoordinator(
-        config_file="distributed_config.json",
-        resume_policy="restart",
-        use_persistent_workers=use_persistent_workers,  # S130
-        worker_pool_size=worker_pool_size                # S130
-    )
+    coordinator = MultiGPUCoordinator(config_file="distributed_config.json", resume_policy="restart")
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -982,13 +975,6 @@ def main():
                        help='[S121] TRSE regime context file (Step 0 output). '
                             'If present and regime stable, narrows Step 1 search bounds. '
                             'Default: trse_context.json. Pass empty string to disable.')
-    parser.add_argument('--use-persistent-workers', action='store_true', default=False,
-                       help='[S130] Use persistent GPU sieve workers (sieve_gpu_worker.py) '
-                            'instead of per-job subprocess launch. Eliminates per-job ROCm '
-                            'init overhead. Default: False (disabled until soak test passes).')
-    parser.add_argument('--worker-pool-size', type=int, default=8,
-                       help='[S130] Number of persistent worker processes per AMD rig '
-                            '(1 per GPU). Default: 8 (full rig). Reduce for debugging.')
 
     args = parser.parse_args()
 
@@ -1009,11 +995,9 @@ def main():
             test_both_modes=args.test_both_modes,
             resume_study=getattr(args, 'resume_study', False),
             study_name=getattr(args, 'study_name', ''),
-            enable_pruning=getattr(args, 'enable_pruning', False),
-            n_parallel=getattr(args, 'n_parallel', 1),
-            trse_context_file=getattr(args, 'trse_context', 'trse_context.json'),
-            use_persistent_workers=getattr(args, 'use_persistent_workers', False),  # S130
-            worker_pool_size=getattr(args, 'worker_pool_size', 8)                   # S130
+            enable_pruning=getattr(args, 'enable_pruning', False),  # S115 wire-up
+            n_parallel=getattr(args, 'n_parallel', 1),              # S115 wire-up
+            trse_context_file=getattr(args, 'trse_context', 'trse_context.json')  # S121
         )
 
         print("\n✅ Bayesian optimization complete!")
