@@ -1410,13 +1410,17 @@ class MultiGPUCoordinator:
                 work_items_by_id[work_item['job_id']] = work_item  # v1.8.1: Track for retries
         else:
             # Original seed-based job creation
-            # S129B-A: Use seed_cap_amd as base chunk size (measured optimal).
-            # Fallback chain: amd_cap -> nvidia_cap -> original formula.
-            # Zero regression risk: if caps not set, behavior identical to today.
+            # S134: Divide total seeds across all active workers so every GPU gets work.
+            # Chunk size = total_seeds / num_workers, capped at seed_cap_amd (OOM ceiling).
+            # Pre-S134 bug: base_chunk_size = seed_cap_amd (2M) → only 3 chunks for 5M seeds
+            # → 23 of 26 GPUs sat idle. Now all GPUs get a slice.
             _amd_cap    = getattr(self, 'seed_cap_amd', None)
             _nvidia_cap = getattr(self, 'seed_cap_nvidia', None)
+            _cap        = _amd_cap or _nvidia_cap or 2000000
             _default    = max(19000, total_seeds // 100)
-            base_chunk_size = _amd_cap or _nvidia_cap or _default
+            _num_workers = max(1, len(self.gpu_workers)) if self.gpu_workers else 26
+            _ideal_chunk = max(1, total_seeds // _num_workers)
+            base_chunk_size = min(_ideal_chunk, _cap)
             current_seed = 0 # <-- CORRECTED: Start from 0
             job_id = 0
             print(f"Creating work chunks (base size: {base_chunk_size:,})...")
@@ -2661,7 +2665,7 @@ def main():
                        help='Max seeds per job on NVIDIA GPUs (5M from S128 Phase A measurement)')
     parser.add_argument('--seed-cap-amd', type=int, default=2000000,
                        help='Max seeds per job on AMD GPUs (2M from S128 Phase C; reduce to 500K after S130 persistent workers)')
-    parser.add_argument('--seed-cap-default', type=int, default=19000,
+    parser.add_argument('--seed-cap-default', type=int, default=2000000,
                        help='Max seeds per job for other/unknown GPUs')
     # System stability parameters
     parser.add_argument('--max-concurrent', type=int, default=26, # <-- INCREASED DEFAULT
