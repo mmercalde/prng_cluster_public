@@ -730,3 +730,91 @@ sed -i 's/"chunk_size": [0-9]*/"chunk_size": 1000/' agent_manifests/full_scoring
 sed -i 's/^CHUNK_SIZE=.*/CHUNK_SIZE=1000/' run_step3_full_scoring.sh
 ```
 
+
+---
+
+## Persistent Worker Engine (S130/S134/S135)
+
+**Module:** `persistent_worker_coordinator.py` -- 855-line STANDALONE module.
+**Key invariant:** Zero changes to `coordinator.py`. Drop-in parallel path activated by
+`--use-persistent-workers` flag on `window_optimizer.py`.
+
+WATCHER passes flag via manifest -> `window_optimizer_integration_final.py`
+-> `run_trial_persistent()` shim -> `PersistentWorkerCoordinator` class.
+
+### Call Chain
+
+```
+watcher_agent.py
+  -> window_optimizer_integration_final.py  (use_persistent_workers=True)
+    -> run_trial_persistent()  (shim at persistent_worker_coordinator.py:669)
+      -> PersistentWorkerCoordinator.run_sieve_pass()
+            Zeus path:   execute_local_sieve_job()  -> sieve_filter.py subprocess
+            Remote path: _dispatch_to_worker()      -> sieve_gpu_worker.py --persistent
+```
+
+### IPC Protocol (verified against live sieve_gpu_worker.py)
+
+| Direction | Message |
+|-----------|---------|
+| Worker -> Coordinator (startup) | {"status":"ready","gpu_id":N,"device":"..."} |
+| Coordinator -> Worker (job) | {"command":"sieve","job":{...}} |
+| Worker -> Coordinator (success) | {"status":"ok","job_id":"...","elapsed_s":N,"result":{...}} |
+| Worker -> Coordinator (error) | {"status":"error","job_id":"...","error":"...","traceback":"..."} |
+| Coordinator -> Worker (shutdown) | {"command":"shutdown"} |
+
+### Worker Pool
+
+- 24 AMD workers (8/rig x 3 rigs); Zeus uses local path (no persistent worker needed)
+- Spawn stagger: 4.0s per gpu_id (ROCm stability, avoids HIP init storm)
+- Pool size cap: worker_pool_size (manifest default 8; stable at 4 vs memory pressure)
+- SSH banner drain: -q flag + drain loop reads until line contains "status" and "ready" (Bug 8, S135)
+- Dispatch lock: threading.Lock per WorkerHandle -- prevents concurrent chunk collision (Bug 9, S135)
+
+### ROCm Stability Env Vars
+
+HSA_OVERRIDE_GFX_VERSION=10.3.0  (correct GFX version for RX 6600)
+HSA_ENABLE_SDMA=0                (reduce HIP init crashes)
+
+### Fault Tolerance (Gate 1, validated S131)
+
+Three fallback paths -> execute_remote_job: spawn failure, broken pipe, worker death mid-job.
+Empty-readline dead-pipe: proc.poll() check fires within 20ms.
+
+### Throughput
+
+| Mode | Aggregate sps |
+|------|--------------|
+| Subprocess baseline (S128) | 849,469 |
+| Persistent workers (S130) | 2,082,140 (+150%) |
+
+---
+
+## GPU Throughput -- Corrected Values (S129B-A)
+
+Early-probing values caused chunk size miscalculation (chunks sized at 19k-40k seeds):
+
+| GPU | Before (stale) | After (corrected) |
+|-----|----------------|-------------------|
+| RTX 3080 Ti sps | 29,000 | 2,210,000 |
+| RX 6600 sps | 5,000 | 787,950 |
+
+---
+
+## Seed Caps -- Validated Operating Points (S129B-A / S131)
+
+| File | Parameter | Value |
+|------|-----------|-------|
+| coordinator.py CLI | --seed-cap-nvidia | 5,000,000 |
+| coordinator.py CLI | --seed-cap-amd | 2,000,000 |
+| coordinator.py constructor default | seed_cap_nvidia | 5,000,000 |
+| coordinator.py constructor default | seed_cap_amd | 2,000,000 |
+| window_optimizer_integration_final.py | 2 instantiation sites | explicit (S131) |
+| agent_manifests/window_optimizer.json | seed_cap_nvidia/amd | declared v1.5.0 (S131) |
+
+---
+
+## rig-6600c Throughput Note
+
+rig-6600c (192.168.3.162) has an i5-8400T CPU -- ~50% throughput deficit vs other rigs.
+Hardware limitation. Consider per-node seed budget or partition exclusion in future.

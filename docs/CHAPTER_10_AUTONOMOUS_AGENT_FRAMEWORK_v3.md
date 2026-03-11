@@ -546,3 +546,41 @@ See `docs/THRESHOLD_GOVERNANCE.md` for full governance model.
 ---
 
 **END OF CHAPTER 10**
+
+---
+
+## Step 0 Integration: TRSE (S121/S122)
+
+**Module:** `trse_step0.py` v1.15.1
+**Invariant:** skip_on_fail=True -- TRSE failure NEVER halts pipeline.
+
+### confirmed_windows Feedback Loop
+
+After Step 1 produces survivors, their window configs are written back to
+`trse_context.json` as `confirmed_windows`. TRSE uses these on subsequent runs
+to bias regime boundary detection.
+
+### regime_type Fix (v1.15.1, S122)
+
+Previous versions used absolute normalization causing `regime_type=unknown` on most
+segments. v1.15.1 switched to relative normalization -- regime classification functional.
+
+### Pydantic ge=1 -> ge=0 Fix (S122)
+
+Five agent files had `step: int = Field(ge=1)` which rejected step=0 dispatch.
+All five fixed to `ge=0` so TRSE can be dispatched through WATCHER.
+
+### Survivor Threshold (S122)
+
+WATCHER validation threshold lowered from >=100 to >=50 survivors to prevent
+false ESCALATE with real data on Steps 1 and 3.
+
+### WATCHER CLI with TRSE
+
+```bash
+PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline \
+  --start-step 0 --end-step 6 \
+  --params '{"lottery_file":"daily3.json","trials":200,
+             "resume_study":true,"study_name":"window_opt_1772507547",
+             "trse_context":"trse_context.json"}'
+```

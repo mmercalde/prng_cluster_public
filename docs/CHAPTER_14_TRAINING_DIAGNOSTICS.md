@@ -3157,3 +3157,43 @@ outcome: SUCCESS ✅
 
 ### Commit
 `f391786` - fix(step5): honor subprocess-trained checkpoints when writing sidecar
+
+---
+
+## ML Target Update: holdout_quality (S111)
+
+### Problem
+
+holdout_hits as ML target produced R2=0.000155 on real CA Daily 3 data -- zero signal.
+
+### Fix (S111)
+
+holdout_quality (composite score) replaced holdout_hits.
+CatBoost R2 immediately rose to +0.0046 on clean real data baseline.
+
+### NN Y-Normalization Fix (S121)
+
+train_single_trial.py line 499: added y_mean/y_std normalization with sidecar .json
+for Step 6 inverse-transform. First positive NN R2: +0.020538.
+
+### Feature Signal on Real Data (CatBoost)
+
+| Feature Group | Importance | Notes |
+|---------------|-----------|-------|
+| mod-8 residue | ~32% | LCG low-bit algebraic structure |
+| Prediction residuals | ~20% | pred_std, residual_abs_mean |
+| mod-125 | <10% | |
+| mod-1000 | <10% | |
+| 24/62 base features | 0% | Battery Tier 1A added to address gap |
+
+### Battery Tier 1A (S113) -- 23 columns added
+
+F1 Spectral FFT (5): batt_fft_peak_mag, batt_fft_secondary_peak, batt_fft_spectral_conc,
+  batt_fft_diff_peak, batt_fft_diff_conc
+F5 Autocorrelation (12): batt_ac_lag_01..10, batt_ac_decay_rate, batt_ac_sig_lag_count
+F7 Cumulative Sum (3): batt_cs_max_excursion, batt_cs_mean_excursion, batt_cs_zero_crossings
+F6 Bit Frequency (3): batt_bf_hamming_mean, batt_bf_hamming_std, batt_bf_popcount_bias
+
+### Z10xZ10xZ10 Digit Transition Features (S119) -- 4 columns
+
+Full utilization requires Z10xZ10xZ10 kernel in sieve_gpu_worker.py -- TB proposal needed first.

@@ -782,3 +782,35 @@ request_selfplay()
 - **Selfplay cannot self-dispatch** — Must go through WATCHER
 - **Requests are append-only** — Audit trail preserved
 - **Cooldown enforced** — Prevent selfplay storms
+
+---
+
+## S114-S131 CLI Parameter Additions
+
+| Parameter | Added | Notes |
+|-----------|-------|-------|
+| --node-allowlist | S115 | Restrict trial execution to named nodes |
+| --enable-pruning | S116/S118 | Enable Optuna MedianPruner |
+| --n-parallel | S116/S118 | Parallel Optuna workers |
+| --use-persistent-workers | S130 | Activate persistent_worker_coordinator.py engine |
+| --worker-pool-size | S130 | Workers per rig (default: 8; stable at 4) |
+| --seed-cap-nvidia | S131 | Seed cap for RTX GPUs (default: 5,000,000) |
+| --seed-cap-amd | S131 | Seed cap for AMD GPUs (default: 2,000,000) |
+| --trse-context | S122 | Path to trse_context.json |
+
+### Manifest v1.5.0 (S131)
+
+agent_manifests/window_optimizer.json bumped to v1.5.0.
+seed_cap_nvidia and seed_cap_amd added to default_params.
+Invariant: all new CLI params MUST appear in manifest default_params.
+
+### args_map Fix (S123)
+
+watcher_agent.py rebuilt from commit e184a8c. args_map in manifest was missing
+4 keys introduced in S116/S118. All gaps closed; full 0->6 smoke test passed
+(commits 7a6a63c, 888cf3e, 478ff74).
+
+### Timeout Overrides (S131)
+
+Per-step timeout configurable via manifest actions[N].timeout_seconds.
+Step 1 default: 14400s (4 hours) for 200-trial persistent-worker runs.

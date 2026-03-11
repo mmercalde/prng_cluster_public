@@ -1,8 +1,8 @@
 # COMPLETE OPERATING GUIDE
 ## Distributed PRNG Analysis System
-**Version 2.1.0**  
+**Version 2.2.0**  
 **February 2026**  
-**Updated: Session 109 (Feb 23, 2026)**
+**Updated: Session 135 (Mar 10, 2026)**
 
 ### 26-GPU Cluster Architecture
 Zeus (2× RTX 3080 Ti) + rig-6600 (8× RX 6600) + rig-6600b (8× RX 6600) + rig-6600c (8× RX 6600)  
@@ -52,6 +52,9 @@ The Distributed PRNG Analysis System is a sophisticated GPU-accelerated platform
 | Inner Episode Trainer | inner_episode_trainer.py | v1.1.0 multi-model k-fold training with diagnostics capture |
 | WATCHER Dispatch | agents/watcher_dispatch.py | Selfplay/learning loop dispatch with LLM lifecycle |
 | Strategy Advisor | parameter_advisor.py | LLM-guided parameter recommendations |
+| Persistent Worker Engine | persistent_worker_coordinator.py | STANDALONE parallel sieve engine -- activated by --use-persistent-workers flag; zero changes to coordinator.py (S130/S134/S135) |
+| TRSE Engine | trse_step0.py | Temporal Regime Segmentation, skip_on_fail (S121/S122) |
+| Holdout Quality | holdout_quality.py | Composite holdout score -- replaces holdout_hits (S111) |
 | Bundle Factory | agents/contexts/bundle_factory.py | Unified LLM context assembly (7 bundle types) |
 
 ## 1.2 Hardware Configuration
@@ -61,13 +64,35 @@ The Distributed PRNG Analysis System is a sophisticated GPU-accelerated platform
 | Zeus (localhost) | RTX 3080 Ti (12GB) | 2 | CUDA / PyTorch |
 | rig-6600 | RX 6600 (8GB) | 8 | ROCm / HIP |
 | rig-6600b | RX 6600 (8GB) | 8 | ROCm / HIP |
-
 | rig-6600c | RX 6600 (8GB) | 8 | ROCm / HIP |
 
 **Network:** All nodes connected via SSH with key-based authentication.  
 **IP Addresses:** rig-6600 (192.168.3.120), rig-6600b (192.168.3.154), rig-6600c (192.168.3.162)  
 **GPU Stability:** udev rule (perf=high auto-set), GFXOFF disabled via kernel parameter  
+**rig-6600c note:** i5-8400T CPU causes ~50% throughput deficit vs other rigs -- hardware limitation  
+**Zeus GPU compute mode:** DEFAULT (enforced via /etc/rc.local, S125b -- EXCLUSIVE_PROCESS breaks n_parallel>1)  
+**Fan service:** rocm-fan-curve.service DISABLED on all rigs  
 **SSH Alias:** `rzeus` (from ser8 to Zeus)
+
+### Seed Caps -- Validated Operating Points (S131)
+
+| GPU | CLI Flag | Value |
+|-----|----------|-------|
+| RTX 3080 Ti (Zeus) | `--seed-cap-nvidia` | 5,000,000 seeds/pass |
+| RX 6600 (rigs) | `--seed-cap-amd` | 2,000,000 seeds/pass |
+
+Worker pool size: 4 workers/rig (validated against memory pressure, S134/S135)
+
+### GPU Throughput -- Corrected Values (S129B-A)
+
+| GPU | Measured sps | Old stale value |
+|-----|-------------|-----------------|
+| RTX 3080 Ti | 2,210,000 | 29,000 |
+| RX 6600 | 787,950 | 5,000 |
+
+Aggregate throughput:
+- Subprocess mode baseline (S128): 849,469 sps
+- Persistent workers active (S130): 2,082,140 sps (+150%)
 
 ## 1.3 Software Dependencies
 
@@ -97,11 +122,22 @@ Each stage can run distributed across all 26 GPUs with automatic fault tolerance
 
 The complete prediction pipeline consists of 6 major steps, each building on the previous results.
 
-## 2.0 Step 0: PRNG Fingerprinting — ARCHIVED
+## 2.0 Step 0: Temporal Regime Segmentation Engine (TRSE) -- NEW S122 — ARCHIVED
 
-**Status:** ARCHIVED (Session 17)
+**Status:** ACTIVE (skip_on_fail -- failures never halt pipeline)
 
-**Original Purpose:** Classify unknown PRNGs by comparing behavioral fingerprints against a library of known PRNGs.
+**Module:** `trse_step0.py` v1.15.1
+
+**Purpose:** Segment draw history into temporal regimes before window optimization. Produces `trse_context.json` consumed by Step 1.
+
+**Key behavior:**
+- `skip_on_fail=True` -- TRSE failure logs a warning and pipeline continues to Step 1
+- Regime detection uses relative normalization (v1.15.1 fix S122 -- eliminates `regime_type=unknown`)
+- Outputs `confirmed_windows` back to `trse_context.json` after Step 1 produces survivors
+
+**Note (archived):** Session 17 mod1000 fingerprinting investigation superseded.
+Bidirectional sieve is the correct PRNG discriminator.
+
 
 **Investigation Results:**
 - Tested 52 mod1000-specific features, 30 curated features, 64 original features
@@ -184,7 +220,7 @@ Workers do NOT access the Optuna database directly. Instead, they write JSON res
 
 > **Updated (Session 80):** Step 3 now uses `run_step3_full_scoring.sh` v2.0.0 (scripts_coordinator.py compliant, supersedes old `run_full_scoring.sh`). NPZ v3.0 format preserves all 22 metadata fields through `convert_survivors_to_binary.py` v3.0.
 
-**Purpose:** Apply the optimal scorer configuration to ALL survivors from Step 1, extracting 64 ML features per seed (50 per-seed + 14 global) for downstream model training.
+**Purpose:** Apply the optimal scorer configuration to ALL survivors from Step 1, extracting **91 features per survivor** (89 training -- excludes score + confidence) for downstream model training.
 
 **Primary Scripts:**
 - `generate_full_scoring_jobs.py`: Creates chunked jobs (1000 survivors/job)
@@ -194,7 +230,7 @@ Workers do NOT access the Optuna database directly. Instead, they write JSON res
 
 ### Feature Architecture (Updated Session 17)
 ```
-Total Features: 64 (62 for training after excluding score, confidence)
+Total Features: 91 (89 for training after excluding score, confidence)
 ├── Per-seed features: 50 (from survivor_scorer.py)
 │   ├── Residue features: 12
 │   ├── Temporal features: 20
@@ -836,6 +872,44 @@ Training diagnostics monitor model health during Step 5 execution, detecting iss
 | Selfplay Diagnostics | Phase 8A: eval_set + trend detection | ✅ Complete (S83) |
 | Episode Trend Detection | `_check_episode_training_trend()` | ✅ Complete (S83) |
 
+### ML Results Summary -- Real Data (S111-S121)
+
+```
+Dataset:      18,068 CA Daily 3 draws (2000-2026)
+ML target:    holdout_quality (composite, S111) -- replaced holdout_hits (R2=0.000155)
+Best model:   CatBoost (consistently top on tabular survivor data)
+Best R2:      +0.0046 (S111 clean baseline)
+NN R2:        +0.020538 (first positive, after y-normalization fix S121)
+Best run:     17,247 bidirectional survivors (200-trial, pre-S110)
+Optuna study: window_opt_1772507547.db (21 trials, resume target)
+
+Feature signal (CatBoost on real data):
+  ~32%  mod-8 residue features  -- LCG low-bit algebraic structure
+  ~20%  prediction residuals    -- pred_std, residual_abs_mean
+  <10%  mod-125 features
+  <10%  mod-1000 features
+   24/62 base features: zero importance -- Battery Tier 1A (S113) added to address gap
+```
+
+### ML Results Summary -- Real Data (S111-S121)
+
+```
+Dataset:      18,068 CA Daily 3 draws (2000-2026)
+ML target:    holdout_quality (composite, S111) -- replaced holdout_hits (R2=0.000155)
+Best model:   CatBoost (consistently top on tabular survivor data)
+Best R2:      +0.0046 (S111 clean baseline)
+NN R2:        +0.020538 (first positive, after y-normalization fix S121)
+Best run:     17,247 bidirectional survivors (200-trial, pre-S110)
+Optuna study: window_opt_1772507547.db (21 trials, resume target)
+
+Feature signal (CatBoost on real data):
+  ~32%  mod-8 residue features  -- LCG low-bit algebraic structure
+  ~20%  prediction residuals    -- pred_std, residual_abs_mean
+  <10%  mod-125 features
+  <10%  mod-1000 features
+   24/62 base features: zero importance -- Battery Tier 1A (S113) added to address gap
+```
+
 ---
 
 # PART 9: WATCHER AGENT & DAEMON
@@ -847,7 +921,19 @@ The WATCHER agent (`agents/watcher_agent.py`, v2.0.0, ~2,800 lines) is the auton
 ### CLI Commands
 
 ```bash
-# Run pipeline manually
+# Full 0->6 run (standard)
+PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline --start-step 0 --end-step 6 \
+  --params '{"lottery_file":"daily3.json","trials":200,"resume_study":true,
+             "study_name":"window_opt_1772507547"}'
+
+# With persistent workers (window_optimizer direct)
+PYTHONPATH=. python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian \
+  --max-seeds 5000000 --prng-type java_lcg --trials 200 \
+  --use-persistent-workers --worker-pool-size 4 \
+  --resume-study --study-name window_opt_1772507547 \
+  --trse-context trse_context.json --enable-pruning --n-parallel 2
+
+# Run pipeline manually (partial)
 PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline --start-step 3 --end-step 6
 
 # Start daemon (persistent, polls for approvals)

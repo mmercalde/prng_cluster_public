@@ -1021,3 +1021,38 @@ optimal_config = inject_agent_metadata(
 ---
 
 *End of Chapter 1: Window Optimizer*
+
+---
+
+## Persistent Worker Call Chain (S130/S134/S135)
+
+When --use-persistent-workers is set, window_optimizer_integration_final.py routes
+through the run_trial_persistent() shim in persistent_worker_coordinator.py:669
+instead of the standard coordinator path.
+
+Call chain:
+```
+watcher_agent.py
+  -> window_optimizer_integration_final.py  (use_persistent_workers=True)
+    -> run_trial_persistent()  (persistent_worker_coordinator.py:669)
+      -> PersistentWorkerCoordinator
+            Zeus:    execute_local_sieve_job()  -> sieve_filter.py
+            Remote:  _dispatch_to_worker()      -> sieve_gpu_worker.py --persistent
+```
+
+Invariant: persistent_worker_coordinator.py is STANDALONE.
+Zero changes to coordinator.py, window_optimizer.py, or window_optimizer_integration_final.py.
+The default subprocess path is completely untouched -- --use-persistent-workers is additive only.
+
+### Optuna Resume
+
+Active study: window_opt_1772507547.db (21 trials as of S132).
+Flag: --resume-study --study-name window_opt_1772507547
+Storage: JournalStorage (not SQLite). Trial-unique output paths prevent cross-trial collisions.
+
+### enable_pruning / n_parallel Fix History (S116/S118/S123)
+
+Both flags required fixes through the full call chain:
+- CLI -> run_bayesian_optimization() signature (S116)
+- -> optimize_window() signature -- enable_pruning was missing (S118)
+- -> agent_manifests/window_optimizer.json args_map -- 4 keys missing (S123)
