@@ -2,7 +2,7 @@
   "agent_name": "window_optimizer_agent",
   "description": "Step 1: Bayesian window optimization using Optuna TPE. Runs real forward/reverse sieves across 26 GPUs to find optimal window_size, offset, and skip_range parameters.",
   "pipeline_step": 1,
-  "version": "1.5.0",
+  "version": "1.7.0",
   "required_inputs": [
     "daily3.json"
   ],

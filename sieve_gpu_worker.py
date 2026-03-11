@@ -209,9 +209,64 @@ def run_sieve_job(job: dict) -> dict:
                 kernel_args += [cp.uint32(default_params.get("a", 1664525)),
                                 cp.uint32(default_params.get("c", 1013904223)),
                                 cp.uint32(default_params.get("m", 0xFFFFFFFF))]
-            elif family_name == 'java_lcg':
+            elif family_name in ('java_lcg', 'java_lcg_reverse'):
+                # NOTE: hybrid variants handled separately below — do NOT add them here.
+                # S133-B: hybrid kernel has completely different signature/buffers.
                 kernel_args += [cp.uint64(default_params.get("a", 25214903917)),
                                 cp.uint64(default_params.get("c", 11))]
+            elif family_name in ('java_lcg_hybrid', 'java_lcg_hybrid_reverse'):
+                # S134: Hybrid kernel — different buffer layout from constant-skip.
+                # Ported from sieve_filter.py run_hybrid_sieve().
+                strategies_data = job.get('strategies') or []
+                if not strategies_data:
+                    try:
+                        from hybrid_strategy import get_all_strategies
+                        strategies_data = [
+                            {"max_consecutive_misses": s.max_consecutive_misses,
+                             "skip_tolerance": s.skip_tolerance}
+                            if not isinstance(s, dict) else s
+                            for s in get_all_strategies()
+                        ]
+                    except ImportError:
+                        strategies_data = [{"max_consecutive_misses": 3, "skip_tolerance": 5}]
+                n_strategies        = len(strategies_data)
+                strategy_max_misses = cp.array([s["max_consecutive_misses"] for s in strategies_data], dtype=cp.int32)
+                strategy_tolerances = cp.array([s["skip_tolerance"]         for s in strategies_data], dtype=cp.int32)
+                strategy_ids_gpu    = cp.zeros(n_seeds,     dtype=cp.uint32)
+                skip_sequences_gpu  = cp.zeros(n_seeds * k, dtype=cp.uint32)
+                # Rebuild kernel_args from scratch — hybrid signature is different
+                kernel_args = [
+                    seeds_gpu, residues_gpu, survivors_gpu,
+                    match_rates_gpu, skip_sequences_gpu, strategy_ids_gpu,
+                    survivor_count_gpu, cp.int32(n_seeds), cp.int32(k),
+                    strategy_max_misses, strategy_tolerances, cp.int32(n_strategies),
+                    cp.float32(threshold),
+                    cp.uint64(default_params.get("a", 25214903917)),
+                    cp.uint64(default_params.get("c", 11)),
+                ]
+                kernel((blocks,), (threads,), tuple(kernel_args))
+                count = int(survivor_count_gpu[0].get())
+                if count > 0:
+                    s_arr   = survivors_gpu[:count].get().tolist()
+                    r_arr   = match_rates_gpu[:count].get().tolist()
+                    sid_arr = strategy_ids_gpu[:count].get().tolist()
+                    ss_raw  = skip_sequences_gpu[:count * k].get().reshape(count, k).tolist()
+                    for seed, rate, sid, ss in zip(s_arr, r_arr, sid_arr, ss_raw):
+                        if rate >= threshold:
+                            survivors_out.append({
+                                'seed': int(seed), 'family': family_name,
+                                'match_rate': float(rate),
+                                'matches': int(rate * k), 'total': k,
+                                'strategy_id': int(sid), 'skip_sequence': ss,
+                            })
+                duration_ms = (time.time() - t0) * 1000
+                per_family.append({
+                    'family': family_name, 'tested': n_seeds,
+                    'found': len(survivors_out), 'duration_ms': round(duration_ms, 2),
+                    'seeds_per_sec': int(n_seeds / (duration_ms/1000)) if duration_ms > 0 else 0
+                })
+                all_survivors.extend(survivors_out)
+                continue  # skip generic kernel launch + append below
             elif family_name == 'minstd':
                 kernel_args += [cp.uint32(default_params.get("a", 48271)),
                                 cp.uint32(default_params.get("m", 2147483647))]
@@ -331,6 +386,8 @@ def run_worker(gpu_id: int):
 def main():
     parser = argparse.ArgumentParser(description='Persistent GPU Sieve Worker (S129B)')
     parser.add_argument('--gpu-id', type=int, default=0, help='Logical GPU id (for logging)')
+    parser.add_argument('--persistent', action='store_true', default=False,
+                        help='[S134] Persistent worker mode — stay alive for multiple jobs via stdin/stdout IPC')
     args = parser.parse_args()
 
     # Graceful SIGTERM handler
