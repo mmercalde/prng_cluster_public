@@ -84,7 +84,23 @@ def convert_json_to_npz(input_file: str, output_file: str, meta_file: str) -> di
     trial_number = np.array([s.get('trial_number', 0) for s in survivors], dtype=np.int32)
     skip_min = np.array([s.get('skip_min', 0) for s in survivors], dtype=np.int32)
     skip_max = np.array([s.get('skip_max', 0) for s in survivors], dtype=np.int32)
-    skip_range = np.array([s.get('skip_range', 0) for s in survivors], dtype=np.int32)
+    def _parse_skip_range(val):
+        """Handle skip_range as int, list, or 'min-max' string."""
+        if isinstance(val, int):
+            return val
+        if isinstance(val, (list, tuple)) and len(val) == 2:
+            return int(val[1]) - int(val[0])
+        if isinstance(val, str) and '-' in val:
+            parts = val.split('-')
+            try:
+                return int(parts[1]) - int(parts[0])
+            except (ValueError, IndexError):
+                return 0
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return 0
+    skip_range = np.array([_parse_skip_range(s.get('skip_range', 0)) for s in survivors], dtype=np.int32)
 
     # Trial-level context (retained for reference)
     forward_count = np.array([s.get('forward_count', 0.0) for s in survivors], dtype=np.float32)

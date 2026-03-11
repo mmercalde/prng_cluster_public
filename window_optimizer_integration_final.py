@@ -47,6 +47,17 @@ from typing import Dict, Any, List, Tuple
 import json
 from window_optimizer import WindowConfig, TestResult
 
+# S134: Lazy imports for persistent worker path — only loaded when flag is set
+try:
+    from sieve_filter import load_draws_from_daily3
+except ImportError:
+    load_draws_from_daily3 = None  # will be imported inside _get_residues_for_config fallback
+
+try:
+    from persistent_worker_coordinator import run_trial_persistent
+except ImportError:
+    run_trial_persistent = None  # only needed when --use-persistent-workers is set
+
 
 def extract_survivor_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -99,6 +110,102 @@ def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
     return [r['seed'] for r in extract_survivor_records(result)]
 
 
+# ============================================================================
+# S134: PERSISTENT WORKER HELPERS
+# These are only called when use_persistent_workers=True.
+# The original run_bidirectional_test path never calls these.
+# ============================================================================
+
+def _get_residues_for_config(config, dataset_path: str):
+    """
+    Load draw residues from dataset file for the given window config.
+    Mirrors what sieve_filter.py does internally via load_draws_from_daily3().
+    """
+    if load_draws_from_daily3 is not None:
+        return load_draws_from_daily3(
+            path        = dataset_path,
+            window_size = config.window_size,
+            offset      = config.offset,
+        )
+    # Fallback: load manually
+    import json as _json
+    with open(dataset_path) as f:
+        data = _json.load(f)
+    draws = data if isinstance(data, list) else data.get("draws", [])
+    n = len(draws)
+    start = max(0, min(int(config.offset), n - config.window_size))
+    end   = start + config.window_size
+    window = draws[start:end]
+    return [int(e.get("full_state", e["draw"])) if isinstance(e, dict) else int(e)
+            for e in window]
+
+
+def _build_test_result_from_pw(pw_result: dict, accumulator, config,
+                                prng_base: str, trial_number: int,
+                                optuna_trial=None):
+    """
+    Convert run_trial_persistent() output into a TestResult and update accumulator.
+    Mirrors the accumulator logic in the original run_bidirectional_test path.
+    """
+    from window_optimizer import TestResult
+
+    bidi_constant = pw_result.get("bidirectional_constant", set())
+    bidi_variable = pw_result.get("bidirectional_variable", set())
+    fwd_map       = pw_result.get("forward_map", {})
+    rev_map       = pw_result.get("reverse_map", {})
+    fwd_records   = pw_result.get("forward_records", [])
+    rev_records   = pw_result.get("reverse_records", [])
+    fwd_h_records = pw_result.get("forward_records_hybrid", [])
+    rev_h_records = pw_result.get("reverse_records_hybrid", [])
+
+    total_bidi = len(bidi_constant) + len(bidi_variable)
+
+    # Update accumulator (same logic as original path)
+    if accumulator is not None:
+        for seed in bidi_constant | bidi_variable:
+            fmr = fwd_map.get(seed, 0.0)
+            rmr = rev_map.get(seed, 0.0)
+            is_var = seed in bidi_variable
+            _union = set(fwd_map.keys()) | set(rev_map.keys())
+            accumulator['bidirectional'].append({
+                'seed':                    seed,
+                'forward_match_rate':      fmr,
+                'reverse_match_rate':      rmr,
+                'score':                   (fmr + rmr) / 2,
+                'window_size':             config.window_size,
+                'offset':                  config.offset,
+                'skip_min':                config.skip_min,
+                'skip_max':                config.skip_max,
+                'trial_number':            trial_number,
+                'prng_type':               prng_base + ("_hybrid" if is_var else ""),
+                'prng_base':               prng_base,
+                'skip_mode':               "variable" if is_var else "constant",
+                'forward_count':           len(fwd_map),
+                'reverse_count':           len(rev_map),
+                'bidirectional_count':     total_bidi,
+                'forward_only_count':      len(set(fwd_map.keys()) - set(rev_map.keys())),
+                'reverse_only_count':      len(set(rev_map.keys()) - set(fwd_map.keys())),
+                'intersection_count':      len(bidi_constant),
+                'intersection_ratio':      len(bidi_constant) / max(len(_union), 1),
+                'survivor_overlap_ratio':  len(bidi_constant) / max(len(fwd_map), 1),
+                'intersection_weight':     len(bidi_constant) / max(len(fwd_map) + len(rev_map), 1),
+                'sessions':                getattr(config, 'sessions', 'all'),
+                'skip_range':              f"{config.skip_min}-{config.skip_max}",
+                'forward_match_rate':      fmr,
+                'reverse_match_rate':      rmr,
+            })
+        accumulator['forward'].extend(fwd_records + fwd_h_records)
+        accumulator['reverse'].extend(rev_records + rev_h_records)
+
+    return TestResult(
+        config             = config,
+        forward_count      = len(fwd_map),
+        reverse_count      = len(rev_map),
+        bidirectional_count= total_bidi,
+        iteration          = trial_number,
+    )
+
+
 def run_bidirectional_test(coordinator,
                            config: WindowConfig,
                            dataset_path: str,
@@ -120,6 +227,46 @@ def run_bidirectional_test(coordinator,
 
     NEW IN V2.0: Optionally tests BOTH constant and variable skip patterns.
     """
+
+    # ========================================================================
+    # S134: PERSISTENT WORKER PATH — activated by use_persistent_workers=True
+    # Zero changes to the original path below. This is a purely additive gate.
+    # WATCHER compatible — transparent, same output files produced.
+    # ========================================================================
+    _use_pw = getattr(coordinator, 'use_persistent_workers', False)
+    if _use_pw:
+        if run_trial_persistent is None:
+            raise ImportError("persistent_worker_coordinator.py not found — cannot use --use-persistent-workers")
+        _pw_result = run_trial_persistent(
+            coordinator_cfg   = getattr(coordinator, 'config_file', 'distributed_config.json'),
+            config            = config,
+            trial_number      = trial_number,
+            prng_base         = prng_base,
+            residues          = _get_residues_for_config(config, dataset_path),
+            total_seeds       = seed_count,
+            forward_threshold = forward_threshold,
+            reverse_threshold = reverse_threshold,
+            test_both_modes   = test_both_modes,
+            dataset_path      = dataset_path,
+            worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
+            seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
+            seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+        )
+        if _pw_result.get("pruned"):
+            # Return minimal pruned TestResult — only fields TestResult accepts
+            return TestResult(
+                config              = config,
+                forward_count       = 0,
+                reverse_count       = 0,
+                bidirectional_count = 0,
+                iteration           = trial_number,
+            )
+        # Build TestResult from persistent worker result
+        return _build_test_result_from_pw(_pw_result, accumulator, config,
+                                          prng_base, trial_number, optuna_trial)
+    # ========================================================================
+    # END PERSISTENT WORKER PATH — original path continues unchanged below
+    # ========================================================================
 
     # ========================================================================
     # HELPER: Args Class for Coordinator
