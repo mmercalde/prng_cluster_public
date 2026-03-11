@@ -526,6 +526,8 @@ def run_bayesian_optimization(
     trse_context_file: str = 'trse_context.json',  # S121 Step 0 context
     use_persistent_workers: bool = False,   # S134
     worker_pool_size: int = 8,             # S134
+    seed_cap_nvidia: int = 5_000_000,      # S137
+    seed_cap_amd: int = 2_000_000,         # S137
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -591,6 +593,9 @@ def run_bayesian_optimization(
     coordinator.worker_pool_size        = worker_pool_size
     if use_persistent_workers:
         print(f"   [S134] Persistent worker mode ENABLED (pool_size={worker_pool_size} per rig)")
+    # S137: wire seed cap flags onto coordinator so integration final can read them
+    coordinator.seed_cap_nvidia = seed_cap_nvidia
+    coordinator.seed_cap_amd    = seed_cap_amd
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -988,6 +993,10 @@ def main():
                             'Workers stay alive across all 4 sieve passes per trial.')
     parser.add_argument('--worker-pool-size', type=int, default=8,
                        help='[S134] Number of persistent workers to spawn per rig (default: 8).')
+    parser.add_argument('--seed-cap-nvidia', type=int, default=5_000_000,
+                       help='[S137] Max seeds per job chunk for NVIDIA GPUs (default: 5000000).')
+    parser.add_argument('--seed-cap-amd', type=int, default=2_000_000,
+                       help='[S137] Max seeds per job chunk for AMD GPUs (default: 2000000).')
 
     args = parser.parse_args()
 
@@ -1013,6 +1022,8 @@ def main():
             trse_context_file=getattr(args, 'trse_context', 'trse_context.json'),
             use_persistent_workers=getattr(args, 'use_persistent_workers', False),  # S134
             worker_pool_size=getattr(args, 'worker_pool_size', 8),                  # S134
+            seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),            # S137
+            seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),                  # S137
         )
 
         print("\n✅ Bayesian optimization complete!")

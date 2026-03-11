@@ -45,6 +45,7 @@ Saves ALL survivors from ALL trials with window metadata for temporal diversity
 
 from typing import Dict, Any, List, Tuple
 import json
+import os
 from window_optimizer import WindowConfig, TestResult
 
 # S134: Lazy imports for persistent worker path — only loaded when flag is set
@@ -640,8 +641,8 @@ def add_window_optimizer_to_coordinator():
                                    storage_url, study_name_w, trials_for_worker,
                                    result_queue):
                 # Runs in a separate process; has its own CUDA context.
-                import sys as _sys, os as _os2
-                _sys.path.insert(0, _os2.dirname(_os2.abspath(__file__)))
+                import sys as _sys
+                _sys.path.insert(0, '/home/michael/distributed_prng_analysis')  # S137: hardcoded, fork-safe
                 try:
                     from coordinator import MultiGPUCoordinator as _WMCC
                     from window_optimizer_integration_final import run_bidirectional_test as _wbt
@@ -825,7 +826,7 @@ def add_window_optimizer_to_coordinator():
             print(f"{'='*60}\n")
 
             try:
-                _mp.set_start_method('spawn', force=True)
+                _mp.set_start_method('fork', force=True)  # S137: fork avoids pickle on local fn
             except RuntimeError:
                 pass  # already set in this process
 
