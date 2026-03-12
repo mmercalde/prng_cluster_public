@@ -814,6 +814,11 @@ def add_window_optimizer_to_coordinator():
             # ----------------------------------------------------------------
             # Divide trials and launch worker processes
             # ----------------------------------------------------------------
+            # S137: Initialize accumulator, bounds, optimizer so they exist in n_parallel path
+            survivor_accumulator = {'forward': [], 'reverse': [], 'bidirectional': []}
+            bounds = SearchBounds.from_config()      # S137-D: needed for session_options after best trial
+            optimizer = WindowOptimizer(self, dataset_path)  # S137-E: needed for save_results
+
             _trials_per_worker = [max_iterations // n_parallel] * n_parallel
             for _ri in range(max_iterations % n_parallel):
                 _trials_per_worker[_ri] += 1
