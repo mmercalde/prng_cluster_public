@@ -1,36 +1,37 @@
 # MASTER TODO LIST — S139
 **Compiled:** 2026-03-02 (S114) | **Updated:** 2026-03-13 (S139)
 **Sources:** TODO_MASTER_S132.md + S138–S139 session history
-**Status:** 200-trial fresh study RUNNING. TRSE Rule A active for first time. NPZ pipe deadlock fixed. Window max 500→50. Both remotes at `25cc2de`.
+**Status:** 200-trial fresh study RUNNING. Chapter 13/14 autonomy wire-up elevated to P1. TRSE Rule A active for first time. NPZ pipe deadlock fixed. Window max 500→50. Both remotes at `3043eea`.
 
 ---
 
 ## 🔴 P1 — HIGH PRIORITY (Next 1-3 Sessions)
 
-### Active Run
+### Active Run — Monitor & Validate
 - [ ] **200-trial fresh Step 1 study in progress** — Cold start, 50M seeds, TRSE Rule A active (window cap=32), n_parallel=2, all 26 GPUs. Monitor for completion and NPZ output. Verify temp file merge works end-to-end.
-
-### Active Bugs
-- [ ] **WATCHER Step 1 timeout** — Currently 480 min hardcoded in `watcher_agent.py`. At 50M seeds with low prune rate, long runs will be killed. Make configurable or remove for autonomous operation. (`step_timeout_overrides={1: 480}` in watcher init)
-- [ ] **WATCHER validation threshold fix** — `>=100` survivor threshold causes false ESCALATE on Steps 1 and 3 with real data. Lower to `>=50` or make configurable. Affects `watcher_agent.py`. (S120) — *Verify if S122/S123 threshold=50 fix already covers this.*
-- [ ] **rrig6600c throughput deficit** — i5-8400T CPU ~50% throughput vs other rigs. Hardware limitation — document in Architecture Invariants, consider excluding from Step 1 partition or weighting down.
-- [ ] **Persistent worker session drops on AMD rigs** — "No existing session" errors after extended runs. Not GPU-specific. Consider keepalive ping, session TTL refresh, or auto-respawn after N hours.
-- [ ] **Trial count ceiling overrun edge case** — When pre-existing complete > max_iterations, S138B fix handles it. But verify ceiling math is correct for the 200-trial fresh study (existing=0, remaining=200).
-
-### Post-Run Actions (after 200-trial completes)
-- [ ] **Update distributed_config.json search_bounds** — After 200-trial run with TRSE active, use empirical results to tighten offset, skip, threshold bounds. Do NOT pre-empt with guesses.
+- [ ] **Update distributed_config.json search_bounds** — After 200-trial run completes, use empirical results to tighten offset, skip, threshold bounds. Do NOT pre-empt with guesses.
 - [ ] **Verify NPZ accumulator fix end-to-end** — Confirm `bidirectional_survivors_binary.npz` contains correct survivor counts from both partitions after run completes.
 
-### Chapter 13 + Selfplay Wire-up (Key Autonomy Gap)
+### Chapter 13 — Autonomy Wire-up (NEXT PRIORITY)
 - [ ] **Wire `dispatch_selfplay()` into WATCHER** — Stub exists in `watcher_agent.py`, not triggered post-Step-6. ~180 lines.
 - [ ] **Wire `dispatch_learning_loop()` into WATCHER** — Same gap.
 - [ ] **Wire Chapter 13 orchestrator into WATCHER daemon** — `chapter_13_orchestrator.py` exists but WATCHER cannot dispatch it post-Step-6.
 - [ ] **Integration test: WATCHER → Chapter 13 → Selfplay full loop** — Selfplay A1–A5 validated in isolation; end-to-end with WATCHER trigger never verified.
 
-### Optuna / Window Optimizer
-- [ ] **Wire variable skip bidirectional count into Optuna scoring** — `TestResult` only returns `bidirectional_count=len(bidirectional_constant)`. Variable skip count not reflected in Optuna objective. (S115 carry-forward)
-- [ ] **Node failure resilience** — Single rig dropout can crash entire Optuna study. Need graceful degradation when a rig goes offline mid-study.
-- [ ] **k_folds runtime clamp** — When `val_fold_size < 3000`, clamp to `max(3, n_train // 3000)`. Needs Team Beta review. (S101 deferred)
+### Chapter 14 — Diagnostics & Selfplay (NEXT PRIORITY)
+- [ ] **Chapter 14 Phase 8: Selfplay + Ch13 Wiring** — Episode diagnostics, trend detection, root cause analysis. Phase 8A done S83, Phase 8B blocked on per_survivor_attribution.
+- [ ] **Chapter 14 Phase 9: First Diagnostic Investigation** — Real `--compare-models --enable-diagnostics` run on real data.
+
+### Live Autonomous Operation (Depends on Ch13/14)
+- [ ] **Activate `draw_ingestion_daemon.py` with real draw data** — Daemon coded, tested with synthetic draws, never activated with live data. Ignition switch for 24/7 autonomous operation.
+- [ ] **Wire `daily3_scraper.py` into WATCHER scheduler** — Scraper exists. WATCHER needs scheduler thread invoking it every N minutes → triggering Chapter 13 on new draw detection.
+- [ ] **24-hour synthetic soak test** — Run `synthetic_draw_injector.py` feeding draws every 60s with full Chapter 13 loop. Proof of sustained autonomous operation before going live.
+
+### Blocking Bugs (Fix as encountered)
+- [ ] **WATCHER Step 1 timeout** — 480 min hardcoded will kill long runs. Make configurable or remove for autonomous operation.
+- [ ] **Persistent worker session drops on AMD rigs** — keepalive/TTL fix needed for 24/7 operation.
+- [ ] **WATCHER validation threshold fix** — `>=100` survivor threshold causes false ESCALATE. Lower to `>=50` or make configurable. *Verify if S122/S123 already covers this.*
+- [ ] **`--force-step N` flag for WATCHER** — bypass freshness gate without manually deleting output files.
 
 ---
 
@@ -46,17 +47,13 @@
 - [ ] **TRSE Rules B and C — revisit after 200-trial results** — Rules B (skip) and C (offset) are logged only, disabled per TB S121 shuffle test. Empirical data from 167-trial run showed strong skip/offset clustering — may justify promoting to applied after 200-trial confirms. Requires Team Beta review.
 - [ ] **Per-segment pipeline runs** — Run Steps 1–6 separately per TRSE regime segment. Depends on TRSE production wire-up.
 
-### Live Autonomous Operation
-- [ ] **Activate `draw_ingestion_daemon.py` with real draw data** — Daemon coded, tested with synthetic draws, never activated with live data.
-- [ ] **Wire `daily3_scraper.py` into WATCHER scheduler** — Scraper exists. WATCHER needs scheduler thread invoking it every N minutes → triggering Chapter 13 on new draw detection.
-- [ ] **24-hour synthetic soak test** — Run `synthetic_draw_injector.py` feeding draws every 60s with full Chapter 13 loop.
-
 ### Bundle Factory Track 2
 - [ ] **Fill 3 stub retrieval functions in `bundle_factory.py`** — `_retrieve_recent_outcomes()`, `_retrieve_trend_summary()`, `_retrieve_open_incidents()`. Currently return empty lists.
 
-### Chapter 14 Remaining
-- [ ] **Chapter 14 Phase 8: Selfplay + Ch13 Wiring** — Episode diagnostics, trend detection, root cause analysis.
-- [ ] **Chapter 14 Phase 9: First Diagnostic Investigation** — Real `--compare-models --enable-diagnostics` run on real data.
+### Optuna / Window Optimizer
+- [ ] **Wire variable skip bidirectional count into Optuna scoring** — `TestResult` only returns `bidirectional_count=len(bidirectional_constant)`. Variable skip count not reflected in Optuna objective. (S115 carry-forward)
+- [ ] **Node failure resilience** — Single rig dropout can crash entire Optuna study. Need graceful degradation when a rig goes offline mid-study.
+- [ ] **k_folds runtime clamp** — When `val_fold_size < 3000`, clamp to `max(3, n_train // 3000)`. Needs Team Beta review. (S101 deferred)
 
 ### Model Persistence
 - [ ] **Feature names into `best_model.meta.json` at training time** — Proper fix vs current fallback extraction from trained LightGBM model. (S86 partial fix in place)
