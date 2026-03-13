@@ -72,7 +72,7 @@
   "search_bounds": {
     "window_size": {
       "min": 2,
-      "max": 500
+      "max": 50
     },
     "offset": {
       "min": 0,

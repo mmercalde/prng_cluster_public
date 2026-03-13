@@ -54,12 +54,12 @@
   "parameter_bounds": {
     "window_size": {
       "type": "int",
-      "min": 128,
-      "max": 4096,
-      "default": 512,
+      "min": 2,
+      "max": 50,
+      "default": 2,
       "description": "Size of the temporal window (number of draws) for PRNG matching.",
       "optimized_by": "Optuna TPE",
-      "effect": "Larger windows = more statistical power but slower. 256-1024 typical."
+      "effect": "Short-term temporal regime confirmed (167-trial run S138). TRSE Rule A caps at 32 when short_persistence active. Config ceiling 50 provides buffer. W2 dominant empirically."
     },
     "offset": {
       "type": "int",

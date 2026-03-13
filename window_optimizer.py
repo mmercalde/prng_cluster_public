@@ -44,10 +44,10 @@ def load_search_bounds_from_config(config_path: str = "distributed_config.json")
     Returns dict with all bounds, using safe defaults if config missing.
     """
     defaults = {
-        "window_size": {"min": 2, "max": 500},
+        "window_size": {"min": 2, "max": 50},   # S139: 500→50, short-term temporal confirmed
         "offset": {"min": 0, "max": 100},
         "skip_min": {"min": 0, "max": 10},
-        "skip_max": {"min": 10, "max": 500},
+        "skip_max": {"min": 10, "max": 250},     # S139: 500→250, matches distributed_config.json
         "forward_threshold": {"min": 0.001, "max": 0.10, "default": 0.01},
         "reverse_threshold": {"min": 0.001, "max": 0.10, "default": 0.01}
     }
@@ -112,7 +112,7 @@ class SearchBounds:
     """
     # Defaults (overridden by from_config)
     min_window_size: int = 2
-    max_window_size: int = 500
+    max_window_size: int = 50    # S139: 500→50, short-term temporal confirmed
     min_offset: int = 0
     max_offset: int = 100
     min_skip_min: int = 0
