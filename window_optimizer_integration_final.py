@@ -639,7 +639,7 @@ def add_window_optimizer_to_coordinator():
                                    dataset_path_w, seed_start_w, seed_count_w,
                                    prng_base_w, test_both_modes_w,
                                    storage_url, study_name_w, trials_for_worker,
-                                   result_queue):
+                                   result_queue, temp_file):
                 # Runs in a separate process; has its own CUDA context.
                 import sys as _sys
                 _sys.path.insert(0, '/home/michael/distributed_prng_analysis')  # S137: hardcoded, fork-safe
@@ -731,16 +731,19 @@ def add_window_optimizer_to_coordinator():
 
                     _pstudy.optimize(_worker_obj, n_trials=trials_for_worker, n_jobs=1)
 
+                    # S138: Write accumulator to temp file (avoids 2.4GB pipe deadlock)
+                    import json as _json
+                    with open(temp_file, 'w') as _tf:
+                        _json.dump(_local_acc, _tf)
                     result_queue.put({
                         'partition': partition_idx,
-                        'accumulator': _local_acc,
                         'status': 'ok',
+                        'temp_file': temp_file,
                     })
                 except Exception:
                     import traceback as _tb
                     result_queue.put({
                         'partition': partition_idx,
-                        'accumulator': {'forward': [], 'reverse': [], 'bidirectional': []},
                         'status': 'error',
                         'error': _tb.format_exc(),
                     })
@@ -849,6 +852,7 @@ def add_window_optimizer_to_coordinator():
                         _mp_storage_url, _mp_study_name,
                         _trials_per_worker[_pi],
                         _rq,
+                        f'/tmp/partition_{_pi}_survivors_{_mp_study_name}.json',
                     ),
                     daemon=False,
                 )
@@ -856,16 +860,16 @@ def add_window_optimizer_to_coordinator():
                 _procs.append(_proc)
                 print(f"   Started Process-{_pi} (pid={_proc.pid}) -> {_PARALLEL_PARTITIONS[_pi]}")
 
-            # Collect results from both worker processes
+            # Collect status from queue (lightweight — no accumulator payload)
             _collected = 0
+            _partition_status = {}
             while _collected < n_parallel:
                 try:
-                    _res = _rq.get(timeout=7200)  # 2-hour hard timeout per worker
+                    _res = _rq.get(timeout=7200)
                     _pi = _res['partition']
+                    _partition_status[_pi] = _res
                     if _res['status'] == 'ok':
-                        print(f"\n   Process-{_pi} complete -- merging survivors")
-                        for _k in ('forward', 'reverse', 'bidirectional'):
-                            survivor_accumulator[_k].extend(_res['accumulator'][_k])
+                        print(f"\n   Process-{_pi} signaled OK (survivors in temp file)")
                     else:
                         print(f"\n   Process-{_pi} ERROR:")
                         print(_res.get('error', 'unknown error'))
@@ -879,6 +883,25 @@ def add_window_optimizer_to_coordinator():
                 if _proc.is_alive():
                     print(f"   Process {_proc.pid} still alive -- terminating")
                     _proc.terminate()
+
+            # S138: Read temp files and merge survivors into accumulator
+            import json as _json2
+            import os as _os2
+            for _pi in range(n_parallel):
+                _tf_path = f'/tmp/partition_{_pi}_survivors_{_mp_study_name}.json'
+                if _os2.path.exists(_tf_path):
+                    print(f"   Process-{_pi} complete -- merging survivors from temp file")
+                    try:
+                        with open(_tf_path, 'r') as _tf:
+                            _res_acc = _json2.load(_tf)
+                        for _k in ('forward', 'reverse', 'bidirectional'):
+                            survivor_accumulator[_k].extend(_res_acc.get(_k, []))
+                        print(f"      Merged: fwd={len(_res_acc.get('forward',[]))} "                              f"rev={len(_res_acc.get('reverse',[]))} "                              f"bid={len(_res_acc.get('bidirectional',[]))}")
+                        _os2.remove(_tf_path)
+                    except Exception as _tfe:
+                        print(f"   ⚠️  Failed to read temp file {_tf_path}: {_tfe}")
+                else:
+                    print(f"   ⚠️  Process-{_pi} temp file missing: {_tf_path}")
 
             print(f"\n   All partition workers complete.")
             print(f"      Forward:       {len(survivor_accumulator['forward'])}")
