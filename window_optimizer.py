@@ -387,13 +387,15 @@ class BayesianOptimization(SearchStrategy):
 
     def search(self, objective_function, bounds, max_iterations, scorer,
                resume_study: bool = False, study_name: str = '',
-               trse_context_file: str = 'trse_context.json'):
+               trse_context_file: str = 'trse_context.json',
+               trial_history_context: dict = None):  # [S140b]
         """Run Bayesian optimization"""
         if self.optuna_search:
             # Use real Optuna implementation
             return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
                                              resume_study=resume_study, study_name=study_name,
-                                             trse_context_file=trse_context_file)
+                                             trse_context_file=trse_context_file,
+                                             trial_history_context=trial_history_context)
         else:
             # Fallback to random search
             print("⚠️  Optuna not available, using random search fallback")
@@ -459,7 +461,8 @@ class WindowOptimizer:
                 max_iterations: int = 50, scorer: ScoringFunction = None,
                 seed_start: int = 0, seed_count: int = 10_000_000,
                 resume_study: bool = False, study_name: str = '',
-                trse_context_file: str = 'trse_context.json') -> Dict[str, Any]:
+                trse_context_file: str = 'trse_context.json',
+                trial_history_context: dict = None) -> Dict[str, Any]:  # [S140b]
         """
         Run optimization using the provided strategy.
         
@@ -473,7 +476,10 @@ class WindowOptimizer:
             return self.test_configuration(config, seed_start, seed_count,
                                            optuna_trial=optuna_trial)  # S118
 
-        return strategy.search(objective, bounds, max_iterations, scorer, resume_study=resume_study, study_name=study_name, trse_context_file=trse_context_file)
+        return strategy.search(objective, bounds, max_iterations, scorer,
+                              resume_study=resume_study, study_name=study_name,
+                              trse_context_file=trse_context_file,
+                              trial_history_context=trial_history_context)  # [S140b]
 
     def save_results(self, results: Dict[str, Any], output_path: str):
         """Save optimization results to JSON file"""

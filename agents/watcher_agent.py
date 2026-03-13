@@ -1415,6 +1415,30 @@ class WatcherAgent:
                         f"[COVERAGE] Step 1: no prior coverage for "
                         f"{_prng_type} — using seed_start=0"
                     )
+
+                # [S140b] WARM-START read
+                try:
+                    _best_prior = _db.get_best_step1_params(_prng_type, limit=1)
+                    if _best_prior:
+                        _bp = _best_prior[0]
+                        final_params['warm_start_window']     = _bp.get('window_size')
+                        final_params['warm_start_offset']     = _bp.get('offset')
+                        final_params['warm_start_skip_min']   = _bp.get('skip_min')
+                        final_params['warm_start_skip_max']   = _bp.get('skip_max')
+                        final_params['warm_start_session']    = _bp.get('session')
+                        final_params['warm_start_fwd_thresh'] = _bp.get('forward_threshold')
+                        final_params['warm_start_rev_thresh'] = _bp.get('reverse_threshold')
+                        _src = 'downstream' if _bp.get('downstream_score') else 'trial_score'
+                        logger.info(
+                            f"[WARM_START] Step 1: W{_bp.get('window_size')}_"
+                            f"O{_bp.get('offset')}_{_bp.get('session')} "
+                            f"(ordered by {_src})"
+                        )
+                    else:
+                        logger.info(f"[WARM_START] no prior history for {_prng_type}")
+                except Exception as _ews:
+                    logger.warning(f"[WARM_START] lookup failed (non-fatal): {_ews}")
+
             except Exception as _e:
                 logger.warning(
                     f"[COVERAGE] Seed coverage lookup failed: {_e} — using seed_start=0"

@@ -1103,6 +1103,15 @@ def add_window_optimizer_to_coordinator():
 
         strategy = strategy_map.get(strategy_name, RandomSearch())
 
+        # [S140b] trial history context — flows to Optuna callback
+        _trial_history_ctx = {
+            'run_id':     f"step1_{prng_base}_{int(seed_start)}",
+            'study_name': study_name,
+            'prng_type':  prng_base,
+            'seed_start': seed_start,
+            'seed_end':   seed_start + seed_count,
+        }
+
         results = optimizer.optimize(
             strategy=strategy,
             bounds=bounds,
@@ -1110,9 +1119,10 @@ def add_window_optimizer_to_coordinator():
             scorer=BidirectionalCountScorer(),
             seed_start=seed_start,
             seed_count=seed_count,
-            resume_study=resume_study,   # S116-Bug5 confirmed
-            study_name=study_name,       # S116-Bug5 confirmed
-            trse_context_file=trse_context_file  # S123 TRSE thread
+            resume_study=resume_study,              # S116-Bug5 confirmed
+            study_name=study_name,                  # S116-Bug5 confirmed
+            trse_context_file=trse_context_file,    # S123 TRSE thread
+            trial_history_context=_trial_history_ctx  # [S140b]
         )
 
         optimizer.save_results(results, output_file)

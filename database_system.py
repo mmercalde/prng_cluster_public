@@ -118,11 +118,44 @@ class DistributedPRNGDatabase:
                 )
             ''')
             
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS step1_trial_history (
+                    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id                  TEXT NOT NULL,
+                    study_name              TEXT NOT NULL,
+                    trial_number            INTEGER NOT NULL,
+                    recorded_at             TEXT NOT NULL,
+                    prng_type               TEXT NOT NULL,
+                    seed_range_start        INTEGER NOT NULL,
+                    seed_range_end          INTEGER NOT NULL,
+                    window_size             INTEGER,
+                    offset                  INTEGER,
+                    skip_min                INTEGER,
+                    skip_max                INTEGER,
+                    session                 TEXT,
+                    forward_threshold       REAL,
+                    reverse_threshold       REAL,
+                    trial_score             REAL,
+                    forward_survivors       INTEGER,
+                    reverse_survivors       INTEGER,
+                    bidirectional_survivors INTEGER,
+                    pruned                  INTEGER DEFAULT 0,
+                    hit_at_20               REAL DEFAULT NULL,
+                    hit_at_100              REAL DEFAULT NULL,
+                    hit_at_300              REAL DEFAULT NULL,
+                    downstream_score        REAL DEFAULT NULL,
+                    downstream_recorded_at  TEXT DEFAULT NULL,
+                    UNIQUE(run_id, trial_number)
+                )
+            ''')
+
             # Create indices for performance
             conn.execute('CREATE INDEX IF NOT EXISTS idx_cache_lookup ON cache_results(prng_type, mapping_type, seed, samples, parameter_hash)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_job_status ON search_jobs(status, priority)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_progress_search ON exhaustive_progress(search_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_lottery_hash ON lottery_draws(number_hash)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_step1_prng_recorded ON step1_trial_history(prng_type, recorded_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_step1_prng_scores ON step1_trial_history(prng_type, downstream_score, trial_score)')
     
     def get_parameter_hash(self, parameters: Dict[str, Any]) -> str:
         """Create hash of parameters for caching"""
@@ -335,6 +368,69 @@ class DistributedPRNGDatabase:
             )
             return 0
     
+    def write_step1_trial(self, run_id, study_name, trial_number, prng_type,
+                          seed_range_start, seed_range_end, params,
+                          trial_score, forward_survivors, reverse_survivors,
+                          bidirectional_survivors, pruned=False):
+        """[S140b] Write one Step 1 Optuna trial to step1_trial_history. INSERT OR IGNORE."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    INSERT OR IGNORE INTO step1_trial_history
+                    (run_id,study_name,trial_number,recorded_at,prng_type,
+                     seed_range_start,seed_range_end,window_size,offset,
+                     skip_min,skip_max,session,forward_threshold,reverse_threshold,
+                     trial_score,forward_survivors,reverse_survivors,
+                     bidirectional_survivors,pruned)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ''', (run_id,study_name,trial_number,datetime.now().isoformat(),
+                       prng_type,seed_range_start,seed_range_end,
+                       params.get('window_size'),params.get('offset'),
+                       params.get('skip_min'),params.get('skip_max'),
+                       params.get('time_of_day',params.get('session')),
+                       params.get('forward_threshold'),params.get('reverse_threshold'),
+                       trial_score,forward_survivors,reverse_survivors,
+                       bidirectional_survivors,1 if pruned else 0))
+        except Exception as e:
+            import logging; logging.getLogger(__name__).warning(f"[TRIAL_HISTORY] write_step1_trial failed: {e}")
+
+    def write_downstream_score(self, run_id, hit_at_20, hit_at_100, hit_at_300, downstream_score):
+        """[S140b] Write Chapter 13 accuracy back to step1_trial_history rows for run_id."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    UPDATE step1_trial_history
+                    SET hit_at_20=?,hit_at_100=?,hit_at_300=?,
+                        downstream_score=?,downstream_recorded_at=?
+                    WHERE run_id=?
+                ''', (hit_at_20,hit_at_100,hit_at_300,downstream_score,
+                       datetime.now().isoformat(),run_id))
+                import logging; logging.getLogger(__name__).info(
+                    f"[TRIAL_HISTORY] downstream_score written run_id={run_id} rows={cursor.rowcount}")
+                return cursor.rowcount
+        except Exception as e:
+            import logging; logging.getLogger(__name__).warning(f"[TRIAL_HISTORY] write_downstream_score failed: {e}")
+            return 0
+
+    def get_best_step1_params(self, prng_type, limit=5):
+        """[S140b] Return best Step 1 params ordered by COALESCE(downstream_score,trial_score) DESC."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute('''
+                    SELECT window_size,offset,skip_min,skip_max,session,
+                           forward_threshold,reverse_threshold,trial_score,
+                           downstream_score,run_id,seed_range_start,seed_range_end
+                    FROM step1_trial_history
+                    WHERE prng_type=? AND pruned=0 AND window_size IS NOT NULL
+                    ORDER BY COALESCE(downstream_score,trial_score) DESC, recorded_at DESC
+                    LIMIT ?
+                ''', (prng_type, limit))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            import logging; logging.getLogger(__name__).warning(f"[TRIAL_HISTORY] get_best_step1_params failed: {e}")
+            return []
+
     def store_lottery_draw(self, lottery_name: str, draw_date: str, draw_number: int,
                           winning_numbers: List[int], metadata: Dict = None):
         """Store lottery draw data"""

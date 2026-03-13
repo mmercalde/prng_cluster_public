@@ -211,7 +211,14 @@
     "worker_pool_size": 8,
     "seed_cap_nvidia": 5000000,
     "seed_cap_amd": 2000000,
-    "seed_start": 0
+    "seed_start": 0,
+    "warm_start_window": null,
+    "warm_start_offset": null,
+    "warm_start_skip_min": null,
+    "warm_start_skip_max": null,
+    "warm_start_session": null,
+    "warm_start_fwd_thresh": null,
+    "warm_start_rev_thresh": null
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",

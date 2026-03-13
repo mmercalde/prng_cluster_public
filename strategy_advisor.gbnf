@@ -56,7 +56,9 @@ advisor-action ::= "\"RETRAIN\"" |
 retrain-scope ::= "\"selfplay_only\"" |
                   "\"steps_5_6\"" |
                   "\"steps_3_5_6\"" |
-                  "\"full_pipeline\""
+                  "\"full_pipeline\"" |
+                  "\"steps_0_1\"" |
+                  "\"step_1_only\""
 
 # Selfplay overrides object
 selfplay-overrides ::= "{" ws

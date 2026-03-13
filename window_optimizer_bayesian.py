@@ -170,11 +170,13 @@ class ResultScorer:
 def create_incremental_save_callback(
     output_config_path: str = "optimal_window_config.json",
     output_survivors_path: str = "bidirectional_survivors.json",
-    total_trials: int = 50
+    total_trials: int = 50,
+    trial_history_context: dict = None,  # [S140b]
 ):
     """
     Optuna callback that saves best-so-far results after each trial.
     Ensures crash recovery and WATCHER visibility.
+    [S140b] Writes per-trial data to step1_trial_history when context provided.
     """
     def save_best_so_far(study, trial):
         completed = len([t for t in study.trials if t.state.name == "COMPLETE"])
@@ -227,6 +229,32 @@ def create_incremental_save_callback(
             with open(temp_path, "w") as f:
                 _patch_json.dump(progress, f, indent=2)
             temp_path.rename(output_config_path)
+
+        # [S140b] per-trial history write
+        if trial_history_context:
+            try:
+                from database_system import DistributedPRNGDatabase as _DBTH
+                _db_th = _DBTH()
+                _params = trial.params if trial.params else {}
+                _score  = trial.value if trial.value is not None else 0.0
+                _pruned = trial.state.name == 'PRUNED'
+                _surv   = trial.user_attrs.get('bidirectional_survivors', [])
+                _bidi   = len(_surv) if isinstance(_surv, list) else 0
+                _db_th.write_step1_trial(
+                    run_id=trial_history_context.get('run_id','unknown'),
+                    study_name=trial_history_context.get('study_name','unknown'),
+                    trial_number=trial.number,
+                    prng_type=trial_history_context.get('prng_type','java_lcg'),
+                    seed_range_start=trial_history_context.get('seed_start',0),
+                    seed_range_end=trial_history_context.get('seed_end',0),
+                    params=_params,
+                    trial_score=_score,
+                    forward_survivors=trial.user_attrs.get('forward_count',0),
+                    reverse_survivors=trial.user_attrs.get('reverse_count',0),
+                    bidirectional_survivors=_bidi,
+                    pruned=_pruned)
+            except Exception as _e_th:
+                print(f"   [TRIAL_HISTORY] write failed (non-fatal): {_e_th}")
     
     return save_best_so_far
 
@@ -281,7 +309,8 @@ class OptunaBayesianSearch:
                scorer: ResultScorer,
                resume_study: bool = False,
                study_name: str = '',
-               trse_context_file: str = 'trse_context.json') -> Dict:  # S121
+               trse_context_file: str = 'trse_context.json',
+               trial_history_context: dict = None) -> Dict:  # S121, [S140b]
         """
         Run Bayesian optimization using Optuna
         
@@ -507,20 +536,29 @@ class OptunaBayesianSearch:
             load_if_exists=_resume
         )
         print(f"   📊 Optuna study: optuna_studies/{study_name}.db")
+        self._trial_history_context = trial_history_context  # [S140b]
 
         # Warm-start: enqueue known-good S112 config as trial 0
         # Skipped on resume — trial already exists in DB
         # Only runs on fresh study starts
         if not _resume:
-            study.enqueue_trial({
-                'window_size': 8,
-                'offset': 43,
-                'skip_min': 5,
-                'skip_max': 56,
-                'forward_threshold': 0.49,
-                'reverse_threshold': 0.49
-            })
-            print("   🌡️  Warm-start: enqueued W8_O43_S5-56 as trial 0 (S112 known-good config)")
+            _ws_params = {'window_size':8,'offset':43,'skip_min':5,
+                          'skip_max':56,'forward_threshold':0.49,'reverse_threshold':0.49}
+            _ws_source = 'S112 hardcoded default'
+            if trial_history_context:
+                _ww=trial_history_context.get('warm_start_window')
+                _wo=trial_history_context.get('warm_start_offset')
+                _wsk=trial_history_context.get('warm_start_skip_min')
+                _wsx=trial_history_context.get('warm_start_skip_max')
+                _wf=trial_history_context.get('warm_start_fwd_thresh')
+                _wr=trial_history_context.get('warm_start_rev_thresh')
+                if all(v is not None for v in [_ww,_wo,_wsk,_wsx,_wf,_wr]):
+                    _ws_params={'window_size':int(_ww),'offset':int(_wo),
+                               'skip_min':int(_wsk),'skip_max':int(_wsx),
+                               'forward_threshold':float(_wf),'reverse_threshold':float(_wr)}
+                    _ws_source=f'step1_trial_history (W{_ww}_O{_wo})'
+            study.enqueue_trial(_ws_params)
+            print(f"   🌡️  Warm-start: enqueued {_ws_source} as trial 0")  # [S140b]
         else:
             print(f"   ✅ Resume mode: skipping warm-start (already in DB)")
 
@@ -529,10 +567,13 @@ class OptunaBayesianSearch:
         _trials_to_run = max_iterations - _resumed_completed
         
         # Run optimization with incremental save callback
+        # [S140b] trial_history_context flows from optimize_window
+        _th_context = self._trial_history_context if hasattr(self, '_trial_history_context') else None
         _incremental_callback = create_incremental_save_callback(
             output_config_path="optimal_window_config.json",
             output_survivors_path="bidirectional_survivors.json",
-            total_trials=max_iterations
+            total_trials=max_iterations,
+            trial_history_context=_th_context
         )
         # S115 R1: prune telemetry callback
         def _prune_telemetry(study, trial):

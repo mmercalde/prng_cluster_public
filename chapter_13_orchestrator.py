@@ -288,6 +288,35 @@ class Chapter13Orchestrator:
             
             # Save diagnostics
             save_diagnostics(diagnostics)
+
+            # [S140b] DOWNSTREAM SCORE WRITE-BACK — annotation only
+            try:
+                from database_system import DistributedPRNGDatabase as _DBCH13
+                _db_ch13 = _DBCH13()
+                _owc_path = Path('optimal_window_config.json')
+                _run_id_ch13 = None
+                if _owc_path.exists():
+                    import json as _jch13
+                    _owc = _jch13.loads(_owc_path.read_text())
+                    _ptype = _owc.get('prng_type','java_lcg')
+                    _ss    = _owc.get('seed_start',_owc.get('seed_range_start',0))
+                    _run_id_ch13 = f"step1_{_ptype}_{int(_ss)}"
+                if _run_id_ch13:
+                    _pv       = diagnostics.get('prediction_validation',{})
+                    _best_rank = _pv.get('best_rank')
+                    _hit_at_20  = 1.0 if _best_rank is not None and _best_rank <= 20  else 0.0
+                    _hit_at_100 = 1.0 if _best_rank is not None and _best_rank <= 100 else 0.0
+                    _hit_at_300 = 1.0 if _best_rank is not None and _best_rank <= 300 else 0.0
+                    _cov = _pv.get('pool_coverage',0.0)
+                    _ds  = round((_hit_at_20*0.5)+(_hit_at_100*0.3)+
+                                 (_hit_at_300*0.15)+(_cov*0.05),4)
+                    _rows = _db_ch13.write_downstream_score(
+                        run_id=_run_id_ch13,
+                        hit_at_20=_hit_at_20, hit_at_100=_hit_at_100,
+                        hit_at_300=_hit_at_300, downstream_score=_ds)
+                    logger.info(f"[S140b] downstream written run_id={_run_id_ch13} rows={_rows}")
+            except Exception as _e140b:
+                logger.warning(f"[S140b] downstream write-back failed (non-fatal): {_e140b}")
             
             # Step 1b: Post-draw root cause analysis (observe-only, Ch14 Task 8.4)
             # Runs if hit rate regression detected in diagnostics.

@@ -17,7 +17,7 @@ failure-enum ::= "\"calibration_drift\"" | "\"feature_relevance\"" | "\"window_m
 
 action-enum ::= "\"RETRAIN\"" | "\"WAIT\"" | "\"ESCALATE\"" | "\"FULL_RESET\""
 
-scope-enum ::= "\"steps_3_5_6\"" | "\"steps_5_6\"" | "\"step_6_only\"" | "\"full_pipeline\""
+scope-enum ::= "\"steps_3_5_6\"" | "\"steps_5_6\"" | "\"step_6_only\"" | "\"full_pipeline\"" | "\"step1_relaunch\""
 
 risk-enum ::= "\"low\"" | "\"medium\"" | "\"high\""
 
