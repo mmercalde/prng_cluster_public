@@ -37,7 +37,8 @@
         "use-persistent-workers": "use_persistent_workers",
         "worker-pool-size": "worker_pool_size",
         "seed-cap-nvidia": "seed_cap_nvidia",
-        "seed-cap-amd": "seed_cap_amd"
+        "seed-cap-amd": "seed_cap_amd",
+        "seed-start": "seed_start"
       },
       "distributed": true,
       "timeout_minutes": 240
@@ -177,6 +178,14 @@
       "description": "[S129B-A] Max seeds per job chunk for AMD GPUs (RX 6600). Measured hardware ceiling ~787k sps.",
       "optimized_by": "Manual",
       "effect": "Controls chunk sizing for rig GPUs. 2M = safe production value at ~788k sps measured throughput."
+    },
+    "seed_start": {
+      "type": "int",
+      "min": 0,
+      "max": 4294967295,
+      "default": 0,
+      "description": "[S140] Starting seed for search range. Set automatically by WATCHER coverage tracker to advance into unexplored seed space. Manual override allowed.",
+      "optimized_by": "WATCHER"
     }
   },
   "success_metrics": {
@@ -201,7 +210,8 @@
     "use_persistent_workers": false,
     "worker_pool_size": 8,
     "seed_cap_nvidia": 5000000,
-    "seed_cap_amd": 2000000
+    "seed_cap_amd": 2000000,
+    "seed_start": 0
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
@@ -215,7 +225,8 @@
   "disable_heuristic_parsing": true,
   "retry_policy": "none",
   "args_map": {
-    "study-name": "study_name"
+    "study-name": "study_name",
+    "seed-start": "seed_start"
   },
   "param_docs": {
     "study_name": {

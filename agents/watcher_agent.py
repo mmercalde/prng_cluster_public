@@ -1388,6 +1388,38 @@ class WatcherAgent:
         # Remove output_file if present (use script default)
         final_params.pop("output_file", None)
 
+        # [S140] SEED COVERAGE TRACKER — Step 1 only
+        # Reads MAX(seed_range_end) for this prng_type from exhaustive_progress.
+        # Advances seed_start between pipeline runs so we never re-search covered ranges.
+        # If DB lookup fails for any reason, defaults to 0 — run proceeds normally.
+        # Invariant: new seed range forces fresh study (resume_study=False, study_name='')
+        if step == 1 and 'seed_start' in final_params:
+            try:
+                import sys as _sys
+                _sys.path.insert(0, str(Path(__file__).parent.parent))
+                from database_system import DistributedPRNGDatabase as _DBM
+                _db = _DBM()
+                _prng_type = final_params.get('prng_type', 'java_lcg')
+                _chunk_size = final_params.get('max_seeds', 5_000_000)
+                _next_start = _db.get_next_seed_start(_prng_type, _chunk_size)
+                if _next_start > 0:
+                    final_params['seed_start'] = _next_start
+                    final_params['resume_study'] = False   # INVARIANT: new range = fresh study
+                    final_params['study_name'] = ''        # force fresh study name
+                    logger.info(
+                        f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
+                        f"for {_prng_type} — forcing fresh study"
+                    )
+                else:
+                    logger.info(
+                        f"[COVERAGE] Step 1: no prior coverage for "
+                        f"{_prng_type} — using seed_start=0"
+                    )
+            except Exception as _e:
+                logger.warning(
+                    f"[COVERAGE] Seed coverage lookup failed: {_e} — using seed_start=0"
+                )
+
         # Build command
         # Detect script type: .sh uses bash, .py uses python3
         if script.endswith(".sh"):

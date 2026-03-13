@@ -516,6 +516,7 @@ def run_bayesian_optimization(
     trials: int,
     output_config: str,
     seed_count: int = 10_000_000,
+    seed_start: int = 0,                   # [S140] coverage tracker base
     prng_type: str = 'java_lcg',
     test_both_modes: bool = False,
     strategy_name: str = 'bayesian',  # 'bayesian' or 'random'
@@ -605,7 +606,7 @@ def run_bayesian_optimization(
 
     results = coordinator.optimize_window(
         dataset_path=lottery_file,
-        seed_start=0,
+        seed_start=seed_start,             # [S140] from coverage tracker
         seed_count=seed_count,
         prng_base=prng_type,
         test_both_modes=test_both_modes,  # NEW: Pass through to integration layer
@@ -618,6 +619,33 @@ def run_bayesian_optimization(
         n_parallel=n_parallel,          # S115 wire-up
         trse_context_file=trse_context_file  # S121 Step 0 context
     )
+
+    # [S140] SEED COVERAGE WRITE-BACK — log this run's range to exhaustive_progress
+    # Runs once per Step 1 completion. Enables WATCHER to advance seed_start next run.
+    try:
+        from database_system import DistributedPRNGDatabase as _DBM
+        _db = _DBM()
+        _best_result = results.get('best_result', {})
+        _survivors = _best_result.get('bidirectional_survivors', [])
+        _best_seed = None
+        if _survivors and isinstance(_survivors[0], dict):
+            _best_seed = _survivors[0].get('seed', None)
+        elif _survivors and isinstance(_survivors[0], int):
+            _best_seed = _survivors[0]
+        _db.update_exhaustive_progress(
+            search_id=f'step1_{prng_type}_{int(seed_start)}',
+            prng_type=prng_type,
+            mapping_type='bidirectional',
+            seed_range_start=seed_start,
+            seed_range_end=seed_start + seed_count,
+            seeds_completed=seed_count,
+            best_score=results.get('best_score'),
+            best_seed=_best_seed
+        )
+        print(f'   [COVERAGE] Logged range {seed_start:,} → {seed_start + seed_count:,} '
+              f'for {prng_type} (best_seed={_best_seed})')
+    except Exception as _e:
+        print(f'   [COVERAGE] Write-back failed (non-fatal): {_e}')
 
     # Save optimal config for downstream use
     best_config = results['best_config']
@@ -997,6 +1025,10 @@ def main():
                        help='[S137] Max seeds per job chunk for NVIDIA GPUs (default: 5000000).')
     parser.add_argument('--seed-cap-amd', type=int, default=2_000_000,
                        help='[S137] Max seeds per job chunk for AMD GPUs (default: 2000000).')
+    parser.add_argument('--seed-start', type=int, default=0,
+                       help='[S140] Starting seed for search range. Set automatically by '
+                            'WATCHER coverage tracker to advance into unexplored seed space. '
+                            'Default 0.')
 
     args = parser.parse_args()
 
@@ -1013,6 +1045,7 @@ def main():
             trials=args.trials,
             output_config=args.output,
             seed_count=args.max_seeds if args.max_seeds else 10_000_000,
+            seed_start=getattr(args, 'seed_start', 0),                              # S140
             prng_type=args.prng_type,
             test_both_modes=args.test_both_modes,
             resume_study=getattr(args, 'resume_study', False),

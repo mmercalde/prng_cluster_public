@@ -292,6 +292,48 @@ class DistributedPRNGDatabase:
             ''', (search_id,))
             
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_next_seed_start(self, prng_type: str, chunk_size: int) -> int:
+        """
+        [S140] Seed Coverage Tracker — returns the next uncovered seed_start
+        for a given prng_type across ALL prior runs.
+
+        Queries MAX(seed_range_end) from exhaustive_progress for this prng_type.
+        If no prior coverage exists, returns 0 (start from beginning).
+
+        Args:
+            prng_type:  PRNG identifier e.g. 'java_lcg', 'mt19937'
+            chunk_size: Size of each search chunk (logged for context only)
+
+        Returns:
+            int: Next seed_start to use (0 if no prior coverage recorded)
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                result = conn.execute(
+                    'SELECT MAX(seed_range_end) FROM exhaustive_progress WHERE prng_type = ?',
+                    (prng_type,)
+                ).fetchone()
+                if result and result[0] is not None:
+                    next_start = int(result[0])
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"[COVERAGE] {prng_type}: prior coverage up to {next_start:,} — "
+                        f"next seed_start={next_start:,}"
+                    )
+                    return next_start
+                else:
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"[COVERAGE] {prng_type}: no prior coverage — starting at seed 0"
+                    )
+                    return 0
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"[COVERAGE] get_next_seed_start failed: {e} — defaulting to seed_start=0"
+            )
+            return 0
     
     def store_lottery_draw(self, lottery_name: str, draw_date: str, draw_number: int,
                           winning_numbers: List[int], metadata: Dict = None):
