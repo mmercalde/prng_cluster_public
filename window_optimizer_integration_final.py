@@ -822,15 +822,46 @@ def add_window_optimizer_to_coordinator():
             bounds = SearchBounds.from_config()      # S137-D: needed for session_options after best trial
             optimizer = WindowOptimizer(self, dataset_path)  # S137-E: needed for save_results
 
-            _trials_per_worker = [max_iterations // n_parallel] * n_parallel
-            for _ri in range(max_iterations % n_parallel):
-                _trials_per_worker[_ri] += 1
+            # S138B: Enforce trial ceiling — subtract already-completed trials
+            try:
+                import optuna as _ocount
+                _count_storage = _ocount.storages.RDBStorage(
+                    url=_mp_storage_url,
+                    engine_kwargs={"connect_args": {"timeout": 20}}
+                )
+                _count_study = _ocount.load_study(
+                    study_name=_mp_study_name,
+                    storage=_count_storage,
+                )
+                _existing_complete = len([
+                    t for t in _count_study.trials
+                    if t.state == _ocount.trial.TrialState.COMPLETE
+                ])
+                print(f"   [n_parallel] Existing complete trials: {_existing_complete}")
+            except Exception as _ce:
+                print(f"   [n_parallel] Could not query existing trials: {_ce} -- assuming 0")
+                _existing_complete = 0
 
-            print(f"\n{'='*60}")
-            print(f"LAUNCHING {n_parallel} PARTITION WORKERS (multiprocessing.Process)")
-            for _pi in range(n_parallel):
-                print(f"   P{_pi}: {_PARALLEL_PARTITIONS[_pi]}  -> {_trials_per_worker[_pi]} trials")
-            print(f"   Study: {_mp_study_name}")
+            _remaining_trials = max(0, max_iterations - _existing_complete)
+            print(f"   [n_parallel] Remaining trials to run: {_remaining_trials} "
+                  f"(ceiling={max_iterations}, existing={_existing_complete})")
+
+            if _remaining_trials == 0:
+                print(f"   [n_parallel] Trial ceiling already reached -- skipping workers")
+                _trials_per_worker = [0] * n_parallel
+            else:
+                _trials_per_worker = [_remaining_trials // n_parallel] * n_parallel
+                for _ri in range(_remaining_trials % n_parallel):
+                    _trials_per_worker[_ri] += 1
+
+            if _remaining_trials == 0:
+                print(f"\n   [n_parallel] No workers launched — ceiling already met")
+            else:
+                print(f"\n{'='*60}")
+                print(f"LAUNCHING {n_parallel} PARTITION WORKERS (multiprocessing.Process)")
+                for _pi in range(n_parallel):
+                    print(f"   P{_pi}: {_PARALLEL_PARTITIONS[_pi]}  -> {_trials_per_worker[_pi]} trials")
+                print(f"   Study: {_mp_study_name}")
             print(f"{'='*60}\n")
 
             try:
