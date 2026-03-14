@@ -1113,11 +1113,64 @@ def add_window_optimizer_to_coordinator():
                 }
             }
             optimizer.save_results(results, output_file)
+
+            # [S142-B] Canonical trial history backfill from shared study
+            # _worker_obj writes are opportunistic. This is the authoritative write.
+            print(f"\n   [TRIAL_HISTORY] Backfilling from shared study ({len(_fin_study.trials)} trials)...")
+            try:
+                from database_system import DistributedPRNGDatabase as _DBFILL
+                _db_fill = _DBFILL()
+                _si_opts = (bounds.session_options
+                            if hasattr(bounds, 'session_options')
+                            else [['midday'], ['evening'], ['morning']])
+                _fill_written = 0
+                _fill_skipped = 0
+                for _ft in _fin_study.trials:
+                    if _ft.state.name != 'COMPLETE':
+                        _fill_skipped += 1
+                        continue
+                    _fparams = _ft.params or {}
+                    _fsi = _fparams.get('session_idx', 0)
+                    _fsess_raw = (_si_opts[_fsi]
+                                  if isinstance(_si_opts, list) and _fsi < len(_si_opts)
+                                  else ['unknown'])
+                    _fsess = (','.join(_fsess_raw)
+                              if isinstance(_fsess_raw, (list, tuple))
+                              else str(_fsess_raw))
+                    _db_fill.write_step1_trial(
+                        run_id=f"step1_{prng_base}_{int(seed_start)}_backfill",
+                        study_name=_mp_study_name,
+                        trial_number=int(_ft.number),
+                        prng_type=str(prng_base),
+                        seed_range_start=int(seed_start),
+                        seed_range_end=int(seed_start + seed_count - 1),
+                        params={
+                            'window_size':       _fparams.get('window_size'),
+                            'offset':            _fparams.get('offset'),
+                            'skip_min':          _fparams.get('skip_min'),
+                            'skip_max':          _fparams.get('skip_max'),
+                            'time_of_day':       _fsess,
+                            'forward_threshold': _fparams.get('forward_threshold', 0.49),
+                            'reverse_threshold': _fparams.get('reverse_threshold', 0.49),
+                        },
+                        trial_score=float(_ft.value or 0.0),
+                        forward_survivors=0,
+                        reverse_survivors=0,
+                        bidirectional_survivors=int(_ft.value or 0),
+                        pruned=False
+                    )
+                    _fill_written += 1
+                print(f"   [TRIAL_HISTORY] Backfill complete: "
+                      f"{_fill_written} written, {_fill_skipped} skipped (PRUNED)")
+            except Exception as _fill_e:
+                print(f"   [TRIAL_HISTORY] Backfill failed (non-fatal): {_fill_e}")
+
             # Falls through to the dedup+save survivor block below
             # (that block reads survivor_accumulator directly, not 'results')
+            print(f"\n[NP2] EXIT NP2 PATH — entering shared dedup+save survivor block")
 
-
-        if False: pass  # indent anchor
+        # [S142-B] NP2 terminal flag — prevents single-process search from running
+        _np2_complete = n_parallel > 1  # True when NP2 block ran above
 
         print(f"\n{'='*80}")
         print(f"WINDOW OPTIMIZATION WITH SURVIVOR ACCUMULATION")
@@ -1132,15 +1185,23 @@ def add_window_optimizer_to_coordinator():
         print(f"Max iterations: {max_iterations}")
         print(f"{'='*80}\n")
 
-        survivor_accumulator = {
-            'forward': [],
-            'reverse': [],
-            'bidirectional': []
-        }
+        # [S142-B] Skip single-process search when NP2 already ran
+        if not _np2_complete:
+            print(f"[SINGLE] ENTER SINGLE-PROCESS SEARCH PATH")
+        else:
+            print(f"[NP2] Single-process search path SKIPPED (n_parallel={n_parallel})")
 
-        optimizer = WindowOptimizer(self, dataset_path)
-        bounds = SearchBounds.from_config()
-        trial_counter = {'count': 0}
+        if not _np2_complete:
+            survivor_accumulator = {
+                'forward': [],
+                'reverse': [],
+                'bidirectional': []
+            }
+
+        if not _np2_complete:
+            optimizer = WindowOptimizer(self, dataset_path)
+            bounds = SearchBounds.from_config()
+            trial_counter = {'count': 0}
 
         def test_config(config,
                         ss=seed_start, sc=seed_count,
@@ -1195,20 +1256,21 @@ def add_window_optimizer_to_coordinator():
             'n_parallel_gt1': n_parallel > 1,  # [S142] guard: NP2 owns writes
         }
 
-        results = optimizer.optimize(
-            strategy=strategy,
-            bounds=bounds,
-            max_iterations=max_iterations,
-            scorer=BidirectionalCountScorer(),
-            seed_start=seed_start,
-            seed_count=seed_count,
-            resume_study=resume_study,              # S116-Bug5 confirmed
-            study_name=study_name,                  # S116-Bug5 confirmed
-            trse_context_file=trse_context_file,    # S123 TRSE thread
-            trial_history_context=_trial_history_ctx  # [S140b]
-        )
+        if not _np2_complete:  # [S142-B] skip single-process search for NP2
+            results = optimizer.optimize(
+                strategy=strategy,
+                bounds=bounds,
+                max_iterations=max_iterations,
+                scorer=BidirectionalCountScorer(),
+                seed_start=seed_start,
+                seed_count=seed_count,
+                resume_study=resume_study,              # S116-Bug5 confirmed
+                study_name=study_name,                  # S116-Bug5 confirmed
+                trse_context_file=trse_context_file,    # S123 TRSE thread
+                trial_history_context=_trial_history_ctx  # [S140b]
+            )
 
-        optimizer.save_results(results, output_file)
+            optimizer.save_results(results, output_file)
 
         print(f"\n{'='*80}")
         print("OPTIMIZATION COMPLETE")
