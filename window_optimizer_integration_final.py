@@ -635,11 +635,31 @@ def add_window_optimizer_to_coordinator():
             import glob as _mpglob
             import time as _mptime
 
+            # [S140b-NP2] Build warm_start_params from trial_history_context
+            _warm_start_params = None
+            if trial_history_context:
+                _ww  = trial_history_context.get('warm_start_window')
+                _wo  = trial_history_context.get('warm_start_offset')
+                _wsk = trial_history_context.get('warm_start_skip_min')
+                _wsx = trial_history_context.get('warm_start_skip_max')
+                _wf  = trial_history_context.get('warm_start_fwd_thresh')
+                _wr  = trial_history_context.get('warm_start_rev_thresh')
+                if all(v is not None for v in [_ww,_wo,_wsk,_wsx,_wf,_wr]):
+                    _warm_start_params = {
+                        'window_size':       int(_ww),
+                        'offset':            int(_wo),
+                        'skip_min':          int(_wsk),
+                        'skip_max':          int(_wsx),
+                        'forward_threshold': float(_wf),
+                        'reverse_threshold': float(_wr),
+                    }
+
             def _partition_worker(partition_idx, allowlist, config_file_w,
                                    dataset_path_w, seed_start_w, seed_count_w,
                                    prng_base_w, test_both_modes_w,
                                    storage_url, study_name_w, trials_for_worker,
-                                   result_queue, temp_file):
+                                   result_queue, temp_file,
+                                   warm_start_params=None):  # [S140b-NP2]
                 # Runs in a separate process; has its own CUDA context.
                 import sys as _sys
                 _sys.path.insert(0, '/home/michael/distributed_prng_analysis')  # S137: hardcoded, fork-safe
@@ -774,6 +794,41 @@ def add_window_optimizer_to_coordinator():
                         trial.set_user_attr("result_dict", result.to_dict())
                         print(f"   [P{partition_idx}] Trial {trial.number}: "
                               f"{cfg.description()} score={score:.0f}")
+                        # [S140b-NP2] Trial history — child-local DB connection
+                        try:
+                            from database_system import DistributedPRNGDatabase as _DBTH
+                            _db_th = _DBTH()
+                            _sess = (",".join(cfg.sessions)
+                                     if isinstance(cfg.sessions, (list, tuple))
+                                     else str(cfg.sessions))
+                            _db_th.write_step1_trial(
+                                run_id=f"step1_{prng_base_w}_{int(seed_start_w)}",
+                                study_name=study_name_w,
+                                trial_number=int(trial.number),
+                                prng_type=str(prng_base_w),
+                                seed_range_start=int(seed_start_w),
+                                seed_range_end=int(seed_start_w + seed_count_w - 1),
+                                params={
+                                    'window_size': cfg.window_size,
+                                    'offset': cfg.offset,
+                                    'skip_min': cfg.skip_min,
+                                    'skip_max': cfg.skip_max,
+                                    'time_of_day': _sess,
+                                    'forward_threshold': cfg.forward_threshold,
+                                    'reverse_threshold': cfg.reverse_threshold,
+                                },
+                                trial_score=float(score),
+                                forward_survivors=int(
+                                    getattr(result, "forward_count", 0)),
+                                reverse_survivors=int(
+                                    getattr(result, "reverse_count", 0)),
+                                bidirectional_survivors=int(
+                                    getattr(result, "bidirectional_count", 0)),
+                                pruned=False
+                            )
+                        except Exception as _th_e:
+                            print(f"   [P{partition_idx}] trial-history write "
+                                  f"failed (non-fatal): {_th_e}")
                         return score
 
                     _pstudy.optimize(_worker_obj, n_trials=trials_for_worker, n_jobs=1)
@@ -852,12 +907,24 @@ def add_window_optimizer_to_coordinator():
                     load_if_exists=True,
                 )
                 if len(_setup_study.trials) == 0:
-                    _setup_study.enqueue_trial({
-                        'window_size': 8, 'offset': 43,
-                        'skip_min': 5, 'skip_max': 56,
-                        'forward_threshold': 0.49, 'reverse_threshold': 0.49
-                    })
-                    print("   [n_parallel] Warm-start enqueued (W8_O43_S5-56)")
+                    # [S140b-NP2] Dynamic warm-start with fallback
+                    _ws_trial = dict(warm_start_params) if warm_start_params else {}
+                    if _ws_trial:
+                        _setup_study.enqueue_trial(_ws_trial)
+                        print(
+                            f"   [n_parallel] Warm-start enqueued "
+                            f"(W{_ws_trial.get('window_size')}_"
+                            f"O{_ws_trial.get('offset')}_"
+                            f"S{_ws_trial.get('skip_min')}-"
+                            f"{_ws_trial.get('skip_max')})"  # [S140b-NP2]
+                        )
+                    else:
+                        _setup_study.enqueue_trial({
+                            'window_size': 8, 'offset': 43,
+                            'skip_min': 5, 'skip_max': 56,
+                            'forward_threshold': 0.49, 'reverse_threshold': 0.49
+                        })
+                        print("   [n_parallel] Warm-start fallback enqueued (W8_O43_S5-56)")
                 print(f"   [n_parallel] Study ready: {_mp_study_name} "
                       f"({len(_setup_study.trials)} trials)")
 
@@ -931,6 +998,7 @@ def add_window_optimizer_to_coordinator():
                         _trials_per_worker[_pi],
                         _rq,
                         f'/tmp/partition_{_pi}_survivors_{_mp_study_name}.json',
+                        _warm_start_params,  # [S140b-NP2]
                     ),
                     daemon=False,
                 )
