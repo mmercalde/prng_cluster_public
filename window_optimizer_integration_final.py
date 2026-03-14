@@ -912,7 +912,7 @@ def add_window_optimizer_to_coordinator():
                 )
                 if len(_setup_study.trials) == 0:
                     # [S140b-NP2] Dynamic warm-start with fallback
-                    _ws_trial = dict(warm_start_params) if warm_start_params else {}
+                    _ws_trial = dict(_warm_start_params) if _warm_start_params else {}
                     if _ws_trial:
                         _setup_study.enqueue_trial(_ws_trial)
                         print(
