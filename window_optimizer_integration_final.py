@@ -635,24 +635,28 @@ def add_window_optimizer_to_coordinator():
             import glob as _mpglob
             import time as _mptime
 
-            # [S140b-NP2] Build warm_start_params from trial_history_context
+            # [S140b-NP2] Build warm_start_params from DB
+            # Read directly — trial_history_context not in optimize_window scope
             _warm_start_params = None
-            if trial_history_context:
-                _ww  = trial_history_context.get('warm_start_window')
-                _wo  = trial_history_context.get('warm_start_offset')
-                _wsk = trial_history_context.get('warm_start_skip_min')
-                _wsx = trial_history_context.get('warm_start_skip_max')
-                _wf  = trial_history_context.get('warm_start_fwd_thresh')
-                _wr  = trial_history_context.get('warm_start_rev_thresh')
-                if all(v is not None for v in [_ww,_wo,_wsk,_wsx,_wf,_wr]):
-                    _warm_start_params = {
-                        'window_size':       int(_ww),
-                        'offset':            int(_wo),
-                        'skip_min':          int(_wsk),
-                        'skip_max':          int(_wsx),
-                        'forward_threshold': float(_wf),
-                        'reverse_threshold': float(_wr),
-                    }
+            try:
+                from database_system import DistributedPRNGDatabase as _DBNP2
+                _db_np2 = _DBNP2()
+                _best_np2 = _db_np2.get_best_step1_params(prng_base, limit=1)
+                if _best_np2:
+                    _bp_np2 = _best_np2[0]
+                    if all(_bp_np2.get(k) is not None for k in
+                           ['window_size','offset','skip_min','skip_max',
+                            'forward_threshold','reverse_threshold']):
+                        _warm_start_params = {
+                            'window_size':       int(_bp_np2['window_size']),
+                            'offset':            int(_bp_np2['offset']),
+                            'skip_min':          int(_bp_np2['skip_min']),
+                            'skip_max':          int(_bp_np2['skip_max']),
+                            'forward_threshold': float(_bp_np2['forward_threshold']),
+                            'reverse_threshold': float(_bp_np2['reverse_threshold']),
+                        }
+            except Exception as _e_np2:
+                print(f'   [n_parallel] warm_start DB lookup failed: {_e_np2}')
 
             def _partition_worker(partition_idx, allowlist, config_file_w,
                                    dataset_path_w, seed_start_w, seed_count_w,
