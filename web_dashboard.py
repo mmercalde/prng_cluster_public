@@ -974,12 +974,58 @@ STATS_CONTENT = """
 """
 
 PLOTS_CONTENT = """
+<!-- Param metadata for JS presets -->
+<script>
+const PARAM_META = {
+    window_size:         { label: "Window Size (W)",         desc: "How many historical draws the sieve looks back. W2=2 draws, W4=4 draws. Smaller windows are faster but less selective." },
+    offset:              { label: "Draw Offset (O)",          desc: "Which position within the draw window to anchor the pattern match. High-scoring offsets cluster around the PRNG's repeat cycle." },
+    session_idx:         { label: "Time Session (0=morn 1=mid 2=eve)", desc: "Time-of-day bucket for the draw. Evening=2 consistently dominates — likely the PRNG is seeded from a daily timestamp." },
+    skip_min:            { label: "Skip Min (seed step floor)", desc: "Minimum distance to jump between candidate seeds. Filters seeds too close together — eliminates sequential duplicates." },
+    skip_max:            { label: "Skip Max (seed step ceil)",  desc: "Maximum distance to jump between candidate seeds. Upper bound on the seed spacing search space." },
+    forward_threshold:   { label: "Forward Filter Threshold",  desc: "Aggressiveness of the forward sieve pass (0.0–1.0). Higher = fewer survivors pass through. Tune against false-positive rate." },
+    reverse_threshold:   { label: "Reverse Filter Threshold",  desc: "Aggressiveness of the reverse sieve pass (0.0–1.0). Works in tandem with forward threshold. Bidirectional survivors are the gold standard." },
+};
+const PRESETS = [
+    { label: "🎯 Offset vs Window",      x: "offset",            y: "window_size",       desc: "Where is the sweet spot? Clusters of high-score dots show the winning offset+window combination." },
+    { label: "⚖️ Filter Thresholds",     x: "forward_threshold", y: "reverse_threshold", desc: "Are our filters balanced? Dots in the top-right corner survive both sieves — the tightest candidates." },
+    { label: "⏭️ Skip Range",            x: "skip_min",          y: "skip_max",          desc: "What seed spacing works best? Tight clusters show the PRNG's likely internal step size." },
+    { label: "📅 Session vs Window",     x: "session_idx",       y: "window_size",       desc: "Does time-of-day matter? If evening (2) dominates all window sizes, the seed is timestamp-derived." },
+    { label: "🔍 Offset vs Fwd Filter",  x: "offset",            y: "forward_threshold", desc: "Which offsets survive aggressive filtering? High-scoring dots at high thresholds = robust candidates." },
+];
+function applyPreset(x, y) {
+    document.querySelector('select[name=param_x]').value = x;
+    document.querySelector('select[name=param_y]').value = y;
+    updateParamDesc();
+}
+function updateParamDesc() {
+    const x = document.querySelector('select[name=param_x]').value;
+    const y = document.querySelector('select[name=param_y]').value;
+    const xm = PARAM_META[x] || {};
+    const ym = PARAM_META[y] || {};
+    document.getElementById('param-x-desc').textContent = xm.desc || '';
+    document.getElementById('param-y-desc').textContent = ym.desc || '';
+}
+window.addEventListener('DOMContentLoaded', updateParamDesc);
+</script>
+
 <div class="card">
     <div class="card-header">
         <div class="card-title">Optuna Study Visualization</div>
     </div>
 
-    <form method="GET" action="/plots" style="margin-bottom: 16px;">
+    <!-- Quick preset buttons -->
+    <div style="margin-bottom: 14px;">
+        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">QUICK VIEWS</div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            {% for preset in plot_presets %}
+            <button type="button" class="btn" style="font-size: 11px; padding: 4px 10px;"
+                onclick="applyPreset('{{ preset.x }}', '{{ preset.y }}')"
+                title="{{ preset.desc }}">{{ preset.label }}</button>
+            {% endfor %}
+        </div>
+    </div>
+
+    <form method="GET" action="/plots" style="margin-bottom: 16px;" id="plots-form">
         <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
             <div class="form-group" style="margin-bottom: 0;">
                 <label class="form-label">Study</label>
@@ -996,19 +1042,25 @@ PLOTS_CONTENT = """
             </div>
             <div class="form-group" style="margin-bottom: 0;">
                 <label class="form-label">X-Axis Parameter</label>
-                <select name="param_x" class="form-select">
+                <select name="param_x" class="form-select" onchange="updateParamDesc()">
                     {% for p in available_params %}
-                    <option value="{{ p }}" {% if p == param_x %}selected{% endif %}>{{ p }}</option>
+                    <option value="{{ p }}" {% if p == param_x %}selected{% endif %}>
+                        {{ param_labels.get(p, p) }}
+                    </option>
                     {% endfor %}
                 </select>
+                <div id="param-x-desc" style="font-size: 10px; color: var(--text-muted); margin-top: 4px; max-width: 280px;"></div>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
                 <label class="form-label">Y-Axis Parameter</label>
-                <select name="param_y" class="form-select">
+                <select name="param_y" class="form-select" onchange="updateParamDesc()">
                     {% for p in available_params %}
-                    <option value="{{ p }}" {% if p == param_y %}selected{% endif %}>{{ p }}</option>
+                    <option value="{{ p }}" {% if p == param_y %}selected{% endif %}>
+                        {{ param_labels.get(p, p) }}
+                    </option>
                     {% endfor %}
                 </select>
+                <div id="param-y-desc" style="font-size: 10px; color: var(--text-muted); margin-top: 4px; max-width: 280px;"></div>
             </div>
             <button type="submit" class="btn">Generate Plot</button>
         </div>
@@ -1019,22 +1071,50 @@ PLOTS_CONTENT = """
     {% endif %}
 </div>
 
+<!-- Chart legend / reading guide -->
+<div class="card" style="margin-bottom: 16px;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; font-size: 12px;">
+        <div>
+            <div style="color: var(--accent-blue); font-weight: 600; margin-bottom: 4px;">🔵 Parameter Scatter</div>
+            <div style="color: var(--text-muted);">Each dot = one Optuna trial. Color = survivor score (yellow/green = high, purple = low). <strong>Clusters of bright dots</strong> reveal the winning parameter region. Isolated bright dots = lucky outliers.</div>
+        </div>
+        <div>
+            <div style="color: var(--accent-green); font-weight: 600; margin-bottom: 4px;">📈 Trial Convergence</div>
+            <div style="color: var(--text-muted);">Blue line = each trial's score. Green line = best score so far. A <strong>rising green line</strong> means TPE is learning. Flat green = plateau. Sharp jumps = TPE found a new region.</div>
+        </div>
+        <div>
+            <div style="color: var(--accent-orange); font-weight: 600; margin-bottom: 4px;">📊 Parameter Importance</div>
+            <div style="color: var(--text-muted);">Which parameters actually matter? <strong>Longer bar = more impact on score.</strong> Ignore low-importance params when analyzing scatter. window_size dominating = window selection is the key decision.</div>
+        </div>
+        <div>
+            <div style="color: var(--text-secondary); font-weight: 600; margin-bottom: 4px;">🎲 Score Distribution</div>
+            <div style="color: var(--text-muted);">Histogram of all trial scores. A <strong>right-skewed spike</strong> at high scores = TPE found a tight winning cluster. Wide spread = still exploring. Bimodal = two distinct regimes exist.</div>
+        </div>
+    </div>
+</div>
+
 <div class="charts-grid">
     <div class="card">
         <div class="card-header">
-            <div class="card-title">Parameter Optimization Scatter</div>
+            <div class="card-title">Parameter Optimization Scatter
+                <span style="font-size: 10px; color: var(--text-muted); font-weight: 400; margin-left: 8px;">
+                    {{ param_labels.get(param_x, param_x) }} vs {{ param_labels.get(param_y, param_y) }}
+                </span>
+            </div>
             {% if heatmap_chart %}<a href="/plot/heatmap?study={{ selected_study }}&param_x={{ param_x }}&param_y={{ param_y }}" target="_blank" style="font-size: 11px; color: var(--accent-blue);">↗ Full Screen</a>{% endif %}
         </div>
         {% if heatmap_chart %}
         <div class="chart-wrapper">{{ heatmap_chart | safe }}</div>
         {% else %}
-        <div class="chart-placeholder">Select a study and parameters above</div>
+        <div class="chart-placeholder">Select a study and parameters above, then click Generate Plot</div>
         {% endif %}
     </div>
 
     <div class="card">
         <div class="card-header">
-            <div class="card-title">Trial Convergence</div>
+            <div class="card-title">Trial Convergence
+                <span style="font-size: 10px; color: var(--text-muted); font-weight: 400; margin-left: 8px;">TPE learning curve — is the best score still rising?</span>
+            </div>
             {% if convergence_chart %}<a href="/plot/convergence?study={{ selected_study }}" target="_blank" style="font-size: 11px; color: var(--accent-blue);">↗ Full Screen</a>{% endif %}
         </div>
         {% if convergence_chart %}
@@ -1046,7 +1126,9 @@ PLOTS_CONTENT = """
 
     <div class="card">
         <div class="card-header">
-            <div class="card-title">Parameter Importance</div>
+            <div class="card-title">Parameter Importance
+                <span style="font-size: 10px; color: var(--text-muted); font-weight: 400; margin-left: 8px;">Which parameters drive survivor count?</span>
+            </div>
             {% if importance_chart %}<a href="/plot/importance?study={{ selected_study }}" target="_blank" style="font-size: 11px; color: var(--accent-blue);">↗ Full Screen</a>{% endif %}
         </div>
         {% if importance_chart %}
@@ -1058,7 +1140,9 @@ PLOTS_CONTENT = """
 
     <div class="card">
         <div class="card-header">
-            <div class="card-title">Score Distribution</div>
+            <div class="card-title">Score Distribution
+                <span style="font-size: 10px; color: var(--text-muted); font-weight: 400; margin-left: 8px;">Are scores clustering or still spread wide?</span>
+            </div>
             {% if distribution_chart %}<a href="/plot/distribution?study={{ selected_study }}" target="_blank" style="font-size: 11px; color: var(--accent-blue);">↗ Full Screen</a>{% endif %}
         </div>
         {% if distribution_chart %}
@@ -1638,7 +1722,18 @@ def generate_heatmap_plotly(study_name=None, param_x=None, param_y=None):
         if not param_x or not param_y:
             return None, "No parameters available"
 
-        x_values, y_values, scores, hover_texts = [], [], [], []
+        PARAM_LABELS = {
+            'window_size':       'Window Size (W)',
+            'offset':            'Draw Offset (O)',
+            'session_idx':       'Time Session (0=morn 1=mid 2=eve)',
+            'skip_min':          'Skip Min',
+            'skip_max':          'Skip Max',
+            'forward_threshold': 'Forward Filter Threshold',
+            'reverse_threshold': 'Reverse Filter Threshold',
+        }
+        SESSION_NAMES = {0: 'morning', 1: 'midday', 2: 'evening'}
+
+        x_values, y_values, scores, hover_texts, trial_labels = [], [], [], [], []
 
         for trial in completed:
             x_val = trial.params.get(param_x)
@@ -1648,28 +1743,62 @@ def generate_heatmap_plotly(study_name=None, param_x=None, param_y=None):
                 y_values.append(float(y_val) if isinstance(y_val, (int, float)) else hash(str(y_val)) % 100)
                 score = trial.value if trial.value else 0
                 scores.append(score)
-                hover_text = f"<b>Trial {trial.number}</b><br>{param_x}: {x_val}<br>{param_y}: {y_val}<br>Score: {score:.4f}"
+
+                # Build human-readable trial summary
+                p = trial.params
+                w = p.get('window_size', '?')
+                o = p.get('offset', '?')
+                sess = SESSION_NAMES.get(p.get('session_idx'), p.get('session_idx', '?'))
+                ft = p.get('forward_threshold', '?')
+                rt = p.get('reverse_threshold', '?')
+                trial_name = f"W{w}_O{o}_{sess}"
+                survivors = f"{int(score):,}" if score > 0 else "0 (pruned)"
+
+                hover_text = (
+                    f"<b>Trial {trial.number}: {trial_name}</b><br>"
+                    f"<b>Survivors: {survivors}</b><br>"
+                    f"──────────────<br>"
+                    f"Window Size: {w} draws back<br>"
+                    f"Offset: {o}<br>"
+                    f"Session: {sess}<br>"
+                    f"Forward Threshold: {ft}<br>"
+                    f"Reverse Threshold: {rt}<br>"
+                    f"Skip: {p.get('skip_min','?')}–{p.get('skip_max','?')}"
+                )
                 hover_texts.append(hover_text)
+                trial_labels.append(trial_name)
 
         if len(x_values) < 2:
             return None, "Not enough data points"
 
+        # Bubble size scaled to score (min 8, max 32)
+        max_score = max(scores) if max(scores) > 0 else 1
+        bubble_sizes = [max(8, min(32, int(8 + 24 * (s / max_score)))) for s in scores]
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=x_values, y=y_values, mode="markers",
-            marker=dict(size=14, color=scores, colorscale="Viridis", showscale=True,
-                       colorbar=dict(title="Score", tickfont=dict(color="#e8e8e8")),
-                       line=dict(width=1, color="white")),
-            text=hover_texts, hoverinfo="text", hovertemplate="%{text}<extra></extra>"
+            x=x_values, y=y_values, mode="markers+text",
+            marker=dict(
+                size=bubble_sizes,
+                color=scores, colorscale="Viridis", showscale=True,
+                colorbar=dict(title="Survivors", tickfont=dict(color="#e8e8e8")),
+                line=dict(width=1, color="rgba(255,255,255,0.4)")
+            ),
+            text=trial_labels,
+            textposition="top center",
+            textfont=dict(size=9, color="rgba(200,200,200,0.7)"),
+            hovertext=hover_texts, hoverinfo="text", hovertemplate="%{hovertext}<extra></extra>"
         ))
-        # Calculate axis ranges with padding (start from 0, add 10% margin on top)
+
         x_max = max(x_values) * 1.1 if x_values else 100
         y_max = max(y_values) * 1.1 if y_values else 100
+        x_label = PARAM_LABELS.get(param_x, param_x)
+        y_label = PARAM_LABELS.get(param_y, param_y)
 
         fig.update_layout(autosize=True, height=plot_height,
-            title=dict(text=f"Optuna Study: {study_name}", font=dict(color="#e8e8e8")),
-            xaxis=dict(title=param_x, color="#8a9099", gridcolor="#3a3f45", range=[0, x_max]),
-            yaxis=dict(title=param_y, color="#8a9099", gridcolor="#3a3f45", range=[0, y_max]),
+            title=dict(text=f"Optuna Study: {study_name} — bigger bubble = more survivors", font=dict(color="#e8e8e8", size=13)),
+            xaxis=dict(title=x_label, color="#8a9099", gridcolor="#3a3f45", range=[0, x_max]),
+            yaxis=dict(title=y_label, color="#8a9099", gridcolor="#3a3f45", range=[0, y_max]),
             plot_bgcolor="#2a2e33", paper_bgcolor="#1a1d21", font=dict(color="#e8e8e8"),
             hovermode="closest", margin=dict(l=60, r=40, t=60, b=60)
         )
@@ -1859,15 +1988,34 @@ def plots():
                 break
     ctx['available_params'] = available_params
 
-    # Get selected params from query
+    # Human-readable labels for all known params
+    PARAM_LABELS = {
+        'window_size':         'Window Size (W) — draws back',
+        'offset':              'Draw Offset (O) — pattern anchor',
+        'session_idx':         'Time Session (0=morn 1=mid 2=eve)',
+        'skip_min':            'Skip Min — seed step floor',
+        'skip_max':            'Skip Max — seed step ceiling',
+        'forward_threshold':   'Forward Filter Threshold',
+        'reverse_threshold':   'Reverse Filter Threshold',
+    }
+    ctx['param_labels'] = PARAM_LABELS
+
+    # Quick-view presets
+    ctx['plot_presets'] = [
+        {'label': '🎯 Offset vs Window',     'x': 'offset',            'y': 'window_size',       'desc': 'Where is the sweet spot? Clusters of bright dots show the winning offset+window combination.'},
+        {'label': '⚖️ Filter Thresholds',    'x': 'forward_threshold', 'y': 'reverse_threshold', 'desc': 'Are filters balanced? Dots top-right survive both sieves.'},
+        {'label': '⏭️ Skip Range',           'x': 'skip_min',          'y': 'skip_max',          'desc': 'What seed spacing works? Tight clusters reveal PRNG internal step size.'},
+        {'label': '📅 Session vs Window',    'x': 'session_idx',       'y': 'window_size',       'desc': 'Does time-of-day matter? Evening dominating = timestamp-seeded PRNG.'},
+        {'label': '🔍 Offset vs Fwd Filter', 'x': 'offset',            'y': 'forward_threshold', 'desc': 'Which offsets survive aggressive filtering?'},
+    ]
+
+    # Get selected params from query — smart defaults: offset vs window_size
     param_x = request.args.get('param_x')
     param_y = request.args.get('param_y')
-    if not param_x and available_params:
-        param_x = available_params[0]
-    if not param_y and len(available_params) > 1:
-        param_y = available_params[1]
-    elif not param_y and available_params:
-        param_y = available_params[0]
+    if not param_x:
+        param_x = 'offset' if 'offset' in available_params else (available_params[0] if available_params else None)
+    if not param_y:
+        param_y = 'window_size' if 'window_size' in available_params else (available_params[1] if len(available_params) > 1 else available_params[0] if available_params else None)
     ctx['param_x'] = param_x
     ctx['param_y'] = param_y
 
