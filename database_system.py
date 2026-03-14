@@ -51,6 +51,7 @@ class DistributedPRNGDatabase:
     def init_database(self):
         """Initialize database tables"""
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")  # [S142] WAL: concurrent NP2 writers
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS cache_results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

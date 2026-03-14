@@ -231,7 +231,9 @@ def create_incremental_save_callback(
             temp_path.rename(output_config_path)
 
         # [S140b] per-trial history write
-        if trial_history_context:
+        # [S142] Skip when n_parallel>1 — _worker_obj owns writes with correct session strings.
+        # If we write here too, INSERT OR IGNORE silently blocks the NP2 write (same PK, NULL session).
+        if trial_history_context and not trial_history_context.get('n_parallel_gt1'):
             try:
                 from database_system import DistributedPRNGDatabase as _DBTH
                 _db_th = _DBTH()
