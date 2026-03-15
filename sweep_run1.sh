@@ -48,6 +48,14 @@ json.dump(m, open('$MANIFEST', 'w'), indent=2)
 print('  Manifest patched: study_name=$STUDY_NAME, resume_study=true')
 "
     # Clear halt
+    # Start persistent workers on all rigs
+    echo "Starting persistent workers on rigs..."
+    for RIG in rrig6600 rrig6600b rrig6600c; do
+        ssh $RIG "cd ~/distributed_prng_analysis && source ~/rocm_env/bin/activate && pkill -f persistent_gpu_worker 2>/dev/null; sleep 1 && nohup python3 persistent_gpu_worker.py > logs/worker.log 2>&1 &" && echo "  ✅ $RIG workers started" || echo "  ⚠️  $RIG worker start failed"
+    done
+    echo "Waiting 30s for workers to initialize..."
+    sleep 30
+
     PYTHONPATH=. python3 agents/watcher_agent.py --clear-halt 2>/dev/null || true
 
     # Re-launch
@@ -93,6 +101,19 @@ m['default_params']['resume_study'] = False
 json.dump(m, open('$MANIFEST', 'w'), indent=2)
 print('  Manifest reset: study_name cleared, resume_study=false')
 "
+
+# Start persistent workers on all rigs
+echo "Starting persistent workers on rigs..."
+for RIG in rrig6600 rrig6600b rrig6600c; do
+    ssh $RIG "cd ~/distributed_prng_analysis && \
+        source ~/rocm_env/bin/activate && \
+        pkill -f persistent_gpu_worker 2>/dev/null; \
+        sleep 1 && \
+        nohup python3 persistent_gpu_worker.py > logs/worker.log 2>&1 &" && \
+        echo "  ✅ $RIG workers started" || echo "  ⚠️  $RIG worker start failed"
+done
+echo "Waiting 30s for workers to initialize..."
+sleep 30
 
 echo "============================================================"
 echo "PRODUCTION SWEEP — Run 1 of 4"
