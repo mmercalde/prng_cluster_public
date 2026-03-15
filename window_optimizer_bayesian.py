@@ -540,13 +540,10 @@ class OptunaBayesianSearch:
         print(f"   📊 Optuna study: optuna_studies/{study_name}.db")
         self._trial_history_context = trial_history_context  # [S140b]
 
-        # Warm-start: enqueue known-good S112 config as trial 0
-        # Skipped on resume — trial already exists in DB
-        # Only runs on fresh study starts
+        # [S144] Warm-start: enqueue from trial_history_context ONLY.
+        # No hardcoded fallback -- CA-specific W8_O43 removed.
+        # New/different datasets get no warm-start and Optuna explores freely.
         if not _resume:
-            _ws_params = {'window_size':8,'offset':43,'skip_min':5,
-                          'skip_max':56,'forward_threshold':0.49,'reverse_threshold':0.49}
-            _ws_source = 'S112 hardcoded default'
             if trial_history_context:
                 _ww=trial_history_context.get('warm_start_window')
                 _wo=trial_history_context.get('warm_start_offset')
@@ -559,10 +556,14 @@ class OptunaBayesianSearch:
                                'skip_min':int(_wsk),'skip_max':int(_wsx),
                                'forward_threshold':float(_wf),'reverse_threshold':float(_wr)}
                     _ws_source=f'step1_trial_history (W{_ww}_O{_wo})'
-            study.enqueue_trial(_ws_params)
-            print(f"   🌡️  Warm-start: enqueued {_ws_source} as trial 0")  # [S140b]
+                    study.enqueue_trial(_ws_params)
+                    print(f"   🌡️  Warm-start: enqueued {_ws_source} as trial 0")  # [S144]
+                else:
+                    print("   ℹ️  Warm-start skipped: trial_history_context incomplete -- Optuna explores freely")
+            else:
+                print("   ℹ️  Warm-start skipped: no trial_history_context -- Optuna explores freely")
         else:
-            print(f"   ✅ Resume mode: skipping warm-start (already in DB)")
+            print("   ✅ Resume mode: skipping warm-start (already in DB)")
 
         # Trials remaining: full count on fresh, remainder on resume
         # S125: n_parallel>1 dispatched externally; this path always n_jobs=1
