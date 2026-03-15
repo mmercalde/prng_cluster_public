@@ -116,7 +116,7 @@ echo ""
 echo "Waiting for Optuna study name..."
 for i in $(seq 1 60); do
     sleep 1
-    STUDY=$(grep "Optuna study:" "$LOG" 2>/dev/null | tail -1 | sed 's/.*optuna_studies\/\(.*\)\.db.*/\1/')
+    STUDY=$(grep -a "Optuna study" "$LOG" 2>/dev/null | tail -1 | sed 's|.*optuna_studies/\(.*\)\.db.*|\1|')
     if [[ -n "$STUDY" ]]; then
         echo "$STUDY" > "$STUDY_FILE"
         echo "✅ Study name captured: $STUDY"
