@@ -41,7 +41,7 @@
         "seed-start": "seed_start"
       },
       "distributed": true,
-      "timeout_minutes": 99999
+      "timeout_minutes": 1440
     }
   ],
   "follow_up_agents": [
