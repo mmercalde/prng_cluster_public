@@ -205,7 +205,7 @@
     "window_trials": 50,
     "study_name": "",
     "trse_context": "trse_context.json",
-    "enable_pruning": false,
+    "enable_pruning": true,
     "n_parallel": 1,
     "use_persistent_workers": false,
     "worker_pool_size": 8,

@@ -608,13 +608,40 @@ class OptunaBayesianSearch:
         print(f"\n{'='*80}")
         print(f"🏆 OPTIMIZATION COMPLETE")
         print(f"   Best score: {best_score:.2f}")
-        print(f"   Best config: {best_result.config.description()}")
-        print(f"   Bidirectional survivors: {best_result.bidirectional_count}")
-        print(f"   📊 Optuna-optimized thresholds:")
-        print(f"      Forward threshold: {best_result.config.forward_threshold}")
-        print(f"      Reverse threshold: {best_result.config.reverse_threshold}")
+        # [S145-R1] Guard: best_result is None when all trials pruned
+        if best_result is not None:
+            print(f"   Best config: {best_result.config.description()}")
+            print(f"   Bidirectional survivors: {best_result.bidirectional_count}")
+            print(f"   📊 Optuna-optimized thresholds:")
+            print(f"      Forward threshold: {best_result.config.forward_threshold}")
+            print(f"      Reverse threshold: {best_result.config.reverse_threshold}")
+        else:
+            print(f"   ⚠️  All trials pruned — no survivors found in this seed range")
+            print(f"   Try wider thresholds, smaller window sizes, or a different seed range")
         print(f"{'='*80}\n")
-        
+
+        # [S145-R1] Guard: return safely when all trials pruned
+        if best_result is None:
+            return {
+                'strategy': 'optuna_bayesian',
+                'best_config': {},
+                'best_result': {'bidirectional_count': 0, 'forward_count': 0, 'reverse_count': 0},
+                'best_score': best_score,
+                'all_results': [],
+                'iterations': len(all_results),
+                'all_pruned': True
+            }
+
+        # [S145-R1] Guard: study.best_trial raises ValueError when all pruned
+        try:
+            _best_trial_num = study.best_trial.number
+            _best_value = study.best_value
+            _best_params = study.best_params
+        except ValueError:
+            _best_trial_num = -1
+            _best_value = 0
+            _best_params = {}
+
         return {
             'strategy': 'optuna_bayesian',
             'best_config': best_result.config.to_dict(),
@@ -623,9 +650,9 @@ class OptunaBayesianSearch:
             'all_results': [r.to_dict() for r in all_results],
             'iterations': len(all_results),
             'optuna_study': {
-                'best_trial': study.best_trial.number,
-                'best_value': study.best_value,
-                'best_params': study.best_params
+                'best_trial': _best_trial_num,
+                'best_value': _best_value,
+                'best_params': _best_params
             }
         }
 

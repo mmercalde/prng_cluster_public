@@ -42,7 +42,7 @@ window_candidates/
 !config_*.json        # Keep config JSONs (safe & important)
 !*_config.json
 !schema_*.json
-!bidirectional_survivors_all.json   # [S145-R1] persistent cross-run survivor accumulator
+!bidirectional_survivors_all.npz    # [S145-R1 v2] persistent NPZ accumulator (replaces JSON)
 
 # --- Syncthing Temp Files ---
 .syncthing*

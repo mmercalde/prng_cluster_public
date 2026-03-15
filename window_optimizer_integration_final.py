@@ -218,7 +218,8 @@ def run_bidirectional_test(coordinator,
                            reverse_threshold: float = 0.01,
                            trial_number: int = 0,
                            accumulator: Dict[str, List] = None,
-                           optuna_trial=None) -> TestResult:  # S115 M2
+                           optuna_trial=None,
+                           enable_pruning: bool = False) -> TestResult:  # S115 M2, [S145-R1]
     """
     Run forward + reverse sieve and ACCUMULATE survivors with metadata.
 
@@ -321,7 +322,8 @@ def run_bidirectional_test(coordinator,
     print(f"      Forward: {len(forward_records):,} survivors")
 
     # S115 M2: prune dead trials (forward==0) before expensive reverse sieve
-    if optuna_trial is not None:
+    # [S145-R1] Gate on enable_pruning — when False, always run reverse sieve
+    if optuna_trial is not None and enable_pruning:
         if not _OPTUNA_AVAILABLE:
             print("      ⚠️  optuna_trial passed but Optuna not installed — pruning disabled.")
         elif len(forward_records) == 0:
@@ -1186,7 +1188,8 @@ def add_window_optimizer_to_coordinator():
                 reverse_threshold=rt,
                 trial_number=trial_counter['count'],
                 accumulator=survivor_accumulator,
-                optuna_trial=optuna_trial          # S119 Gap5
+                optuna_trial=optuna_trial,         # S119 Gap5
+                enable_pruning=enable_pruning      # [S145-R1] closure var
             )
 
         optimizer.test_configuration = test_config
@@ -1232,12 +1235,17 @@ def add_window_optimizer_to_coordinator():
 
         print(f"\n{'='*80}")
         print("OPTIMIZATION COMPLETE")
-        best = results['best_config']
-        print(f"  Window size: {best['window_size']}")
-        print(f"  Offset: {best['offset']}")
-        print(f"  Sessions: {', '.join(best['sessions'])}")
-        print(f"  Skip range: [{best['skip_min']}, {best['skip_max']}]")
-        print(f"  Bidirectional survivors: {results['best_result']['bidirectional_count']:,}")
+        best = results.get('best_config', {})
+        # [S145-R1] Guard: best_config empty when all trials pruned
+        if best and 'window_size' in best:
+            print(f"  Window size: {best['window_size']}")
+            print(f"  Offset: {best['offset']}")
+            print(f"  Sessions: {', '.join(best.get('sessions', []))}")
+            print(f"  Skip range: [{best['skip_min']}, {best['skip_max']}]")
+            print(f"  Bidirectional survivors: {results['best_result'].get('bidirectional_count', 0):,}")
+        else:
+            print(f"  ⚠️  All trials pruned — no survivors found in this seed range")
+            print(f"  Coverage tracker will advance seed_start on next run")
         print(f"{'='*80}\n")
 
         # ====================================================================
@@ -1270,7 +1278,7 @@ def add_window_optimizer_to_coordinator():
             print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped)} unique seeds")
 
             with open('bidirectional_survivors.json', 'w') as f:
-                json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f, indent=2)
+                json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f)
             print(f"✅ Saved bidirectional_survivors.json: {len(bidirectional_deduped)} unique seeds")
 
             # Print sample to confirm per-seed fields present
@@ -1290,47 +1298,166 @@ def add_window_optimizer_to_coordinator():
                 print(f"   Constant skip: {constant_count} survivors")
                 print(f"   Variable skip: {variable_count} survivors")
 
-            # [S145-R1] SURVIVOR ACCUMULATOR — merge into persistent cross-run store
+            # [S145-R1 v2] NPZ ACCUMULATOR — direct NPZ→NPZ merge
+            # Replaces JSON accumulator (v1) — eliminates 700MB+ JSON intermediary
             # Merge policy: best per-seed score wins on conflict (TB ruling S145-R1)
-            # bidirectional_survivors.json still written above — no change to existing output
+            # Backward compatible: bidirectional_survivors_binary.npz same path/schema/22 fields
+            # Steps 2-6 unaffected — they consume bidirectional_survivors_binary.npz exclusively
             import os as _os_s145
-            _accum_path = 'bidirectional_survivors_all.json'
-            try:
-                if _os_s145.path.exists(_accum_path):
-                    with open(_accum_path) as _af:
-                        _prior_survivors = json.load(_af)
-                else:
-                    _prior_survivors = []
-                _prior_count = len(_prior_survivors)
-                # Merge — best per-seed score wins on conflict
-                _merged = {s['seed']: s for s in _prior_survivors}
-                for s in bidirectional_deduped:
-                    if s['seed'] not in _merged or                        float(s.get('score', 0)) > float(_merged[s['seed']].get('score', 0)):
-                        _merged[s['seed']] = s
-                _merged_list = sorted(_merged.values(), key=lambda x: x['seed'])
-                with open(_accum_path, 'w') as _af:
-                    json.dump(_merged_list, _af)
-                _net_new = len(_merged_list) - _prior_count
-                print(f"\n[S145-R1][ACCUMULATOR] {len(_merged_list):,} total survivors across all runs")
-                print(f"   This run: +{len(bidirectional_deduped):,} candidates | Net new: +{_net_new:,}")
-                print(f"   Accumulator: {_accum_path}")
-            except Exception as _accum_err:
-                print(f"\n⚠️  [S145-R1][ACCUMULATOR] Failed (non-fatal): {_accum_err}")
-                print(f"   Falling back to per-run NPZ conversion")
-                _accum_path = 'bidirectional_survivors.json'
+            import numpy as _np_s145
+            _SKIP_ENC = {'constant': 0, 'variable': 1}
+            _PRNG_ENC = {
+                'java_lcg': 0, 'java_lcg_reverse': 1,
+                'mt19937': 2, 'mt19937_reverse': 3,
+                'xorshift128': 4, 'xorshift128_reverse': 5,
+                'lcg32': 6, 'lcg32_reverse': 7,
+                'minstd': 8, 'minstd_reverse': 9,
+                'randu': 10, 'randu_reverse': 11,
+            }
 
-            # Convert accumulated set to NPZ binary format (required by Step 2)
-            # Uses accumulator if available, falls back to per-run file on accumulator error
-            from subprocess import run as subprocess_run, CalledProcessError
+            def _survivors_to_arrays(survivors):
+                """Convert list of survivor dicts to NPZ field arrays."""
+                def _parse_skip_range(val):
+                    if isinstance(val, int): return val
+                    if isinstance(val, (list, tuple)) and len(val) == 2:
+                        return int(val[1]) - int(val[0])
+                    if isinstance(val, str) and '-' in val:
+                        try: return int(val.split('-')[1]) - int(val.split('-')[0])
+                        except: return 0
+                    try: return int(val)
+                    except: return 0
+                n = len(survivors)
+                return {
+                    'seeds':                  _np_s145.array([s['seed'] for s in survivors], dtype=_np_s145.uint32),
+                    'forward_matches':        _np_s145.array([s.get('forward_match_rate', s.get('forward_matches', 0.0)) for s in survivors], dtype=_np_s145.float32),
+                    'reverse_matches':        _np_s145.array([s.get('reverse_match_rate', s.get('reverse_matches', 0.0)) for s in survivors], dtype=_np_s145.float32),
+                    'window_size':            _np_s145.array([s.get('window_size', 0) for s in survivors], dtype=_np_s145.int32),
+                    'offset':                 _np_s145.array([s.get('offset', 0) for s in survivors], dtype=_np_s145.int32),
+                    'trial_number':           _np_s145.array([s.get('trial_number', 0) for s in survivors], dtype=_np_s145.int32),
+                    'skip_min':               _np_s145.array([s.get('skip_min', 0) for s in survivors], dtype=_np_s145.int32),
+                    'skip_max':               _np_s145.array([s.get('skip_max', 0) for s in survivors], dtype=_np_s145.int32),
+                    'skip_range':             _np_s145.array([_parse_skip_range(s.get('skip_range', 0)) for s in survivors], dtype=_np_s145.int32),
+                    'forward_count':          _np_s145.array([s.get('forward_count', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'reverse_count':          _np_s145.array([s.get('reverse_count', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'bidirectional_count':    _np_s145.array([s.get('bidirectional_count', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'intersection_count':     _np_s145.array([s.get('intersection_count', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'intersection_ratio':     _np_s145.array([s.get('intersection_ratio', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'intersection_weight':    _np_s145.array([s.get('intersection_weight', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'bidirectional_selectivity': _np_s145.array([s.get('bidirectional_selectivity', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'forward_only_count':     _np_s145.array([s.get('forward_only_count', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'reverse_only_count':     _np_s145.array([s.get('reverse_only_count', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'survivor_overlap_ratio': _np_s145.array([s.get('survivor_overlap_ratio', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'score':                  _np_s145.array([s.get('score', 0.0) for s in survivors], dtype=_np_s145.float32),
+                    'skip_mode':              _np_s145.array([_SKIP_ENC.get(s.get('skip_mode', 'constant'), 0) for s in survivors], dtype=_np_s145.uint8),
+                    'prng_type':              _np_s145.array([_PRNG_ENC.get(s.get('prng_type', s.get('prng_base', 'java_lcg')), 0) for s in survivors], dtype=_np_s145.uint8),
+                }
+
+            _accum_npz = 'bidirectional_survivors_all.npz'
             try:
-                subprocess_run(
-                    ["python3", "convert_survivors_to_binary.py", _accum_path],
-                    check=True
-                )
-                print(f"✅ Converted {_accum_path} to bidirectional_survivors_binary.npz")
-            except CalledProcessError as e:
-                print(f"❌ NPZ conversion failed: {e}")
-                raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
+                # Load prior accumulated NPZ if exists
+                if _os_s145.path.exists(_accum_npz):
+                    _prior_npz = _np_s145.load(_accum_npz)
+                    _prior_seeds = _prior_npz['seeds'].astype(_np_s145.int64)
+                    _prior_scores = _prior_npz['score'].astype(_np_s145.float32)
+                    _prior_count = len(_prior_seeds)
+                    # Build seed→index map for prior
+                    _prior_idx = {int(_prior_seeds[i]): i for i in range(_prior_count)}
+                else:
+                    _prior_npz = None
+                    _prior_seeds = _np_s145.array([], dtype=_np_s145.int64)
+                    _prior_scores = _np_s145.array([], dtype=_np_s145.float32)
+                    _prior_idx = {}
+                    _prior_count = 0
+
+                # Convert current run survivors to arrays
+                _new_arrays = _survivors_to_arrays(bidirectional_deduped)
+                _new_seeds = _new_arrays['seeds'].astype(_np_s145.int64)
+                _new_scores = _new_arrays['score']
+
+                # Determine indices: keep from prior (not beaten), add from new (new or better)
+                _keep_prior = []  # indices into prior arrays
+                _keep_new = []    # indices into new arrays
+
+                # Track which prior seeds are superseded by new
+                _superseded = set()
+                for _ni in range(len(_new_seeds)):
+                    _seed = int(_new_seeds[_ni])
+                    if _seed not in _prior_idx:
+                        _keep_new.append(_ni)  # Genuinely new seed
+                    else:
+                        _pi = _prior_idx[_seed]
+                        if float(_new_scores[_ni]) > float(_prior_scores[_pi]):
+                            _keep_new.append(_ni)   # New run has better score
+                            _superseded.add(_pi)
+                        # else: prior has equal or better score — keep prior
+
+                # Keep all prior seeds not superseded
+                _keep_prior = [i for i in range(_prior_count) if i not in _superseded]
+
+                # Build merged field arrays
+                _FIELDS_INT32  = ['window_size','offset','trial_number','skip_min','skip_max','skip_range']
+                _FIELDS_FLOAT32 = ['forward_matches','reverse_matches','forward_count','reverse_count',
+                                   'bidirectional_count','intersection_count','intersection_ratio',
+                                   'intersection_weight','bidirectional_selectivity','forward_only_count',
+                                   'reverse_only_count','survivor_overlap_ratio','score']
+                _FIELDS_UINT8  = ['skip_mode','prng_type']
+                _FIELDS_UINT32 = ['seeds']
+
+                _merged_arrays = {}
+                for _fname in _FIELDS_UINT32 + _FIELDS_INT32 + _FIELDS_FLOAT32 + _FIELDS_UINT8:
+                    _dtype = (_np_s145.uint32 if _fname in _FIELDS_UINT32 else
+                              _np_s145.int32  if _fname in _FIELDS_INT32  else
+                              _np_s145.uint8  if _fname in _FIELDS_UINT8  else
+                              _np_s145.float32)
+                    _parts = []
+                    if _keep_prior and _prior_npz is not None and _fname in _prior_npz:
+                        _parts.append(_prior_npz[_fname][_keep_prior].astype(_dtype))
+                    if _keep_new and _fname in _new_arrays:
+                        _parts.append(_new_arrays[_fname][_keep_new].astype(_dtype))
+                    if _parts:
+                        _merged_arrays[_fname] = _np_s145.concatenate(_parts)
+                    else:
+                        _merged_arrays[_fname] = _np_s145.array([], dtype=_dtype)
+
+                # Sort merged arrays by seed value
+                _sort_idx = _np_s145.argsort(_merged_arrays['seeds'])
+                for _fname in _merged_arrays:
+                    _merged_arrays[_fname] = _merged_arrays[_fname][_sort_idx]
+
+                _total = len(_merged_arrays['seeds'])
+                _net_new = len(_keep_new)
+                _superseded_count = len(_superseded)
+
+                # Save accumulator NPZ
+                _np_s145.savez_compressed(_accum_npz, **_merged_arrays)
+
+                # Save as canonical bidirectional_survivors_binary.npz (Steps 2-6 input)
+                _np_s145.savez_compressed('bidirectional_survivors_binary.npz', **_merged_arrays)
+
+                print(f"\n[S145-R1 v2][NPZ ACCUMULATOR] {_total:,} total survivors across all runs")
+                print(f"   Prior kept:   {len(_keep_prior):,}")
+                print(f"   Net new:      +{_net_new:,}")
+                print(f"   Superseded:   {_superseded_count:,} (prior seeds beaten by new score)")
+                print(f"   Accumulator:  {_accum_npz}")
+                print(f"✅ bidirectional_survivors_binary.npz written ({_total:,} seeds, 22 fields)")
+
+            except Exception as _accum_err:
+                print(f"\n⚠️  [S145-R1 v2][NPZ ACCUMULATOR] Failed: {_accum_err}")
+                print(f"   Falling back to per-run convert_survivors_to_binary.py")
+                import traceback as _tb_s145
+                _tb_s145.print_exc()
+                # Fallback: use original conversion path
+                from subprocess import run as subprocess_run, CalledProcessError
+                try:
+                    subprocess_run(
+                        ["python3", "convert_survivors_to_binary.py",
+                         "bidirectional_survivors.json"],
+                        check=True
+                    )
+                    print(f"✅ Fallback: converted bidirectional_survivors.json to NPZ")
+                except CalledProcessError as _e:
+                    print(f"❌ NPZ conversion failed: {_e}")
+                    raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
 
             print(f"{'='*80}\n")
 
