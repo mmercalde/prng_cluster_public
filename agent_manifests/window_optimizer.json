@@ -41,7 +41,7 @@
         "seed-start": "seed_start"
       },
       "distributed": true,
-      "timeout_minutes": 240
+      "timeout_minutes": 900
     }
   ],
   "follow_up_agents": [
@@ -197,12 +197,12 @@
   "default_params": {
     "lottery_file": "daily3.json",
     "strategy": "bayesian",
-    "max_seeds": 10000000,
+    "max_seeds": 1073741824,
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json",
     "test_both_modes": true,
     "resume_study": false,
-    "window_trials": 100,
+    "window_trials": 50,
     "study_name": "",
     "trse_context": "trse_context.json",
     "enable_pruning": false,

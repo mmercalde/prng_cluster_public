@@ -190,7 +190,13 @@ def create_incremental_save_callback(
             "last_trial_value": trial.value,
         }
         
-        if study.best_trial is not None:
+        # [S145-R1] Guard against ValueError when all trials are pruned
+        # Optuna raises ValueError (not returns None) when no completed trials exist
+        try:
+            _best_trial_exists = study.best_trial is not None
+        except ValueError:
+            _best_trial_exists = False
+        if _best_trial_exists:
             best_params = study.best_params or {}
             best_config = {
                 **progress,

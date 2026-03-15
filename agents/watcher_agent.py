@@ -1404,12 +1404,25 @@ class WatcherAgent:
                 _next_start = _db.get_next_seed_start(_prng_type, _chunk_size)
                 if _next_start > 0:
                     final_params['seed_start'] = _next_start
-                    final_params['resume_study'] = False   # INVARIANT: new range = fresh study
-                    final_params['study_name'] = ''        # force fresh study name
-                    logger.info(
-                        f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
-                        f"for {_prng_type} — forcing fresh study"
-                    )
+                    # [S145-R1] Conditionalize fresh-study invariant on study_name presence.
+                    # If operator explicitly provides study_name in default_params, preserve
+                    # Optuna continuity across seed range boundaries (cross-session resume).
+                    # Default behavior (no study_name) unchanged — fresh study on range advance.
+                    _explicit_study = final_params.get('study_name', '')
+                    if not _explicit_study:
+                        final_params['resume_study'] = False   # INVARIANT: new range = fresh study
+                        final_params['study_name'] = ''        # force fresh study name
+                        logger.info(
+                            f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
+                            f"for {_prng_type} — forcing fresh study (no explicit study_name)"
+                        )
+                    else:
+                        final_params['resume_study'] = True
+                        logger.info(
+                            f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
+                            f"for {_prng_type} — preserving Optuna continuity "
+                            f"(study_name='{_explicit_study}' explicitly set) [S145-R1]"
+                        )
                 else:
                     logger.info(
                         f"[COVERAGE] Step 1: no prior coverage for "
@@ -2793,7 +2806,7 @@ def main():
         use_grammar=not args.no_grammar,
         # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
         # [S121] Step 0 TRSE is fast (~5s) — explicit override prevents default 120min wait
-        step_timeout_overrides={0: 1, 1: 480, 5: 360}
+        step_timeout_overrides={0: 1, 1: 900, 5: 360}  # [S145-R1] 900min = 50 trials × ~17min + buffer
     )
 
     # Handle halt commands

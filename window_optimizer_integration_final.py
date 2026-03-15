@@ -1290,14 +1290,44 @@ def add_window_optimizer_to_coordinator():
                 print(f"   Constant skip: {constant_count} survivors")
                 print(f"   Variable skip: {variable_count} survivors")
 
-            # Convert to NPZ binary format (required by Step 2)
+            # [S145-R1] SURVIVOR ACCUMULATOR — merge into persistent cross-run store
+            # Merge policy: best per-seed score wins on conflict (TB ruling S145-R1)
+            # bidirectional_survivors.json still written above — no change to existing output
+            import os as _os_s145
+            _accum_path = 'bidirectional_survivors_all.json'
+            try:
+                if _os_s145.path.exists(_accum_path):
+                    with open(_accum_path) as _af:
+                        _prior_survivors = json.load(_af)
+                else:
+                    _prior_survivors = []
+                _prior_count = len(_prior_survivors)
+                # Merge — best per-seed score wins on conflict
+                _merged = {s['seed']: s for s in _prior_survivors}
+                for s in bidirectional_deduped:
+                    if s['seed'] not in _merged or                        float(s.get('score', 0)) > float(_merged[s['seed']].get('score', 0)):
+                        _merged[s['seed']] = s
+                _merged_list = sorted(_merged.values(), key=lambda x: x['seed'])
+                with open(_accum_path, 'w') as _af:
+                    json.dump(_merged_list, _af)
+                _net_new = len(_merged_list) - _prior_count
+                print(f"\n[S145-R1][ACCUMULATOR] {len(_merged_list):,} total survivors across all runs")
+                print(f"   This run: +{len(bidirectional_deduped):,} candidates | Net new: +{_net_new:,}")
+                print(f"   Accumulator: {_accum_path}")
+            except Exception as _accum_err:
+                print(f"\n⚠️  [S145-R1][ACCUMULATOR] Failed (non-fatal): {_accum_err}")
+                print(f"   Falling back to per-run NPZ conversion")
+                _accum_path = 'bidirectional_survivors.json'
+
+            # Convert accumulated set to NPZ binary format (required by Step 2)
+            # Uses accumulator if available, falls back to per-run file on accumulator error
             from subprocess import run as subprocess_run, CalledProcessError
             try:
                 subprocess_run(
-                    ["python3", "convert_survivors_to_binary.py", "bidirectional_survivors.json"],
+                    ["python3", "convert_survivors_to_binary.py", _accum_path],
                     check=True
                 )
-                print(f"✅ Converted to bidirectional_survivors_binary.npz")
+                print(f"✅ Converted {_accum_path} to bidirectional_survivors_binary.npz")
             except CalledProcessError as e:
                 print(f"❌ NPZ conversion failed: {e}")
                 raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
