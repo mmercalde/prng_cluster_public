@@ -41,7 +41,7 @@
         "seed-start": "seed_start"
       },
       "distributed": true,
-      "timeout_minutes": 0
+      "timeout_minutes": 99999
     }
   ],
   "follow_up_agents": [
@@ -201,9 +201,9 @@
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json",
     "test_both_modes": true,
-    "resume_study": false,
+    "resume_study": true,
     "window_trials": 50,
-    "study_name": "",
+    "study_name": "window_opt_1773613016",
     "trse_context": "trse_context.json",
     "enable_pruning": true,
     "n_parallel": 1,
