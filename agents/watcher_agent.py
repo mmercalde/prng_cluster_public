@@ -1927,6 +1927,10 @@ class WatcherAgent:
         # Write initial progress (Team Beta recommendation B)
         self._write_progress_atomic(step, step_name, current_progress, 0.0)
         
+        # [S145] timeout_seconds=0 means disabled — treat as infinite
+        if timeout_seconds <= 0:
+            timeout_seconds = float('inf')
+
         try:
             while True:
                 # Check timeout
@@ -2806,7 +2810,7 @@ def main():
         use_grammar=not args.no_grammar,
         # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
         # [S121] Step 0 TRSE is fast (~5s) — explicit override prevents default 120min wait
-        step_timeout_overrides={0: 1, 1: 900, 5: 360}  # [S145-R1] 900min = 50 trials × ~17min + buffer
+        step_timeout_overrides={0: 1, 5: 360}  # Step 1 has no timeout — production runs are 13-18hrs
     )
 
     # Handle halt commands
