@@ -798,51 +798,9 @@ def add_window_optimizer_to_coordinator():
                         trial.set_user_attr("result_dict", result.to_dict())
                         print(f"   [P{partition_idx}] Trial {trial.number}: "
                               f"{cfg.description()} score={score:.0f}")
-                        # [S140b-NP2] Trial history — child-local DB connection
-                        # [S142] Retry loop: SQLite lock contention when P0+P1 write simultaneously
-                        import time as _time_th
-                        import random as _rand_th
-                        _sess = (",".join(cfg.sessions)
-                                 if isinstance(cfg.sessions, (list, tuple))
-                                 else str(cfg.sessions))
-                        _th_written = False
-                        for _th_attempt in range(3):
-                            try:
-                                from database_system import DistributedPRNGDatabase as _DBTH
-                                _db_th = _DBTH()
-                                _db_th.write_step1_trial(
-                                    run_id=f"step1_{prng_base_w}_{int(seed_start_w)}_p{partition_idx}",  # [S142-TB] partition-scoped: eliminates INSERT OR IGNORE collision
-                                    study_name=study_name_w,
-                                    trial_number=int(trial.number),
-                                    prng_type=str(prng_base_w),
-                                    seed_range_start=int(seed_start_w),
-                                    seed_range_end=int(seed_start_w + seed_count_w - 1),
-                                    params={
-                                        'window_size': cfg.window_size,
-                                        'offset': cfg.offset,
-                                        'skip_min': cfg.skip_min,
-                                        'skip_max': cfg.skip_max,
-                                        'time_of_day': _sess,
-                                        'forward_threshold': cfg.forward_threshold,
-                                        'reverse_threshold': cfg.reverse_threshold,
-                                    },
-                                    trial_score=float(score),
-                                    forward_survivors=int(
-                                        getattr(result, "forward_count", 0)),
-                                    reverse_survivors=int(
-                                        getattr(result, "reverse_count", 0)),
-                                    bidirectional_survivors=int(
-                                        getattr(result, "bidirectional_count", 0)),
-                                    pruned=False
-                                )
-                                _th_written = True
-                                break
-                            except Exception as _th_e:
-                                if _th_attempt < 2:
-                                    _time_th.sleep(0.1 + _rand_th.random() * 0.4)
-                                else:
-                                    print(f"   [P{partition_idx}] trial-history write "
-                                          f"failed after 3 attempts: {_th_e}")
+                        # [S142-C] _worker_obj trial history writes removed per TB ruling.
+                        # Canonical step1_trial_history is written by backfill from
+                        # the shared Optuna study after all partition workers complete.
                         return score
 
                     _pstudy.optimize(_worker_obj, n_trials=trials_for_worker, n_jobs=1)
@@ -1138,7 +1096,7 @@ def add_window_optimizer_to_coordinator():
                               if isinstance(_fsess_raw, (list, tuple))
                               else str(_fsess_raw))
                     _db_fill.write_step1_trial(
-                        run_id=f"step1_{prng_base}_{int(seed_start)}_backfill",
+                        run_id=f"step1_{prng_base}_{int(seed_start)}",  # [S142-C] canonical run_id, no suffix
                         study_name=_mp_study_name,
                         trial_number=int(_ft.number),
                         prng_type=str(prng_base),
