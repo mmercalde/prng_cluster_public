@@ -462,7 +462,10 @@ class PersistentWorkerCoordinator:
                        dataset_path: str = "",
                        strategies: Optional[List[Dict]] = None,
                        phase2_threshold: float = 0.5,
-                       target_file: str = "") -> Dict[str, Any]:
+                       target_file: str = "",
+                       offset: int = 0,
+                       sessions: Optional[List[str]] = None,
+                       skip_range: Optional[List[int]] = None) -> Dict[str, Any]:
         """
         Run a full distributed sieve pass (forward OR reverse, constant OR hybrid).
         Returns a result dict compatible with extract_survivor_records() in
@@ -525,20 +528,27 @@ class PersistentWorkerCoordinator:
 
         def dispatch_chunk(idx: int, seed_start: int, seed_end: int,
                            worker_handle_or_node):
+            # Job dict matches coordinator.py residue_sieve format exactly
+            # (field names verified against sieve_gpu_worker.py job.get() calls)
+            _sessions   = sessions   if sessions   is not None else ["midday", "evening"]
+            _skip_range = skip_range if skip_range is not None else [0, 147]
+            # prng_families: strip _reverse/_hybrid suffixes — worker handles variants
+            _base_prng  = prng_type.replace("_reverse", "").replace("_hybrid", "")
             job = {
-                "job_id":            f"sieve_{idx:03d}",
-                "prng_type":         prng_type,
-                "search_type":       "residue_sieve",
-                "seed_start":        seed_start,
-                "seed_end":          seed_end,
-                "residues":          residues,
-                "window_size":       window_size,
-                "threshold":         threshold,
-                "phase2_threshold":  phase2_threshold,
-                "strategies":        strategies if is_hybrid else None,
-                "hybrid":            is_hybrid,
-                "target_file":       target_file,
-                "dataset_path":      dataset_path,
+                "job_id":               f"sieve_{idx:03d}",
+                "search_type":          "residue_sieve",
+                "dataset_path":         dataset_path or target_file,
+                "seed_start":           seed_start,
+                "seed_end":             seed_end,
+                "window_size":          window_size,
+                "min_match_threshold":  threshold,
+                "skip_range":           _skip_range,
+                "offset":               offset,
+                "sessions":             _sessions,
+                "prng_families":        [prng_type],
+                "strategies":           strategies if is_hybrid else None,
+                "hybrid":               is_hybrid,
+                "phase2_threshold":     phase2_threshold,
             }
 
             def _run_once(wh):
@@ -711,6 +721,9 @@ def run_trial_persistent(coordinator_cfg: str,
             window_size  = ws,
             dataset_path = dataset_path,
             output_file  = f"results/window_opt_forward_{ws}_{off}_t{trial_number}.json",
+            offset       = config.offset,
+            sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
+            skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
         )
         fwd_survivors   = fwd_result.get("survivors", [])
         fwd_match_rates = fwd_result.get("match_rates", [])
@@ -740,6 +753,9 @@ def run_trial_persistent(coordinator_cfg: str,
             window_size  = ws,
             dataset_path = dataset_path,
             output_file  = f"results/window_opt_reverse_{ws}_{off}_t{trial_number}.json",
+            offset       = config.offset,
+            sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
+            skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
         )
         rev_survivors   = rev_result.get("survivors", [])
         rev_match_rates = rev_result.get("match_rates", [])
@@ -767,6 +783,9 @@ def run_trial_persistent(coordinator_cfg: str,
                 window_size  = ws,
                 dataset_path = dataset_path,
                 output_file  = f"results/window_opt_forward_hybrid_{ws}_{off}_t{trial_number}.json",
+                offset       = config.offset,
+                sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
+                skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
             )
             fwd_h_survivors   = fwd_h_result.get("survivors", [])
             fwd_h_match_rates = fwd_h_result.get("match_rates", [])
@@ -782,6 +801,9 @@ def run_trial_persistent(coordinator_cfg: str,
                 window_size  = ws,
                 dataset_path = dataset_path,
                 output_file  = f"results/window_opt_reverse_hybrid_{ws}_{off}_t{trial_number}.json",
+                offset       = config.offset,
+                sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
+                skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
             )
             rev_h_survivors   = rev_h_result.get("survivors", [])
             rev_h_match_rates = rev_h_result.get("match_rates", [])
