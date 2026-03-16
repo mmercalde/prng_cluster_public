@@ -150,7 +150,7 @@ def run_sieve_job(job: dict) -> dict:
     seed_start   = job.get('seed_start', 0)
     seed_end     = job.get('seed_end', seed_start + 100_000)
     skip_range   = tuple(job.get('skip_range', [0, 16]))
-    threshold    = job.get('min_match_threshold', 0.25)
+    threshold    = coerce_threshold(job.get('min_match_threshold', None), 0.25)
     offset       = job.get('offset', 0)
     sessions     = job.get('sessions', ['midday', 'evening'])
     prng_families= job.get('prng_families', ['java_lcg'])
@@ -171,6 +171,10 @@ def run_sieve_job(job: dict) -> dict:
             seed_type = config.get("seed_type", "uint32")
             dtype = cp.uint64 if seed_type == "uint64" else cp.uint32
             residue_dtype = cp.uint32
+            # Apply per-family custom_params overrides (fidelity — mirrors original path)
+            default_params = dict(config.get("default_params", {}))
+            if custom_params:
+                default_params.update(custom_params)
 
             if '_reverse' in family_name:
                 residues_gpu = cp.array(draws[::-1], dtype=residue_dtype)
@@ -193,11 +197,13 @@ def run_sieve_job(job: dict) -> dict:
             blocks  = (n_seeds + threads - 1) // threads
 
             # Build kernel args (mirrors sieve_filter.py exactly)
-            default_params = config.get("default_params", {})
+            # Note: default_params already set above with custom_params applied
             kernel_args = [
                 seeds_gpu, residues_gpu, survivors_gpu,
                 match_rates_gpu, best_skips_gpu, survivor_count_gpu,
-                n_seeds, k, skip_min, skip_max, cp.float32(threshold)
+                cp.int32(n_seeds), cp.int32(k),
+                cp.int32(skip_min), cp.int32(skip_max),
+                cp.float32(threshold)
             ]
             if family_name == 'xorshift32':
                 kernel_args += [cp.int32(default_params.get("shift_a", 13)),
@@ -216,7 +222,11 @@ def run_sieve_job(job: dict) -> dict:
                                 cp.uint64(default_params.get("c", 11))]
             elif family_name in ('java_lcg_hybrid', 'java_lcg_hybrid_reverse'):
                 # S134: Hybrid kernel — different buffer layout from constant-skip.
-                # Ported from sieve_filter.py run_hybrid_sieve().
+                # Kernel signatures differ between forward and reverse:
+                #   Forward (java_lcg_hybrid_multi_strategy_sieve):
+                #     ...threshold, unsigned long long a, unsigned long long c
+                #   Reverse (java_lcg_hybrid_reverse_sieve):
+                #     ...threshold, int offset  (a,c hardcoded inside kernel)
                 strategies_data = job.get('strategies') or []
                 if not strategies_data:
                     try:
@@ -234,25 +244,40 @@ def run_sieve_job(job: dict) -> dict:
                 strategy_tolerances = cp.array([s["skip_tolerance"]         for s in strategies_data], dtype=cp.int32)
                 strategy_ids_gpu    = cp.zeros(n_seeds,     dtype=cp.uint32)
                 skip_sequences_gpu  = cp.zeros(n_seeds * k, dtype=cp.uint32)
-                # Rebuild kernel_args from scratch — hybrid signature is different
-                kernel_args = [
-                    seeds_gpu, residues_gpu, survivors_gpu,
-                    match_rates_gpu, skip_sequences_gpu, strategy_ids_gpu,
-                    survivor_count_gpu, cp.int32(n_seeds), cp.int32(k),
-                    strategy_max_misses, strategy_tolerances, cp.int32(n_strategies),
-                    cp.float32(threshold),
-                    cp.uint64(default_params.get("a", 25214903917)),
-                    cp.uint64(default_params.get("c", 11)),
-                ]
+                # Use phase2_threshold for hybrid (mirrors sieve_filter.py single-phase hybrid)
+                # Use coerce_threshold for safe handling — avoids 0.0 / string edge cases
+                phase2_raw = job.get('phase2_threshold', None)
+                hybrid_threshold = coerce_threshold(phase2_raw, threshold) if phase2_raw is not None else threshold
+                if family_name == 'java_lcg_hybrid':
+                    # Forward hybrid: kernel expects ...threshold, a, c
+                    kernel_args = [
+                        seeds_gpu, residues_gpu, survivors_gpu,
+                        match_rates_gpu, skip_sequences_gpu, strategy_ids_gpu,
+                        survivor_count_gpu, cp.int32(n_seeds), cp.int32(k),
+                        strategy_max_misses, strategy_tolerances, cp.int32(n_strategies),
+                        cp.float32(hybrid_threshold),
+                        cp.uint64(default_params.get("a", 25214903917)),
+                        cp.uint64(default_params.get("c", 11)),
+                    ]
+                else:
+                    # Reverse hybrid: kernel expects ...threshold, offset (a,c hardcoded)
+                    kernel_args = [
+                        seeds_gpu, residues_gpu, survivors_gpu,
+                        match_rates_gpu, skip_sequences_gpu, strategy_ids_gpu,
+                        survivor_count_gpu, cp.int32(n_seeds), cp.int32(k),
+                        strategy_max_misses, strategy_tolerances, cp.int32(n_strategies),
+                        cp.float32(hybrid_threshold),
+                        cp.int32(offset),
+                    ]
                 kernel((blocks,), (threads,), tuple(kernel_args))
-                count = int(survivor_count_gpu[0].get())
+                count = min(int(survivor_count_gpu[0].get()), n_seeds)  # defensive clamp
                 if count > 0:
                     s_arr   = survivors_gpu[:count].get().tolist()
                     r_arr   = match_rates_gpu[:count].get().tolist()
                     sid_arr = strategy_ids_gpu[:count].get().tolist()
                     ss_raw  = skip_sequences_gpu[:count * k].get().reshape(count, k).tolist()
                     for seed, rate, sid, ss in zip(s_arr, r_arr, sid_arr, ss_raw):
-                        if rate >= threshold:
+                        if rate >= hybrid_threshold:  # use hybrid_threshold not threshold
                             survivors_out.append({
                                 'seed': int(seed), 'family': family_name,
                                 'match_rate': float(rate),
@@ -276,7 +301,7 @@ def run_sieve_job(job: dict) -> dict:
 
             kernel((blocks,), (threads,), tuple(kernel_args))
 
-            count = int(survivor_count_gpu[0].get())
+            count = min(int(survivor_count_gpu[0].get()), n_seeds)  # defensive clamp
             if count > 0:
                 s_arr = survivors_gpu[:count].get().tolist()
                 r_arr = match_rates_gpu[:count].get().tolist()

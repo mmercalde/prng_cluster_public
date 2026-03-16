@@ -589,7 +589,9 @@ class PersistentWorkerCoordinator:
                     finally:
                         self._localhost_semaphore.release()
 
+            t0 = time.time()
             res = _run_once(worker_handle_or_node)
+            elapsed = time.time() - t0
 
             # One retry on transient pipe/empty-response failures
             if res.get("status") != "ok":
@@ -597,13 +599,26 @@ class PersistentWorkerCoordinator:
                 if "empty response" in err or "pipe" in err.lower() or "timeout" in err.lower():
                     self.logger.warning(f"  Chunk {idx} transient failure ({err}) — retrying once")
                     import time; time.sleep(1)
+                    t0 = time.time()
                     res = _run_once(worker_handle_or_node)
+                    elapsed = time.time() - t0
 
             with lock:
                 results_by_chunk[idx] = res
             status = "✅" if res.get("status") == "ok" else "❌"
             survivors = len(res.get("survivors", []))
-            self.logger.info(f"  {status} Chunk {idx}: {seed_end - seed_start:,} seeds → {survivors:,} survivors")
+            seeds_in_chunk = seed_end - seed_start
+            self.logger.info(f"  {status} Chunk {idx}: {seeds_in_chunk:,} seeds → {survivors:,} survivors")
+
+            # Log to ProgressWriter for web dashboard (mirrors coordinator.py line 1611)
+            if self._progress_writer and res.get("status") == "ok" and elapsed > 0:
+                try:
+                    hostname = worker_handle_or_node.node.hostname if isinstance(worker_handle_or_node, WorkerHandle) else worker_handle_or_node.hostname
+                    gpu_type = worker_handle_or_node.node.gpu_type if isinstance(worker_handle_or_node, WorkerHandle) else worker_handle_or_node.gpu_type
+                    gpu_id   = worker_handle_or_node.gpu_id if isinstance(worker_handle_or_node, WorkerHandle) else 0
+                    self._progress_writer.log_gpu_result(hostname, gpu_id, gpu_type, seeds_in_chunk, elapsed, success=True)
+                except Exception:
+                    pass
 
         threads = []
         for i, (s_start, s_end) in enumerate(chunks):
