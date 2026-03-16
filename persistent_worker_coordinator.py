@@ -161,6 +161,8 @@ class PersistentWorkerCoordinator:
         self.workers: List[WorkerHandle] = []   # AMD rig workers (persistent)
         self._lock = threading.Lock()
         self._started = False
+        # Mirror coordinator.py: semaphore limits Zeus concurrent local jobs (2 GPUs)
+        self._localhost_semaphore = threading.Semaphore(2)
         # Per-node semaphores — throttle concurrent dispatch to max_per_node (S133-A lesson)
         self._node_semaphores: Dict[str, threading.Semaphore] = {}
 
@@ -243,6 +245,18 @@ class PersistentWorkerCoordinator:
         self._started = True
         alive = sum(1 for w in self.workers if w.alive)
         self.logger.info(f"Worker pool ready: {alive}/{len(self.workers)} alive")
+        # Initialize ProgressWriter for web dashboard (mirrors coordinator.py)
+        try:
+            from progress_display import ProgressWriter
+            self._progress_writer = ProgressWriter("Forward Sieve", total_jobs=100, total_seeds=0)
+            for node in self.nodes:
+                if self._is_localhost(node.hostname):
+                    self._progress_writer.register_node("localhost", "RTX 3080 Ti", 2)
+                else:
+                    self._progress_writer.register_node(node.hostname, node.gpu_type, node.gpu_count)
+        except Exception as e:
+            self.logger.warning(f"ProgressWriter unavailable: {e}")
+            self._progress_writer = None
 
     def _spawn_worker(self, handle: WorkerHandle) -> bool:
         """SSH + launch sieve_gpu_worker.py on remote GPU, confirm heartbeat."""
@@ -319,6 +333,11 @@ class PersistentWorkerCoordinator:
     def shutdown(self):
         """Send shutdown to all workers and reap processes."""
         self.logger.info("Shutting down persistent workers...")
+        if hasattr(self, '_progress_writer') and self._progress_writer:
+            try:
+                self._progress_writer.finish()
+            except Exception:
+                pass
         for handle in self.workers:
             if handle.proc and handle.proc.poll() is None:
                 try:
@@ -521,6 +540,12 @@ class PersistentWorkerCoordinator:
             f"[{prng_type}] {total_seeds:,} seeds → {len(chunks)} chunks "
             f"({chunk_size:,}/chunk) across {num_workers} workers"
         )
+        if self._progress_writer:
+            try:
+                step_name = f"{'Reverse' if 'reverse' in prng_type else 'Forward'} Sieve ({prng_type})"
+                self._progress_writer.update_step(step_name, total_seeds=total_seeds)
+            except Exception:
+                pass
 
         # Dispatch all chunks in parallel threads
         results_by_chunk: Dict[int, Dict] = {}
@@ -556,8 +581,13 @@ class PersistentWorkerCoordinator:
                     job["gpu_id"] = wh.gpu_id
                     return self._dispatch_to_worker(wh, job)
                 else:
+                    # Mirror coordinator.py: semaphore limits Zeus to 2 concurrent local jobs
                     job["gpu_id"] = idx % wh.gpu_count
-                    return self._dispatch_local_sieve(job, wh)
+                    self._localhost_semaphore.acquire()
+                    try:
+                        return self._dispatch_local_sieve(job, wh)
+                    finally:
+                        self._localhost_semaphore.release()
 
             res = _run_once(worker_handle_or_node)
 
@@ -613,6 +643,15 @@ class PersistentWorkerCoordinator:
 
         if failed_chunks:
             self.logger.warning(f"{failed_chunks}/{len(chunks)} chunks failed for {prng_type}")
+
+        if self._progress_writer:
+            try:
+                self._progress_writer.update_progress(
+                    jobs_done=len(chunks) - failed_chunks,
+                    chunks_total=len(chunks)
+                )
+            except Exception:
+                pass
 
         # Build result dict compatible with extract_survivor_records()
         result = {
