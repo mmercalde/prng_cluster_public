@@ -660,7 +660,7 @@ OVERVIEW_CONTENT = """
 
     <div class="stats-grid">
         <div class="stat-item">
-            <div class="stat-value">{{ "{:,}".format(state.seeds_completed) }}</div>
+            <div class="stat-value">{{ "{:,}".format(state.seeds_completed|default(0)) }}</div>
             <div class="stat-label">Seeds</div>
         </div>
         <div class="stat-item">
@@ -758,19 +758,19 @@ OVERVIEW_CONTENT = """
     </div>
     <div class="stats-grid">
         <div class="stat-item">
-            <div class="stat-value" style="color: var(--accent-blue);">{{ "{:,}".format(state.trial_stats.forward_survivors) }}</div>
+            <div class="stat-value" style="color: var(--accent-blue);">{{ "{:,}".format(state.trial_stats.forward_survivors|default(0)) }}</div>
             <div class="stat-label">Forward Survivors</div>
         </div>
         <div class="stat-item">
-            <div class="stat-value" style="color: var(--accent-purple);">{{ "{:,}".format(state.trial_stats.reverse_survivors) }}</div>
+            <div class="stat-value" style="color: var(--accent-purple);">{{ "{:,}".format(state.trial_stats.reverse_survivors|default(0)) }}</div>
             <div class="stat-label">Reverse Survivors</div>
         </div>
         <div class="stat-item">
-            <div class="stat-value" style="color: var(--accent-green);">{{ "{:,}".format(state.trial_stats.bidirectional) }}</div>
+            <div class="stat-value" style="color: var(--accent-green);">{{ "{:,}".format(state.trial_stats.bidirectional|default(0)) }}</div>
             <div class="stat-label">Bidirectional</div>
         </div>
         <div class="stat-item">
-            <div class="stat-value" style="color: var(--accent-orange);">{{ "{:,}".format(state.trial_stats.best_bidirectional) }}</div>
+            <div class="stat-value" style="color: var(--accent-orange);">{{ "{:,}".format(state.trial_stats.best_bidirectional|default(0)) }}</div>
             <div class="stat-label">Best So Far</div>
         </div>
     </div>
@@ -959,7 +959,7 @@ STATS_CONTENT = """
             <tr>
                 <td>{{ elapsed_str }} ago</td>
                 <td>{{ state.step_name }}</td>
-                <td>{{ "{:,}".format(state.seeds_completed) }}</td>
+                <td>{{ "{:,}".format(state.seeds_completed|default(0)) }}</td>
                 <td>{{ elapsed_str }}</td>
                 <td>{{ "{:,.0f}".format(total_sps) }} s/s</td>
             </tr>
