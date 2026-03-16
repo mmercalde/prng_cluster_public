@@ -668,7 +668,7 @@ OVERVIEW_CONTENT = """
             <div class="stat-label">Jobs</div>
         </div>
         <div class="stat-item">
-            <div class="stat-value">{{ "{:,.0f}".format(total_sps) }}</div>
+            <div class="stat-value">{{ "{:,.0f}".format(total_sps|default(0)) }}</div>
             <div class="stat-label">Seeds/sec</div>
         </div>
         <div class="stat-item">
@@ -724,7 +724,7 @@ OVERVIEW_CONTENT = """
                     {% endif %}
                 </td>
                 <td>
-                    <span class="throughput-value">{{ "{:,.0f}".format(node.current_seeds_per_sec) }}</span>
+                    <span class="throughput-value">{{ "{:,.0f}".format(node.current_seeds_per_sec|default(0)) }}</span>
                     <span class="throughput-unit">s/s</span>
                 </td>
                 <td>{{ node.jobs_completed }}</td>
@@ -839,7 +839,7 @@ WORKERS_CONTENT = """
                 </div>
                 <div class="gpu-stats">
                     <div>
-                        <div class="gpu-stat-value">{% if node.current_seeds_per_sec > 0 %}{{ "{:,.0f}".format(node.current_seeds_per_sec / node.total_gpus) }}{% else %}0{% endif %}</div>
+                        <div class="gpu-stat-value">{% if node.current_seeds_per_sec > 0 %}{{ "{:,.0f}".format((node.current_seeds_per_sec|default(0)) / ((node.total_gpus|default(1)) or 1)) }}{% else %}0{% endif %}</div>
                         <div class="gpu-stat-label">Seeds/s</div>
                     </div>
                     <div>
@@ -885,7 +885,7 @@ STATS_CONTENT = """
             <div class="stat-label">Nodes</div>
         </div>
         <div class="stat-item">
-            <div class="stat-value">{{ "{:,.0f}".format(total_sps) }}</div>
+            <div class="stat-value">{{ "{:,.0f}".format(total_sps|default(0)) }}</div>
             <div class="stat-label">Current Seeds/s</div>
         </div>
     </div>
@@ -961,7 +961,7 @@ STATS_CONTENT = """
                 <td>{{ state.step_name }}</td>
                 <td>{{ "{:,}".format(state.seeds_completed|default(0)) }}</td>
                 <td>{{ elapsed_str }}</td>
-                <td>{{ "{:,.0f}".format(total_sps) }} s/s</td>
+                <td>{{ "{:,.0f}".format(total_sps|default(0)) }} s/s</td>
             </tr>
             {% else %}
             <tr>
