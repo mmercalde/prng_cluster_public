@@ -208,7 +208,7 @@
     "enable_pruning": true,
     "n_parallel": 1,
     "use_persistent_workers": true,
-    "worker_pool_size": 8,
+    "worker_pool_size": 4,
     "seed_cap_nvidia": 5000000,
     "seed_cap_amd": 2000000,
     "seed_start": 0

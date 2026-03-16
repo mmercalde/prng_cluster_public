@@ -104,7 +104,7 @@ ROCM_ENV_VARS = [
 ]
 WORKER_SCRIPT = "sieve_gpu_worker.py"
 WORKER_HEARTBEAT_TIMEOUT_S = 30   # seconds to wait for worker heartbeat on startup
-JOB_TIMEOUT_S = 300               # seconds max per sieve job
+JOB_TIMEOUT_S = 600               # seconds max per sieve job
 
 
 # ─────────────────────────────────────────────────────────────────────────────
