@@ -232,9 +232,8 @@ def run_sieve_job(job: dict) -> dict:
                     try:
                         from hybrid_strategy import get_all_strategies
                         strategies_data = [
-                            {"max_consecutive_misses": s.max_consecutive_misses,
-                             "skip_tolerance": s.skip_tolerance}
-                            if not isinstance(s, dict) else s
+                            # Full dict needed — sieve_filter.py StrategyConfig(**s) requires all fields
+                            s.to_dict() if hasattr(s, 'to_dict') else s
                             for s in get_all_strategies()
                         ]
                     except ImportError:

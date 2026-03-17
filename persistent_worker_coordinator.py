@@ -509,9 +509,8 @@ class PersistentWorkerCoordinator:
                 from hybrid_strategy import get_all_strategies
                 raw = get_all_strategies()
                 strategies = [
-                    {"max_consecutive_misses": s.max_consecutive_misses,
-                     "skip_tolerance": s.skip_tolerance}
-                    if not isinstance(s, dict) else s
+                    # Send full strategy dict — sieve_filter.py needs all StrategyConfig fields
+                    s.to_dict() if hasattr(s, 'to_dict') else s
                     for s in raw
                 ]
                 self.logger.info(f"Loaded {len(strategies)} strategies for hybrid sieve")
