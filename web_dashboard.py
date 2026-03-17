@@ -1351,9 +1351,21 @@ function exportHistory() {
 
 def read_progress():
     """Read progress from JSON file"""
+    _default_trial_stats = {
+        'trial_num': 0, 'forward_survivors': 0, 'reverse_survivors': 0,
+        'bidirectional': 0, 'best_bidirectional': 0, 'config_desc': '',
+        'accumulated_forward': 0, 'accumulated_reverse': 0, 'accumulated_bidirectional': 0
+    }
     try:
         with open(PROGRESS_FILE, 'r') as f:
-            return json.load(f)
+            data = json.load(f)
+        # Ensure trial_stats always has all required keys — prevents Undefined.__format__ crash
+        if 'trial_stats' not in data or not data['trial_stats']:
+            data['trial_stats'] = _default_trial_stats
+        else:
+            for k, v in _default_trial_stats.items():
+                data['trial_stats'].setdefault(k, v)
+        return data
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
