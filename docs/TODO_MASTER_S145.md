@@ -67,8 +67,32 @@ operational. Ready for production sweep Run 1.
 ### Neural Net & Training
 - [ ] **sklearn warnings fix**
 - [ ] **XGBoost device mismatch warning fix**
-- [ ] **NN Y-label normalization** — `train_single_trial.py` line 499
+- [ ] **NN Y-label normalization — Step 5 DONE (S121, commit 6e5f76c)**. Outstanding: port same fix to selfplay path (`inner_episode_trainer.py`) — see below.
 - [ ] **Phase 3B: Tree parallel workers** — Team Beta review required
+
+### Selfplay — NN Enablement (Two-Part Fix)
+- [ ] **Remove NN forbidden guard in `inner_episode_trainer.py`** — Lines 497–502
+  hardcode `ValueError` blocking neural_net. Must be removed before NN can
+  run in selfplay episodes. Verified live in public repo.
+- [ ] **Add y-normalization to selfplay inner trainer** — `inner_episode_trainer.py`
+  `train_model_kfold()` has no y-normalization. Need to port the same
+  `y_mean`/`y_std` normalize → inverse-transform pattern from
+  `train_single_trial.py` (S121 fix). Without this, NN will produce
+  catastrophic R² values in selfplay just as it did in Step 5 pre-S121.
+- [ ] **Selfplay multi-model (`train_best()`) — DEFERRED** — `inner_episode_trainer.py`
+  already has `train_all()` and `train_best()` methods and `--compare-all` CLI flag.
+  However, adding NN to `train_best()` would require subprocess isolation
+  (GPU isolation invariant) which inner_episode_trainer does not implement.
+  Defer until NN is stable in single-episode selfplay first.
+
+### Selfplay Compute — Architecture Note
+- **Inner-only selfplay is lightweight** — Tree models run on Zeus i9-9900X
+  (~18 threads auto-detected), NN on RTX 3080 Ti. No contention. 5 episodes
+  in ~26 seconds confirmed S109. No compute engineering needed in current state.
+- **⚠️ Compute becomes significant when outer episodes are wired** — Outer
+  episode = full GPU sieve via coordinator across all 26 GPUs. At that point
+  selfplay competes with pipeline runs for cluster resources and scheduling/
+  resource management must be considered before enabling `use_coordinator=true`.
 
 ### TRSE Integration
 - [ ] **TRSE Rules B and C — revisit after sweep results**
