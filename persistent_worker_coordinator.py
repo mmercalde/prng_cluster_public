@@ -872,6 +872,24 @@ def run_trial_persistent(coordinator_cfg: str,
         total_bidi = len(bidirectional_constant) + len(bidirectional_variable)
         print(f"      📊 Total bidirectional: {total_bidi:,}")
 
+        # Update dashboard with trial survivor stats (mirrors coordinator._progress_writer call
+        # in window_optimizer_integration_final.py line 373)
+        if pwc._progress_writer:
+            try:
+                pwc._progress_writer.update_trial_stats(
+                    trial_num=trial_number,
+                    forward_survivors=len(fwd_survivors),
+                    reverse_survivors=len(rev_map),
+                    bidirectional=len(bidirectional_constant),
+                    best_bidirectional=len(bidirectional_constant),
+                    config_desc=f"W{config.window_size}_O{config.offset}",
+                    accumulated_forward=len(fwd_survivors),
+                    accumulated_reverse=len(rev_map),
+                    accumulated_bidirectional=total_bidi,
+                )
+            except Exception:
+                pass
+
         return {
             "pruned":                 False,
             "bidirectional_count":    total_bidi,
