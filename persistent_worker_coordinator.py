@@ -598,7 +598,7 @@ class PersistentWorkerCoordinator:
                 err = res.get("message", "")
                 if "empty response" in err or "pipe" in err.lower() or "timeout" in err.lower():
                     self.logger.warning(f"  Chunk {idx} transient failure ({err}) — retrying once")
-                    import time; time.sleep(1)
+                    time.sleep(1)
                     t0 = time.time()
                     res = _run_once(worker_handle_or_node)
                     elapsed = time.time() - t0
