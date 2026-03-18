@@ -818,3 +818,80 @@ Early-probing values caused chunk size miscalculation (chunks sized at 19k-40k s
 
 rig-6600c (192.168.3.162) has an i5-8400T CPU -- ~50% throughput deficit vs other rigs.
 Hardware limitation. Consider per-node seed budget or partition exclusion in future.
+
+---
+
+## Persistent Worker Coordinator (PWC) — Architecture Invariants (S146)
+
+**Files:** `persistent_worker_coordinator.py`, `sieve_gpu_worker.py`
+
+### Overview
+
+The Persistent Worker Coordinator (PWC) is the production Step 1 sieve execution backend
+when `--use-persistent-workers` is active. Workers are kept alive between trials, accepting
+job payloads over SSH. Zeus dispatches local jobs; remote rigs receive jobs via `sieve_gpu_worker.py --persistent`.
+
+### S146 Validated Architecture
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `worker_pool_size` | **4** | Validated stable. Do NOT increase to 8. |
+| `JOB_TIMEOUT_S` | **600** | (not 300) — allow time for large seed ranges |
+| `_localhost_semaphore` | `threading.Semaphore(2)` | Zeus has 2 GPUs; mirrors coordinator.py line 269 |
+
+### Hybrid Kernel Signature Invariants (CRITICAL)
+
+GPU kernel arg tails differ between forward and reverse hybrid kernels.
+These **must not be conflated** — they have different argument tails:
+
+| Kernel direction | Tail args | Notes |
+|-----------------|-----------|-------|
+| Forward hybrid  | `..., threshold, unsigned long long a, unsigned long long c` | a,c passed explicitly |
+| Reverse hybrid  | `..., threshold, int offset` | a,c hardcoded inside kernel |
+
+**Rule:** `sieve_gpu_worker.py` must split the hybrid `elif` into separate forward and
+reverse branches and pass the correct tail for each. Sending `a, c` to a reverse hybrid
+kernel → crash.
+
+### Threshold Routing (Hybrid)
+
+- Hybrid kernels and hybrid post-filter **must use `phase2_threshold`**, not `min_match_threshold`.
+- `hybrid_threshold = coerce_threshold(phase2_raw, threshold) if phase2_raw is not None else threshold`
+- Post-filter: `if rate >= hybrid_threshold:` (NOT `if rate >= threshold:`)
+
+### Strategy Dict Requirement
+
+`sieve_filter.py` calls `StrategyConfig(**s)` which requires all 6 fields:
+
+```
+name, max_consecutive_misses, skip_tolerance,
+enable_reseed_search, skip_learning_rate, breakpoint_threshold
+```
+
+Both `persistent_worker_coordinator.py` and `sieve_gpu_worker.py` must send the full
+`StrategyConfig.to_dict()` result — never a partial dict.
+
+### Dashboard Integration (ProgressWriter)
+
+PWC must call these on every chunk/trial to drive live dashboard throughput:
+
+```python
+# After every successful chunk:
+self._progress_writer.log_gpu_result(hostname, gpu_id, gpu_type, seeds_in_chunk, elapsed)
+
+# After every completed trial:
+self._progress_writer.update_trial_stats(trial_id, survivors_found, ...)
+```
+
+Dashboard: `45.32.131.224:5002`
+
+### S146 Validation Result
+
+3 trials, 10M seeds, all 4 sieve passes — zero errors:
+
+| Pass | Status |
+|------|--------|
+| java_lcg forward | ✅ |
+| java_lcg_reverse | ✅ |
+| java_lcg_hybrid forward | ✅ |
+| java_lcg_hybrid_reverse | ✅ |

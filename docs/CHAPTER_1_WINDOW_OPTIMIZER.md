@@ -1056,3 +1056,40 @@ Both flags required fixes through the full call chain:
 - CLI -> run_bayesian_optimization() signature (S116)
 - -> optimize_window() signature -- enable_pruning was missing (S118)
 - -> agent_manifests/window_optimizer.json args_map -- 4 keys missing (S123)
+
+---
+
+## Persistent Worker Mode — S146 Kernel Invariants
+
+When `--use-persistent-workers` is active, Step 1 dispatches sieve jobs via
+`persistent_worker_coordinator.py` → `sieve_gpu_worker.py`. The following invariants
+were validated in S146 and must be preserved in any future modifications:
+
+### Hybrid Kernel Arg Tails (CRITICAL)
+
+```
+Forward hybrid:  kernel_args = (..., threshold, a, c)
+Reverse hybrid:  kernel_args = (..., threshold, offset)   # a,c hardcoded in kernel
+```
+
+These are **not interchangeable**. Passing `(threshold, a, c)` to a reverse hybrid kernel
+causes an immediate crash.
+
+### Threshold Invariant
+
+Hybrid families use `phase2_threshold` for both kernel invocation and post-filter check.
+Base threshold (`min_match_threshold`) is used only for constant-skip families.
+
+### int32 Casts
+
+All scalar kernel args must be explicitly cast: `cp.int32(n_seeds)`, `cp.int32(k)`,
+`cp.int32(skip_min)`, `cp.int32(skip_max)`. ROCm/CuPy requires explicit types.
+
+### Count Clamp (defensive)
+
+```python
+count = min(int(survivor_count_gpu[0].get()), n_seeds)
+```
+
+Applied to both hybrid and non-hybrid extraction paths to prevent buffer overrun on
+corrupt kernel writes.
