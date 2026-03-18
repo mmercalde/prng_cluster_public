@@ -688,7 +688,7 @@ OVERVIEW_CONTENT = """
         <thead>
             <tr>
                 <th>Worker</th>
-                <th>Avg Clock</th>
+                <th>Avg Seeds/GPU</th>
                 <th>Status</th>
                 <th>Throughput</th>
                 <th>Jobs</th>
@@ -703,17 +703,9 @@ OVERVIEW_CONTENT = """
                     <div class="worker-type">{{ node.gpu_type }}</div>
                 </td>
                 <td>
-                    {% set gpu_data = gpu_stats.get(hostname, []) %}
-                    {% set avg_clock = 0 %}
-                    {% if gpu_data %}
-                        {% set clock_sum = namespace(val=0) %}
-                        {% for g in gpu_data %}
-                            {% set clock_sum.val = clock_sum.val + g.get('clock', 0) %}
-                        {% endfor %}
-                        {% set avg_clock = (clock_sum.val / gpu_data|length)|int %}
-                    {% endif %}
-                    <span style="color: {% if avg_clock > 1000 %}var(--accent-green){% elif avg_clock > 100 %}var(--accent-orange){% else %}var(--text-muted){% endif %}; font-weight: 600;">
-                        {{ avg_clock }} MHz
+                    {% set per_gpu = (node.current_seeds_per_sec / node.total_gpus)|int if node.total_gpus > 0 else 0 %}
+                    <span style="color: {% if per_gpu > 1000 %}var(--accent-green){% elif per_gpu > 100 %}var(--accent-orange){% else %}var(--text-muted){% endif %}; font-weight: 600;">
+                        {{ "{:,}".format(per_gpu) }} s/s
                     </span>
                 </td>
                 <td>
@@ -730,14 +722,9 @@ OVERVIEW_CONTENT = """
                 <td>{{ node.jobs_completed }}</td>
                 <td>
                     <div class="mini-chart">
-                        {% set gpu_data = gpu_stats.get(hostname, []) %}
+                        {% set active = node.current_seeds_per_sec > 0 %}
                         {% for i in range(node.total_gpus) %}
-                            {% if gpu_data and i < gpu_data|length %}
-                                {% set clock_pct = (gpu_data[i].get('clock', 0) / 2000 * 100)|int %}
-                                <div class="mini-bar" style="height: {{ clock_pct if clock_pct > 5 else 5 }}%; background: {% if clock_pct > 50 %}var(--accent-green){% elif clock_pct > 10 %}var(--accent-orange){% else %}var(--text-muted){% endif %};"></div>
-                            {% else %}
-                                <div class="mini-bar" style="height: 5%;"></div>
-                            {% endif %}
+                            <div class="mini-bar" style="height: {% if active %}85{% else %}5{% endif %}%; background: {% if active %}var(--accent-green){% else %}var(--text-muted){% endif %};"></div>
                         {% endfor %}
                     </div>
                 </td>
@@ -843,11 +830,9 @@ WORKERS_CONTENT = """
                         <div class="gpu-stat-label">Seeds/s</div>
                     </div>
                     <div>
-                        {% set gpu_list = gpu_stats.get(hostname, []) %}
-                        {% set gpu_info = gpu_list[i] if i < gpu_list|length else {} %}
-                        {% set gpu_clock = gpu_info.get('clock', 0) if gpu_info else 0 %}
-                        <div class="gpu-stat-value" style="color: {% if gpu_clock > 1000 %}var(--accent-green){% elif gpu_clock > 0 %}var(--accent-orange){% else %}var(--text-secondary){% endif %};">{{ gpu_clock }} MHz</div>
-                        <div class="gpu-stat-label">Clock</div>
+                        {% set per_gpu = (node.current_seeds_per_sec / node.total_gpus)|int if node.total_gpus > 0 else 0 %}
+                        <div class="gpu-stat-value" style="color: {% if per_gpu > 500 %}var(--accent-green){% elif per_gpu > 0 %}var(--accent-orange){% else %}var(--text-secondary){% endif %};">{{ "{:,}".format(per_gpu) }}</div>
+                        <div class="gpu-stat-label">Seeds/s</div>
                     </div>
                 </div>
             </div>

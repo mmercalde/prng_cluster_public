@@ -634,6 +634,20 @@ class ProgressWriter:
         self.start_time = time.time()
         self.nodes = {}
         self.finished = False
+        # S147 fix: initialize trial_stats and preserve across fresh instances
+        # Read back existing trial_stats from file so a new PWC instance per
+        # trial doesn't wipe the previous trial's survivor counts from the dashboard.
+        self.trial_stats = {}
+        try:
+            import json
+            if os.path.exists(PROGRESS_FILE):
+                with open(PROGRESS_FILE, 'r') as _f:
+                    _existing = json.load(_f)
+                existing_ts = _existing.get('trial_stats', {})
+                if existing_ts and existing_ts.get('trial_num', 0) > 0:
+                    self.trial_stats = existing_ts
+        except Exception:
+            pass
         self._write()
     
     def register_node(self, hostname: str, gpu_type: str, gpu_count: int):
