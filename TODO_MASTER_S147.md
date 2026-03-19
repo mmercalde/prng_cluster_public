@@ -18,6 +18,7 @@
   Expected per-trial time: ~2.5-3 hours with Q2 single strategy (was ~9-11 hours)
   Step 1 now has infinite timeout (Q1 fix)
 
+- [ ] **Q0 zero-survivor branch live proof** — Monkeypatch `PersistentWorkerCoordinator` inside the module so `run_trial_persistent()` receives mocked results forcing `java_lcg_hybrid` to return `[]`. Exercises the actual skip-Pass-4 branch live without GPUs. TB recommendation.
 - [ ] **Monitor hybrid forward prune rate** — With Q0 gate now active, log how often
   hybrid forward returns zero survivors. This data will inform whether further
   strategy reduction is needed for future runs.

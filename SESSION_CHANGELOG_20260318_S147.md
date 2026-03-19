@@ -211,3 +211,34 @@ Both remotes synced at `bf2549b`.
 ---
 
 **END OF SESSION S147**
+
+---
+
+## Team Beta Post-Session Review (S147)
+
+**TB verdict:** Approved for production use in full patched mode.
+
+### What was verified
+- Q1: Step 1 infinite timeout — fully verified (source + live)
+- Q2: balanced_hybrid strategy wired to both forward and reverse — fully verified
+- Q0: Patch text present in both PWC and legacy paths — source-verified
+- Q0: Normal hybrid path (fwd > 0) works correctly after patching — live-verified
+
+### What was NOT verified
+**Q0 zero-survivor branch was not exercised live.** In the verification run, hybrid
+forward found 4 survivors so the gate did not fire. The skip-Pass-4 branch was only
+verified by source inspection and mock harness logic — not by a live branch-triggering
+run.
+
+This is not a failure — correct status is: "Q0 zero-survivor branch source-verified
+but not yet branch-executed live."
+
+### How to fully verify Q0 live
+Monkeypatch `PersistentWorkerCoordinator` inside the module so `run_trial_persistent()`
+receives mocked pass results forcing `java_lcg_hybrid` to return `[]`. This avoids
+touching GPUs while exercising the actual live code path.
+Added to TODO as P2 item.
+
+### Selective flags note
+`--q0-only` and `--q2-only` flags are still unsafe (Q0A depends on `_hybrid_strategies`
+from Q2). Already blocked at CLI level in `apply_s147_q0_q1_q2.py` — full mode only.
