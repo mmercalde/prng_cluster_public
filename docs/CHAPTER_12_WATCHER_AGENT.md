@@ -846,3 +846,35 @@ S146 preprod run: 313 survivors → confidence 1.00 → PROCEED.
 
 These invariants are enforced in `persistent_worker_coordinator.py` and
 `sieve_gpu_worker.py` as of commit `7e4ae02` (S146).
+
+---
+
+## 12. Step 1 Execution Path — Persistent Worker Mode (S146)
+
+### Updated Step 1 Dispatch
+
+When WATCHER executes Step 1 with `--use-persistent-workers`, the sieve backend
+is `persistent_worker_coordinator.py` (PWC) rather than the legacy `coordinator.py` path.
+
+**Manifest flag:** `window_optimizer.json` must include `"use_persistent_workers": true` in
+the `args_map` section (or pass `--use-persistent-workers` in the launch args).
+
+### WATCHER Step 1 Confidence Threshold
+
+WATCHER issues PROCEED on Step 1 when:
+- Bidirectional survivor count > 0
+- WATCHER confidence = 1.00 (no anomalies)
+
+S146 preprod run: 313 survivors → confidence 1.00 → PROCEED.
+
+### PWC Architecture Invariants for WATCHER Integration
+
+| Invariant | Value |
+|-----------|-------|
+| `worker_pool_size` | 4 (not 8) |
+| `JOB_TIMEOUT_S` | 600 |
+| Localhost semaphore | `threading.Semaphore(2)` |
+| Strategy dict fields | All 6 required (`name`, `max_consecutive_misses`, `skip_tolerance`, `enable_reseed_search`, `skip_learning_rate`, `breakpoint_threshold`) |
+
+These invariants are enforced in `persistent_worker_coordinator.py` and
+`sieve_gpu_worker.py` as of commit `7e4ae02` (S146).

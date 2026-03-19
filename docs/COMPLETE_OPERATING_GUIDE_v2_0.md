@@ -1107,4 +1107,69 @@ NPZ accumulator: 666 seeds.
 
 ---
 
+## 11. Persistent Worker Coordinator (PWC) Operating Procedures (S146)
+
+### Overview
+
+The Persistent Worker Coordinator (`persistent_worker_coordinator.py`) is the production
+sieve backend for Step 1. Workers persist between trials, reducing SSH spawn overhead.
+
+### Launch with PWC
+
+```bash
+# Via WATCHER (recommended)
+PYTHONPATH=. python3 agents/watcher_agent.py \
+  --run-pipeline --start-step 1 --end-step 1 \
+  --params '{"use_persistent_workers": true}'
+
+# Via sweep script
+bash sweep_run1.sh          # uses manifest: max_seeds=1B, trials=50
+bash sweep_preprod.sh       # uses manifest: max_seeds=50M, trials=5  (validation)
+```
+
+### Validated Operating Parameters
+
+| Parameter | Value | Do NOT change |
+|-----------|-------|---------------|
+| `worker_pool_size` | 4 | Increasing to 8 causes instability |
+| `JOB_TIMEOUT_S` | 600 | 300 is too short for large seed ranges |
+| `_localhost_semaphore` | `Semaphore(2)` | Zeus has 2 GPUs — must match GPU count |
+
+### Hybrid Kernel Invariants
+
+Forward hybrid kernel expects: `..., threshold, a, c`
+Reverse hybrid kernel expects: `..., threshold, offset` (a,c hardcoded)
+
+These are distinct. Mixing them causes an immediate crash at kernel launch.
+Threshold for hybrid families is always `phase2_threshold`, not `min_match_threshold`.
+
+### Dashboard Monitoring
+
+Dashboard: `http://45.32.131.224:5002`
+
+PWC writes to `/tmp/cluster_progress.json` via `ProgressWriter`. Live per-node
+throughput is updated after every chunk via `log_gpu_result()`. Trial survivor counts
+are updated after each trial via `update_trial_stats()`.
+
+If dashboard shows 0 seeds/sec during a run, check that `log_gpu_result()` is being
+called in the PWC chunk completion path.
+
+### Kill All Workers
+
+```bash
+ssh rzeus "pkill -f 'watcher_agent.py'; pkill -f 'window_optimizer.py'"
+ssh rrig6600  "pkill -f sieve_gpu_worker 2>/dev/null"
+ssh rrig6600b "pkill -f sieve_gpu_worker 2>/dev/null"
+ssh rrig6600c "pkill -f sieve_gpu_worker 2>/dev/null"
+```
+
+### S146 Validation Summary
+
+Pre-production run: 3 trials, 10M seeds, all 4 sieve passes clean.
+313 bidirectional survivors (274 constant-skip + 40 variable-skip).
+WATCHER confidence: 1.00 — PROCEED.
+NPZ accumulator: 666 seeds.
+
+---
+
 **— End of Document —**
