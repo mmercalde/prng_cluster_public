@@ -469,22 +469,28 @@ def run_bidirectional_test(coordinator,
         forward_records_hybrid = extract_survivor_records(forward_result_hybrid)
         print(f"      Forward (variable): {len(forward_records_hybrid):,} survivors")
 
-        print(f"    Running REVERSE sieve ({prng_hybrid}_reverse) [VARIABLE SKIP]...")
-        reverse_args_hybrid = Args()
-        reverse_args_hybrid.threshold = reverse_threshold
-        reverse_args_hybrid.step_name = f"Reverse Sieve ({prng_hybrid}) [VARIABLE]"
-        reverse_args_hybrid.prng_type = prng_hybrid + "_reverse"  # e.g. java_lcg_hybrid_reverse
+        # [S147 Q0] Gate: skip hybrid reverse if hybrid forward = 0
+        # SKIP not prune — constant-skip results preserved.
+        if not forward_records_hybrid:
+            print(f"      Hybrid forward zero survivors — skipping hybrid reverse (Q0 gate)")
+            reverse_records_hybrid = []
+        else:
+            print(f"    Running REVERSE sieve ({prng_hybrid}_reverse) [VARIABLE SKIP]...")
+            reverse_args_hybrid = Args()
+            reverse_args_hybrid.threshold = reverse_threshold
+            reverse_args_hybrid.step_name = f"Reverse Sieve ({prng_hybrid}) [VARIABLE]"
+            reverse_args_hybrid.prng_type = prng_hybrid + "_reverse"  # e.g. java_lcg_hybrid_reverse
 
-        reverse_result_hybrid = coordinator.execute_distributed_analysis(
-            reverse_args_hybrid.target_file,
-            f'results/window_opt_reverse_hybrid_{config.window_size}_{config.offset}_t{trial_number}.json',  # S115 M3
-            reverse_args_hybrid,
-            reverse_args_hybrid.seeds,
-            1000, 8, 50
-        )
+            reverse_result_hybrid = coordinator.execute_distributed_analysis(
+                reverse_args_hybrid.target_file,
+                f'results/window_opt_reverse_hybrid_{config.window_size}_{config.offset}_t{trial_number}.json',  # S115 M3
+                reverse_args_hybrid,
+                reverse_args_hybrid.seeds,
+                1000, 8, 50
+            )
 
-        reverse_records_hybrid = extract_survivor_records(reverse_result_hybrid)
-        print(f"      Reverse (variable): {len(reverse_records_hybrid):,} survivors")
+            reverse_records_hybrid = extract_survivor_records(reverse_result_hybrid)
+            print(f"      Reverse (variable): {len(reverse_records_hybrid):,} survivors")
 
         forward_map_hybrid = {r['seed']: r['match_rate'] for r in forward_records_hybrid}
         reverse_map_hybrid = {r['seed']: r['match_rate'] for r in reverse_records_hybrid}

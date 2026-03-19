@@ -2810,7 +2810,7 @@ def main():
         use_grammar=not args.no_grammar,
         # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
         # [S121] Step 0 TRSE is fast (~5s) — explicit override prevents default 120min wait
-        step_timeout_overrides={0: 1, 5: 360}  # Step 1 has no timeout — production runs are 13-18hrs
+        step_timeout_overrides={0: 1, 1: 0, 5: 360}  # [S147 Q1] 1:0 → S145 guard fires (<=0 → inf)
     )
 
     # Handle halt commands

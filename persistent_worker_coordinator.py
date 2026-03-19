@@ -827,6 +827,17 @@ def run_trial_persistent(coordinator_cfg: str,
             prng_hybrid = f"{prng_base}_hybrid"
             prng_hybrid_rev = f"{prng_hybrid}_reverse"
 
+            # [S147 Q2] Single strategy for full-range scan — 5x work reduction
+            # TB ruling: balanced_hybrid for discovery, all 5 for refinement only
+            # Uses pwc.logger — run_trial_persistent is a standalone function, not a method
+            try:
+                from hybrid_strategy import get_strategy as _get_strategy
+                _s = _get_strategy("balanced_hybrid")
+                _hybrid_strategies = [_s.to_dict() if hasattr(_s, "to_dict") else vars(_s)]
+            except Exception as _e:
+                pwc.logger.warning(f"Q2: could not load balanced_hybrid ({_e}) — using all strategies")
+                _hybrid_strategies = None  # fallback: auto-load all in run_sieve_pass
+
             print(f"    Running FORWARD sieve ({prng_hybrid}) [VARIABLE SKIP] [PERSISTENT]...")
             fwd_h_result = pwc.run_sieve_pass(
                 prng_type    = prng_hybrid,
@@ -839,29 +850,39 @@ def run_trial_persistent(coordinator_cfg: str,
                 offset       = config.offset,
                 sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
                 skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
+                strategies   = _hybrid_strategies,  # [S147 Q2] single strategy
             )
             fwd_h_survivors   = fwd_h_result.get("survivors", [])
             fwd_h_match_rates = fwd_h_result.get("match_rates", [])
             fwd_h_map = dict(zip(fwd_h_survivors, fwd_h_match_rates))
             print(f"      Forward (variable): {len(fwd_h_survivors):,} survivors")
 
-            print(f"    Running REVERSE sieve ({prng_hybrid_rev}) [VARIABLE SKIP] [PERSISTENT]...")
-            rev_h_result = pwc.run_sieve_pass(
-                prng_type    = prng_hybrid_rev,
-                residues     = residues,
-                total_seeds  = total_seeds,
-                threshold    = reverse_threshold,
-                window_size  = ws,
-                dataset_path = dataset_path,
-                output_file  = f"results/window_opt_reverse_hybrid_{ws}_{off}_t{trial_number}.json",
-                offset       = config.offset,
-                sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
-                skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
-            )
-            rev_h_survivors   = rev_h_result.get("survivors", [])
-            rev_h_match_rates = rev_h_result.get("match_rates", [])
-            rev_h_map = dict(zip(rev_h_survivors, rev_h_match_rates))
-            print(f"      Reverse (variable): {len(rev_h_survivors):,} survivors")
+            # [S147 Q0] Gate: skip hybrid reverse if hybrid forward = 0
+            # Mirrors constant-skip B1 gate. SKIP not prune — constant results preserved.
+            if not fwd_h_survivors:
+                print(f"      Hybrid forward zero survivors — skipping hybrid reverse (Q0 gate)")
+                rev_h_survivors   = []
+                rev_h_match_rates = []
+                rev_h_map         = {}
+            else:
+                print(f"    Running REVERSE sieve ({prng_hybrid_rev}) [VARIABLE SKIP] [PERSISTENT]...")
+                rev_h_result = pwc.run_sieve_pass(
+                    prng_type    = prng_hybrid_rev,
+                    residues     = residues,
+                    total_seeds  = total_seeds,
+                    threshold    = reverse_threshold,
+                    window_size  = ws,
+                    dataset_path = dataset_path,
+                    output_file  = f"results/window_opt_reverse_hybrid_{ws}_{off}_t{trial_number}.json",
+                    offset       = config.offset,
+                    sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
+                    skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
+                    strategies   = _hybrid_strategies,  # [S147 Q2] single strategy
+                )
+                rev_h_survivors   = rev_h_result.get("survivors", [])
+                rev_h_match_rates = rev_h_result.get("match_rates", [])
+                rev_h_map = dict(zip(rev_h_survivors, rev_h_match_rates))
+                print(f"      Reverse (variable): {len(rev_h_survivors):,} survivors")
 
             bidirectional_variable = set(fwd_h_map.keys()) & set(rev_h_map.keys())
             print(f"      ✨ Bidirectional (variable): {len(bidirectional_variable):,} survivors")
