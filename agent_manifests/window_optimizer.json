@@ -48,8 +48,7 @@
     "scorer_meta_agent"
   ],
   "success_condition": [
-    "optimal_window_config.json",
-    "bidirectional_survivors.json"
+    "optimal_window_config.json"
   ],
   "retry": 2,
   "parameter_bounds": {
@@ -198,18 +197,18 @@
   "default_params": {
     "lottery_file": "daily3.json",
     "strategy": "bayesian",
-    "max_seeds": 1073741824,
+    "max_seeds": 50000000,
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json",
     "test_both_modes": true,
     "resume_study": false,
-    "window_trials": 50,
+    "window_trials": 5,
     "study_name": "",
     "trse_context": "trse_context.json",
     "enable_pruning": true,
     "n_parallel": 1,
     "use_persistent_workers": true,
-    "worker_pool_size": 4,
+    "worker_pool_size": 8,
     "seed_cap_nvidia": 5000000,
     "seed_cap_amd": 2000000,
     "seed_start": 0

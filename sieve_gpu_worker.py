@@ -135,12 +135,14 @@ def _get_kernel(prng_family: str):
 # ============================================================================
 # SIEVE EXECUTION (extracted from sieve_filter.py, worker-adapted)
 # ============================================================================
-def run_sieve_job(job: dict) -> dict:
+def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
     """
     Execute one sieve job. Equivalent to GPUSieve.run_sieve() but:
     - Uses cached kernels (compiled once at worker startup)
     - Uses cached draw data
-    - Always uses device 0 (ROCR_VISIBLE_DEVICES has isolated the GPU)
+    - Uses cp.cuda.Device(gpu_id) for direct GPU selection [S149-B]
+    - Workers see all GPUs — no HIP/CUDA/ROCR visibility masking in spawner
+    - ROCR_VISIBLE_DEVICES not viable on this CuPy/ROCm stack
     """
     job_id = job.get('job_id', 'unknown')
 
@@ -158,7 +160,11 @@ def run_sieve_job(job: dict) -> dict:
     draws = load_draws_cached(dataset_path, window_size, sessions, offset)
     k = len(draws)
 
-    device = cp.cuda.Device(0)
+    # [S149-B] Direct GPU selection — workers see all GPUs, bind via gpu_id
+    _job_gpu_id = job.get('gpu_id', None)
+    if _job_gpu_id is not None and int(_job_gpu_id) != gpu_id:
+        raise ValueError(f"gpu_id mismatch: worker={gpu_id}, job={_job_gpu_id}")
+    device = cp.cuda.Device(gpu_id)
     all_survivors = []
     per_family = []
 
@@ -356,14 +362,14 @@ def run_worker(gpu_id: int):
 
     # Warm up GPU - touch device to trigger ROCm init NOW (not at first job)
     _log(f"Warming up GPU {gpu_id}...")
-    with cp.cuda.Device(0):
+    with cp.cuda.Device(gpu_id):
         _ = cp.zeros(1, dtype=cp.float32)
-        cp.cuda.Device(0).synchronize()
+        cp.cuda.Device(gpu_id).synchronize()
     _log(f"GPU ready")
 
     device_name = "unknown"
     try:
-        device_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
+        device_name = cp.cuda.runtime.getDeviceProperties(gpu_id)['name'].decode()
     except Exception:
         pass
 
@@ -394,7 +400,7 @@ def run_worker(gpu_id: int):
             job_id = job.get("job_id", "unknown")
             try:
                 t0 = time.time()
-                result = run_sieve_job(job)
+                result = run_sieve_job(job, gpu_id)
                 elapsed = time.time() - t0
                 jobs_processed += 1
                 _emit({"status": "ok", "job_id": job_id,

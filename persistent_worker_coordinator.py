@@ -264,8 +264,8 @@ class PersistentWorkerCoordinator:
         gpu_id = handle.gpu_id
 
         rocm_env = " ".join(ROCM_ENV_VARS + [
-            f"CUDA_VISIBLE_DEVICES={gpu_id}",
-            f"HIP_VISIBLE_DEVICES={gpu_id}",
+            # [S149-B] HIP/CUDA per-worker masking removed
+            # Workers see all GPUs; Device(gpu_id) selects directly in worker
         ])
 
         activate = f"source {os.path.join(os.path.dirname(node.python_env), 'activate')}"
