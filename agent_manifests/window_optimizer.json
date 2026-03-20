@@ -57,10 +57,11 @@
       "type": "int",
       "min": 2,
       "max": 50,
-      "default": 2,
+      "default": 12,
       "description": "Size of the temporal window (number of draws) for PRNG matching.",
       "optimized_by": "Optuna TPE",
-      "effect": "Short-term temporal regime confirmed (167-trial run S138). TRSE Rule A caps at 32 when short_persistence active. Config ceiling 50 provides buffer. W2 dominant empirically."
+      "effect": "Short-term temporal regime confirmed (167-trial run S138). TRSE Rule A caps at 32 when short_persistence active. Config ceiling 50 provides buffer. W2 dominant empirically.",
+      "_calibration_note": "S148 Run-1 ruling: W12 promoted as production default. Bounds [2,50] unchanged \u2014 Optuna explores freely."
     },
     "offset": {
       "type": "int",
@@ -91,21 +92,21 @@
     },
     "forward_threshold": {
       "type": "float",
-      "default": 0.25,
+      "default": 0.3,
       "description": "Forward sieve match threshold. Higher = stricter filtering.",
       "optimized_by": "Optuna TPE",
       "effect": "Controls false positive rate in forward sieve.",
       "_note": "Bounds are INFORMATIONAL ONLY. Runtime bounds defined in distributed_config.json",
-      "_bounds_reference": "[0.15, 0.60] - see distributed_config.json"
+      "_bounds_reference": "[0.30, 0.75] - see distributed_config.json (S148 empirical calibration)"
     },
     "reverse_threshold": {
       "type": "float",
-      "default": 0.25,
+      "default": 0.3,
       "description": "Reverse sieve match threshold. Controls historical consistency.",
       "optimized_by": "Optuna TPE",
       "effect": "Controls historical consistency check.",
       "_note": "Bounds are INFORMATIONAL ONLY. Runtime bounds defined in distributed_config.json",
-      "_bounds_reference": "[0.15, 0.60] - see distributed_config.json"
+      "_bounds_reference": "[0.30, 0.75] - see distributed_config.json (S148 empirical calibration)"
     },
     "window_trials": {
       "type": "int",

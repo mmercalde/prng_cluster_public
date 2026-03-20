@@ -120,13 +120,13 @@ class SearchBounds:
     min_skip_max: int = 10
     max_skip_max: int = 250
     # Threshold bounds - LOW for discovery, not filtering
-    min_forward_threshold: float = 0.15
-    max_forward_threshold: float = 0.60
-    min_reverse_threshold: float = 0.15
-    max_reverse_threshold: float = 0.60
+    min_forward_threshold: float = 0.30
+    max_forward_threshold: float = 0.75
+    min_reverse_threshold: float = 0.30
+    max_reverse_threshold: float = 0.75
     # Defaults
-    default_forward_threshold: float = 0.25
-    default_reverse_threshold: float = 0.25
+    default_forward_threshold: float = 0.30
+    default_reverse_threshold: float = 0.30
     session_options: List[List[str]] = None
     
     @classmethod

@@ -70,7 +70,7 @@ result = pwc.run_sieve_pass(
     prng_type="java_lcg",
     residues=residues,
     total_seeds=5_000_000,
-    threshold=0.25,
+    threshold=0.30,
     window_size=8,
     output_file="results/window_opt_forward_8_43_t1.json"
 )
@@ -961,7 +961,7 @@ if __name__ == "__main__":
         prng_type   = args.prng_type,
         residues    = residues,
         total_seeds = args.total_seeds,
-        threshold   = 0.25,
+        threshold   = 0.30,
         window_size = 8,
         output_file = "/tmp/pwc_smoke_test.json",
     )
