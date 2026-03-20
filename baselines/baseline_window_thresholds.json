@@ -1,0 +1,13 @@
+{
+  "forward_threshold": 0.3,
+  "reverse_threshold": 0.3,
+  "window_size": 12,
+  "skip_max": 200,
+  "expected_survivor_band": [
+    1000,
+    10000
+  ],
+  "calibration_source": "THRESHOLD_CALIBRATION_FINDINGS_S148.md",
+  "calibration_date": "2026-03-19",
+  "notes": "Empirically calibrated S148. Window=12 + threshold=0.30 gives zero-noise at window=12. Window=8 + threshold=0.30 gives near-zero (permissive). Known seed survives to threshold=0.75 \u2014 ceiling safe."
+}
