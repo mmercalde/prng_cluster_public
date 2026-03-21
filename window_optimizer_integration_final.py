@@ -1199,7 +1199,7 @@ def add_window_optimizer_to_coordinator():
             )
 
         optimizer.test_configuration = test_config
-        optimizer._survivor_accumulator = survivor_accumulator  # [S149] per-trial NPZ checkpoint
+        strategy._survivor_accumulator = survivor_accumulator   # [S149] set on BayesianOptimization instance
 
         strategy_map = {
             'random': RandomSearch(),
