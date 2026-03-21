@@ -43,7 +43,8 @@ sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
 def _emit(obj: dict):
     """Write JSON line to stdout and flush."""
-    print(json.dumps(obj), flush=True)
+    # [S150-slim_v1] compact separators — zero whitespace overhead
+    print(json.dumps(obj, separators=(',', ':')), flush=True)
 
 
 def _log(msg: str):
@@ -283,12 +284,8 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
                     ss_raw  = skip_sequences_gpu[:count * k].get().reshape(count, k).tolist()
                     for seed, rate, sid, ss in zip(s_arr, r_arr, sid_arr, ss_raw):
                         if rate >= hybrid_threshold:  # use hybrid_threshold not threshold
-                            survivors_out.append({
-                                'seed': int(seed), 'family': family_name,
-                                'match_rate': float(rate),
-                                'matches': int(rate * k), 'total': k,
-                                'strategy_id': int(sid), 'skip_sequence': ss,
-                            })
+                            # [S150-slim_v1] tuple: (seed, match_rate, strategy_id, skip_seq)
+                            survivors_out.append((int(seed), float(rate), int(sid), list(ss)))
                 duration_ms = (time.time() - t0) * 1000
                 per_family.append({
                     'family': family_name, 'tested': n_seeds,
@@ -313,12 +310,8 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
                 k_arr = best_skips_gpu[:count].get().tolist()
                 for seed, rate, skip in zip(s_arr, r_arr, k_arr):
                     if rate >= threshold:
-                        survivors_out.append({
-                            'seed': int(seed), 'family': family_name,
-                            'match_rate': float(rate),
-                            'matches': int(rate * k), 'total': k,
-                            'best_skip': int(skip)
-                        })
+                        # [S150-slim_v1] tuple: (seed, match_rate, None=no_strategy, [best_skip])
+                        survivors_out.append((int(seed), float(rate), None, [int(skip)]))
 
             duration_ms = (time.time() - t0) * 1000
             per_family.append({
@@ -334,19 +327,37 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
 
     total_tested   = sum(f['tested'] for f in per_family)
     total_duration = sum(f['duration_ms'] for f in per_family)
-    return {
-        'job_id': job_id,
-        'success': True,
-        'survivors': all_survivors,
-        'seed_range': {'start': seed_start, 'end': seed_end},
+    # [S150-slim_v1] Build flat parallel-array result dict
+    # IMPORTANT: run_worker() wraps this as {"status":"ok","result":<this>}
+    # Coordinator reads inner=result.get("result",{}) then inner.get("format")
+    # So "format" and array fields MUST be at top level here (not nested under "result")
+    _seeds     = [t[0] for t in all_survivors]
+    _rates     = [t[1] for t in all_survivors]
+    # TB ruling: drive hybrid from job context, not survivor content
+    # Zero-survivor hybrid chunks must still emit strategy_ids/skip_sequences
+    _is_hybrid = (
+        "hybrid" in str(job.get("prng_type", "")).lower()
+        or str(job.get("skip_mode", "")).lower() == "hybrid"
+    )
+    _ret = {
+        'job_id':      job_id,
+        'success':     True,
+        'format':      'slim_v1',
+        'seeds':       _seeds,
+        'match_rates': _rates,
+        'seed_range':  {'start': seed_start, 'end': seed_end},
         'stats': {
             'total_seeds_tested': total_tested,
-            'total_survivors': len(all_survivors),
-            'duration_ms': round(total_duration, 2),
-            'avg_seeds_per_sec': int(total_tested / (total_duration / 1000)) if total_duration > 0 else 0
+            'total_survivors':    len(_seeds),
+            'duration_ms':        round(total_duration, 2),
+            'avg_seeds_per_sec':  int(total_tested / (total_duration / 1000)) if total_duration > 0 else 0
         },
         'per_family': {f['family']: f for f in per_family}
     }
+    if _is_hybrid:
+        _ret['strategy_ids']   = [t[2] for t in all_survivors]
+        _ret['skip_sequences'] = [t[3] for t in all_survivors]
+    return _ret
 
 
 # ============================================================================

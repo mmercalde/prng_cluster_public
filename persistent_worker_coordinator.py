@@ -378,11 +378,37 @@ class PersistentWorkerCoordinator:
                 if result.get("status") == "ok":
                     handle.jobs_completed += 1
                     inner = result.get("result", {})
-                    raw_survivors = inner.get("survivors", [])
-                    survivors   = [s["seed"]       if isinstance(s, dict) else int(s) for s in raw_survivors]
-                    match_rates = [s["match_rate"] if isinstance(s, dict) else 0.5     for s in raw_survivors]
-                    skip_seqs   = [s.get("skip_sequence", []) if isinstance(s, dict) else [] for s in raw_survivors]
-                    strat_ids   = [s.get("strategy_id",    0) if isinstance(s, dict) else 0  for s in raw_survivors]
+                    # [S150-slim_v1] Accept both slim parallel-array and legacy dict-list
+                    if inner.get("format") == "slim_v1":
+                        # Fast path — parallel arrays (TB approved Option A)
+                        survivors   = [int(s) for s in inner.get("seeds", [])]
+                        match_rates = list(inner.get("match_rates", []))
+                        n = len(survivors)
+                        # TB ruling: strategy_ids+skip_sequences required for hybrid
+                        _is_hybrid_job = (
+                            "hybrid" in str(job.get("prng_type", "")).lower()
+                            or str(job.get("skip_mode", "")).lower() == "hybrid"
+                        )
+                        if _is_hybrid_job:
+                            if "strategy_ids" not in inner or "skip_sequences" not in inner:
+                                handle.alive = False
+                                return {"status": "error", "message": "slim_v1 hybrid payload missing strategy_ids/skip_sequences"}
+                            strat_ids = list(inner["strategy_ids"])
+                            skip_seqs = list(inner["skip_sequences"])
+                        else:
+                            strat_ids = [0] * n
+                            skip_seqs = [[] for _ in survivors]
+                        # TB guardrail: all arrays must match len(seeds)
+                        if len(match_rates) != n or len(strat_ids) != n or len(skip_seqs) != n:
+                            handle.alive = False
+                            return {"status": "error", "message": f"slim_v1 length mismatch: seeds={n} match_rates={len(match_rates)} strat_ids={len(strat_ids)} skip_seqs={len(skip_seqs)}"}
+                    else:
+                        # Legacy path — list of dicts (kept for rollout safety)
+                        raw_survivors = inner.get("survivors", [])
+                        survivors   = [s["seed"]       if isinstance(s, dict) else int(s) for s in raw_survivors]
+                        match_rates = [s["match_rate"] if isinstance(s, dict) else 0.5     for s in raw_survivors]
+                        skip_seqs   = [s.get("skip_sequence", []) if isinstance(s, dict) else [] for s in raw_survivors]
+                        strat_ids   = [s.get("strategy_id",    0) if isinstance(s, dict) else 0  for s in raw_survivors]
                     return {
                         "status":         "ok",
                         "job_id":         result.get("job_id", job.get("job_id")),
