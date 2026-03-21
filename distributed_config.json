@@ -34,7 +34,7 @@
     {
       "hostname": "192.168.3.162",
       "username": "michael",
-      "gpu_count": 6,
+      "gpu_count": 8,
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
