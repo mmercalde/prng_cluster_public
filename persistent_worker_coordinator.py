@@ -94,6 +94,7 @@ from typing import Dict, List, Optional, Any, Tuple
 # ─────────────────────────────────────────────────────────────────────────────
 ROCM_SPAWN_STAGGER_S   = 4.0   # seconds between worker spawns per gpu_id
 ROCM_ENV_VARS = [
+    "CUPY_CUDA_MEMORY_POOL_TYPE=none",
     "HSA_OVERRIDE_GFX_VERSION=10.3.0",
     "HSA_ENABLE_SDMA=0",
     "ROCM_PATH=/opt/rocm",
