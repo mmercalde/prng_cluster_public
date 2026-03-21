@@ -172,6 +172,7 @@ def create_incremental_save_callback(
     output_survivors_path: str = "bidirectional_survivors.json",
     total_trials: int = 50,
     trial_history_context: dict = None,  # [S140b]
+    survivor_accumulator: dict = None,   # [S149] per-trial NPZ checkpoint
 ):
     """
     Optuna callback that saves best-so-far results after each trial.
@@ -219,6 +220,74 @@ def create_incremental_save_callback(
             temp_path.rename(output_config_path)
             
             print(f"[SAVE] Trial {trial.number}: config saved (best={study.best_value:.0f} @ trial {study.best_trial.number})")
+
+            # [S149] Per-trial NPZ checkpoint — write accumulator after each trial with survivors
+            if survivor_accumulator is not None:
+                try:
+                    _bidi = survivor_accumulator.get('bidirectional', [])
+                    if _bidi:
+                        import numpy as _np_ckpt
+                        import os as _os_ckpt
+                        _SKIP_ENC = {'constant': 0, 'variable': 1}
+                        _PRNG_ENC = {
+                            'java_lcg': 0, 'java_lcg_reverse': 1,
+                            'mt19937': 2, 'xorshift128': 4, 'lcg32': 6, 'minstd': 8,
+                        }
+                        _accum_npz = 'bidirectional_survivors_all.npz'
+                        _binary_npz = 'bidirectional_survivors_binary.npz'
+
+                        # Build arrays from current accumulator
+                        def _dedup(lst):
+                            seen = {}
+                            for s in lst:
+                                seed = s['seed']
+                                if seed not in seen or s.get('score', 0) > seen[seed].get('score', 0):
+                                    seen[seed] = s
+                            return list(seen.values())
+
+                        _deduped = _dedup(_bidi)
+
+                        # Merge with prior NPZ if exists
+                        _prior_seeds = set()
+                        _merged = {s['seed']: s for s in _deduped}
+                        if _os_ckpt.path.exists(_accum_npz):
+                            try:
+                                _prior = _np_ckpt.load(_accum_npz)
+                                _prior_arr = _prior['seeds']
+                                _prior_scores = _prior.get('score', _np_ckpt.zeros(len(_prior_arr)))
+                                for i, seed in enumerate(_prior_arr):
+                                    _prior_seeds.add(int(seed))
+                                    if int(seed) not in _merged or float(_prior_scores[i]) > _merged[int(seed)].get('score', 0):
+                                        # Keep prior — higher score or not in current
+                                        _merged[int(seed)] = {'seed': int(seed), 'score': float(_prior_scores[i]),
+                                                              '_from_prior': True}
+                            except Exception:
+                                pass
+
+                        _all = list(_merged.values())
+                        _seeds = _np_ckpt.array([s['seed'] for s in _all], dtype=_np_ckpt.uint64)
+                        _scores = _np_ckpt.array([s.get('score', 0.0) for s in _all], dtype=_np_ckpt.float32)
+
+                        # Atomic write
+                        _tmp = _accum_npz + '.ckpt.tmp'
+                        _np_ckpt.savez_compressed(_tmp, seeds=_seeds, score=_scores)
+                        _os_ckpt.replace(_tmp, _accum_npz)
+
+                        # Write binary NPZ for Steps 2-6
+                        _fwd_mr = _np_ckpt.array([s.get('forward_match_rate', 0.0) for s in _all], dtype=_np_ckpt.float32)
+                        _rev_mr = _np_ckpt.array([s.get('reverse_match_rate', 0.0) for s in _all], dtype=_np_ckpt.float32)
+                        _tmp_bin = _binary_npz + '.ckpt.tmp'
+                        _np_ckpt.savez_compressed(_tmp_bin, seeds=_seeds,
+                                                  forward_match_rate=_fwd_mr,
+                                                  reverse_match_rate=_rev_mr,
+                                                  score=_scores)
+                        _os_ckpt.replace(_tmp_bin, _binary_npz)
+
+                        _new = len(_seeds) - len(_prior_seeds)
+                        print(f"[S149-CKPT] Trial {trial.number}: NPZ checkpoint written "
+                              f"({len(_seeds):,} total, +{_new} new seeds)")
+                except Exception as _ckpt_err:
+                    print(f"[S149-CKPT] Warning: checkpoint write failed (non-fatal): {_ckpt_err}")
             
             # Save survivors if this trial stored them and is the new best
             if trial.number == study.best_trial.number:
@@ -578,11 +647,13 @@ class OptunaBayesianSearch:
         # Run optimization with incremental save callback
         # [S140b] trial_history_context flows from optimize_window
         _th_context = self._trial_history_context if hasattr(self, '_trial_history_context') else None
+        _survivor_acc = getattr(self, '_survivor_accumulator', None)  # [S149] per-trial checkpoint
         _incremental_callback = create_incremental_save_callback(
             output_config_path="optimal_window_config.json",
             output_survivors_path="bidirectional_survivors.json",
             total_trials=max_iterations,
-            trial_history_context=_th_context
+            trial_history_context=_th_context,
+            survivor_accumulator=_survivor_acc,  # [S149]
         )
         # S115 R1: prune telemetry callback
         def _prune_telemetry(study, trial):
