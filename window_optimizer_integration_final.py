@@ -1199,7 +1199,6 @@ def add_window_optimizer_to_coordinator():
             )
 
         optimizer.test_configuration = test_config
-        strategy._survivor_accumulator = survivor_accumulator   # [S149] set on BayesianOptimization instance
 
         strategy_map = {
             'random': RandomSearch(),
@@ -1213,6 +1212,7 @@ def add_window_optimizer_to_coordinator():
         }
 
         strategy = strategy_map.get(strategy_name, RandomSearch())
+        strategy._survivor_accumulator = survivor_accumulator  # [S149]
 
         # [S140b] trial history context — flows to Optuna callback
         _trial_history_ctx = {
