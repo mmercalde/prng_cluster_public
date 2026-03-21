@@ -1,0 +1,26 @@
+{
+  "status": "in_progress",
+  "completed_trials": 4,
+  "total_trials": 50,
+  "last_updated": "2026-03-20T18:20:25.656501",
+  "last_trial_number": 5,
+  "last_trial_value": 273.0,
+  "best_trial_number": 5,
+  "best_value": 273.0,
+  "best_bidirectional_count": 273,
+  "best_params": {
+    "window_size": 5,
+    "offset": 5,
+    "session_idx": 2,
+    "skip_min": 10,
+    "skip_max": 53,
+    "forward_threshold": 0.3669503834546568,
+    "reverse_threshold": 0.7463772269221434
+  },
+  "window_size": 5,
+  "offset": 5,
+  "skip_min": 10,
+  "skip_max": 53,
+  "forward_threshold": 0.3669503834546568,
+  "reverse_threshold": 0.7463772269221434
+}
