@@ -166,6 +166,8 @@ class PersistentWorkerCoordinator:
         self._localhost_semaphore = threading.Semaphore(2)
         # Per-node semaphores — throttle concurrent dispatch to max_per_node (S133-A lesson)
         self._node_semaphores: Dict[str, threading.Semaphore] = {}
+        # [S151] Per-node respawn locks — serialize respawns with stagger to prevent SSH hammer
+        self._node_respawn_locks: Dict[str, threading.Lock] = {}
 
         self.logger = logging.getLogger("PersistentWorkerCoordinator")
         if not self.logger.handlers:
@@ -199,6 +201,8 @@ class PersistentWorkerCoordinator:
             self.nodes.append(node)
             # Create per-node semaphore — limits concurrent in-flight jobs to max_per_node
             self._node_semaphores[node.hostname] = threading.Semaphore(self.max_per_node)
+            # [S151] Per-node respawn lock — serializes respawns with stagger
+            self._node_respawn_locks[node.hostname] = threading.Lock()
             self.logger.info(f"Node loaded: {node.hostname} ({node.gpu_count}× {node.gpu_type})")
 
     def _is_rocm(self, node: WorkerNode) -> bool:
@@ -324,7 +328,15 @@ class PersistentWorkerCoordinator:
         if handle.proc is None or handle.proc.poll() is not None:
             self.logger.warning(f"Worker {handle.node.hostname}:GPU{handle.gpu_id} dead — respawning")
             handle.alive = False
-            success = self._spawn_worker(handle)
+            # [S151] Per-node respawn lock + stagger — prevents SSH hammer when multiple
+            # workers die simultaneously on the same rig (PCIe 1x crypto-miner constraint)
+            respawn_lock = self._node_respawn_locks.get(handle.node.hostname)
+            if respawn_lock:
+                with respawn_lock:
+                    time.sleep(ROCM_SPAWN_STAGGER_S)
+                    success = self._spawn_worker(handle)
+            else:
+                success = self._spawn_worker(handle)
             if not success:
                 handle.quarantined = True
                 self.logger.error(f"Respawn failed — {handle.node.hostname}:GPU{handle.gpu_id} quarantined")
