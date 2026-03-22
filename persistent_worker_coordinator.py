@@ -104,7 +104,7 @@ ROCM_ENV_VARS = [
     "CUPY_CACHE_DIR=${HOME}/.cache/cupy",
 ]
 WORKER_SCRIPT = "sieve_gpu_worker.py"
-WORKER_HEARTBEAT_TIMEOUT_S = 30   # seconds to wait for worker heartbeat on startup
+WORKER_HEARTBEAT_TIMEOUT_S = 90   # [S152] seconds to wait for worker heartbeat on startup — 90s allows ROCm init on fresh-booted rigs
 JOB_TIMEOUT_S = 600               # seconds max per sieve job
 
 
