@@ -285,6 +285,8 @@ class PersistentWorkerCoordinator:
             "-o", "StrictHostKeyChecking=no",
             "-o", "BatchMode=yes",
             "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=10",    # [S152] probe 10× before giving up = 300s tolerance
+            "-o", "ConnectTimeout=10",         # [S152] fail fast on dead hosts
             f"{node.username}@{node.hostname}" if node.username else node.hostname,
             cmd_body
         ]
