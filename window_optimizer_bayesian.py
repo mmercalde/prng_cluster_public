@@ -269,14 +269,16 @@ def create_incremental_save_callback(
                         _scores = _np_ckpt.array([s.get('score', 0.0) for s in _all], dtype=_np_ckpt.float32)
 
                         # Atomic write
-                        _tmp = _accum_npz + '.ckpt.tmp'
+                        # [S152] numpy.savez_compressed appends .npz if not present
+                        # so tmp must already end in .npz or rename will fail
+                        _tmp = _accum_npz.replace('.npz', '.ckpt.tmp.npz')
                         _np_ckpt.savez_compressed(_tmp, seeds=_seeds, score=_scores)
                         _os_ckpt.replace(_tmp, _accum_npz)
 
                         # Write binary NPZ for Steps 2-6
                         _fwd_mr = _np_ckpt.array([s.get('forward_match_rate', 0.0) for s in _all], dtype=_np_ckpt.float32)
                         _rev_mr = _np_ckpt.array([s.get('reverse_match_rate', 0.0) for s in _all], dtype=_np_ckpt.float32)
-                        _tmp_bin = _binary_npz + '.ckpt.tmp'
+                        _tmp_bin = _binary_npz.replace('.npz', '.ckpt.tmp.npz')
                         _np_ckpt.savez_compressed(_tmp_bin, seeds=_seeds,
                                                   forward_match_rate=_fwd_mr,
                                                   reverse_match_rate=_rev_mr,
