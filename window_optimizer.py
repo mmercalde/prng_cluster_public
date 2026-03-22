@@ -391,6 +391,11 @@ class BayesianOptimization(SearchStrategy):
                trial_history_context: dict = None):  # [S140b]
         """Run Bayesian optimization"""
         if self.optuna_search:
+            # [S152] Wire _survivor_accumulator through to OptunaBayesianSearch
+            # BayesianOptimization.search() delegates immediately — accumulator must
+            # be copied onto the inner search object or getattr(self,...) finds None.
+            if hasattr(self, '_survivor_accumulator'):
+                self.optuna_search._survivor_accumulator = self._survivor_accumulator
             # Use real Optuna implementation
             return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
                                              resume_study=resume_study, study_name=study_name,
