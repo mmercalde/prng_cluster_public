@@ -141,6 +141,100 @@ def _get_residues_for_config(config, dataset_path: str):
             for e in window]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [S152] Incremental NPZ flush — write survivors to disk as-found
+# ─────────────────────────────────────────────────────────────────────────────
+import os as _os_flush
+import numpy as _np_flush
+
+# Flush threshold: flush NPZ after this many NEW bidi survivors accumulate.
+# Override via env: PRNG_FLUSH_EVERY=1 to flush after every chunk.
+_FLUSH_EVERY = int(_os_flush.environ.get("PRNG_FLUSH_EVERY", "10"))
+
+# Tracks how many survivors were present at the last flush (module-level state,
+# reset to 0 at process start — safe because each run is a fresh process).
+_flush_last_count = 0
+
+
+def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
+    """
+    Atomic merge-write of accumulator bidirectional survivors to NPZ.
+
+    - Deduplicates by seed (highest score wins).
+    - Merges with any pre-existing NPZ on disk.
+    - Writes atomically via .tmp → rename.
+    - Updates both bidirectional_survivors_all.npz  (with scores)
+      and    bidirectional_survivors_binary.npz     (Steps 2-6 format).
+    - Non-fatal: any write error is logged but does not raise.
+    """
+    global _flush_last_count
+
+    bidi = accumulator.get("bidirectional", [])
+    current_count = len(bidi)
+
+    new_since_last = current_count - _flush_last_count
+    if new_since_last < _FLUSH_EVERY:
+        return  # not enough new survivors yet
+
+    try:
+        _ACCUM_NPZ  = "bidirectional_survivors_all.npz"
+        _BINARY_NPZ = "bidirectional_survivors_binary.npz"
+
+        # Deduplicate: highest score per seed wins
+        seen: dict = {}
+        for s in bidi:
+            seed = int(s["seed"])
+            if seed not in seen or s.get("score", 0.0) > seen[seed].get("score", 0.0):
+                seen[seed] = s
+
+        # Merge with prior NPZ if it exists
+        if _os_flush.path.exists(_ACCUM_NPZ):
+            try:
+                prior = _np_flush.load(_ACCUM_NPZ)
+                prior_seeds  = prior["seeds"]
+                prior_scores = prior.get("score", _np_flush.zeros(len(prior_seeds)))
+                for i, pseed in enumerate(prior_seeds):
+                    pseed = int(pseed)
+                    pscore = float(prior_scores[i])
+                    if pseed not in seen or pscore > seen[pseed].get("score", 0.0):
+                        seen[pseed] = {"seed": pseed, "score": pscore}
+            except Exception as _me:
+                print(f"[S152-FLUSH] Warning: could not read prior NPZ for merge: {_me}")
+
+        all_survivors = list(seen.values())
+        seeds  = _np_flush.array([s["seed"]  for s in all_survivors], dtype=_np_flush.uint64)
+        scores = _np_flush.array([s.get("score", 0.0) for s in all_survivors], dtype=_np_flush.float32)
+        fwd_mr = _np_flush.array([s.get("forward_match_rate", 0.0) for s in all_survivors], dtype=_np_flush.float32)
+        rev_mr = _np_flush.array([s.get("reverse_match_rate", 0.0) for s in all_survivors], dtype=_np_flush.float32)
+
+        # Atomic write — accumulator NPZ
+        _tmp = _ACCUM_NPZ + ".flush.tmp"
+        _np_flush.savez_compressed(_tmp, seeds=seeds, score=scores)
+        _os_flush.replace(_tmp, _ACCUM_NPZ)
+
+        # Atomic write — binary NPZ (Steps 2-6)
+        _tmp_bin = _BINARY_NPZ + ".flush.tmp"
+        _np_flush.savez_compressed(_tmp_bin, seeds=seeds,
+                                   forward_match_rate=fwd_mr,
+                                   reverse_match_rate=rev_mr,
+                                   score=scores)
+        _os_flush.replace(_tmp_bin, _BINARY_NPZ)
+
+        _flush_last_count = current_count
+        _tag = f" [{label}]" if label else ""
+        print(
+            f"[S152-FLUSH]{_tag} NPZ flushed: {len(seeds):,} total survivors "
+            f"(+{new_since_last} new this flush, threshold={_FLUSH_EVERY})"
+        )
+
+    except Exception as _fe:
+        print(f"[S152-FLUSH] Warning: incremental flush failed (non-fatal): {_fe}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# END [S152] incremental flush helper
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _build_test_result_from_pw(pw_result: dict, accumulator, config,
                                 prng_base: str, trial_number: int,
                                 optuna_trial=None):
@@ -197,6 +291,9 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
             })
         accumulator['forward'].extend(fwd_records + fwd_h_records)
         accumulator['reverse'].extend(rev_records + rev_h_records)
+
+        # [S152] Flush survivors to disk as-found (incremental, threshold-gated)
+        _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")
 
     return TestResult(
         config             = config,

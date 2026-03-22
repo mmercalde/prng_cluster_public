@@ -52,9 +52,9 @@ print('  Manifest patched: study_name=$STUDY_NAME, resume_study=true')
 
     PYTHONPATH=. python3 agents/watcher_agent.py --clear-halt 2>/dev/null || true
 
-    # Re-launch
+    # Re-launch — [S152] --force-step 1 bypasses freshness check automatically on resume
     nohup bash -c "PYTHONPATH=. python3 agents/watcher_agent.py \
-        --run-pipeline --start-step 1 --end-step 1 \
+        --run-pipeline --start-step 1 --end-step 1 --force-step 1 \
         >> $LOG 2>&1" &
     echo $! > "$PID_FILE"
     echo "✅ Resumed — PID $(cat $PID_FILE)"

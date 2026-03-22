@@ -249,7 +249,12 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
                 strategy_max_misses = cp.array([s["max_consecutive_misses"] for s in strategies_data], dtype=cp.int32)
                 strategy_tolerances = cp.array([s["skip_tolerance"]         for s in strategies_data], dtype=cp.int32)
                 strategy_ids_gpu    = cp.zeros(n_seeds,     dtype=cp.uint32)
-                skip_sequences_gpu  = cp.zeros(n_seeds * k, dtype=cp.uint32)
+                # [S152-VRAM] Cap allocation: kernel writes survivor positions only (not n_seeds)
+                # prng_registry.py: "skip_sequences[n_survivors * k] where k = window_size"
+                # Before fix: 200,000 × 18,068 × 4 = 14.5 GB per worker → VRAM OOM crash
+                # After fix:    5,000 × 18,068 × 4 =  361 MB per worker → safe on 8 GB
+                _max_surv = int(os.environ.get('PRNG_MAX_HYBRID_SURVIVORS', '5000'))
+                skip_sequences_gpu  = cp.zeros(_max_surv * k, dtype=cp.uint32)
                 # Use phase2_threshold for hybrid (mirrors sieve_filter.py single-phase hybrid)
                 # Use coerce_threshold for safe handling — avoids 0.0 / string edge cases
                 phase2_raw = job.get('phase2_threshold', None)
@@ -281,8 +286,10 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
                     s_arr   = survivors_gpu[:count].get().tolist()
                     r_arr   = match_rates_gpu[:count].get().tolist()
                     sid_arr = strategy_ids_gpu[:count].get().tolist()
-                    ss_raw  = skip_sequences_gpu[:count * k].get().reshape(count, k).tolist()
-                    for seed, rate, sid, ss in zip(s_arr, r_arr, sid_arr, ss_raw):
+                    # [S152-VRAM] Clamp readback to allocated buffer size
+                    _safe_count = min(count, _max_surv)
+                    ss_raw  = skip_sequences_gpu[:_safe_count * k].get().reshape(_safe_count, k).tolist()
+                    for seed, rate, sid, ss in zip(s_arr[:_safe_count], r_arr[:_safe_count], sid_arr[:_safe_count], ss_raw):
                         if rate >= hybrid_threshold:  # use hybrid_threshold not threshold
                             # [S150-slim_v1] tuple: (seed, match_rate, strategy_id, skip_seq)
                             survivors_out.append((int(seed), float(rate), int(sid), list(ss)))

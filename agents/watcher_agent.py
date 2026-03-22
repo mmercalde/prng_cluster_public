@@ -364,6 +364,7 @@ class WatcherConfig:
 
     # Safety
     halt_file: str = "/tmp/agent_halt"
+    force_steps: set = None  # [S152] steps to bypass freshness check
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict."""
@@ -1337,7 +1338,13 @@ class WatcherAgent:
                 print(f"⚠️ SOFT FAILURE: {preflight_msg} - continuing anyway")
 
         # FRESHNESS CHECK (Phase 1 Patch v1.1.2)
-        is_fresh, freshness_msg, is_hard_freshness = check_output_freshness(step)
+        # [S152] --force-step bypass: treat output as stale for forced steps
+        _force_steps = getattr(self.config, 'force_steps', None) or set()
+        if step in _force_steps:
+            print(f"[FORCE-STEP] Bypassing freshness check for step {step} (--force-step)")
+            is_fresh, freshness_msg, is_hard_freshness = False, f"FORCE-STEP: step {step} forced", False
+        else:
+            is_fresh, freshness_msg, is_hard_freshness = check_output_freshness(step)
         
         if is_hard_freshness:
             logger.error(f"Step {step} blocked by hard failure: {freshness_msg}")
@@ -2780,7 +2787,15 @@ def main():
         default=None,
         help="JSON string of params to override manifest defaults"
     )
-
+    parser.add_argument(
+        "--force-step",
+        type=int,
+        action="append",
+        dest="force_steps",
+        metavar="N",
+        default=[],
+        help="Force step N to re-run even if output is fresh (repeatable: --force-step 1 --force-step 2)"
+    )
 
     # Phase 7 Part B: Dispatch commands
     parser.add_argument("--episodes", type=int, default=5,
@@ -2808,6 +2823,7 @@ def main():
         auto_proceed_threshold=args.threshold,
         use_llm=not args.no_llm,
         use_grammar=not args.no_grammar,
+        force_steps=set(args.force_steps) if args.force_steps else set(),  # [S152]
         # [S95] Step 5 NN Optuna needs more time (20 trials × ~35min × 2 GPUs)
         # [S121] Step 0 TRSE is fast (~5s) — explicit override prevents default 120min wait
         step_timeout_overrides={0: 1, 1: 0, 5: 360}  # [S147 Q1] 1:0 → S145 guard fires (<=0 → inf)

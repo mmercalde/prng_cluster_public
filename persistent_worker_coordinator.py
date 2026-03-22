@@ -397,6 +397,9 @@ class PersistentWorkerCoordinator:
                         survivors   = [int(s) for s in inner.get("seeds", [])]
                         match_rates = list(inner.get("match_rates", []))
                         n = len(survivors)
+                        # [S152-IPC] Confirm slim_v1 fast path active
+                        _gpu_tag = f"{job.get('hostname','?')}:GPU{job.get('gpu_id','?')}"
+                        self.logger.debug(f"[slim_v1] {_gpu_tag} chunk → {n} survivors")
                         # TB ruling: strategy_ids+skip_sequences required for hybrid
                         _is_hybrid_job = (
                             "hybrid" in str(job.get("prng_type", "")).lower()
@@ -417,6 +420,9 @@ class PersistentWorkerCoordinator:
                             return {"status": "error", "message": f"slim_v1 length mismatch: seeds={n} match_rates={len(match_rates)} strat_ids={len(strat_ids)} skip_seqs={len(skip_seqs)}"}
                     else:
                         # Legacy path — list of dicts (kept for rollout safety)
+                        # [S152-IPC] WARN: expected slim_v1 from updated workers
+                        _gpu_tag = f"{job.get('hostname','?')}:GPU{job.get('gpu_id','?')}"
+                        self.logger.warning(f"[legacy-ipc] {_gpu_tag} — worker sent legacy dict-list format (expected slim_v1)")
                         raw_survivors = inner.get("survivors", [])
                         survivors   = [s["seed"]       if isinstance(s, dict) else int(s) for s in raw_survivors]
                         match_rates = [s["match_rate"] if isinstance(s, dict) else 0.5     for s in raw_survivors]
