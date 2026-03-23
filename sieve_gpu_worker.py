@@ -161,11 +161,13 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
     draws = load_draws_cached(dataset_path, window_size, sessions, offset)
     k = len(draws)
 
-    # [S149-B] Direct GPU selection — workers see all GPUs, bind via gpu_id
+    # [S155-ROCR] ROCR_VISIBLE_DEVICES={gpu_id} in spawner remaps assigned GPU
+    # to device index 0 in this worker's HIP context. Use Device(0).
+    # gpu_id is retained for logging and mismatch detection only.
     _job_gpu_id = job.get('gpu_id', None)
     if _job_gpu_id is not None and int(_job_gpu_id) != gpu_id:
         raise ValueError(f"gpu_id mismatch: worker={gpu_id}, job={_job_gpu_id}")
-    device = cp.cuda.Device(gpu_id)
+    device = cp.cuda.Device(0)
     all_survivors = []
     per_family = []
 
@@ -417,11 +419,12 @@ def run_worker(gpu_id: int):
     # Warm up GPU - touch device to trigger ROCm init NOW (not at first job)
     # set_limit() is inside the Device context and before cp.zeros(1) so the
     # warmup allocation itself is already bounded by the cap.
-    _log(f"Warming up GPU {gpu_id} (pool cap: {_pool_mb}MB)...")
-    with cp.cuda.Device(gpu_id):
+    # [S155-ROCR] ROCR_VISIBLE_DEVICES remaps assigned GPU to device 0.
+    _log(f"Warming up GPU {gpu_id} (physical, appears as device 0 via ROCR)...")
+    with cp.cuda.Device(0):
         cp.get_default_memory_pool().set_limit(_pool_bytes)   # cap BEFORE first alloc
         _ = cp.zeros(1, dtype=cp.float32)                     # warmup, now bounded
-        cp.cuda.Device(gpu_id).synchronize()
+        cp.cuda.Device(0).synchronize()
 
     # Startup diagnostics — proves the cap is live and VM is sane (TB S155)
     # VmSize logged because the crash signature was total-vm:41452828kB (virtual

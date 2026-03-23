@@ -287,9 +287,16 @@ class PersistentWorkerCoordinator:
         node   = handle.node
         gpu_id = handle.gpu_id
 
+        # [S155-ROCR] Restore ROCR_VISIBLE_DEVICES per-worker GPU isolation.
+        # Root cause of rrig6600c OOM: without ROCR isolation, each worker's
+        # HIP runtime enumerates ALL 8 GPUs and maps ALL their VRAM into the
+        # process VA space: 8 GPUs × ~5GB = ~41GB VA per worker.
+        # Under production load the kernel tries to back these pages → OOM.
+        # With ROCR_VISIBLE_DEVICES={gpu_id}: each worker only sees 1 GPU,
+        # VA per worker = ~5GB. 8 workers × 5GB = 40GB total — safe.
+        # Worker uses Device(0) because ROCR remaps assigned GPU → device 0.
         rocm_env = " ".join(ROCM_ENV_VARS + [
-            # [S149-B] HIP/CUDA per-worker masking removed
-            # Workers see all GPUs; Device(gpu_id) selects directly in worker
+            f"ROCR_VISIBLE_DEVICES={gpu_id}",
         ])
 
         activate = f"source {os.path.join(os.path.dirname(node.python_env), 'activate')}"
