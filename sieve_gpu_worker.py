@@ -355,10 +355,10 @@ def run_sieve_job(job: dict, gpu_id: int = 0) -> dict:
     _rates     = [t[1] for t in all_survivors]
     # TB ruling: drive hybrid from job context, not survivor content
     # Zero-survivor hybrid chunks must still emit strategy_ids/skip_sequences
-    _is_hybrid = (
-        "hybrid" in str(job.get("prng_type", "")).lower()
-        or str(job.get("skip_mode", "")).lower() == "hybrid"
-    )
+    # [S155] Fix: job payload sends "hybrid": bool — not "prng_type" or "skip_mode".
+    # Both those keys are absent from PWC job dicts. job.get("hybrid", False) is the
+    # correct key — set at sieve_range() dispatch from "is_hybrid = '_hybrid' in prng_type".
+    _is_hybrid = bool(job.get("hybrid", False))
     _ret = {
         'job_id':      job_id,
         'success':     True,
@@ -391,12 +391,58 @@ def run_worker(gpu_id: int):
         _emit({"status": "error", "error": "prng_registry not found"})
         sys.exit(1)
 
+    # [S155-v2] Cap CuPy memory pool — prevents OOM on AMD rigs.
+    # Root cause: CUPY_CUDA_MEMORY_POOL_TYPE=none mmap'd full 8GB VRAM per worker
+    # at device init. 8 workers × 8GB = ~64GB VA on a 7.7GB RAM machine → OOM.
+    # Fix: re-enable pool (remove that env var in coordinator) + cap via set_limit().
+    #
+    # Sequencing requirement (TB review S155):
+    #   set_limit() requires a live device context — must be called inside
+    #   `with cp.cuda.Device()`. It must also precede the warmup cp.zeros(1)
+    #   allocation so the very first pool allocation is already bounded.
+    #
+    # Pinned pool (TB review S155):
+    #   PinnedMemoryPool has no set_limit() in CuPy 13.x/14.x (confirmed live).
+    #   Methods: free, free_all_blocks, malloc, n_free_blocks — no limit API.
+    #   Do NOT call set_limit() on the pinned pool.
+    #
+    # Configurability: PRNG_CUPY_POOL_LIMIT_MB injected via ROCM_ENV_VARS in
+    # persistent_worker_coordinator.py — propagates through remote `env` command.
+    # Default 256MB = 5-6x per-job working set (~42-50MB for 2M seeds).
+    # 8 workers × 256MB = 2GB total pool — leaves ~5.7GB free on 7.7GB rigs.
+    import os as _os
+    _pool_mb = int(_os.environ.get("PRNG_CUPY_POOL_LIMIT_MB", "256"))
+    _pool_bytes = _pool_mb * 1024 * 1024
+
     # Warm up GPU - touch device to trigger ROCm init NOW (not at first job)
-    _log(f"Warming up GPU {gpu_id}...")
+    # set_limit() is inside the Device context and before cp.zeros(1) so the
+    # warmup allocation itself is already bounded by the cap.
+    _log(f"Warming up GPU {gpu_id} (pool cap: {_pool_mb}MB)...")
     with cp.cuda.Device(gpu_id):
-        _ = cp.zeros(1, dtype=cp.float32)
+        cp.get_default_memory_pool().set_limit(_pool_bytes)   # cap BEFORE first alloc
+        _ = cp.zeros(1, dtype=cp.float32)                     # warmup, now bounded
         cp.cuda.Device(gpu_id).synchronize()
-    _log(f"GPU ready")
+
+    # Startup diagnostics — proves the cap is live and VM is sane (TB S155)
+    # VmSize logged because the crash signature was total-vm:41452828kB (virtual
+    # address space bloat from mmap). VmRSS alone would not have caught that.
+    _mp = cp.get_default_memory_pool()
+    _vm_size_kb = "unknown"
+    _vm_rss_kb = "unknown"
+    try:
+        for _line in open("/proc/self/status").readlines():
+            if _line.startswith("VmSize:"):
+                _vm_size_kb = _line.split()[1]
+            elif _line.startswith("VmRSS:"):
+                _vm_rss_kb = _line.split()[1]
+    except Exception:
+        pass
+    _log(
+        f"GPU ready | pool_limit={_mp.get_limit() // (1024*1024)}MB "
+        f"used={_mp.used_bytes() // 1024}KB "
+        f"total={_mp.total_bytes() // 1024}KB "
+        f"VmSize={_vm_size_kb}kB VmRSS={_vm_rss_kb}kB"
+    )
 
     device_name = "unknown"
     try:

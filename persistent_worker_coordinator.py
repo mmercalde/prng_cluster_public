@@ -94,7 +94,26 @@ from typing import Dict, List, Optional, Any, Tuple
 # ─────────────────────────────────────────────────────────────────────────────
 ROCM_SPAWN_STAGGER_S   = 4.0   # seconds between worker spawns per gpu_id
 ROCM_ENV_VARS = [
-    "CUPY_CUDA_MEMORY_POOL_TYPE=none",
+    # [S155] Removed CUPY_CUDA_MEMORY_POOL_TYPE=none — caused 41GB VM mmap OOM.
+    # Each worker mmaps full 8GB VRAM at device init with pool disabled.
+    # 8 workers × 8GB = 64GB VA on a 7.7GB RAM machine → OOM killer.
+    # Pool race condition now handled via set_limit() in sieve_gpu_worker.py.
+    # Cache race (original S151 concern) addressed separately via per-worker
+    # CUPY_CACHE_DIR (S152). These are independent issues. TB ruling: approved.
+    #
+    # [S155-v2] Propagate pool limit into remote worker env.
+    # _spawn_worker() runs: env {rocm_env} python sieve_gpu_worker.py
+    # ROCM_ENV_VARS is the only injection path — must include this var or
+    # the worker falls back to its hardcoded default silently.
+    # Operator can override on any rig: PRNG_CUPY_POOL_LIMIT_MB=512 bash sweep_run1.sh
+    "PRNG_CUPY_POOL_LIMIT_MB=256",
+    # [S155-v3] Defense-in-depth: CUPY_GPU_MEMORY_LIMIT is CuPy's own env var
+    # (confirmed in memory.pyx _parse_limit_string — called at pool construction).
+    # Read at SingleDeviceMemoryPool.__init__() before any worker code runs.
+    # set_limit() inside Device context later supersedes this per-device value.
+    # Layering: env var caps ALL devices at init; set_limit() reinforces for our device.
+    # Format: plain integer bytes. 268435456 = 256MB.
+    "CUPY_GPU_MEMORY_LIMIT=268435456",
     "HSA_OVERRIDE_GFX_VERSION=10.3.0",
     "HSA_ENABLE_SDMA=0",
     "ROCM_PATH=/opt/rocm",
@@ -403,10 +422,10 @@ class PersistentWorkerCoordinator:
                         _gpu_tag = f"{job.get('hostname','?')}:GPU{job.get('gpu_id','?')}"
                         self.logger.debug(f"[slim_v1] {_gpu_tag} chunk → {n} survivors")
                         # TB ruling: strategy_ids+skip_sequences required for hybrid
-                        _is_hybrid_job = (
-                            "hybrid" in str(job.get("prng_type", "")).lower()
-                            or str(job.get("skip_mode", "")).lower() == "hybrid"
-                        )
+                        # [S155] Fix: job payload sends "hybrid": bool — not "prng_type"/"skip_mode".
+                        # Both those keys are absent from PWC job dicts. "hybrid" is the correct key,
+                        # set at dispatch: "hybrid": is_hybrid (from "'_hybrid' in prng_type").
+                        _is_hybrid_job = bool(job.get("hybrid", False))
                         if _is_hybrid_job:
                             if "strategy_ids" not in inner or "skip_sequences" not in inner:
                                 handle.alive = False
