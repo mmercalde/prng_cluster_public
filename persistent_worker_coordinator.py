@@ -243,6 +243,34 @@ class PersistentWorkerCoordinator:
         """Spawn persistent workers on all AMD rigs with ROCm stagger."""
         if self._started:
             return
+        # [S156] Pre-spawn cleanup — kill any existing sieve_gpu_worker processes
+        # on remote nodes before spawning new workers. Prevents zombie worker
+        # accumulation when a rig reboots mid-run and rejoins with stale workers
+        # from a previous PWC instance still running.
+        for node in self.nodes:
+            if self._is_localhost(node.hostname):
+                continue
+            if not self._is_rocm(node):
+                continue
+            try:
+                cleanup_cmd = (
+                    f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                    f"-o BatchMode=yes "
+                    f"{node.username}@{node.hostname} "
+                    f"'pkill -9 -f sieve_gpu_worker 2>/dev/null; sleep 1; echo cleanup_done'"
+                )
+                result = subprocess.run(cleanup_cmd, shell=True, capture_output=True,
+                                      text=True, timeout=15)
+                if "cleanup_done" in result.stdout:
+                    self.logger.info(f"  [S156] {node.hostname}: pre-spawn cleanup done")
+                else:
+                    self.logger.warning(f"  [S156] {node.hostname}: pre-spawn cleanup uncertain")
+            except Exception as e:
+                self.logger.warning(f"  [S156] {node.hostname}: pre-spawn cleanup failed: {e}")
+        # Small delay after cleanup to allow ROCm contexts to fully release
+        import time as _time
+        _time.sleep(2)
+
         self.logger.info("Starting persistent worker pool...")
         for node in self.nodes:
             if self._is_localhost(node.hostname):
