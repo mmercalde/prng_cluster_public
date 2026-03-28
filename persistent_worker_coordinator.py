@@ -246,7 +246,7 @@ class PersistentWorkerCoordinator:
         # ── [S156-BANDAID v2] Pre-spawn targeted cleanup ──────────────────────
         # TEMPORARY SAFETY NET — not the root fix.
         # Root fix: session-scoped PWC (Phase B, S157).
-        # TB requirements: targeted --persistent match, SIGTERM first, log exact procs.
+        # TB: targeted --persistent match, SIGTERM first, log exact procs.
         import subprocess as _s156_sp
         import time as _s156_time
         for _s156_node in self.nodes:
@@ -255,13 +255,14 @@ class PersistentWorkerCoordinator:
             if not self._is_rocm(_s156_node):
                 continue
             try:
-                # Find matching persistent workers only
+                _s156_host = _s156_node.hostname
+                _s156_user = _s156_node.username
                 _s156_find = (
-                    f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
-                    f"-o BatchMode=yes "
-                    f"{_s156_node.username}@{_s156_node.hostname} "
-                    f"'pgrep -af "sieve_gpu_worker.*--persistent" 2>/dev/null "
-                    f"|| echo none'"
+                    "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                    "-o BatchMode=yes "
+                    + _s156_user + "@" + _s156_host + " "
+                    + "'pgrep -af \"sieve_gpu_worker.*--persistent\" 2>/dev/null "
+                    "|| echo none'"
                 )
                 _s156_r = _s156_sp.run(
                     _s156_find, shell=True, capture_output=True, text=True, timeout=10
@@ -269,41 +270,39 @@ class PersistentWorkerCoordinator:
                 _s156_found = _s156_r.stdout.strip()
                 if _s156_found and _s156_found != "none":
                     self.logger.info(
-                        f"  [S156] {_s156_node.hostname}: found stale workers: "
-                        f"{_s156_found[:200]}"
+                        "  [S156] " + _s156_host + ": found stale workers: "
+                        + _s156_found[:200]
                     )
-                    # SIGTERM first, escalate to SIGKILL
                     _s156_reap = (
-                        f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
-                        f"-o BatchMode=yes "
-                        f"{_s156_node.username}@{_s156_node.hostname} "
-                        f"'pkill -15 -f "sieve_gpu_worker.*--persistent" 2>/dev/null; "
-                        f"sleep 2; "
-                        f"pkill -9 -f "sieve_gpu_worker.*--persistent" 2>/dev/null; "
-                        f"sleep 1; "
-                        f"remaining=$(pgrep -c -f "sieve_gpu_worker.*--persistent" "
-                        f"2>/dev/null || echo 0); "
-                        f"echo "reaped:$remaining"'"
+                        "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+                        "-o BatchMode=yes "
+                        + _s156_user + "@" + _s156_host + " "
+                        + "'pkill -15 -f \"sieve_gpu_worker.*--persistent\" 2>/dev/null; "
+                        "sleep 2; "
+                        "pkill -9 -f \"sieve_gpu_worker.*--persistent\" 2>/dev/null; "
+                        "sleep 1; "
+                        "remaining=$(pgrep -c -f \"sieve_gpu_worker.*--persistent\" "
+                        "2>/dev/null || echo 0); "
+                        "echo \"reaped:$remaining\"'"
                     )
                     _s156_r2 = _s156_sp.run(
                         _s156_reap, shell=True, capture_output=True, text=True, timeout=15
                     )
                     self.logger.info(
-                        f"  [S156] {_s156_node.hostname}: "
-                        f"reap result: {_s156_r2.stdout.strip()}"
+                        "  [S156] " + _s156_host + ": reap result: "
+                        + _s156_r2.stdout.strip()
                     )
                 else:
                     self.logger.info(
-                        f"  [S156] {_s156_node.hostname}: no stale persistent workers"
+                        "  [S156] " + _s156_host + ": no stale persistent workers"
                     )
             except Exception as _s156_e:
                 self.logger.warning(
-                    f"  [S156] {_s156_node.hostname}: pre-spawn cleanup failed: {_s156_e}"
+                    "  [S156] " + _s156_host
+                    + ": pre-spawn cleanup failed: " + str(_s156_e)
                 )
-        # Allow ROCm contexts to fully release after cleanup
         _s156_time.sleep(2)
         # ── end [S156-BANDAID v2] ───────────────────────────────────────────
-
         self.logger.info("Starting persistent worker pool...")
         for node in self.nodes:
             if self._is_localhost(node.hostname):
