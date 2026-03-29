@@ -357,6 +357,7 @@ class PersistentWorkerCoordinator:
         # Worker uses Device(0) because ROCR remaps assigned GPU → device 0.
         rocm_env = " ".join(ROCM_ENV_VARS + [
             f"ROCR_VISIBLE_DEVICES={gpu_id}",
+            f"CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_{gpu_id}",  # [S157] per-worker isolated cache
         ])
 
         activate = f"source {os.path.join(os.path.dirname(node.python_env), 'activate')}"
