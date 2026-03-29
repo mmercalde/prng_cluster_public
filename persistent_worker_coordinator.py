@@ -97,7 +97,7 @@ ROCM_SPAWN_STAGGER_S   = 4.0   # seconds between worker spawns per gpu_id
 # [S158C] Inter-node stagger — pause between finishing one node's workers
 # and starting the next node's spawn. Prevents combined ROCm init overload
 # when multiple rigs have active workers simultaneously.
-ROCM_INTER_NODE_STAGGER_S = 10.0  # seconds between nodes
+ROCM_INTER_NODE_STAGGER_S = 30.0  # seconds between nodes
 # [S158C] Cliff nodes — require extra inter-node stagger before spawn.
 # These nodes are sensitive to ROCm init load from other active workers.
 ROCM_CLIFF_NODES = ["192.168.3.162"]  # rrig6600c
