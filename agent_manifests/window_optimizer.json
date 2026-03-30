@@ -208,12 +208,12 @@
     "trse_context": "trse_context.json",
     "enable_pruning": true,
     "n_parallel": 1,
-    "use_persistent_workers": true,
+    "use_persistent_workers": false,
     "worker_pool_size": 8,
     "seed_cap_nvidia": 5000000,
     "seed_cap_amd": 2000000,
     "seed_start": 0,
-    "use_zmq_sqlite": false
+    "use_zmq_sqlite": true
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
