@@ -94,13 +94,6 @@ from typing import Dict, List, Optional, Any, Tuple
 # ROCm stability constants (from S130/S133 learnings)
 # ─────────────────────────────────────────────────────────────────────────────
 ROCM_SPAWN_STAGGER_S   = 4.0   # seconds between worker spawns per gpu_id
-# [S158C] Inter-node stagger — pause between finishing one node's workers
-# and starting the next node's spawn. Prevents combined ROCm init overload
-# when multiple rigs have active workers simultaneously.
-ROCM_INTER_NODE_STAGGER_S = 30.0  # seconds between nodes
-# [S158C] Cliff nodes — require extra inter-node stagger before spawn.
-# These nodes are sensitive to ROCm init load from other active workers.
-ROCM_CLIFF_NODES = ["192.168.3.162"]  # rrig6600c
 ROCM_ENV_VARS = [
     # [S155] Removed CUPY_CUDA_MEMORY_POOL_TYPE=none — caused 41GB VM mmap OOM.
     # Each worker mmaps full 8GB VRAM at device init with pool disabled.
@@ -334,16 +327,6 @@ class PersistentWorkerCoordinator:
                 # Stagger to prevent simultaneous HIP init (S130/S133 lesson)
                 if gpu_id < pool - 1:
                     time.sleep(ROCM_SPAWN_STAGGER_S)
-            # [S158C] Inter-node stagger — let workers stabilize before
-            # spawning next node. Extra stagger for CLIFF nodes.
-            _is_cliff = node.hostname in ROCM_CLIFF_NODES
-            _inter_stagger = (ROCM_INTER_NODE_STAGGER_S * 1.5) if _is_cliff else ROCM_INTER_NODE_STAGGER_S
-            self.logger.info(
-                f"  [S158C] Inter-node stagger {_inter_stagger}s "
-                f"after {node.hostname} "
-                f"({'CLIFF node' if _is_cliff else 'standard'})"
-            )
-            time.sleep(_inter_stagger)
         self._started = True
         alive = sum(1 for w in self.workers if w.alive)
         self.logger.info(f"Worker pool ready: {alive}/{len(self.workers)} alive")
