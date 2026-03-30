@@ -274,6 +274,31 @@ class ZMQSQLiteCoordinator:
         self._nodes           = self._load_nodes()
         self._workers_launched = False
         self._zeus_ip         = self._get_zeus_ip()
+        self._progress_writer = None
+        self._init_progress_writer()
+
+    def _init_progress_writer(self):
+        """Initialize ProgressWriter for web dashboard — mirrors PWC.startup()."""
+        try:
+            from progress_display import ProgressWriter
+            self._progress_writer = ProgressWriter(
+                "Forward Sieve", total_jobs=100, total_seeds=0
+            )
+            for node in self._nodes:
+                host = node.get("hostname", "")
+                if host in ("localhost", "127.0.0.1"):
+                    self._progress_writer.register_node(
+                        "localhost", "RTX 3080 Ti", 2
+                    )
+                elif node.get("gpu_count", 0) > 0:
+                    self._progress_writer.register_node(
+                        host,
+                        node.get("gpu_type", "RX 6600"),
+                        node.get("gpu_count", 8)
+                    )
+        except Exception as e:
+            self.logger.warning(f"[ZMQ] ProgressWriter unavailable: {e}")
+            self._progress_writer = None
 
     def _get_zeus_ip(self):
         try:
@@ -418,6 +443,17 @@ class ZMQSQLiteCoordinator:
             f"[ZMQ] {prng_type} {total_seeds:,} seeds "
             f"-> {total_chunks} chunks ({chunk_size:,}/chunk)"
         )
+        if self._progress_writer:
+            try:
+                _step_name = (
+                    f"{'Reverse' if 'reverse' in prng_type else 'Forward'} "
+                    f"Sieve ({prng_type})"
+                )
+                self._progress_writer.update_step(
+                    _step_name, total_seeds=total_seeds
+                )
+            except Exception:
+                pass
 
         self.db.enqueue_chunks(
             run_id=run_id, prng_type=prng_type, chunks=chunks,
@@ -495,6 +531,21 @@ class ZMQSQLiteCoordinator:
                         self.logger.info(
                             f"  ✅ Chunk {chunk_id}: {n:,} survivors [{worker_id}]"
                         )
+                        if self._progress_writer:
+                            try:
+                                # Parse worker_id: "hostname:gpuN"
+                                _parts = worker_id.split(":")
+                                _host  = _parts[0] if _parts else worker_id
+                                _gpuid = int(_parts[1].replace("gpu",""))                                          if len(_parts) > 1 else 0
+                                _gpu_type = "RTX 3080 Ti"                                             if _host == "localhost" else "RX 6600"
+                                _chunk_seeds = chunk_size
+                                # elapsed not available here — use chunk_size/throughput
+                                self._progress_writer.log_gpu_result(
+                                    _host, _gpuid, _gpu_type,
+                                    _chunk_seeds, 10.0, success=True
+                                )
+                            except Exception:
+                                pass
                 else:
                     self.logger.error(
                         f"  ❌ Chunk {chunk_id} error: "
@@ -508,6 +559,16 @@ class ZMQSQLiteCoordinator:
             job_sock.close()
             result_sock.close()
             ctx.term()
+
+        # Update dashboard progress
+        if self._progress_writer:
+            try:
+                self._progress_writer.update_progress(
+                    jobs_done=completed,
+                    chunks_total=total_chunks
+                )
+            except Exception:
+                pass
 
         # Aggregate
         all_survivors: List[int]   = []
@@ -688,6 +749,23 @@ def run_trial_zmq_sqlite(
 
         total_bidi = len(bidi_const) + len(bidi_var)
         print(f"      Total bidirectional: {total_bidi:,}")
+
+        # Update dashboard trial stats (mirrors run_trial_persistent)
+        if coord._progress_writer:
+            try:
+                coord._progress_writer.update_trial_stats(
+                    trial_num=trial_number,
+                    forward_survivors=len(fwd_map),
+                    reverse_survivors=len(rev_map),
+                    bidirectional=total_bidi,
+                    best_bidirectional=total_bidi,
+                    config_desc=f"W{ws}_O{off}",
+                    accumulated_forward=len(fwd_map),
+                    accumulated_reverse=len(rev_map),
+                    accumulated_bidirectional=total_bidi,
+                )
+            except Exception:
+                pass
 
         return {
             "pruned":                 False,
