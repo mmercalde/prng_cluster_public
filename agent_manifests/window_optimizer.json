@@ -38,7 +38,8 @@
         "worker-pool-size": "worker_pool_size",
         "seed-cap-nvidia": "seed_cap_nvidia",
         "seed-cap-amd": "seed_cap_amd",
-        "seed-start": "seed_start"
+        "seed-start": "seed_start",
+        "use-zmq-sqlite": "use_zmq_sqlite"
       },
       "distributed": true,
       "timeout_minutes": 1440
@@ -201,9 +202,9 @@
     "prng_type": "java_lcg",
     "output": "optimal_window_config.json",
     "test_both_modes": true,
-    "resume_study": true,
-    "window_trials": 50,
-    "study_name": "window_opt_1773971255",
+    "resume_study": false,
+    "window_trials": 3,
+    "study_name": "",
     "trse_context": "trse_context.json",
     "enable_pruning": true,
     "n_parallel": 1,
@@ -211,7 +212,8 @@
     "worker_pool_size": 8,
     "seed_cap_nvidia": 5000000,
     "seed_cap_amd": 2000000,
-    "seed_start": 0
+    "seed_start": 0,
+    "use_zmq_sqlite": false
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
@@ -234,6 +236,11 @@
       "default": "",
       "description": "Optuna study DB name to resume (e.g. 'window_opt_1772507547'). Empty = auto-select most recent incomplete study.",
       "optimized_by": "Manual"
+    },
+    "use_zmq_sqlite": {
+      "type": "bool",
+      "default": false,
+      "description": "S158D: Use ZMQ+SQLite coordinator instead of PWC. Eliminates persistent SSH pipes. Workers launched once per run, pull jobs via ZMQ TCP."
     }
   }
 }

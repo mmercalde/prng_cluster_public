@@ -537,6 +537,7 @@ def run_bayesian_optimization(
     n_parallel: int = 1,              # S115 M1
     trse_context_file: str = 'trse_context.json',  # S121 Step 0 context
     use_persistent_workers: bool = False,   # S134
+    use_zmq_sqlite: bool = False,            # S158D
     worker_pool_size: int = 8,             # S134
     seed_cap_nvidia: int = 5_000_000,      # S137
     seed_cap_amd: int = 2_000_000,         # S137
@@ -602,6 +603,9 @@ def run_bayesian_optimization(
 
     # S134: wire persistent worker flags onto coordinator so integration gate can read them
     coordinator.use_persistent_workers = use_persistent_workers
+    coordinator.use_zmq_sqlite = use_zmq_sqlite
+    if use_zmq_sqlite:
+        print(f"   [S158D] ZMQ-SQLite coordinator ENABLED")
     coordinator.worker_pool_size        = worker_pool_size
     if use_persistent_workers:
         print(f"   [S134] Persistent worker mode ENABLED (pool_size={worker_pool_size} per rig)")
@@ -1030,6 +1034,8 @@ def main():
     parser.add_argument('--use-persistent-workers', action='store_true', default=False,
                        help='[S134] Use persistent worker engine instead of subprocess sieve. '
                             'Workers stay alive across all 4 sieve passes per trial.')
+    parser.add_argument('--use-zmq-sqlite', action='store_true', default=False,
+                        help='Use ZMQ+SQLite coordinator (S158D — no persistent SSH pipes)')
     parser.add_argument('--worker-pool-size', type=int, default=8,
                        help='[S134] Number of persistent workers to spawn per rig (default: 8).')
     parser.add_argument('--seed-cap-nvidia', type=int, default=5_000_000,
@@ -1065,6 +1071,7 @@ def main():
             n_parallel=getattr(args, 'n_parallel', 1),
             trse_context_file=getattr(args, 'trse_context', 'trse_context.json'),
             use_persistent_workers=getattr(args, 'use_persistent_workers', False),  # S134
+            use_zmq_sqlite=getattr(args, 'use_zmq_sqlite', False),                      # S158D
             worker_pool_size=getattr(args, 'worker_pool_size', 8),                  # S134
             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),            # S137
             seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),                  # S137

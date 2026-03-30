@@ -59,6 +59,11 @@ try:
 except ImportError:
     run_trial_persistent = None  # only needed when --use-persistent-workers is set
 
+try:
+    from zmq_sqlite_coordinator import run_trial_zmq_sqlite
+except ImportError:
+    run_trial_zmq_sqlite = None  # only needed when --use-zmq-sqlite is set
+
 
 def extract_survivor_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -365,6 +370,46 @@ def run_bidirectional_test(coordinator,
                                           prng_base, trial_number, optuna_trial)
     # ========================================================================
     # END PERSISTENT WORKER PATH — original path continues unchanged below
+    # ========================================================================
+
+    # ========================================================================
+    # [S158D] ZMQ-SQLITE PATH — activated by use_zmq_sqlite=True
+    # Zero changes to original path. Purely additive gate.
+    # ========================================================================
+    _use_zmq = getattr(coordinator, 'use_zmq_sqlite', False)
+    if _use_zmq:
+        if run_trial_zmq_sqlite is None:
+            raise ImportError(
+                "zmq_sqlite_coordinator.py not found — cannot use --use-zmq-sqlite"
+            )
+        _zmq_result = run_trial_zmq_sqlite(
+            coordinator_cfg   = getattr(coordinator, 'config_file', 'distributed_config.json'),
+            config            = config,
+            trial_number      = trial_number,
+            prng_base         = prng_base,
+            residues          = _get_residues_for_config(config, dataset_path),
+            total_seeds       = seed_count,
+            forward_threshold = forward_threshold,
+            reverse_threshold = reverse_threshold,
+            test_both_modes   = test_both_modes,
+            dataset_path      = dataset_path,
+            worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
+            seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
+            seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+        )
+        if _zmq_result.get("pruned"):
+            return TestResult(
+                config              = config,
+                forward_count       = 0,
+                reverse_count       = 0,
+                bidirectional_count = 0,
+                iteration           = trial_number,
+            )
+        return _build_test_result_from_pw(
+            _zmq_result, accumulator, config, prng_base, trial_number, optuna_trial
+        )
+    # ========================================================================
+    # END ZMQ-SQLITE PATH
     # ========================================================================
 
     # ========================================================================
