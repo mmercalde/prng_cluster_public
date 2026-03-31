@@ -319,88 +319,131 @@ class ZMQSQLiteCoordinator:
             return []
 
     def _launch_workers(self):
-        """SSH to each rig ONCE. Fire and forget. SSH closes after launch."""
+        """
+        SSH to each rig ONCE. Launch workers as systemd-run --user transient services.
+        Workers survive SSH session teardown. systemd owns the process, not the shell.
+        Zeus local workers launched via subprocess.Popen with isolated env per GPU.
+
+        Prerequisite (one-time per rig):
+            sudo loginctl enable-linger michael
+        """
         if self._workers_launched:
             return
+
         import subprocess
+        import shlex
+
+        def _abs(p, username):
+            return '/home/' + username + '/' + p[2:] if p.startswith('~/') else p
 
         for node in self._nodes:
-            host      = node.get("hostname", "")
-            username  = node.get("username", "michael")
-            gpu_count = node.get("gpu_count", 0)
-            if not host or host in ("localhost", "127.0.0.1") or gpu_count == 0:
+            host      = node.get('hostname', '')
+            username  = node.get('username', 'michael')
+            gpu_count = node.get('gpu_count', 0)
+            if not host or host in ('localhost', '127.0.0.1') or gpu_count == 0:
                 continue
-            py_env      = node.get("python_env", "~/rocm_env/bin/python3")
-            script_path = node.get("script_path", "~/distributed_prng_analysis")
-            activate    = f"source {os.path.join(os.path.dirname(py_env), 'activate')}"
-            kill_cmd    = "pkill -9 -f zmq_sqlite_worker.py 2>/dev/null; sleep 1"
 
-            launches = []
+            py_env      = _abs(node.get('python_env',  '~/rocm_env/bin/python3'),    username)
+            script_path = _abs(node.get('script_path', '~/distributed_prng_analysis'), username)
+            worker_script = script_path + '/zmq_sqlite_worker.py'
+
             for gpu_id in range(gpu_count):
-                worker_id = f"{host}:gpu{gpu_id}"
-                env_vars  = (
-                    f"ROCR_VISIBLE_DEVICES={gpu_id} "
-                    f"CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_{gpu_id} "
-                    f"HSA_OVERRIDE_GFX_VERSION=10.3.0"
-                )
-                launches.append(
-                    f"nohup {env_vars} {py_env} -u "
-                    f"{script_path}/zmq_sqlite_worker.py "
-                    f"--zeus-host {self._zeus_ip} "
-                    f"--job-port {self.zmq_job_port} "
-                    f"--result-port {self.zmq_result_port} "
-                    f"--worker-id {worker_id} "
-                    f"--gpu-id {gpu_id} "
-                    f"> /tmp/zmq_worker_gpu{gpu_id}.log 2>&1 &"
-                )
+                worker_id = host + ':gpu' + str(gpu_id)
+                unit      = 'zmq-worker-gpu' + str(gpu_id)
+                log_path  = '/tmp/zmq_worker_gpu' + str(gpu_id) + '.log'
 
-            full_cmd = (
-                f"{activate} && cd {script_path} && "
-                f"{kill_cmd} && " + "\n".join(launches)
-            )
-            try:
-                # Fire and forget — nohup workers run independently after SSH exits.
-                # Do NOT wait() — SSH session stays open while background processes
-                # run on rig, causing timeout and killing workers before they start.
-                subprocess.Popen(
-                    ["ssh", "-q",
-                     "-o", "StrictHostKeyChecking=no",
-                     "-o", "BatchMode=yes",
-                     "-o", "ConnectTimeout=10",
-                     "-o", "ServerAliveInterval=0",
-                     f"{username}@{host}", full_cmd],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                self.logger.info(
-                    f"[ZMQ] Launched {gpu_count} workers on {host}"
-                )
-            except Exception as e:
-                self.logger.error(f"[ZMQ] Failed to launch on {host}: {e}")
+                worker_cmd = ' '.join([
+                    'cd', shlex.quote(script_path), '&&',
+                    'exec', shlex.quote(py_env), '-u', shlex.quote(worker_script),
+                    '--zeus-host', shlex.quote(self._zeus_ip),
+                    '--job-port', str(self.zmq_job_port),
+                    '--result-port', str(self.zmq_result_port),
+                    '--worker-id', shlex.quote(worker_id),
+                    '--gpu-id', str(gpu_id),
+                    '>>' + shlex.quote(log_path), '2>&1',
+                ])
 
-        # Zeus local CUDA workers
+                remote_lines = [
+                    'set -e',
+                    'linger=$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || echo no)',
+                    'if [ "$linger" != yes ]; then',
+                    '  echo "ERROR: linger not enabled -- run: sudo loginctl enable-linger $USER" >&2',
+                    '  exit 42',
+                    'fi',
+                    'systemctl --user stop ' + shlex.quote(unit) + ' >/dev/null 2>&1 || true',
+                    'systemctl --user reset-failed ' + shlex.quote(unit) + ' >/dev/null 2>&1 || true',
+                    ('systemd-run --user'
+                     + ' --unit=' + shlex.quote(unit)
+                     + ' --collect'
+                     + ' --property=Type=exec'
+                     + ' --property=Restart=always'
+                     + ' --property=RestartSec=2'
+                     + ' --setenv=ROCR_VISIBLE_DEVICES=' + str(gpu_id)
+                     + ' --setenv=CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_' + str(gpu_id)
+                     + ' --setenv=HSA_OVERRIDE_GFX_VERSION=10.3.0'
+                     + ' /bin/bash -lc ' + shlex.quote(worker_cmd)),
+                    'sleep 1',
+                    'systemctl --user is-active --quiet ' + shlex.quote(unit),
+                ]
+                remote_script = '\n'.join(remote_lines)
+
+                try:
+                    proc = subprocess.run(
+                        ['ssh', '-q',
+                         '-o', 'StrictHostKeyChecking=no',
+                         '-o', 'BatchMode=yes',
+                         '-o', 'ConnectTimeout=10',
+                         username + '@' + host,
+                         'bash', '-lc', remote_script],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if proc.returncode == 0:
+                        self.logger.info('[ZMQ] systemd-run worker active: ' + host + ' gpu' + str(gpu_id))
+                    elif proc.returncode == 42:
+                        self.logger.error('[ZMQ] linger not enabled on ' + host)
+                    else:
+                        self.logger.error(
+                            '[ZMQ] systemd-run failed on ' + host + ' gpu' + str(gpu_id) +
+                            ' rc=' + str(proc.returncode) +
+                            ' stderr=' + proc.stderr.strip()[:200]
+                        )
+                except subprocess.TimeoutExpired:
+                    self.logger.error('[ZMQ] SSH timeout on ' + host + ' gpu' + str(gpu_id))
+                except Exception as e:
+                    self.logger.error('[ZMQ] Launch failed ' + host + ' gpu' + str(gpu_id) + ': ' + str(e))
+
+        # Zeus local CUDA workers -- isolated env per GPU (S158D-E)
         import subprocess as sp
+        import os as _os
         for gpu_id in range(2):
-            worker_id = f"localhost:gpu{gpu_id}"
+            worker_id = 'localhost:gpu' + str(gpu_id)
+            env = _os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+            env['CUPY_CACHE_DIR']       = '/tmp/cupy_cache_zeus_gpu' + str(gpu_id)
+            env.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
             try:
                 sp.Popen(
-                    ["python3", "zmq_sqlite_worker.py",
-                     "--zeus-host", "localhost",
-                     "--job-port",    str(self.zmq_job_port),
-                     "--result-port", str(self.zmq_result_port),
-                     "--worker-id",   worker_id,
-                     "--gpu-id",      str(gpu_id),
-                     "--cuda"],
-                    stdout=open(f"/tmp/zmq_zeus_gpu{gpu_id}.log", "w"),
-                    stderr=sp.STDOUT
+                    ['python3', 'zmq_sqlite_worker.py',
+                     '--zeus-host',   'localhost',
+                     '--job-port',    str(self.zmq_job_port),
+                     '--result-port', str(self.zmq_result_port),
+                     '--worker-id',   worker_id,
+                     '--gpu-id',      '0',
+                     '--cuda'],
+                    env=env,
+                    stdout=open('/tmp/zmq_zeus_gpu' + str(gpu_id) + '.log', 'w'),
+                    stderr=sp.STDOUT,
                 )
-                self.logger.info(f"[ZMQ] Zeus CUDA worker launched ({worker_id})")
+                self.logger.info(
+                    '[ZMQ] Zeus CUDA worker launched (' + worker_id +
+                    ' CUDA_VISIBLE_DEVICES=' + str(gpu_id) + ' logical_gpu=0)'
+                )
             except Exception as e:
-                self.logger.error(f"[ZMQ] Zeus GPU{gpu_id} launch failed: {e}")
+                self.logger.error('[ZMQ] Zeus GPU' + str(gpu_id) + ' launch failed: ' + str(e))
 
         time.sleep(WORKER_SETTLE_S)
         self._workers_launched = True
-        self.logger.info("[ZMQ] All workers launched and settled")
+        self.logger.info('[ZMQ] All workers launched and settled')
 
     def run_sieve_pass(self, prng_type, residues, total_seeds, threshold,
                        window_size, output_file, dataset_path="",
