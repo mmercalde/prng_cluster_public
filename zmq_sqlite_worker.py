@@ -70,7 +70,7 @@ def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str) -> dic
         os.environ.setdefault("ROCR_VISIBLE_DEVICES",     str(gpu_id))
         os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
     else:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(gpu_id))  # S158D-E: launcher mask wins
 
     chunk_id = job.get("chunk_id", "unknown_chunk")
 
@@ -203,7 +203,9 @@ def main():
 
     log.info(
         f"Worker ready — id={worker_id} gpu={gpu_id} cuda={use_cuda} "
-        f"zeus={args.zeus_host}:{args.job_port}"
+        f"zeus={args.zeus_host}:{args.job_port} "
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES','unset')} "
+        f"ROCR_VISIBLE_DEVICES={os.environ.get('ROCR_VISIBLE_DEVICES','unset')}"
     )
 
     jobs_done  = 0
