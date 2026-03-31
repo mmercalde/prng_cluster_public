@@ -359,14 +359,19 @@ class ZMQSQLiteCoordinator:
                 f"{kill_cmd} && " + "\n".join(launches)
             )
             try:
-                proc = subprocess.Popen([
-                    "ssh", "-q",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=10",
-                    f"{username}@{host}", full_cmd
-                ])
-                proc.wait(timeout=15)
+                # Fire and forget — nohup workers run independently after SSH exits.
+                # Do NOT wait() — SSH session stays open while background processes
+                # run on rig, causing timeout and killing workers before they start.
+                subprocess.Popen(
+                    ["ssh", "-q",
+                     "-o", "StrictHostKeyChecking=no",
+                     "-o", "BatchMode=yes",
+                     "-o", "ConnectTimeout=10",
+                     "-o", "ServerAliveInterval=0",
+                     f"{username}@{host}", full_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 self.logger.info(
                     f"[ZMQ] Launched {gpu_count} workers on {host}"
                 )
