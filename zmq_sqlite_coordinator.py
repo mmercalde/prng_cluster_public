@@ -467,8 +467,8 @@ class ZMQSQLiteCoordinator:
             dataset_path=dataset_path or target_file,
             is_hybrid=is_hybrid, strategies=strategies
         )
-        self._launch_workers()
 
+        # Bind sockets BEFORE launching workers so workers can connect immediately
         ctx         = zmq.Context()
         job_sock    = ctx.socket(zmq.PUSH)
         result_sock = ctx.socket(zmq.PULL)
@@ -476,6 +476,9 @@ class ZMQSQLiteCoordinator:
         result_sock.setsockopt(zmq.RCVTIMEO, RESULT_POLL_MS)
         job_sock.bind(f"tcp://*:{self.zmq_job_port}")
         result_sock.bind(f"tcp://*:{self.zmq_result_port}")
+
+        # Launch workers AFTER sockets are bound — workers connect immediately
+        self._launch_workers()
 
         try:
             # Dispatch all pending chunks
