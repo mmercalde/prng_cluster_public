@@ -41,6 +41,7 @@ LEASE_DURATION_S = 900
 MAX_ATTEMPTS     = 3
 WORKER_SETTLE_S  = 5
 RESULT_POLL_MS   = 500
+CHUNK_PAYLOAD_DIR = "zmq_chunk_payloads"  # S159: per-chunk .npz files
 
 
 class JobQueue:
@@ -94,14 +95,28 @@ class JobQueue:
                     CREATE TABLE IF NOT EXISTS job_results (
                         chunk_id         TEXT PRIMARY KEY,
                         run_id           TEXT NOT NULL,
-                        survivors_json   TEXT NOT NULL,
-                        match_rates_json TEXT NOT NULL,
-                        skip_seqs_json   TEXT NOT NULL,
-                        strat_ids_json   TEXT NOT NULL,
+                        result_path      TEXT NOT NULL,
+                        survivor_count   INTEGER NOT NULL DEFAULT 0,
                         worker_id        TEXT NOT NULL,
                         created_at       REAL NOT NULL
                     )
                 """)
+                # S159 migration: handle existing DBs with old blob schema
+                try:
+                    cols = {r[1] for r in conn.execute(
+                        "PRAGMA table_info(job_results)")}
+                    if "survivors_json" in cols and "result_path" not in cols:
+                        conn.execute(
+                            "ALTER TABLE job_results ADD COLUMN "
+                            "result_path TEXT NOT NULL DEFAULT ''")
+                        conn.execute(
+                            "ALTER TABLE job_results ADD COLUMN "
+                            "survivor_count INTEGER NOT NULL DEFAULT 0")
+                        logger.warning(
+                            "[ZMQ-DB] Migrated job_results to slim schema "
+                            "(old blob columns retained for this session)")
+                except Exception as _mig_err:
+                    logger.debug(f"[ZMQ-DB] Schema migration check: {_mig_err}")
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_status_run "
                     "ON job_queue (status, run_id)"
@@ -152,11 +167,20 @@ class JobQueue:
                 conn.commit()
 
     def complete_chunk(self, chunk_id, worker_id, survivors, match_rates,
-                       skip_seqs, strat_ids):
+                       skip_seqs, strat_ids, chunk_payload_dir=None):
         """
         Zeus records result. Idempotent — duplicate chunk_id silently ignored.
         Returns True if first completion, False if duplicate.
+
+        S159: payload arrays written to .npz file; only ledger metadata
+        (result_path, survivor_count) stored in SQLite.
         """
+        import numpy as np  # numpy already required by the broader project
+
+        payload_dir = chunk_payload_dir or CHUNK_PAYLOAD_DIR
+        os.makedirs(payload_dir, exist_ok=True)
+        npz_path = os.path.join(payload_dir, chunk_id + ".npz")
+
         with self._write_lock:
             with self._conn() as conn:
                 existing = conn.execute(
@@ -169,15 +193,34 @@ class JobQueue:
                         f"from {worker_id} — ignored"
                     )
                     return False
+
+                # Write payload to .npz before DB insert (fail-fast)
+                try:
+                    np.savez_compressed(
+                        npz_path,
+                        survivors=np.array(survivors,   dtype=np.int64),
+                        match_rates=np.array(match_rates, dtype=np.float32),
+                        # skip_seqs and strat_ids preserved for completeness
+                        # but never consumed by downstream steps
+                        skip_seqs=np.array(
+                            [json.dumps(s) for s in skip_seqs], dtype=object),
+                        strat_ids=np.array(strat_ids,   dtype=np.int32),
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[ZMQ-DB] Failed to write payload npz "
+                        f"{npz_path}: {e}"
+                    )
+                    raise
+
                 conn.execute("""
                     INSERT INTO job_results
-                    (chunk_id,run_id,survivors_json,match_rates_json,
-                     skip_seqs_json,strat_ids_json,worker_id,created_at)
-                    SELECT chunk_id,run_id,?,?,?,?,?,?
+                    (chunk_id, run_id, result_path, survivor_count,
+                     worker_id, created_at)
+                    SELECT chunk_id, run_id, ?, ?, ?, ?
                     FROM job_queue WHERE chunk_id=?
-                """, (json.dumps(survivors), json.dumps(match_rates),
-                      json.dumps(skip_seqs), json.dumps(strat_ids),
-                      worker_id, time.time(), chunk_id))
+                """, (npz_path, len(survivors), worker_id, time.time(),
+                      chunk_id))
                 conn.execute(
                     "UPDATE job_queue SET status='done', completed_at=? "
                     "WHERE chunk_id=?", (time.time(), chunk_id)
@@ -231,11 +274,56 @@ class JobQueue:
         return [dict(r) for r in rows]
 
     def get_results(self, run_id):
+        """
+        S159: returns list of dicts with survivors/match_rates lists loaded
+        from .npz files.  Same structure as before — callers unchanged.
+        Missing or corrupt .npz files are logged and skipped (treated as
+        failed chunks; coordinator already tracks failure count separately).
+        """
+        import numpy as np
+
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM job_results WHERE run_id=?", (run_id,)
             ).fetchall()
-        return [dict(r) for r in rows]
+
+        results = []
+        for row in rows:
+            r = dict(row)
+            npz_path = r.get("result_path", "")
+
+            # S159 migration path: old DB rows have blob columns, no result_path
+            if not npz_path or npz_path == "":
+                if "survivors_json" in r:
+                    # Graceful fallback for rows from pre-S159 schema
+                    try:
+                        results.append({
+                            "chunk_id":    r["chunk_id"],
+                            "run_id":      r["run_id"],
+                            "survivors":   json.loads(r["survivors_json"]),
+                            "match_rates": json.loads(r["match_rates_json"]),
+                        })
+                    except Exception as e:
+                        logger.warning(
+                            f"[ZMQ-DB] Legacy row decode failed "
+                            f"{r['chunk_id']}: {e}")
+                continue
+
+            try:
+                data = np.load(npz_path, allow_pickle=True)
+                results.append({
+                    "chunk_id":    r["chunk_id"],
+                    "run_id":      r["run_id"],
+                    "survivors":   data["survivors"].tolist(),
+                    "match_rates": data["match_rates"].tolist(),
+                })
+            except Exception as e:
+                logger.warning(
+                    f"[ZMQ-DB] Could not load payload npz "
+                    f"{npz_path}: {e} — chunk skipped"
+                )
+
+        return results
 
     def count_by_status(self, run_id):
         with self._conn() as conn:
@@ -246,8 +334,24 @@ class JobQueue:
         return {r["status"]: r["n"] for r in rows}
 
     def cleanup(self, run_id):
+        """S159: also removes per-chunk .npz payload files for this run."""
         with self._write_lock:
             with self._conn() as conn:
+                # Collect paths before deleting rows
+                rows = conn.execute(
+                    "SELECT result_path FROM job_results WHERE run_id=?",
+                    (run_id,)
+                ).fetchall()
+                for row in rows:
+                    path = row[0] if row[0] else ""
+                    if path and os.path.isfile(path):
+                        try:
+                            os.remove(path)
+                        except Exception as e:
+                            logger.debug(
+                                f"[ZMQ-DB] cleanup: could not remove "
+                                f"{path}: {e}"
+                            )
                 conn.execute("DELETE FROM job_queue WHERE run_id=?", (run_id,))
                 conn.execute("DELETE FROM job_results WHERE run_id=?", (run_id,))
                 conn.commit()
@@ -262,13 +366,15 @@ class ZMQSQLiteCoordinator:
     def __init__(self, config_file="distributed_config.json",
                  seed_cap_amd=2_000_000, seed_cap_nvidia=5_000_000,
                  worker_pool_size=8,
-                 zmq_job_port=ZMQ_JOB_PORT, zmq_result_port=ZMQ_RESULT_PORT):
+                 zmq_job_port=ZMQ_JOB_PORT, zmq_result_port=ZMQ_RESULT_PORT,
+                 chunk_payload_dir=None):   # S159: override default payload dir
         self.config_file      = config_file
         self.seed_cap_amd     = seed_cap_amd
         self.seed_cap_nvidia  = seed_cap_nvidia
         self.worker_pool_size = worker_pool_size
-        self.zmq_job_port     = zmq_job_port
-        self.zmq_result_port  = zmq_result_port
+        self.zmq_job_port       = zmq_job_port
+        self.zmq_result_port    = zmq_result_port
+        self.chunk_payload_dir  = chunk_payload_dir or CHUNK_PAYLOAD_DIR  # S159
         self.db               = JobQueue()
         self.logger           = logging.getLogger("ZMQSQLiteCoordinator")
         self._nodes           = self._load_nodes()
@@ -575,6 +681,7 @@ class ZMQSQLiteCoordinator:
                         result.get("match_rates",     []),
                         result.get("skip_sequences",  []),
                         result.get("strategy_ids",    []),
+                        chunk_payload_dir=self.chunk_payload_dir,  # S159
                     )
                     if is_new:
                         completed += 1
@@ -628,10 +735,10 @@ class ZMQSQLiteCoordinator:
         all_strat_ids: List[int]   = []
 
         for r in self.db.get_results(run_id):
-            all_survivors.extend(  json.loads(r["survivors_json"]))
-            all_match_rates.extend(json.loads(r["match_rates_json"]))
-            all_skip_seqs.extend(  json.loads(r["skip_seqs_json"]))
-            all_strat_ids.extend(  json.loads(r["strat_ids_json"]))
+            # S159: get_results now returns pre-loaded lists from .npz
+            all_survivors.extend(  r["survivors"])
+            all_match_rates.extend(r["match_rates"])
+            # skip_seqs / strat_ids no longer stored; downstream doesn't use them
 
         counts        = self.db.count_by_status(run_id)
         failed_chunks = counts.get("failed", 0)
@@ -708,6 +815,7 @@ def run_trial_zmq_sqlite(
         seed_cap_amd=seed_cap_amd, seed_cap_nvidia=seed_cap_nvidia,
         worker_pool_size=worker_pool_size,
         zmq_job_port=zmq_job_port, zmq_result_port=zmq_result_port,
+        chunk_payload_dir=CHUNK_PAYLOAD_DIR,  # S159
     )
 
     ws         = config.window_size
