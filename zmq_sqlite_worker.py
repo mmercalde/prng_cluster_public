@@ -1,12 +1,10 @@
 """
-zmq_sqlite_worker.py  —  S158D v2: ZMQ GPU Sieve Worker (Rig Side)
+zmq_sqlite_worker.py  —  S158D v3: ZMQ GPU Sieve Worker (Rig Side)
 ====================================================================
 Launched ONCE per GPU via SSH. Runs independently via ZMQ TCP.
-No persistent SSH pipes. No heartbeats. Zeus is sole SQLite writer.
+No persistent SSH pipes. Zeus is sole SQLite writer.
 
 Worker identity (--worker-id): "hostname:gpuN"
-  - Explicit, stable, logged with every result
-  - Zeus uses this for SQLite claimed_by tracking
 
 Launch (done automatically by ZMQSQLiteCoordinator._launch_workers()):
   ROCR_VISIBLE_DEVICES=0 python3 zmq_sqlite_worker.py \
@@ -15,6 +13,13 @@ Launch (done automatically by ZMQSQLiteCoordinator._launch_workers()):
 
 Install pyzmq in existing venv:
   source ~/rocm_env/bin/activate && pip install pyzmq
+
+v3 fixes vs v2:
+  1. execute_sieve_job(sieve_job, gpu_id) — was missing gpu_id positional arg
+  2. result.get("success") not result.get("status")=="ok" — wrong key in v2
+  3. Survivor dicts: "best_skip" (standard) or "skip_sequence" (hybrid)
+     v2 was looking for nested "result"/"slim_v1" format that does not exist
+  4. Defensive logging — full traceback in worker log for every failure path
 """
 
 import argparse
@@ -23,10 +28,13 @@ import logging
 import os
 import sys
 import time
+import traceback as tb
 
-logging.basicConfig(level=logging.INFO,
-                    format="[%(asctime)s] %(levelname)s %(message)s",
-                    datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S"
+)
 log = logging.getLogger("ZMQWorker")
 
 
@@ -44,8 +52,17 @@ def parse_args():
 
 def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str) -> dict:
     """
-    Execute one sieve chunk using existing sieve_filter.py infrastructure.
-    Same GPU kernel code as PWC — only IPC changes.
+    Execute one sieve chunk using sieve_filter.execute_sieve_job().
+
+    execute_sieve_job(job, gpu_id) returns:
+      {"success": True,  "survivors": [{"seed":int, "match_rate":float,
+                                        "best_skip":int (standard) or
+                                        "skip_sequence":list, "strategy_id":int (hybrid)},
+                                        ...], ...}
+      {"success": False, "error": str, "traceback": str, ...}
+
+    We log the full traceback locally to /tmp/zmq_worker_gpuN.log on every
+    failure path so Zeus errors are never opaque.
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -55,11 +72,21 @@ def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str) -> dic
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
+    chunk_id = job.get("chunk_id", "unknown_chunk")
+
+    # ── Stage 1: import ───────────────────────────────────────────────────────
     try:
         from sieve_filter import execute_sieve_job
+    except Exception as e:
+        full_tb = tb.format_exc()
+        log.error(f"{worker_id}: IMPORT FAILED — {e}\n{full_tb}")
+        return _error_result(chunk_id, worker_id,
+                             f"import sieve_filter failed: {e}", full_tb)
 
+    # ── Stage 2: build job dict ───────────────────────────────────────────────
+    try:
         sieve_job = {
-            "job_id":              job["chunk_id"],
+            "job_id":              chunk_id,
             "search_type":         "residue_sieve",
             "dataset_path":        job["dataset_path"],
             "seed_start":          job["seed_start"],
@@ -73,61 +100,83 @@ def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str) -> dic
             "strategies":          (json.loads(job["strategies_json"])
                                     if job.get("strategies_json") else None),
             "hybrid":              bool(job["is_hybrid"]),
-            "gpu_id":              0,  # remapped by ROCR_VISIBLE_DEVICES
         }
-
-        result = execute_sieve_job(sieve_job)
-
-        if result.get("status") == "ok":
-            inner = result.get("result", {})
-            if inner.get("format") == "slim_v1":
-                survivors   = [int(s) for s in inner.get("seeds", [])]
-                match_rates = list(inner.get("match_rates", []))
-                skip_seqs   = list(inner.get("skip_sequences",
-                                             [[]] * len(survivors)))
-                strat_ids   = list(inner.get("strategy_ids",
-                                             [0] * len(survivors)))
-            else:
-                raw         = inner.get("survivors", [])
-                survivors   = [s["seed"]          if isinstance(s, dict)
-                               else int(s) for s in raw]
-                match_rates = [s.get("match_rate", 0.5) if isinstance(s, dict)
-                               else 0.5 for s in raw]
-                skip_seqs   = [s.get("skip_sequence", []) if isinstance(s, dict)
-                               else [] for s in raw]
-                strat_ids   = [s.get("strategy_id",    0) if isinstance(s, dict)
-                               else 0 for s in raw]
-
-            return {
-                "chunk_id":       job["chunk_id"],
-                "worker_id":      worker_id,
-                "status":         "ok",
-                "survivors":      survivors,
-                "match_rates":    match_rates,
-                "skip_sequences": skip_seqs,
-                "strategy_ids":   strat_ids,
-            }
-        else:
-            return {
-                "chunk_id":       job["chunk_id"],
-                "worker_id":      worker_id,
-                "status":         "error",
-                "message":        result.get("message", "unknown"),
-                "survivors":      [], "match_rates":    [],
-                "skip_sequences": [], "strategy_ids":   [],
-            }
-
     except Exception as e:
-        import traceback
+        full_tb = tb.format_exc()
+        log.error(f"{worker_id}: JOB BUILD FAILED chunk={chunk_id} — {e}\n{full_tb}")
+        return _error_result(chunk_id, worker_id,
+                             f"job build failed: {e}", full_tb)
+
+    # ── Stage 3: execute sieve ────────────────────────────────────────────────
+    try:
+        # gpu_id=0 because ROCR_VISIBLE_DEVICES remaps the device index
+        result = execute_sieve_job(sieve_job, 0)
+    except Exception as e:
+        full_tb = tb.format_exc()
+        log.error(f"{worker_id}: EXECUTE FAILED chunk={chunk_id} — {e}\n{full_tb}")
+        return _error_result(chunk_id, worker_id,
+                             f"execute_sieve_job raised: {e}", full_tb)
+
+    # ── Stage 4: check success flag ───────────────────────────────────────────
+    if not result.get("success", False):
+        err_msg  = result.get("error",     "no error field")
+        err_tb   = result.get("traceback", "no traceback field")
+        full_msg = f"execute_sieve_job returned success=False: {err_msg}"
+        log.error(
+            f"{worker_id}: SIEVE FAILED chunk={chunk_id}\n"
+            f"  error:     {err_msg}\n"
+            f"  traceback: {err_tb}"
+        )
+        return _error_result(chunk_id, worker_id, full_msg, err_tb)
+
+    # ── Stage 5: parse survivors ──────────────────────────────────────────────
+    try:
+        raw = result.get("survivors", [])
+        log.debug(
+            f"{worker_id}: chunk={chunk_id} raw survivors={len(raw)} "
+            f"first={raw[0] if raw else 'none'}"
+        )
+
+        survivors   = [int(s["seed"])                                  for s in raw]
+        match_rates = [float(s.get("match_rate", 0.5))                 for s in raw]
+        # Standard mode: best_skip (int) → wrap in list for consistency
+        # Hybrid mode:   skip_sequence (list of ints)
+        skip_seqs   = [s.get("skip_sequence", [s.get("best_skip", 0)]) for s in raw]
+        strat_ids   = [int(s.get("strategy_id", 0))                    for s in raw]
+
         return {
-            "chunk_id":       job["chunk_id"],
+            "chunk_id":       chunk_id,
             "worker_id":      worker_id,
-            "status":         "error",
-            "message":        str(e),
-            "traceback":      traceback.format_exc(),
-            "survivors":      [], "match_rates":    [],
-            "skip_sequences": [], "strategy_ids":   [],
+            "status":         "ok",
+            "survivors":      survivors,
+            "match_rates":    match_rates,
+            "skip_sequences": skip_seqs,
+            "strategy_ids":   strat_ids,
         }
+    except Exception as e:
+        full_tb = tb.format_exc()
+        log.error(
+            f"{worker_id}: PARSE FAILED chunk={chunk_id} — {e}\n"
+            f"  raw result keys: {list(result.keys())}\n"
+            f"  first survivor:  {result.get('survivors', [None])[0]}\n"
+            f"{full_tb}"
+        )
+        return _error_result(chunk_id, worker_id,
+                             f"result parse failed: {e}", full_tb)
+
+
+def _error_result(chunk_id: str, worker_id: str,
+                  message: str, full_tb: str = "") -> dict:
+    """Consistent error result format with full traceback."""
+    return {
+        "chunk_id":       chunk_id,
+        "worker_id":      worker_id,
+        "status":         "error",
+        "message":        message[:500],
+        "traceback":      full_tb[:2000],
+        "survivors":      [], "match_rates":    [],
+        "skip_sequences": [], "strategy_ids":   [],
+    }
 
 
 def main():
@@ -157,7 +206,9 @@ def main():
         f"zeus={args.zeus_host}:{args.job_port}"
     )
 
-    jobs_done = 0
+    jobs_done  = 0
+    jobs_error = 0
+
     try:
         while True:
             try:
@@ -165,7 +216,11 @@ def main():
             except zmq.Again:
                 continue
 
-            job = json.loads(msg.decode())
+            try:
+                job = json.loads(msg.decode())
+            except Exception as e:
+                log.error(f"{worker_id}: JSON decode failed — {e}")
+                continue
 
             if job.get("cmd") == "shutdown":
                 log.info(f"{worker_id}: shutdown received")
@@ -173,33 +228,48 @@ def main():
 
             chunk_id = job.get("chunk_id", "?")
             log.info(
-                f"{worker_id}: chunk {chunk_id} "
-                f"seeds {job.get('seed_start',0):,}"
-                f"→{job.get('seed_end',0):,} "
-                f"prng={job.get('prng_type','?')}"
+                f"{worker_id}: START chunk={chunk_id} "
+                f"seeds={job.get('seed_start',0):,}→{job.get('seed_end',0):,} "
+                f"prng={job.get('prng_type','?')} "
+                f"threshold={job.get('threshold','?')}"
             )
 
-            t0     = time.time()
-            result = run_sieve_job(job, gpu_id, use_cuda, worker_id)
+            t0      = time.time()
+            result  = run_sieve_job(job, gpu_id, use_cuda, worker_id)
             elapsed = time.time() - t0
 
             n = len(result.get("survivors", []))
-            log.info(
-                f"{worker_id}: chunk {chunk_id} done "
-                f"{n:,} survivors {elapsed:.1f}s"
-            )
+            if result["status"] == "ok":
+                log.info(
+                    f"{worker_id}: DONE chunk={chunk_id} "
+                    f"{n:,} survivors {elapsed:.1f}s"
+                )
+                jobs_done += 1
+            else:
+                log.error(
+                    f"{worker_id}: ERROR chunk={chunk_id} "
+                    f"after {elapsed:.1f}s — {result.get('message','?')}"
+                )
+                jobs_error += 1
 
-            # Send result back to Zeus via ZMQ (JSON only — no pickle)
-            result_sock.send(json.dumps(result).encode())
-            jobs_done += 1
+            # Always send result back — Zeus decides what to do with errors
+            try:
+                result_sock.send(json.dumps(result).encode())
+            except Exception as e:
+                log.error(f"{worker_id}: ZMQ send failed chunk={chunk_id} — {e}")
 
     except KeyboardInterrupt:
         log.info(f"{worker_id}: interrupted")
+    except Exception as e:
+        log.error(f"{worker_id}: FATAL — {e}\n{tb.format_exc()}")
     finally:
         job_sock.close()
         result_sock.close()
         ctx.term()
-        log.info(f"{worker_id}: exiting after {jobs_done} jobs")
+        log.info(
+            f"{worker_id}: exiting — "
+            f"done={jobs_done} errors={jobs_error}"
+        )
 
 
 if __name__ == "__main__":
