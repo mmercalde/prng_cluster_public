@@ -356,7 +356,7 @@ class ZMQSQLiteCoordinator:
 
             full_cmd = (
                 f"{activate} && cd {script_path} && "
-                f"{kill_cmd} && " + " && ".join(launches)
+                f"{kill_cmd} && " + "\n".join(launches)
             )
             try:
                 proc = subprocess.Popen([
