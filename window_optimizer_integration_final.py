@@ -382,6 +382,19 @@ def run_bidirectional_test(coordinator,
             raise ImportError(
                 "zmq_sqlite_coordinator.py not found — cannot use --use-zmq-sqlite"
             )
+        # S159E: session-scoped coordinator — created once, reused across all trials
+        # Workers stay connected between trials; sockets never close mid-optimization
+        if not hasattr(coordinator, '_zmq_session_coord') or coordinator._zmq_session_coord is None:
+            from zmq_sqlite_coordinator import ZMQSQLiteCoordinator as _ZMQSC
+            coordinator._zmq_session_coord = _ZMQSC(
+                config_file      = getattr(coordinator, 'config_file', 'distributed_config.json'),
+                seed_cap_amd     = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+                seed_cap_nvidia  = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
+                worker_pool_size = getattr(coordinator, 'worker_pool_size', 8),
+            )
+            print(f'[S159E] Created new ZMQ session coordinator for trial {trial_number}')
+        else:
+            print(f'[S159E] Reusing existing ZMQ session coordinator for trial {trial_number}')
         _zmq_result = run_trial_zmq_sqlite(
             coordinator_cfg   = getattr(coordinator, 'config_file', 'distributed_config.json'),
             config            = config,
@@ -396,6 +409,7 @@ def run_bidirectional_test(coordinator,
             worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
             seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
             seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+            session_coord     = coordinator._zmq_session_coord,
         )
         if _zmq_result.get("pruned"):
             return TestResult(
@@ -1641,6 +1655,22 @@ def add_window_optimizer_to_coordinator():
             print(f"Note: New results format unavailable: {e}")
 
         return results
+
+    _orig_optimize_window = optimize_window
+    def optimize_window(self, *args, **kwargs):
+        # S159E TB guardrail: single final shutdown in outer finally
+        try:
+            return _orig_optimize_window(self, *args, **kwargs)
+        finally:
+            _zmq_sc = getattr(self, '_zmq_session_coord', None)
+            if _zmq_sc is not None:
+                try:
+                    _zmq_sc.shutdown()
+                    print('[S159E] ZMQ session coordinator shut down cleanly')
+                except Exception as _e:
+                    print(f'[S159E] ZMQ session coordinator shutdown error (non-fatal): {_e}')
+                finally:
+                    self._zmq_session_coord = None
 
     MultiGPUCoordinator.optimize_window = optimize_window
     print("✅ Window optimizer integrated into MultiGPUCoordinator")

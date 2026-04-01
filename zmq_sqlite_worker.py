@@ -50,7 +50,7 @@ def parse_args():
     return p.parse_args()
 
 
-def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str) -> dict:
+def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str, execute_sieve_job=None) -> dict:
     """
     Execute one sieve chunk using sieve_filter.execute_sieve_job().
 
@@ -66,22 +66,20 @@ def run_sieve_job(job: dict, gpu_id: int, use_cuda: bool, worker_id: str) -> dic
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-    if not use_cuda:
-        os.environ.setdefault("ROCR_VISIBLE_DEVICES",     str(gpu_id))
-        os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
-    else:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(gpu_id))  # S158D-E: launcher mask wins
-
+    # S159F: env vars now set at worker startup before sieve_filter import
     chunk_id = job.get("chunk_id", "unknown_chunk")
 
-    # ── Stage 1: import ───────────────────────────────────────────────────────
-    try:
-        from sieve_filter import execute_sieve_job
-    except Exception as e:
-        full_tb = tb.format_exc()
-        log.error(f"{worker_id}: IMPORT FAILED — {e}\n{full_tb}")
-        return _error_result(chunk_id, worker_id,
-                             f"import sieve_filter failed: {e}", full_tb)
+
+
+
+    # S159F: sieve_filter imported once at worker startup — eliminates per-chunk CUDA context collision
+    if execute_sieve_job is None:
+        return _error_result(job.get("chunk_id","?"), worker_id,
+                             "execute_sieve_job not provided to run_sieve_job", "")
+
+
+
+
 
     # ── Stage 2: build job dict ───────────────────────────────────────────────
     try:
@@ -199,7 +197,27 @@ def main():
     result_sock = ctx.socket(zmq.PUSH)
     job_sock.connect(f"tcp://{args.zeus_host}:{args.job_port}")
     result_sock.connect(f"tcp://{args.zeus_host}:{args.result_port}")
-    job_sock.setsockopt(zmq.RCVTIMEO, 5000)
+    job_sock.setsockopt(zmq.RCVTIMEO, 500)  # S159B: was 5000ms
+
+    # S159F: set env vars BEFORE sieve_filter import (ROCm requires this)
+    if not use_cuda:
+        os.environ.setdefault("ROCR_VISIBLE_DEVICES",     str(gpu_id))
+        os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+        os.environ.setdefault("HSA_ENABLE_SDMA",          "0")
+        os.environ.setdefault("ROCM_PATH",                "/opt/rocm")
+        os.environ.setdefault("HIP_PATH",                 "/opt/rocm")
+    else:
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES",     str(gpu_id))
+
+    # S159F: import sieve_filter ONCE at worker startup — not per chunk
+    # Eliminates simultaneous CUDA context init collision between Zeus workers
+    try:
+        from sieve_filter import execute_sieve_job as _execute_sieve_job
+        log.info(f"[S159F] sieve_filter imported at startup — gpu={gpu_id} cuda={use_cuda}")
+    except Exception as _e:
+        log.error(f"[S159F] sieve_filter import FAILED at startup: {_e}")
+        sys.exit(1)
+
 
     log.info(
         f"Worker ready — id={worker_id} gpu={gpu_id} cuda={use_cuda} "
@@ -237,7 +255,7 @@ def main():
             )
 
             t0      = time.time()
-            result  = run_sieve_job(job, gpu_id, use_cuda, worker_id)
+            result  = run_sieve_job(job, gpu_id, use_cuda, worker_id, _execute_sieve_job)
             elapsed = time.time() - t0
 
             n = len(result.get("survivors", []))

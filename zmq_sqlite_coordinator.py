@@ -571,6 +571,9 @@ class ZMQSQLiteCoordinator:
                     '[ZMQ] Zeus CUDA worker launched (' + worker_id +
                     ' CUDA_VISIBLE_DEVICES=' + str(gpu_id) + ' logical_gpu=0)'
                 )
+                # S159F: stagger Zeus workers to prevent simultaneous CuPy init collision
+                if gpu_id == 0:
+                    time.sleep(3)
             except Exception as e:
                 self.logger.error('[ZMQ] Zeus GPU' + str(gpu_id) + ' launch failed: ' + str(e))
 
@@ -833,18 +836,28 @@ def run_trial_zmq_sqlite(
         dataset_path="", worker_pool_size=8,
         seed_cap_nvidia=5_000_000, seed_cap_amd=2_000_000,
         zmq_job_port=ZMQ_JOB_PORT, zmq_result_port=ZMQ_RESULT_PORT,
+        session_coord=None,
 ) -> Dict[str, Any]:
     """
     Identical signature and return contract to run_trial_persistent().
     _build_test_result_from_pw() works unchanged on the returned dict.
+
+    S159E: If session_coord is provided, it is reused across trials so sockets
+    stay bound and workers stay connected between trials. The caller owns
+    session_coord and must call session_coord.shutdown() after all trials.
+    If None, a per-trial coordinator is created and shut down after each trial.
     """
-    coord = ZMQSQLiteCoordinator(
-        config_file=coordinator_cfg,
-        seed_cap_amd=seed_cap_amd, seed_cap_nvidia=seed_cap_nvidia,
-        worker_pool_size=worker_pool_size,
-        zmq_job_port=zmq_job_port, zmq_result_port=zmq_result_port,
-        chunk_payload_dir=CHUNK_PAYLOAD_DIR,  # S159
-    )
+    _owns_coord = session_coord is None
+    if _owns_coord:
+        coord = ZMQSQLiteCoordinator(
+            config_file=coordinator_cfg,
+            seed_cap_amd=seed_cap_amd, seed_cap_nvidia=seed_cap_nvidia,
+            worker_pool_size=worker_pool_size,
+            zmq_job_port=zmq_job_port, zmq_result_port=zmq_result_port,
+            chunk_payload_dir=CHUNK_PAYLOAD_DIR,  # S159
+        )
+    else:
+        coord = session_coord
 
     ws         = config.window_size
     off        = config.offset
@@ -968,4 +981,5 @@ def run_trial_zmq_sqlite(
         }
 
     finally:
-        coord.shutdown()
+        if _owns_coord:
+            coord.shutdown()
