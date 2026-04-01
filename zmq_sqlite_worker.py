@@ -229,54 +229,81 @@ def main():
     jobs_done  = 0
     jobs_error = 0
 
-    try:
+    def _recv_job():
+        """Block until a valid non-shutdown job arrives. Returns job dict or None on shutdown."""
         while True:
             try:
                 msg = job_sock.recv()
             except zmq.Again:
                 continue
-
             try:
                 job = json.loads(msg.decode())
             except Exception as e:
                 log.error(f"{worker_id}: JSON decode failed — {e}")
                 continue
-
             if job.get("cmd") == "shutdown":
                 log.info(f"{worker_id}: shutdown received")
-                break
+                return None
+            return job
 
-            chunk_id = job.get("chunk_id", "?")
-            log.info(
-                f"{worker_id}: START chunk={chunk_id} "
-                f"seeds={job.get('seed_start',0):,}→{job.get('seed_end',0):,} "
-                f"prng={job.get('prng_type','?')} "
-                f"threshold={job.get('threshold','?')}"
-            )
+    def _send_result(result):
+        try:
+            result_sock.send(json.dumps(result).encode())
+        except Exception as e:
+            log.error(f"{worker_id}: ZMQ send failed chunk={result.get('chunk_id','?')} — {e}")
 
-            t0      = time.time()
-            result  = run_sieve_job(job, gpu_id, use_cuda, worker_id, _execute_sieve_job)
-            elapsed = time.time() - t0
+    try:
+        # S159F pre-fetch: pull first job before entering loop so GPU never idles
+        # between chunks — while GPU computes job N, next job N+1 is already in hand
+        next_job = _recv_job()
+        if next_job is None:
+            log.info(f"{worker_id}: shutdown before first job")
+        else:
+            while True:
+                job = next_job
 
-            n = len(result.get("survivors", []))
-            if result["status"] == "ok":
+                chunk_id = job.get("chunk_id", "?")
                 log.info(
-                    f"{worker_id}: DONE chunk={chunk_id} "
-                    f"{n:,} survivors {elapsed:.1f}s"
+                    f"{worker_id}: START chunk={chunk_id} "
+                    f"seeds={job.get('seed_start',0):,}→{job.get('seed_end',0):,} "
+                    f"prng={job.get('prng_type','?')} "
+                    f"threshold={job.get('threshold','?')}"
                 )
-                jobs_done += 1
-            else:
-                log.error(
-                    f"{worker_id}: ERROR chunk={chunk_id} "
-                    f"after {elapsed:.1f}s — {result.get('message','?')}"
-                )
-                jobs_error += 1
 
-            # Always send result back — Zeus decides what to do with errors
-            try:
-                result_sock.send(json.dumps(result).encode())
-            except Exception as e:
-                log.error(f"{worker_id}: ZMQ send failed chunk={chunk_id} — {e}")
+                t0 = time.time()
+                # Pre-fetch next job WHILE GPU is computing current job
+                import threading as _threading
+                _next = [None]
+                def _prefetch():
+                    _next[0] = _recv_job()
+                _t = _threading.Thread(target=_prefetch, daemon=True)
+                _t.start()
+
+                result  = run_sieve_job(job, gpu_id, use_cuda, worker_id, _execute_sieve_job)
+                elapsed = time.time() - t0
+
+                # Wait for pre-fetch to complete (should already be done)
+                _t.join()
+                next_job = _next[0]
+
+                n = len(result.get("survivors", []))
+                if result["status"] == "ok":
+                    log.info(
+                        f"{worker_id}: DONE chunk={chunk_id} "
+                        f"{n:,} survivors {elapsed:.1f}s"
+                    )
+                    jobs_done += 1
+                else:
+                    log.error(
+                        f"{worker_id}: ERROR chunk={chunk_id} "
+                        f"after {elapsed:.1f}s — {result.get('message','?')}"
+                    )
+                    jobs_error += 1
+
+                _send_result(result)
+
+                if next_job is None:
+                    break  # shutdown received during pre-fetch
 
     except KeyboardInterrupt:
         log.info(f"{worker_id}: interrupted")
