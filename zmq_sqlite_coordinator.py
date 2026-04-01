@@ -40,7 +40,7 @@ DB_PATH          = "zmq_job_queue.db"
 LEASE_DURATION_S = 900
 MAX_ATTEMPTS     = 3
 WORKER_SETTLE_S  = 5
-RESULT_POLL_MS   = 500
+RESULT_POLL_MS   = 50   # S159B: was 500 — 250ms avg wait/chunk -> 25ms
 CHUNK_PAYLOAD_DIR = "zmq_chunk_payloads"  # S159: per-chunk .npz files
 
 
@@ -196,15 +196,13 @@ class JobQueue:
 
                 # Write payload to .npz before DB insert (fail-fast)
                 try:
-                    np.savez_compressed(
+                    # S159B: savez (uncompressed) — 71x faster than savez_compressed.
+                    # These files are temporary, deleted after run. No reason to compress.
+                    # skip_seqs/strat_ids dropped — never consumed by any downstream step.
+                    np.savez(
                         npz_path,
                         survivors=np.array(survivors,   dtype=np.int64),
                         match_rates=np.array(match_rates, dtype=np.float32),
-                        # skip_seqs and strat_ids preserved for completeness
-                        # but never consumed by downstream steps
-                        skip_seqs=np.array(
-                            [json.dumps(s) for s in skip_seqs], dtype=object),
-                        strat_ids=np.array(strat_ids,   dtype=np.int32),
                     )
                 except Exception as e:
                     logger.error(
@@ -375,6 +373,10 @@ class ZMQSQLiteCoordinator:
         self.zmq_job_port       = zmq_job_port
         self.zmq_result_port    = zmq_result_port
         self.chunk_payload_dir  = chunk_payload_dir or CHUNK_PAYLOAD_DIR  # S159
+        # S159D: session-scoped sockets — stay bound across all sieve passes
+        self._zmq_ctx    = None
+        self._job_sock   = None
+        self._result_sock = None
         self.db               = JobQueue()
         self.logger           = logging.getLogger("ZMQSQLiteCoordinator")
         self._nodes           = self._load_nodes()
@@ -423,6 +425,31 @@ class ZMQSQLiteCoordinator:
         except Exception as e:
             self.logger.warning(f"Could not load {self.config_file}: {e}")
             return []
+
+    def _start_sockets(self, sndhwm=1000):
+        """
+        S159D: Create and bind ZMQ sockets once for the entire session.
+        Called lazily before the first run_sieve_pass(). Sockets remain
+        bound across all passes so workers never lose their connection.
+        """
+        if self._zmq_ctx is not None:
+            return  # already started
+        try:
+            import zmq
+        except ImportError:
+            raise ImportError("pyzmq required. Install in venv: pip install pyzmq")
+
+        self._zmq_ctx     = zmq.Context()
+        self._job_sock    = self._zmq_ctx.socket(zmq.PUSH)
+        self._result_sock = self._zmq_ctx.socket(zmq.PULL)
+        self._job_sock.setsockopt(zmq.SNDHWM, sndhwm)
+        self._result_sock.setsockopt(zmq.RCVTIMEO, RESULT_POLL_MS)
+        self._job_sock.bind(f"tcp://*:{self.zmq_job_port}")
+        self._result_sock.bind(f"tcp://*:{self.zmq_result_port}")
+        self.logger.info(
+            f"[ZMQ] Session sockets bound: job={self.zmq_job_port} "
+            f"result={self.zmq_result_port}"
+        )
 
     def _launch_workers(self):
         """
@@ -556,13 +583,6 @@ class ZMQSQLiteCoordinator:
                        strategies=None, phase2_threshold=0.5,
                        target_file="", offset=0, sessions=None,
                        skip_range=None):
-        try:
-            import zmq
-        except ImportError:
-            raise ImportError(
-                "pyzmq required. Install in venv: pip install pyzmq"
-            )
-
         is_hybrid  = "_hybrid" in prng_type
         sessions   = sessions   or ["midday", "evening"]
         skip_range = skip_range or [0, 147]
@@ -617,16 +637,13 @@ class ZMQSQLiteCoordinator:
             is_hybrid=is_hybrid, strategies=strategies
         )
 
-        # Bind sockets BEFORE launching workers so workers can connect immediately
-        ctx         = zmq.Context()
-        job_sock    = ctx.socket(zmq.PUSH)
-        result_sock = ctx.socket(zmq.PULL)
-        job_sock.setsockopt(zmq.SNDHWM, total_chunks + 100)
-        result_sock.setsockopt(zmq.RCVTIMEO, RESULT_POLL_MS)
-        job_sock.bind(f"tcp://*:{self.zmq_job_port}")
-        result_sock.bind(f"tcp://*:{self.zmq_result_port}")
+        import zmq  # S159D: needed for zmq.Again in result loop
+        # S159D: use session-scoped sockets (bound once, reused across passes)
+        self._start_sockets(sndhwm=total_chunks + 100)
+        job_sock    = self._job_sock
+        result_sock = self._result_sock
 
-        # Launch workers AFTER sockets are bound — workers connect immediately
+        # Launch workers (no-op after first pass — _workers_launched guard)
         self._launch_workers()
 
         try:
@@ -714,9 +731,7 @@ class ZMQSQLiteCoordinator:
                         break
 
         finally:
-            job_sock.close()
-            result_sock.close()
-            ctx.term()
+            pass  # S159D: sockets kept alive across passes — closed in shutdown()
 
         # Update dashboard progress
         if self._progress_writer:
@@ -784,19 +799,32 @@ class ZMQSQLiteCoordinator:
         }
 
     def shutdown(self):
+        """S159D: send shutdown to workers, then close session sockets."""
         try:
-            import zmq
-            ctx  = zmq.Context()
-            sock = ctx.socket(zmq.PUSH)
-            sock.connect(f"tcp://localhost:{self.zmq_job_port}")
-            total_workers = sum(n.get("gpu_count", 0) for n in self._nodes) + 2
-            for _ in range(total_workers * 2):
-                sock.send(json.dumps({"cmd": "shutdown"}).encode())
-            time.sleep(1)
-            sock.close()
-            ctx.term()
+            if self._job_sock is not None:
+                total_workers = (
+                    sum(n.get("gpu_count", 0) for n in self._nodes) + 2
+                )
+                for _ in range(total_workers * 2):
+                    self._job_sock.send(
+                        json.dumps({"cmd": "shutdown"}).encode()
+                    )
+                time.sleep(1)
         except Exception:
             pass
+        finally:
+            try:
+                if self._job_sock:
+                    self._job_sock.close()
+                if self._result_sock:
+                    self._result_sock.close()
+                if self._zmq_ctx:
+                    self._zmq_ctx.term()
+            except Exception:
+                pass
+            self._job_sock    = None
+            self._result_sock = None
+            self._zmq_ctx     = None
 
 
 def run_trial_zmq_sqlite(
