@@ -514,6 +514,9 @@ class ZMQSQLiteCoordinator:
                      + ' --setenv=ROCR_VISIBLE_DEVICES=' + str(gpu_id)
                      + ' --setenv=CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_' + str(gpu_id)
                      + ' --setenv=HSA_OVERRIDE_GFX_VERSION=10.3.0'
+                     + ' --setenv=HSA_ENABLE_SDMA=0'
+                     + ' --setenv=HSA_ENABLE_RUNTIME_POWER_MGMT=0'
+                     + ' --setenv=AMDGPU_NO_POWER_PROFILE=1'
                      + ' /bin/bash -lc ' + shlex.quote(worker_cmd)),
                     'sleep 1',
                     'systemctl --user is-active --quiet ' + shlex.quote(unit),
