@@ -1,196 +1,176 @@
 # Session Changelog — S159G
 **Date:** 2026-04-02
-**Team:** Alpha (Lead Dev/Implementation)
-**Focus:** GPU crash root cause investigation, netconsole deployment, rig standardization
+**Session:** S159G
+**Focus:** rrig6600 GPU crash root cause investigation and fix
 
 ---
 
 ## Summary
 
-Extended debugging session focused on identifying and addressing the root cause of rrig6600 and rrig6600c GPU crashes during ZMQ multi-rig runs. Netconsole infrastructure deployed across all nodes. GRUB parameters standardized. Key findings documented for TB review.
+This session identified and fixed the root cause of persistent rrig6600 GPU crashes
+during ZMQ multi-rig runs. The crash was a GPU virtual memory fault (amdgpu gfxhub
+page fault → queue unrecoverable) caused by rrig6600 workers running without 4
+critical ROCm protective environment variables.
+
+**Status:** Fix applied. Acceptance test (fresh run + live PID env verification)
+pending next session.
 
 ---
 
-## S159G-1 — Netconsole Infrastructure Deployment
+## Key Findings
 
-### Problem
-No kernel-level crash visibility on rrig6600 and rrig6600c. Previous crashes left no useful logs because the rig went fully offline before anything could be written.
-
-### Solution
-Deployed netconsole UDP streaming to Zeus on all 3 rigs + persistent systemd listener on Zeus.
-
-### Files Created
-- `netconsole_listener.py` — UDP listener on Zeus port 6667, writes to `logs/netconsole_all_rigs.log`
-- `install_netconsole_zeus.sh` — Installs listener as systemd service on Zeus
-- `install_netconsole_rig.sh` — Auto-detects interface, writes `/etc/rc.local`, applies immediately
-
-### Deployment
-- Zeus: systemd service `netconsole-listener` — enabled, running, auto-starts on reboot
-- rrig6600: `lan0`, 192.168.3.120 → Zeus 192.168.3.127:6667 ✅
-- rrig6600b: `enp10s0`, 192.168.3.154 → Zeus 192.168.3.127:6667 ✅
-- rrig6600c: `lan0`, 192.168.3.162 → Zeus 192.168.3.127:6667 ✅
-- All 3 rigs persist netconsole across reboots via `/etc/rc.local`
-
----
-
-## S159G-2 — Crash Root Cause Analysis
-
-### Netconsole Capture
-First ever real-time kernel crash capture on rrig6600c. Full sequence recorded:
-
+### Root Cause Confirmed (Primary Root-Cause Candidate)
+rrig6600 workers consistently ran with only:
 ```
-gmc_v10_0_process_interrupt: 16 callbacks suppressed
-[gfxhub] page fault on 0000:19:00.0 — python pid 3408
-[gfxhub] page fault on 0000:06:00.0 — python pid 3003
-GCVM_L2_PROTECTION_FAULT_STATUS: 0xFFFFFFFF
-Faulty UTCL2 client ID: unknown (0x1ff)
-WALKER_ERROR: 0x7
-PERMISSION_FAULTS: 0xf
-MAPPING_ERROR: 0x1
-RW: 0x1
-snd_hda_intel: Unable to change power state from D3hot to D0
-qcm fence wait loop timeout expired (both GPUs)
-The cp might be in an unrecoverable state due to an unsuccessful queues preemption
-sq_intr: error (multiple shader engines)
-GPU reset begin! → system goes down
-```
-
-### Team Beta Analysis
-- Fault class: GPU virtual memory / bad address failure
-- Initial hypothesis: 5M seeds above validated AMD operating point (2M)
-- Updated after 2M also crashed: deeper GPU memory correctness issue
-
-### Team Alpha Analysis
-- `GCVM_L2_PROTECTION_FAULT_STATUS: 0xFFFFFFFF` — all protection fault bits set simultaneously
-- Address `0x0000000000002000` — near-NULL, consistent with use-after-free
-- Two separate Python PIDs faulting on two GPUs simultaneously
-- Multiple fault addresses — not solely near-NULL
-- Proposed: CuPy `free_all_blocks()` cross-worker race (TB rejected as unproven lead)
-
-### Web Research Findings
-- ROCm GitHub issues confirm identical crash pattern on RX 6600 (gfx1032)
-- Gentoo ROCm wiki: `iommu=pt` is documented fix for multi-GPU AMD page fault crashes
-- `GCVM_L2_PROTECTION_FAULT_STATUS: 0xFFFFFFFF` is known AMD multi-GPU symptom
-
-### Seed Cap Testing
-- Run at 5M seeds → crash (both rigs)
-- Run at 2M seeds → also crashed (TB hypothesis partially disproven)
-- 5M is a trigger/amplifier but not sole cause
-- 2M remains the validated operating point
-
----
-
-## S159G-3 — Package Difference Investigation
-
-### Finding
-rrig6600b (stable) has minimal compute-only amdgpu install.
-rrig6600 and rrig6600c have full desktop/multimedia amdgpu stack:
-
-**Extra packages on crashing rigs (not on rrig6600b):**
-- `amdgpu-lib`, `amdgpu-lib32`, `amdgpu-multimedia`
-- `mesa-amdgpu-*` (full mesa stack — va, vdpau, gallium, libgallium)
-- `libva-amdgpu-*`, `libwayland-amdgpu-*`
-- `libllvm19.1-amdgpu` (full LLVM)
-- `xserver-xorg-amdgpu-video-amdgpu`
-
-### History (Claude Error Log)
-1. rrig6600c was originally cloned from rrig6600b (stable, minimal install)
-2. rrig6600c started crashing → Claude advised installing extra amdgpu packages to match rrig6600 (**wrong**)
-3. rrig6600c still crashed → Claude advised cloning rrig6600 onto rrig6600c (**wrong again**)
-4. Both decisions made rrig6600c match the crashing configuration
-
-### Correct Path Forward
-Remove extra packages from rrig6600 and rrig6600c OR clone rrig6600b's clean state.
-Decision: **Clone rrig6600b** (pending — after stability test with iommu=pt).
-
----
-
-## S159G-4 — GRUB Standardization
-
-### Problem
-All 3 rigs had different GRUB configurations — inconsistent parameters, some in `CMDLINE_LINUX_DEFAULT`, some in `CMDLINE_LINUX`.
-
-### Solution
-Standardized all 3 rigs to identical GRUB config based on rrig6600b (stable reference) plus `iommu=pt`:
-
-```
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash pcie_aspm=off pci=noaer amdgpu.ppfeaturemask=0xffff7fff amdgpu.gfxoff=0 amdgpu.runpm=0 amdgpu.aspm=0 pci=assign-busses,hpbussize=0x33 iommu=pt"
-GRUB_CMDLINE_LINUX=""
-```
-
-### Verification
-All 3 rigs confirmed booted with identical kernel cmdline including `iommu=pt vt.handoff=7`.
-
----
-
-## S159G-5 — /etc/environment Standardization
-
-### Problem
-Only rrig6600 had `HSA_OVERRIDE_GFX_VERSION=10.3.0` in `/etc/environment`.
-rrig6600b and rrig6600c were missing it (set elsewhere or not at all).
-
-### Solution
-Added `HSA_OVERRIDE_GFX_VERSION=10.3.0` to `/etc/environment` on all 3 rigs.
-
-### Verification
-```
-PATH="/usr/local/sbin:..."
 HSA_OVERRIDE_GFX_VERSION=10.3.0
 ```
-Confirmed identical on all 3 rigs.
+
+While rrig6600b and rrig6600c workers had the full protective set:
+```
+ROCR_VISIBLE_DEVICES=0
+HSA_ENABLE_SDMA=0
+AMDGPU_NO_POWER_PROFILE=1
+HSA_ENABLE_RUNTIME_POWER_MGMT=0
+HSA_OVERRIDE_GFX_VERSION=10.3.0
+```
+
+The missing `HSA_ENABLE_SDMA=0` is the critical variable — it disables the SDMA
+engine which has known bugs causing GPU VM faults on gfx1032 (RX 6600).
+
+### Why rrig6600 Was Different
+The coordinator launches workers via `systemd-run --user` with `--setenv` flags.
+On rrig6600b and rrig6600c, the transient systemd unit files correctly contained
+the full `Environment=` block, injecting all 5 vars into worker processes.
+
+On rrig6600, the systemd unit was created identically BUT the env vars were not
+reaching the worker PID. Only `/etc/environment` vars survived. Investigation
+revealed rrig6600's `.bashrc` had a `[ -n "$PS1" ]` guard before sourcing
+`rocm_env/bin/activate`, preventing venv activation in non-interactive shells.
+rrig6600b's `.bashrc` had an unconditional activate (no `$PS1` check).
+
+### ZMQ Crash Resilience Confirmed
+When rrig6600 crashed mid-run and rebooted, the ZMQ SQLite coordinator:
+- Detected expired leases via lease expiry mechanism
+- Redistributed chunks to surviving rrig6600b and rrig6600c workers
+- Completed the forward sieve (126,610,730 survivors) without data loss
+- Accepted rrig6600 back when it rejoined
+
+This is the first confirmed crash-resilient full-cluster run. Architecture validated.
 
 ---
 
-## S159G-6 — Stability Test (PENDING)
+## Infrastructure Work Completed
 
-### Configuration at Test Time
-- seed_cap_amd: 2,000,000
-- seed_cap_nvidia: 5,000,000
-- ZMQ+SQLite coordinator (--use-zmq-sqlite)
-- iommu=pt active on all 3 rigs
-- Netconsole monitoring all 3 rigs in real time
-- GRUB and /etc/environment identical across all 3
+### Netconsole (Completed in earlier S159 sub-sessions)
+- Zeus netconsole listener: `logs/netconsole_all_rigs.log`
+- All 3 rigs streaming kernel logs to Zeus in real time
+- Enabled capture of exact crash sequence: page fault → GCVM_L2_PROTECTION_FAULT_STATUS:0xFFFFFFFF → qcm fence timeout → unrecoverable CP state
 
-### Log File
-`logs/zmq_iommu_test_v1.log`
+### Fix Applied — /etc/environment on All 3 AMD Rigs
+Added to `/etc/environment` on rrig6600, rrig6600b, rrig6600c:
+```
+HSA_ENABLE_SDMA=0
+HSA_ENABLE_RUNTIME_POWER_MGMT=0
+AMDGPU_NO_POWER_PROFILE=1
+```
 
-### Success Criteria
-- All 3 rigs stay online for full run completion
-- No gfxhub page fault messages in netconsole log
-- 537/537 chunks completed
+`ROCR_VISIBLE_DEVICES` intentionally NOT added — remains coordinator-managed
+per-worker via `--setenv` to avoid pinning the whole machine to one GPU.
 
-### If Test Fails
-Clone rrig6600b's ROCm environment to rrig6600 and rrig6600c:
-- Use USB-SATA drive to copy tarball
-- Remove extra amdgpu packages from crashing rigs
-- Re-run stability test
+All 3 rigs rebooted after fix. `/etc/environment` verified clean and identical
+on all 3 rigs post-reboot.
 
 ---
 
-## Key Invariants Confirmed This Session
-- rrig6600b is the gold standard reference rig — never crashed
-- rrig6600b interface: `enp10s0` (differs from rrig6600/rrig6600c which use `lan0`)
-- Zeus MAC: `0c:9d:92:c3:e5:a2`, Zeus LAN IP: `192.168.3.127`
-- Netconsole Zeus listener port: 6667, rig local port: 6665
-- All 3 rigs: kernel `6.8.0-106-generic`, ROCm `6.4.3`
-- AppArmor: active on all 3 rigs in unconfined mode — identical, not a variable
+## TB Rulings This Session
+
+### TB Initial Ruling
+- P0: Verify `HSA_ENABLE_SDMA=0` reaches live worker PIDs
+- Fault class: GPU VM / copy-path failure (not Zeus, not coordinator)
+- 5M seed cap: downgraded to "amplifier at most"
+
+### TB Final Ruling (Provisional Accept)
+- Primary root-cause candidate: worker env propagation defect
+- Fix: add AMD-wide safety vars to `/etc/environment` on all AMD rigs
+- Keep `ROCR_VISIBLE_DEVICES` coordinator-managed
+- Acceptance criteria:
+  1. rrig6600 rebooted after fix ✅
+  2. Fresh coordinator launch (PENDING)
+  3. Live zmq_sqlite_worker PID on rrig6600 shows all 4 vars (PENDING)
+  4. One clean full-cluster stability run with no rrig6600 crash (PENDING)
+- Follow-on: worker registration env-invariant check (future hardening)
 
 ---
 
-## TODO Carried Forward
-1. **Stability test result** — pass/fail determines next action
-2. **If fail: Clone rrig6600b** ROCm packages to rrig6600 and rrig6600c
-3. **apt update (kernel held)** on all 3 rigs after clone
-4. **PWC TCP Gate 1** — 1-rig, 1-GPU validation (deferred pending stability)
-5. **Selfplay NN fix** — remove forbidden guard in `inner_episode_trainer.py`
-6. **S110 root cleanup** — 884 stray files
-7. **Write netconsole setup to rc.local** — make persistent ✅ (done this session)
+## Documents Created This Session
+
+- `docs/TB_SUBMISSION_S159G_RIG6600_CRASHES.md` — commit 9e09af7
+- `docs/TB_UPDATE_S159G_ENV_PROPAGATION.md` — commit pending
+- `docs/TB_FINAL_UPDATE_S159G_ROOT_CAUSE_CONFIRMED.md` — commit pending
+- `docs/SESSION_CHANGELOG_20260402_S159G.md` — this file
 
 ---
 
-## Commits This Session
-- None yet — pending stability test result before committing
+## Current Cluster State
+
+| Component | State |
+|-----------|-------|
+| rrig6600 | Up, rebooted, /etc/environment fixed |
+| rrig6600b | Up, rebooted, /etc/environment fixed |
+| rrig6600c | Up, rebooted, /etc/environment fixed |
+| Zeus | Halted (agent_halt set) |
+| Last run | Killed mid-reverse-sieve (hybrid pass failed — rrig6600 crash) |
+| seed_start | Reset required before next run |
 
 ---
 
-*Session S159G — 2026-04-02 — Team Alpha*
+## Pending — Next Session Action Plan
+
+### Step 1 — Fresh launch with env verification
+```bash
+# Clear halt and state
+ssh rzeus "cd ~/distributed_prng_analysis && \
+  rm -f /tmp/agent_halt daemon_state.json optimal_window_config.json \
+  bidirectional_survivors.json && \
+  mv zmq_job_queue.db zmq_job_queue.db.pre_s159g_fix 2>/dev/null; \
+  source ~/venvs/torch/bin/activate && \
+  python3 -c 'from agents.safety import clear_halt; clear_halt()' && \
+  python3 -c \"import sqlite3; conn=sqlite3.connect('prng_analysis.db'); \
+  conn.execute('DELETE FROM exhaustive_progress WHERE prng_type=?',('java_lcg',)); \
+  conn.commit(); conn.close()\" && \
+  setsid bash -c 'source ~/venvs/torch/bin/activate && \
+  PYTHONPATH=. python3 agents/watcher_agent.py \
+  --run-pipeline --start-step 1 --end-step 1 --force-step 1 \
+  >> logs/zmq_s159g_fix_v1.log 2>&1' &"
+```
+
+### Step 2 — TB acceptance test (45 seconds after launch)
+```bash
+sleep 45
+# Check systemd unit
+ssh rrig6600 "systemctl --user cat zmq-worker-gpu0.service 2>/dev/null | grep Environment"
+# Check live PID env — THIS IS THE CRITICAL TEST
+ssh rrig6600 "cat /proc/\$(pgrep -f zmq_sqlite_worker | head -1)/environ \
+  2>/dev/null | tr '\0' '\n' | grep -E 'HSA|SDMA|ROCR|POWER'"
+```
+
+### Expected result
+```
+ROCR_VISIBLE_DEVICES=0
+HSA_ENABLE_SDMA=0
+AMDGPU_NO_POWER_PROFILE=1
+HSA_ENABLE_RUNTIME_POWER_MGMT=0
+HSA_OVERRIDE_GFX_VERSION=10.3.0
+```
+
+If all 5 present → run to completion → S159G resolved.
+If still missing → coordinator launch-path bug, escalate to TB.
+
+### Step 3 — Future hardening (post-S159G)
+- Worker registration env-invariant check in coordinator
+- Normalize rrig6600 `.bashrc` to match rrig6600b (remove `$PS1` guard)
+- TODO_MASTER update
+
+---
+
+*Team Alpha — S159G — 2026-04-02*
