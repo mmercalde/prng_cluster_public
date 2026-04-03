@@ -584,6 +584,101 @@ class ZMQSQLiteCoordinator:
         self._workers_launched = True
         self.logger.info('[ZMQ] All workers launched and settled')
 
+
+    # --- S160: TB-recommended env-invariant check ---
+    _REQUIRED_WORKER_VARS = {
+        "HSA_ENABLE_SDMA":              "0",
+        "HSA_ENABLE_RUNTIME_POWER_MGMT": "0",
+        "AMDGPU_NO_POWER_PROFILE":       "1",
+        "HSA_OVERRIDE_GFX_VERSION":      "10.3.0",
+    }
+
+    def _verify_worker_env(self, host: str, username: str) -> bool:
+        """
+        SSH to host, find a live zmq_sqlite_worker PID, read /proc/<pid>/environ,
+        and verify all required ROCm protective vars are set to correct values.
+
+        Returns True if all vars pass. Logs ERROR and returns False otherwise.
+        Called 45 s after _launch_workers() in _launch_and_verify().
+        """
+        import subprocess as _sp
+        cmd = (
+            "pid=$(pgrep -f zmq_sqlite_worker | head -1); "
+            "[ -n \"$pid\" ] && cat /proc/$pid/environ | tr \'\\0\' \'\\n\'"
+        )
+        try:
+            r = _sp.run(
+                ["ssh", "-q", "-o", "BatchMode=yes",
+                 "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
+                 f"{username}@{host}", "bash", "-c", cmd],
+                capture_output=True, text=True, timeout=20
+            )
+        except Exception as exc:
+            self.logger.warning(f"[EnvCheck] SSH error on {host}: {exc}")
+            return False
+
+        if r.returncode != 0:
+            self.logger.warning(
+                f"[EnvCheck] No live zmq_sqlite_worker found on {host} "
+                f"(pgrep returned non-zero). Worker may still be starting."
+            )
+            return False
+
+        env_dict = {}
+        for line in r.stdout.strip().splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                env_dict[k] = v
+
+        missing = []
+        for var, expected in self._REQUIRED_WORKER_VARS.items():
+            actual = env_dict.get(var)
+            if actual != expected:
+                missing.append(f"{var}={actual!r} (expected {expected!r})")
+
+        # ROCR_VISIBLE_DEVICES just needs to be present (value depends on gpu_id)
+        if "ROCR_VISIBLE_DEVICES" not in env_dict:
+            missing.append("ROCR_VISIBLE_DEVICES=MISSING")
+
+        if missing:
+            self.logger.error(
+                f"[EnvCheck] FAIL on {host}: {missing}"
+            )
+            return False
+
+        self.logger.info(f"[EnvCheck] PASS on {host}: all ROCm protective vars confirmed")
+        return True
+
+    def _launch_and_verify(self):
+        """
+        Launch workers, wait for settle, then verify env on each AMD rig.
+        Raises RuntimeError if any rig fails the env check.
+        """
+        self._launch_workers()
+
+        # Give systemd-run workers time to start before checking /proc
+        self.logger.info("[EnvCheck] Waiting 45 s for workers to initialize...")
+        import time as _time
+        _time.sleep(45)
+
+        failed_hosts = []
+        for node in self._nodes:
+            host = node.get("hostname", "")
+            if host in ("localhost", "127.0.0.1"):
+                continue  # CUDA workers on Zeus — different env path
+            username = node.get("username", "michael")
+            if not self._verify_worker_env(host, username):
+                failed_hosts.append(host)
+
+        if failed_hosts:
+            raise RuntimeError(
+                f"[EnvCheck] Env-invariant check FAILED on: {failed_hosts}. "
+                "ROCm protective vars missing. Check /etc/environment and "
+                "systemd-run --setenv args in zmq_sqlite_coordinator.py. "
+                "Halting to prevent GPU crash."
+            )
+        self.logger.info("[EnvCheck] All AMD rigs passed env-invariant check.")
+
     def run_sieve_pass(self, prng_type, residues, total_seeds, threshold,
                        window_size, output_file, dataset_path="",
                        strategies=None, phase2_threshold=0.5,
@@ -650,7 +745,8 @@ class ZMQSQLiteCoordinator:
         result_sock = self._result_sock
 
         # Launch workers (no-op after first pass — _workers_launched guard)
-        self._launch_workers()
+        # S160: first call also runs env-invariant check (45 s settle + SSH verify)
+        self._launch_and_verify()
 
         try:
             # Dispatch all pending chunks
