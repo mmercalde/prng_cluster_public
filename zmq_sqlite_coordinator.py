@@ -626,7 +626,7 @@ class ZMQSQLiteCoordinator:
         import subprocess as _sp
         diag_cmd = (
             f"echo '=== journal ==' && "
-            f"journalctl --user -u {unit} -n 30 --no-pager 2>/dev/null; "
+            f"XDG_RUNTIME_DIR=/run/user/$(id -u) journalctl --user -u {unit} -n 30 --no-pager 2>/dev/null; "
             f"echo '=== worker log ==' && "
             f"tail -n 30 /tmp/zmq_worker_gpu0.log 2>/dev/null"
         )
@@ -658,7 +658,7 @@ class ZMQSQLiteCoordinator:
 
         unit = "zmq-worker-gpu0.service"
         state_cmd = (
-            f"systemctl --user show {unit} "
+            f"XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user show {unit} "
             f"-p MainPID,ActiveState,SubState,Result,NRestarts"
         )
         try:
