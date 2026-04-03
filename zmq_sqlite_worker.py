@@ -302,6 +302,17 @@ def main():
 
                 _send_result(result)
 
+                # S160-v5 (TB-approved): best-effort GPU cleanup between chunks.
+                # Persistent workers skip the implicit cleanup that process-death
+                # provided in the ephemeral coordinator. _best_effort_gpu_cleanup()
+                # is already validated in sieve_filter.py (TB 2026-01-26).
+                # Called AFTER send so result is never blocked by cleanup latency.
+                try:
+                    from sieve_filter import _best_effort_gpu_cleanup
+                    _best_effort_gpu_cleanup()
+                except Exception:
+                    pass
+
                 if next_job is None:
                     break  # shutdown received during pre-fetch
 
