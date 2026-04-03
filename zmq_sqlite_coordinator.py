@@ -585,47 +585,142 @@ class ZMQSQLiteCoordinator:
         self.logger.info('[ZMQ] All workers launched and settled')
 
 
-    # --- S160: TB-recommended env-invariant check ---
+    # --- S160-v2: TB-approved env-invariant check ---
     _REQUIRED_WORKER_VARS = {
-        "HSA_ENABLE_SDMA":              "0",
+        "HSA_ENABLE_SDMA":               "0",
         "HSA_ENABLE_RUNTIME_POWER_MGMT": "0",
         "AMDGPU_NO_POWER_PROFILE":       "1",
         "HSA_OVERRIDE_GFX_VERSION":      "10.3.0",
     }
 
-    def _verify_worker_env(self, host: str, username: str) -> bool:
-        """
-        SSH to host, find a live zmq_sqlite_worker PID, read /proc/<pid>/environ,
-        and verify all required ROCm protective vars are set to correct values.
+    # Secondary guardrail: these flags must appear in _launch_workers() source.
+    _REQUIRED_SETENV_FLAGS = [
+        "--setenv=HSA_ENABLE_SDMA=0",
+        "--setenv=HSA_ENABLE_RUNTIME_POWER_MGMT=0",
+        "--setenv=AMDGPU_NO_POWER_PROFILE=1",
+        "--setenv=HSA_OVERRIDE_GFX_VERSION=10.3.0",
+    ]
 
-        Returns True if all vars pass. Logs ERROR and returns False otherwise.
-        Called 45 s after _launch_workers() in _launch_and_verify().
+    def _assert_launch_cmd_contains_setenv(self) -> None:
         """
+        Secondary guardrail (TB-approved): statically verify _launch_workers()
+        source contains all required --setenv flags. Raises AssertionError on
+        failure. Called once before SSH work begins.
+        """
+        import inspect as _inspect
+        src = _inspect.getsource(self._launch_workers)
+        missing = [f for f in self._REQUIRED_SETENV_FLAGS if f not in src]
+        if missing:
+            raise AssertionError(
+                f"[EnvCheck] Static assertion FAILED — --setenv flags missing "
+                f"from _launch_workers() source: {missing}"
+            )
+        self.logger.info(
+            "[EnvCheck] Static assertion PASSED — all required --setenv flags "
+            "confirmed in _launch_workers() source."
+        )
+
+    def _collect_worker_diagnostics(self, host: str, username: str,
+                                    unit: str) -> None:
+        """Collect and log journal + worker log on env check failure."""
         import subprocess as _sp
-        cmd = (
-            "pid=$(pgrep -f zmq_sqlite_worker | head -1); "
-            "[ -n \"$pid\" ] && cat /proc/$pid/environ | tr \'\\0\' \'\\n\'"
+        diag_cmd = (
+            f"echo '=== journal ==' && "
+            f"journalctl --user -u {unit} -n 30 --no-pager 2>/dev/null; "
+            f"echo '=== worker log ==' && "
+            f"tail -n 30 /tmp/zmq_worker_gpu0.log 2>/dev/null"
         )
         try:
             r = _sp.run(
                 ["ssh", "-q", "-o", "BatchMode=yes",
                  "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
-                 f"{username}@{host}", "bash", "-c", cmd],
+                 f"{username}@{host}", "bash", "-c", diag_cmd],
                 capture_output=True, text=True, timeout=20
             )
+            for line in r.stdout.strip().splitlines():
+                self.logger.info(f"[EnvCheck][diag:{host}] {line}")
         except Exception as exc:
-            self.logger.warning(f"[EnvCheck] SSH error on {host}: {exc}")
+            self.logger.warning(
+                f"[EnvCheck] Could not collect diagnostics from {host}: {exc}"
+            )
+
+    def _verify_worker_env(self, host: str, username: str) -> bool:
+        """
+        S160-v2 (TB-approved):
+        1. Query systemctl --user show zmq-worker-gpu0.service for MainPID,
+           ActiveState, SubState, Result, NRestarts.
+        2. FAIL hard if ActiveState != active or MainPID == 0.
+           (Verification runs before chunk dispatch, so workers must be alive.)
+        3. Read /proc/<MainPID>/environ and verify all required ROCm vars.
+        4. On any failure, collect journal + worker log diagnostics.
+        """
+        import subprocess as _sp
+
+        unit = "zmq-worker-gpu0.service"
+        state_cmd = (
+            f"systemctl --user show {unit} "
+            f"-p MainPID,ActiveState,SubState,Result,NRestarts"
+        )
+        try:
+            r = _sp.run(
+                ["ssh", "-q", "-o", "BatchMode=yes",
+                 "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
+                 f"{username}@{host}", "bash", "-c", state_cmd],
+                capture_output=True, text=True, timeout=15
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"[EnvCheck] SSH error querying unit state on {host}: {exc}"
+            )
             return False
 
-        if r.returncode != 0:
-            self.logger.warning(
-                f"[EnvCheck] No live zmq_sqlite_worker found on {host} "
-                f"(pgrep returned non-zero). Worker may still be starting."
+        state = {}
+        for line in r.stdout.strip().splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                state[k.strip()] = v.strip()
+
+        active_state = state.get("ActiveState", "unknown")
+        sub_state    = state.get("SubState",    "unknown")
+        result       = state.get("Result",      "unknown")
+        n_restarts   = state.get("NRestarts",   "?")
+        try:
+            main_pid = int(state.get("MainPID", "0"))
+        except ValueError:
+            main_pid = 0
+
+        self.logger.info(
+            f"[EnvCheck] {host} unit state: ActiveState={active_state} "
+            f"SubState={sub_state} Result={result} "
+            f"MainPID={main_pid} NRestarts={n_restarts}"
+        )
+
+        if active_state != "active" or main_pid == 0:
+            self.logger.error(
+                f"[EnvCheck] FAIL on {host}: unit not active or MainPID=0. "
+                f"ActiveState={active_state} SubState={sub_state} "
+                f"Result={result} NRestarts={n_restarts}"
+            )
+            self._collect_worker_diagnostics(host, username, unit)
+            return False
+
+        # Read /proc/<MainPID>/environ
+        env_cmd = f"tr '\\0' '\\n' </proc/{main_pid}/environ"
+        try:
+            r2 = _sp.run(
+                ["ssh", "-q", "-o", "BatchMode=yes",
+                 "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
+                 f"{username}@{host}", "bash", "-c", env_cmd],
+                capture_output=True, text=True, timeout=15
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"[EnvCheck] SSH error reading environ on {host}: {exc}"
             )
             return False
 
         env_dict = {}
-        for line in r.stdout.strip().splitlines():
+        for line in r2.stdout.strip().splitlines():
             if "=" in line:
                 k, _, v = line.partition("=")
                 env_dict[k] = v
@@ -635,37 +730,47 @@ class ZMQSQLiteCoordinator:
             actual = env_dict.get(var)
             if actual != expected:
                 missing.append(f"{var}={actual!r} (expected {expected!r})")
-
-        # ROCR_VISIBLE_DEVICES just needs to be present (value depends on gpu_id)
         if "ROCR_VISIBLE_DEVICES" not in env_dict:
             missing.append("ROCR_VISIBLE_DEVICES=MISSING")
 
         if missing:
             self.logger.error(
-                f"[EnvCheck] FAIL on {host}: {missing}"
+                f"[EnvCheck] FAIL on {host}: env vars wrong: {missing}"
             )
+            self._collect_worker_diagnostics(host, username, unit)
             return False
 
-        self.logger.info(f"[EnvCheck] PASS on {host}: all ROCm protective vars confirmed")
+        self.logger.info(
+            f"[EnvCheck] PASS on {host}: MainPID={main_pid} "
+            f"all ROCm protective vars confirmed."
+        )
         return True
 
     def _launch_and_verify(self):
         """
-        Launch workers, wait for settle, then verify env on each AMD rig.
-        Raises RuntimeError if any rig fails the env check.
+        S160-v2 (TB-approved):
+        1. Static assertion on launch command source.
+        2. Launch workers.
+        3. Wait 10 s for systemd units to become active (no jobs dispatched yet).
+        4. Verify each AMD rig — unit must be active + MainPID > 0 + correct env.
+        5. Raise RuntimeError if any rig fails. Halt before chunk dispatch.
         """
+        import time as _time
+
+        self._assert_launch_cmd_contains_setenv()
         self._launch_workers()
 
-        # Give systemd-run workers time to start before checking /proc
-        self.logger.info("[EnvCheck] Waiting 45 s for workers to initialize...")
-        import time as _time
-        _time.sleep(45)
+        self.logger.info(
+            "[EnvCheck] Waiting 10 s for workers to initialize "
+            "(no chunks dispatched yet)..."
+        )
+        _time.sleep(10)
 
         failed_hosts = []
         for node in self._nodes:
             host = node.get("hostname", "")
             if host in ("localhost", "127.0.0.1"):
-                continue  # CUDA workers on Zeus — different env path
+                continue  # Zeus CUDA workers use a different launch path
             username = node.get("username", "michael")
             if not self._verify_worker_env(host, username):
                 failed_hosts.append(host)
@@ -673,11 +778,14 @@ class ZMQSQLiteCoordinator:
         if failed_hosts:
             raise RuntimeError(
                 f"[EnvCheck] Env-invariant check FAILED on: {failed_hosts}. "
-                "ROCm protective vars missing. Check /etc/environment and "
-                "systemd-run --setenv args in zmq_sqlite_coordinator.py. "
-                "Halting to prevent GPU crash."
+                f"Workers not active or ROCm protective vars missing/wrong. "
+                f"See journal output above for root cause. "
+                f"Halting before chunk dispatch."
             )
-        self.logger.info("[EnvCheck] All AMD rigs passed env-invariant check.")
+        self.logger.info(
+            "[EnvCheck] All AMD rigs passed env-invariant check. "
+            "Proceeding to chunk dispatch."
+        )
 
     def run_sieve_pass(self, prng_type, residues, total_seeds, threshold,
                        window_size, output_file, dataset_path="",
