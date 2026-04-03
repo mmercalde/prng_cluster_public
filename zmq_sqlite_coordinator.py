@@ -646,85 +646,89 @@ class ZMQSQLiteCoordinator:
 
     def _verify_worker_env(self, host: str, username: str) -> bool:
         """
-        S160-v2 (TB-approved):
-        1. Query systemctl --user show zmq-worker-gpu0.service for MainPID,
-           ActiveState, SubState, Result, NRestarts.
-        2. FAIL hard if ActiveState != active or MainPID == 0.
-           (Verification runs before chunk dispatch, so workers must be alive.)
-        3. Read /proc/<MainPID>/environ and verify all required ROCm vars.
-        4. On any failure, collect journal + worker log diagnostics.
+        S160-v4: D-Bus-free worker verification.
+
+        Root cause of v2/v3 failures: systemctl --user requires a D-Bus session
+        bus which does not exist in SSH exec (non-login, non-interactive) sessions.
+        XDG_RUNTIME_DIR alone is not sufficient — the bus socket path must also
+        be known and the session must be active.
+
+        Fix: discover the worker PID via /proc/<pid>/cgroup, which contains the
+        systemd unit name for any process launched under that unit. This works in
+        all SSH contexts with no D-Bus dependency.
+
+        Steps:
+        1. Scan /proc/*/cgroup on the remote host for the unit name.
+        2. FAIL if no PID found (worker not running — check /tmp worker log).
+        3. Read /proc/<pid>/environ and verify all required ROCm protective vars.
+        4. On any failure, collect worker log diagnostics.
         """
         import subprocess as _sp
 
         unit = "zmq-worker-gpu0.service"
-        state_cmd = (
-            f"XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user show {unit} "
-            f"-p MainPID,ActiveState,SubState,Result,NRestarts"
+
+        # Single SSH call: find PID via cgroup, then read environ if found.
+        # No D-Bus required. Works in SSH exec sessions on Ubuntu 22.04 cgroup v2.
+        combined_cmd = (
+            f"pid=; "
+            f"for p in $(ls /proc | grep -E '^[0-9]+$'); do "
+            f"  if [ -f /proc/$p/cgroup ] && "
+            f"     grep -q '{unit}' /proc/$p/cgroup 2>/dev/null; then "
+            f"    pid=$p; break; "
+            f"  fi; "
+            f"done; "
+            f"if [ -n \"$pid\" ]; then "
+            f"  echo \"MAINPID=$pid\"; "
+            f"  tr '\\0' '\\n' </proc/$pid/environ 2>/dev/null; "
+            f"else "
+            f"  echo \"MAINPID=0\"; "
+            f"fi"
         )
+
         try:
             r = _sp.run(
                 ["ssh", "-q", "-o", "BatchMode=yes",
                  "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
-                 f"{username}@{host}", "bash", "-c", state_cmd],
-                capture_output=True, text=True, timeout=15
+                 f"{username}@{host}", "bash", "-c", combined_cmd],
+                capture_output=True, text=True, timeout=20
             )
         except Exception as exc:
             self.logger.error(
-                f"[EnvCheck] SSH error querying unit state on {host}: {exc}"
+                f"[EnvCheck] SSH error on {host}: {exc}"
             )
             return False
 
-        state = {}
-        for line in r.stdout.strip().splitlines():
-            if "=" in line:
-                k, _, v = line.partition("=")
-                state[k.strip()] = v.strip()
+        # Parse output: first line is MAINPID=<n>, rest is environ
+        lines = r.stdout.strip().splitlines()
+        main_pid = 0
+        env_dict = {}
 
-        active_state = state.get("ActiveState", "unknown")
-        sub_state    = state.get("SubState",    "unknown")
-        result       = state.get("Result",      "unknown")
-        n_restarts   = state.get("NRestarts",   "?")
-        try:
-            main_pid = int(state.get("MainPID", "0"))
-        except ValueError:
-            main_pid = 0
+        for line in lines:
+            if line.startswith("MAINPID="):
+                try:
+                    main_pid = int(line.split("=", 1)[1])
+                except ValueError:
+                    main_pid = 0
+            elif "=" in line:
+                k, _, v = line.partition("=")
+                env_dict[k] = v
 
         self.logger.info(
-            f"[EnvCheck] {host} unit state: ActiveState={active_state} "
-            f"SubState={sub_state} Result={result} "
-            f"MainPID={main_pid} NRestarts={n_restarts}"
+            f"[EnvCheck] {host}: MainPID={main_pid} "
+            f"(found via /proc/*/cgroup scan for '{unit}')"
         )
 
-        if active_state != "active" or main_pid == 0:
+        # FAIL if no live worker PID found
+        if main_pid == 0:
             self.logger.error(
-                f"[EnvCheck] FAIL on {host}: unit not active or MainPID=0. "
-                f"ActiveState={active_state} SubState={sub_state} "
-                f"Result={result} NRestarts={n_restarts}"
+                f"[EnvCheck] FAIL on {host}: no live process found for "
+                f"unit '{unit}' in /proc/*/cgroup. "
+                f"Worker is not running. Collecting diagnostics."
             )
             self._collect_worker_diagnostics(host, username, unit)
             return False
 
-        # Read /proc/<MainPID>/environ
-        env_cmd = f"tr '\\0' '\\n' </proc/{main_pid}/environ"
-        try:
-            r2 = _sp.run(
-                ["ssh", "-q", "-o", "BatchMode=yes",
-                 "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
-                 f"{username}@{host}", "bash", "-c", env_cmd],
-                capture_output=True, text=True, timeout=15
-            )
-        except Exception as exc:
-            self.logger.error(
-                f"[EnvCheck] SSH error reading environ on {host}: {exc}"
-            )
-            return False
-
-        env_dict = {}
-        for line in r2.stdout.strip().splitlines():
-            if "=" in line:
-                k, _, v = line.partition("=")
-                env_dict[k] = v
-
+        # Verify required ROCm protective vars
         missing = []
         for var, expected in self._REQUIRED_WORKER_VARS.items():
             actual = env_dict.get(var)
