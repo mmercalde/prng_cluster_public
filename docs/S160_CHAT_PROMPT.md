@@ -101,3 +101,32 @@ Post-run tasks:
 - Zeus semaphore: 2
 - ZMQ ports: job=5557, result=5558
 - Git: dual-push `git push origin main && git push public main`
+
+---
+
+## S161 Target (Plan Ahead)
+
+Once S159G acceptance test passes and ZMQ stability run completes, next priority
+is PWC TCP transport benchmark:
+
+**Goal:** Direct apples-to-apples speed comparison — ZMQ vs PWC TCP, same workload,
+flag swap only:
+```
+--use-zmq-sqlite       # ZMQ (current)
+--pwc-transport tcp    # PWC TCP adapter (TB-approved, coded, ready to test)
+--pwc-transport ssh    # PWC legacy SSH (baseline reference)
+```
+
+**Why now is the right time:**
+- `/etc/environment` fix means all rigs have correct ROCm env regardless of
+  transport — first time PWC will get a fair test on rrig6600
+- env vars inherited at OS level, not dependent on SSH pipe or systemd-run path
+- Any speed delta will be pure transport architecture, not crash contamination
+
+**PWC target speed:** ~2,082,140 seeds/sec (historical)
+**ZMQ current speed:** ~800,000 seeds/sec (18 AMD workers + 2 CUDA)
+
+**Test sequence per TB protocol:**
+1. Isolation test: rrig6600 only with `--pwc-transport tcp`
+2. Full cluster test if isolation passes
+3. Record seeds/sec, compare to ZMQ run from S160
