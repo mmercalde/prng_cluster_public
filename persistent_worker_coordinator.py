@@ -94,6 +94,8 @@ from typing import Dict, List, Optional, Any, Tuple
 # ROCm stability constants (from S130/S133 learnings)
 # ─────────────────────────────────────────────────────────────────────────────
 ROCM_SPAWN_STAGGER_S   = 4.0   # seconds between worker spawns per gpu_id
+TCP_SPAWN_STAGGER_S    = 1.0   # S161: TCP-only stagger (SSH is bootstrap only)
+ROCM_READY_TIMEOUT_S   = 110.0 # S161: ROCm startup budget after last TCP worker launched
 ROCM_ENV_VARS = [
     # [S155] Removed CUPY_CUDA_MEMORY_POOL_TYPE=none — caused 41GB VM mmap OOM.
     # Each worker mmaps full 8GB VRAM at device init with pool disabled.
@@ -174,7 +176,8 @@ class PersistentWorkerCoordinator:
                  max_per_node: int = 8,
                  pwc_transport: str = "ssh",
                  pwc_host: str = "0.0.0.0",
-                 pwc_port: int = 5600):
+                 pwc_port: int = 5600,
+                 min_workers: int = 1):
         self.config_file     = config_file
         self.worker_pool_size = worker_pool_size
         self.seed_cap_nvidia = seed_cap_nvidia
@@ -184,7 +187,10 @@ class PersistentWorkerCoordinator:
         self.pwc_transport   = pwc_transport
         self.pwc_host        = pwc_host
         self.pwc_port        = pwc_port
+        self.min_workers     = min_workers  # S161: readiness gate
         self._tcp_transport  = None  # lazily started if pwc_transport == "tcp"
+        self._tcp_launch_complete_time: float = 0.0  # set by _tcp_launch_workers()
+        self._tcp_expected_workers: int = 0           # set by _tcp_launch_workers()
         self._progress_writer = None  # guard for TCP early-return startup path
 
         self.nodes: List[WorkerNode] = []
@@ -540,13 +546,16 @@ class PersistentWorkerCoordinator:
                 except Exception as e:
                     self.logger.error("[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launch failed: " + str(e))
 
-                # Stagger to prevent simultaneous HIP init
+                # Stagger — TCP path uses 1s (SSH is bootstrap only, not compute)
                 if gpu_id < pool - 1:
-                    _t.sleep(ROCM_SPAWN_STAGGER_S)
+                    _t.sleep(TCP_SPAWN_STAGGER_S)
 
+        import time as _t2
+        self._tcp_launch_complete_time = _t2.time()
+        self._tcp_expected_workers = total_launched  # TB: use actual launched count
         self.logger.info(
-            f"[PWC-TCP] {total_launched} workers launched across all rigs — "
-            f"waiting up to 180s for connections"
+            "[PWC-TCP] " + str(total_launched) + " workers launched across all rigs"
+            " — launch_complete_time recorded, readiness gate active"
         )
 
     def _ensure_worker_alive(self, handle: WorkerHandle) -> bool:
@@ -864,16 +873,50 @@ class PersistentWorkerCoordinator:
                 strategies = []
 
         # Build chunk list — divide total seeds across all available workers
-        # S161: in TCP mode, wait for at least 1 worker to connect before dispatch
+        # S161: TB-approved readiness gate — wait for min_workers OR launch_complete + timeout
         if self._tcp_transport is not None:
-            _wait_start = time.time()
-            while self._tcp_transport.worker_count() == 0:
-                if time.time() - _wait_start > 180.0:
-                    self.logger.error("[PWC-TCP] No workers connected after 180s — aborting")
+            _expected    = getattr(self, "_tcp_expected_workers", 0)  # actual launched count
+            _min_needed  = self.min_workers
+            _launch_done = self._tcp_launch_complete_time
+            _ready_deadline = _launch_done + ROCM_READY_TIMEOUT_S
+            _fallback_deadline = time.time() + 180.0  # absolute fallback
+
+            if _min_needed > _expected > 0:
+                self.logger.warning(
+                    f"[PWC-TCP] min_workers={_min_needed} exceeds expected={_expected} "
+                    f"(actual launched) — will wait until ready_deadline then dispatch"
+                )
+            self.logger.info(
+                f"[PWC-TCP] readiness gate: min_workers={_min_needed} "
+                f"expected={_expected} ready_deadline=+{max(0, _ready_deadline - time.time()):.0f}s"
+            )
+
+            while True:
+                _connected = self._tcp_transport.worker_count()
+                _now = time.time()
+                if _connected >= _min_needed:
+                    self.logger.info(
+                        f"[PWC-TCP] {_connected}/{_expected} worker(s) connected "
+                        f"— min_workers threshold reached, dispatching"
+                    )
+                    break
+                if _launch_done > 0 and _now > _ready_deadline:
+                    if _connected == 0:
+                        self.logger.error(
+                            f"[PWC-TCP] No workers connected after ready_deadline — aborting"
+                        )
+                        return {"status": "error", "survivor_count": 0,
+                                "survivors": [], "failed_chunks": 1, "total_chunks": 1}
+                    self.logger.info(
+                        f"[PWC-TCP] {_connected}/{_expected} worker(s) connected "
+                        f"— ready_deadline expired, dispatching with available workers"
+                    )
+                    break
+                if _now > _fallback_deadline:
+                    self.logger.error("[PWC-TCP] absolute timeout — aborting")
                     return {"status": "error", "survivor_count": 0,
                             "survivors": [], "failed_chunks": 1, "total_chunks": 1}
                 time.sleep(0.5)
-            self.logger.info(f"[PWC-TCP] {self._tcp_transport.worker_count()} worker(s) connected — dispatching")
         all_workers = self._get_available_workers()
         num_workers = max(1, len(all_workers))
         ideal_chunk = max(1, total_seeds // num_workers)
@@ -1405,6 +1448,8 @@ if __name__ == "__main__":
                    help="TCP server bind host (tcp mode only)")
     p.add_argument("--pwc-port",      type=int, default=5600,
                    help="TCP server port (tcp mode only)")
+    p.add_argument("--min-workers",   type=int, default=1,
+                   help="[TCP] minimum connected workers before dispatch (default=1)")
     p.add_argument("--startup-only", action="store_true",
                    help="Just spawn workers and report alive count, then shutdown")
     args = p.parse_args()
@@ -1416,6 +1461,7 @@ if __name__ == "__main__":
         pwc_transport    = args.pwc_transport,
         pwc_host         = args.pwc_host,
         pwc_port         = args.pwc_port,
+        min_workers      = args.min_workers,
     )
     pwc.startup()
 
