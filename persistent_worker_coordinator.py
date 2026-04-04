@@ -171,12 +171,21 @@ class PersistentWorkerCoordinator:
                  worker_pool_size: int = 8,
                  seed_cap_nvidia: int = 5_000_000,
                  seed_cap_amd: int = 2_000_000,
-                 max_per_node: int = 8):
+                 max_per_node: int = 8,
+                 pwc_transport: str = "ssh",
+                 pwc_host: str = "0.0.0.0",
+                 pwc_port: int = 5600):
         self.config_file     = config_file
         self.worker_pool_size = worker_pool_size
         self.seed_cap_nvidia = seed_cap_nvidia
         self.seed_cap_amd    = seed_cap_amd
         self.max_per_node    = max_per_node
+        # [TCP transport] additive — default ssh preserves legacy behavior
+        self.pwc_transport   = pwc_transport
+        self.pwc_host        = pwc_host
+        self.pwc_port        = pwc_port
+        self._tcp_transport  = None  # lazily started if pwc_transport == "tcp"
+        self._progress_writer = None  # guard for TCP early-return startup path
 
         self.nodes: List[WorkerNode] = []
         self.workers: List[WorkerHandle] = []   # AMD rig workers (persistent)
@@ -304,6 +313,24 @@ class PersistentWorkerCoordinator:
                 )
         _s156_time.sleep(2)
         # ── end [S156-BANDAID v2] ───────────────────────────────────────────
+        # [TCP transport] in TCP mode, skip SSH worker spawning entirely
+        if self.pwc_transport == "tcp":
+            self.logger.info("[PWC-TCP] TCP transport mode — skipping SSH worker spawn")
+            self._started = True
+            self.logger.info("Worker pool ready: 0/0 alive (TCP mode — workers connect via TCP)")
+            from persistent.pwc_transport_base import build_transport
+            self._tcp_transport = build_transport(
+                pwc_transport=self.pwc_transport,
+                pwc_host=self.pwc_host,
+                pwc_port=self.pwc_port,
+            )
+            if self._tcp_transport is not None:
+                self._tcp_transport.start()
+                self.logger.info(
+                    f"[PWC-TCP] transport started on {self.pwc_host}:{self.pwc_port}"
+                )
+            return
+
         self.logger.info("Starting persistent worker pool...")
         for node in self.nodes:
             if self._is_localhost(node.hostname):
@@ -450,6 +477,15 @@ class PersistentWorkerCoordinator:
                 except Exception:
                     handle.proc.kill()
             handle.alive = False
+        # [TCP transport] stop TCP server if running — additive
+        if self._tcp_transport is not None:
+            try:
+                self._tcp_transport.stop()
+                self.logger.info("[PWC-TCP] transport stopped")
+            except Exception as _e:
+                self.logger.warning(f"[PWC-TCP] transport stop error: {_e}")
+            self._tcp_transport = None
+
         self.logger.info("All workers shut down")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -535,6 +571,69 @@ class PersistentWorkerCoordinator:
             finally:
                 if sem:
                     sem.release()
+
+    def _dispatch_to_tcp(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        [TCP transport] Submit job to TCPWorkerTransport and block for result.
+        Converts normalized transport result back into the same dict contract
+        as _dispatch_to_worker() so all downstream code is transport-blind.
+        TB ruling: result normalizer is the contract wall.
+        """
+        import uuid as _uuid
+        if "job_id" not in job:
+            job = dict(job)
+            job["job_id"] = str(_uuid.uuid4())
+
+        # S161: wait for at least one TCP worker to connect before dispatching
+        _wait_start = time.time()
+        while self._tcp_transport.worker_count() == 0:
+            if time.time() - _wait_start > 60.0:
+                return {"status": "error", "message": "TCP worker connect timeout (60s)"}
+            time.sleep(0.5)
+        self._tcp_transport.submit_job(job)
+
+        # Block for result correlated by job_id — TB fix 4
+        result = self._tcp_transport.recv_result(
+            timeout_s=JOB_TIMEOUT_S,
+            job_id=job["job_id"],
+        )
+        if result is None:
+            return {"status": "error", "message": "TCP worker timeout"}
+
+        # Normalize to PWC result contract
+        if result.get("status") == "error":
+            return result
+
+        inner = result.get("result", {})
+        payload = inner.get("payload", inner)
+
+        # Accept slim_v1 parallel arrays or legacy dict-list — same as _dispatch_to_worker
+        if isinstance(payload, dict) and payload.get("format") == "slim_v1":
+            survivors   = [int(s) for s in payload.get("seeds", [])]
+            match_rates = list(payload.get("match_rates", []))
+            n = len(survivors)
+            _is_hybrid_job = bool(job.get("hybrid", False))
+            if _is_hybrid_job:
+                strat_ids = list(payload.get("strategy_ids", [0]*n))
+                skip_seqs = list(payload.get("skip_sequences", [[]]*n))
+            else:
+                strat_ids = [0] * n
+                skip_seqs = [[] for _ in survivors]
+        else:
+            raw_surv    = payload.get("survivors", [])
+            survivors   = [s["seed"]                  if isinstance(s, dict) else int(s) for s in raw_surv]
+            match_rates = [s.get("match_rate", 0.5)   if isinstance(s, dict) else 0.5    for s in raw_surv]
+            skip_seqs   = [s.get("skip_sequence", []) if isinstance(s, dict) else []      for s in raw_surv]
+            strat_ids   = [s.get("strategy_id", 0)    if isinstance(s, dict) else 0       for s in raw_surv]
+
+        return {
+            "status":         "ok",
+            "job_id":         job["job_id"],
+            "survivors":      survivors,
+            "match_rates":    match_rates,
+            "skip_sequences": skip_seqs,
+            "strategy_ids":   strat_ids,
+        }
 
     def _dispatch_local_sieve(self, job: Dict[str, Any], node: WorkerNode) -> Dict[str, Any]:
         """
@@ -654,6 +753,16 @@ class PersistentWorkerCoordinator:
                 strategies = []
 
         # Build chunk list — divide total seeds across all available workers
+        # S161: in TCP mode, wait for at least 1 worker to connect before dispatch
+        if self._tcp_transport is not None:
+            _wait_start = time.time()
+            while self._tcp_transport.worker_count() == 0:
+                if time.time() - _wait_start > 60.0:
+                    self.logger.error("[PWC-TCP] No workers connected after 60s — aborting")
+                    return {"status": "error", "survivor_count": 0,
+                            "survivors": [], "failed_chunks": 1, "total_chunks": 1}
+                time.sleep(0.5)
+            self.logger.info(f"[PWC-TCP] {self._tcp_transport.worker_count()} worker(s) connected — dispatching")
         all_workers = self._get_available_workers()
         num_workers = max(1, len(all_workers))
         ideal_chunk = max(1, total_seeds // num_workers)
@@ -711,6 +820,9 @@ class PersistentWorkerCoordinator:
             }
 
             def _run_once(wh):
+                # [TCP transport] dispatch bridge — additive, SSH path unchanged
+                if self._tcp_transport is not None:
+                    return self._dispatch_to_tcp(job)
                 if isinstance(wh, WorkerHandle):
                     job["gpu_id"] = wh.gpu_id
                     return self._dispatch_to_worker(wh, job)
@@ -919,7 +1031,15 @@ class PersistentWorkerCoordinator:
         """
         Returns list of available dispatch targets — mix of WorkerHandle (AMD)
         and WorkerNode (Zeus local). Only alive, non-quarantined workers included.
+        In TCP mode, derives count from connected TCP workers — TB fix 3.
         """
+        # [TCP transport] use TCP worker count as pool size — TB fix 3
+        if self._tcp_transport is not None:
+            tcp_count = self._tcp_transport.worker_count()
+            # Return synthetic placeholder list sized to connected TCP workers
+            # Actual dispatch goes through _dispatch_to_tcp(), not these handles
+            return [None] * tcp_count
+
         available = []
         # AMD persistent workers
         for w in self.workers:
@@ -964,7 +1084,10 @@ def run_trial_persistent(coordinator_cfg: str,
                          dataset_path: str = "",
                          worker_pool_size: int = 8,
                          seed_cap_nvidia: int = 5_000_000,
-                         seed_cap_amd:   int  = 2_000_000) -> Dict[str, Any]:
+                         seed_cap_amd:   int  = 2_000_000,
+                         pwc_transport: str = "ssh",
+                         pwc_host: str = "0.0.0.0",
+                         pwc_port: int = 5600) -> Dict[str, Any]:
     """
     Shim called by window_optimizer_integration_final.py when use_persistent_workers=True.
 
@@ -980,6 +1103,9 @@ def run_trial_persistent(coordinator_cfg: str,
         worker_pool_size = worker_pool_size,
         seed_cap_nvidia  = seed_cap_nvidia,
         seed_cap_amd     = seed_cap_amd,
+        pwc_transport    = pwc_transport,
+        pwc_host         = pwc_host,
+        pwc_port         = pwc_port,
     )
     pwc.startup()
 
@@ -1161,6 +1287,13 @@ if __name__ == "__main__":
     p.add_argument("--pool-size",    type=int, default=2)
     p.add_argument("--total-seeds",  type=int, default=500_000)
     p.add_argument("--prng-type",    default="java_lcg")
+    p.add_argument("--pwc-transport", default="ssh",
+                   choices=["ssh", "tcp"],
+                   help="Transport backend: ssh (default/legacy) or tcp (new)")
+    p.add_argument("--pwc-host",      default="0.0.0.0",
+                   help="TCP server bind host (tcp mode only)")
+    p.add_argument("--pwc-port",      type=int, default=5600,
+                   help="TCP server port (tcp mode only)")
     p.add_argument("--startup-only", action="store_true",
                    help="Just spawn workers and report alive count, then shutdown")
     args = p.parse_args()
@@ -1169,6 +1302,9 @@ if __name__ == "__main__":
     pwc = PersistentWorkerCoordinator(
         config_file      = args.config,
         worker_pool_size = args.pool_size,
+        pwc_transport    = args.pwc_transport,
+        pwc_host         = args.pwc_host,
+        pwc_port         = args.pwc_port,
     )
     pwc.startup()
 

@@ -108,3 +108,4 @@ models/reinforcement/compare_models/
 optuna_studies/
 optimal_window_config.json
 watcher_decisions.jsonl
+zmq_chunk_payloads/
