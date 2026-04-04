@@ -838,6 +838,10 @@ class PersistentWorkerCoordinator:
             "match_rates":    match_rates,
             "skip_sequences": skip_seqs,
             "strategy_ids":   strat_ids,
+            # S161 dashboard: preserve worker identity for ProgressWriter
+            "worker_id":      result.get("worker_id", ""),
+            "hostname":       result.get("hostname", ""),
+            "gpu_id":         result.get("gpu_id", 0),
         }
 
     def _dispatch_local_sieve(self, job: Dict[str, Any], node: WorkerNode) -> Dict[str, Any]:
