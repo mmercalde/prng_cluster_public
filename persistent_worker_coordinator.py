@@ -378,6 +378,14 @@ class PersistentWorkerCoordinator:
             self.logger.warning(f"ProgressWriter unavailable: {e}")
             self._progress_writer = None
 
+        # S161: build reverse map hostname→IP for TCP dashboard fix
+        # TCP workers report socket.gethostname() but nodes registered by IP
+        self._hostname_to_ip: dict = {}
+        for _n in self.nodes:
+            if not self._is_localhost(_n.hostname):
+                self._hostname_to_ip[_n.hostname] = _n.hostname  # IP→IP passthrough
+        # Populated lazily when first TCP result arrives with a non-IP hostname
+
     def _spawn_worker(self, handle: WorkerHandle) -> bool:
         """SSH + launch sieve_gpu_worker.py on remote GPU, confirm heartbeat."""
         node   = handle.node
@@ -1046,9 +1054,32 @@ class PersistentWorkerCoordinator:
                     if worker_handle_or_node is None:
                         # S161 v2: TCP worker — extract from result payload
                         _payload = res.get("result", {}).get("payload", res.get("result", {}))
-                        hostname = _payload.get("hostname", res.get("hostname", "tcp-worker"))
-                        gpu_id   = _payload.get("gpu_id", 0)
-                        gpu_type = "RX 6600"
+                        _raw_host = _payload.get("hostname", res.get("hostname", "tcp-worker"))
+                        gpu_id    = _payload.get("gpu_id", 0)
+                        gpu_type  = "RX 6600"
+                        # S161 dashboard fix: map short hostname to registered IP
+                        # TCP workers report socket.gethostname() e.g. "rig-6600"
+                        # but ProgressWriter registered nodes by IP e.g. "192.168.3.120"
+                        if _raw_host not in self._hostname_to_ip:
+                            # First time we see this hostname — find matching node by IP lookup
+                            for _n in self.nodes:
+                                if not self._is_localhost(_n.hostname):
+                                    # Try to resolve short hostname to node IP
+                                    try:
+                                        import socket as _sock
+                                        _resolved = _sock.gethostbyname(_raw_host)
+                                        if _resolved == _n.hostname:
+                                            self._hostname_to_ip[_raw_host] = _n.hostname
+                                            gpu_type = _n.gpu_type
+                                            break
+                                    except Exception:
+                                        pass
+                        hostname = self._hostname_to_ip.get(_raw_host, _raw_host)
+                        # Also get correct gpu_type from node if mapped
+                        for _n in self.nodes:
+                            if _n.hostname == hostname:
+                                gpu_type = _n.gpu_type
+                                break
                     elif isinstance(worker_handle_or_node, WorkerHandle):
                         hostname = worker_handle_or_node.node.hostname
                         gpu_type = worker_handle_or_node.node.gpu_type
