@@ -1,7 +1,7 @@
 # Distributed PRNG Analysis System
 **Updated:** S135 (2026-03-10)
 
-A distributed system for reverse-engineering PRNG behavioral patterns via bidirectional
+An agnostic distributed system for reverse-engineering PRNG behavioral patterns via bidirectional
 sieve validation, ML ensemble scoring, and autonomous agent orchestration.
 Modular and configurable -- not tied to any specific PRNG type or data source.
 
@@ -27,7 +27,6 @@ Modular and configurable -- not tied to any specific PRNG type or data source.
 | rig-6600c | 8x RX 6600 | ROCm | 192.168.3.162 |
 
 **Total: 26 GPUs**
-Note: rig-6600c has i5-8400T CPU (~50% throughput deficit vs other rigs)
 
 ## Key Metrics
 
