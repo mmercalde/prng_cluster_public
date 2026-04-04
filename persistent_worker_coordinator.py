@@ -1043,9 +1043,20 @@ class PersistentWorkerCoordinator:
             # Log to ProgressWriter for web dashboard (mirrors coordinator.py line 1611)
             if self._progress_writer and res.get("status") == "ok" and elapsed > 0:
                 try:
-                    hostname = worker_handle_or_node.node.hostname if isinstance(worker_handle_or_node, WorkerHandle) else worker_handle_or_node.hostname
-                    gpu_type = worker_handle_or_node.node.gpu_type if isinstance(worker_handle_or_node, WorkerHandle) else worker_handle_or_node.gpu_type
-                    gpu_id   = worker_handle_or_node.gpu_id if isinstance(worker_handle_or_node, WorkerHandle) else 0
+                    if worker_handle_or_node is None:
+                        # S161 v2: TCP worker — extract from result payload
+                        _payload = res.get("result", {}).get("payload", res.get("result", {}))
+                        hostname = _payload.get("hostname", res.get("hostname", "tcp-worker"))
+                        gpu_id   = _payload.get("gpu_id", 0)
+                        gpu_type = "RX 6600"
+                    elif isinstance(worker_handle_or_node, WorkerHandle):
+                        hostname = worker_handle_or_node.node.hostname
+                        gpu_type = worker_handle_or_node.node.gpu_type
+                        gpu_id   = worker_handle_or_node.gpu_id
+                    else:
+                        hostname = worker_handle_or_node.hostname
+                        gpu_type = worker_handle_or_node.gpu_type
+                        gpu_id   = 0
                     self._progress_writer.log_gpu_result(hostname, gpu_id, gpu_type, seeds_in_chunk, elapsed, success=True)
                 except Exception:
                     pass
