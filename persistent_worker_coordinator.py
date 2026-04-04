@@ -521,7 +521,6 @@ class PersistentWorkerCoordinator:
                 ]
                 script_content = chr(10).join(script_lines)
 
-                _connected = False  # S161: init before try so except block can reference it
                 try:
                     # Write script to rig via stdin pipe
                     write_r = _sp.run(
@@ -544,42 +543,85 @@ class PersistentWorkerCoordinator:
                         "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
                         " launched — " + pid_line + " log=" + log_file
                     )
-                    if _connected:
-                        total_launched += 1
+                    total_launched += 1
                 except Exception as e:
                     self.logger.error("[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launch failed: " + str(e))
 
-                # S161: Mirror SSH-PWC — wait for this worker to connect before
-                # launching next GPU. Prevents simultaneous ROCm context competition.
-                # CRITICAL: deadline starts from _launch_time not from previous connect,
-                # because ROCm init on this GPU starts immediately after launch script runs.
-                # Each GPU takes ~WORKER_HEARTBEAT_TIMEOUT_S to init independently.
-                _prev_count = self._tcp_transport.worker_count()
-                _deadline = _launch_time + WORKER_HEARTBEAT_TIMEOUT_S
-                while _t.time() < _deadline:
-                    if self._tcp_transport.worker_count() > _prev_count:
-                        _connected = True
-                        break
-                    _t.sleep(0.5)
-                if _connected:
-                    _launch_time = _t.time()  # reset for next GPU
-                    self.logger.info(
-                        "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
-                        " ready (" + str(self._tcp_transport.worker_count()) + " total connected)"
-                    )
-                else:
-                    self.logger.warning(
-                        "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
-                        " did not connect within " + str(WORKER_HEARTBEAT_TIMEOUT_S) + "s"
-                    )
+                # S161 v2: no per-worker wait — workers connect fast (no ROCm at startup)
+                # All workers launched with 1s stagger, then _tcp_wait_online() handles
+                # the online barrier before broadcasting init.
+                self.logger.info(
+                    "[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launched"
+                )
 
-        import time as _t2
-        self._tcp_launch_complete_time = _t2.time()
-        self._tcp_expected_workers = total_launched  # TB: use actual launched count
         self.logger.info(
             "[PWC-TCP] " + str(total_launched) + " workers launched across all rigs"
-            " — launch_complete_time recorded, readiness gate active"
+            " — waiting for online, then init, then ready"
         )
+        # S161 v2: three-phase startup
+        # Phase 1: wait for all workers to come online (fast TCP connect)
+        _online = self._tcp_wait_online(expected=total_launched, timeout_s=30.0)
+        # Phase 2: broadcast init to all online workers (parallel ROCm warmup)
+        self._tcp_broadcast_init()
+        # Phase 3: wait for workers to become compute-ready
+        _ready = self._tcp_wait_ready(expected=total_launched, timeout_s=180.0)
+        self.logger.info(
+            f"[PWC-TCP] startup complete: {_online} online, {_ready} ready"
+        )
+
+    def _tcp_wait_online(self, expected: int, timeout_s: float = 30.0) -> int:
+        """
+        S161 v2: Wait for expected workers to report online (TCP connected).
+        Online = fast TCP connect, no ROCm. Timeout is short (30s).
+        Returns count of online workers when deadline reached or expected met.
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            count = self._tcp_transport.online_count()
+            if count >= expected:
+                self.logger.info(
+                    f"[PWC-TCP] all {count}/{expected} workers online — proceeding to init"
+                )
+                return count
+            time.sleep(0.5)
+        count = self._tcp_transport.online_count()
+        self.logger.warning(
+            f"[PWC-TCP] online timeout: {count}/{expected} workers online after {timeout_s:.0f}s"
+        )
+        return count
+
+    def _tcp_broadcast_init(self) -> int:
+        """
+        S161 v2: Broadcast init command to all online workers.
+        Workers will import sieve_filter (ROCm warmup) in parallel.
+        Returns count of workers init was sent to.
+        """
+        sent = self._tcp_transport.broadcast_init()
+        self.logger.info(
+            f"[PWC-TCP] init broadcast to {sent} workers — parallel ROCm warmup starting"
+        )
+        return sent
+
+    def _tcp_wait_ready(self, expected: int, timeout_s: float = 180.0) -> int:
+        """
+        S161 v2: Wait for workers to report ready (compute-ready after ROCm init).
+        Ready = dispatch-eligible. Timeout covers parallel ROCm warmup (~90s).
+        Returns count of ready workers when min_workers met or deadline reached.
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            count = self._tcp_transport.ready_count()
+            if count >= self.min_workers:
+                self.logger.info(
+                    f"[PWC-TCP] {count}/{expected} workers ready — dispatching"
+                )
+                return count
+            time.sleep(0.5)
+        count = self._tcp_transport.ready_count()
+        self.logger.warning(
+            f"[PWC-TCP] ready timeout: {count}/{expected} workers ready after {timeout_s:.0f}s"
+        )
+        return count
 
     def _ensure_worker_alive(self, handle: WorkerHandle) -> bool:
         """Check worker still alive; respawn if dead."""
@@ -896,50 +938,15 @@ class PersistentWorkerCoordinator:
                 strategies = []
 
         # Build chunk list — divide total seeds across all available workers
-        # S161: TB-approved readiness gate — wait for min_workers OR launch_complete + timeout
+        # S161 v2: workers already online+ready from startup() three-phase init
+        # Just confirm ready count before dispatch — no waiting needed here
         if self._tcp_transport is not None:
-            _expected    = getattr(self, "_tcp_expected_workers", 0)  # actual launched count
-            _min_needed  = self.min_workers
-            _launch_done = self._tcp_launch_complete_time
-            _ready_deadline = _launch_done + ROCM_READY_TIMEOUT_S
-            _fallback_deadline = time.time() + 180.0  # absolute fallback
-
-            if _min_needed > _expected > 0:
-                self.logger.warning(
-                    f"[PWC-TCP] min_workers={_min_needed} exceeds expected={_expected} "
-                    f"(actual launched) — will wait until ready_deadline then dispatch"
-                )
-            self.logger.info(
-                f"[PWC-TCP] readiness gate: min_workers={_min_needed} "
-                f"expected={_expected} ready_deadline=+{max(0, _ready_deadline - time.time()):.0f}s"
-            )
-
-            while True:
-                _connected = self._tcp_transport.worker_count()
-                _now = time.time()
-                if _connected >= _min_needed:
-                    self.logger.info(
-                        f"[PWC-TCP] {_connected}/{_expected} worker(s) connected "
-                        f"— min_workers threshold reached, dispatching"
-                    )
-                    break
-                if _launch_done > 0 and _now > _ready_deadline:
-                    if _connected == 0:
-                        self.logger.error(
-                            f"[PWC-TCP] No workers connected after ready_deadline — aborting"
-                        )
-                        return {"status": "error", "survivor_count": 0,
-                                "survivors": [], "failed_chunks": 1, "total_chunks": 1}
-                    self.logger.info(
-                        f"[PWC-TCP] {_connected}/{_expected} worker(s) connected "
-                        f"— ready_deadline expired, dispatching with available workers"
-                    )
-                    break
-                if _now > _fallback_deadline:
-                    self.logger.error("[PWC-TCP] absolute timeout — aborting")
-                    return {"status": "error", "survivor_count": 0,
-                            "survivors": [], "failed_chunks": 1, "total_chunks": 1}
-                time.sleep(0.5)
+            _ready = self._tcp_transport.ready_count()
+            if _ready == 0:
+                self.logger.error("[PWC-TCP] no ready workers — aborting dispatch")
+                return {"status": "error", "survivor_count": 0,
+                        "survivors": [], "failed_chunks": 1, "total_chunks": 1}
+            self.logger.info(f"[PWC-TCP] {_ready} ready worker(s) — dispatching")
         all_workers = self._get_available_workers()
         num_workers = max(1, len(all_workers))
         ideal_chunk = max(1, total_seeds // num_workers)
@@ -1212,7 +1219,7 @@ class PersistentWorkerCoordinator:
         """
         # [TCP transport] use TCP worker count as pool size — TB fix 3
         if self._tcp_transport is not None:
-            tcp_count = self._tcp_transport.worker_count()
+            tcp_count = self._tcp_transport.ready_count()  # S161 v2: only ready workers
             # Return synthetic placeholder list sized to connected TCP workers
             # Actual dispatch goes through _dispatch_to_tcp(), not these handles
             return [None] * tcp_count

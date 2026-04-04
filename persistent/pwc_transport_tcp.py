@@ -134,6 +134,12 @@ class TCPWorkerTransport(PWCTransportBase):
         self._workers: Dict[str, FramedSocket] = {}  # worker_id → conn
         self._workers_lock = threading.Lock()
 
+        # S161 v2: two-phase state tracking
+        self._online_workers: set = set()   # TCP connected, not yet compute-ready
+        self._ready_workers:  set = set()   # compute-ready after init
+        self._state_lock = threading.Lock()
+        self._init_sent: bool = False       # True after broadcast_init()
+
         # Inflight lease table — TB blocker C fix
         # {job_id: {worker_id, lease_id, assigned_at, attempt, job}}
         self._inflight: Dict[str, Dict[str, Any]] = {}
@@ -225,6 +231,40 @@ class TCPWorkerTransport(PWCTransportBase):
     def worker_count(self) -> int:
         with self._workers_lock:
             return len(self._workers)
+
+    def online_count(self) -> int:
+        """Workers that have reported online (TCP connected, not compute-ready)."""
+        with self._state_lock:
+            return len(self._online_workers)
+
+    def ready_count(self) -> int:
+        """Workers that have reported ready (compute-ready after init)."""
+        with self._state_lock:
+            return len(self._ready_workers)
+
+    def broadcast_init(self) -> int:
+        """
+        Send init command to all currently online workers.
+        Sets _init_sent so late joiners get init immediately on connect.
+        Returns count of workers init was sent to.
+        """
+        with self._state_lock:
+            self._init_sent = True
+        with self._workers_lock:
+            targets = list(self._workers.items())
+        sent = 0
+        for worker_id, conn in targets:
+            try:
+                conn.send_obj({
+                    "message_type": "command",
+                    "command":      "init",
+                    "worker_id":    "coordinator",
+                    "timestamp":    time.time(),
+                })
+                sent += 1
+            except Exception:
+                pass
+        return sent
 
     # ------------------------------------------------------------------
     # Inflight lease management — TB blocker C fix
@@ -354,6 +394,20 @@ class TCPWorkerTransport(PWCTransportBase):
             with self._last_seen_lock:
                 self._last_seen[worker_id] = time.time()
 
+            # S161 v2: if init already broadcast, send it immediately (late joiner)
+            with self._state_lock:
+                _init_already_sent = self._init_sent
+            if _init_already_sent:
+                try:
+                    conn.send_obj({
+                        "message_type": "command",
+                        "command":      "init",
+                        "worker_id":    "coordinator",
+                        "timestamp":    time.time(),
+                    })
+                except Exception:
+                    pass
+
             # Main dispatch loop
             while not self._stop.is_set():
                 msg = conn.recv_obj()
@@ -363,7 +417,19 @@ class TCPWorkerTransport(PWCTransportBase):
                 with self._last_seen_lock:
                     self._last_seen[worker_id] = time.time()
 
-                if mtype == "request_job":
+                if mtype == "online":
+                    # S161 v2: worker is TCP-connected, not yet compute-ready
+                    with self._state_lock:
+                        self._online_workers.add(worker_id)
+                    continue
+
+                elif mtype == "ready":
+                    # S161 v2: worker completed ROCm warmup — compute-ready
+                    with self._state_lock:
+                        self._ready_workers.add(worker_id)
+                    continue
+
+                elif mtype == "request_job":
                     try:
                         job = self._pending_jobs.get_nowait()
                     except queue.Empty:
@@ -420,4 +486,7 @@ class TCPWorkerTransport(PWCTransportBase):
                 self._workers.pop(worker_id, None)
             with self._last_seen_lock:
                 self._last_seen.pop(worker_id, None)
+            with self._state_lock:
+                self._online_workers.discard(worker_id)
+                self._ready_workers.discard(worker_id)
             conn.close()
