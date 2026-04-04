@@ -1005,7 +1005,7 @@ class PersistentWorkerCoordinator:
 
             def _run_once(wh):
                 # [TCP transport] dispatch bridge — additive, SSH path unchanged
-                if self._tcp_transport is not None:
+                if self._tcp_transport is not None and not isinstance(wh, WorkerNode):
                     return self._dispatch_to_tcp(job)
                 if isinstance(wh, WorkerHandle):
                     job["gpu_id"] = wh.gpu_id
@@ -1220,9 +1220,12 @@ class PersistentWorkerCoordinator:
         # [TCP transport] use TCP worker count as pool size — TB fix 3
         if self._tcp_transport is not None:
             tcp_count = self._tcp_transport.ready_count()  # S161 v2: only ready workers
-            # Return synthetic placeholder list sized to connected TCP workers
-            # Actual dispatch goes through _dispatch_to_tcp(), not these handles
-            return [None] * tcp_count
+            # TCP workers as synthetic placeholders + Zeus local nodes
+            available = [None] * tcp_count
+            for node in self.nodes:
+                if self._is_localhost(node.hostname):
+                    available.append(node)
+            return available
 
         available = []
         # AMD persistent workers
