@@ -126,7 +126,7 @@ ROCM_ENV_VARS = [
     "CUPY_CACHE_DIR=${HOME}/.cache/cupy",
 ]
 WORKER_SCRIPT = "sieve_gpu_worker.py"
-WORKER_HEARTBEAT_TIMEOUT_S = 90   # [S152] seconds to wait for worker heartbeat on startup — 90s allows ROCm init on fresh-booted rigs
+WORKER_HEARTBEAT_TIMEOUT_S = 120  # [S161] 120s allows ROCm sequential init on 8-GPU rigs (90s was edge case)
 JOB_TIMEOUT_S = 600               # seconds max per sieve job
 
 
@@ -521,6 +521,7 @@ class PersistentWorkerCoordinator:
                 ]
                 script_content = chr(10).join(script_lines)
 
+                _connected = False  # S161: init before try so except block can reference it
                 try:
                     # Write script to rig via stdin pipe
                     write_r = _sp.run(
@@ -537,18 +538,40 @@ class PersistentWorkerCoordinator:
                         ssh_base + ["bash " + script],
                         capture_output=True, text=True, timeout=10
                     )
+                    _launch_time = _t.time()  # S161: start deadline from actual launch
                     pid_line = exec_r.stdout.strip()
                     self.logger.info(
                         "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
                         " launched — " + pid_line + " log=" + log_file
                     )
-                    total_launched += 1
+                    if _connected:
+                        total_launched += 1
                 except Exception as e:
                     self.logger.error("[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launch failed: " + str(e))
 
-                # Stagger — TCP path uses 1s (SSH is bootstrap only, not compute)
-                if gpu_id < pool - 1:
-                    _t.sleep(TCP_SPAWN_STAGGER_S)
+                # S161: Mirror SSH-PWC — wait for this worker to connect before
+                # launching next GPU. Prevents simultaneous ROCm context competition.
+                # CRITICAL: deadline starts from _launch_time not from previous connect,
+                # because ROCm init on this GPU starts immediately after launch script runs.
+                # Each GPU takes ~WORKER_HEARTBEAT_TIMEOUT_S to init independently.
+                _prev_count = self._tcp_transport.worker_count()
+                _deadline = _launch_time + WORKER_HEARTBEAT_TIMEOUT_S
+                while _t.time() < _deadline:
+                    if self._tcp_transport.worker_count() > _prev_count:
+                        _connected = True
+                        break
+                    _t.sleep(0.5)
+                if _connected:
+                    _launch_time = _t.time()  # reset for next GPU
+                    self.logger.info(
+                        "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
+                        " ready (" + str(self._tcp_transport.worker_count()) + " total connected)"
+                    )
+                else:
+                    self.logger.warning(
+                        "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
+                        " did not connect within " + str(WORKER_HEARTBEAT_TIMEOUT_S) + "s"
+                    )
 
         import time as _t2
         self._tcp_launch_complete_time = _t2.time()
