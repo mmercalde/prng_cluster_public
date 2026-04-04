@@ -329,6 +329,8 @@ class PersistentWorkerCoordinator:
                 self.logger.info(
                     f"[PWC-TCP] transport started on {self.pwc_host}:{self.pwc_port}"
                 )
+            # S161: SSH-launch workers on all AMD rigs now that TCP server is bound
+            self._tcp_launch_workers()
             return
 
         self.logger.info("Starting persistent worker pool...")
@@ -437,6 +439,115 @@ class PersistentWorkerCoordinator:
         except Exception as e:
             self.logger.error(f"Spawn failed {node.hostname}:GPU{gpu_id}: {e}")
             return False
+
+    def _tcp_launch_workers(self) -> None:
+        """
+        S161: SSH-launch pwc_worker_service on each AMD rig GPU via nohup.
+        TB Gate 1 requirements:
+          - TCP server already bound before this is called
+          - Kill stale pwc_worker_service processes first
+          - nohup launch per GPU with per-GPU log file
+          - ROCm env vars same as _spawn_worker()
+          - 180s connect deadline starts AFTER last launch issued
+        """
+        import subprocess as _sp
+        import time as _t
+
+        total_launched = 0
+
+        for node in self.nodes:
+            if self._is_localhost(node.hostname):
+                continue
+            if not self._is_rocm(node):
+                continue
+
+            host = node.hostname
+            user = node.username
+            pool = min(self.worker_pool_size, node.gpu_count)
+            ssh_base = ["ssh", "-q",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "BatchMode=yes",
+                        "-o", "ConnectTimeout=10",
+                        user + "@" + host]
+            activate_path = node.python_env.replace("/bin/python", "/bin/activate")
+
+            # Step 1: Kill stale pwc_worker_service processes
+            try:
+                _sp.run(
+                    ssh_base + ["pkill -9 -f pwc_worker_service 2>/dev/null; echo killed"],
+                    capture_output=True, timeout=10
+                )
+                self.logger.info("[PWC-TCP] " + host + ": stale workers killed")
+            except Exception as e:
+                self.logger.warning("[PWC-TCP] " + host + ": kill failed: " + str(e))
+
+            # Step 2: Launch one worker per GPU via temp bash script
+
+            for gpu_id in range(pool):
+                rocm_env = " ".join(ROCM_ENV_VARS + [
+                    f"ROCR_VISIBLE_DEVICES={gpu_id}",
+                    f"CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_{gpu_id}",
+                ])
+                log_file = f"/tmp/pwc_tcp_worker_{host.replace('.', '_')}_gpu{gpu_id}.log"
+                worker_id = f"{host.replace('.', '_')}_gpu{gpu_id}"
+
+                script    = f"/tmp/pwc_tcp_launch_gpu{gpu_id}.sh"
+
+                # Build script content — no quoting issues since it is a file
+                script_lines = [
+                    "#!/bin/bash",
+                    "source " + activate_path,
+                    "cd " + node.script_path,
+                ]
+                for var in ROCM_ENV_VARS:
+                    script_lines.append("export " + var)
+                script_lines += [
+                    "export ROCR_VISIBLE_DEVICES=" + str(gpu_id),
+                    "export CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_" + str(gpu_id),
+                    "export PYTHONPATH=.",
+                    (
+                        "nohup " + node.python_env + " -m persistent.pwc_worker_service "
+                        "--host 192.168.3.127 --port " + str(self.pwc_port) + " "
+                        "--gpu-id " + str(gpu_id) + " --worker-id " + worker_id + " "
+                        ">> " + log_file + " 2>&1 &"
+                    ),
+                    "echo PID=$!",
+                ]
+                script_content = chr(10).join(script_lines)
+
+                try:
+                    # Write script to rig via stdin pipe
+                    write_r = _sp.run(
+                        ssh_base + ["cat > " + script + " && chmod +x " + script],
+                        input=script_content.encode(),
+                        capture_output=True, timeout=10
+                    )
+                    if write_r.returncode != 0:
+                        self.logger.error("[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " script write failed")
+                        continue
+
+                    # Execute the script
+                    exec_r = _sp.run(
+                        ssh_base + ["bash " + script],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    pid_line = exec_r.stdout.strip()
+                    self.logger.info(
+                        "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
+                        " launched — " + pid_line + " log=" + log_file
+                    )
+                    total_launched += 1
+                except Exception as e:
+                    self.logger.error("[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launch failed: " + str(e))
+
+                # Stagger to prevent simultaneous HIP init
+                if gpu_id < pool - 1:
+                    _t.sleep(ROCM_SPAWN_STAGGER_S)
+
+        self.logger.info(
+            f"[PWC-TCP] {total_launched} workers launched across all rigs — "
+            f"waiting up to 180s for connections"
+        )
 
     def _ensure_worker_alive(self, handle: WorkerHandle) -> bool:
         """Check worker still alive; respawn if dead."""
@@ -757,8 +868,8 @@ class PersistentWorkerCoordinator:
         if self._tcp_transport is not None:
             _wait_start = time.time()
             while self._tcp_transport.worker_count() == 0:
-                if time.time() - _wait_start > 60.0:
-                    self.logger.error("[PWC-TCP] No workers connected after 60s — aborting")
+                if time.time() - _wait_start > 180.0:
+                    self.logger.error("[PWC-TCP] No workers connected after 180s — aborting")
                     return {"status": "error", "survivor_count": 0,
                             "survivors": [], "failed_chunks": 1, "total_chunks": 1}
                 time.sleep(0.5)
@@ -1317,12 +1428,13 @@ if __name__ == "__main__":
     # Minimal smoke test sieve pass
     residues = [0, 1, 2, 3, 4, 5, 6, 7]   # placeholder
     result = pwc.run_sieve_pass(
-        prng_type   = args.prng_type,
-        residues    = residues,
-        total_seeds = args.total_seeds,
-        threshold   = 0.30,
-        window_size = 8,
-        output_file = "/tmp/pwc_smoke_test.json",
+        prng_type    = args.prng_type,
+        residues     = residues,
+        total_seeds  = args.total_seeds,
+        threshold    = 0.30,
+        window_size  = 8,
+        dataset_path = "daily3.json",
+        output_file  = "/tmp/pwc_smoke_test.json",
     )
     print(f"\nSmoke test result: {result.get('survivor_count', 0)} survivors")
     pwc.shutdown()
