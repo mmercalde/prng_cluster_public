@@ -109,3 +109,6 @@ optuna_studies/
 optimal_window_config.json
 watcher_decisions.jsonl
 zmq_chunk_payloads/
+*.ckpt.tmp.npz
+*.flush.tmp.npz
+zmq_job_queue.db.stale_*
