@@ -83,15 +83,33 @@ class PWCWorkerService:
         self._setup_env()
         self._import_sieve()
 
+        # S161: terminal reconnect policy (TB Gate 1 ruling)
+        # After a successful session, exit cleanly on repeated ECONNREFUSED
+        # instead of reconnecting forever. Prevents stale-process storms at scale.
+        _had_session  = False
+        _refused_count = 0
+        _MAX_REFUSED  = 5  # exit after 5 consecutive refusals post-session
+
         while True:
             try:
                 self._connect()
                 log.info(f"[{self.worker_id}] connected to {self.host}:{self.port}")
+                _refused_count = 0  # reset on successful connect
                 self._main_loop()
+                _had_session = True  # mark session complete after main_loop returns
             except KeyboardInterrupt:
                 log.info(f"[{self.worker_id}] interrupted")
                 break
             except (ConnectionError, OSError) as exc:
+                err_str = str(exc)
+                if _had_session and "Connection refused" in err_str:
+                    _refused_count += 1
+                    if _refused_count >= _MAX_REFUSED:
+                        log.info(
+                            f"[{self.worker_id}] coordinator gone after session "
+                            f"({_refused_count} refused) — exiting cleanly"
+                        )
+                        break
                 log.warning(
                     f"[{self.worker_id}] transport error: {exc} "
                     f"— reconnecting in {RECONNECT_DELAY_S}s"
@@ -259,6 +277,16 @@ class PWCWorkerService:
                 self.jobs_error += 1
 
             self._send_result(payload, result, job_id, lease_id, attempt)
+
+            # S162: best-effort GPU cleanup between chunks — prevents memory
+            # accumulation crash (page fault → qcm timeout → rig reboot).
+            # Same fix as S160 ZMQ worker. Placement: after result delivery,
+            # before next job fetch so cleanup never delays or suppresses results.
+            try:
+                from sieve_filter import _best_effort_gpu_cleanup
+                _best_effort_gpu_cleanup()
+            except Exception as _cleanup_exc:
+                log.debug(f"[{self.worker_id}] GPU cleanup skipped: {_cleanup_exc}")
 
     # ------------------------------------------------------------------
     # Heartbeat — TB blocker E fix
