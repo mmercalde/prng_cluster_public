@@ -425,6 +425,22 @@ def run_worker(gpu_id: int):
         cp.get_default_memory_pool().set_limit(_pool_bytes)   # cap BEFORE first alloc
         _ = cp.zeros(1, dtype=cp.float32)                     # warmup, now bounded
         cp.cuda.Device(0).synchronize()
+        # [S162-WARMUP] Pre-compile all PRNG kernel binaries at startup.
+        # Prevents SQC (inst) page fault on rrig6600c caused by 8 workers
+        # simultaneously cold-compiling java_lcg_hybrid_reverse kernel when
+        # the first reverse sieve job arrives. Force compile now while idle.
+        try:
+            _families = list_available_prngs()
+            _log(f"Pre-compiling {len(_families)} PRNG kernels...")
+            for _fam in _families:
+                try:
+                    _get_kernel(_fam)
+                except Exception as _ke:
+                    _log(f"  [WARN] kernel pre-compile skipped for {_fam}: {_ke}")
+            cp.cuda.Device(0).synchronize()
+            _log("All PRNG kernels pre-compiled and cached.")
+        except Exception as _we:
+            _log(f"[WARN] kernel pre-warm failed (non-fatal): {_we}")
 
     # Startup diagnostics — proves the cap is live and VM is sane (TB S155)
     # VmSize logged because the crash signature was total-vm:41452828kB (virtual
