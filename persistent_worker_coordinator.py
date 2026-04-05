@@ -497,13 +497,19 @@ class PersistentWorkerCoordinator:
                         user + "@" + host]
             activate_path = node.python_env.replace("/bin/python", "/bin/activate")
 
-            # Step 1: Kill stale pwc_worker_service processes
+            # Step 1: Kill stale pwc_worker_service AND sieve_gpu_worker processes
+            # S162: sieve_gpu_worker reap added — same fix as S156 SSH-PWC bandaid.
+            # Stale sieve_gpu_worker processes accumulate PageTables → crash.
             try:
                 _sp.run(
-                    ssh_base + ["pkill -9 -f pwc_worker_service 2>/dev/null; echo killed"],
-                    capture_output=True, timeout=10
+                    ssh_base + [
+                        "pkill -9 -f pwc_worker_service 2>/dev/null; "
+                        "pkill -9 -f sieve_gpu_worker 2>/dev/null; "
+                        "sleep 2; echo killed"
+                    ],
+                    capture_output=True, timeout=15
                 )
-                self.logger.info("[PWC-TCP] " + host + ": stale workers killed")
+                self.logger.info("[PWC-TCP] " + host + ": stale workers killed (pwc + sieve_gpu)")
             except Exception as e:
                 self.logger.warning("[PWC-TCP] " + host + ": kill failed: " + str(e))
 
