@@ -538,6 +538,8 @@ def run_bayesian_optimization(
     trse_context_file: str = 'trse_context.json',  # S121 Step 0 context
     use_persistent_workers: bool = False,   # S134
     use_zmq_sqlite: bool = False,            # S158D
+    pwc_transport: str = 'tcp',            # S162 TCP-PWC default
+    pwc_min_workers: int = 24,             # S162 readiness gate
     worker_pool_size: int = 8,             # S134
     seed_cap_nvidia: int = 5_000_000,      # S137
     seed_cap_amd: int = 2_000_000,         # S137
@@ -604,6 +606,8 @@ def run_bayesian_optimization(
     # S134: wire persistent worker flags onto coordinator so integration gate can read them
     coordinator.use_persistent_workers = use_persistent_workers
     coordinator.use_zmq_sqlite = use_zmq_sqlite
+    coordinator.pwc_transport   = pwc_transport    # S162
+    coordinator.pwc_min_workers = pwc_min_workers  # S162
     if use_zmq_sqlite:
         print(f"   [S158D] ZMQ-SQLite coordinator ENABLED")
     coordinator.worker_pool_size        = worker_pool_size
@@ -1036,6 +1040,12 @@ def main():
                             'Workers stay alive across all 4 sieve passes per trial.')
     parser.add_argument('--use-zmq-sqlite', action='store_true', default=False,
                         help='Use ZMQ+SQLite coordinator (S158D — no persistent SSH pipes)')
+    parser.add_argument('--pwc-transport', default='tcp',
+                       help='[S162] PWC transport: ssh | tcp. tcp=10x faster, '
+                            '26-GPU validated at 2.24M sps. (default: tcp)')
+    parser.add_argument('--min-workers', type=int, default=24,
+                       help='[S162] Minimum workers reaching ready state before dispatch. '
+                            'Default 24 = full 3-rig AMD cluster.')
     parser.add_argument('--worker-pool-size', type=int, default=8,
                        help='[S134] Number of persistent workers to spawn per rig (default: 8).')
     parser.add_argument('--seed-cap-nvidia', type=int, default=5_000_000,
@@ -1072,6 +1082,8 @@ def main():
             trse_context_file=getattr(args, 'trse_context', 'trse_context.json'),
             use_persistent_workers=getattr(args, 'use_persistent_workers', False),  # S134
             use_zmq_sqlite=getattr(args, 'use_zmq_sqlite', False),                      # S158D
+            pwc_transport=getattr(args, 'pwc_transport', 'tcp'),                    # S162
+            pwc_min_workers=getattr(args, 'min_workers', 24),                       # S162
             worker_pool_size=getattr(args, 'worker_pool_size', 8),                  # S134
             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),            # S137
             seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),                  # S137

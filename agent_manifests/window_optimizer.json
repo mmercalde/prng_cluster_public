@@ -189,24 +189,6 @@
       "default": 0,
       "description": "[S140] Starting seed for search range. Set automatically by WATCHER coverage tracker to advance into unexplored seed space. Manual override allowed.",
       "optimized_by": "WATCHER"
-    },
-    "pwc_transport": {
-      "type": "choice",
-      "choices": [
-        "ssh",
-        "tcp"
-      ],
-      "default": "tcp",
-      "description": "[S162] PWC transport mode. tcp = 10x faster than ssh-PWC, 2.8x faster than ZMQ. 26-GPU validated at 2,240,701 aggregate sps (S161).",
-      "optimized_by": "Fixed"
-    },
-    "min_workers": {
-      "type": "int",
-      "min": 1,
-      "max": 26,
-      "default": 24,
-      "description": "[S162] Minimum workers that must reach READY state before job dispatch. 24 = all 3 AMD rigs. Reduce for partial-cluster testing.",
-      "optimized_by": "Manual"
     }
   },
   "success_metrics": {
