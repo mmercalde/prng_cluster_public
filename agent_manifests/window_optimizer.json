@@ -39,7 +39,9 @@
         "seed-cap-nvidia": "seed_cap_nvidia",
         "seed-cap-amd": "seed_cap_amd",
         "seed-start": "seed_start",
-        "use-zmq-sqlite": "use_zmq_sqlite"
+        "use-zmq-sqlite": "use_zmq_sqlite",
+        "pwc-transport": "pwc_transport",
+        "min-workers": "min_workers"
       },
       "distributed": true,
       "timeout_minutes": 1440
@@ -187,6 +189,24 @@
       "default": 0,
       "description": "[S140] Starting seed for search range. Set automatically by WATCHER coverage tracker to advance into unexplored seed space. Manual override allowed.",
       "optimized_by": "WATCHER"
+    },
+    "pwc_transport": {
+      "type": "choice",
+      "choices": [
+        "ssh",
+        "tcp"
+      ],
+      "default": "tcp",
+      "description": "[S162] PWC transport mode. tcp = 10x faster than ssh-PWC, 2.8x faster than ZMQ. 26-GPU validated at 2,240,701 aggregate sps (S161).",
+      "optimized_by": "Fixed"
+    },
+    "min_workers": {
+      "type": "int",
+      "min": 1,
+      "max": 26,
+      "default": 24,
+      "description": "[S162] Minimum workers that must reach READY state before job dispatch. 24 = all 3 AMD rigs. Reduce for partial-cluster testing.",
+      "optimized_by": "Manual"
     }
   },
   "success_metrics": {
@@ -208,12 +228,14 @@
     "trse_context": "trse_context.json",
     "enable_pruning": true,
     "n_parallel": 1,
-    "use_persistent_workers": false,
+    "use_persistent_workers": true,
     "worker_pool_size": 8,
     "seed_cap_nvidia": 5000000,
     "seed_cap_amd": 2000000,
     "seed_start": 0,
-    "use_zmq_sqlite": true
+    "use_zmq_sqlite": false,
+    "pwc_transport": "tcp",
+    "min_workers": 24
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
