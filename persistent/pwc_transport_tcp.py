@@ -152,6 +152,13 @@ class TCPWorkerTransport(PWCTransportBase):
         self._accept_thread: Optional[threading.Thread] = None
         self._lease_thread: Optional[threading.Thread] = None
 
+        # S162: Dispatch semaphore — limits concurrent job payload sends to 8.
+        # Prevents 24 simultaneous conn.send_obj() calls from flooding Zeus's
+        # 1GbE NIC (Intel I210) when all workers request jobs at the same time.
+        # Value=8 = one rig's worth of workers — allows full rig parallelism
+        # while preventing cross-rig NIC saturation.
+        self._dispatch_semaphore = threading.Semaphore(8)
+
     def start(self) -> None:
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -446,16 +453,20 @@ class TCPWorkerTransport(PWCTransportBase):
                         continue
 
                     lease_id = self._lease_job(job, worker_id)
-                    conn.send_obj({
-                        "message_type":     "job_assign",
-                        "protocol_version": 1,
-                        "worker_id":        "coordinator",
-                        "timestamp":        time.time(),
-                        "job_id":           job["job_id"],
-                        "lease_id":         lease_id,
-                        "attempt":          job.get("attempt", 0),
-                        "payload":          job,
-                    })
+                    # S162: Semaphore limits concurrent job sends to 8 at a time.
+                    # Prevents NIC flood on Zeus's 1GbE (Intel I210) when all
+                    # 24 workers request jobs simultaneously.
+                    with self._dispatch_semaphore:
+                        conn.send_obj({
+                            "message_type":     "job_assign",
+                            "protocol_version": 1,
+                            "worker_id":        "coordinator",
+                            "timestamp":        time.time(),
+                            "job_id":           job["job_id"],
+                            "lease_id":         lease_id,
+                            "attempt":          job.get("attempt", 0),
+                            "payload":          job,
+                        })
 
                 elif mtype in ("result_inline", "result_spooled"):
                     # Complete lease before normalizing
