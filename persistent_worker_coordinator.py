@@ -119,6 +119,12 @@ ROCM_ENV_VARS = [
     "CUPY_GPU_MEMORY_LIMIT=268435456",
     "HSA_OVERRIDE_GFX_VERSION=10.3.0",
     "HSA_ENABLE_SDMA=0",
+    # [S162] Disable scratch memory reclaim on ALL AMD rigs.
+    # Prevents ROCr async scratch reclaim from invalidating GPU VA mappings
+    # (including instruction cache pages) while another worker is executing.
+    # Root cause of SQC (inst) PERMISSION_FAULTS:0x3 RW:0x0 page faults
+    # under full 3-rig concurrency. Stronger than HSA_ENABLE_SCRATCH_ASYNC_RECLAIM=0.
+    "HSA_NO_SCRATCH_RECLAIM=1",
     "ROCM_PATH=/opt/rocm",
     "HIP_PATH=/opt/rocm/hip",
     "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
@@ -524,14 +530,7 @@ class PersistentWorkerCoordinator:
                 # HSA_ENABLE_SCRATCH_ASYNC_RECLAIM=0 on rrig6600c only.
                 # Option B (AMD_SERIALIZE_KERNEL=3) ruled out async overlap.
                 # Now testing ROCr scratch reclaim as crash trigger.
-                _exp1_vars = []
-                if host == "192.168.3.162":
-                    _exp1_vars = ["HSA_ENABLE_SCRATCH_ASYNC_RECLAIM=0"]
-                    self.logger.info(
-                        "[PWC-TCP] [S162-EXP1] 192.168.3.162: "
-                        "HSA_ENABLE_SCRATCH_ASYNC_RECLAIM=0 active (TB Exp 1)"
-                    )
-                rocm_env = " ".join(ROCM_ENV_VARS + _exp1_vars + [
+                rocm_env = " ".join(ROCM_ENV_VARS + [
                     f"ROCR_VISIBLE_DEVICES={gpu_id}",
                     f"CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_{gpu_id}",
                 ])
