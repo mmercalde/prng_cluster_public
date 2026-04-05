@@ -422,11 +422,6 @@ def run_worker(gpu_id: int):
     # [S155-ROCR] ROCR_VISIBLE_DEVICES remaps assigned GPU to device 0.
     _log(f"Warming up GPU {gpu_id} (physical, appears as device 0 via ROCR)...")
     with cp.cuda.Device(0):
-        # [S162-NOPOOL] Disable CuPy memory pool — forces raw hipMalloc/hipFree
-        # per allocation. Diagnostic test for stale TLB / SQC (inst) page faults.
-        # If faults stop → pool recycling is the culprit. Slower but stable.
-        cp.cuda.set_allocator(None)
-        cp.cuda.set_pinned_memory_allocator(None)
         cp.get_default_memory_pool().set_limit(_pool_bytes)   # cap BEFORE first alloc
         _ = cp.zeros(1, dtype=cp.float32)                     # warmup, now bounded
         cp.cuda.Device(0).synchronize()
