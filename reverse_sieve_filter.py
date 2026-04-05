@@ -150,10 +150,22 @@ class GPUReverseSieve:
                           offset: int = 0) -> Dict[str, Any]:
         start_time = time.time()
         with self.device:
+            # [WARMUP] Initialize GPU context before kernel launch to prevent
+            # SQC (inst) instruction fetch faults on cold kernel compilation
+            _ = cp.zeros(1, dtype=cp.float32)
+            cp.cuda.Stream.null.synchronize()
+
             seeds_array = [c["seed"] if isinstance(c, dict) else c for c in candidate_seeds]
             skips_array = [c.get("skip", 0) if isinstance(c, dict) else 0 for c in candidate_seeds]
             n_candidates = len(candidate_seeds)
             k = len(draws)
+
+            # [VRAM INSTRUMENTATION]
+            free_before, total_vram = cp.cuda.runtime.memGetInfo()
+            mempool = cp.get_default_memory_pool()
+            print(f"[VRAM] GPU{self.gpu_id} BEFORE alloc: n_candidates={n_candidates} "
+                  f"free={free_before/1024**2:.1f}MB total={total_vram/1024**2:.1f}MB "
+                  f"pool_used={mempool.used_bytes()/1024**2:.1f}MB", file=sys.stderr, flush=True)
 
             candidate_seeds_gpu = cp.array(seeds_array, dtype=cp.uint32)
             candidate_skips_gpu = cp.array(skips_array, dtype=cp.uint8)
@@ -162,6 +174,12 @@ class GPUReverseSieve:
             match_rates = cp.zeros(n_candidates, dtype=cp.float32)
             used_skips = cp.zeros(n_candidates, dtype=cp.uint8)
             survivor_count = cp.zeros(1, dtype=cp.uint32)
+
+            free_after, _ = cp.cuda.runtime.memGetInfo()
+            print(f"[VRAM] GPU{self.gpu_id} AFTER alloc: "
+                  f"free={free_after/1024**2:.1f}MB "
+                  f"allocated={(free_before-free_after)/1024**2:.1f}MB "
+                  f"pool_used={mempool.used_bytes()/1024**2:.1f}MB", file=sys.stderr, flush=True)
 
             kernel, config = self._get_kernel(prng_family)
             threads_per_block = 256
