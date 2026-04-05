@@ -119,12 +119,7 @@ ROCM_ENV_VARS = [
     "CUPY_GPU_MEMORY_LIMIT=268435456",
     "HSA_OVERRIDE_GFX_VERSION=10.3.0",
     "HSA_ENABLE_SDMA=0",
-    # [S162] Disable scratch memory reclaim on ALL AMD rigs.
-    # Prevents ROCr async scratch reclaim from invalidating GPU VA mappings
-    # (including instruction cache pages) while another worker is executing.
-    # Root cause of SQC (inst) PERMISSION_FAULTS:0x3 RW:0x0 page faults
-    # under full 3-rig concurrency. Stronger than HSA_ENABLE_SCRATCH_ASYNC_RECLAIM=0.
-    "HSA_NO_SCRATCH_RECLAIM=1",
+
     "ROCM_PATH=/opt/rocm",
     "HIP_PATH=/opt/rocm/hip",
     "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
