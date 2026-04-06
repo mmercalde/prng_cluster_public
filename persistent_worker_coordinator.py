@@ -119,7 +119,6 @@ ROCM_ENV_VARS = [
     "CUPY_GPU_MEMORY_LIMIT=268435456",
     "HSA_OVERRIDE_GFX_VERSION=10.3.0",
     "HSA_ENABLE_SDMA=0",
-
     "ROCM_PATH=/opt/rocm",
     "HIP_PATH=/opt/rocm/hip",
     "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
@@ -517,14 +516,6 @@ class PersistentWorkerCoordinator:
             # Step 2: Launch one worker per GPU via temp bash script
 
             for gpu_id in range(pool):
-                # S162 Option B (TB-approved diagnostic): AMD_SERIALIZE_KERNEL=3
-                # AMD_SERIALIZE_COPY=3 forces synchronous GPU execution on rrig6600c
-                # only. Diagnostic for 3-rig concurrency-triggered SQC fault.
-                # TB ruling: "not a permanent production setting."
-                # S162-EXP1 (TB-directed): Replaces Option B diagnostic.
-                # HSA_ENABLE_SCRATCH_ASYNC_RECLAIM=0 on rrig6600c only.
-                # Option B (AMD_SERIALIZE_KERNEL=3) ruled out async overlap.
-                # Now testing ROCr scratch reclaim as crash trigger.
                 rocm_env = " ".join(ROCM_ENV_VARS + [
                     f"ROCR_VISIBLE_DEVICES={gpu_id}",
                     f"CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_{gpu_id}",
@@ -541,9 +532,6 @@ class PersistentWorkerCoordinator:
                     "cd " + node.script_path,
                 ]
                 for var in ROCM_ENV_VARS:
-                    script_lines.append("export " + var)
-                # S162-EXP1: export scratch reclaim disable for rrig6600c
-                for var in _exp1_vars:
                     script_lines.append("export " + var)
                 script_lines += [
                     "export ROCR_VISIBLE_DEVICES=" + str(gpu_id),

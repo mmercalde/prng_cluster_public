@@ -16,7 +16,7 @@
       "gpu_type": "RX 6600",
       "script_path": "/home/michael/distributed_prng_analysis",
       "python_env": "/home/michael/rocm_env/bin/python",
-      "max_concurrent_script_jobs": 0,
+      "max_concurrent_script_jobs": 8,
       "use_ramdisk": true,
       "ramdisk_path": "/dev/shm/prng"
     },
