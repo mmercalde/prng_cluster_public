@@ -75,9 +75,64 @@ except ImportError:
 # ============================================================================
 # GPU CLEANUP
 # ============================================================================
-def _best_effort_gpu_cleanup():
+
+# S163 — sampling-gated memory instrumentation (active when S163_MEM_DEBUG=1)
+_S163_CHUNK_COUNTER = 0
+_S163_RSS_BASELINE  = None
+_S163_SAMPLE_EVERY  = 25    # log every 25 chunks
+_S163_RSS_WARN_MB   = 200   # alert if RSS grows >200MB from baseline
+_S163_POOL_WARN_MB  = 256   # alert if pool exceeds cap
+
+def _s163_read_proc(pid):
+    """Read VmRSS and VmSize from /proc/PID/status. Returns (rss_mb, vmsize_mb)."""
     try:
-        import gc; gc.collect()
+        status = open(f'/proc/{pid}/status').read()
+        rss_kb    = int(status.split('VmRSS:')[1].split()[0])
+        vmsize_kb = int(status.split('VmSize:')[1].split()[0])
+        return rss_kb // 1024, vmsize_kb // 1024
+    except Exception:
+        return 0, 0
+
+def _best_effort_gpu_cleanup():
+    global _S163_CHUNK_COUNTER, _S163_RSS_BASELINE
+    import os, gc
+    _S163_CHUNK_COUNTER += 1
+    n = _S163_CHUNK_COUNTER
+    should_log = False
+
+    # ── S163 instrumentation — gated, sampled every N chunks ─────────────
+    if os.environ.get('S163_MEM_DEBUG', '0') == '1':
+        try:
+            pool         = cp.get_default_memory_pool()
+            used_before  = pool.used_bytes()  / 1024**2
+            total_before = pool.total_bytes() / 1024**2
+            free_before  = pool.n_free_blocks()
+            rss, vmsize  = _s163_read_proc(os.getpid())
+
+            if _S163_RSS_BASELINE is None:
+                _S163_RSS_BASELINE = rss
+
+            rss_delta        = rss - _S163_RSS_BASELINE
+            threshold_breach = (total_before > _S163_POOL_WARN_MB or
+                                rss_delta    > _S163_RSS_WARN_MB)
+            should_log       = (n <= 3 or n % _S163_SAMPLE_EVERY == 0 or threshold_breach)
+
+            if should_log:
+                tag = "WARN" if threshold_breach else "INFO"
+                print(
+                    f"[S163-MEM/{tag}] chunk={n} "
+                    f"pool_used_before={used_before:.1f}MB "
+                    f"pool_total_before={total_before:.1f}MB "
+                    f"free_blocks={free_before} "
+                    f"VmRSS={rss}MB VmSize={vmsize}MB rss_delta={rss_delta:+d}MB",
+                    flush=True
+                )
+        except Exception:
+            pass
+
+    # ── actual cleanup ────────────────────────────────────────────────────
+    try:
+        gc.collect()
     except Exception:
         pass
     try:
@@ -87,11 +142,29 @@ def _best_effort_gpu_cleanup():
             torch.cuda.empty_cache()
     except Exception:
         pass
-    try:
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-    except Exception:
-        pass
+
+    # [S163] free_all_blocks() REMOVED — redundant since S155 pool cap (256MB).
+    # S155 cap prevents VM bloat without requiring explicit pool release.
+    # free_all_blocks() under concurrent multi-process load causes race condition
+    # (CuPy issue #4866 — cudaErrorIllegalAddress). Removed as both redundant
+    # and dangerous. Pool cap is the correct mechanism for memory control.
+
+    # ── S163 post-cleanup instrumentation ────────────────────────────────
+    if os.environ.get('S163_MEM_DEBUG', '0') == '1' and should_log:
+        try:
+            pool       = cp.get_default_memory_pool()
+            used_after  = pool.used_bytes()  / 1024**2
+            total_after = pool.total_bytes() / 1024**2
+            free_after  = pool.n_free_blocks()
+            print(
+                f"[S163-MEM/AFTER] chunk={n} "
+                f"pool_used_after={used_after:.1f}MB "
+                f"pool_total_after={total_after:.1f}MB "
+                f"free_blocks_after={free_after}",
+                flush=True
+            )
+        except Exception:
+            pass
 
 
 # ============================================================================
