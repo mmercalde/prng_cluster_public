@@ -197,8 +197,14 @@ class PersistentWorkerCoordinator:
         self.workers: List[WorkerHandle] = []   # AMD rig workers (persistent)
         self._lock = threading.Lock()
         self._started = False
-        # Mirror coordinator.py: semaphore limits Zeus concurrent local jobs (2 GPUs)
-        self._localhost_semaphore = threading.Semaphore(2)
+        # [S163] Zeus local GPU slot pool — bind GPU by acquired slot, not chunk index.
+        # Chunk index (idx % gpu_count) is NOT a safe proxy for live GPU ownership under
+        # concurrent local dispatch — two simultaneous jobs can map to the same gpu_id.
+        # Use a Queue of available GPU IDs so each acquired slot carries its own GPU binding.
+        import queue as _queue
+        self._localhost_gpu_slots: "_queue.Queue[int]" = _queue.Queue()
+        for _gpu_id in range(2):  # Zeus has 2 GPUs
+            self._localhost_gpu_slots.put(_gpu_id)
         # Per-node semaphores — throttle concurrent dispatch to max_per_node (S133-A lesson)
         self._node_semaphores: Dict[str, threading.Semaphore] = {}
         # [S151] Per-node respawn locks — serialize respawns with stagger to prevent SSH hammer
@@ -1041,13 +1047,20 @@ class PersistentWorkerCoordinator:
                     job["gpu_id"] = wh.gpu_id
                     return self._dispatch_to_worker(wh, job)
                 else:
-                    # Mirror coordinator.py: semaphore limits Zeus to 2 concurrent local jobs
-                    job["gpu_id"] = idx % wh.gpu_count
-                    self._localhost_semaphore.acquire()
+                    # [S163] Slot-based GPU binding — acquire a specific GPU slot from the
+                    # pool. GPU ID comes from the slot, not from chunk index. This ensures
+                    # two concurrent Zeus local subprocesses always get distinct gpu_ids and
+                    # thus distinct CUDA_VISIBLE_DEVICES. chunk index is not a safe proxy.
+                    local_gpu_id = self._localhost_gpu_slots.get(block=True)
+                    job["gpu_id"] = local_gpu_id
+                    self.logger.info(
+                        f"[S163-ZEUS] chunk={idx} gpu_slot={local_gpu_id} "
+                        f"CUDA_VISIBLE_DEVICES={local_gpu_id}"
+                    )
                     try:
                         return self._dispatch_local_sieve(job, wh)
                     finally:
-                        self._localhost_semaphore.release()
+                        self._localhost_gpu_slots.put(local_gpu_id)
 
             t0 = time.time()
             res = _run_once(worker_handle_or_node)

@@ -59,7 +59,6 @@ def convert_json_to_npz(input_file: str, output_file: str, meta_file: str) -> di
     if n == 0:
         print("⚠️  No survivors — skipping NPZ conversion (empty input is valid)")
         # Write empty NPZ so downstream steps don't fail on missing file
-        import numpy as np
         out_path = Path(output_file)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(str(out_path), seeds=np.array([], dtype=np.uint32))
