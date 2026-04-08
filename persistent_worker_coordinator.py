@@ -1368,6 +1368,24 @@ def run_trial_persistent(coordinator_cfg: str,
         ws  = config.window_size
         off = config.offset
 
+        # [S163] Announce trial start to dashboard immediately — always show
+        # trial number regardless of survivor count
+        if pwc._progress_writer:
+            try:
+                pwc._progress_writer.update_trial_stats(
+                    trial_num=trial_number,
+                    forward_survivors=0,
+                    reverse_survivors=0,
+                    bidirectional=0,
+                    best_bidirectional=0,
+                    config_desc=f"W{ws}_O{off}",
+                    accumulated_forward=0,
+                    accumulated_reverse=0,
+                    accumulated_bidirectional=0,
+                )
+            except Exception:
+                pass
+
         # ── Pass 1: Forward constant skip ────────────────────────────────────
         print(f"\n    Running FORWARD sieve ({prng_base}) [CONSTANT SKIP] [PERSISTENT]...")
         fwd_result = pwc.run_sieve_pass(
