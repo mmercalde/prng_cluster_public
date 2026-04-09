@@ -119,14 +119,17 @@ def _best_effort_gpu_cleanup():
         gc.collect()
     except Exception:
         pass
-    # 2. PyTorch/ROCm cache clear
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+    # 2. PyTorch/ROCm cache clear — only under debug flag to avoid blocking
+    # Zeus CUDA path on every chunk. torch.cuda.synchronize() is a blocking
+    # call that serializes the GPU — unconditional use tanks Zeus throughput.
+    if os.environ.get('S163_MEM_DEBUG', '0') == '1':
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     # [S163] free_all_blocks() REMOVED — redundant since S155 pool cap (256MB).
     # S155 cap prevents VM bloat without requiring explicit pool release.
