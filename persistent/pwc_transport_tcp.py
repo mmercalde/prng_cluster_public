@@ -29,7 +29,7 @@ from persistent.pwc_result_normalizer import normalize_transport_result
 
 
 # Reclaim inflight jobs if worker heartbeat silent for this long
-HEARTBEAT_TIMEOUT_S = 60.0
+HEARTBEAT_TIMEOUT_S = 300.0
 # How often coordinator checks for expired leases
 LEASE_CHECK_INTERVAL_S = 10.0
 # Max job attempts before abandoning
