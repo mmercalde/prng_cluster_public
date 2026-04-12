@@ -355,6 +355,7 @@ def run_bidirectional_test(coordinator,
             worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
             seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
             seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+        pwc_transport     = getattr(coordinator, 'pwc_transport', 'tcp'),
         )
         if _pw_result.get("pruned"):
             # Return minimal pruned TestResult — only fields TestResult accepts
