@@ -401,12 +401,6 @@ class TCPWorkerTransport(PWCTransportBase):
             with self._last_seen_lock:
                 self._last_seen[worker_id] = time.time()
 
-            # S163: worker uses single-phase protocol (hello->request_job, no online/ready msgs)
-            # Count as online AND ready immediately after handshake.
-            with self._state_lock:
-                self._online_workers.add(worker_id)
-                self._ready_workers.add(worker_id)
-
             # S161 v2: if init already broadcast, send it immediately (late joiner)
             with self._state_lock:
                 _init_already_sent = self._init_sent
