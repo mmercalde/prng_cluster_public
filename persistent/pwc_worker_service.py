@@ -217,6 +217,8 @@ class PWCWorkerService:
             raise ConnectionError(
                 f"coordinator rejected hello: {ack.get('reason')}"
             )
+        # S163: remove connect timeout — recv_obj must block for init (up to 120s)
+        sock.settimeout(None)
         log.info(f"[{self.worker_id}] handshake complete")
 
     def _close(self) -> None:
