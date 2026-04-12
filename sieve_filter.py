@@ -54,6 +54,20 @@ try:
 except ImportError:
     print("ERROR: CuPy not available - GPU required for sieve", file=sys.stderr)
     sys.exit(1)
+
+# [S163-TCP] Enforce CuPy pool limit in TCP-PWC path.
+# sieve_gpu_worker.py sets set_limit() inside Device context, but TCP-PWC
+# workers import sieve_filter directly — that path never ran set_limit().
+# CUPY_GPU_MEMORY_LIMIT env var caps pool at init, but set_limit() reinforces
+# it per-device after device context is live. We set it at module import time
+# so it's active before the first execute_sieve_job() call.
+# Reads PRNG_CUPY_POOL_LIMIT_MB (default 256MB) — same var as sieve_gpu_worker.
+try:
+    _pool_limit_mb = int(os.environ.get("PRNG_CUPY_POOL_LIMIT_MB", "256"))
+    cp.get_default_memory_pool().set_limit(_pool_limit_mb * 1024 * 1024)
+except Exception:
+    pass  # non-fatal — env var limit still active
+
 import numpy as np
 
 # S163 — sampling-gated memory instrumentation (active when S163_MEM_DEBUG=1)
