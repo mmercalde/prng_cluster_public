@@ -542,6 +542,8 @@ class PersistentWorkerCoordinator:
                 script_lines += [
                     "export ROCR_VISIBLE_DEVICES=" + str(gpu_id),
                     "export CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_" + str(gpu_id),
+                    "export PWC_GPU_ID=" + str(gpu_id),
+                    "export PWC_WORKER_ID=" + worker_id,
                     "export PYTHONPATH=.",
                     (
                         "nohup " + node.python_env + " -m persistent.pwc_worker_service "
@@ -592,7 +594,7 @@ class PersistentWorkerCoordinator:
         )
         # S161 v2: three-phase startup
         # Phase 1: wait for all workers to come online (fast TCP connect)
-        _online = self._tcp_wait_online(expected=total_launched, timeout_s=30.0)
+        _online = self._tcp_wait_online(expected=total_launched, timeout_s=60.0)
         # Phase 2: broadcast init to all online workers (parallel ROCm warmup)
         self._tcp_broadcast_init()
         # Phase 3: wait for workers to become compute-ready
@@ -609,14 +611,14 @@ class PersistentWorkerCoordinator:
         """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            count = self._tcp_transport.online_count()
+            count = self._tcp_transport.worker_count()
             if count >= expected:
                 self.logger.info(
                     f"[PWC-TCP] all {count}/{expected} workers online — proceeding to init"
                 )
                 return count
             time.sleep(0.5)
-        count = self._tcp_transport.online_count()
+        count = self._tcp_transport.worker_count()
         self.logger.warning(
             f"[PWC-TCP] online timeout: {count}/{expected} workers online after {timeout_s:.0f}s"
         )
