@@ -1,17 +1,11 @@
 """
 persistent/pwc_worker_service.py
 ==================================
-PWC Transport Adapter v1 — TCP worker daemon.
-TB-approved S159G proposal. Team Alpha implementation.
+PWC Transport Adapter v2 — TCP worker daemon.
+S161 two-phase startup: online → init → ready (lazy ROCm import).
 
-TB Gate 1 requirements:
-  - inline-only results (spool disabled for v1)
-  - no prefetch until lease/reclaim proven
-  - heartbeat every N seconds during long jobs
-  - auto-reconnect on disconnect
-  - ROCm env vars set before any GPU imports
-
-IMPORTANT: reuses EXACT same execute_sieve_job as existing PWC fast path.
+Protocol:
+  LAUNCH → CONNECT → send online → wait for init → import sieve → send ready → job loop
 """
 from __future__ import annotations
 
@@ -37,20 +31,16 @@ logging.basicConfig(
 
 RECONNECT_DELAY_S     = 2.0
 JOB_REQUEST_INTERVAL_S = 0.5
-HEARTBEAT_INTERVAL_S  = 15.0   # emit heartbeat every 15s during long jobs
+HEARTBEAT_INTERVAL_S  = 15.0
+INLINE_MAX_BYTES = 32 * 1024 * 1024
 
-# v1: Force inline only — spool disabled until coordinator-side
-# file transfer is implemented for cross-machine payloads (TB blocker B)
-INLINE_MAX_BYTES = 32 * 1024 * 1024  # 32 MB Gate 1 — headroom below 64 MB framed-socket cap
+ROCM_READY_TIMEOUT_S = 120.0  # max time to wait for sieve_filter import
 
 
 class PWCWorkerService:
     """
     TCP worker daemon. One instance per GPU.
-    Connects to Zeus, pulls jobs, pushes results.
-    Auto-reconnects on disconnect.
-
-    TB Gate 1: no prefetch, inline only, heartbeat active.
+    S161 v2: two-phase startup — connect fast, import ROCm lazily after init.
     """
 
     def __init__(
@@ -73,7 +63,7 @@ class PWCWorkerService:
         self._conn: Optional[FramedSocket] = None
         self._sock: Optional[socket.socket] = None
         self._execute_sieve_job = None
-        self._current_job_id: Optional[str] = None  # for heartbeat
+        self._current_job_id: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Entry point
@@ -81,22 +71,26 @@ class PWCWorkerService:
 
     def run_forever(self) -> None:
         self._setup_env()
-        self._import_sieve()
+        # S161 v2: NO sieve import here — lazy import after coordinator sends init
 
-        # S161: terminal reconnect policy (TB Gate 1 ruling)
-        # After a successful session, exit cleanly on repeated ECONNREFUSED
-        # instead of reconnecting forever. Prevents stale-process storms at scale.
         _had_session  = False
         _refused_count = 0
-        _MAX_REFUSED  = 5  # exit after 5 consecutive refusals post-session
+        _MAX_REFUSED  = 5
 
         while True:
             try:
                 self._connect()
                 log.info(f"[{self.worker_id}] connected to {self.host}:{self.port}")
-                _refused_count = 0  # reset on successful connect
+                _refused_count = 0
+
+                # S161 v2: two-phase startup
+                self._send_online()
+                self._wait_for_init()
+                self._import_sieve()
+                self._send_ready()
+
                 self._main_loop()
-                _had_session = True  # mark session complete after main_loop returns
+                _had_session = True
             except KeyboardInterrupt:
                 log.info(f"[{self.worker_id}] interrupted")
                 break
@@ -124,11 +118,49 @@ class PWCWorkerService:
                 time.sleep(RECONNECT_DELAY_S)
 
     # ------------------------------------------------------------------
+    # Two-phase startup
+    # ------------------------------------------------------------------
+
+    def _send_online(self) -> None:
+        """S161 v2: notify coordinator we are TCP-connected (not yet compute-ready)."""
+        assert self._conn is not None
+        self._conn.send_obj({
+            "message_type": "online",
+            "worker_id":    self.worker_id,
+            "timestamp":    time.time(),
+        })
+        log.info(f"[{self.worker_id}] sent online")
+
+    def _wait_for_init(self) -> None:
+        """S161 v2: wait for coordinator to broadcast init command."""
+        assert self._conn is not None
+        deadline = time.time() + ROCM_READY_TIMEOUT_S
+        log.info(f"[{self.worker_id}] waiting for init command...")
+        while time.time() < deadline:
+            msg = self._conn.recv_obj()
+            mtype = msg.get("message_type")
+            if mtype == "command" and msg.get("command") == "init":
+                log.info(f"[{self.worker_id}] received init — importing sieve_filter")
+                return
+            elif mtype == "shutdown":
+                raise ConnectionError("shutdown before init")
+        raise TimeoutError(f"init not received within {ROCM_READY_TIMEOUT_S}s")
+
+    def _send_ready(self) -> None:
+        """S161 v2: notify coordinator we are compute-ready."""
+        assert self._conn is not None
+        self._conn.send_obj({
+            "message_type": "ready",
+            "worker_id":    self.worker_id,
+            "timestamp":    time.time(),
+        })
+        log.info(f"[{self.worker_id}] sent ready — entering job loop")
+
+    # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
 
     def _setup_env(self) -> None:
-        """Set ROCm/CUDA env vars BEFORE any GPU imports."""
         if self.use_rocm:
             os.environ.setdefault("ROCR_VISIBLE_DEVICES",     str(self.gpu_id))
             os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
@@ -145,12 +177,6 @@ class PWCWorkerService:
             )
 
     def _import_sieve(self) -> None:
-        """
-        Import execute_sieve_job once at startup.
-        This is the EXACT same function used by the existing PWC fast path
-        (sieve_gpu_worker.py calls execute_sieve_job from sieve_filter.py).
-        TB blocker D: compute path parity confirmed.
-        """
         sys.path.insert(
             0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
@@ -200,14 +226,13 @@ class PWCWorkerService:
         self._sock  = None
 
     # ------------------------------------------------------------------
-    # Main loop — TB Gate 1: no prefetch
+    # Main loop
     # ------------------------------------------------------------------
 
     def _main_loop(self) -> None:
         assert self._conn is not None
 
         while True:
-            # Request a job
             self._conn.send_obj({
                 "message_type":     "request_job",
                 "protocol_version": 1,
@@ -230,7 +255,6 @@ class PWCWorkerService:
 
             payload = msg.get("payload")
             if payload is None:
-                # No job yet — wait and retry
                 time.sleep(JOB_REQUEST_INTERVAL_S)
                 continue
 
@@ -246,7 +270,6 @@ class PWCWorkerService:
                 f"prng={payload.get('prng_type', '?')}"
             )
 
-            # Start heartbeat thread — TB blocker E fix
             hb_stop = threading.Event()
             hb_thread = threading.Thread(
                 target=self._heartbeat_loop,
@@ -259,15 +282,12 @@ class PWCWorkerService:
             result = self._execute_job(payload)
             elapsed = time.time() - t0
 
-            # Stop heartbeat
             hb_stop.set()
             hb_thread.join(timeout=2.0)
             self._current_job_id = None
 
             if result.get("success"):
-                log.info(
-                    f"[{self.worker_id}] DONE job={job_id} {elapsed:.1f}s"
-                )
+                log.info(f"[{self.worker_id}] DONE job={job_id} {elapsed:.1f}s")
                 self.jobs_done += 1
             else:
                 log.error(
@@ -278,10 +298,6 @@ class PWCWorkerService:
 
             self._send_result(payload, result, job_id, lease_id, attempt)
 
-            # S162: best-effort GPU cleanup between chunks — prevents memory
-            # accumulation crash (page fault → qcm timeout → rig reboot).
-            # Same fix as S160 ZMQ worker. Placement: after result delivery,
-            # before next job fetch so cleanup never delays or suppresses results.
             try:
                 from sieve_filter import _best_effort_gpu_cleanup
                 _best_effort_gpu_cleanup()
@@ -289,11 +305,10 @@ class PWCWorkerService:
                 log.debug(f"[{self.worker_id}] GPU cleanup skipped: {_cleanup_exc}")
 
     # ------------------------------------------------------------------
-    # Heartbeat — TB blocker E fix
+    # Heartbeat
     # ------------------------------------------------------------------
 
     def _heartbeat_loop(self, stop_event: threading.Event) -> None:
-        """Emit heartbeat every HEARTBEAT_INTERVAL_S while job is running."""
         while not stop_event.wait(HEARTBEAT_INTERVAL_S):
             if self._conn is None:
                 break
@@ -314,11 +329,6 @@ class PWCWorkerService:
     # ------------------------------------------------------------------
 
     def _execute_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute one GPU sieve job via execute_sieve_job from sieve_filter.py.
-        Accepts both coordinator schema (min_match_threshold, skip_range, prng_families)
-        and ZMQ schema (threshold, skip_min/skip_max, prng_type) — TB fix 1.
-        """
         assert self._execute_sieve_job is not None
         chunk_id = job.get("job_id", "?")
 
@@ -330,7 +340,6 @@ class PWCWorkerService:
                 "seed_start":          job["seed_start"],
                 "seed_end":            job["seed_end"],
                 "window_size":         job["window_size"],
-                # Accept both coordinator and ZMQ schema keys
                 "min_match_threshold": job.get("min_match_threshold",
                                                job.get("threshold", 0.3)),
                 "skip_range":          job.get("skip_range",
@@ -345,7 +354,6 @@ class PWCWorkerService:
                                                job.get("is_hybrid", False))),
                 "phase2_threshold":    job.get("phase2_threshold", 0.5),
             }
-            # gpu_id=0 because ROCR/CUDA_VISIBLE_DEVICES remaps to device 0
             result = self._execute_sieve_job(sieve_job, 0)
 
             return {
@@ -369,7 +377,7 @@ class PWCWorkerService:
             }
 
     # ------------------------------------------------------------------
-    # Result sending — inline only for v1 (TB blocker B)
+    # Result sending
     # ------------------------------------------------------------------
 
     def _send_result(
@@ -380,12 +388,7 @@ class PWCWorkerService:
         lease_id: str,
         attempt: int,
     ) -> None:
-        """
-        Send result inline. Spool disabled for v1 — TB blocker B.
-        INLINE_MAX_BYTES is set to 64MB which effectively forces inline always.
-        """
         assert self._conn is not None
-
         self._conn.send_obj({
             "message_type":     "result_inline",
             "protocol_version": 1,
