@@ -1271,11 +1271,33 @@ class PersistentWorkerCoordinator:
         }
 
         # Save to output_file (mirrors coordinator behavior)
+        # [S163] Skip full JSON write when survivor count is large — json.dump of
+        # millions of records causes multi-hour serialization hang. Write a lightweight
+        # summary instead. The result dict in memory is used for intersection directly.
         os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else ".", exist_ok=True)
+        _JSON_WRITE_LIMIT = 100_000  # skip full write above this threshold
         try:
-            with open(output_file, "w") as f:
-                json.dump(result, f)
-            self.logger.info(f"Results saved: {output_file} ({len(all_survivors):,} survivors)")
+            if len(all_survivors) <= _JSON_WRITE_LIMIT:
+                with open(output_file, "w") as f:
+                    json.dump(result, f)
+                self.logger.info(f"Results saved: {output_file} ({len(all_survivors):,} survivors)")
+            else:
+                # Write lightweight summary only — avoids multi-GB JSON serialization hang
+                summary = {
+                    "survivor_count": len(all_survivors),
+                    "total_tested":   total_seeds,
+                    "prng_type":      prng_type,
+                    "threshold":      threshold,
+                    "failed_chunks":  failed_chunks,
+                    "total_chunks":   len(chunks),
+                    "note":           "Full survivors omitted (count > 100K) — see NPZ accumulator",
+                }
+                with open(output_file, "w") as f:
+                    json.dump(summary, f)
+                self.logger.info(
+                    f"Results summary saved: {output_file} "
+                    f"({len(all_survivors):,} survivors — full JSON skipped, count > {_JSON_WRITE_LIMIT:,})"
+                )
         except Exception as e:
             self.logger.error(f"Failed to save {output_file}: {e}")
 
