@@ -68,6 +68,17 @@ try:
 except Exception:
     pass  # non-fatal — env var limit still active
 
+# [S163-FLUSH] Startup pool flush — releases accumulated pool state from
+# previous runs on the same rig. Without this, CuPy pool grows across
+# consecutive runs and triggers GPU page faults at 300K+ seed cap.
+# Safe as a single call at module import time — no concurrent workers yet,
+# no race condition possible. This eliminates the need for rig reboots
+# between production runs.
+try:
+    cp.get_default_memory_pool().free_all_blocks()
+except Exception:
+    pass  # non-fatal
+
 import numpy as np
 
 # S163 — sampling-gated memory instrumentation (active when S163_MEM_DEBUG=1)
