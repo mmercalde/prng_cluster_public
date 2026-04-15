@@ -124,10 +124,6 @@ ROCM_ENV_VARS = [
     "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
     "PATH=/opt/rocm/bin:${PATH}",
     "CUPY_CACHE_DIR=${HOME}/.cache/cupy",
-    # [S163-DEBUG] Memory instrumentation — propagate to workers so pool stats
-    # are logged every 25 chunks. Set S163_MEM_DEBUG=1 in coordinator env to enable.
-    # Default 0 = disabled (no overhead in production).
-    "S163_MEM_DEBUG=0",
 ]
 WORKER_SCRIPT = "sieve_gpu_worker.py"
 WORKER_HEARTBEAT_TIMEOUT_S = 120  # [S161] 120s allows ROCm sequential init on 8-GPU rigs (90s was edge case)
@@ -421,7 +417,9 @@ class PersistentWorkerCoordinator:
         # With ROCR_VISIBLE_DEVICES={gpu_id}: each worker only sees 1 GPU,
         # VA per worker = ~5GB. 8 workers × 5GB = 40GB total — safe.
         # Worker uses Device(0) because ROCR remaps assigned GPU → device 0.
+        _mem_debug_val = os.environ.get("S163_MEM_DEBUG", "0")
         rocm_env = " ".join(ROCM_ENV_VARS + [
+            f"S163_MEM_DEBUG={_mem_debug_val}",
             f"ROCR_VISIBLE_DEVICES={gpu_id}",
             f"CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_{gpu_id}",  # [S157] per-worker isolated cache
         ])
@@ -590,6 +588,8 @@ class PersistentWorkerCoordinator:
                 ]
                 for var in ROCM_ENV_VARS:
                     script_lines.append("export " + var)
+                _mem_debug = os.environ.get("S163_MEM_DEBUG", "0")
+                script_lines.append(f"export S163_MEM_DEBUG={_mem_debug}")
                 script_lines += [
                     "export ROCR_VISIBLE_DEVICES=" + str(gpu_id),
                     "export CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_" + str(gpu_id),
