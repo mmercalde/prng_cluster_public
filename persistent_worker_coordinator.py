@@ -475,6 +475,7 @@ class PersistentWorkerCoordinator:
     def _tcp_launch_workers(self) -> None:
         """
         S161: SSH-launch pwc_worker_service on each AMD rig GPU via nohup.
+        S163-ZEUS: Also launch Zeus GPUs as local TCP persistent workers (CUDA path).
         TB Gate 1 requirements:
           - TCP server already bound before this is called
           - Kill stale pwc_worker_service processes first
@@ -486,6 +487,57 @@ class PersistentWorkerCoordinator:
         import time as _t
 
         total_launched = 0
+
+        # [S163-ZEUS] Launch Zeus local GPUs as TCP persistent workers.
+        # Previously Zeus used subprocess-per-chunk (_dispatch_local_sieve) which
+        # paid full Python+CUDA init overhead on every chunk (~1-2s). Now Zeus
+        # joins the same TCP-PWC pool as AMD rigs — persistent worker, zero per-chunk
+        # init overhead, GPU stays warm between jobs.
+        # use_rocm=False → CUDA_VISIBLE_DEVICES env var, no ROCm env vars.
+        for node in self.nodes:
+            if not self._is_localhost(node.hostname):
+                continue
+            pool = min(self.worker_pool_size, node.gpu_count)
+            self.logger.info(f"[PWC-TCP] Zeus: launching {pool} local CUDA persistent workers")
+
+            # Kill any stale Zeus pwc_worker_service processes
+            _sp.run(
+                ["pkill", "-9", "-f", "pwc_worker_service"],
+                capture_output=True
+            )
+            _t.sleep(1)
+
+            for gpu_id in range(pool):
+                worker_id = f"localhost_gpu{gpu_id}"
+                log_file  = f"/tmp/pwc_tcp_worker_localhost_gpu{gpu_id}.log"
+                env = os.environ.copy()
+                env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+                env["CUPY_CACHE_DIR"]       = f"/tmp/cupy_cache_zeus_gpu{gpu_id}"
+                env["PWC_GPU_ID"]           = str(gpu_id)
+                env["PWC_WORKER_ID"]        = worker_id
+                env["PWC_USE_ROCM"]         = "0"   # CUDA path, not ROCm
+                env["PYTHONPATH"]           = node.script_path
+
+                cmd = [
+                    node.python_env, "-m", "persistent.pwc_worker_service",
+                    "--host", "127.0.0.1",
+                    "--port", str(self.pwc_port),
+                    "--gpu-id", str(gpu_id),
+                    "--worker-id", worker_id,
+                ]
+                try:
+                    with open(log_file, "a") as lf:
+                        _sp.Popen(
+                            cmd, env=env, cwd=node.script_path,
+                            stdout=lf, stderr=lf,
+                            start_new_session=True
+                        )
+                    self.logger.info(
+                        f"[PWC-TCP] Zeus:GPU{gpu_id} launched — log={log_file}"
+                    )
+                    total_launched += 1
+                except Exception as e:
+                    self.logger.error(f"[PWC-TCP] Zeus:GPU{gpu_id} launch failed: {e}")
 
         for node in self.nodes:
             if self._is_localhost(node.hostname):
@@ -704,6 +756,37 @@ class PersistentWorkerCoordinator:
             except Exception as _e:
                 self.logger.warning(f"[PWC-TCP] transport stop error: {_e}")
             self._tcp_transport = None
+
+            # [S163-AUTOCLEAN] Kill remote TCP workers automatically on shutdown.
+            # Workers detect Connection refused and exit cleanly, but this takes
+            # up to 10s. Killing immediately prevents stale workers connecting to
+            # the next run's TCP server. Manual zombie kill is no longer needed.
+            import subprocess as _shutdown_sp
+            for _node in self.nodes:
+                if self._is_localhost(_node.hostname):
+                    # Kill local Zeus TCP workers
+                    try:
+                        _shutdown_sp.run(
+                            ["pkill", "-9", "-f", "pwc_worker_service"],
+                            capture_output=True, timeout=5
+                        )
+                    except Exception:
+                        pass
+                    continue
+                if not self._is_rocm(_node):
+                    continue
+                try:
+                    _shutdown_sp.run(
+                        ["ssh", "-q", "-o", "StrictHostKeyChecking=no",
+                         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                         f"{_node.username}@{_node.hostname}",
+                         "pkill -9 -f pwc_worker_service 2>/dev/null; "
+                         "pkill -9 -f sieve_gpu_worker 2>/dev/null; echo done"],
+                        capture_output=True, timeout=10
+                    )
+                    self.logger.info(f"[PWC-TCP] {_node.hostname}: workers killed on shutdown")
+                except Exception as _ke:
+                    self.logger.warning(f"[PWC-TCP] {_node.hostname}: shutdown kill failed: {_ke}")
 
         self.logger.info("All workers shut down")
 
@@ -1049,10 +1132,15 @@ class PersistentWorkerCoordinator:
                     job["gpu_id"] = wh.gpu_id
                     return self._dispatch_to_worker(wh, job)
                 else:
-                    # [S163] Slot-based GPU binding — acquire a specific GPU slot from the
-                    # pool. GPU ID comes from the slot, not from chunk index. This ensures
-                    # two concurrent Zeus local subprocesses always get distinct gpu_ids and
-                    # thus distinct CUDA_VISIBLE_DEVICES. chunk index is not a safe proxy.
+                    # [S163-ZEUS] If TCP transport active, Zeus GPUs are now persistent
+                    # TCP workers — dispatch via TCP like AMD rigs. No more subprocess
+                    # per chunk with Python+CUDA init overhead on every job.
+                    if self._tcp_transport is not None:
+                        return self._dispatch_to_tcp(job)
+                    # [S163] SSH-PWC path: Slot-based GPU binding — acquire a specific
+                    # GPU slot from the pool. GPU ID comes from the slot, not from chunk
+                    # index. This ensures two concurrent Zeus local subprocesses always
+                    # get distinct gpu_ids and thus distinct CUDA_VISIBLE_DEVICES.
                     local_gpu_id = self._localhost_gpu_slots.get(block=True)
                     job["gpu_id"] = local_gpu_id
                     self.logger.info(
