@@ -1,38 +1,38 @@
 #!/bin/bash
-# monitor_all.sh v3 — 6-tab monitoring launcher
+# monitor_all.sh v4 — 7 separate gnome-terminal WINDOWS (not tabs)
 #
-# Runs ON SER8. Opens:
-#   Tab 1: Progress Monitor   — rich terminal via progress_monitor.py
-#   Tab 2: Health Snapshot    — workers + chunks + errors + trials (5s refresh)
-#   Tab 3: S163 MEM Debug     — pool_used/pool_total/free_blocks/VmRSS + threshold breaches
-#   Tab 4: Netconsole         — kernel messages from all 3 rigs
-#   Tab 5: Page Memory        — rig RAM snapshots (2s)
-#   Tab 6: Crash Monitor      — 3s UP/DOWN polling, persistent log
+# Runs ON SER8. Opens 7 independent windows you can arrange however:
+#   Window 1: Progress Monitor   — rich terminal (progress_monitor.py)
+#   Window 2: Live Log           — tail -f of active run log
+#   Window 3: Health Snapshot    — workers + chunks + trials (5s)
+#   Window 4: S163 MEM Debug     — pool/VmRSS/threshold breaches (10s)
+#   Window 5: Netconsole         — kernel messages from all 3 rigs
+#   Window 6: Page Memory        — rig RAM snapshots (2s)
+#   Window 7: Crash Monitor      — 3s UP/DOWN polling, persistent log
 #
-# Also ensures web_dashboard.py is running on Zeus.
+# Also auto-launches web_dashboard.py on Zeus.
 #
-# NOTE: All tabs are interactive TTY views. They close when the tab/ssh session
-# ends — that's by design. The pipeline itself is the nohup process on Zeus
-# and continues regardless. Re-run this script to re-open the views.
+# Each window can be moved/resized/minimized independently.
+# Close a window anytime — pipeline on Zeus keeps running (nohup).
 #
-# Uses nohup + gnome-terminal — NEVER tmux.
+# Uses nohup + gnome-terminal --window — NEVER tmux.
 #
 # Usage:  bash monitor_all.sh
 
 set -u
 
 echo "═════════════════════════════════════════════════════════════"
-echo " PRNG Cluster — monitor_all.sh v3 (6 tabs + dashboard)"
+echo " PRNG Cluster — monitor_all.sh v4 (7 windows + dashboard)"
 echo "═════════════════════════════════════════════════════════════"
 
-# ---- 0. Web dashboard (background on Zeus) ---------------------------------
+# ---- 0. Web dashboard -----------------------------------------------------
 echo ""
-echo "[0/7] Web dashboard..."
+echo "[0/8] Web dashboard..."
 DASH_RUNNING=$(ssh rzeus "pgrep -f web_dashboard.py | head -1" 2>/dev/null)
 if [ -n "$DASH_RUNNING" ]; then
     echo "  ✅ already running on Zeus (PID $DASH_RUNNING)"
 else
-    echo "  ⚠  not running — launching via nohup on Zeus"
+    echo "  ⚠  launching via nohup on Zeus"
     ssh rzeus "cd ~/distributed_prng_analysis && \
         source ~/venvs/torch/bin/activate && \
         fuser -k 5000/tcp 2>/dev/null; sleep 1; \
@@ -40,27 +40,38 @@ else
     sleep 3
     echo "  ✅ launched"
 fi
-echo "      → http://45.32.131.224:5002  (VPS proxy to Zeus:5000)"
+echo "      → http://45.32.131.224:5002"
 
 # ---- 1. Netconsole listener check ------------------------------------------
 echo ""
-echo "[1/7] Netconsole listener..."
+echo "[1/8] Netconsole listener..."
 NETC=$(ssh rzeus "systemctl is-active netconsole-listener.service" 2>/dev/null)
 if [ "$NETC" = "active" ]; then
     echo "  ✅ active"
 else
-    echo "  ⚠  not active — start manually:  ssh rzeus 'sudo systemctl start netconsole-listener.service'"
+    echo "  ⚠  not active — start with:  ssh rzeus 'sudo systemctl start netconsole-listener.service'"
 fi
 
-# ---- 2-7. Launch 6 gnome-terminal tabs -------------------------------------
+# ---- 2. Resolve current active log (for Live Log window) -------------------
+ACTIVE_LOG=$(ssh rzeus "ls -t ~/distributed_prng_analysis/logs/s*.log 2>/dev/null | grep -vE \"dashboard|netconsole|soak\" | head -1")
 echo ""
-echo "[2-7/7] Launching 6 monitoring tabs..."
+echo "📋 Active log: ${ACTIVE_LOG:-none detected}"
 
-gnome-terminal \
-  --tab --title="Progress Monitor" \
-    -- bash -c 'ssh -t rzeus "cd ~/distributed_prng_analysis && source ~/venvs/torch/bin/activate && python3 progress_monitor.py"; exec bash' \
-  --tab --title="Health Snapshot" \
-    -- bash -c '
+# ---- 3-8. Launch 7 separate gnome-terminal WINDOWS -------------------------
+echo ""
+echo "[2-8/8] Launching 7 monitoring windows..."
+
+# Window 1: Progress Monitor
+gnome-terminal --window --title="1. Progress Monitor" --geometry=100x20+0+0 -- \
+  bash -c 'ssh -t rzeus "cd ~/distributed_prng_analysis && source ~/venvs/torch/bin/activate && python3 progress_monitor.py"; exec bash' &
+
+# Window 2: Live Log tail
+gnome-terminal --window --title="2. Live Log" --geometry=160x25+0+400 -- \
+  bash -c "ssh rzeus \"tail -f ${ACTIVE_LOG:-/dev/null}\"; exec bash" &
+
+# Window 3: Health Snapshot
+gnome-terminal --window --title="3. Health Snapshot" --geometry=100x35+700+0 -- \
+  bash -c '
 while true; do
   clear
   LOG=$(ssh rzeus "ls -t ~/distributed_prng_analysis/logs/s*.log 2>/dev/null | grep -vE \"dashboard|netconsole|soak\" | head -1")
@@ -90,9 +101,11 @@ while true; do
   echo ""
   echo "(refreshing every 5s — Ctrl+C to exit)"
   sleep 5
-done; exec bash' \
-  --tab --title="S163 MEM Debug" \
-    -- bash -c '
+done; exec bash' &
+
+# Window 4: S163 MEM Debug
+gnome-terminal --window --title="4. S163 MEM Debug" --geometry=100x35+700+500 -- \
+  bash -c '
 while true; do
   clear
   LOG=$(ssh rzeus "ls -t ~/distributed_prng_analysis/logs/s*.log 2>/dev/null | grep -vE \"dashboard|netconsole|soak\" | head -1")
@@ -102,22 +115,20 @@ while true; do
   echo " free_all_blocks() removed (TB Option B) | Sample every 25 chunks"
   echo "════════════════════════════════════════════════════════════"
   echo ""
-  echo "── Instrumentation active? ──"
   MEM_DEBUG_VAL=$(ssh rzeus "ps aux | grep window_optimizer | grep -v grep | head -1 | grep -oP \"S163_MEM_DEBUG=\\K[0-9]\"" 2>/dev/null)
   if [ "$MEM_DEBUG_VAL" = "1" ]; then
     echo "  ✅ S163_MEM_DEBUG=1 (instrumentation ENABLED)"
   else
-    echo "  ⚠  S163_MEM_DEBUG not set — threshold breaches only (no sampling)"
+    echo "  ⚠  S163_MEM_DEBUG not set — threshold breaches only"
   fi
   echo ""
   echo "── MEM Samples (last 10, every 25 chunks) ──"
-  ssh rzeus "grep \"\\[MEM chunk=\" $LOG 2>/dev/null | tail -10" 2>/dev/null \
-    | awk -F"pool_used=" "{if(NF>1){split(\$2, a, \" \"); gsub(/MB/, \"\", a[1]); printf \"  %s\n\", \$0}}"
+  ssh rzeus "grep \"\\[MEM chunk=\" $LOG 2>/dev/null | tail -10" 2>/dev/null
   echo ""
-  echo "── Threshold Breaches (pool_used > 200MB — ALWAYS LOGGED) ──"
+  echo "── Threshold Breaches (pool_used > 200MB) ──"
   ssh rzeus "grep \"\\[MEM WARNING\" $LOG 2>/dev/null | tail -10" 2>/dev/null
   echo ""
-  echo "── Pool Growth Trend (pool_used column over last 10 samples) ──"
+  echo "── Pool Growth Trend ──"
   ssh rzeus "grep \"\\[MEM chunk=\" $LOG 2>/dev/null | tail -10 | grep -oE \"pool_used=[0-9]+MB\"" 2>/dev/null
   echo ""
   echo "── Instrumentation Errors ──"
@@ -125,11 +136,15 @@ while true; do
   echo ""
   echo "(refreshing every 10s — Ctrl+C to exit)"
   sleep 10
-done; exec bash' \
-  --tab --title="Netconsole" \
-    -- bash -c 'ssh rzeus "tail -f ~/distributed_prng_analysis/logs/netconsole_all_rigs.log"; exec bash' \
-  --tab --title="Page Memory" \
-    -- bash -c '
+done; exec bash' &
+
+# Window 5: Netconsole
+gnome-terminal --window --title="5. Netconsole" --geometry=140x25+1400+0 -- \
+  bash -c 'ssh rzeus "tail -f ~/distributed_prng_analysis/logs/netconsole_all_rigs.log"; exec bash' &
+
+# Window 6: Page Memory
+gnome-terminal --window --title="6. Page Memory" --geometry=100x30+1400+500 -- \
+  bash -c '
 while true; do
   clear
   echo "========== $(date) — Rig Memory Snapshot =========="
@@ -141,9 +156,11 @@ while true; do
     echo ""
   done
   sleep 2
-done; exec bash' \
-  --tab --title="Crash Monitor" \
-    -- bash -c '
+done; exec bash' &
+
+# Window 7: Crash Monitor
+gnome-terminal --window --title="7. Crash Monitor" --geometry=140x30+300+800 -- \
+  bash -c '
 LOG=$HOME/rig_crash_monitor_persistent.log
 declare -A LAST_GOOD DOWN_STATE
 SAMPLE=0
@@ -172,8 +189,9 @@ while true; do
     fi
   done
   sleep 3
-done; exec bash'
+done; exec bash' &
 
+sleep 2
 echo ""
-echo "✅ All monitors launched. Dashboard: http://45.32.131.224:5002"
+echo "✅ 7 monitoring windows launched. Dashboard: http://45.32.131.224:5002"
 echo "✅ Crash monitor log: ~/rig_crash_monitor_persistent.log"
