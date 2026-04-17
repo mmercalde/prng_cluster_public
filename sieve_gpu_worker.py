@@ -87,11 +87,10 @@ def _best_effort_gpu_cleanup():
             torch.cuda.empty_cache()
     except Exception:
         pass
-    try:
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-    except Exception:
-        pass
+    # [S163] free_all_blocks() removed — TB-approved Option B.
+    # S155 256MB pool cap makes it redundant. CuPy issue #4866: concurrent
+    # free_all_blocks() calls from 8 workers race → cudaErrorIllegalAddress.
+    pass
 
 
 # ============================================================================
@@ -485,6 +484,44 @@ def run_worker(gpu_id: int):
                 jobs_processed += 1
                 _emit({"status": "ok", "job_id": job_id,
                        "elapsed_s": round(elapsed, 3), "result": result})
+
+                # [S163] Memory instrumentation — TB-approved
+                # Sample every 25 chunks when S163_MEM_DEBUG=1
+                # Threshold breach always logged regardless of MEM_DEBUG flag
+                _s163_debug = os.environ.get("S163_MEM_DEBUG", "0") == "1"
+                if _s163_debug and jobs_processed % 25 == 0:
+                    try:
+                        _mp = cp.get_default_memory_pool()
+                        _pool_used_mb  = _mp.used_bytes()  // (1024 * 1024)
+                        _pool_total_mb = _mp.total_bytes() // (1024 * 1024)
+                        _pool_free_blk = _mp.n_free_blocks()
+                        _vm_rss_kb  = "unknown"
+                        _vm_size_kb = "unknown"
+                        try:
+                            for _ln in open("/proc/self/status").readlines():
+                                if _ln.startswith("VmRSS:"):
+                                    _vm_rss_kb  = _ln.split()[1]
+                                elif _ln.startswith("VmSize:"):
+                                    _vm_size_kb = _ln.split()[1]
+                        except Exception:
+                            pass
+                        _log(
+                            f"[MEM chunk={jobs_processed}] "
+                            f"pool_used={_pool_used_mb}MB "
+                            f"pool_total={_pool_total_mb}MB "
+                            f"n_free_blocks={_pool_free_blk} "
+                            f"VmRSS={_vm_rss_kb}kB "
+                            f"VmSize={_vm_size_kb}kB"
+                        )
+                        # Threshold breach — always warn regardless of MEM_DEBUG
+                        if _pool_used_mb > 200:
+                            _log(
+                                f"[MEM WARNING] pool_used={_pool_used_mb}MB "
+                                f"exceeds 200MB threshold at chunk={jobs_processed}"
+                            )
+                    except Exception as _me:
+                        _log(f"[MEM instrumentation error] {_me}")
+
             except Exception as e:
                 _emit({"status": "error", "job_id": job_id,
                        "error": str(e), "traceback": traceback.format_exc()})
