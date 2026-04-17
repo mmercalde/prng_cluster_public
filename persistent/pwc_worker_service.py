@@ -306,6 +306,49 @@ class PWCWorkerService:
             except Exception as _cleanup_exc:
                 log.debug(f"[{self.worker_id}] GPU cleanup skipped: {_cleanup_exc}")
 
+            # [S163] Memory instrumentation — TB-approved
+            # Mirrors sieve_gpu_worker.py lines 488-523 for the TCP-PWC path.
+            # Sample every 25 jobs when S163_MEM_DEBUG=1.
+            # Threshold breach (>200MB) always logged regardless of MEM_DEBUG flag.
+            _s163_debug = os.environ.get("S163_MEM_DEBUG", "0") == "1"
+            _total_jobs = self.jobs_done + self.jobs_error
+            if _total_jobs % 25 == 0 and _total_jobs > 0:
+                try:
+                    import cupy as _cp_s163
+                    _mp = _cp_s163.get_default_memory_pool()
+                    _pool_used_mb  = _mp.used_bytes()  // (1024 * 1024)
+                    _pool_total_mb = _mp.total_bytes() // (1024 * 1024)
+                    _pool_free_blk = _mp.n_free_blocks()
+                    _vm_rss_kb  = "unknown"
+                    _vm_size_kb = "unknown"
+                    try:
+                        for _ln in open("/proc/self/status").readlines():
+                            if _ln.startswith("VmRSS:"):
+                                _vm_rss_kb  = _ln.split()[1]
+                            elif _ln.startswith("VmSize:"):
+                                _vm_size_kb = _ln.split()[1]
+                    except Exception:
+                        pass
+                    if _s163_debug:
+                        log.info(
+                            f"[MEM chunk={_total_jobs}] "
+                            f"worker={self.worker_id} "
+                            f"pool_used={_pool_used_mb}MB "
+                            f"pool_total={_pool_total_mb}MB "
+                            f"n_free_blocks={_pool_free_blk} "
+                            f"VmRSS={_vm_rss_kb}kB "
+                            f"VmSize={_vm_size_kb}kB"
+                        )
+                    # Threshold breach — always warn regardless of MEM_DEBUG
+                    if _pool_used_mb > 200:
+                        log.warning(
+                            f"[MEM WARNING] worker={self.worker_id} "
+                            f"pool_used={_pool_used_mb}MB "
+                            f"exceeds 200MB threshold at chunk={_total_jobs}"
+                        )
+                except Exception as _me:
+                    log.debug(f"[MEM instrumentation error] {_me}")
+
     # ------------------------------------------------------------------
     # Heartbeat
     # ------------------------------------------------------------------
