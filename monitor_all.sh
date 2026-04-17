@@ -1,15 +1,19 @@
 #!/bin/bash
-# monitor_all.sh — Launch all monitoring views in gnome-terminal tabs
+# monitor_all.sh v3 — 6-tab monitoring launcher
 #
-# Runs ON SER8 (not Zeus). Opens 5 tabs + ensures dashboard up.
+# Runs ON SER8. Opens:
+#   Tab 1: Progress Monitor   — rich terminal via progress_monitor.py
+#   Tab 2: Health Snapshot    — workers + chunks + errors + trials (5s refresh)
+#   Tab 3: S163 MEM Debug     — pool_used/pool_total/free_blocks/VmRSS + threshold breaches
+#   Tab 4: Netconsole         — kernel messages from all 3 rigs
+#   Tab 5: Page Memory        — rig RAM snapshots (2s)
+#   Tab 6: Crash Monitor      — 3s UP/DOWN polling, persistent log
 #
-# Tab 1: Progress Monitor        — rich terminal (progress_monitor.py on Zeus)
-# Tab 2: Health Snapshot         — 5s worker counts + recent chunks + MEM + errors
-# Tab 3: Netconsole              — kernel messages from all 3 rigs
-# Tab 4: Page Memory             — 2s rig RAM snapshots (pre-crash leak detection)
-# Tab 5: Crash Monitor           — 3s UP/DOWN polling, logs state changes
+# Also ensures web_dashboard.py is running on Zeus.
 #
-# Also launches web_dashboard.py on Zeus if not running.
+# NOTE: All tabs are interactive TTY views. They close when the tab/ssh session
+# ends — that's by design. The pipeline itself is the nohup process on Zeus
+# and continues regardless. Re-run this script to re-open the views.
 #
 # Uses nohup + gnome-terminal — NEVER tmux.
 #
@@ -18,12 +22,12 @@
 set -u
 
 echo "═════════════════════════════════════════════════════════════"
-echo " PRNG Cluster — monitor_all.sh (5 tabs + dashboard)"
+echo " PRNG Cluster — monitor_all.sh v3 (6 tabs + dashboard)"
 echo "═════════════════════════════════════════════════════════════"
 
 # ---- 0. Web dashboard (background on Zeus) ---------------------------------
 echo ""
-echo "[0/6] Web dashboard..."
+echo "[0/7] Web dashboard..."
 DASH_RUNNING=$(ssh rzeus "pgrep -f web_dashboard.py | head -1" 2>/dev/null)
 if [ -n "$DASH_RUNNING" ]; then
     echo "  ✅ already running on Zeus (PID $DASH_RUNNING)"
@@ -40,7 +44,7 @@ echo "      → http://45.32.131.224:5002  (VPS proxy to Zeus:5000)"
 
 # ---- 1. Netconsole listener check ------------------------------------------
 echo ""
-echo "[1/6] Netconsole listener (systemd on Zeus)..."
+echo "[1/7] Netconsole listener..."
 NETC=$(ssh rzeus "systemctl is-active netconsole-listener.service" 2>/dev/null)
 if [ "$NETC" = "active" ]; then
     echo "  ✅ active"
@@ -48,9 +52,9 @@ else
     echo "  ⚠  not active — start manually:  ssh rzeus 'sudo systemctl start netconsole-listener.service'"
 fi
 
-# ---- 2-6. Launch 5 gnome-terminal tabs -------------------------------------
+# ---- 2-7. Launch 6 gnome-terminal tabs -------------------------------------
 echo ""
-echo "[2-6/6] Launching 5 monitoring tabs..."
+echo "[2-7/7] Launching 6 monitoring tabs..."
 
 gnome-terminal \
   --tab --title="Progress Monitor" \
@@ -78,9 +82,6 @@ while true; do
   echo "── Recent Chunks ──"
   ssh rzeus "grep Chunk $LOG 2>/dev/null | tail -5" 2>/dev/null
   echo ""
-  echo "── MEM DEBUG (last 3) ──"
-  ssh rzeus "grep \"\\[MEM\" $LOG 2>/dev/null | tail -3" 2>/dev/null
-  echo ""
   echo "── Errors (last 3) ──"
   ssh rzeus "grep -iE \"error|traceback|fault|crash\" $LOG 2>/dev/null | tail -3" 2>/dev/null
   echo ""
@@ -89,6 +90,41 @@ while true; do
   echo ""
   echo "(refreshing every 5s — Ctrl+C to exit)"
   sleep 5
+done; exec bash' \
+  --tab --title="S163 MEM Debug" \
+    -- bash -c '
+while true; do
+  clear
+  LOG=$(ssh rzeus "ls -t ~/distributed_prng_analysis/logs/s*.log 2>/dev/null | grep -vE \"dashboard|netconsole|soak\" | head -1")
+  echo "════════════════════════════════════════════════════════════"
+  echo " S163 MEM DEBUG — $(date)"
+  echo " Log: $LOG"
+  echo " free_all_blocks() removed (TB Option B) | Sample every 25 chunks"
+  echo "════════════════════════════════════════════════════════════"
+  echo ""
+  echo "── Instrumentation active? ──"
+  MEM_DEBUG_VAL=$(ssh rzeus "ps aux | grep window_optimizer | grep -v grep | head -1 | grep -oP \"S163_MEM_DEBUG=\\K[0-9]\"" 2>/dev/null)
+  if [ "$MEM_DEBUG_VAL" = "1" ]; then
+    echo "  ✅ S163_MEM_DEBUG=1 (instrumentation ENABLED)"
+  else
+    echo "  ⚠  S163_MEM_DEBUG not set — threshold breaches only (no sampling)"
+  fi
+  echo ""
+  echo "── MEM Samples (last 10, every 25 chunks) ──"
+  ssh rzeus "grep \"\\[MEM chunk=\" $LOG 2>/dev/null | tail -10" 2>/dev/null \
+    | awk -F"pool_used=" "{if(NF>1){split(\$2, a, \" \"); gsub(/MB/, \"\", a[1]); printf \"  %s\n\", \$0}}"
+  echo ""
+  echo "── Threshold Breaches (pool_used > 200MB — ALWAYS LOGGED) ──"
+  ssh rzeus "grep \"\\[MEM WARNING\" $LOG 2>/dev/null | tail -10" 2>/dev/null
+  echo ""
+  echo "── Pool Growth Trend (pool_used column over last 10 samples) ──"
+  ssh rzeus "grep \"\\[MEM chunk=\" $LOG 2>/dev/null | tail -10 | grep -oE \"pool_used=[0-9]+MB\"" 2>/dev/null
+  echo ""
+  echo "── Instrumentation Errors ──"
+  ssh rzeus "grep \"MEM instrumentation error\" $LOG 2>/dev/null | tail -3" 2>/dev/null
+  echo ""
+  echo "(refreshing every 10s — Ctrl+C to exit)"
+  sleep 10
 done; exec bash' \
   --tab --title="Netconsole" \
     -- bash -c 'ssh rzeus "tail -f ~/distributed_prng_analysis/logs/netconsole_all_rigs.log"; exec bash' \
