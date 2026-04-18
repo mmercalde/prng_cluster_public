@@ -256,10 +256,18 @@ class GPUSieve:
                 threads_per_block = 256
                 blocks = (n_seeds + threads_per_block - 1) // threads_per_block
                 # Build kernel arguments
+                # [S163-KARG] Explicit int32 typing — C++ kernel signature is int32.
+                # Bare Python ints marshal as int64 on x86_64 CuPy, shifting arg
+                # buffer layout by 4 bytes per arg. Misaligned args past this point
+                # read garbage (including n_seeds itself if misread earlier).
+                # Mirrors run_hybrid_sieve pattern (line ~435) which already uses
+                # explicit cp.int32() wrapping.
                 kernel_args = [
                     seeds_gpu, residues_gpu, survivors_gpu,
                     match_rates_gpu, best_skips_gpu, survivor_count_gpu,
-                    n_seeds, k, skip_min, skip_max, cp.float32(min_match_threshold)
+                    cp.int32(n_seeds), cp.int32(k),
+                    cp.int32(skip_min), cp.int32(skip_max),
+                    cp.float32(min_match_threshold),
                 ]
                 # Add PRNG-specific parameters
                 default_params = config.get("default_params", {})
