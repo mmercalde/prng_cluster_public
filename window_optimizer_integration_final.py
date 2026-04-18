@@ -1433,52 +1433,17 @@ def add_window_optimizer_to_coordinator():
             reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
             bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
 
-            # [S163] JSON write size guard — propagates commit 9b3c443 pattern.
-            # json.dump() of >1M records causes multi-hour serialization hang.
-            # When survivor count exceeds threshold, write a summary only.
-            # Full data remains in bidirectional_survivors_all.npz (accumulator).
-            _JSON_WRITE_LIMIT = 100_000
+            with open('forward_survivors.json', 'w') as f:
+                json.dump(sorted(forward_deduped, key=lambda x: x['seed']), f, indent=2)
+            print(f"✅ Saved forward_survivors.json: {len(forward_deduped)} unique seeds")
 
-            if len(forward_deduped) <= _JSON_WRITE_LIMIT:
-                with open('forward_survivors.json', 'w') as f:
-                    json.dump(sorted(forward_deduped, key=lambda x: x['seed']), f, indent=2)
-                print(f"✅ Saved forward_survivors.json: {len(forward_deduped)} unique seeds")
-            else:
-                _summary = {
-                    "survivor_count": len(forward_deduped),
-                    "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_all.npz",
-                }
-                with open('forward_survivors.json', 'w') as f:
-                    json.dump(_summary, f, indent=2)
-                print(f"⚠️  forward_survivors.json: summary only ({len(forward_deduped):,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
+            with open('reverse_survivors.json', 'w') as f:
+                json.dump(sorted(reverse_deduped, key=lambda x: x['seed']), f, indent=2)
+            print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped)} unique seeds")
 
-            if len(reverse_deduped) <= _JSON_WRITE_LIMIT:
-                with open('reverse_survivors.json', 'w') as f:
-                    json.dump(sorted(reverse_deduped, key=lambda x: x['seed']), f, indent=2)
-                print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped)} unique seeds")
-            else:
-                _summary = {
-                    "survivor_count": len(reverse_deduped),
-                    "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_all.npz",
-                }
-                with open('reverse_survivors.json', 'w') as f:
-                    json.dump(_summary, f, indent=2)
-                print(f"⚠️  reverse_survivors.json: summary only ({len(reverse_deduped):,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
-
-            # bidirectional_survivors.json — always written (canonical input for Steps 2-6)
-            # Same 100K guard for safety, but bidirectional count is normally much smaller.
-            if len(bidirectional_deduped) <= _JSON_WRITE_LIMIT:
-                with open('bidirectional_survivors.json', 'w') as f:
-                    json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f)
-                print(f"✅ Saved bidirectional_survivors.json: {len(bidirectional_deduped)} unique seeds")
-            else:
-                _summary = {
-                    "survivor_count": len(bidirectional_deduped),
-                    "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_binary.npz",
-                }
-                with open('bidirectional_survivors.json', 'w') as f:
-                    json.dump(_summary, f, indent=2)
-                print(f"⚠️  bidirectional_survivors.json: summary only ({len(bidirectional_deduped):,} > {_JSON_WRITE_LIMIT:,}) — binary NPZ has full data")
+            with open('bidirectional_survivors.json', 'w') as f:
+                json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f)
+            print(f"✅ Saved bidirectional_survivors.json: {len(bidirectional_deduped)} unique seeds")
 
             # Print sample to confirm per-seed fields present
             if bidirectional_deduped:
