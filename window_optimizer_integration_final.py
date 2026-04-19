@@ -1429,9 +1429,37 @@ def add_window_optimizer_to_coordinator():
                         seed_map[seed] = survivor
                 return list(seed_map.values())
 
+            # [S163-DEDUP-DIAG] Timing instrumentation — prove fwd/rev dedup bottleneck
+            import time as _dedup_time
+            print(f"\n[DEDUP-DIAG] Starting deduplication...")
+            print(f"[DEDUP-DIAG] Input sizes: "
+                  f"forward={len(survivor_accumulator['forward']):,}  "
+                  f"reverse={len(survivor_accumulator['reverse']):,}  "
+                  f"bidi={len(survivor_accumulator['bidirectional']):,}")
+
+            _t0_fwd = _dedup_time.time()
             forward_deduped = deduplicate_survivors(survivor_accumulator['forward'])
+            _t1_fwd = _dedup_time.time()
+            print(f"[DEDUP-DIAG] forward    input={len(survivor_accumulator['forward']):,}  "
+                  f"output={len(forward_deduped):,}  time={_t1_fwd - _t0_fwd:.3f}s")
+
+            _t0_rev = _dedup_time.time()
             reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
+            _t1_rev = _dedup_time.time()
+            print(f"[DEDUP-DIAG] reverse    input={len(survivor_accumulator['reverse']):,}  "
+                  f"output={len(reverse_deduped):,}  time={_t1_rev - _t0_rev:.3f}s")
+
+            _t0_bid = _dedup_time.time()
             bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
+            _t1_bid = _dedup_time.time()
+            print(f"[DEDUP-DIAG] bidi       input={len(survivor_accumulator['bidirectional']):,}  "
+                  f"output={len(bidirectional_deduped):,}  time={_t1_bid - _t0_bid:.3f}s")
+
+            _total_dedup = (_t1_fwd - _t0_fwd) + (_t1_rev - _t0_rev) + (_t1_bid - _t0_bid)
+            _fwd_rev_total = (_t1_fwd - _t0_fwd) + (_t1_rev - _t0_rev)
+            print(f"[DEDUP-DIAG] TOTAL dedup time: {_total_dedup:.3f}s  "
+                  f"(fwd+rev={_fwd_rev_total:.3f}s  bidi={_t1_bid - _t0_bid:.3f}s)")
+            # [END S163-DEDUP-DIAG]
 
             # [S163] JSON write size guard — propagates commit 9b3c443 pattern.
             # json.dump() of >1M records causes multi-hour serialization hang.
@@ -1618,7 +1646,35 @@ def add_window_optimizer_to_coordinator():
                     else:
                         _merged_arrays[_fname] = _np_s145.array([], dtype=_dtype)
 
-                # Sort merged arrays by seed value
+                # [S163-KARG-NPZ] TB-approved fix: backfill missing fields before sort.
+                # Fields absent from older prior NPZ schemas produce size-0 arrays.
+                # Backfill to zeros(seed_len) ensures rectangular NPZ — safe for all
+                # downstream readers. Tagged ValueError on wrong-length non-empty fields
+                # is caught by Patch 2 below and re-raised to prevent silent data loss.
+                _seed_len = len(_merged_arrays['seeds'])
+
+                def _dtype_for_field(_fn):
+                    if _fn in _FIELDS_UINT32:  return _np_s145.uint32
+                    if _fn in _FIELDS_INT32:   return _np_s145.int32
+                    if _fn in _FIELDS_UINT8:   return _np_s145.uint8
+                    return _np_s145.float32
+
+                for _fn in _FIELDS_UINT32 + _FIELDS_INT32 + _FIELDS_FLOAT32 + _FIELDS_UINT8:
+                    if _fn == 'seeds':
+                        continue
+                    if _fn not in _merged_arrays or len(_merged_arrays[_fn]) == 0:
+                        # Missing or empty — backfill with zeros to keep schema rectangular
+                        _merged_arrays[_fn] = _np_s145.zeros(
+                            _seed_len, dtype=_dtype_for_field(_fn)
+                        )
+                    elif len(_merged_arrays[_fn]) != _seed_len:
+                        raise ValueError(
+                            f"[S163-KARG-NPZ] Field {_fn} length "
+                            f"{len(_merged_arrays[_fn])} != seeds length {_seed_len}"
+                        )
+                # [END S163-KARG-NPZ backfill]
+
+                # Sort merged arrays by seed value (all fields now seed_len — safe)
                 _sort_idx = _np_s145.argsort(_merged_arrays['seeds'])
                 for _fname in _merged_arrays:
                     _merged_arrays[_fname] = _merged_arrays[_fname][_sort_idx]
@@ -1640,6 +1696,30 @@ def add_window_optimizer_to_coordinator():
                 print(f"   Accumulator:  {_accum_npz}")
                 print(f"✅ bidirectional_survivors_binary.npz written ({_total:,} seeds, 22 fields)")
 
+            except ValueError as _accum_err:
+                # [S163-KARG-NPZ] Re-raise only tagged schema-mismatch ValueErrors.
+                # Untagged ValueErrors (from numpy/conversion code) still fall through
+                # to the fallback path — they may be reasonable fallback candidates.
+                # Re-raising tagged errors prevents silent data loss when
+                # bidirectional_survivors.json is summary-only (JSON guard active).
+                if str(_accum_err).startswith("[S163-KARG-NPZ]"):
+                    raise  # schema mismatch — do not silently fall back
+                print(f"\n⚠️  [S145-R1 v2][NPZ ACCUMULATOR] Failed: {_accum_err}")
+                print(f"   Falling back to per-run convert_survivors_to_binary.py")
+                import traceback as _tb_s145
+                _tb_s145.print_exc()
+                # Fallback: use original conversion path
+                from subprocess import run as subprocess_run, CalledProcessError
+                try:
+                    subprocess_run(
+                        ["python3", "convert_survivors_to_binary.py",
+                         "bidirectional_survivors.json"],
+                        check=True
+                    )
+                    print(f"✅ Fallback: converted bidirectional_survivors.json to NPZ")
+                except CalledProcessError as _e:
+                    print(f"❌ NPZ conversion failed: {_e}")
+                    raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
             except Exception as _accum_err:
                 print(f"\n⚠️  [S145-R1 v2][NPZ ACCUMULATOR] Failed: {_accum_err}")
                 print(f"   Falling back to per-run convert_survivors_to_binary.py")
