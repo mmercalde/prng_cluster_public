@@ -341,6 +341,8 @@ def run_bidirectional_test(coordinator,
     if _use_pw:
         if run_trial_persistent is None:
             raise ImportError("persistent_worker_coordinator.py not found — cannot use --use-persistent-workers")
+        # [S163-KARG-FIX1] Hops 5→8: pass pwc_host and pwc_port so PersistentWorkerCoordinator
+        # binds the partition-correct port — not always defaulting to 5600.
         _pw_result = run_trial_persistent(
             coordinator_cfg   = getattr(coordinator, 'config_file', 'distributed_config.json'),
             config            = config,
@@ -355,7 +357,9 @@ def run_bidirectional_test(coordinator,
             worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
             seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
             seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
-        pwc_transport     = getattr(coordinator, 'pwc_transport', 'tcp'),
+            pwc_transport     = getattr(coordinator, 'pwc_transport', 'tcp'),
+            pwc_host          = getattr(coordinator, 'pwc_host', '0.0.0.0'),  # [S163-KARG-FIX1] hop 5
+            pwc_port          = getattr(coordinator, 'pwc_port', 5600),       # [S163-KARG-FIX1] hop 5
         )
         if _pw_result.get("pruned"):
             # Return minimal pruned TestResult — only fields TestResult accepts
@@ -828,7 +832,15 @@ def add_window_optimizer_to_coordinator():
                                    prng_base_w, test_both_modes_w,
                                    storage_url, study_name_w, trials_for_worker,
                                    result_queue, temp_file,
-                                   warm_start_params=None):  # [S140b-NP2]
+                                   warm_start_params=None,        # [S140b-NP2]
+                                   use_persistent_workers_w=False,  # [S163-KARG-FIX1] hop 3
+                                   pwc_transport_w='tcp',           # [S163-KARG-FIX1] hop 3
+                                   pwc_min_workers_w=1,             # [S163-KARG-FIX1] hop 3 — permissive for partition
+                                   worker_pool_size_w=8,            # [S163-KARG-FIX1] hop 3
+                                   seed_cap_nvidia_w=5_000_000,     # [S163-KARG-FIX1] hop 3
+                                   seed_cap_amd_w=2_000_000,        # [S163-KARG-FIX1] hop 3
+                                   pwc_host_w='0.0.0.0',           # [S163-KARG-FIX1] hop 3
+                                   pwc_port_w=5600):               # [S163-KARG-FIX1] hop 3
                 # Runs in a separate process; has its own CUDA context.
                 import sys as _sys
                 _sys.path.insert(0, '/home/michael/distributed_prng_analysis')  # S137: hardcoded, fork-safe
@@ -842,13 +854,22 @@ def add_window_optimizer_to_coordinator():
 
                     _opt2.logging.set_verbosity(_opt2.logging.WARNING)
 
-                    # Isolated coordinator -- only this partition's nodes
+                    # [S163-KARG-FIX1] Isolated coordinator — inherit parent runtime flags.
+                    # Constructor only accepts config_file, node_allowlist, seed_caps.
+                    # Transport/runtime flags set as attributes after construction (TB ruling).
                     _wcoord = _WMCC(
                         config_file=config_file_w,
                         node_allowlist=allowlist,
-                        seed_cap_nvidia=5_000_000,
-                        seed_cap_amd=2_000_000,
+                        seed_cap_nvidia=seed_cap_nvidia_w,  # inherit from parent (not hardcoded)
+                        seed_cap_amd=seed_cap_amd_w,        # inherit from parent (not hardcoded)
                     )
+                    # Hops 3→4: set transport/runtime attributes post-construction
+                    _wcoord.use_persistent_workers = use_persistent_workers_w
+                    _wcoord.pwc_transport          = pwc_transport_w
+                    _wcoord.pwc_min_workers        = pwc_min_workers_w
+                    _wcoord.worker_pool_size       = worker_pool_size_w
+                    _wcoord.pwc_host               = pwc_host_w
+                    _wcoord.pwc_port               = pwc_port_w
                     _wcoord.load_configuration()
                     _wcoord.create_gpu_workers()
 
@@ -1123,6 +1144,9 @@ def add_window_optimizer_to_coordinator():
             _rq = _mp.Queue()
             _procs = []
             for _pi in range(n_parallel):
+                # [S163-KARG-FIX1] Hops 1→2: capture parent transport flags before fork.
+                # Port is distinct per partition: P0=5600, P1=5601 (TB-approved scheme).
+                _pwc_port_base = getattr(self, 'pwc_port', 5600)
                 _proc = _mp.Process(
                     target=_partition_worker,
                     args=(
@@ -1135,7 +1159,15 @@ def add_window_optimizer_to_coordinator():
                         _trials_per_worker[_pi],
                         _rq,
                         f'/tmp/partition_{_pi}_survivors_{_mp_study_name}.json',
-                        _warm_start_params,  # [S140b-NP2]
+                        _warm_start_params,                              # [S140b-NP2]
+                        getattr(self, 'use_persistent_workers', False),  # [S163-KARG-FIX1] hop 2
+                        getattr(self, 'pwc_transport', 'tcp'),           # [S163-KARG-FIX1] hop 2
+                        1,                                               # pwc_min_workers — permissive for partition
+                        getattr(self, 'worker_pool_size', 8),            # [S163-KARG-FIX1] hop 2
+                        getattr(self, 'seed_cap_nvidia', 5_000_000),     # [S163-KARG-FIX1] hop 2
+                        getattr(self, 'seed_cap_amd', 2_000_000),        # [S163-KARG-FIX1] hop 2
+                        getattr(self, 'pwc_host', '0.0.0.0'),           # [S163-KARG-FIX1] hop 2
+                        _pwc_port_base + _pi,                           # [S163-KARG-FIX1] hop 2 — P0=5600, P1=5601
                     ),
                     daemon=False,
                 )
@@ -1421,77 +1453,95 @@ def add_window_optimizer_to_coordinator():
 
         try:
             def deduplicate_survivors(survivor_list):
-                """Keep survivor with highest per-seed score for each unique seed."""
-                seed_map = {}
-                for survivor in survivor_list:
-                    seed = survivor['seed']
-                    if seed not in seed_map or survivor.get('score', 0) > seed_map[seed].get('score', 0):
-                        seed_map[seed] = survivor
-                return list(seed_map.values())
+                """Keep survivor with highest per-seed score for each unique seed.
+                [S163-KARG] Vectorized via numpy — replaces O(N) pure Python dict loop.
+                """
+                if not survivor_list:
+                    return []
+                import numpy as _np_dedup
+                seeds  = _np_dedup.array([s['seed'] for s in survivor_list], dtype=_np_dedup.int64)
+                scores = _np_dedup.array([s.get('score', 0.0) for s in survivor_list], dtype=_np_dedup.float32)
+                # Sort by seed asc, then score desc — argsort stable keeps last (highest score) per seed
+                # Strategy: sort by seed, then for ties keep highest score entry
+                order  = _np_dedup.lexsort((-scores, seeds))   # primary: seed asc; secondary: score desc
+                sorted_seeds = seeds[order]
+                # Keep first occurrence of each unique seed (= highest score due to sort)
+                keep_mask = _np_dedup.concatenate(([True], sorted_seeds[1:] != sorted_seeds[:-1]))
+                keep_idx  = order[keep_mask]
+                return [survivor_list[i] for i in keep_idx]
 
-            # [S163-DEDUP-DIAG] Timing instrumentation — prove fwd/rev dedup bottleneck
-            import time as _dedup_time
-            print(f"\n[DEDUP-DIAG] Starting deduplication...")
-            print(f"[DEDUP-DIAG] Input sizes: "
-                  f"forward={len(survivor_accumulator['forward']):,}  "
-                  f"reverse={len(survivor_accumulator['reverse']):,}  "
-                  f"bidi={len(survivor_accumulator['bidirectional']):,}")
-
-            _t0_fwd = _dedup_time.time()
-            forward_deduped = deduplicate_survivors(survivor_accumulator['forward'])
-            _t1_fwd = _dedup_time.time()
-            print(f"[DEDUP-DIAG] forward    input={len(survivor_accumulator['forward']):,}  "
-                  f"output={len(forward_deduped):,}  time={_t1_fwd - _t0_fwd:.3f}s")
-
-            _t0_rev = _dedup_time.time()
-            reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
-            _t1_rev = _dedup_time.time()
-            print(f"[DEDUP-DIAG] reverse    input={len(survivor_accumulator['reverse']):,}  "
-                  f"output={len(reverse_deduped):,}  time={_t1_rev - _t0_rev:.3f}s")
-
-            _t0_bid = _dedup_time.time()
-            bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
-            _t1_bid = _dedup_time.time()
-            print(f"[DEDUP-DIAG] bidi       input={len(survivor_accumulator['bidirectional']):,}  "
-                  f"output={len(bidirectional_deduped):,}  time={_t1_bid - _t0_bid:.3f}s")
-
-            _total_dedup = (_t1_fwd - _t0_fwd) + (_t1_rev - _t0_rev) + (_t1_bid - _t0_bid)
-            _fwd_rev_total = (_t1_fwd - _t0_fwd) + (_t1_rev - _t0_rev)
-            print(f"[DEDUP-DIAG] TOTAL dedup time: {_total_dedup:.3f}s  "
-                  f"(fwd+rev={_fwd_rev_total:.3f}s  bidi={_t1_bid - _t0_bid:.3f}s)")
-            # [END S163-DEDUP-DIAG]
-
-            # [S163] JSON write size guard — propagates commit 9b3c443 pattern.
-            # json.dump() of >1M records causes multi-hour serialization hang.
-            # When survivor count exceeds threshold, write a summary only.
-            # Full data remains in bidirectional_survivors_all.npz (accumulator).
+            # [S163-KARG-DEDUP] TB-approved fix: skip forward/reverse dedup when
+            # output will be summary-only anyway. Only bidirectional_deduped is
+            # load-bearing (feeds NPZ accumulator + Steps 2-6). Forward/reverse
+            # dedup on 1.4M+ records was 100% wasted work at scale.
+            # Root cause: S162 NPZ accumulator failure masked this — fallback path
+            # skipped dedup entirely. S163 NPZ fix exposed the bottleneck.
             _JSON_WRITE_LIMIT = 100_000
 
-            if len(forward_deduped) <= _JSON_WRITE_LIMIT:
+            import time as _dedup_time
+
+            _fwd_count = len(survivor_accumulator['forward'])
+            _rev_count = len(survivor_accumulator['reverse'])
+            _bid_count = len(survivor_accumulator['bidirectional'])
+
+            forward_summary_only = _fwd_count > _JSON_WRITE_LIMIT
+            reverse_summary_only = _rev_count > _JSON_WRITE_LIMIT
+
+            print(f"\n[DEDUP] fwd={_fwd_count:,} ({'summary-only — skipping dedup' if forward_summary_only else 'deduping'})  "
+                  f"rev={_rev_count:,} ({'summary-only — skipping dedup' if reverse_summary_only else 'deduping'})  "
+                  f"bidi={_bid_count:,} (always dedup)")
+
+            # Forward — skip dedup if summary-only
+            if not forward_summary_only:
+                _t0 = _dedup_time.time()
+                forward_deduped = deduplicate_survivors(survivor_accumulator['forward'])
+                print(f"[DEDUP] forward deduped: {_fwd_count:,} → {len(forward_deduped):,}  "
+                      f"({_dedup_time.time()-_t0:.3f}s)")
+            else:
+                forward_deduped = None
+
+            # Reverse — skip dedup if summary-only
+            if not reverse_summary_only:
+                _t0 = _dedup_time.time()
+                reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
+                print(f"[DEDUP] reverse deduped: {_rev_count:,} → {len(reverse_deduped):,}  "
+                      f"({_dedup_time.time()-_t0:.3f}s)")
+            else:
+                reverse_deduped = None
+
+            # Bidirectional — ALWAYS dedup — load-bearing path
+            _t0 = _dedup_time.time()
+            bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
+            print(f"[DEDUP] bidi deduped:    {_bid_count:,} → {len(bidirectional_deduped):,}  "
+                  f"({_dedup_time.time()-_t0:.3f}s)")
+
+            # Write forward_survivors.json
+            if not forward_summary_only and forward_deduped is not None:
                 with open('forward_survivors.json', 'w') as f:
                     json.dump(sorted(forward_deduped, key=lambda x: x['seed']), f, indent=2)
-                print(f"✅ Saved forward_survivors.json: {len(forward_deduped)} unique seeds")
+                print(f"✅ Saved forward_survivors.json: {len(forward_deduped):,} unique seeds")
             else:
                 _summary = {
-                    "survivor_count": len(forward_deduped),
+                    "survivor_count": _fwd_count,
                     "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_all.npz",
                 }
                 with open('forward_survivors.json', 'w') as f:
                     json.dump(_summary, f, indent=2)
-                print(f"⚠️  forward_survivors.json: summary only ({len(forward_deduped):,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
+                print(f"⚠️  forward_survivors.json: summary only ({_fwd_count:,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
 
-            if len(reverse_deduped) <= _JSON_WRITE_LIMIT:
+            # Write reverse_survivors.json
+            if not reverse_summary_only and reverse_deduped is not None:
                 with open('reverse_survivors.json', 'w') as f:
                     json.dump(sorted(reverse_deduped, key=lambda x: x['seed']), f, indent=2)
-                print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped)} unique seeds")
+                print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped):,} unique seeds")
             else:
                 _summary = {
-                    "survivor_count": len(reverse_deduped),
+                    "survivor_count": _rev_count,
                     "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_all.npz",
                 }
                 with open('reverse_survivors.json', 'w') as f:
                     json.dump(_summary, f, indent=2)
-                print(f"⚠️  reverse_survivors.json: summary only ({len(reverse_deduped):,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
+                print(f"⚠️  reverse_survivors.json: summary only ({_rev_count:,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
 
             # bidirectional_survivors.json — always written (canonical input for Steps 2-6)
             # Same 100K guard for safety, but bidirectional count is normally much smaller.
@@ -1587,13 +1637,15 @@ def add_window_optimizer_to_coordinator():
                     _prior_seeds = _prior_npz['seeds'].astype(_np_s145.int64)
                     _prior_scores = _prior_npz['score'].astype(_np_s145.float32)
                     _prior_count = len(_prior_seeds)
-                    # Build seed→index map for prior
-                    _prior_idx = {int(_prior_seeds[i]): i for i in range(_prior_count)}
+                    # [S163-KARG] Sort prior seeds for searchsorted (vectorized lookup)
+                    _prior_sort_order = _np_s145.argsort(_prior_seeds)
+                    _prior_seeds_sorted = _prior_seeds[_prior_sort_order]
                 else:
                     _prior_npz = None
                     _prior_seeds = _np_s145.array([], dtype=_np_s145.int64)
                     _prior_scores = _np_s145.array([], dtype=_np_s145.float32)
-                    _prior_idx = {}
+                    _prior_sort_order = _np_s145.array([], dtype=_np_s145.int64)
+                    _prior_seeds_sorted = _np_s145.array([], dtype=_np_s145.int64)
                     _prior_count = 0
 
                 # Convert current run survivors to arrays
@@ -1601,25 +1653,27 @@ def add_window_optimizer_to_coordinator():
                 _new_seeds = _new_arrays['seeds'].astype(_np_s145.int64)
                 _new_scores = _new_arrays['score']
 
-                # Determine indices: keep from prior (not beaten), add from new (new or better)
-                _keep_prior = []  # indices into prior arrays
-                _keep_new = []    # indices into new arrays
-
-                # Track which prior seeds are superseded by new
-                _superseded = set()
-                for _ni in range(len(_new_seeds)):
-                    _seed = int(_new_seeds[_ni])
-                    if _seed not in _prior_idx:
-                        _keep_new.append(_ni)  # Genuinely new seed
-                    else:
-                        _pi = _prior_idx[_seed]
-                        if float(_new_scores[_ni]) > float(_prior_scores[_pi]):
-                            _keep_new.append(_ni)   # New run has better score
-                            _superseded.add(_pi)
-                        # else: prior has equal or better score — keep prior
-
-                # Keep all prior seeds not superseded
-                _keep_prior = [i for i in range(_prior_count) if i not in _superseded]
+                # [S163-KARG] Vectorized merge — replaces pure Python dict loop
+                # Use searchsorted on sorted prior seeds for O(N log N) instead of O(N) dict
+                if _prior_count > 0:
+                    _pos = _np_s145.searchsorted(_prior_seeds_sorted, _new_seeds)
+                    _pos_clipped = _np_s145.clip(_pos, 0, _prior_count - 1)
+                    _matched = _prior_seeds_sorted[_pos_clipped] == _new_seeds
+                    # Original indices in prior arrays for matched seeds
+                    _prior_orig_idx = _prior_sort_order[_pos_clipped]
+                    # For matched: check if new score beats prior score
+                    _new_beats = _matched & (_new_scores > _prior_scores[_prior_orig_idx])
+                    _keep_new_mask = (~_matched) | _new_beats
+                    _keep_new = list(_np_s145.where(_keep_new_mask)[0])
+                    # Superseded prior indices = matched AND new beats
+                    _superseded_prior_orig = _prior_orig_idx[_new_beats]
+                    _superseded_mask = _np_s145.zeros(_prior_count, dtype=bool)
+                    if len(_superseded_prior_orig) > 0:
+                        _superseded_mask[_superseded_prior_orig] = True
+                    _keep_prior = list(_np_s145.where(~_superseded_mask)[0])
+                else:
+                    _keep_new = list(range(len(_new_seeds)))
+                    _keep_prior = []
 
                 # Build merged field arrays
                 _FIELDS_INT32  = ['window_size','offset','trial_number','skip_min','skip_max','skip_range']
