@@ -36,7 +36,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-RECONNECT_DELAY_S      = 2.0
+RECONNECT_DELAY_S      = 5.0  # [S163-KARG] increased from 2.0 — with MAX_REFUSED=60 gives 5min retry window
 JOB_REQUEST_INTERVAL_S = 0.5
 HEARTBEAT_INTERVAL_S   = 15.0
 INLINE_MAX_BYTES       = 32 * 1024 * 1024
@@ -171,7 +171,7 @@ class PWCWorkerService:
 
         _had_session  = False
         _refused_count = 0
-        _MAX_REFUSED  = 5
+        _MAX_REFUSED  = 60  # [S163-KARG] increased from 5 — allows ~2min for rig reboot+reconnect
 
         while True:
             try:
