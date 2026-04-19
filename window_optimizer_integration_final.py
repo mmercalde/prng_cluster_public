@@ -360,6 +360,7 @@ def run_bidirectional_test(coordinator,
             pwc_transport     = getattr(coordinator, 'pwc_transport', 'tcp'),
             pwc_host          = getattr(coordinator, 'pwc_host', '0.0.0.0'),  # [S163-KARG-FIX1] hop 5
             pwc_port          = getattr(coordinator, 'pwc_port', 5600),       # [S163-KARG-FIX1] hop 5
+            node_allowlist    = getattr(coordinator, 'node_allowlist', None), # [S163-KARG-PWC] hop 6
         )
         if _pw_result.get("pruned"):
             # Return minimal pruned TestResult — only fields TestResult accepts
@@ -1140,6 +1141,45 @@ def add_window_optimizer_to_coordinator():
                 _mp.set_start_method('fork', force=True)  # S137: fork avoids pickle on local fn
             except RuntimeError:
                 pass  # already set in this process
+
+            # [S163-KARG-KILL] Kill all stale pwc_worker_service processes on ALL rigs
+            # BEFORE forking partition processes. Without this, stale workers from prior
+            # runs reconnect to whichever TCP port comes up first, causing cross-partition
+            # contamination (P1's workers connecting to P0's port 5600).
+            # Must be done in parent before fork — each partition's S156 only sees its own nodes.
+            print(f"\n[NP2-KILL] Killing stale pwc_worker_service on all AMD rigs before fork...")
+            import subprocess as _pre_kill_sp
+            _all_rig_ips = ['192.168.3.120', '192.168.3.154', '192.168.3.162']
+            for _rig_ip in _all_rig_ips:
+                try:
+                    _pre_kill_sp.run(
+                        ['ssh', '-q', '-o', 'StrictHostKeyChecking=no',
+                         f'michael@{_rig_ip}',
+                         'pkill -9 -f pwc_worker_service 2>/dev/null; echo ok'],
+                        capture_output=True, timeout=10
+                    )
+                    print(f"   [NP2-KILL] {_rig_ip}: stale workers killed")
+                except Exception as _kill_e:
+                    print(f"   [NP2-KILL] {_rig_ip}: kill failed (non-fatal): {_kill_e}")
+            import time as _pre_kill_time
+            _pre_kill_time.sleep(2)  # allow processes to die before fork
+            print(f"[NP2-KILL] Pre-fork cleanup complete")
+
+            # [S163-KARG-PORT] Kill any zombie processes holding TCP ports 5600-5601
+            # kill -9 does not close sockets immediately — zombies hold ports across runs
+            import subprocess as _port_kill_sp
+            for _port in range(5600, 5600 + n_parallel):
+                try:
+                    _fuser = _port_kill_sp.run(
+                        ['fuser', '-k', f'{_port}/tcp'],
+                        capture_output=True, timeout=5
+                    )
+                    print(f"   [NP2-PORT] fuser -k {_port}/tcp: done")
+                except Exception as _pe:
+                    pass  # fuser may not be installed — non-fatal
+            import time as _port_wait
+            _port_wait.sleep(1)  # allow sockets to release
+            print(f"[NP2-PORT] Port cleanup complete\n")
 
             _rq = _mp.Queue()
             _procs = []

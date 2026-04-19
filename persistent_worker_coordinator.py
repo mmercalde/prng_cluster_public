@@ -177,8 +177,10 @@ class PersistentWorkerCoordinator:
                  pwc_transport: str = "ssh",
                  pwc_host: str = "0.0.0.0",
                  pwc_port: int = 5600,
-                 min_workers: int = 1):
+                 min_workers: int = 1,
+                 node_allowlist=None):   # [S163-KARG-PWC] partition node filter
         self.config_file     = config_file
+        self.node_allowlist  = node_allowlist  # [S163-KARG-PWC] applied in _load_config
         self.worker_pool_size = worker_pool_size
         self.seed_cap_nvidia = seed_cap_nvidia
         self.seed_cap_amd    = seed_cap_amd
@@ -231,8 +233,17 @@ class PersistentWorkerCoordinator:
             return
 
         for nc in cfg.get("nodes", []):
+            hostname = nc["hostname"]
+            # [S163-KARG-PWC] Apply node_allowlist filter BEFORE building any per-node
+            # state (semaphores, respawn_locks, S156 cleanup targets, worker launches).
+            # TB ruling: filter at load time so each partition only owns its nodes.
+            if self.node_allowlist is not None and hostname not in self.node_allowlist:
+                self.logger.info(
+                    f"Node skipped (not in partition allowlist): {hostname}"
+                )
+                continue
             node = WorkerNode(
-                hostname   = nc["hostname"],
+                hostname   = hostname,
                 gpu_type   = nc.get("gpu_type", "unknown"),
                 gpu_count  = nc.get("gpu_count", 1),
                 python_env = nc["python_env"],
@@ -1366,7 +1377,8 @@ def run_trial_persistent(coordinator_cfg: str,
                          seed_cap_amd:   int  = 2_000_000,
                          pwc_transport: str = "ssh",
                          pwc_host: str = "0.0.0.0",
-                         pwc_port: int = 5600) -> Dict[str, Any]:
+                         pwc_port: int = 5600,
+                         node_allowlist=None) -> Dict[str, Any]:  # [S163-KARG-PWC]
     """
     Shim called by window_optimizer_integration_final.py when use_persistent_workers=True.
 
@@ -1377,6 +1389,9 @@ def run_trial_persistent(coordinator_cfg: str,
     This function manages PersistentWorkerCoordinator lifecycle internally so that
     the caller (run_trial) doesn't need to know about workers at all.
     """
+    # [S163-KARG-PWC] Pass node_allowlist so each partition only sees its own nodes.
+    # Without this, both P0 and P1 read all nodes from config and launch 24 workers each,
+    # competing for the same rigs. P1 wins the race; P0 gets 0 ready workers.
     pwc = PersistentWorkerCoordinator(
         config_file      = coordinator_cfg,
         worker_pool_size = worker_pool_size,
@@ -1385,6 +1400,7 @@ def run_trial_persistent(coordinator_cfg: str,
         pwc_transport    = pwc_transport,
         pwc_host         = pwc_host,
         pwc_port         = pwc_port,
+        node_allowlist   = node_allowlist,  # [S163-KARG-PWC] partition node filter
     )
     pwc.startup()
 
