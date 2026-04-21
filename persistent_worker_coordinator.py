@@ -119,6 +119,10 @@ ROCM_ENV_VARS = [
     "CUPY_GPU_MEMORY_LIMIT=268435456",
     "HSA_OVERRIDE_GFX_VERSION=10.3.0",
     "HSA_ENABLE_SDMA=0",
+    # [S165] Disable KFD debug trap — prevents NULL pointer dereference
+    # in kfd_dbg_trap_activate during concurrent GPU reset + worker init.
+    # Root cause: kq_acquire_packet_buffer crashes when called mid-reset.
+    "HSA_ENABLE_DEBUG_TRAP=0",
     "ROCM_PATH=/opt/rocm",
     "HIP_PATH=/opt/rocm/hip",
     "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/hip/lib:${LD_LIBRARY_PATH}",
@@ -498,6 +502,17 @@ class PersistentWorkerCoordinator:
 
         total_launched = 0
 
+        # [S165-ZEUS-TCP] Kill stale Zeus local pwc workers before launching fresh ones
+        try:
+            import subprocess as _sp_zeus_kill
+            _sp_zeus_kill.run(
+                ["pkill", "-9", "-f", "pwc_worker_service"],
+                capture_output=True, timeout=5
+            )
+            self.logger.info("[PWC-TCP] Zeus: stale local workers killed")
+        except Exception:
+            pass  # No stale workers is fine
+
         for node in self.nodes:
             if self._is_localhost(node.hostname):
                 continue
@@ -598,6 +613,45 @@ class PersistentWorkerCoordinator:
                 self.logger.info(
                     "[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launched"
                 )
+
+        # [S165-ZEUS-TCP] Launch persistent CUDA workers on Zeus (localhost)
+        # Workers connect back to 127.0.0.1:port — same TCP path as AMD rigs.
+        # PWC_USE_ROCM=0 → CUDA_VISIBLE_DEVICES path in pwc_worker_service._setup_env()
+        import subprocess as _sp_zeus
+        for _zeus_node in self.nodes:
+            if not self._is_localhost(_zeus_node.hostname):
+                continue
+            _zeus_pool = min(2, _zeus_node.gpu_count)  # 2 RTX 3080Ti
+            for _zeus_gpu in range(_zeus_pool):
+                _zeus_worker_id = f"zeus_gpu{_zeus_gpu}"
+                _zeus_log = f"/tmp/pwc_tcp_worker_zeus_gpu{_zeus_gpu}.log"
+                _zeus_env = os.environ.copy()
+                _zeus_env["PWC_GPU_ID"]           = str(_zeus_gpu)
+                _zeus_env["PWC_WORKER_ID"]        = _zeus_worker_id
+                _zeus_env["PWC_HOST"]             = "127.0.0.1"
+                _zeus_env["PWC_PORT"]             = str(self.pwc_port)
+                _zeus_env["PWC_USE_ROCM"]         = "0"
+                _zeus_env["CUDA_VISIBLE_DEVICES"] = str(_zeus_gpu)
+                _zeus_env["CUPY_CACHE_DIR"]       = f"/tmp/cupy_cache_zeus_gpu{_zeus_gpu}"
+                _zeus_env["PYTHONPATH"]           = _zeus_node.script_path
+                try:
+                    with open(_zeus_log, "a") as _lf:
+                        _zeus_proc = _sp_zeus.Popen(
+                            [_zeus_node.python_env, "-m", "persistent.pwc_worker_service"],
+                            env=_zeus_env,
+                            cwd=_zeus_node.script_path,
+                            stdout=_lf, stderr=_lf,
+                            start_new_session=True,
+                        )
+                    self.logger.info(
+                        f"[PWC-TCP] Zeus GPU{_zeus_gpu} local worker launched "
+                        f"— PID={_zeus_proc.pid} log={_zeus_log}"
+                    )
+                    total_launched += 1
+                except Exception as _ze:
+                    self.logger.error(
+                        f"[PWC-TCP] Zeus GPU{_zeus_gpu} local worker launch failed: {_ze}"
+                    )
 
         self.logger.info(
             "[PWC-TCP] " + str(total_launched) + " workers launched across all rigs"
