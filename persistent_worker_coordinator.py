@@ -1108,7 +1108,7 @@ class PersistentWorkerCoordinator:
 
             def _run_once(wh):
                 # [TCP transport] dispatch bridge — additive, SSH path unchanged
-                if self._tcp_transport is not None and not isinstance(wh, WorkerNode):
+                if self._tcp_transport is not None:  # [S166] route ALL workers via TCP incl Zeus
                     return self._dispatch_to_tcp(job)
                 if isinstance(wh, WorkerHandle):
                     job["gpu_id"] = wh.gpu_id

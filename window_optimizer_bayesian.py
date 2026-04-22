@@ -317,8 +317,9 @@ def create_incremental_save_callback(
                 _params = trial.params if trial.params else {}
                 _score  = trial.value if trial.value is not None else 0.0
                 _pruned = trial.state.name == 'PRUNED'
-                _surv   = trial.user_attrs.get('bidirectional_survivors', [])
-                _bidi   = len(_surv) if isinstance(_surv, list) else 0
+                # [S166-ACCUM] Use count attr — full list may not be stored at scale
+                _bidi   = trial.user_attrs.get('bidirectional_count',
+                          len(trial.user_attrs.get('bidirectional_survivors', [])))
                 _db_th.write_step1_trial(
                     run_id=trial_history_context.get('run_id','unknown'),
                     study_name=trial_history_context.get('study_name','unknown'),
@@ -459,9 +460,15 @@ class OptunaBayesianSearch:
             all_results.append(result)
             score = scorer.score(result)
             
-            # Store result data for incremental callback
-            trial.set_user_attr("bidirectional_survivors", 
-                               getattr(result, 'bidirectional_survivors', []))
+            # [S166-ACCUM] Store count always. Store full list only when small enough
+            # for bidirectional_survivors.json output contract (line ~296 reads it back).
+            _bidi_list = getattr(result, 'bidirectional_survivors', [])
+            _bidi_count = len(_bidi_list) if isinstance(_bidi_list, list) else getattr(result, 'bidirectional_count', 0)
+            trial.set_user_attr("bidirectional_count", _bidi_count)
+            if _bidi_count <= 100_000:  # only store full list when manageable
+                trial.set_user_attr("bidirectional_survivors", _bidi_list)
+            else:
+                trial.set_user_attr("bidirectional_survivors", [])  # empty — NPZ has full data
             trial.set_user_attr("result_dict", result.to_dict())
             
             # Track best

@@ -294,8 +294,9 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
                 'forward_match_rate':      fmr,
                 'reverse_match_rate':      rmr,
             })
-        accumulator['forward'].extend(fwd_records + fwd_h_records)
-        accumulator['reverse'].extend(rev_records + rev_h_records)
+        # [S166-ACCUM] Count only — full objects not retained for forward/reverse.
+        accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(fwd_records) + len(fwd_h_records)
+        accumulator['reverse_count'] = accumulator.get('reverse_count', 0) + len(rev_records) + len(rev_h_records)
 
         # [S152] Flush survivors to disk as-found (incremental, threshold-gated)
         _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")
@@ -529,8 +530,8 @@ def run_bidirectional_test(coordinator,
         if len(bidirectional_constant) > best_so_far:
             coordinator._best_bidirectional = len(bidirectional_constant)
             best_so_far = len(bidirectional_constant)
-        acc_fwd = len(accumulator['forward']) if accumulator else 0
-        acc_rev = len(accumulator['reverse']) if accumulator else 0
+        acc_fwd = accumulator.get('forward_count', 0) if accumulator else 0
+        acc_rev = accumulator.get('reverse_count', 0) if accumulator else 0
         acc_bid = len(accumulator['bidirectional']) if accumulator else 0
         coordinator._progress_writer.update_trial_stats(
             trial_num=trial_number,
@@ -577,21 +578,11 @@ def run_bidirectional_test(coordinator,
             'intersection_weight': len(bidirectional_constant) / max(len(forward_set) + len(reverse_set), 1),
         }
 
-        for record in forward_records:
-            seed = record['seed']
-            accumulator['forward'].append({
-                'seed': seed,
-                'forward_match_rate': record['match_rate'],  # v3.0: per-seed
-                **metadata_base
-            })
-
-        for record in reverse_records:
-            seed = record['seed']
-            accumulator['reverse'].append({
-                'seed': seed,
-                'reverse_match_rate': record['match_rate'],  # v3.0: per-seed
-                **metadata_base
-            })
+        # [S166-ACCUM] Stop accumulating full forward/reverse objects — RAM bomb.
+        # Only bidirectional objects are load-bearing (NPZ + Steps 2-6).
+        # Preserve counts for dashboard, logging, and output JSON contract.
+        accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(forward_records)
+        accumulator['reverse_count'] = accumulator.get('reverse_count', 0) + len(reverse_records)
 
         for seed in bidirectional_constant:
             fwd_rate = forward_map[seed]
@@ -691,21 +682,9 @@ def run_bidirectional_test(coordinator,
                 'intersection_weight': len(bidirectional_variable) / max(len(forward_set_hybrid) + len(reverse_set_hybrid), 1),
             }
 
-            for record in forward_records_hybrid:
-                seed = record['seed']
-                accumulator['forward'].append({
-                    'seed': seed,
-                    'forward_match_rate': record['match_rate'],
-                    **metadata_base_hybrid
-                })
-
-            for record in reverse_records_hybrid:
-                seed = record['seed']
-                accumulator['reverse'].append({
-                    'seed': seed,
-                    'reverse_match_rate': record['match_rate'],
-                    **metadata_base_hybrid
-                })
+            # [S166-ACCUM] Count only — no full object accumulation for forward/reverse.
+            accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(forward_records_hybrid)
+            accumulator['reverse_count'] = accumulator.get('reverse_count', 0) + len(reverse_records_hybrid)
 
             for seed in bidirectional_variable:
                 fwd_rate = forward_map_hybrid[seed]
@@ -723,8 +702,8 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     if accumulator is not None:
         print(f"      📊 Accumulated totals:")
-        print(f"         Forward: {len(accumulator['forward'])} total")
-        print(f"         Reverse: {len(accumulator['reverse'])} total")
+        print(f"         Forward: {accumulator.get('forward_count', 0)} total (count only)")
+        print(f"         Reverse: {accumulator.get('reverse_count', 0)} total (count only)")
         print(f"         Bidirectional: {len(accumulator['bidirectional'])} total")
 
     # [S124] Combined bidirectional score: constant + variable skip survivors
@@ -1091,7 +1070,8 @@ def add_window_optimizer_to_coordinator():
             # Divide trials and launch worker processes
             # ----------------------------------------------------------------
             # S137: Initialize accumulator, bounds, optimizer so they exist in n_parallel path
-            survivor_accumulator = {'forward': [], 'reverse': [], 'bidirectional': []}
+            # [S166-ACCUM] forward/reverse are now counts not lists
+            survivor_accumulator = {'forward_count': 0, 'reverse_count': 0, 'bidirectional': []}
             bounds = SearchBounds.from_config()      # S137-D: needed for session_options after best trial
             optimizer = WindowOptimizer(self, dataset_path)  # S137-E: needed for save_results
 
@@ -1259,8 +1239,8 @@ def add_window_optimizer_to_coordinator():
                     print(f"   ⚠️  Process-{_pi} temp file missing: {_tf_path}")
 
             print(f"\n   All partition workers complete.")
-            print(f"      Forward:       {len(survivor_accumulator['forward'])}")
-            print(f"      Reverse:       {len(survivor_accumulator['reverse'])}")
+            print(f"      Forward:       {survivor_accumulator.get('forward_count', 0)} (count only)")
+            print(f"      Reverse:       {survivor_accumulator.get('reverse_count', 0)} (count only)")
             print(f"      Bidirectional: {len(survivor_accumulator['bidirectional'])}")
 
             # Load best result from study for results dict
@@ -1520,34 +1500,26 @@ def add_window_optimizer_to_coordinator():
 
             import time as _dedup_time
 
-            _fwd_count = len(survivor_accumulator['forward'])
-            _rev_count = len(survivor_accumulator['reverse'])
+            _fwd_count = survivor_accumulator.get('forward_count', 0)
+            _rev_count = survivor_accumulator.get('reverse_count', 0)
             _bid_count = len(survivor_accumulator['bidirectional'])
 
-            forward_summary_only = _fwd_count > _JSON_WRITE_LIMIT
-            reverse_summary_only = _rev_count > _JSON_WRITE_LIMIT
+            # [S166-ACCUM] forward/reverse full objects no longer retained in bayesian mode.
+            # forward/reverse JSON output is always summary-only (count + metadata).
+            # bidirectional JSON + NPZ are unaffected — bidirectional objects still accumulated.
+            forward_summary_only = True   # [S166] always summary-only
+            reverse_summary_only = True   # [S166] always summary-only
+            _ = _fwd_count  # suppress unused warning
 
             print(f"\n[DEDUP] fwd={_fwd_count:,} ({'summary-only — skipping dedup' if forward_summary_only else 'deduping'})  "
                   f"rev={_rev_count:,} ({'summary-only — skipping dedup' if reverse_summary_only else 'deduping'})  "
                   f"bidi={_bid_count:,} (always dedup)")
 
-            # Forward — skip dedup if summary-only
-            if not forward_summary_only:
-                _t0 = _dedup_time.time()
-                forward_deduped = deduplicate_survivors(survivor_accumulator['forward'])
-                print(f"[DEDUP] forward deduped: {_fwd_count:,} → {len(forward_deduped):,}  "
-                      f"({_dedup_time.time()-_t0:.3f}s)")
-            else:
-                forward_deduped = None
-
-            # Reverse — skip dedup if summary-only
-            if not reverse_summary_only:
-                _t0 = _dedup_time.time()
-                reverse_deduped = deduplicate_survivors(survivor_accumulator['reverse'])
-                print(f"[DEDUP] reverse deduped: {_rev_count:,} → {len(reverse_deduped):,}  "
-                      f"({_dedup_time.time()-_t0:.3f}s)")
-            else:
-                reverse_deduped = None
+            # [S166-ACCUM] forward/reverse objects not retained — always summary-only.
+            forward_deduped = None
+            reverse_deduped = None
+            print(f"[DEDUP] forward: {_fwd_count:,} (count only — objects not retained)")
+            print(f"[DEDUP] reverse: {_rev_count:,} (count only — objects not retained)")
 
             # Bidirectional — ALWAYS dedup — load-bearing path
             _t0 = _dedup_time.time()
@@ -1714,6 +1686,7 @@ def add_window_optimizer_to_coordinator():
                 else:
                     _keep_new = list(range(len(_new_seeds)))
                     _keep_prior = []
+                    _superseded_prior_orig = _np_s145.array([], dtype=_np_s145.int64)  # [S166] no prior — nothing superseded
 
                 # Build merged field arrays
                 _FIELDS_INT32  = ['window_size','offset','trial_number','skip_min','skip_max','skip_range']
@@ -1775,7 +1748,7 @@ def add_window_optimizer_to_coordinator():
 
                 _total = len(_merged_arrays['seeds'])
                 _net_new = len(_keep_new)
-                _superseded_count = len(_superseded)
+                _superseded_count = len(_superseded_prior_orig)
 
                 # Save accumulator NPZ
                 _np_s145.savez_compressed(_accum_npz, **_merged_arrays)
