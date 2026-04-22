@@ -741,7 +741,13 @@ def add_window_optimizer_to_coordinator():
                         study_name: str = '',
                         n_parallel: int = 1,
                         enable_pruning: bool = False,
-                        trse_context_file: str = 'trse_context.json'):  # S123 TRSE thread
+                        trse_context_file: str = 'trse_context.json',  # S123 TRSE thread
+                        warm_start_window: int = None,    # [S166] explicit warm-start
+                        warm_start_offset: int = None,
+                        warm_start_skip_min: int = None,
+                        warm_start_skip_max: int = None,
+                        warm_start_fwd_thresh: float = None,
+                        warm_start_rev_thresh: float = None):
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -1431,6 +1437,13 @@ def add_window_optimizer_to_coordinator():
             'seed_start':   seed_start,
             'seed_end':     seed_start + seed_count,
             'n_parallel_gt1': n_parallel > 1,  # [S142] guard: NP2 owns writes
+            # [S166] explicit warm-start params — override DB lookup
+            'warm_start_window':     warm_start_window,
+            'warm_start_offset':     warm_start_offset,
+            'warm_start_skip_min':   warm_start_skip_min,
+            'warm_start_skip_max':   warm_start_skip_max,
+            'warm_start_fwd_thresh': warm_start_fwd_thresh,
+            'warm_start_rev_thresh': warm_start_rev_thresh,
         }
 
         if not _np2_complete:  # [S142-B] skip single-process search for NP2

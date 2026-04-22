@@ -543,6 +543,12 @@ def run_bayesian_optimization(
     worker_pool_size: int = 8,             # S134
     seed_cap_nvidia: int = 5_000_000,      # S137
     seed_cap_amd: int = 2_000_000,         # S137
+    warm_start_window: int = None,         # [S166] explicit warm-start
+    warm_start_offset: int = None,
+    warm_start_skip_min: int = None,
+    warm_start_skip_max: int = None,
+    warm_start_fwd_thresh: float = None,
+    warm_start_rev_thresh: float = None,
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -636,7 +642,13 @@ def run_bayesian_optimization(
         study_name=study_name,
         enable_pruning=enable_pruning,  # S115 wire-up
         n_parallel=n_parallel,          # S115 wire-up
-        trse_context_file=trse_context_file  # S121 Step 0 context
+        trse_context_file=trse_context_file,  # S121 Step 0 context
+        warm_start_window=warm_start_window,      # [S166]
+        warm_start_offset=warm_start_offset,
+        warm_start_skip_min=warm_start_skip_min,
+        warm_start_skip_max=warm_start_skip_max,
+        warm_start_fwd_thresh=warm_start_fwd_thresh,
+        warm_start_rev_thresh=warm_start_rev_thresh,
     )
 
     # [S140] SEED COVERAGE WRITE-BACK — log this run's range to exhaustive_progress
@@ -1056,6 +1068,18 @@ def main():
                        help='[S140] Starting seed for search range. Set automatically by '
                             'WATCHER coverage tracker to advance into unexplored seed space. '
                             'Default 0.')
+    parser.add_argument('--warm-start-window', type=int, default=None,
+                       help='[S166] Warm-start: enqueue this window_size as trial 0.')
+    parser.add_argument('--warm-start-offset', type=int, default=None,
+                       help='[S166] Warm-start: enqueue this offset as trial 0.')
+    parser.add_argument('--warm-start-skip-min', type=int, default=None,
+                       help='[S166] Warm-start: skip_min for trial 0.')
+    parser.add_argument('--warm-start-skip-max', type=int, default=None,
+                       help='[S166] Warm-start: skip_max for trial 0.')
+    parser.add_argument('--warm-start-fwd-thresh', type=float, default=None,
+                       help='[S166] Warm-start: forward_threshold for trial 0.')
+    parser.add_argument('--warm-start-rev-thresh', type=float, default=None,
+                       help='[S166] Warm-start: reverse_threshold for trial 0.')
 
     args = parser.parse_args()
 
@@ -1087,6 +1111,12 @@ def main():
             worker_pool_size=getattr(args, 'worker_pool_size', 8),                  # S134
             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),            # S137
             seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),                  # S137
+            warm_start_window=getattr(args, 'warm_start_window', None),             # S166
+            warm_start_offset=getattr(args, 'warm_start_offset', None),
+            warm_start_skip_min=getattr(args, 'warm_start_skip_min', None),
+            warm_start_skip_max=getattr(args, 'warm_start_skip_max', None),
+            warm_start_fwd_thresh=getattr(args, 'warm_start_fwd_thresh', None),
+            warm_start_rev_thresh=getattr(args, 'warm_start_rev_thresh', None),
         )
 
         print("\n✅ Bayesian optimization complete!")
