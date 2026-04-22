@@ -2234,17 +2234,17 @@ def shutdown():
     return 'Server shutting down...'
 
 if __name__ == '__main__':
-    # Kill any existing process on port 5000
+    # Kill any existing process on port 5002
     import subprocess
-    subprocess.run(['fuser', '-k', '5000/tcp'], capture_output=True)
+    subprocess.run(['fuser', '-k', '5002/tcp'], capture_output=True)
     import time
     time.sleep(1)
 
     print("╔════════════════════════════════════════════════════════════╗")
     print("║  PRNG Cluster Dashboard v2.0                               ║")
     print("║                                                            ║")
-    print("║  Local:   http://localhost:5000                            ║")
-    print("║  Network: http://192.168.3.127:5000                        ║")
+    print("║  Local:   http://localhost:5002                            ║")
+    print("║  Network: http://192.168.3.127:5002                        ║")
     print("║                                                            ║")
     print("║  Routes:                                                   ║")
     print("║    /         - Overview                                    ║")
@@ -2256,4 +2256,4 @@ if __name__ == '__main__':
     print("║  Press Ctrl+C to stop                                      ║")
     print("╚════════════════════════════════════════════════════════════╝")
 
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5002, debug=False)
