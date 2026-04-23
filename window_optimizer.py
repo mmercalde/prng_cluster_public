@@ -549,6 +549,7 @@ def run_bayesian_optimization(
     warm_start_skip_max: int = None,
     warm_start_fwd_thresh: float = None,
     warm_start_rev_thresh: float = None,
+    warm_start_session_idx: int = None,    # [S166] session index for Optuna enqueue
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -649,6 +650,7 @@ def run_bayesian_optimization(
         warm_start_skip_max=warm_start_skip_max,
         warm_start_fwd_thresh=warm_start_fwd_thresh,
         warm_start_rev_thresh=warm_start_rev_thresh,
+        warm_start_session_idx=warm_start_session_idx,  # [S166]
     )
 
     # [S140] SEED COVERAGE WRITE-BACK — log this run's range to exhaustive_progress
@@ -1080,6 +1082,8 @@ def main():
                        help='[S166] Warm-start: forward_threshold for trial 0.')
     parser.add_argument('--warm-start-rev-thresh', type=float, default=None,
                        help='[S166] Warm-start: reverse_threshold for trial 0.')
+    parser.add_argument('--warm-start-session-idx', type=int, default=None,
+                       help='[S166] Warm-start: session_idx for trial 0 (0=midday+evening, 1=midday, 2=evening).')
 
     args = parser.parse_args()
 
@@ -1117,6 +1121,7 @@ def main():
             warm_start_skip_max=getattr(args, 'warm_start_skip_max', None),
             warm_start_fwd_thresh=getattr(args, 'warm_start_fwd_thresh', None),
             warm_start_rev_thresh=getattr(args, 'warm_start_rev_thresh', None),
+            warm_start_session_idx=getattr(args, 'warm_start_session_idx', None),
         )
 
         print("\n✅ Bayesian optimization complete!")

@@ -635,10 +635,12 @@ class OptunaBayesianSearch:
                 _wsx=trial_history_context.get('warm_start_skip_max')
                 _wf=trial_history_context.get('warm_start_fwd_thresh')
                 _wr=trial_history_context.get('warm_start_rev_thresh')
+                _wsi=trial_history_context.get('warm_start_session_idx', 0)  # [S166] default 0
                 if all(v is not None for v in [_ww,_wo,_wsk,_wsx,_wf,_wr]):
                     _ws_params={'window_size':int(_ww),'offset':int(_wo),
                                'skip_min':int(_wsk),'skip_max':int(_wsx),
-                               'forward_threshold':float(_wf),'reverse_threshold':float(_wr)}
+                               'forward_threshold':float(_wf),'reverse_threshold':float(_wr),
+                               'session_idx':int(_wsi)}  # [S166] required by objective function
                     _ws_source=f'step1_trial_history (W{_ww}_O{_wo})'
                     study.enqueue_trial(_ws_params)
                     print(f"   🌡️  Warm-start: enqueued {_ws_source} as trial 0")  # [S144]

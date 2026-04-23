@@ -752,7 +752,8 @@ def add_window_optimizer_to_coordinator():
                         warm_start_skip_min: int = None,
                         warm_start_skip_max: int = None,
                         warm_start_fwd_thresh: float = None,
-                        warm_start_rev_thresh: float = None):
+                        warm_start_rev_thresh: float = None,
+                        warm_start_session_idx: int = None):
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -1449,6 +1450,7 @@ def add_window_optimizer_to_coordinator():
             'warm_start_skip_max':   warm_start_skip_max,
             'warm_start_fwd_thresh': warm_start_fwd_thresh,
             'warm_start_rev_thresh': warm_start_rev_thresh,
+            'warm_start_session_idx': warm_start_session_idx,  # [S166] required by Optuna
         }
 
         if not _np2_complete:  # [S142-B] skip single-process search for NP2

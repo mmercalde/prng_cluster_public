@@ -47,6 +47,7 @@
         "warm-start-skip-max": "warm_start_skip_max",
         "warm-start-fwd-thresh": "warm_start_fwd_thresh",
         "warm-start-rev-thresh": "warm_start_rev_thresh",
+        "warm-start-session-idx": "warm_start_session_idx",
         "min-workers": "min_workers"
       },
       "distributed": true,
