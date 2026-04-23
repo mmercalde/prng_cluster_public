@@ -1502,13 +1502,9 @@ class WatcherAgent:
                     _param_to_cli[param_name] = cli_arg
 
             # [S140b FIX] Strip internal-only params injected by WATCHER preflight
-            # These are consumed by the bayesian optimizer via trial_history_context
-            # dict — they are never CLI args and must not be passed to the script.
+            # [S166] warm_start_* are now real CLI args — only session remains internal
             _INTERNAL_ONLY_PARAMS = {
-                'warm_start_window', 'warm_start_offset',
-                'warm_start_skip_min', 'warm_start_skip_max',
-                'warm_start_session', 'warm_start_fwd_thresh',
-                'warm_start_rev_thresh',
+                'warm_start_session',
             }
             _cli_params = {k: v for k, v in final_params.items()
                            if k not in _INTERNAL_ONLY_PARAMS}
