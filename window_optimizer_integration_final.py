@@ -225,12 +225,17 @@ def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
                                    score=scores)
         _os_flush.replace(_tmp_bin, _BINARY_NPZ)
 
-        _flush_last_count = current_count
+        _flush_last_count = 0  # [S166] reset — list cleared below
         _tag = f" [{label}]" if label else ""
         print(
             f"[S152-FLUSH]{_tag} NPZ flushed: {len(seeds):,} total survivors "
             f"(+{new_since_last} new this flush, threshold={_FLUSH_EVERY})"
         )
+
+        # [S166] Clear the in-memory list after flush — data is safe in NPZ.
+        # Without this, the list grows unboundedly and causes OOM on Zeus.
+        # Survivors are deduplicated and persisted to NPZ above.
+        accumulator["bidirectional"] = []
 
     except Exception as _fe:
         print(f"[S152-FLUSH] Warning: incremental flush failed (non-fatal): {_fe}")
