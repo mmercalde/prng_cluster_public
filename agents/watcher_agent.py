@@ -1436,28 +1436,9 @@ class WatcherAgent:
                         f"{_prng_type} — using seed_start=0"
                     )
 
-                # [S140b] WARM-START read
-                try:
-                    _best_prior = _db.get_best_step1_params(_prng_type, limit=1)
-                    if _best_prior:
-                        _bp = _best_prior[0]
-                        final_params['warm_start_window']     = _bp.get('window_size')
-                        final_params['warm_start_offset']     = _bp.get('offset')
-                        final_params['warm_start_skip_min']   = _bp.get('skip_min')
-                        final_params['warm_start_skip_max']   = _bp.get('skip_max')
-                        final_params['warm_start_session']    = _bp.get('session')
-                        final_params['warm_start_fwd_thresh'] = _bp.get('forward_threshold')
-                        final_params['warm_start_rev_thresh'] = _bp.get('reverse_threshold')
-                        _src = 'downstream' if _bp.get('downstream_score') else 'trial_score'
-                        logger.info(
-                            f"[WARM_START] Step 1: W{_bp.get('window_size')}_"
-                            f"O{_bp.get('offset')}_{_bp.get('session')} "
-                            f"(ordered by {_src})"
-                        )
-                    else:
-                        logger.info(f"[WARM_START] no prior history for {_prng_type}")
-                except Exception as _ews:
-                    logger.warning(f"[WARM_START] lookup failed (non-fatal): {_ews}")
+                # [S167] warm-start DB injection removed per Team Beta ruling.
+                # Fresh runs must not be silently converted to historical warm-start runs.
+                # Resume is handled exclusively via explicit study_name / --resume-study.
 
             except Exception as _e:
                 logger.warning(
@@ -1502,9 +1483,12 @@ class WatcherAgent:
                     _param_to_cli[param_name] = cli_arg
 
             # [S140b FIX] Strip internal-only params injected by WATCHER preflight
-            # [S166] warm_start_* are now real CLI args — only session remains internal
+            # [S167] warm_start_* are not S114-S116 resume args — strip from CLI entirely.
             _INTERNAL_ONLY_PARAMS = {
-                'warm_start_session',
+                'warm_start_window', 'warm_start_offset',
+                'warm_start_skip_min', 'warm_start_skip_max',
+                'warm_start_session', 'warm_start_fwd_thresh',
+                'warm_start_rev_thresh', 'warm_start_session_idx',
             }
             _cli_params = {k: v for k, v in final_params.items()
                            if k not in _INTERNAL_ONLY_PARAMS}
@@ -1519,6 +1503,10 @@ class WatcherAgent:
                     if value:
                         cmd.append(f"--{cli_key}")
                     # If False, omit the flag entirely
+                    continue
+
+                # [S167] Skip None and empty string values
+                if value is None or value == '':
                     continue
 
                 cmd.extend([f"--{cli_key}", str(value)])

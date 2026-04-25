@@ -453,6 +453,28 @@ class TCPWorkerTransport(PWCTransportBase):
                         continue
 
                     lease_id = self._lease_job(job, worker_id)
+
+                    # [S168A-DIAG] job assignment telemetry (PASSIVE, env-gated)
+                    try:
+                        import os as _s168_os
+                        import json as _s168_json
+                        import time as _s168_time
+                        from pathlib import Path as _S168Path
+                        if _s168_os.environ.get("PRNG_PWC_STARTUP_DIAG", "0") == "1":
+                            _S168Path("logs").mkdir(exist_ok=True)
+                            with open("logs/pwc_startup_diag_simple.jsonl", "a") as _f:
+                                _f.write(_s168_json.dumps({
+                                    "event": "job_assign",
+                                    "t": _s168_time.time(),
+                                    "worker_id": worker_id,
+                                    "job_id": job.get("job_id"),
+                                    "seed_start": job.get("seed_start"),
+                                    "seed_end": job.get("seed_end"),
+                                    "prng_type": job.get("prng_type"),
+                                    "attempt": job.get("attempt", 0)
+                                }) + "\n")
+                    except Exception:
+                        pass
                     # S162: Semaphore limits concurrent job sends to 8 at a time.
                     # Prevents NIC flood on Zeus's 1GbE (Intel I210) when all
                     # 24 workers request jobs simultaneously.
