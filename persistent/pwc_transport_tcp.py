@@ -159,6 +159,16 @@ class TCPWorkerTransport(PWCTransportBase):
         # while preventing cross-rig NIC saturation.
         self._dispatch_semaphore = threading.Semaphore(8)
 
+        # [S168-FIRST-ASSIGN-JITTER]
+        self._first_assign_done = set()
+        self._first_assign_lock = threading.Lock()
+
+        # [S169-PER-WORKER-PACING]
+        self._last_assign_time = {}
+        self._last_assign_lock = threading.Lock()
+
+
+
     def start(self) -> None:
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -451,6 +461,55 @@ class TCPWorkerTransport(PWCTransportBase):
                             "payload":          None,
                         })
                         continue
+
+                    
+                    # [S168-FIRST-ASSIGN-JITTER]
+                    try:
+                        import os as _s168_os
+                        import time as _s168_time
+                        import zlib as _s168_zlib
+
+                        jitter = float(_s168_os.environ.get("PRNG_PWC_FIRST_ASSIGN_JITTER_SEC", "0") or 0)
+
+                        if jitter > 0:
+                            with self._first_assign_lock:
+                                first = worker_id not in self._first_assign_done
+                                if first:
+                                    self._first_assign_done.add(worker_id)
+
+                            if first:
+                                slots = max(1, int(jitter * 1000))
+                                delay = (_s168_zlib.crc32(worker_id.encode("utf-8")) % (slots + 1)) / 1000.0
+
+                                if delay > 0:
+                                    _s168_time.sleep(delay)
+
+                    except Exception:
+                        pass
+
+                    
+                    # [S169-PER-WORKER-PACING]
+                    # Optional steady-state smoothing. Default off.
+                    try:
+                        import os as _s169_os
+                        import time as _s169_time
+
+                        min_gap = float(_s169_os.environ.get("PRNG_PWC_PER_WORKER_MIN_GAP_SEC", "0") or 0)
+
+                        if min_gap > 0:
+                            with self._last_assign_lock:
+                                now = _s169_time.time()
+                                last = self._last_assign_time.get(worker_id, 0.0)
+                                wait = min_gap - (now - last)
+
+                                if wait > 0:
+                                    _s169_time.sleep(wait)
+                                    now = _s169_time.time()
+
+                                self._last_assign_time[worker_id] = now
+
+                    except Exception:
+                        pass
 
                     lease_id = self._lease_job(job, worker_id)
 
