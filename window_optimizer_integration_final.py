@@ -322,8 +322,8 @@ def run_bidirectional_test(coordinator,
                            seed_count: int,
                            prng_base: str = 'java_lcg',
                            test_both_modes: bool = False,
-                           forward_threshold: float = 0.01,
-                           reverse_threshold: float = 0.01,
+                           forward_threshold: float = 0.50,
+                           reverse_threshold: float = 0.50,
                            trial_number: int = 0,
                            accumulator: Dict[str, List] = None,
                            optuna_trial=None,
@@ -1392,10 +1392,18 @@ def add_window_optimizer_to_coordinator():
 
         def test_config(config,
                         ss=seed_start, sc=seed_count,
-                        ft=bounds.default_forward_threshold,
-                        rt=bounds.default_reverse_threshold,
-                        optuna_trial=None):  # S115 M2
+                        ft=None,
+                        rt=None,
+                        optuna_trial=None):  # S115 M2 + S172 threshold-drop fix
             trial_counter['count'] += 1
+            # [S172] Read threshold from config (Optuna-sampled value).
+            # Previously ft/rt defaulted to bounds.default_*, dropping
+            # Optuna's per-trial threshold. Now we honor the WindowConfig
+            # value with bounds.default_* as the safety fallback.
+            if ft is None:
+                ft = getattr(config, 'forward_threshold', None) or bounds.default_forward_threshold
+            if rt is None:
+                rt = getattr(config, 'reverse_threshold', None) or bounds.default_reverse_threshold
             # S115 M1/M5: route to partition coordinator
             if optuna_trial is not None and n_parallel > 1:
                 _part = optuna_trial.number % n_parallel

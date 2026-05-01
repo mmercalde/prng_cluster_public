@@ -48,8 +48,8 @@ def load_search_bounds_from_config(config_path: str = "distributed_config.json")
         "offset": {"min": 0, "max": 100},
         "skip_min": {"min": 0, "max": 10},
         "skip_max": {"min": 10, "max": 250},     # S139: 500→250, matches distributed_config.json
-        "forward_threshold": {"min": 0.001, "max": 0.10, "default": 0.01},
-        "reverse_threshold": {"min": 0.001, "max": 0.10, "default": 0.01}
+        "forward_threshold": {"min": 0.40, "max": 0.75, "default": 0.50},
+        "reverse_threshold": {"min": 0.40, "max": 0.75, "default": 0.50}
     }
     try:
         with open(config_path, 'r') as f:
@@ -120,13 +120,13 @@ class SearchBounds:
     min_skip_max: int = 10
     max_skip_max: int = 250
     # Threshold bounds - LOW for discovery, not filtering
-    min_forward_threshold: float = 0.30
+    min_forward_threshold: float = 0.40
     max_forward_threshold: float = 0.75
-    min_reverse_threshold: float = 0.30
+    min_reverse_threshold: float = 0.40
     max_reverse_threshold: float = 0.75
     # Defaults
-    default_forward_threshold: float = 0.30
-    default_reverse_threshold: float = 0.30
+    default_forward_threshold: float = 0.50
+    default_reverse_threshold: float = 0.50
     session_options: List[List[str]] = None
     
     @classmethod
@@ -146,8 +146,8 @@ class SearchBounds:
             max_forward_threshold=cfg["forward_threshold"]["max"],
             min_reverse_threshold=cfg["reverse_threshold"]["min"],
             max_reverse_threshold=cfg["reverse_threshold"]["max"],
-            default_forward_threshold=cfg["forward_threshold"].get("default", 0.01),
-            default_reverse_threshold=cfg["reverse_threshold"].get("default", 0.01)
+            default_forward_threshold=cfg["forward_threshold"].get("default", 0.50),
+            default_reverse_threshold=cfg["reverse_threshold"].get("default", 0.50)
         )
 
     def __post_init__(self):
@@ -174,8 +174,8 @@ class SearchBounds:
         with open(baseline_path) as f:
             baseline = json.load(f)
         
-        fwd = baseline.get('forward_threshold', 0.25)
-        rev = baseline.get('reverse_threshold', 0.25)
+        fwd = baseline.get('forward_threshold', 0.50)
+        rev = baseline.get('reverse_threshold', 0.50)
         skip = baseline.get('skip_max', 200)
         
         errors = []
@@ -813,7 +813,13 @@ def run_with_config(
     iterations: int,
     output_survivors: str = 'bidirectional_survivors.json',
     output_train: str = 'train_history.json',
-    output_holdout: str = 'holdout_history.json'
+    output_holdout: str = 'holdout_history.json',
+    use_persistent_workers: bool = False,   # [S170-PARITY] use_persistent_workers
+    pwc_transport: str = 'tcp',             # [S170-PARITY] use_persistent_workers
+    seed_cap_amd: int = 2_000_000,          # [S170-PARITY-2] execution sizing
+    seed_cap_nvidia: int = 5_000_000,       # [S170-PARITY-2] execution sizing
+    worker_pool_size: int = 8,              # [S170-PARITY-2] execution sizing
+    min_workers: int = 1,                   # [S170-PARITY-2] execution sizing
 ) -> Dict[str, Any]:
     """
     Run sieves with an existing optimal configuration.
@@ -871,6 +877,20 @@ def run_with_config(
 
     # Add integration
     add_window_optimizer_to_coordinator()
+
+    # [S170-PARITY] propagate persistent worker / transport — match Bayesian path
+    # (lines 614-616). Without these, --config-file mode silently downgrades to
+    # legacy SSH distribution regardless of CLI flags.
+    coordinator.use_persistent_workers = use_persistent_workers
+    coordinator.pwc_transport          = pwc_transport
+
+    # [S170-PARITY-2] propagate execution sizing — match Bayesian/PWC path
+    # Without these, --config-file mode silently falls back to default chunk caps
+    # such as seed_cap_amd=2_000_000 despite CLI --seed-cap-amd 100000.
+    coordinator.seed_cap_amd           = seed_cap_amd
+    coordinator.seed_cap_nvidia        = seed_cap_nvidia
+    coordinator.worker_pool_size       = worker_pool_size
+    coordinator.min_workers            = min_workers
 
     # Create WindowConfig object
     window_config = WindowConfig(
@@ -1205,7 +1225,15 @@ def main():
             iterations=args.iterations,
             output_survivors=args.output_survivors,
             output_train=args.output_train,
-            output_holdout=args.output_holdout
+            output_holdout=args.output_holdout,
+            # [S170-PARITY] CLI passthrough — same defaults as Bayesian call site
+            use_persistent_workers=getattr(args, 'use_persistent_workers', False),
+            pwc_transport=getattr(args, 'pwc_transport', 'tcp'),
+            # [S170-PARITY-2] CLI execution sizing passthrough
+            seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),
+            seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),
+            worker_pool_size=getattr(args, 'worker_pool_size', 8),
+            min_workers=getattr(args, 'min_workers', 1),
         )
 
         print("\n✅ Sieve execution complete!")

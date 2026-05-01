@@ -71,10 +71,11 @@
   },
   "search_bounds": {
     "window_size": {
-      "min": 2,
+      "min": 6,
       "max": 50,
       "default": 12,
-      "_calibration_note": "S148 Run-1 ruling: W12 is empirically preferred production baseline. Optuna still explores full [min,max] range. W12+T0.30 gives ~5 false fwd survivors/200k vs ~272 at W8/T0.25."
+      "_calibration_note": "S148 Run-1 ruling: W12 is empirically preferred production baseline. Optuna still explores full [min,max] range. W12+T0.30 gives ~5 false fwd survivors/200k vs ~272 at W8/T0.25.",
+      "_s172_note": "S172 (2026-04-30): min raised from 2 to 6 per TB ruling. W=2/3 produces ~39%/53% survivor rate by chance alone, regardless of threshold. Threshold bounds intentionally PRESERVED so Optuna can continue optimizing across [min, max]."
     },
     "offset": {
       "min": 0,
