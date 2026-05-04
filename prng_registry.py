@@ -29,7 +29,7 @@ Version 2.4 - November 27, 2025
   * Size checks: seq_size = (k < 2048) ? k : 2048 (was 512)
 
 - CRITICAL FIX: Changed skip_sequences stride from hardcoded to dynamic
-  * Changed: skip_sequences[pos * k + i] (was pos * 512 + i)
+  * Changed: skip_sequences[pos * k + i] (was pos * k + i)
   * Reason: Window sizes from optimizer varied (e.g., 783, 453, 755)
   * Impact: Eliminated illegal memory access causing GPU crashes
   * Affected kernels: All hybrid variants (java_lcg, xorshift32, pcg32, etc.)
@@ -1878,7 +1878,7 @@ void sfc64_hybrid_multi_strategy_sieve(
     unsigned long long seed = seeds[idx];
     float best_rate = 0.0f;
     int best_strategy = -1;
-    int best_skip_seq[512];
+    int best_skip_seq[2048];  // [S170-K512] was [512]
     for (int strat = 0; strat < n_strategies; strat++) {
         unsigned long long a = seed;
         unsigned long long b = 0x9E3779B97F4A7C15ULL;
@@ -1895,7 +1895,7 @@ void sfc64_hybrid_multi_strategy_sieve(
         int consecutive_misses = 0;
         int max_misses = strategy_max_misses[strat];
         int tolerance = strategy_tolerances[strat];
-        int temp_skip_seq[512];
+        int temp_skip_seq[2048];  // [S170-K512] was [512]
         int expected_skip = 5;
         for (int draw_idx = 0; draw_idx < k && draw_idx < 2048; draw_idx++) {
             unsigned long long a_backup = a, b_backup = b, c_backup = c, counter_backup = counter;
@@ -2471,7 +2471,7 @@ void lcg32_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -2777,7 +2777,7 @@ void xorshift64_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -2920,7 +2920,7 @@ void xorshift128_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -3060,7 +3060,7 @@ void pcg32_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -3193,7 +3193,7 @@ void java_lcg_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -3327,7 +3327,7 @@ void minstd_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -3486,7 +3486,7 @@ void philox4x32_hybrid_reverse_sieve(
         unsigned int counter = offset;
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;
@@ -3675,7 +3675,7 @@ void mt19937_hybrid_reverse_sieve(
         }
         int matches = 0;
         int consecutive_misses = 0;
-        unsigned int skip_seq[512];
+        unsigned int skip_seq[2048];  // [S170-K512] was [512]
         bool failed = false;
         for (int i = 0; i < k && !failed; i++) {
             bool found = false;

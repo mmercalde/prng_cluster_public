@@ -112,3 +112,21 @@ zmq_chunk_payloads/
 *.ckpt.tmp.npz
 *.flush.tmp.npz
 zmq_job_queue.db.stale_*
+
+# Patch backups
+*.s173_bak
+*.s173v2_bak
+*.s170_*_bak
+*.s171_*_bak
+*.s172_bak*
+*_threshold_fix_bak
+*_k512_bak
+*_config_parity_bak
+*_parity2_bak
+
+# Launch scripts (operational, not architectural)
+launch_pool*.sh
+launch_s173_*.sh
+
+# Crash dumps
+crash_dumps/

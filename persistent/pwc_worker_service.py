@@ -185,6 +185,7 @@ class PWCWorkerService:
                 self._send_online()
                 self._wait_for_init()
                 self._import_sieve()
+                self._validate_compute_device()  # [S170-LIVE-GPU-PROBE] fail before READY if isolated GPU invalid
                 self._send_ready()
 
                 self._main_loop()
@@ -247,6 +248,37 @@ class PWCWorkerService:
             elif mtype == "shutdown":
                 raise ConnectionError("shutdown before init")
         raise TimeoutError(f"init not received within {ROCM_READY_TIMEOUT_S}s")
+
+    def _validate_compute_device(self) -> None:
+        """
+        [S170-LIVE-GPU-PROBE]
+        Validate assigned isolated compute device before READY.
+
+        With ROCR_VISIBLE_DEVICES=<physical_gpu>, CuPy should see exactly the
+        isolated logical Device(0). If not, exit before the coordinator can use us.
+        """
+        try:
+            import cupy as cp
+            n = cp.cuda.runtime.getDeviceCount()
+            if n < 1:
+                raise RuntimeError(f"CuPy sees {n} devices after isolation")
+            with cp.cuda.Device(0):
+                x = cp.zeros((1,), dtype=cp.uint8)
+                cp.cuda.runtime.deviceSynchronize()
+                del x
+            log.info(
+                f"[{self.worker_id}] [S170-LIVE-GPU-PROBE] device validation OK "
+                f"visible_devices={n} logical_device=0 rocm={self.use_rocm}"
+            )
+        except Exception as exc:
+            log.error(
+                f"[{self.worker_id}] [S170-LIVE-GPU-PROBE] device validation FAILED: {exc}"
+            )
+            self._emit_heartbeat(
+                "exception",
+                error=f"S170 device validation failed: {exc}",
+            )
+            sys.exit(42)
 
     def _send_ready(self) -> None:
         """S161 v2: notify coordinator we are compute-ready."""
