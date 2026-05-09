@@ -791,24 +791,42 @@ class PersistentWorkerCoordinator:
 
     def _tcp_wait_ready(self, expected: int, timeout_s: float = 180.0) -> int:
         """
-        S161 v2: Wait for workers to report ready (compute-ready after ROCm init).
+        S161 v2 + S174: Wait for workers to report ready (compute-ready after ROCm init).
         Ready = dispatch-eligible. Timeout covers parallel ROCm warmup (~90s).
-        Returns count of ready workers when min_workers met or deadline reached.
+
+        S174 hard gate: on success, emits READY GATE PASSED and returns count.
+        On timeout with count < min_workers, shuts down workers, emits
+        READY GATE FAILED, and RAISES RuntimeError BEFORE any job dispatch
+        can occur.
         """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             count = self._tcp_transport.ready_count()
             if count >= self.min_workers:
                 self.logger.info(
-                    f"[PWC-TCP] {count}/{expected} workers ready — dispatching"
+                    f"[PWC-TCP] READY GATE PASSED: {count}/{expected} ready "
+                    f"(min_workers={self.min_workers}) — dispatch allowed"
                 )
                 return count
             time.sleep(0.5)
+        # Timeout path: hard-fail per S174 spec
         count = self._tcp_transport.ready_count()
-        self.logger.warning(
-            f"[PWC-TCP] ready timeout: {count}/{expected} workers ready after {timeout_s:.0f}s"
+        self.logger.error(
+            f"[PWC-TCP] READY GATE FAILED: {count}/{expected} ready "
+            f"< min_workers={self.min_workers} — aborting before dispatch"
         )
-        return count
+        # S174 TB hardening: actively clean up workers before raising,
+        # so failed gate does not leave TCP workers waiting/reconnecting.
+        try:
+            self.shutdown()
+        except Exception as _shutdown_exc:
+            self.logger.warning(
+                f"[PWC-TCP] READY GATE FAILED cleanup warning: {_shutdown_exc}"
+            )
+        raise RuntimeError(
+            f"PWC TCP ready gate failed: {count}/{expected} ready "
+            f"< min_workers={self.min_workers} after {timeout_s:.0f}s timeout"
+        )
 
     def _ensure_worker_alive(self, handle: WorkerHandle) -> bool:
         """Check worker still alive; respawn if dead."""
@@ -1130,14 +1148,23 @@ class PersistentWorkerCoordinator:
 
         # Build chunk list — divide total seeds across all available workers
         # S161 v2: workers already online+ready from startup() three-phase init
-        # Just confirm ready count before dispatch — no waiting needed here
+        # S174 defense-in-depth: ready gate already enforced in _tcp_wait_ready,
+        # but verify once more at dispatch site to block any race condition.
         if self._tcp_transport is not None:
             _ready = self._tcp_transport.ready_count()
-            if _ready == 0:
-                self.logger.error("[PWC-TCP] no ready workers — aborting dispatch")
-                return {"status": "error", "survivor_count": 0,
-                        "survivors": [], "failed_chunks": 1, "total_chunks": 1}
-            self.logger.info(f"[PWC-TCP] {_ready} ready worker(s) — dispatching")
+            if _ready < self.min_workers:
+                self.logger.error(
+                    f"[PWC-TCP] DISPATCH BLOCKED: {_ready} ready "
+                    f"< min_workers={self.min_workers} — refusing job_assign"
+                )
+                raise RuntimeError(
+                    f"PWC dispatch blocked: ready={_ready} "
+                    f"< min_workers={self.min_workers}"
+                )
+            self.logger.info(
+                f"[PWC-TCP] dispatch confirmed: {_ready} ready workers "
+                f"(min_workers={self.min_workers})"
+            )
         all_workers = self._get_available_workers()
         num_workers = max(1, len(all_workers))
         ideal_chunk = max(1, total_seeds // num_workers)
@@ -1520,7 +1547,8 @@ def run_trial_persistent(coordinator_cfg: str,
                          pwc_transport: str = "ssh",
                          pwc_host: str = "0.0.0.0",
                          pwc_port: int = 5600,
-                         node_allowlist=None) -> Dict[str, Any]:  # [S163-KARG-PWC]
+                         node_allowlist=None,
+                         min_workers: int = 1) -> Dict[str, Any]:  # [S163-KARG-PWC] + [S174 ready gate]
     """
     Shim called by window_optimizer_integration_final.py when use_persistent_workers=True.
 
@@ -1543,6 +1571,7 @@ def run_trial_persistent(coordinator_cfg: str,
         pwc_host         = pwc_host,
         pwc_port         = pwc_port,
         node_allowlist   = node_allowlist,  # [S163-KARG-PWC] partition node filter
+        min_workers      = min_workers,     # [S174] ready gate
     )
     pwc.startup()
 

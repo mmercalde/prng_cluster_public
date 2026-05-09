@@ -367,6 +367,7 @@ def run_bidirectional_test(coordinator,
             pwc_host          = getattr(coordinator, 'pwc_host', '0.0.0.0'),  # [S163-KARG-FIX1] hop 5
             pwc_port          = getattr(coordinator, 'pwc_port', 5600),       # [S163-KARG-FIX1] hop 5
             node_allowlist    = getattr(coordinator, 'node_allowlist', None), # [S163-KARG-PWC] hop 6
+            min_workers       = getattr(coordinator, 'pwc_min_workers', 1),   # [S174] ready gate wiring
         )
         if _pw_result.get("pruned"):
             # Return minimal pruned TestResult — only fields TestResult accepts
