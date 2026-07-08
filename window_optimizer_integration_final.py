@@ -64,6 +64,14 @@ try:
 except ImportError:
     run_trial_zmq_sqlite = None  # only needed when --use-zmq-sqlite is set
 
+# [S172 Phase 1] RANGE-MINER runner — optional import so this module keeps working
+# on hosts without the miner/ package. Enabling --use-range-miner without the
+# package raises ImportError inside the gate below, matching the PWC/ZMQ pattern.
+try:
+    from miner import run_trial_miner
+except ImportError:
+    run_trial_miner = None
+
 
 def extract_survivor_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -335,6 +343,55 @@ def run_bidirectional_test(coordinator,
 
     NEW IN V2.0: Optionally tests BOTH constant and variable skip patterns.
     """
+
+    # ========================================================================
+    # [S172 Phase 1] RANGE-MINER PATH — activated by use_range_miner=True
+    # Mutually exclusive with --use-persistent-workers and --use-zmq-sqlite
+    # (enforced at argparse in window_optimizer.py). Placed at the top of the
+    # cascade so miner selection wins unambiguously; PWC/ZMQ paths follow.
+    # Phase 1: run_trial_miner raises NotImplementedError. Enabling this flag
+    # is scaffolding-visible only; production use gated on Phase 7 acceptance.
+    # ========================================================================
+    _use_miner = getattr(coordinator, 'use_range_miner', False)
+    if _use_miner:
+        if run_trial_miner is None:
+            raise ImportError(
+                "miner/ package not found — cannot use --use-range-miner. "
+                "Ensure miner/__init__.py and miner/range_miner_coordinator.py "
+                "are deployed to the project root."
+            )
+        _miner_result = run_trial_miner(
+            coordinator_cfg   = getattr(coordinator, 'config_file', 'distributed_config.json'),
+            config            = config,
+            trial_number      = trial_number,
+            prng_base         = prng_base,
+            residues          = _get_residues_for_config(config, dataset_path),
+            total_seeds       = seed_count,
+            forward_threshold = forward_threshold,
+            reverse_threshold = reverse_threshold,
+            test_both_modes   = test_both_modes,
+            dataset_path      = dataset_path,
+            worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
+            seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
+            seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+            miner_stripe_size = getattr(coordinator, 'miner_stripe_size', 67_108_864),
+            miner_substripes  = getattr(coordinator, 'miner_substripes', 8),
+            miner_output_dir  = getattr(coordinator, 'miner_output_dir', None),
+            node_allowlist    = getattr(coordinator, 'node_allowlist', None),
+        )
+        if _miner_result.get("pruned"):
+            return TestResult(
+                config              = config,
+                forward_count       = 0,
+                reverse_count       = 0,
+                bidirectional_count = 0,
+                iteration           = trial_number,
+            )
+        return _build_test_result_from_pw(_miner_result, accumulator, config,
+                                          prng_base, trial_number, optuna_trial)
+    # ========================================================================
+    # END RANGE-MINER PATH — original path continues unchanged below
+    # ========================================================================
 
     # ========================================================================
     # S134: PERSISTENT WORKER PATH — activated by use_persistent_workers=True

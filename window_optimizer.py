@@ -550,6 +550,10 @@ def run_bayesian_optimization(
     warm_start_fwd_thresh: float = None,
     warm_start_rev_thresh: float = None,
     warm_start_session_idx: int = None,    # [S166] session index for Optuna enqueue
+    use_range_miner: bool = False,          # [S172 Phase 1]
+    miner_stripe_size: int = 67_108_864,    # [S172 Phase 1]
+    miner_substripes: int = 8,              # [S172 Phase 1]
+    miner_output_dir: str = None,           # [S172 Phase 1]
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -623,6 +627,18 @@ def run_bayesian_optimization(
     # S137: wire seed cap flags onto coordinator so integration final can read them
     coordinator.seed_cap_nvidia = seed_cap_nvidia
     coordinator.seed_cap_amd    = seed_cap_amd
+
+    # [S172 Phase 1] Wire miner flags onto coordinator so the integration-final gate
+    # (window_optimizer_integration_final.py:_use_miner) can read them.
+    coordinator.use_range_miner   = use_range_miner
+    coordinator.miner_stripe_size = miner_stripe_size
+    coordinator.miner_substripes  = miner_substripes
+    coordinator.miner_output_dir  = miner_output_dir
+    if use_range_miner:
+        print(f"   [S172 Phase 1] RANGE-MINER backend ENABLED "
+              f"(stripe={miner_stripe_size}, substripes={miner_substripes})")
+        print(f"   [S172 Phase 1] Miner output dir: "
+              f"{miner_output_dir or 'auto (/dev/shm/prng/miner/ if writable, else ~/miner_output/)'}")
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -1105,7 +1121,37 @@ def main():
     parser.add_argument('--warm-start-session-idx', type=int, default=None,
                        help='[S166] Warm-start: session_idx for trial 0 (0=midday+evening, 1=midday, 2=evening).')
 
+    # [S172 Phase 1] RANGE-MINER backend (mutually exclusive with --use-persistent-workers
+    # and --use-zmq-sqlite). Phase 1 is scaffolding-only; enabling this flag will import
+    # miner.range_miner_coordinator.run_trial_miner which raises NotImplementedError until
+    # Phases 2-5 land. See docs/PROPOSAL_S172_RANGE_MINER_v1_4_4.md.
+    parser.add_argument('--use-range-miner', action='store_true', default=False,
+                        help='[S172] Use RANGE-MINER stripe backend (opt-in, mutex vs PWC/ZMQ)')
+    parser.add_argument('--miner-stripe-size', type=int, default=67_108_864,
+                        help='[S172 §6.2] Seeds per stripe per GPU (default 64M)')
+    parser.add_argument('--miner-substripes', type=int, default=8,
+                        help='[S172 §6.2] Sub-stripe count per stripe (default 8; sized to fit watchdog)')
+    # [S172 Phase 1] Infrastructure-neutral output path — configurable to support LXC ramdisk
+    # bind-mounts (/dev/shm/prng/miner/), VM disk paths, and bare-metal all identically.
+    # None means "auto-detect: /dev/shm/prng/miner/ if writable else ~/miner_output/".
+    parser.add_argument('--miner-output-dir', type=str, default=None,
+                        help='[S172] Miner NPZ output directory (default: /dev/shm/prng/miner/ '
+                             'if writable, else ~/miner_output/)')
+
     args = parser.parse_args()
+
+    # [S172 Phase 1] Mutex validation: exactly one backend may be selected.
+    _backends = [
+        ('use_persistent_workers', args.use_persistent_workers),
+        ('use_zmq_sqlite',         args.use_zmq_sqlite),
+        ('use_range_miner',        args.use_range_miner),
+    ]
+    _enabled = [name for name, val in _backends if val]
+    if len(_enabled) > 1:
+        parser.error(
+            f"only one of --use-persistent-workers, --use-zmq-sqlite, "
+            f"--use-range-miner may be set (got: {', '.join('--' + n.replace('_','-') for n in _enabled)})"
+        )
 
     # Check mode
     if args.strategy == 'bayesian':
@@ -1142,6 +1188,11 @@ def main():
             warm_start_fwd_thresh=getattr(args, 'warm_start_fwd_thresh', None),
             warm_start_rev_thresh=getattr(args, 'warm_start_rev_thresh', None),
             warm_start_session_idx=getattr(args, 'warm_start_session_idx', None),
+            # [S172 Phase 1]
+            use_range_miner=getattr(args, 'use_range_miner', False),
+            miner_stripe_size=getattr(args, 'miner_stripe_size', 67_108_864),
+            miner_substripes=getattr(args, 'miner_substripes', 8),
+            miner_output_dir=getattr(args, 'miner_output_dir', None),
         )
 
         print("\n✅ Bayesian optimization complete!")
