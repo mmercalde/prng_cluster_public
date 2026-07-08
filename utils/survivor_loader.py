@@ -37,16 +37,25 @@ VERSION = "2.0.0"
 # Default logger
 _default_logger = logging.getLogger(__name__)
 
-# Categorical decodings (reverse of encoding in converter)
-SKIP_MODE_DECODING = {0: 'constant', 1: 'variable'}
-PRNG_TYPE_DECODING = {
-    0: 'java_lcg', 1: 'java_lcg_reverse',
-    2: 'mt19937', 3: 'mt19937_reverse',
-    4: 'xorshift128', 5: 'xorshift128_reverse',
-    6: 'lcg32', 7: 'lcg32_reverse',
-    8: 'minstd', 9: 'minstd_reverse',
-    10: 'randu', 11: 'randu_reverse',
-}
+# Categorical decodings — S172 Phase 0 (v3.2): now sourced from the shared
+# registry-derived prng_encoding module. decode_prng_type hard-fails on an
+# unknown id rather than silently returning 'java_lcg'. SKIP_MODE_DECODING and
+# PRNG_TYPE_DECODING are re-exported for any external referrers.
+try:
+    from .prng_encoding import (
+        SKIP_MODE_DECODING,
+        PRNG_TYPE_DECODING,
+        decode_prng_type,
+        decode_skip_mode,
+    )
+except ImportError:
+    # Fallback for direct-script execution (not as a package member)
+    from prng_encoding import (
+        SKIP_MODE_DECODING,
+        PRNG_TYPE_DECODING,
+        decode_prng_type,
+        decode_skip_mode,
+    )
 
 
 @dataclass
@@ -352,9 +361,9 @@ def _array_to_dict(data: Dict[str, np.ndarray], npz_version: int = 1) -> List[Di
             
             # Categorical fields (decode from int)
             if 'skip_mode' in data:
-                survivor['skip_mode'] = SKIP_MODE_DECODING.get(int(data['skip_mode'][i]), 'constant')
+                survivor['skip_mode'] = decode_skip_mode(int(data['skip_mode'][i]))
             if 'prng_type' in data:
-                survivor['prng_type'] = PRNG_TYPE_DECODING.get(int(data['prng_type'][i]), 'java_lcg')
+                survivor['prng_type'] = decode_prng_type(int(data['prng_type'][i]))
         
         survivors.append(survivor)
     

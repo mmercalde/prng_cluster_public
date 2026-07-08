@@ -226,16 +226,14 @@ def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
         _os_flush.replace(_tmp_bin, _BINARY_NPZ)
 
         _flush_last_count = 0  # [S166] reset — list cleared below
+        # [S166] Clear the in-memory list after flush — data is safe in NPZ.
+        # Without this, the list grows unboundedly and causes OOM on Zeus.
+        accumulator["bidirectional"] = []
         _tag = f" [{label}]" if label else ""
         print(
             f"[S152-FLUSH]{_tag} NPZ flushed: {len(seeds):,} total survivors "
             f"(+{new_since_last} new this flush, threshold={_FLUSH_EVERY})"
         )
-
-        # [S166] Clear the in-memory list after flush — data is safe in NPZ.
-        # Without this, the list grows unboundedly and causes OOM on Zeus.
-        # Survivors are deduplicated and persisted to NPZ above.
-        accumulator["bidirectional"] = []
 
     except Exception as _fe:
         print(f"[S152-FLUSH] Warning: incremental flush failed (non-fatal): {_fe}")
@@ -322,8 +320,8 @@ def run_bidirectional_test(coordinator,
                            seed_count: int,
                            prng_base: str = 'java_lcg',
                            test_both_modes: bool = False,
-                           forward_threshold: float = 0.50,
-                           reverse_threshold: float = 0.50,
+                           forward_threshold: float = 0.01,
+                           reverse_threshold: float = 0.01,
                            trial_number: int = 0,
                            accumulator: Dict[str, List] = None,
                            optuna_trial=None,
@@ -367,7 +365,6 @@ def run_bidirectional_test(coordinator,
             pwc_host          = getattr(coordinator, 'pwc_host', '0.0.0.0'),  # [S163-KARG-FIX1] hop 5
             pwc_port          = getattr(coordinator, 'pwc_port', 5600),       # [S163-KARG-FIX1] hop 5
             node_allowlist    = getattr(coordinator, 'node_allowlist', None), # [S163-KARG-PWC] hop 6
-            min_workers       = getattr(coordinator, 'pwc_min_workers', 1),   # [S174] ready gate wiring
         )
         if _pw_result.get("pruned"):
             # Return minimal pruned TestResult — only fields TestResult accepts
@@ -747,14 +744,7 @@ def add_window_optimizer_to_coordinator():
                         study_name: str = '',
                         n_parallel: int = 1,
                         enable_pruning: bool = False,
-                        trse_context_file: str = 'trse_context.json',  # S123 TRSE thread
-                        warm_start_window: int = None,    # [S166] explicit warm-start
-                        warm_start_offset: int = None,
-                        warm_start_skip_min: int = None,
-                        warm_start_skip_max: int = None,
-                        warm_start_fwd_thresh: float = None,
-                        warm_start_rev_thresh: float = None,
-                        warm_start_session_idx: int = None):
+                        trse_context_file: str = 'trse_context.json'):  # S123 TRSE thread
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -1393,18 +1383,10 @@ def add_window_optimizer_to_coordinator():
 
         def test_config(config,
                         ss=seed_start, sc=seed_count,
-                        ft=None,
-                        rt=None,
-                        optuna_trial=None):  # S115 M2 + S172 threshold-drop fix
+                        ft=bounds.default_forward_threshold,
+                        rt=bounds.default_reverse_threshold,
+                        optuna_trial=None):  # S115 M2
             trial_counter['count'] += 1
-            # [S172] Read threshold from config (Optuna-sampled value).
-            # Previously ft/rt defaulted to bounds.default_*, dropping
-            # Optuna's per-trial threshold. Now we honor the WindowConfig
-            # value with bounds.default_* as the safety fallback.
-            if ft is None:
-                ft = getattr(config, 'forward_threshold', None) or bounds.default_forward_threshold
-            if rt is None:
-                rt = getattr(config, 'reverse_threshold', None) or bounds.default_reverse_threshold
             # S115 M1/M5: route to partition coordinator
             if optuna_trial is not None and n_parallel > 1:
                 _part = optuna_trial.number % n_parallel
@@ -1452,15 +1434,28 @@ def add_window_optimizer_to_coordinator():
             'seed_start':   seed_start,
             'seed_end':     seed_start + seed_count,
             'n_parallel_gt1': n_parallel > 1,  # [S142] guard: NP2 owns writes
-            # [S166] explicit warm-start params — override DB lookup
-            'warm_start_window':     warm_start_window,
-            'warm_start_offset':     warm_start_offset,
-            'warm_start_skip_min':   warm_start_skip_min,
-            'warm_start_skip_max':   warm_start_skip_max,
-            'warm_start_fwd_thresh': warm_start_fwd_thresh,
-            'warm_start_rev_thresh': warm_start_rev_thresh,
-            'warm_start_session_idx': warm_start_session_idx,  # [S166] required by Optuna
         }
+
+        # [S166] Add warm_start fields from DB lookup — feeds Optuna enqueue
+        # This mirrors the n_parallel DB lookup path above.
+        try:
+            from database_system import DistributedPRNGDatabase as _DBW
+            _db_ws = _DBW()
+            _best_ws = _db_ws.get_best_step1_params(prng_base, limit=1)
+            if _best_ws:
+                _bws = _best_ws[0]
+                _trial_history_ctx['warm_start_window']     = _bws.get('window_size')
+                _trial_history_ctx['warm_start_offset']     = _bws.get('offset')
+                _trial_history_ctx['warm_start_skip_min']   = _bws.get('skip_min')
+                _trial_history_ctx['warm_start_skip_max']   = _bws.get('skip_max')
+                _trial_history_ctx['warm_start_session']    = _bws.get('session')
+                _trial_history_ctx['warm_start_fwd_thresh'] = _bws.get('forward_threshold')
+                _trial_history_ctx['warm_start_rev_thresh'] = _bws.get('reverse_threshold')
+                print(f"   [WARM_START] loaded W{_bws.get('window_size')}_O{_bws.get('offset')} from step1_trial_history")
+            else:
+                print(f"   [WARM_START] no prior history for {prng_base}")
+        except Exception as _ews:
+            print(f"   [WARM_START] DB lookup failed (non-fatal): {_ews}")
 
         if not _np2_complete:  # [S142-B] skip single-process search for NP2
             results = optimizer.optimize(
