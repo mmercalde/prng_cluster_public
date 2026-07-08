@@ -4,6 +4,12 @@
 **Status:** DRAFT — pending rrig6600c trial
 **Scope:** rrig6600, rrig6600b, rrig6600c (8× RX 6600 each)
 
+> **⚠ Superseded on acceptance criteria.** The container-type decision and
+> acceptance gates in §5 of this document are superseded by
+> `PROPOSAL_Infrastructure_Reconciliation_S172_v1_0.md` (Beta-approved).
+> For the authoritative rrig6600c trial criteria, see §5 of that document.
+> The per-phase step detail below remains valid.
+
 ---
 
 ## 1. Objective
