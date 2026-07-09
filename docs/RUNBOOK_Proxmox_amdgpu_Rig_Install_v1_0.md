@@ -1,5 +1,5 @@
 # RUNBOOK: Proxmox VE + amdgpu-dkms Install for RX 6600 Rigs
-**Version:** 1.0
+**Version:** 1.1
 **Date:** 2026-07-08
 **Verified on:** rrig6600c (first conversion)
 **Applies to:** rrig6600, rrig6600b (identical hardware — Biostar TB360-BTC Pro 2.0, 8× RX 6600)
@@ -159,3 +159,75 @@ The Proxmox HOST owns: amdgpu kernel driver, `/dev/kfd` + `/dev/dri` nodes,
 firmware, modprobe tuning. The CONTAINER owns: ROCm 6.4.3 userspace, HIP
 runtime, rocm_env venv, all HSA_OVERRIDE_GFX_VERSION=10.3.0 / HSA_ENABLE_SDMA=0
 env vars (set per-worker). Keep this boundary clean across upgrades.
+
+---
+
+## 9. LXC container with GPU access (CT100) — VERIFIED on rrig6600c
+
+Result achieved 2026-07-08: a privileged LXC saw all 8 GPUs and `rocminfo`
+opened all 8 gfx1030 compute agents (the gfx1032->gfx1030 spoof) with RW
+access, from inside the container.
+
+### 9.1 Create the container
+```
+pveam update
+pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst
+pct create 100 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
+  --hostname rrig6600c \       # MUST be the rig name (socket.gethostname() → coordinator identity)
+  --cores 4 --memory 4096 --swap 512 \
+  --rootfs local-lvm:20 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp \   # real CT100: use rig identity IP
+  --unprivileged 0 \           # privileged = simplest reliable GPU passthrough
+  --features nesting=1
+```
+
+### 9.2 Bind the GPU devices (append to /etc/pve/lxc/100.conf)
+```
+lxc.cgroup2.devices.allow: c 226:* rwm       # DRI (card* + renderD*)
+lxc.cgroup2.devices.allow: c <KFD_MAJOR>:* rwm   # see GOTCHA 2
+lxc.mount.entry: /dev/kfd dev/kfd none bind,optional,create=file
+lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
+```
+`pct stop 100 && pct start 100` after editing.
+
+### 9.3 Prove GPU access inside the container
+```
+pct exec 100 -- ls /dev/dri/                 # card0-7 + renderD128-135 present
+# install rocm-smi + rocminfo (test tools only; real workload uses rocm_env)
+pct exec 100 -- bash -c "mkdir -p /etc/apt/keyrings && \
+  wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor > /etc/apt/keyrings/rocm.gpg && \
+  echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.3 jammy main' > /etc/apt/sources.list.d/rocm.list && \
+  apt-get update -qq && apt-get install -y rocminfo rocm-smi-lib"
+pct exec 100 -- /opt/rocm/bin/rocm-smi                       # lists 8 GPUs
+pct exec 100 -- bash -c "HSA_OVERRIDE_GFX_VERSION=10.3.0 rocminfo | grep gfx"  # 8× gfx1030 agents
+```
+
+## 10. GOTCHAS discovered on rrig6600c (both bite the container)
+
+**GOTCHA 1 — render group name mismatch.**
+Host `/dev/kfd` + render nodes are group `render` (GID 104). Inside a fresh
+Ubuntu 22.04 container, GID 104 maps to the name `ssl-cert`. ROCm refuses RW
+access unless the user is in that GID. Symptom:
+`Unable to open /dev/kfd read-write: Operation not permitted / root is not
+member of "ssl-cert" group`. Quick fix: `usermod -aG ssl-cert root`. Proper
+fix for production CT100: rename GID 104 to `render` inside the container so
+it matches rig convention.
+
+**GOTCHA 2 — kfd major number is NOT stable across boots.**
+`/dev/kfd` major was 236 on one boot, 237 on the next. If the cgroup allow
+rule hardcodes the wrong major, the container binds the device but ROCm gets
+"Operation not permitted" on kfd. For a one-off test, check `ls -la /dev/kfd`
+and use the current major. **For production CT100, do NOT hardcode** — use a
+Proxmox lxc hookscript that reads the live kfd major at container start and
+writes the correct `lxc.cgroup2.devices.allow` rule, OR migrate to the newer
+`dev0:` passthrough syntax which resolves the device dynamically.
+
+## 11. Userspace (the part backups save)
+
+The DKMS driver rebuilds cleanly from AMD's repo (§5). The ROCm **userspace**
+(CuPy-for-ROCm especially) does NOT — there is no pip wheel for cupy-rocm at
+6.4.3, and building from source is the original "many failures" ordeal.
+DO NOT rebuild it. Restore the rig backup tarball into the container:
+`rig-6600b_rocm_env_*.tar.gz` → `/home/michael/rocm_env` in CT100, then
+validate with a real CuPy matmul + a Step 1 job. Host provides the driver;
+container provides this restored userspace.
