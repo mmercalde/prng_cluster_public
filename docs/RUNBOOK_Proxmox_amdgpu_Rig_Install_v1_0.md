@@ -1,5 +1,5 @@
 # RUNBOOK: Proxmox VE + amdgpu-dkms Install for RX 6600 Rigs
-**Version:** 1.2
+**Version:** 1.3
 **Date:** 2026-07-08
 **Verified on:** rrig6600c (first conversion)
 **Applies to:** rrig6600, rrig6600b (identical hardware — Biostar TB360-BTC Pro 2.0, 8× RX 6600)
@@ -210,13 +210,17 @@ pct create 100 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
   --features nesting=1
 ```
 
-### 9.2 Bind the GPU devices (append to /etc/pve/lxc/100.conf)
+### 9.2 Bind the GPU devices — USE THE PATH-BASED `dev0:` SYNTAX
+Append to /etc/pve/lxc/100.conf. The `dev0:` syntax (Proxmox 8.2+) resolves
+`/dev/kfd` BY PATH at container start, so it auto-adapts to the floating kfd
+major (see GOTCHA 2) and sets the render group (fixes GOTCHA 1). Do NOT
+hardcode the kfd major in a cgroup rule.
 ```
-lxc.cgroup2.devices.allow: c 226:* rwm       # DRI (card* + renderD*)
-lxc.cgroup2.devices.allow: c <KFD_MAJOR>:* rwm   # see GOTCHA 2
-lxc.mount.entry: /dev/kfd dev/kfd none bind,optional,create=file
+dev0: /dev/kfd,gid=104                              # 104 = render GID; path-based, self-resolving
+lxc.cgroup2.devices.allow: c 226:* rwm             # DRI major 226 is STABLE, safe to hardcode
 lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
 ```
+Get the render GID with: `getent group render | cut -d: -f3` (was 104 here).
 `pct stop 100 && pct start 100` after editing.
 
 ### 9.3 Prove GPU access inside the container
@@ -228,28 +232,35 @@ pct exec 100 -- bash -c "mkdir -p /etc/apt/keyrings && \
   echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.3 jammy main' > /etc/apt/sources.list.d/rocm.list && \
   apt-get update -qq && apt-get install -y rocminfo rocm-smi-lib"
 pct exec 100 -- /opt/rocm/bin/rocm-smi                       # lists 8 GPUs
-pct exec 100 -- bash -c "HSA_OVERRIDE_GFX_VERSION=10.3.0 rocminfo | grep gfx"  # 8× gfx1030 agents
+pct exec 100 -- bash -c "HSA_OVERRIDE_GFX_VERSION=10.3.0 rocminfo | grep -c gfx1030"  # =16 (8 GPUs x2 lines)
 ```
+Telemetry inside the CT: works automatically via the container's default /sys
+mount once the HOST telemetry is fixed (§6 step 21). NO hwmon bind needed:
+```
+pct exec 100 -- bash -c "for h in 1 2 3 4 5 6 7 8; do echo -n \"hwmon\$h: \"; cat /sys/class/hwmon/hwmon\$h/temp1_input 2>&1; done"
+```
+Must show 8 real temps — that's the canary working inside the sandbox.
 
-## 10. GOTCHAS discovered on rrig6600c (both bite the container)
+## 10. GOTCHAS discovered on rrig6600c (both now SOLVED by §9.2 dev0: syntax)
 
 **GOTCHA 1 — render group name mismatch.**
 Host `/dev/kfd` + render nodes are group `render` (GID 104). Inside a fresh
 Ubuntu 22.04 container, GID 104 maps to the name `ssl-cert`. ROCm refuses RW
 access unless the user is in that GID. Symptom:
 `Unable to open /dev/kfd read-write: Operation not permitted / root is not
-member of "ssl-cert" group`. Quick fix: `usermod -aG ssl-cert root`. Proper
-fix for production CT100: rename GID 104 to `render` inside the container so
-it matches rig convention.
+member of "ssl-cert" group`. SOLVED by `gid=104` in the `dev0:` line (§9.2),
+which sets the correct group on the device. (Old manual fix was
+`usermod -aG ssl-cert root`.)
 
 **GOTCHA 2 — kfd major number is NOT stable across boots.**
-`/dev/kfd` major was 236 on one boot, 237 on the next. If the cgroup allow
-rule hardcodes the wrong major, the container binds the device but ROCm gets
-"Operation not permitted" on kfd. For a one-off test, check `ls -la /dev/kfd`
-and use the current major. **For production CT100, do NOT hardcode** — use a
-Proxmox lxc hookscript that reads the live kfd major at container start and
-writes the correct `lxc.cgroup2.devices.allow` rule, OR migrate to the newer
-`dev0:` passthrough syntax which resolves the device dynamically.
+`/dev/kfd` uses a dynamically-allocated major (seen as 236, 237, 238 on
+successive boots — it depends on module load order). Hardcoding it in a
+`lxc.cgroup2.devices.allow` rule means the container silently loses kfd access
+whenever the major shifts. SOLVED by the path-based `dev0: /dev/kfd` syntax
+(§9.2) — Proxmox resolves the device by path at each container start, so the
+major can float freely. Verified across a host reboot: container still
+enumerated all 8 GPUs with zero config change. The DRI major (226) IS stable,
+so its cgroup rule is fine to hardcode.
 
 ## 11. Userspace (the part backups save)
 
@@ -276,16 +287,12 @@ the installer video workaround) + missing amdgpu tuning params. Fixed by §6
 step 21 (remove nomodeset, set `amdgpu.runpm=0` etc.). After that fix, a
 healthy host shows real per-card temps.
 
-**For CT100:** bind the GPU hwmon sysfs so the container's rocm-smi shows real
-telemetry on healthy cards — otherwise the container would show the error
-unconditionally and the canary would be permanently dead. hwmon lives at
-`/sys/class/hwmon/hwmon1..8` (symlinks into each GPU's
-`/sys/devices/.../hwmon/`). NO separate monitoring system needed — running
-rocm-smi IS the check; a bad card stands out because it shows the error while
-the other 7 show numbers. Validate: healthy CT100 shows real temps for all 8.
-(Note: verify the exact CT100 hwmon binding when building the production
-container — host-side telemetry is confirmed working; the container bind step
-is not yet validated end-to-end.)
+**For CT100:** telemetry works AUTOMATICALLY inside the container via its
+default read-only /sys mount, once the HOST fix (§6 step 21) is applied. NO
+hwmon sysfs bind is needed — verified: with the host cmdline fixed, CT100's
+rocm-smi/`cat temp1_input` showed real per-card temps with zero extra config.
+NO separate monitoring system needed — running rocm-smi IS the check; a bad
+card stands out because it shows the error while the other 7 show numbers.
 
 **Debugging note (methodology that found the fix):** three wrong theories were
 ruled out first — idle power state, "SMU driver if version not matched" dmesg
