@@ -1,5 +1,5 @@
 # RUNBOOK: Proxmox VE + amdgpu-dkms Install for RX 6600 Rigs
-**Version:** 1.3
+**Version:** 1.4
 **Date:** 2026-07-08
 **Verified on:** rrig6600c (first conversion)
 **Applies to:** rrig6600, rrig6600b (identical hardware — Biostar TB360-BTC Pro 2.0, 8× RX 6600)
@@ -264,13 +264,92 @@ so its cgroup rule is fine to hardcode.
 
 ## 11. Userspace (the part backups save)
 
+## 11. ROCm userspace restore into CT100 (VERIFIED — all 3 frameworks, 8 GPUs)
+
 The DKMS driver rebuilds cleanly from AMD's repo (§5). The ROCm **userspace**
-(CuPy-for-ROCm especially) does NOT — there is no pip wheel for cupy-rocm at
-6.4.3, and building from source is the original "many failures" ordeal.
-DO NOT rebuild it. Restore the rig backup tarball into the container:
-`rig-6600b_rocm_env_*.tar.gz` → `/home/michael/rocm_env` in CT100, then
-validate with a real CuPy matmul + a Step 1 job. Host provides the driver;
-container provides this restored userspace.
+does NOT rebuild trivially — this is the original "many failures" ordeal.
+The proven path is: restore the venv from backup + install the matching
+system ROCm from AMD's repo (NOT rebuild CuPy from source — no pip wheel
+exists at 6.4.3). Verified end-to-end on rrig6600c: CuPy 2000x2000 matmul,
+PyTorch (cuda available, 8 devices), TensorFlow (8 GPUs) ALL working.
+
+**11.1 rootfs size:** CT100 needs 50G+ (created at 20G originally — too small).
+`pct resize 100 rootfs +30G` if needed. ROCm userspace (llvm, miopen, libs)
+plus the venv is ~30G+.
+
+**11.2 Restore the venv** (from rig backup `rig-6600b_rocm_env_*.tar.gz`, 5.9G):
+Create the `michael` user first (venv has baked /home/michael paths):
+```
+pct exec 100 -- bash -c "useradd -m -s /bin/bash michael"
+```
+Push the tarball into /home/michael, then extract MANUALLY (the
+restore_rocm_env_once.sh auto-detect trips SIGPIPE under `set -o pipefail`):
+```
+pct exec 100 -- su - michael -c "cd ~ && tar -xzf rocm_env.tar.gz --no-same-owner"
+```
+Delete the tarball after extract (frees 5.9G for the ROCm install).
+
+**11.3 apt-pin repo.radeon.com — CRITICAL.** Ubuntu-universe ships a mismatched
+`rocminfo 5.0.0` that apt prefers over AMD's `1.0.0.60403`, breaking every ROCm
+dependency. Pin the AMD repo:
+```
+pct exec 100 -- bash -c "cat > /etc/apt/preferences.d/rocm-pin << 'EOF'
+Package: *
+Pin: origin repo.radeon.com
+Pin-Priority: 1000
+EOF
+apt-get update"
+```
+Verify: `apt-cache policy rocminfo` candidate must be the 6.4.3 (1.0.0.60403) version.
+
+**11.4 Install the ROCm system userspace** (the AMD repo was added by the
+rocm-smi install; the pin makes these resolve to 6.4.3). Runtime alone is NOT
+enough — you need dev/device-libs for CuPy's JIT compiler and miopen for TF:
+```
+pct exec 100 -- bash -c "apt-get install -y \
+  rocm-hip-runtime rocm-hip-libraries \
+  rocm-hip-runtime-dev hip-dev rocm-device-libs \
+  miopen-hip"
+```
+Why each: `rocm-hip-runtime` = libamdhip64 (CuPy import); `rocm-hip-libraries`
+= rocBLAS/hipRAND (matmul, random); `rocm-device-libs` = /opt/rocm/amdgcn/
+bitcode/*.bc (hiprtc JIT — without it EVERY kernel segfaults with empty
+HIPRTC_ERROR_COMPILATION log); `hip-dev`+`-runtime-dev` = HIP headers for JIT;
+`miopen-hip` = libMIOpen (TensorFlow reports GPUs:0 without it).
+
+**11.5 GID fix — michael must be in the group owning /dev/kfd.** kfd is passed
+in as GID 104 (§9.2 dev0), which the container names `ssl-cert`. Without this,
+CuPy gets `hipErrorNoDevice` (device detected count works, but kernel access
+fails):
+```
+pct exec 100 -- bash -c "usermod -aG 104 michael"
+```
+
+**11.6 Env vars** in michael's ~/.bashrc (match rig-6600b). Both HSA vars are
+load-bearing on RX 6600:
+```
+export ROCM_PATH=/opt/rocm
+export HIP_PATH=/opt/rocm/hip
+export PATH=$PATH:/opt/rocm/bin
+export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/hip/lib:$LD_LIBRARY_PATH
+export HSA_OVERRIDE_GFX_VERSION=10.3.0    # gfx1032 -> gfx1030 spoof
+export HSA_ENABLE_SDMA=0                  # RX 6600 stability
+```
+NOTE: `su - michael -c "..."` does NOT reliably source ~/.bashrc, so the real
+workload/service must set LD_LIBRARY_PATH explicitly or source the env. TF
+needs /opt/rocm/lib on LD_LIBRARY_PATH to find libhsa-runtime64.so.1 (CuPy/
+torch bundle their own copy, TF does not).
+
+**11.7 Validate all three frameworks:**
+```
+# CuPy — real matmul
+pct exec 100 -- su - michael -c "export LD_LIBRARY_PATH=/opt/rocm/lib:\$LD_LIBRARY_PATH && HSA_OVERRIDE_GFX_VERSION=10.3.0 HSA_ENABLE_SDMA=0 ~/rocm_env/bin/python3 -c 'import cupy as cp; c=cp.dot(cp.random.rand(2000,2000),cp.random.rand(2000,2000)); cp.cuda.Stream.null.synchronize(); print(cp.cuda.runtime.getDeviceCount())'"
+# PyTorch
+pct exec 100 -- su - michael -c "HSA_OVERRIDE_GFX_VERSION=10.3.0 ~/rocm_env/bin/python3 -c 'import torch; print(torch.cuda.is_available(), torch.cuda.device_count())'"
+# TensorFlow
+pct exec 100 -- su - michael -c "export LD_LIBRARY_PATH=/opt/rocm/lib:\$LD_LIBRARY_PATH && HSA_OVERRIDE_GFX_VERSION=10.3.0 ~/rocm_env/bin/python3 -c 'import tensorflow as tf; print(len(tf.config.list_physical_devices(\"GPU\")))'"
+```
+All must report 8.
 
 ## 12. GPU telemetry canary (REQUIRED — hard-won, verified on rrig6600c)
 
