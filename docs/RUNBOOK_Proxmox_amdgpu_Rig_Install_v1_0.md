@@ -1,5 +1,5 @@
 # RUNBOOK: Proxmox VE + amdgpu-dkms Install for RX 6600 Rigs
-**Version:** 1.1
+**Version:** 1.2
 **Date:** 2026-07-08
 **Verified on:** rrig6600c (first conversion)
 **Applies to:** rrig6600, rrig6600b (identical hardware — Biostar TB360-BTC Pro 2.0, 8× RX 6600)
@@ -120,19 +120,48 @@
     ```
     echo "amdgpu" >> /etc/modules-load.d/amdgpu.conf
     ```
-21. Match the rigs' tuning (gfxoff must be modprobe.d — kernel cmdline is
-    silently ignored per TB incident report):
+21. **CRITICAL — remove the installer's `nomodeset` AND set the rigs' proven
+    kernel cmdline.** The Proxmox installer persists `nomodeset` (from the
+    install-time video workaround) in `/etc/default/grub.d/installer.cfg`.
+    `nomodeset` disables KMS, which cripples amdgpu's SMU telemetry sysfs →
+    `cat /sys/class/hwmon/hwmonN/temp1_input` returns "Operation not
+    permitted" for ALL cards (even as root on the host). This kills the
+    rocm-smi failure canary (see §12). The rigs' bare-metal Ubuntu cmdline
+    has NO nomodeset plus a full amdgpu tuning set; replicate it:
+    ```
+    # remove the installer's nomodeset injection
+    mv /etc/default/grub.d/installer.cfg /root/installer.cfg.disabled
+    # set the proven cmdline (copied from a working bare-metal rig's /proc/cmdline)
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="quiet"/GRUB_CMDLINE_LINUX_DEFAULT="quiet pcie_aspm=off pci=noaer amdgpu.ppfeaturemask=0xffff7fff amdgpu.gfxoff=0 amdgpu.runpm=0 amdgpu.aspm=0 pci=assign-busses,hpbussize=0x33 iommu=pt amdgpu.dc=0 amdgpu.lockup_timeout=30000 amdgpu.gpu_recovery=1"/' /etc/default/grub
+    update-grub
+    # verify: no nomodeset, params present
+    grep -h "vmlinuz.*root" /boot/grub/grub.cfg | head -1
+    ```
+    Note: `amdgpu.runpm=0` (disables BACO runtime PM) is the key telemetry
+    fix; `nomodeset` removal is the other half. Proxmox boots off the Intel
+    iGPU, so nomodeset was never needed post-install. Since this uses GRUB
+    (not systemd-boot on this ext4/UEFI install), `update-grub` is correct.
+    The `ppfeaturemask`/`gfxoff` here on cmdline supersede the modprobe.d
+    version in the next step (redundant but harmless).
+22. (Optional/legacy) modprobe.d tuning — now redundant with step 21's
+    cmdline, kept for reference:
     ```
     echo "options amdgpu gfxoff=0 ppfeaturemask=0xffff7fff" > /etc/modprobe.d/amdgpu.conf
     update-initramfs -u
     ```
     (Firmware warnings for Vega/Navi12/Aldebaran/etc. are harmless — that's
     firmware for GPUs we don't have. Navi 23 firmware is present.)
-22. Pin the driver so it never auto-upgrades (matches rig hold policy):
+23. Pin the driver so it never auto-upgrades (matches rig hold policy):
     ```
     apt-mark hold amdgpu-dkms amdgpu-install
     ```
-23. Reboot and re-run step 19 checks to confirm amdgpu auto-loads.
+24. Reboot and verify: amdgpu auto-loads (§5 step 19) AND telemetry works:
+    ```
+    for h in 1 2 3 4 5 6 7 8; do echo -n "hwmon$h: "; cat /sys/class/hwmon/hwmon$h/temp1_input 2>&1; done
+    ```
+    Must show 8 real temps (e.g. 39000 = 39°C), NOT "Operation not permitted".
+    (Local console may go black after nomodeset removal — expected, host is
+    headless; judge success by network reachability + this temp check.)
 
 ---
 
@@ -231,3 +260,36 @@ DO NOT rebuild it. Restore the rig backup tarball into the container:
 `rig-6600b_rocm_env_*.tar.gz` → `/home/michael/rocm_env` in CT100, then
 validate with a real CuPy matmul + a Step 1 job. Host provides the driver;
 container provides this restored userspace.
+
+## 12. GPU telemetry canary (REQUIRED — hard-won, verified on rrig6600c)
+
+On these rigs the `rocm-smi` "Expected integer value from monitor, but got
+"" " error (and unreadable `temp1_input`) is a validated dual-purpose signal:
+(1) a per-card hardware/SMU failure, and (2) — more commonly — feedback that
+the running code pushed the cards too hard or skipped required due diligence.
+This matters most for the agent-sandbox use case: an agent writing GPU code is
+the most likely actor to trigger it, and it's the primary signal the code
+mistreated the hardware.
+
+Root cause of it being broken on a fresh Proxmox install: `nomodeset` (from
+the installer video workaround) + missing amdgpu tuning params. Fixed by §6
+step 21 (remove nomodeset, set `amdgpu.runpm=0` etc.). After that fix, a
+healthy host shows real per-card temps.
+
+**For CT100:** bind the GPU hwmon sysfs so the container's rocm-smi shows real
+telemetry on healthy cards — otherwise the container would show the error
+unconditionally and the canary would be permanently dead. hwmon lives at
+`/sys/class/hwmon/hwmon1..8` (symlinks into each GPU's
+`/sys/devices/.../hwmon/`). NO separate monitoring system needed — running
+rocm-smi IS the check; a bad card stands out because it shows the error while
+the other 7 show numbers. Validate: healthy CT100 shows real temps for all 8.
+(Note: verify the exact CT100 hwmon binding when building the production
+container — host-side telemetry is confirmed working; the container bind step
+is not yet validated end-to-end.)
+
+**Debugging note (methodology that found the fix):** three wrong theories were
+ruled out first — idle power state, "SMU driver if version not matched" dmesg
+line (a red herring present on the WORKING rig too), and kernel lockdown (was
+`[none]`). The cause was found by comparing `/proc/cmdline` on the broken
+Proxmox host vs. a working bare-metal rig. Always compare against the known-
+good rig before theorizing.
