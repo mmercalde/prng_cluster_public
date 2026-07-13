@@ -42,6 +42,7 @@ S172/S174 session changelogs.
 | PRNG registry | **44** (11 base × 4 variants) | `PROPOSAL_S172_RANGE_MINER_v1_4_4.md` §0 |
 | Feature vector | **64 total** = 50 per-seed + 14 global; **62 training** (excl. score, confidence) | `feature_registry.json` |
 | Window bounds | **min 6 / max 50 / default 12** (S172 raised min 2→6) | `distributed_config.json` `search_bounds.window_size` |
+| Step 0 | **TRSE** (`trse_step0.py` v1.15.0) — Temporal Regime Segmentation; implemented, wired into WATCHER, consumed by Step 1 (passive, Rule A) | `trse_step0.py`, `agents/watcher_agent.py:387-410`, `window_optimizer_bayesian.py:487-520` |
 | Step 1 backend | PWC (persistent workers, TCP); S172 RANGE-MINER opt-in **not yet implemented** (Phase 1 stub) | `SESSION_CHANGELOG_20260507_S174.md`, `miner/range_miner_coordinator.py` |
 | Infra direction | Proxmox containerization of rigs (TB-approved; LXC-vs-VM pending `rrig6600c` trial) | `PROPOSAL_Infrastructure_Reconciliation_S172_v1_0.md` |
 | Latest session | S174 (ready-gate hard fix) + S172 infra pivot | git HEAD `2cf23cf` (2026-07-11) |
@@ -52,8 +53,11 @@ S172/S174 session changelogs.
   machine-readable contract and should be treated as authoritative until the
   registry is re-audited; if a re-audit changes it, update the registry first,
   then this table.
-- "Step 0" is ambiguous in the source docs (see §2, item H). The Config of Record
-  deliberately omits a Step 0 until the TRSE-vs-archived question is resolved.
+- "Step 0" is **not** genuinely ambiguous in the code (this was a misread in an
+  earlier pass). The label had two historical meanings: (i) PRNG fingerprinting,
+  archived Session 17 (Dec 2025), and (ii) **TRSE**, which took over the slot in
+  S119–S122 (Mar 2026) and is the current, code-authoritative Step 0. Docs that
+  still describe (i) as "Step 0" are simply stale. See §2 items E and H.
 
 ---
 
@@ -67,10 +71,10 @@ Severity: 🔴 high (can mislead operations/agents) · 🟠 stale baseline · �
 | B | 🔴 | PRNG registry count | "46 PRNGs" | 44 (11×4) |
 | C | 🔴 | Feature count | "91" / "89 training" / "48" | 64 total / 62 training |
 | D | 🔴 | Window bounds | "min 2 / max 500" | min 6 / max 50 / default 12 |
-| E | 🔴 | Step 0 definition conflict | README: TRSE active; MAP/STATUS: archived fingerprinting | Unresolved — see item H |
+| E | 🟠 | Step 0 identity — stale docs describe archived fingerprinting | MAP/STATUS: "Step 0 = PRNG fingerprinting, ARCHIVED"; S121 plan: "wiring NOT yet done" | Step 0 = TRSE, implemented + wired + consumed by Step 1 (code-authoritative) |
 | F | 🟠 | "FULLY OPERATIONAL 285.69 TFLOPS" whole-doc baselines | bare-metal, pre-pivot | needs S172/S174 + Proxmox context |
 | G | 🟠 | Front-door docs date-frozen | README S135 (Mar); STATUS/MAP Session 17 (Dec 2025) | S174 / S172-infra (Jul 2026) |
-| H | 🔴 | Step 0 = TRSE vs archived fingerprinting | three docs disagree; TRSE "wiring not done" | pick one contract |
+| H | 🔴 | **BUG** — dangling WATCHER Step 0 manifest | `watcher_agent.py:399` sets `STEP_MANIFESTS[0]="trse.json"` but `agent_manifests/trse.json` **does not exist** | create the manifest (S121 plan §2.B) or remove the reference |
 | I | 🟡 | Duplicate/near-dup files | `CURRENT_STATUS.txt` vs `CURRENT_Status.txt`; multi-version guides/proposals | one source of truth each |
 | J | 🟡 | Hostname convention | `rig-6600` vs `rrig6600` vs raw IP | standardize |
 | K | 🟡 | Repo/remote push guidance | README assumes private `origin` + `public` | N/A in public mirror |
@@ -108,15 +112,32 @@ Severity: 🔴 high (can mislead operations/agents) · 🟠 stale baseline · �
 - [ ] `docs/PROPOSAL_Unified_Agent_Context_Framework_v3_2_3.md:673,694` — same
 - [ ] (older proposal versions `_v3_2_7/9` may also contain it — grep before editing)
 
-### E/H. Step 0 contract (decision required, then correct)
-Resolve first: **is Step 0 (a) TRSE `trse_step0.py`, (b) archived PRNG
-fingerprinting, or (c) removed entirely?** The three docs below must then agree.
-- [ ] `README.md:12` — Step 0 row (`trse_step0.py`, TRSE, skip_on_fail)
-- [ ] `README.md:44` — CLI example `--start-step 0`
-- [ ] `PROJECT_MAP.md:14,22` — "Step 0 PRNG Fingerprinting — ARCHIVED"
-- [ ] `CURRENT_STATUS.txt` (Step 0 fingerprinting archived narrative)
-- [ ] `docs/TRSE_INTEGRATION_PLAN_S121.md:3` — "wiring into pipeline NOT yet done"
-- Recommendation: if TRSE is not wired, the pipeline starts at Step 1; state that plainly and move TRSE to an explicit "pre-pipeline sidecar (not wired)" note.
+### E. Step 0 identity — no decision required (code-authoritative)
+**Resolved:** Step 0 = **TRSE** (`trse_step0.py` v1.15.0). It is implemented,
+wired into WATCHER (`agents/watcher_agent.py:387-410`: `STEP_SCRIPTS[0]`,
+`STEP_NAMES[0]`, `STEP_MANIFESTS[0]`), and actively consumed by Step 1
+(`window_optimizer_bayesian.py:487-520`, Rule A narrows the window ceiling to
+≤32 when `regime_type=short_persistence` ∧ `regime_type_confidence≥0.70` ∧
+`regime_stable`; Rules B/C log only). Step 1 also writes `confirmed_windows`
+back to `trse_context.json` (`window_optimizer.py:769-798`). The
+"archived PRNG fingerprinting" is a **superseded earlier meaning** of the Step 0
+label (Session 17, Dec 2025), predating TRSE.
+
+`README.md` is **already correct** on Step 0 — no edit needed. Fix the stale docs:
+- [ ] `PROJECT_MAP.md:14,22` — reframe "Step 0 PRNG Fingerprinting — ARCHIVED" as historical; add current Step 0 = TRSE row
+- [ ] `CURRENT_STATUS.txt` — same (Session-17 archived-fingerprinting narrative is historical, not current)
+- [ ] `docs/TRSE_INTEGRATION_PLAN_S121.md:3` — status line "wiring into pipeline NOT yet done" is **stale**; items §2.A (WATCHER) and §2.C (Step 1 passive read + Rule A) have since landed. Update to "wired" and note §2.B (manifest) is the one outstanding item — see item H.
+
+### H. BUG — dangling WATCHER Step 0 manifest (🔴 real, not doc-only)
+`agents/watcher_agent.py:399` sets `STEP_MANIFESTS[0] = "trse.json"`, but
+`agent_manifests/trse.json` **does not exist** (dir contains only the six
+Step 1–6 manifests; `find . -name 'trse*.json'` → none). S121 plan §2.B specified
+this manifest (`agent_name`, `pipeline_step:0`, `primary_output:trse_context.json`,
+`evaluation_type:file_exists`, `disable_llm_parsing:true`, `retry_policy:none`) but
+it was never committed.
+- [ ] Verify how WATCHER handles a missing manifest on a `--start-step 0` run (does it fail, or fall through to defaults?)
+- [ ] Either **create** `agent_manifests/trse.json` per S121 §2.B, or **remove** the dangling `STEP_MANIFESTS[0]` entry if Step 0 is intended to run without a manifest
+- Note: `trse_context.json` itself is not gitignored and not committed — it is a runtime artifact regenerated on Zeus each run; that is expected, not a gap.
 
 ### F/G. Stale baselines and dates
 - [ ] `README.md:2` — "Updated: S135 (2026-03-10)" → current session
@@ -152,11 +173,14 @@ grep -rniE '12[× x] ?RX ?6600|46 ?PRNG|285\.69 ?TFLOPS|"min": 2, "max": 500' \
 
 ## 5. Suggested order of operations
 
-1. Operator confirms the **Step 0 decision** (item E/H) — blocks README + MAP edits.
-2. Apply mechanical value fixes A–D (safe, unambiguous).
-3. Add deprecation banners to the F-tier legacy docs (fast, high signal).
-4. Refresh dates + narratives G, then hygiene I–K.
-5. Add the §4 grep gate so drift can't silently return.
+1. Fix the **H bug** first (missing `agent_manifests/trse.json`) — it is a real
+   wiring gap, not doc drift; decide create-vs-remove and confirm WATCHER behavior.
+2. Apply mechanical value fixes A–D (safe, unambiguous — no decision needed).
+3. Apply E doc-cleanup (mark archived-fingerprinting as historical; README needs no change).
+4. Add deprecation banners to the F-tier legacy docs (fast, high signal).
+5. Refresh dates + narratives G, then hygiene I–K.
+6. Add the §4 grep gate so drift can't silently return.
 
-*This document is a draft plan. It edits nothing. Apply §3 only after operator
-sign-off on the Step 0 contract and the TFLOPS figure.*
+*This document is a draft plan. It edits nothing. The only genuine open question
+is the "285.69 TFLOPS" figure (unverified — see item A/F); Step 0 is resolved
+(item E) and item H is a code bug to fix, not a decision.*
