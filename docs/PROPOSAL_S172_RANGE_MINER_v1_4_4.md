@@ -1,3 +1,12 @@
+> **SUPERSEDED — retained for audit trail.**
+> This document is superseded by PROPOSAL_S172_RANGE_MINER_v1_4_5.md, which absorbs
+> the binding Team Beta S175 ruling (remote spool staging, staged A+C parallel
+> assembly, high-survivor acceptance, three-way verification). Where v1.4.4 and
+> v1.4.5 conflict, **v1.4.5 governs.** v1.4.4 remains authoritative only for sections
+> v1.4.5 explicitly marks PRESERVED / carried forward unchanged.
+
+---
+
 # PROPOSAL_S172_RANGE_MINER_v1_4_4.md
 **End-to-end miner-style architecture to replace Step 1 window_optimizer chunked dispatch.**
 
