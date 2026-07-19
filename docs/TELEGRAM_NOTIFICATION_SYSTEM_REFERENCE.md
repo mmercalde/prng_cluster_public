@@ -1,6 +1,7 @@
 # Telegram Notification System — Cluster Reference
 **TFM Distributed PRNG Analysis Cluster**
-**Last updated: 2026-04-03 | Session S159G post-mortem**
+**Last updated: 2026-07-19 | v2.0 — Proxmox topology deployment**
+**Supersedes: 2026-04-03 S159G edition (bare-metal topology)**
 
 ---
 
@@ -12,8 +13,14 @@ share the same bot but serve different purposes:
 
 | System | Fires when | Lives on |
 |---|---|---|
-| **Boot Notify** | Rig powers on / reboots | Each rig (rrig6600/b/c) |
-| **WATCHER Runtime** | Pipeline events (CRITICAL, DEGRADED, INFO) | Zeus only |
+| **Boot Notify** | Node powers on / reboots | Proxmox rig hosts + CT100 workers + VM101 |
+| **WATCHER Runtime** | Pipeline events (CRITICAL, DEGRADED, INFO) | Zeus (VM101) only |
+
+**2026-07-19 topology note:** all rigs now boot into Proxmox. Boot notify runs
+in TWO places per rig — the Proxmox host (box survived POST + amdgpu load) and
+CT100 (worker container up, all 8 render nodes visible). Messages carry a
+`(HOST)` / `(CT)` role label. The bare-metal installs on the dormant TIMETEC
+Ubuntu drives remain but only fire if a rig is booted back to bare metal.
 
 ---
 
@@ -23,7 +30,7 @@ share the same bot but serve different purposes:
 Confirms each rig is alive after a boot or reboot. Reports hostname, IP, timestamp,
 and GPU count. Fires once per boot via systemd.
 
-### Files (on each rig — rrig6600, rrig6600b, rrig6600c)
+### Files (on each Proxmox host AND inside each CT100)
 
 ```
 /etc/cluster-boot-notify.conf          ← credentials (BOT_TOKEN + CHAT_ID)
@@ -35,25 +42,32 @@ and GPU count. Fires once per boot via systemd.
 ```
 /etc/cluster-boot-notify.conf
 ```
-Owner: `root:michael` | Permissions: `640` (root writes, michael reads)
+Owner/perms: CT100s and VM101 = `root:michael 640` (root writes, michael
+reads). Proxmox hosts = `root:root 600` (no michael user on hosts).
 
 Contents:
 ```bash
 BOT_TOKEN=<your_bot_token>
 CHAT_ID=<your_chat_id>
+EXPECTED_GPUS=8        # rigs; VM101 uses its passthrough GPU count
 ```
 
-**To view on any rig:**
+**To view (hosts):**
 ```bash
-ssh rrig6600  'cat /etc/cluster-boot-notify.conf'
-ssh rrig6600b 'cat /etc/cluster-boot-notify.conf'
-ssh rrig6600c 'cat /etc/cluster-boot-notify.conf'
+ssh root@192.168.3.121 'cat /etc/cluster-boot-notify.conf'   # pve-rig6600
+ssh root@192.168.3.155 'cat /etc/cluster-boot-notify.conf'   # pve-rig6600b
+ssh root@192.168.3.163 'cat /etc/cluster-boot-notify.conf'   # pve-rig6600c
 ```
 
-**To edit on a rig (example rrig6600b):**
+**To view (CT100, via host):**
 ```bash
-ssh rrig6600b 'sudo nano /etc/cluster-boot-notify.conf'
+ssh root@192.168.3.155 'pct exec 100 -- cat /etc/cluster-boot-notify.conf'
 ```
+
+**Production credential source of truth:** VM101 —
+`ssh michael@192.168.3.177 'cat /etc/cluster-boot-notify.conf'`
+(WATCHER's `cluster_notify.sh` sources this same file, which is why the
+Proxmox Zeus host at .128 has no conf.)
 
 **To fix permissions if broken (S159G lesson):**
 ```bash
@@ -68,6 +82,15 @@ Permissions: `755` (executable by all)
 
 Sources the conf file, reads hostname/IP/GPU count, sends curl POST to Telegram API.
 Edit this file to change the boot message format.
+
+**v2 (2026-07-19, AMD/Proxmox variant):**
+- GPU count = render nodes with PCI vendor `0x1002` only, via
+  `/sys/class/drm/renderD*/device/vendor` (lspci fallback). REQUIRED: the
+  Biostar boards expose an Intel iGPU render node; a naive renderD count
+  reads 9/8 on pve-rig6600b/c and rrig6600c CT. (pve-rig6600's iGPU is
+  inactive — it shows 8 either way.)
+- Adds `(HOST)` / `(CT)` role label via container detection.
+- Same script deployed to hosts and CTs; role/hostname self-label.
 
 ### Systemd service
 ```
@@ -193,19 +216,38 @@ Edit `watcher_policies.json` on Zeus:
 
 ## 3. Node Summary
 
-| Node | IP | Boot Notify | Runtime Notify | Conf Location |
+| Node | IP | Boot Notify | Runtime Notify | Conf |
 |---|---|---|---|---|
 | ser8 | 192.168.1.229 | ❌ N/A (workstation) | ❌ N/A | N/A |
-| Zeus | 192.168.3.127 | ❌ N/A | ✅ WATCHER (S77) | via watcher_policies.json |
-| rrig6600 | 192.168.3.120 | ✅ Active | ❌ N/A | /etc/cluster-boot-notify.conf |
-| rrig6600b | 192.168.3.154 | ✅ Active | ❌ N/A | /etc/cluster-boot-notify.conf |
-| rrig6600c | 192.168.3.162 | ✅ Active | ❌ N/A | /etc/cluster-boot-notify.conf |
+| pzeus (Proxmox host) | 192.168.3.128 | ❌ (none) | ❌ N/A | none |
+| VM101 zeus-ubuntu-vm | 192.168.3.177 | ✅ (P2V-inherited) | ✅ WATCHER (S77) | /etc/cluster-boot-notify.conf (EXPECTED_GPUS=1; bump when 2nd GPU passed through) |
+| pve-rig6600 (host) | 192.168.3.121 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (600) |
+| pve-rig6600b (host) | 192.168.3.155 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (600) |
+| pve-rig6600c (host) | 192.168.3.163 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (600) |
+| rrig6600 CT100 | 192.168.3.122 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (640) |
+| rrig6600b CT100 | 192.168.3.156 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (640) |
+| rrig6600c CT100 | 192.168.3.164 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (640) |
+| bare-metal Zeus | 192.168.3.127 | — | — | FROZEN FALLBACK, hands-off |
+| bare-metal rigs (TIMETEC) | .120/.154/.162 | ⚠ dormant (fires only if booted bare-metal) | ❌ | old install retained |
 
 ---
 
 ## 4. Common Troubleshooting
 
-### Rig not sending boot notification
+### Node not sending boot notification (Proxmox era)
+```bash
+# Host:
+ssh root@192.168.3.155 'journalctl -u cluster-boot-notify.service -b 0 --no-pager'
+# CT100 (via host):
+ssh root@192.168.3.155 'pct exec 100 -- journalctl -u cluster-boot-notify.service -b 0 --no-pager'
+# Manual test:
+ssh root@192.168.3.155 'bash /usr/local/bin/cluster_boot_notify.sh'
+ssh root@192.168.3.155 'pct exec 100 -- bash /usr/local/bin/cluster_boot_notify.sh'
+```
+If a CT test fails with `curl: (28) Resolving timed out` — check the CT
+gateway (see §5b) and that the CT is actually running (`pct status 100`).
+
+### Rig not sending boot notification (legacy bare-metal commands)
 ```bash
 # Step 1: check the service ran
 ssh rrig6600b 'journalctl -u cluster-boot-notify.service -b 0 --no-pager'
@@ -243,6 +285,19 @@ ssh rrig6600b 'bash /usr/local/bin/cluster_boot_notify.sh'
 
 ---
 
+## 5b. 2026-07-19 Post-Mortem — CT100 Gateway Typo (rrig6600)
+
+**Symptom:** rrig6600 CT100 boot notify: `curl: (28) Resolving timed out`.
+LAN traffic (SSH, coordinator) unaffected.
+**Root cause:** CT created with `gw=192.168.3.1`; correct LAN gateway is
+`192.168.3.10` (per runbook; other CTs correct). All internet egress from the
+CT silently failed — invisible until something needed the outside world.
+**Fix:** `pct set 100 --net0 name=eth0,bridge=vmbr0,gw=192.168.3.10,hwaddr=<same>,ip=192.168.3.122/24,type=veth`
+**Prevention:** after creating any CT, verify `pct config <id> | grep net0`
+gateway matches 192.168.3.10, and test egress: `pct exec <id> -- getent hosts api.telegram.org`.
+
+---
+
 ## 5. S159G Post-Mortem — Permissions Drift Incident
 
 **Date:** 2026-04-03
@@ -256,4 +311,6 @@ ownership has not drifted: `ls -la /etc/cluster-boot-notify.conf`
 
 ---
 
-*Document generated Session S159G. Store at: `docs/TELEGRAM_NOTIFICATION_SYSTEM_REFERENCE.md`*
+*v2.0 updated 2026-07-19 (Proxmox topology deployment — see
+SESSION_CHANGELOG_20260719_TELEGRAM_PROXMOX.md). Original: Session S159G.
+Store at: `docs/TELEGRAM_NOTIFICATION_SYSTEM_REFERENCE.md`*
