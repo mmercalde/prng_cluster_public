@@ -1,6 +1,6 @@
 # Telegram Notification System — Cluster Reference
 **TFM Distributed PRNG Analysis Cluster**
-**Last updated: 2026-07-19 | v2.0 — Proxmox topology deployment**
+**Last updated: 2026-07-19 | v2.1 — Proxmox topology deployment (incl. pzeus host)**
 **Supersedes: 2026-04-03 S159G edition (bare-metal topology)**
 
 ---
@@ -91,6 +91,12 @@ Edit this file to change the boot message format.
   inactive — it shows 8 either way.)
 - Adds `(HOST)` / `(CT)` role label via container detection.
 - Same script deployed to hosts and CTs; role/hostname self-label.
+
+**pzeus host variant (`install_boot_notify_pzeus.sh`):** counts NVIDIA
+VGA/3D devices via lspci — driver-independent, so vfio-bound passthrough
+GPUs (no host driver, invisible to nvidia-smi and /sys/class/drm) are
+still counted. pzeus expects 3: 2x RTX 3080 Ti (19:00→VM100, 68:00→VM101)
++ 1x GTX 1660 Ti (1a:00).
 
 ### Systemd service
 ```
@@ -219,15 +225,16 @@ Edit `watcher_policies.json` on Zeus:
 | Node | IP | Boot Notify | Runtime Notify | Conf |
 |---|---|---|---|---|
 | ser8 | 192.168.1.229 | ❌ N/A (workstation) | ❌ N/A | N/A |
-| pzeus (Proxmox host) | 192.168.3.128 | ❌ (none) | ❌ N/A | none |
-| VM101 zeus-ubuntu-vm | 192.168.3.177 | ✅ (P2V-inherited) | ✅ WATCHER (S77) | /etc/cluster-boot-notify.conf (EXPECTED_GPUS=1; bump when 2nd GPU passed through) |
+| pzeus (Proxmox host) | 192.168.3.128 | ✅ v2 2026-07-19 (lspci NVIDIA count, vfio-safe) | ❌ N/A | /etc/cluster-boot-notify.conf (600, EXPECTED_GPUS=3) |
+| VM101 zeus-ubuntu-vm | 192.168.3.177 | ✅ (P2V-inherited, nvidia-smi count) | ✅ WATCHER (S77) | /etc/cluster-boot-notify.conf (EXPECTED_GPUS=2 — reports 🔴 1/2 until 2nd 3080 Ti reassigned from VM100 win11) |
 | pve-rig6600 (host) | 192.168.3.121 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (600) |
 | pve-rig6600b (host) | 192.168.3.155 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (600) |
 | pve-rig6600c (host) | 192.168.3.163 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (600) |
 | rrig6600 CT100 | 192.168.3.122 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (640) |
 | rrig6600b CT100 | 192.168.3.156 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (640) |
 | rrig6600c CT100 | 192.168.3.164 | ✅ v2 2026-07-19 | ❌ N/A | /etc/cluster-boot-notify.conf (640) |
-| bare-metal Zeus | 192.168.3.127 | — | — | FROZEN FALLBACK, hands-off |
+| VM100 win11-gpu | (VM) | ❌ (Windows — no bash/systemd; Task Scheduler candidate) | ❌ N/A | N/A |
+| bare-metal Zeus | 192.168.3.127 | ✅ dormant (nvidia-smi, EXPECTED_GPUS=3; fires only when booted bare-metal) | — | FROZEN FALLBACK, hands-off |
 | bare-metal rigs (TIMETEC) | .120/.154/.162 | ⚠ dormant (fires only if booted bare-metal) | ❌ | old install retained |
 
 ---
@@ -311,6 +318,6 @@ ownership has not drifted: `ls -la /etc/cluster-boot-notify.conf`
 
 ---
 
-*v2.0 updated 2026-07-19 (Proxmox topology deployment — see
+*v2.1 updated 2026-07-19 (Proxmox topology deployment — see
 SESSION_CHANGELOG_20260719_TELEGRAM_PROXMOX.md). Original: Session S159G.
 Store at: `docs/TELEGRAM_NOTIFICATION_SYSTEM_REFERENCE.md`*
