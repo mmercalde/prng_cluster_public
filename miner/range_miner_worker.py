@@ -1,13 +1,15 @@
 """
 miner/range_miner_worker.py
 ===========================
-S172 RANGE-MINER Phase 3 — per-GPU worker daemon (rev-3, Team Beta APPROVED).
+S172 RANGE-MINER Phase 3 — per-GPU worker daemon (rev-4; rev-3 Team Beta APPROVED,
+rev-4 adds the Phase-4-driven Stage-0 dataset_sha256 patch to ResidueResolver —
+pending Beta re-review).
 
 Spec: docs/PROPOSAL_S172_RANGE_MINER_v1_4_4.md (frozen at 1f6c0c5) §5.3, §5.4,
 §6.8, §11, §12.4.  Fix brief: docs/S172_PHASE3_FIX_BRIEF.md.
 Team Alpha implementation. Do not commit/push from the sandbox.
 
-rev-2 addresses Team Beta's five release-blockers:
+rev-3 addresses Team Beta's five release-blockers:
   B1  Per-assignment residue window resolution keyed by dataset CONTENT identity
       (not a stale process-lifetime `self.draws`).
   B2  Real atomic spool transport with a byte-exact schema, size-based (not
@@ -596,8 +598,26 @@ class ResidueResolver:
 
         # sessions MUST be canonicalized before entering the key (sorted tuple).
         canonical_sessions = tuple(sorted(sessions)) if sessions else ()
-        # CONTENT fingerprint — never key on pathname alone.
+        # CONTENT fingerprint — never key on pathname alone. Reused below for both
+        # the Blocker-6 integrity check AND the cache key (hash the file once).
         dataset_sha = self._file_hasher(dataset)
+
+        # Blocker-6 (TB binding ruling — Option C): dataset_sha256 is MANDATORY on
+        # every assignment and MUST match the locally computed content hash. Both
+        # checks gate the method BEFORE any cache return and BEFORE residue loading,
+        # so a cached window can never bypass a later hash mismatch. Both failures
+        # are non-retryable (ResidueError -> stripe_error(retryable=False)). Plain
+        # `!=` — this is an integrity identifier, not a secret.
+        expected_dataset_sha = payload.get("dataset_sha256")
+        if not expected_dataset_sha:
+            raise ResidueResolutionError(
+                "assignment payload missing mandatory dataset_sha256"
+            )
+        if dataset_sha != expected_dataset_sha:
+            raise ResidueVerificationError(
+                f"dataset_sha256 mismatch: payload={expected_dataset_sha}, "
+                f"computed={dataset_sha}"
+            )
 
         if residue_sha:
             key: tuple = ("residue_sha256", residue_sha, window_size,

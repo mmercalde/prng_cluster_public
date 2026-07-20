@@ -345,12 +345,14 @@ def run_bidirectional_test(coordinator,
     """
 
     # ========================================================================
-    # [S172 Phase 1] RANGE-MINER PATH — activated by use_range_miner=True
+    # [S172 Phase 4] RANGE-MINER PATH — activated by use_range_miner=True
     # Mutually exclusive with --use-persistent-workers and --use-zmq-sqlite
     # (enforced at argparse in window_optimizer.py). Placed at the top of the
     # cascade so miner selection wins unambiguously; PWC/ZMQ paths follow.
-    # Phase 1: run_trial_miner raises NotImplementedError. Enabling this flag
-    # is scaffolding-visible only; production use gated on Phase 7 acceptance.
+    # run_trial_miner drives the real coordinator server (serve_trial); it derives
+    # a UNIQUE run_id per trial and resolves the workflow stages from
+    # prng_base + test_both_modes. Coexistence with PWC/ZMQ holds — this gate is
+    # behind use_range_miner and touches neither.
     # ========================================================================
     _use_miner = getattr(coordinator, 'use_range_miner', False)
     if _use_miner:
@@ -361,23 +363,45 @@ def run_bidirectional_test(coordinator,
                 "are deployed to the project root."
             )
         _miner_result = run_trial_miner(
-            coordinator_cfg   = getattr(coordinator, 'config_file', 'distributed_config.json'),
-            config            = config,
-            trial_number      = trial_number,
-            prng_base         = prng_base,
-            residues          = _get_residues_for_config(config, dataset_path),
-            total_seeds       = seed_count,
-            forward_threshold = forward_threshold,
-            reverse_threshold = reverse_threshold,
-            test_both_modes   = test_both_modes,
-            dataset_path      = dataset_path,
-            worker_pool_size  = getattr(coordinator, 'worker_pool_size', 8),
-            seed_cap_nvidia   = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
-            seed_cap_amd      = getattr(coordinator, 'seed_cap_amd',    2_000_000),
-            miner_stripe_size = getattr(coordinator, 'miner_stripe_size', 67_108_864),
-            miner_substripes  = getattr(coordinator, 'miner_substripes', 8),
-            miner_output_dir  = getattr(coordinator, 'miner_output_dir', None),
-            node_allowlist    = getattr(coordinator, 'node_allowlist', None),
+            coordinator_cfg        = getattr(coordinator, 'config_file', 'distributed_config.json'),
+            config                 = config,
+            trial_number           = trial_number,
+            prng_base              = prng_base,
+            residues               = _get_residues_for_config(config, dataset_path),
+            total_seeds            = seed_count,
+            forward_threshold      = forward_threshold,
+            reverse_threshold      = reverse_threshold,
+            test_both_modes        = test_both_modes,
+            dataset_path           = dataset_path,
+            worker_pool_size       = getattr(coordinator, 'worker_pool_size', 8),
+            seed_cap_nvidia        = getattr(coordinator, 'seed_cap_nvidia', 5_000_000),
+            seed_cap_amd           = getattr(coordinator, 'seed_cap_amd',    2_000_000),
+            # Defect 6: hybrid caps, window params, staging + bind must be wired —
+            # not left to defaults (which would silently use Phase 1 / window 1 /
+            # loopback bind and drop sessions/offset).
+            seed_cap_nvidia_hybrid = getattr(coordinator, 'seed_cap_nvidia_hybrid', 2_500_000),
+            seed_cap_amd_hybrid    = getattr(coordinator, 'seed_cap_amd_hybrid',    1_000_000),
+            miner_stripe_size      = getattr(coordinator, 'miner_stripe_size', 67_108_864),
+            miner_substripes       = getattr(coordinator, 'miner_substripes', 8),
+            miner_output_dir       = getattr(coordinator, 'miner_output_dir', None),
+            staging_dir            = getattr(coordinator, 'staging_dir', None),
+            staging_high_water_bytes = getattr(coordinator, 'staging_high_water_bytes', 16 * 1024 ** 3),
+            staging_high_water_files = getattr(coordinator, 'staging_high_water_files', 512),
+            compute_lease_timeout  = getattr(coordinator, 'compute_lease_timeout', 300.0),
+            staging_timeout        = getattr(coordinator, 'staging_timeout', 600.0),
+            # Production bind must be reachable by REMOTE rigs (0.0.0.0), not
+            # loopback. Tests inject 127.0.0.1 / a pre-bound listen_sock.
+            miner_host             = getattr(coordinator, 'miner_host', '0.0.0.0'),
+            miner_port             = getattr(coordinator, 'miner_port', 5700),
+            node_allowlist         = getattr(coordinator, 'node_allowlist', None),
+            # Resolved WindowConfig window params (were dropped before).
+            window_size            = getattr(config, 'window_size', 1),
+            sessions               = getattr(config, 'sessions', None),
+            offset                 = getattr(config, 'offset', 0),
+            # Correction-3 production-timeout: a real multi-billion-seed scan far
+            # exceeds any fixed 30s. Default UNBOUNDED (None) so the production path
+            # runs until a terminal state; an explicit config value still binds.
+            serve_timeout          = getattr(coordinator, 'serve_timeout', None),
         )
         if _miner_result.get("pruned"):
             return TestResult(

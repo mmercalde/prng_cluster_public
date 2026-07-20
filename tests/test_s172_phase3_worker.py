@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-test_s172_phase3_worker.py — S172 Phase 3 worker-daemon acceptance harness (rev-2)
+test_s172_phase3_worker.py — S172 Phase 3 worker-daemon acceptance harness (rev-4)
 
-Phase 3 rev-3 = miner/range_miner_worker.py after Team Beta's five blocker fixes.
-This harness keeps the original 8 contract gates and adds the Beta-mandated
-blocking gates for the dangerous paths.
+Phase 3 rev-3 = miner/range_miner_worker.py after Team Beta's five blocker fixes;
+rev-4 = rev-3 + the Phase-4-driven Stage-0 dataset_sha256 patch to ResidueResolver
+(gates 15-17 below). This harness keeps the original 8 contract gates and adds the
+Beta-mandated blocking gates for the dangerous paths (now 17 gates total).
 
 Gates (all block-on-failure):
    1. Builder registry coverage (6 covered / 5 uncovered, no default).
@@ -28,6 +29,12 @@ Gates (all block-on-failure):
       incl. the hybrids now built; no uncovered variant claimed.
   14. [B4/§11.I] Non-Java full-mode: lcg32 + minstd test_both_modes run all four
       phase variants through the correct builders (CPU arg-shape).
+  15. [B6/TB Option C] Missing dataset_sha256 -> ResidueResolutionError, routed
+      non-retryable through handle_stripe() (resolver + behavioral loopback).
+  16. [B6/TB Option C] Mismatched dataset_sha256 -> ResidueVerificationError,
+      routed non-retryable (resolver + behavioral loopback).
+  17. [B6/TB Option C] A warm resolver cache cannot bypass a later dataset_sha256
+      mismatch — the check precedes any cache return.
 
 Run:
     cd ~/distributed_prng_analysis
@@ -85,8 +92,10 @@ from miner.range_miner_worker import (  # noqa: E402
     INLINE_BYTE_LIMIT,
     MinerFramedSocket,
     RangeMinerWorker,
+    ResidueError,
     ResidueResolutionError,
     ResidueResolver,
+    ResidueVerificationError,
     ScalarArg,
     SieveExecutor,
     SubStripe,
@@ -417,7 +426,7 @@ def gate7_gpu_smoke():
     assign = StripeAssignMessage(
         stripe_id="smoke", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=256,
-        payload={"dataset": "x", "window_size": 10,
+        payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10,
                  "skip_range": [0, 16], "min_match_threshold": 0.25})
     outcome = ex.execute(assign, 0, 256)
     assert isinstance(outcome, SubStripeOutcome)
@@ -434,7 +443,7 @@ def gate7_gpu_smoke():
     assign_r = StripeAssignMessage(
         stripe_id="smoke_rev", prng_type="java_lcg", family_name="java_lcg_reverse",
         seed_start=0, seed_count=256,
-        payload={"dataset": "x", "window_size": 10,
+        payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10,
                  "skip_range": [0, 16], "min_match_threshold": 0.25})
     out_r = ex_r.execute(assign_r, 0, 256)
     assert isinstance(out_r, SubStripeOutcome)
@@ -477,9 +486,13 @@ def gate9_per_assignment_window():
 
     resolver = ResidueResolver(loader=fake_loader, file_hasher=lambda p: "sha-" + p)
 
-    r1 = resolver.resolve({"dataset": "ds.json", "window_size": 5,
+    # dataset_sha256 is MANDATORY (Blocker-6 / TB Option C) and must match the
+    # fake file_hasher's digest ("sha-" + dataset).
+    r1 = resolver.resolve({"dataset": "ds.json", "dataset_sha256": "sha-ds.json",
+                           "window_size": 5,
                            "sessions": ["evening", "midday"], "offset": 0})
-    r2 = resolver.resolve({"dataset": "ds.json", "window_size": 7,
+    r2 = resolver.resolve({"dataset": "ds.json", "dataset_sha256": "sha-ds.json",
+                           "window_size": 7,
                            "sessions": ["evening", "midday"], "offset": 3})
     assert r1 == [0, 1, 2, 3, 4]
     assert r2 == [3000, 3001, 3002, 3003, 3004, 3005, 3006]
@@ -489,18 +502,21 @@ def gate9_per_assignment_window():
 
     # same identity -> cached, loader NOT called again
     before = len(calls)
-    r1b = resolver.resolve({"dataset": "ds.json", "window_size": 5,
+    r1b = resolver.resolve({"dataset": "ds.json", "dataset_sha256": "sha-ds.json",
+                            "window_size": 5,
                             "sessions": ["midday", "evening"], "offset": 0})
     assert r1b == r1 and len(calls) == before, "cache miss on identical window"
 
     # residue_sha256 verification: mismatch is non-retryable
     good = sha256_residues([10, 20, 30])
     ok = ResidueResolver(loader=lambda *a: [10, 20, 30], file_hasher=lambda p: "h")
-    assert ok.resolve({"dataset": "d", "window_size": 3, "residue_sha256": good}) \
+    assert ok.resolve({"dataset": "d", "dataset_sha256": "h",
+                       "window_size": 3, "residue_sha256": good}) \
         == [10, 20, 30]
     bad = ResidueResolver(loader=lambda *a: [1, 2, 3], file_hasher=lambda p: "h")
     try:
-        bad.resolve({"dataset": "d", "window_size": 3, "residue_sha256": good})
+        bad.resolve({"dataset": "d", "dataset_sha256": "h",
+                     "window_size": 3, "residue_sha256": good})
     except Exception as e:
         from miner.range_miner_worker import ResidueVerificationError
         assert isinstance(e, ResidueVerificationError)
@@ -534,12 +550,14 @@ def gate9_per_assignment_window():
     a1 = StripeAssignMessage(
         stripe_id="w1", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=128,
-        payload={"dataset": "ds", "window_size": 5, "offset": 0,
+        payload={"dataset": "ds", "dataset_sha256": "sha-ds",
+                 "window_size": 5, "offset": 0,
                  "sessions": ["evening", "midday"], "min_match_threshold": 0.25})
     a2 = StripeAssignMessage(
         stripe_id="w2", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=128,
-        payload={"dataset": "ds", "window_size": 7, "offset": 3,
+        payload={"dataset": "ds", "dataset_sha256": "sha-ds",
+                 "window_size": 7, "offset": 3,
                  "sessions": ["evening", "midday"], "min_match_threshold": 0.25})
     if cp is None:
         for a in (a1, a2):
@@ -681,7 +699,7 @@ def gate12_cleanup_after_exception():
     assign = StripeAssignMessage(
         stripe_id="x", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=128,
-        payload={"dataset": "x", "window_size": 10})
+        payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10})
 
     spy = mock.Mock(wraps=W._best_effort_gpu_cleanup)
     with mock.patch.object(W, "_best_effort_gpu_cleanup", spy):
@@ -755,8 +773,119 @@ def gate14_non_java_full_mode():
             assert cap == (2_500_000 if is_hybrid_family(fam) else 5_000_000), fam
 
 
+# ---------------------------------------------------------------------------
+# GATES 15–17 — [Blocker-6 / TB Option C] mandatory dataset_sha256
+# ---------------------------------------------------------------------------
+def _drive_one_assign(family, payload, resolver):
+    """Spin a real worker wired to a REAL SieveExecutor over loopback, send one
+    stripe_assign, and return the first message the worker emits back. For a
+    COVERED family, SieveExecutor.execute() resolves the residue window BEFORE the
+    lazy `import cupy` (range_miner_worker.py:711-716), so a ResidueError raised by
+    resolve() is exercised — and routed through handle_stripe() at :1152-1154 —
+    on a CPU-only box. This tests the retryable=False routing BEHAVIORALLY, not
+    just the exception type."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    srv.settimeout(10)
+    port = srv.getsockname()[1]
+    with tempfile.TemporaryDirectory() as spool:
+        worker = RangeMinerWorker(
+            host="127.0.0.1", port=port, gpu_id=0, caps=VramCaps(),
+            executor=SieveExecutor(resolver=resolver, device_index=0).execute,
+            gpu_info=GpuInfo("cuda", "stub", 12 * 1024**3),
+            heartbeat_interval=999, miner_output_dir=spool)
+        t, err_box = _spin_worker(worker)
+        conn, _ = srv.accept()
+        fs = MinerFramedSocket(conn)
+        try:
+            reg = fs.recv_msg()
+            assert reg.message_type == "register"
+            fs.send_msg(StripeAssignMessage(
+                stripe_id="r", prng_type=family, family_name=family,
+                seed_start=0, seed_count=100, payload=payload))
+            msg = fs.recv_msg()
+            fs.send_msg(MinerShutdownMessage())
+            t.join(timeout=5)
+            return msg
+        finally:
+            fs.close()
+            srv.close()
+
+
+def gate15_missing_dataset_sha_non_retryable():
+    # resolver level: absence of dataset_sha256 -> ResidueResolutionError (a
+    # ResidueError, hence non-retryable). The check gates the method AFTER the
+    # dataset/window guard but BEFORE cache/load.
+    r = _dummy_resolver([1, 2, 3])   # file_hasher -> "deadbeef"
+    try:
+        r.resolve({"dataset": "x", "window_size": 3})
+    except ResidueResolutionError as e:
+        assert isinstance(e, ResidueError)
+        assert "dataset_sha256" in str(e)
+    else:
+        raise AssertionError("missing dataset_sha256 must raise ResidueResolutionError")
+
+    # behavioral: real SieveExecutor over loopback -> stripe_error, retryable=False
+    msg = _drive_one_assign(
+        "java_lcg", {"dataset": "x", "window_size": 3}, _dummy_resolver([1, 2, 3]))
+    assert msg.message_type == "stripe_error", msg.message_type
+    assert msg.retryable is False, "missing dataset_sha256 must be NON-retryable"
+    assert "dataset_sha256" in msg.error
+
+
+def gate16_mismatched_dataset_sha_non_retryable():
+    # resolver level: computed hash ("deadbeef") != payload's -> ResidueVerificationError
+    r = _dummy_resolver([1, 2, 3])   # file_hasher -> "deadbeef"
+    try:
+        r.resolve({"dataset": "x", "window_size": 3, "dataset_sha256": "wrongsha"})
+    except ResidueVerificationError as e:
+        assert isinstance(e, ResidueError)
+        assert "mismatch" in str(e)
+    else:
+        raise AssertionError("mismatched dataset_sha256 must raise ResidueVerificationError")
+
+    # behavioral: real SieveExecutor over loopback -> stripe_error, retryable=False
+    msg = _drive_one_assign(
+        "java_lcg", {"dataset": "x", "window_size": 3, "dataset_sha256": "wrongsha"},
+        _dummy_resolver([1, 2, 3]))
+    assert msg.message_type == "stripe_error", msg.message_type
+    assert msg.retryable is False, "mismatched dataset_sha256 must be NON-retryable"
+    assert "mismatch" in msg.error
+
+
+def gate17_cache_cannot_bypass_mismatch():
+    # A warm cache MUST NOT let a later mismatched dataset_sha256 slip through —
+    # the hash check runs BEFORE any cache return. Note the cache key uses the
+    # locally computed dataset_sha ("goodsha"), so the tampered attempt below WOULD
+    # hit the same cached entry if the check ran after the cache lookup.
+    loads = []
+
+    def loader(dataset, window_size, sessions, offset):
+        loads.append(dataset)
+        return [10, 20, 30]
+
+    r = ResidueResolver(loader=loader, file_hasher=lambda p: "goodsha")
+    ok_payload = {"dataset": "d", "dataset_sha256": "goodsha", "window_size": 3}
+    assert r.resolve(dict(ok_payload)) == [10, 20, 30]
+    # cache is warm: a repeat with the SAME good sha does not reload
+    n = len(loads)
+    assert r.resolve(dict(ok_payload)) == [10, 20, 30] and len(loads) == n, \
+        "identical window must hit cache"
+
+    # tampered coordinator sha with the same underlying content/window -> still raises
+    try:
+        r.resolve({"dataset": "d", "dataset_sha256": "tampered", "window_size": 3})
+    except ResidueVerificationError:
+        pass
+    else:
+        raise AssertionError("warm cache must NOT bypass a dataset_sha256 mismatch")
+    assert len(loads) == n, "mismatch attempt must not load residues (checks precede load)"
+
+
 def main():
-    print("\nS172 Phase 3 worker-daemon acceptance harness (rev-3)")
+    print("\nS172 Phase 3 worker-daemon acceptance harness (rev-4)")
     print("=" * 70)
     _check("Gate 1: builder registry coverage",                    gate1_builder_registry_coverage)
     _check("Gate 2: per-family arg-shapes + dtype materialization", gate2_arg_shapes)
@@ -772,6 +901,9 @@ def main():
     _check("Gate 12: [B3] cleanup after exception (skippable)",    gate12_cleanup_after_exception)
     _check("Gate 13: [B4] exact capability advertisement",         gate13_capability_advertisement)
     _check("Gate 14: [B4/§11.I] non-Java full-mode dispatch",      gate14_non_java_full_mode)
+    _check("Gate 15: [B6] missing dataset_sha256 -> non-retryable", gate15_missing_dataset_sha_non_retryable)
+    _check("Gate 16: [B6] mismatched dataset_sha256 -> non-retryable", gate16_mismatched_dataset_sha_non_retryable)
+    _check("Gate 17: [B6] warm cache cannot bypass sha mismatch",   gate17_cache_cannot_bypass_mismatch)
     print("=" * 70)
 
     passed = sum(1 for _, ok, _ in _results if ok)
@@ -786,7 +918,7 @@ def main():
             if not ok:
                 print(f"\n--- {name} ---\n{tb}")
         sys.exit(1)
-    print("\nAll gates green — Phase 3 rev-3 worker daemon is contract-validated.")
+    print("\nAll gates green — Phase 3 rev-4 worker daemon is contract-validated.")
     sys.exit(0)
 
 

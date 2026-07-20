@@ -8,8 +8,10 @@ without launching any real Step 1 job.
 
 Gates (all block-on-failure):
   1. miner/ package imports; run_trial_miner is callable.
-  2. run_trial_miner raises NotImplementedError with a message pointing at
-     the v1.4.4 spec (Phase 2-5 not implemented yet — this is intentional).
+  2. run_trial_miner is the REAL wired coordinator entrypoint (updated for Phase 4
+     per Team Beta's binding serve-path ruling): it builds the coordinator + trial
+     and drives the default serve path; the `_serve` seam stays injectable. (Was:
+     'raises NotImplementedError' — the Phase-4 coordinator is now implemented.)
   3. window_optimizer.py argparse accepts the 4 new flags (--use-range-miner,
      --miner-stripe-size, --miner-substripes, --miner-output-dir).
   4. Argparse-level mutex: --use-range-miner + --use-persistent-workers
@@ -66,29 +68,37 @@ def gate1_miner_package_imports():
 
 
 # ---------------------------------------------------------------------------
-# GATE 2 — run_trial_miner raises NotImplementedError (Phase 1 stub behavior)
+# GATE 2 — run_trial_miner is the REAL wired coordinator entrypoint
 # ---------------------------------------------------------------------------
-def gate2_stub_raises():
+def gate2_run_trial_miner_wired():
+    """UPDATED for Phase 4 (Team Beta binding ruling — the coordinator serve path
+    is the central Phase-4 deliverable): run_trial_miner is no longer a
+    NotImplementedError stub. It builds the CoordinatorConfig + durable ledger +
+    coordinator, creates the trial, and drives it via the REAL default
+    `RangeMinerCoordinator.serve_trial`; `_serve` stays an injectable seam for
+    tests. This gate asserts the plumbing (args -> coordinator + trial) and that
+    NO NotImplementedError is raised. (Was: 'stub raises NotImplementedError'.)"""
+    import tempfile
     from miner import run_trial_miner
-    try:
-        run_trial_miner(
+
+    captured = {}
+
+    def _capture(coordinator, ctx):
+        captured["run_id"] = ctx["run_id"]
+        captured["trial"] = coordinator.ledger.get_trial(ctx["run_id"])
+        return {"state": "captured", "run_id": ctx["run_id"]}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = run_trial_miner(
             coordinator_cfg='distributed_config.json',
             config=None, trial_number=0, prng_base='java_lcg',
-            residues=None, total_seeds=1000,
+            residues=[1, 2, 3], total_seeds=1000,
             forward_threshold=0.01, reverse_threshold=0.01,
             test_both_modes=False, dataset_path='daily3.json',
-        )
-    except NotImplementedError as e:
-        msg = str(e)
-        # Must clearly point at the spec so anyone hitting this stops here
-        assert 'Phase' in msg or 'phase' in msg, (
-            "NotImplementedError message must mention 'Phase' to signal intent"
-        )
-        assert 'v1_4_4' in msg or 'v1.4.4' in msg or 'PROPOSAL_S172' in msg, (
-            "NotImplementedError message must point at the v1.4.4 spec"
-        )
-        return
-    raise AssertionError("run_trial_miner should have raised NotImplementedError")
+            staging_dir=os.path.join(tmp, "stg"), _serve=_capture)
+    assert out["state"] == "captured", "run_trial_miner must drive the coordinator"
+    assert captured["trial"] is not None and captured["trial"]["state"] == "running", (
+        "run_trial_miner must build the coordinator + create the trial")
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +209,7 @@ def main():
     print("\nS172 Phase 1 scaffolding acceptance harness")
     print("=" * 66)
     _check("Gate 1: miner/ package imports; run_trial_miner callable", gate1_miner_package_imports)
-    _check("Gate 2: run_trial_miner raises NotImplementedError (stub)", gate2_stub_raises)
+    _check("Gate 2: run_trial_miner is the real wired entrypoint",      gate2_run_trial_miner_wired)
     _check("Gate 3: argparse accepts 4 miner flags",                    gate3_argparse_accepts_flags)
     _check("Gate 4: mutex — miner + PWC rejected",                       gate4_backend_mutex)
     _check("Gate 5: WATCHER manifest v1.8.0 has miner keys",              gate5_watcher_manifest)
