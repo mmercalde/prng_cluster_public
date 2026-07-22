@@ -130,3 +130,4 @@ launch_s173_*.sh
 
 # Crash dumps
 crash_dumps/
+models/
