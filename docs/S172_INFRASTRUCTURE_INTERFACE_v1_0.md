@@ -31,6 +31,12 @@ The miner treats each rig as an opaque endpoint with these guarantees:
 | Path to ramdisk (if writable) | `/dev/shm/prng/miner/` | Proxmox team |
 | Fallback output path | `~/miner_output/` (writable, persistent) | Proxmox team |
 
+> **Boot-selector note:** each rig is dual-boot. The `.120`/`.154`/`.162` IPs in
+> the table above are the **default** bare-Ubuntu endpoints (what
+> `distributed_config.json` holds). When a rig is booted into Proxmox instead, its
+> worker endpoint is the CT100 address (`.122`/`.156`/`.164`). As of 2026-07-22 all
+> three rigs are running under Proxmox. See `CLAUDE.md` §3.
+
 **The miner code does not check whether these are backed by bare-metal, LXC,
 or VM.** It reads them by convention. The Proxmox migration is free to
 choose LXC-first or VM-first per the reconciliation §5 trial without

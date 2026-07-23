@@ -58,34 +58,59 @@ rulings are binding.** Claude is never Team Beta and never speaks for it.
 - **scp to 101 uses ABSOLUTE paths** (`/home/michael/...`), not `~` — the
   SFTP-backed scp on ser8 does not expand `~` reliably.
 
-## 3. Network topology (verified 2026-07-17)
+## 3. Network topology (verified 2026-07-22)
 
-Zeus is a boot-selector: bare-metal Ubuntu/TFM at `.127` **or** Proxmox at
-`.128`. Under Proxmox the TFM workload runs in **VM 101**.
+**Every machine in the cluster is a boot-selector**, not a one-way migration.
+Each boots its **default target — bare Ubuntu on its original IP** — *or*, as an
+alternate, **Proxmox**, under which the workload runs in a VM/CT at a different
+address. Both address sets are valid; **never simultaneously** (a machine runs one
+OS at a time). This is the same model already understood for Zeus (`.127`
+bare-metal *or* `.128` Proxmox → VM 101), now applied uniformly to the rigs.
 
-| Thing | Address | Notes |
-|---|---|---|
-| VM 101 (canonical dev) | 192.168.3.177 | DHCP — **pin static before relying on it** |
-| Zeus bare-metal (fallback) | 192.168.3.127 | alias `zeus` / tunnel `rzeus`; FROZEN |
-| Zeus Proxmox host | 192.168.3.128 | alias `pzeus-lan` / `pve-zeus` (root) |
-| Windows VM 100 | 192.168.3.138 | RDP only; holds the 2nd 3080 Ti |
+| Machine | Default boot — bare Ubuntu | Alternate — Proxmox host | Workload endpoint under Proxmox |
+|---|---|---|---|
+| Zeus | `192.168.3.127` (alias `zeus`, tunnel `rzeus`; FROZEN) | `.128` (`pzeus-lan`/`pve-zeus`, root) | **VM 101 `192.168.3.177`** (canonical dev box) |
+| rrig6600 | `192.168.3.120` | `.121` (`pve-rig6600`) | **CT100 `192.168.3.122`** |
+| rrig6600b | `192.168.3.154` | `.155` (`pve-rig6600b`) | **CT100 `192.168.3.156`** |
+| rrig6600c | `192.168.3.162` | `.163` (`pve-rig6600c`) | **CT100 `192.168.3.164`** |
 
-**Proxmox rig migration scheme** (RUNBOOK_v1.6_PATCH FIX 1 — old runbook
-wrongly used +10): **host = rig + 1, CT100 worker = host + 1, CT IPs STATIC.**
+- **VM 101 (canonical dev):** `192.168.3.177`, **DHCP** (`ipv4.method: auto`,
+  lease from `.10`, addr flagged `dynamic` — verified 2026-07-22). **Pin static
+  before it becomes the permanent box.**
+- **Windows VM 100:** `192.168.3.138`, RDP only. GPU allocation: the Proxmox host
+  console uses a **dedicated 1660 Ti**; VM 100 holds **one** 3080 Ti *only while
+  running*; the **second 3080 Ti is unassigned and free** to pass through to VM 101
+  for rig testing.
+- **The worker endpoint depends on which target is booted.** When a rig boots its
+  default bare-Ubuntu target, its endpoint is the original IP (`.120`/`.154`/`.162`);
+  when it boots Proxmox, its endpoint is the CT100 address (`.122`/`.156`/`.164`).
+  `distributed_config.json` currently holds the **bare-metal** addresses because
+  those match the **default** boot target — this is **not a bug** and must not be
+  "corrected."
+- **Current state (point-in-time, 2026-07-22):** all three rigs are booted into
+  **Proxmox** (live ping sweep from VM 101: `.120`/`.154`/`.162` DOWN,
+  `.122`/`.156`/`.164` UP). In this state the config's bare-metal addresses are not
+  reachable. This is a **boot state, not a defect**, and is distinct from the
+  *default* boot target the config is written against.
+- **CT IPs are STATIC** (`host = rig + 1, CT100 worker = host + 1`; RUNBOOK_v1.6_PATCH
+  FIX 1 — the old runbook wrongly used +10). CT100 gets the rig's canonical hostname
+  (`pct create --hostname rrig6600c`) so `socket.gethostname()` reports the rig name
+  for coordinator identity (`docs/S172_INFRASTRUCTURE_INTERFACE_v1_0.md`).
+- **michael→CT100 SSH key auth is verified working to all three CTs (2026-07-22)** —
+  `ssh -o BatchMode=yes michael@<ip> hostname` returns `rrig6600`/`rrig6600b`/
+  `rrig6600c`. The checked-in `zeus-proxmox-build/dotfiles/ssh_config` remains STALE
+  for migrated rigs (still bare-metal `.154`/`.162`); do not edit it here.
+- **The three rigs are identical clones**, so two CTs sharing an SSH host-key
+  fingerprint is **expected, not a MITM signal.**
+- **Making the rig endpoint selectable** (e.g. `rig_profile: baremetal | proxmox`)
+  is the correct long-term fix and satisfies the no-hardcoding rule, but it is
+  **Phase 6 prep and explicitly NOT done.**
 
-| Rig | bare-metal | Proxmox host | **CT100 (worker endpoint)** | Migrated |
-|---|---|---|---|---|
-| rrig6600 | .120 | .121 | .122 | **NO — still bare-metal** |
-| rrig6600b | .154 | .155 | **.156** | yes (ROCm, 8 GPUs) |
-| rrig6600c | .162 | .163 | **.164** | yes (ROCm, 8 GPUs) |
-
-- CT100 gets the rig's canonical hostname (`pct create --hostname rrig6600c`)
-  so `socket.gethostname()` reports the rig name for coordinator identity
-  (`docs/S172_INFRASTRUCTURE_INTERFACE_v1_0.md`).
-- **Coordinator/miner reach WORKERS at the CT100 address**, not bare-metal.
-- The checked-in `zeus-proxmox-build/dotfiles/ssh_config` is STALE for migrated
-  rigs (still bare-metal `.154`/`.162`). CT100s at `.156`/`.164` confirmed
-  reachable; **michael→CT100 key auth is NOT yet set up** (open Phase-3 item).
+*Verified 2026-07-22 by:* live ping sweep from VM 101, `ssh BatchMode` key-auth
+check to all three CTs, `pct config 100` on rrig6600 (device binding + hostname +
+static IP), and Proxmox UI (`pve-rig6600` at `.121:8006`, CT 100 running). *Not
+re-checked this session:* the default bare-Ubuntu boot targets (all rigs are
+currently in Proxmox) and `distributed_config.json` contents.
 
 ## 4. GPU / rig regimes (the frozen-vs-evolving split)
 
@@ -146,8 +171,10 @@ All acceptance gates §11.B/C/E are release blockers.
 
 **Phase 3 prerequisites (GPU/rig-dependent):**
 - CUDA smoke test is satisfiable on 101 (3080 Ti, 12 GB, confirmed).
-- Rig smoke tests need **michael→CT100 SSH key auth** (not yet set up).
-- Pin VM 101 `.177` static before it becomes the permanent box.
+- Rig smoke tests need **michael→CT100 SSH key auth** — **verified working to all
+  three CTs (2026-07-22)**; see §3.
+- Pin VM 101 `.177` static before it becomes the permanent box (still **DHCP** as of
+  2026-07-22 — verified).
 
 **Protocol invariants Phase 3 must honor** (from Phase 2, `pwc_protocol` parity):
 - Length-prefixed JSON framing (4-byte big-endian + compact UTF-8), 64 MB cap.

@@ -68,6 +68,12 @@ The Distributed PRNG Analysis System is a sophisticated GPU-accelerated platform
 
 **Network:** All nodes connected via SSH with key-based authentication.  
 **IP Addresses:** rig-6600 (192.168.3.120), rig-6600b (192.168.3.154), rig-6600c (192.168.3.162)  
+
+> **Boot-selector note:** each rig is dual-boot. The addresses shown are the
+> **default** bare-Ubuntu endpoints. When a rig is booted into Proxmox instead, its
+> worker endpoint is the CT100 address (`.122`/`.156`/`.164`). As of 2026-07-22 all
+> three rigs are running under Proxmox. See `CLAUDE.md` §3.
+
 **GPU Stability:** udev rule (perf=high auto-set), GFXOFF disabled via kernel parameter  
 **rig-6600c note:** i5-8400T CPU causes ~50% throughput deficit vs other rigs -- hardware limitation  
 **Zeus GPU compute mode:** DEFAULT (enforced via /etc/rc.local, S125b -- EXCLUSIVE_PROCESS breaks n_parallel>1)  

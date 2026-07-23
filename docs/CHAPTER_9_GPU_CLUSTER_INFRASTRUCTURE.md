@@ -596,6 +596,12 @@ cleanup: enabled                   # Best-effort GPU allocator cleanup between j
    }
    ```
 
+   > **Boot-selector note:** each rig is dual-boot. The `.120`/`.154`/`.162`
+   > addresses in this chapter are the **default** bare-Ubuntu endpoints, which is
+   > why `distributed_config.json` holds them. When a rig is booted into Proxmox
+   > instead, its worker endpoint is the CT100 address (`.122`/`.156`/`.164`). As of
+   > 2026-07-22 all three rigs are running under Proxmox. See `CLAUDE.md` §3.
+
 3. **Sample Size Cap** — `run_scorer_meta_optimizer.sh`:
    ```bash
    --sample-size 450
