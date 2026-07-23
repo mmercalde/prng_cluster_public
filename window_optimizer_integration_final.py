@@ -394,10 +394,22 @@ def run_bidirectional_test(coordinator,
             miner_host             = getattr(coordinator, 'miner_host', '0.0.0.0'),
             miner_port             = getattr(coordinator, 'miner_port', 5700),
             node_allowlist         = getattr(coordinator, 'node_allowlist', None),
-            # Resolved WindowConfig window params (were dropped before).
-            window_size            = getattr(config, 'window_size', 1),
-            sessions               = getattr(config, 'sessions', None),
-            offset                 = getattr(config, 'offset', 0),
+            # Resolved WindowConfig window params. Blocker 2b: DIRECT attribute
+            # access, no getattr default — window_size/offset/sessions/skip_min/
+            # skip_max are REQUIRED constructor fields of WindowConfig (no defaults;
+            # window_optimizer.py:85-89), so a malformed substitute object raises
+            # AttributeError loudly instead of silently coercing a missing field to
+            # 1/0/None and letting present-but-wrong metadata reach Phase 5.
+            window_size            = config.window_size,
+            sessions               = config.sessions,
+            offset                 = config.offset,
+            # D0 seam: the skip bounds were the one WindowConfig pair still dropped
+            # here (window_size/offset/sessions were wired, skip_min/skip_max were
+            # not) — thread them from the resolved WindowConfig so every published
+            # miner manifest carries the real skip range, never a run_trial_miner
+            # default. WindowConfig always defines both (window_optimizer.py:88-89).
+            skip_min               = config.skip_min,
+            skip_max               = config.skip_max,
             # Correction-3 production-timeout: a real multi-billion-seed scan far
             # exceeds any fixed 30s. Default UNBOUNDED (None) so the production path
             # runs until a terminal state; an explicit config value still binds.

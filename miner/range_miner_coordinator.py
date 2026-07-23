@@ -510,6 +510,30 @@ class MinerLedger:
                         finalized_at           REAL
                     )
                 """)
+                # D0: trial-GLOBAL immutable context, persisted ONCE per run_id
+                # before any stripe work. Adjacent to `trials` (not the mutable
+                # lifecycle row) precisely because it must NEVER change after trial
+                # creation — write-once via INSERT OR IGNORE, no UPDATE path — and
+                # must survive a coordinator restart so a manifest can be rebuilt
+                # identically from the durable ledger alone (gate D0-4). sessions is
+                # stored as JSON.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS trial_context (
+                        run_id             TEXT PRIMARY KEY,
+                        trial_number       INTEGER,
+                        window_size        INTEGER,
+                        offset_val         INTEGER,
+                        sessions_json      TEXT,
+                        skip_min           INTEGER,
+                        skip_max           INTEGER,
+                        prng_base          TEXT,
+                        forward_threshold  REAL,
+                        reverse_threshold  REAL,
+                        dataset_sha256     TEXT,
+                        residue_sha256     TEXT,
+                        created_at         REAL NOT NULL
+                    )
+                """)
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_stripe_state "
                     "ON stripes (run_id, state)"
@@ -764,6 +788,89 @@ class MinerLedger:
                 "SELECT * FROM trials WHERE run_id=?", (run_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def set_trial_context(
+        self, run_id: str, ctx: Dict[str, Any], now: Optional[float] = None
+    ) -> None:
+        """D0 / Blocker 1: persist the trial-GLOBAL immutable context ONCE per run_id
+        via COMPARE-AND-INSERT under the write lock in a single transaction.
+
+          first write           -> insert;
+          identical replay      -> idempotent no-op (row unchanged, no raise);
+          CONFLICTING re-serve   -> raise MinerMetadataError, ORIGINAL row unchanged.
+
+        `INSERT OR IGNORE` is NO LONGER relied on to enforce immutability (it prevents
+        *mutation* but silently accepts a *conflicting* context); it survives only as
+        the concurrency-safe insert primitive INSIDE the transaction — a losing
+        concurrent (cross-process) insert is then detected by re-reading and comparing,
+        so a race resolves to identical->no-op or conflict->raise, never a silent
+        divergence where new work runs one config while manifests publish another.
+
+        The read-compare-insert is transactionally protected (self._write_lock AND one
+        DB transaction) so two concurrent initializations of the same run_id cannot
+        race between the get and the insert. Comparison is SEMANTIC (the same field set
+        get_trial_context returns, round-tripped through the same JSON encode/decode)
+        so an identical replay compares equal regardless of key spacing or numeric
+        string form. Mandatory trial-global/provenance fields must be present and
+        non-None, else this fails closed BEFORE any stripe work rather than letting an
+        incomplete `{}` reach Phase 5 later. sessions is JSON-encoded (None → [])."""
+        now = time.time() if now is None else now
+        missing = [k for k in _TRIAL_GLOBAL_FIELDS
+                   if k != "sessions" and ctx.get(k) is None]
+        missing += [k for k in _PROVENANCE_FIELDS if not ctx.get(k)]
+        if missing:
+            raise MinerMetadataError(
+                f"trial_context for {run_id!r} missing mandatory field(s) {missing!r}; "
+                f"refusing to persist an incomplete immutable context (fail-closed)."
+            )
+        sessions = ctx.get("sessions")
+        sessions_json = json.dumps(sessions if sessions is not None else [])
+        new_canon = _canonicalize_trial_context(ctx)
+        with self._write_lock:
+            with self._conn() as conn:
+                existing = conn.execute(
+                    "SELECT * FROM trial_context WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if existing is None:
+                    # Concurrency-safe insert primitive; a losing concurrent insert is
+                    # caught by the re-read + compare below (never assume our row won).
+                    conn.execute(
+                        """INSERT OR IGNORE INTO trial_context
+                           (run_id, trial_number, window_size, offset_val, sessions_json,
+                            skip_min, skip_max, prng_base, forward_threshold,
+                            reverse_threshold, dataset_sha256, residue_sha256, created_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (run_id, int(ctx["trial_number"]), int(ctx["window_size"]),
+                         int(ctx["offset"]), sessions_json,
+                         int(ctx["skip_min"]), int(ctx["skip_max"]), str(ctx["prng_base"]),
+                         float(ctx["forward_threshold"]), float(ctx["reverse_threshold"]),
+                         str(ctx["dataset_sha256"]), str(ctx["residue_sha256"]), now),
+                    )
+                    existing = conn.execute(
+                        "SELECT * FROM trial_context WHERE run_id=?", (run_id,)
+                    ).fetchone()
+                existing_canon = _canonicalize_trial_context(
+                    _trial_context_row_to_ctx(existing))
+                if existing_canon != new_canon:
+                    # Conflict: leave the original row untouched (INSERT OR IGNORE is a
+                    # no-op when a row exists) and fail closed BEFORE any stripe work.
+                    raise MinerMetadataError(
+                        f"conflicting immutable trial context for run_id={run_id!r}: a "
+                        f"different window_size/offset/skip/prng_base/threshold/provenance "
+                        f"was already persisted; refusing to mutate (fail-closed)."
+                    )
+                conn.commit()
+
+    def get_trial_context(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Reconstruct the trial-global immutable context from the durable ledger.
+        Returns None when none was persisted (a bare unit-test path)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM trial_context WHERE run_id=?", (run_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return _trial_context_row_to_ctx(row)
 
     def mark_trial_aborted(
         self, run_id: str, abort_event_id: str, now: Optional[float] = None
@@ -1224,6 +1331,246 @@ class StagingTimeout(Exception):
     through the phase-specific matrix."""
 
 
+class MinerMetadataError(Exception):
+    """D0 fail-closed: a manifest would publish to Phase 5 with an absent or empty
+    mandatory metadata field (or an unresolvable workflow phase). The publish is
+    ABORTED — no `{}` trial_metadata is ever handed to Phase 5 (§0.5, gate D0-6)."""
+
+
+# ---------------------------------------------------------------------------
+# D0 — trial-metadata seam (Phase-4 correction, [TB-R3, TB-R1 seam])
+#
+# Every ShardReadyManifest published to Phase 5 must carry a complete, immutable
+# trial_metadata projection so Phase 5 can populate the NPZ window/offset/skip/
+# trial/prng fields WITHOUT re-deriving identity from spool contents. The projection
+# is reconstructed durably from the ledger (trial_context row + the stripe's own
+# persisted phase/family_name), so it survives a coordinator restart and is
+# identical across every one of a run's manifests where trial-global.
+# ---------------------------------------------------------------------------
+
+# Trial-GLOBAL immutable fields (identical across every manifest of one run_id).
+_TRIAL_GLOBAL_FIELDS = (
+    "trial_number", "window_size", "offset", "sessions", "skip_min", "skip_max",
+    "prng_base", "forward_threshold", "reverse_threshold",
+)
+# Provenance (non-NPZ) fields carried for auditability, also trial-global.
+_PROVENANCE_FIELDS = ("dataset_sha256", "residue_sha256")
+# Phase/stripe-SPECIFIC fields (correct per stripe, derived from the ledger).
+_PHASE_SPECIFIC_FIELDS = (
+    "workflow_phase", "family_name", "prng_type", "direction", "skip_mode",
+    "threshold_used",
+)
+
+# The minimum mandatory manifest metadata (§ "Mandatory manifest metadata"). Every
+# published shard MUST carry all of these (non-empty) or publication fails closed.
+MANDATORY_MANIFEST_METADATA = (
+    "trial_number", "window_size", "offset", "sessions", "skip_min", "skip_max",
+    "prng_base", "prng_type", "family_name", "direction", "skip_mode",
+    "workflow_phase", "forward_threshold", "reverse_threshold",
+)
+# Provenance fields are also required on the manifest (retained separately, non-NPZ).
+_MANDATORY_PROVENANCE = ("dataset_sha256", "residue_sha256")
+
+# String-identity fields whose EMPTY string is as invalid as absence.
+_NON_EMPTY_STRING_FIELDS = frozenset({
+    "prng_base", "prng_type", "family_name", "direction", "skip_mode",
+    "dataset_sha256", "residue_sha256",
+})
+
+# Mandatory keys the raw serve `context` MUST supply to build the immutable trial
+# context (Blocker 2: no numeric/family fallback may substitute for a missing field).
+# sessions is intentionally excluded — it is optional and normalized None -> [].
+_SERVE_CONTEXT_REQUIRED = (
+    "trial_number", "window_size", "offset", "skip_min", "skip_max",
+    "prng_base", "forward_threshold", "reverse_threshold",
+)
+
+
+def _trial_context_row_to_ctx(row: Any) -> Dict[str, Any]:
+    """Map a durable `trial_context` row to the SAME semantic dict get_trial_context
+    returns (11 trial-global + provenance), so an existing row and a fresh ctx can be
+    canonicalized and compared field-for-field (Blocker 1)."""
+    d = dict(row)
+    return {
+        "trial_number":      d["trial_number"],
+        "window_size":       d["window_size"],
+        "offset":            d["offset_val"],
+        "sessions":          json.loads(d["sessions_json"]),
+        "skip_min":          d["skip_min"],
+        "skip_max":          d["skip_max"],
+        "prng_base":         d["prng_base"],
+        "forward_threshold": d["forward_threshold"],
+        "reverse_threshold": d["reverse_threshold"],
+        "dataset_sha256":    d["dataset_sha256"],
+        "residue_sha256":    d["residue_sha256"],
+    }
+
+
+def _canonicalize_trial_context(ctx: Dict[str, Any]) -> str:
+    """Canonical SEMANTIC form of a trial context for the immutability comparison
+    (Blocker 1). Each field is coerced to the SAME type the durable row stores
+    (int / float / str; sessions as a decoded list; None sessions -> []), then the
+    whole dict is round-tripped through a sorted-key JSON encode so an identical
+    replay compares EQUAL regardless of JSON key spacing or numeric string form.
+    Comparison is by VALUE, never raw row bytes."""
+    sessions = ctx.get("sessions")
+    return json.dumps(
+        {
+            "trial_number":      int(ctx["trial_number"]),
+            "window_size":       int(ctx["window_size"]),
+            "offset":            int(ctx["offset"]),
+            "sessions":          sessions if sessions is not None else [],
+            "skip_min":          int(ctx["skip_min"]),
+            "skip_max":          int(ctx["skip_max"]),
+            "prng_base":         str(ctx["prng_base"]),
+            "forward_threshold": float(ctx["forward_threshold"]),
+            "reverse_threshold": float(ctx["reverse_threshold"]),
+            "dataset_sha256":    str(ctx["dataset_sha256"]),
+            "residue_sha256":    str(ctx["residue_sha256"]),
+        },
+        sort_keys=True,
+    )
+
+
+def build_trial_context_from_serve(
+    context: Dict[str, Any], dataset_sha256: str, residue_sha256: str
+) -> Dict[str, Any]:
+    """Blocker 2 fail-closed seam: project the durable trial-context dict from the raw
+    serve `context` with NO fallback substitution for any mandatory field.
+
+    The pre-fix serve path substituted concrete values (family_name for a missing
+    prng_base; 0 / -1 / 0.0 for missing numerics) BEFORE the mandatory-field guard,
+    turning a missing field into apparently-present-but-semantically-malformed
+    metadata that slipped through. Here every mandatory field is required-key access;
+    a missing key (or a None/empty prng_base) raises MinerMetadataError BEFORE any
+    stripe assignment/dispatch, so a missing mandatory field can never reach Phase 5
+    as present-but-wrong metadata. dataset_sha256/residue_sha256 are coordinator-
+    computed and passed in (not defaulted)."""
+    missing = [k for k in _SERVE_CONTEXT_REQUIRED if context.get(k) is None]
+    if missing:
+        raise MinerMetadataError(
+            f"serve context missing mandatory field(s) {sorted(missing)!r}; refusing "
+            f"to build an immutable trial context with fallback substitutes (fail-closed)."
+        )
+    prng_base = context["prng_base"]          # required-key access, no family fallback
+    if prng_base is None or (isinstance(prng_base, str) and prng_base.strip() == ""):
+        raise MinerMetadataError(
+            "prng_base missing/empty in trial context (fail-closed; no family_name fallback)."
+        )
+    return {
+        "trial_number":      int(context["trial_number"]),
+        "window_size":       int(context["window_size"]),
+        "offset":            int(context["offset"]),
+        "sessions":          context.get("sessions"),
+        "skip_min":          int(context["skip_min"]),
+        "skip_max":          int(context["skip_max"]),
+        "prng_base":         prng_base,
+        "forward_threshold": float(context["forward_threshold"]),
+        "reverse_threshold": float(context["reverse_threshold"]),
+        "dataset_sha256":    dataset_sha256,
+        "residue_sha256":    residue_sha256,
+    }
+
+
+def workflow_phase_semantics(phase: int) -> Tuple[str, str]:
+    """§6.8 workflow table → the (direction, skip_mode) identity of a workflow
+    phase. EXPLICIT strings, derived from the phase number via the shared table —
+    NOT inferred downstream from a numeric phase, and NOT hardcoded to any one base
+    family (the same table holds for every prng_base). Hard-fails on an unknown
+    phase (fail-closed, gate D0-3).
+
+      1 → forward/constant   2 → reverse/constant
+      3 → forward/variable   4 → reverse/variable
+    """
+    table = {
+        1: ("forward", "constant"),
+        2: ("reverse", "constant"),
+        3: ("forward", "variable"),
+        4: ("reverse", "variable"),
+    }
+    try:
+        return table[int(phase)]
+    except (KeyError, ValueError, TypeError):
+        raise MinerMetadataError(
+            f"unknown workflow phase {phase!r}: expected 1..4 (§6.8). Cannot resolve "
+            f"direction/skip_mode — refusing to publish a manifest with inferred "
+            f"identity."
+        )
+
+
+def derive_trial_metadata(
+    trial_ctx: Dict[str, Any], stripe: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build the ONE immutable trial_metadata projection for a shard's manifest from
+    the durable ledger: trial-GLOBAL fields from the persisted `trial_context` row,
+    phase-SPECIFIC fields from the stripe's own persisted `phase`/`family_name`.
+
+    Direction / skip_mode come from workflow_phase_semantics (the §6.8 table via the
+    resolved base — never hardcoded to Java LCG). prng_type is the canonical
+    encoding key (`prng_base` for constant, `prng_base + '_hybrid'` for variable),
+    matching utils/prng_encoding's contract; direction is carried as its own
+    explicit field, not folded into prng_type. threshold_used is the forward or
+    reverse threshold selected by direction.
+
+    Raises MinerMetadataError (fail-closed) if the phase is unresolvable. Field
+    presence/emptiness is enforced separately by validate_trial_metadata so the
+    single failure point covers both this path and a hand-built manifest.
+    """
+    phase = stripe.get("phase")
+    family_name = stripe.get("family_name")
+    direction, skip_mode = workflow_phase_semantics(phase)
+    prng_base = trial_ctx.get("prng_base")
+    prng_type = prng_base if skip_mode == "constant" else f"{prng_base}_hybrid"
+    threshold_used = (trial_ctx.get("forward_threshold") if direction == "forward"
+                      else trial_ctx.get("reverse_threshold"))
+    meta: Dict[str, Any] = {
+        # trial-global (identical across the run's manifests)
+        "trial_number":      trial_ctx.get("trial_number"),
+        "window_size":       trial_ctx.get("window_size"),
+        "offset":            trial_ctx.get("offset"),
+        "sessions":          trial_ctx.get("sessions"),
+        "skip_min":          trial_ctx.get("skip_min"),
+        "skip_max":          trial_ctx.get("skip_max"),
+        "prng_base":         prng_base,
+        "forward_threshold": trial_ctx.get("forward_threshold"),
+        "reverse_threshold": trial_ctx.get("reverse_threshold"),
+        # phase/stripe-specific (correct per stripe)
+        "workflow_phase":    int(phase) if phase is not None else None,
+        "family_name":       family_name,
+        "prng_type":         prng_type,
+        "direction":         direction,
+        "skip_mode":         skip_mode,
+        "threshold_used":    threshold_used,
+        # provenance (non-NPZ)
+        "dataset_sha256":    trial_ctx.get("dataset_sha256"),
+        "residue_sha256":    trial_ctx.get("residue_sha256"),
+    }
+    return meta
+
+
+def validate_trial_metadata(meta: Dict[str, Any]) -> None:
+    """Fail-closed gate (§0.5, gate D0-6): a manifest may NOT publish to Phase 5
+    unless every mandatory field is present and non-empty. A missing key, a None
+    value, or an empty string in an identity/provenance field RAISES
+    MinerMetadataError before publication — the coordinator never emits a `{}` (or
+    partially-populated) trial_metadata to the sink. Numeric 0 / -1 are legitimate
+    values (offset 0, skip_min 0, trial_number -1) and pass."""
+    required = list(MANDATORY_MANIFEST_METADATA) + list(_MANDATORY_PROVENANCE)
+    missing = [k for k in required if k not in meta or meta[k] is None]
+    if missing:
+        raise MinerMetadataError(
+            f"manifest trial_metadata missing mandatory field(s) {missing!r}; "
+            f"refusing to publish to Phase 5 (fail-closed)."
+        )
+    empty = [k for k in _NON_EMPTY_STRING_FIELDS
+             if k in meta and isinstance(meta[k], str) and meta[k].strip() == ""]
+    if empty:
+        raise MinerMetadataError(
+            f"manifest trial_metadata has empty identity field(s) {empty!r}; "
+            f"refusing to publish to Phase 5 (fail-closed)."
+        )
+
+
 @dataclass
 class StagingTask:
     """Immutable identity carried by every async staging task/callback (L5):
@@ -1573,6 +1920,23 @@ class RangeMinerCoordinator:
         delete (L2)."""
         now = time.time() if now is None else now
         stripe = self.ledger.get_stripe(run_id, stripe_id)
+        # D0 (Blocker 1, REV3): reconstruct the immutable trial_metadata projection
+        # DURABLY from the ledger — the trial-global `trial_context` row (persisted
+        # once per run_id, before any stripe work) + this stripe's own persisted
+        # phase/family_name. It survives a restart and is identical across the run's
+        # manifests where trial-global. The durable row MUST exist before any publish:
+        # a completely-absent `trial_context` row now FAILS CLOSED here, instead of the
+        # old `... if trial_ctx is not None else None` fallback that let _build_manifest
+        # emit `trial_metadata: {}` and leak an empty manifest to Phase 5. (The interim
+        # `_finalize_stage` manifest keeps its own no-metadata `{}` shape but is NEVER
+        # published to Phase 5 — publish_shard is reached only from this method.)
+        trial_ctx = self.ledger.get_trial_context(run_id)
+        if trial_ctx is None:
+            raise MinerMetadataError(
+                f"missing durable trial context for run_id={run_id!r}; "
+                "refusing Phase 5 publication"
+            )
+        trial_metadata = derive_trial_metadata(trial_ctx, stripe)
         manifests: List[Dict[str, Any]] = []
         for sh in self.ledger.get_shards(run_id, stripe_id, attempt):
             if sh["staging_status"] != SH_VERIFIED:
@@ -1585,7 +1949,8 @@ class RangeMinerCoordinator:
                 stripe["staging_generation"])
             manifest = self._build_manifest(
                 event_id, run_id, stripe, attempt, sh["sub_index"],
-                sh["local_staged_path"], sh["size_bytes"], sh["sha256"])
+                sh["local_staged_path"], sh["size_bytes"], sh["sha256"],
+                trial_metadata=trial_metadata)
             if self.phase5_sink is not None:
                 self.phase5_sink.publish_shard(manifest)
             self.ledger.mark_shard_enqueued(run_id, stripe_id, attempt, sh["sub_index"], now)
@@ -1676,8 +2041,15 @@ class RangeMinerCoordinator:
         trial_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """The ONE uniform ShardReadyManifest shape (Blocker 4 / L6) for inline AND
-        remote shards. event_id is the immutable L6 ack key."""
-        return {
+        remote shards. event_id is the immutable L6 ack key.
+
+        D0: when `trial_metadata` is supplied (the publish path, once a trial_context
+        row exists), it is a COMPLETE immutable projection — it is validated
+        fail-closed (a missing/empty mandatory field raises MinerMetadataError, never
+        a `{}` leak), and its provenance shas are also lifted to top-level manifest
+        fields. The interim `_finalize_stage` manifest (not published to Phase 5)
+        still calls with no metadata and keeps the legacy `{}` shape."""
+        manifest = {
             "event_id": event_id,
             "run_id": run_id,
             "stripe_id": stripe["stripe_id"],
@@ -1687,8 +2059,14 @@ class RangeMinerCoordinator:
             "local_spool_path": staged_path,
             "expected_size": size,
             "expected_sha256": sha256,
-            "trial_metadata": trial_metadata or {},
+            "trial_metadata": trial_metadata if trial_metadata is not None else {},
         }
+        if trial_metadata is not None:
+            validate_trial_metadata(trial_metadata)
+            # Provenance (non-NPZ) retained as top-level manifest fields too.
+            manifest["dataset_sha256"] = trial_metadata["dataset_sha256"]
+            manifest["residue_sha256"] = trial_metadata["residue_sha256"]
+        return manifest
 
     def _finalize_stage(
         self, task: StagingTask, actual_bytes: bytes, now: Optional[float] = None,
@@ -2720,9 +3098,34 @@ class RangeMinerCoordinator:
         total_seeds = int(context["total_seeds"])
         residues = context["residues"]
         dataset_path = context["dataset_path"]
-        window_size = int(context.get("window_size", 1))
-        sessions = context.get("sessions")
-        offset = int(context.get("offset", 0))
+
+        # dataset_sha256 is coordinator-computed ONCE and reused for every assign.
+        dataset_sha256 = compute_dataset_sha256(dataset_path)
+
+        # D0 (Blocker 2 + REV4): persist the trial-GLOBAL immutable context ONCE per
+        # run_id — BEFORE any window_size/offset coercion, stripe assignment, or
+        # dispatch. build_trial_context_from_serve projects it with NO fallback
+        # substitution: a missing mandatory field (prng_base / skip_min / skip_max /
+        # window_size / offset / thresholds) fails closed HERE with MinerMetadataError,
+        # never as a fabricated 1/0/family_name AND never as a raw int(None) TypeError
+        # in the window-param coercions below (REV4: those coercions previously ran
+        # first and crashed on an omitted value instead of failing closed cleanly).
+        # dataset_sha256 (just computed) and residue_sha256 (the SAME sha256_residues
+        # the assign payload uses) are COPIED, not recomputed. Every published manifest
+        # is reconstructed from this row + the stripe's persisted phase/family_name, so
+        # trial-global metadata is identical across the run and immutable after
+        # creation. Compare-and-insert, so a restart's re-serve with an identical
+        # context is idempotent and a conflicting one fails closed.
+        trial_ctx = build_trial_context_from_serve(
+            context, dataset_sha256, sha256_residues(residues))
+        self.ledger.set_trial_context(run_id, trial_ctx)
+
+        # Trial-global window params come from the VALIDATED projection (already
+        # int-coerced and guaranteed non-None by the guard above) — NEVER re-fabricated
+        # from raw context via int(context.get(..., 1/0)).
+        window_size = trial_ctx["window_size"]
+        sessions = trial_ctx["sessions"]
+        offset = trial_ctx["offset"]
         expected_workers = int(context.get("worker_pool_size", 1) or 1)
         node_allowlist = context.get("node_allowlist")
         poll = float(context.get("serve_poll", 0.1))
@@ -2737,9 +3140,6 @@ class RangeMinerCoordinator:
         # dropped after this many seconds so it can never wedge registration /
         # dispatch / the timeout loop. Registered workers are exempt (they may idle).
         read_deadline = float(context.get("serve_read_deadline", 15.0))
-
-        # dataset_sha256 is coordinator-computed ONCE and reused for every assign.
-        dataset_sha256 = compute_dataset_sha256(dataset_path)
 
         listen_sock = context.get("listen_sock")
         own_listen = listen_sock is None
@@ -3254,6 +3654,28 @@ def run_trial_miner(
     reverse_threshold: float,
     test_both_modes: bool,
     dataset_path: str,
+    # D0 (Blocker 2, REV3): skip bounds flow from the resolved WindowConfig at the
+    # _use_miner call site (they were dropped before) so every published manifest
+    # carries the real skip_min/skip_max. FAIL-CLOSED default: None (not 0). An
+    # OMITTED skip is no longer fabricated into a valid-looking 0 at the entry point
+    # BEFORE build_trial_context_from_serve's missing-field guard sees it — the None
+    # flows through the serve `context` unchanged and the guard raises
+    # MinerMetadataError. A caller that legitimately needs zero must pass
+    # skip_min=0, skip_max=0 EXPLICITLY (the real _use_miner call site already threads
+    # config.skip_min/config.skip_max, so production is unaffected).
+    skip_min: Optional[int] = None,
+    skip_max: Optional[int] = None,
+    # D0 (Blocker, REV4): window_size/offset are ALSO mandatory
+    # _SERVE_CONTEXT_REQUIRED metadata (REV3 fixed skip_min/skip_max; these two
+    # still fabricated 1/0 from kwargs.get). Same fail-closed shape as skip: an
+    # Optional=None passthrough so an OMITTED value reaches
+    # build_trial_context_from_serve's missing-field guard as None (rejected)
+    # instead of a fabricated 1/0. The real _use_miner call site passes
+    # config.window_size/config.offset, so production is unchanged. (sessions stays
+    # kwargs-optional below: it is NOT in _SERVE_CONTEXT_REQUIRED and normalizes
+    # None -> [].)
+    window_size: Optional[int] = None,
+    offset: Optional[int] = None,
     worker_pool_size: int = 8,
     seed_cap_nvidia: int = 5_000_000,
     seed_cap_amd: int = 2_000_000,
@@ -3346,13 +3768,15 @@ def run_trial_miner(
         "dataset_path": dataset_path,
         "forward_threshold": forward_threshold,
         "reverse_threshold": reverse_threshold,
+        "skip_min": skip_min,
+        "skip_max": skip_max,
         "test_both_modes": test_both_modes,
         "worker_pool_size": worker_pool_size,
         "miner_substripes": miner_substripes,
         "node_allowlist": node_allowlist,
-        "window_size": kwargs.get("window_size", 1),
-        "sessions": kwargs.get("sessions"),
-        "offset": kwargs.get("offset", 0),
+        "window_size": window_size,          # REV4: fail-closed passthrough (no `or 1`)
+        "sessions": kwargs.get("sessions"),  # intentionally optional (None -> [])
+        "offset": offset,                    # REV4: fail-closed passthrough (no `or 0`)
         "staging_dir": staging_dir_resolved,
         "miner_host": miner_host,
         "miner_port": miner_port,

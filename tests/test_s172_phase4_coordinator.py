@@ -284,6 +284,8 @@ def gate3_bad_sub_index_not_done():
 def gate4_done_conditions():
     with tempfile.TemporaryDirectory() as tmp:
         coord = _coord(tmp, miner_stripe_size=1000)
+        coord.ledger.set_trial_context("r", _ctx())
+        coord.ledger.set_trial_context("r2", _ctx())
         w = _worker(caps={**CAPS, "nvidia": 10})
         a = coord.assign_stripes("r", "java_lcg", 1, 30, [w], now=100.0)[0]
         sid = a["stripe_id"]
@@ -355,6 +357,7 @@ def gate5_staging_state_reclaim():
 def gate6_wait_for_staging():
     with tempfile.TemporaryDirectory() as tmp:
         coord = _coord(tmp, miner_stripe_size=1000)
+        coord.ledger.set_trial_context("run", _ctx())
         w = _worker(caps={**CAPS, "nvidia": 10})
         a = coord.assign_stripes("run", "java_lcg", 1, 30, [w], now=100.0)[0]
         sid = a["stripe_id"]
@@ -717,9 +720,23 @@ class _StubSink(Phase5Sink):
             raise IOError("simulated Phase-5 abort failure")
 
 
+def _ctx(**over):
+    """D0 REV3 (Blocker 1): a valid trial-global context so publish_attempt can
+    reconstruct a complete trial_metadata. Blocker 1 now FAILS CLOSED when the
+    durable trial_context row is absent, so every gate that PUBLISHES must persist
+    this first — production always does via serve_trial/build_trial_context_from_serve."""
+    c = dict(trial_number=7, window_size=5, offset=2,
+             sessions=["midday", "evening"], skip_min=1, skip_max=9,
+             prng_base="java_lcg", forward_threshold=0.40, reverse_threshold=0.45,
+             dataset_sha256="d" * 64, residue_sha256="r" * 64)
+    c.update(over)
+    return c
+
+
 def _stage_complete_inline(coord, sid, conn, survivors, now=100.0):
     """Stage a single sub-stripe covering the whole 30-seed stripe, record
     StripeComplete, and finalize -> attempt published + stripe done."""
+    coord.ledger.set_trial_context("run", _ctx())
     pb, size, sha = _canon(sid, 0, 0, 30, survivors)
     coord.ledger.record_substripe_result(
         "run", sid, 0, 0, conn.worker_id, 0, 30, len(survivors),
@@ -748,6 +765,7 @@ def _assign_one(coord, run="run", family="java_lcg", total=30, now=100.0):
 def gate13_inline_normalized():
     with tempfile.TemporaryDirectory() as tmp:
         coord = _coord_staging(tmp, miner_stripe_size=1000)
+        coord.ledger.set_trial_context("run", _ctx())
         conn, sid = _assign_one(coord)   # total 30, default caps -> expected_substripes 1
         survivors = [[0, 0.9, None, [1]], [5, 0.8, None, [2, 3]]]
         pb, size, sha = _canon(sid, 0, 0, 30, survivors)
@@ -882,6 +900,7 @@ def _stage_inline(coord, sid, sub_index, survivors, conn, now=100.0):
 def _stage_n_and_complete(coord, sid, conn, subs, now=100.0):
     """Stage N sub-stripes tiling a 30-seed stripe, complete + finalize -> publish.
     subs: list of (sub_index, seed_start, seed_count, survivors). Returns res list."""
+    coord.ledger.set_trial_context("run", _ctx())
     out = []
     for sub_index, ss, sc, sv in subs:
         pb, size, sha = _canon(sid, sub_index, ss, sc, sv)
@@ -1336,6 +1355,7 @@ def gate28_whole_trial_abort():
     with tempfile.TemporaryDirectory() as tmp:
         sink = _StubSink()
         coord = _coord_staging(tmp, sink=sink, miner_stripe_size=1000)
+        coord.ledger.set_trial_context("run", _ctx())
         coord.ledger.create_trial("run", 1, now=100.0)
         conn = _register(coord, "hostA:gpu0")
         staged = []
@@ -1596,6 +1616,12 @@ def gate22_coexistence():
         # ENTIRELY inside the `use_range_miner` gate — the PWC and ZMQ call paths
         # in this file are untouched, so coexistence holds.
         "window_optimizer_integration_final.py",
+        # Phase-5 D0 (metadata-seam + durable-context correction): the D0 change
+        # touches only the miner coordinator + the `use_range_miner` call site
+        # (both already allowed above); it also ships its own acceptance harness.
+        # Listing that harness here keeps this coexistence whitelist truthful —
+        # PWC/ZMQ/pwc_protocol remain untouched (flagged for review).
+        "tests/test_s172_phase5_d0.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",
@@ -1755,6 +1781,14 @@ def gate37_serve_path_two_workers():
                     False, ds, worker_pool_size=2,
                     staging_dir=os.path.join(tmp, "stg"), phase5_sink=sink,
                     listen_sock=lsock, family_name="java_lcg_hybrid",
+                    # D0 Blocker 2 (REV3): skip defaults are now fail-closed None at
+                    # the entry point; a serve-path gate that legitimately runs with
+                    # zero skip must pass skip_min/skip_max=0 explicitly.
+                    skip_min=0, skip_max=0,
+                    # D0 Blocker (REV4): window_size/offset are now fail-closed too;
+                    # this serve-path gate must supply offset explicitly (window_size
+                    # already passed).
+                    offset=0,
                     workflow_phase=3, window_size=3, serve_timeout=20.0)
             except Exception:
                 holder["err"] = traceback.format_exc()
@@ -1939,6 +1973,7 @@ def gate41_slow_fetch_nonblocking():
     with tempfile.TemporaryDirectory() as tmp:
         gate = threading.Event()
         coord = _coord_staging(tmp, miner_stripe_size=1000)
+        coord.ledger.set_trial_context("run", _ctx())
         connA = _register(coord, "hostA:gpu0")
         connB = _register(coord, "hostB:gpu0")
         sidA, sidB = "run_sA", "run_sB"
@@ -2057,6 +2092,7 @@ def gate43_admission_deferred_resume_real_lifecycle():
                                staging_workers=2, staging_queue_depth=2,
                                staging_high_water_files=2,          # fits ONE attempt
                                staging_high_water_bytes=10 ** 12, staging_timeout=3.0)
+        coord.ledger.set_trial_context("run", _ctx())
         coord.ledger.create_trial("run", 1, now=100.0)
         conn = _register(coord, "hostA:gpu0")
         elig = lambda: [conn]
@@ -2492,6 +2528,10 @@ def _run_serve_thread(tmp, ds, sink, lsock, **kw):
                 False, ds, worker_pool_size=kw.pop("worker_pool_size", 1),
                 staging_dir=os.path.join(tmp, "stg"), phase5_sink=sink,
                 listen_sock=lsock, family_name="java_lcg_hybrid", workflow_phase=3,
+                # D0 Blocker 2 (REV3): explicit zero skip on the serve-path gate.
+                skip_min=0, skip_max=0,
+                # D0 Blocker (REV4): explicit offset on the serve-path gate.
+                offset=0,
                 window_size=3, **kw)
         except Exception:
             holder["err"] = traceback.format_exc()
@@ -2784,6 +2824,10 @@ def gate57_variant_filtered_scheduling():
                     worker_pool_size=1, staging_dir=os.path.join(tmp, "stg"),
                     phase5_sink=sink, listen_sock=lsock,
                     family_name="mt19937", workflow_phase=1,   # NO worker supports it
+                    # D0 Blocker 2 (REV3): explicit zero skip on the serve-path gate.
+                    skip_min=0, skip_max=0,
+                    # D0 Blocker (REV4): explicit offset on the serve-path gate.
+                    offset=0,
                     window_size=3, serve_timeout=20.0, serve_read_deadline=10.0)
             except Exception:
                 holder["err"] = traceback.format_exc()
@@ -3008,6 +3052,7 @@ def gate62_tiny_inline_admission():
         coord = _coord_staging(tmp, sink=sink, miner_stripe_size=1000,
                                staging_high_water_files=2,
                                staging_high_water_bytes=60 * MB)
+        coord.ledger.set_trial_context("run", _ctx())
         coord.ledger.create_trial("run", 1, now=100.0)
         conn = _register(coord, "hostA:gpu0")
         sid = "run_sTINY"
@@ -3052,6 +3097,7 @@ def gate63_cross_attempt_remote_serialized():
                                staging_workers=2, staging_queue_depth=2,
                                staging_high_water_files=100,
                                staging_high_water_bytes=200 * MB, staging_timeout=30.0)
+        coord.ledger.set_trial_context("run", _ctx())
         coord.ledger.create_trial("run", 1, now=100.0)
         conn = _register(coord, "hostA:gpu0")
         # identical 70 MiB payload shared by all four shards (one object, ~73 MB RAM)
