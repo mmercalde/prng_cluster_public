@@ -1622,6 +1622,12 @@ def gate22_coexistence():
         # Listing that harness here keeps this coexistence whitelist truthful —
         # PWC/ZMQ/pwc_protocol remain untouched (flagged for review).
         "tests/test_s172_phase5_d0.py",
+        # Phase-5 D1.0 (workflow bidirectionality + abort/commit terminal-race
+        # correction): the change touches only the miner coordinator (already
+        # allowed above) and ships its own acceptance harness. Listed here for the
+        # same reason as D0's — PWC/ZMQ/pwc_protocol remain untouched (flagged for
+        # review).
+        "tests/test_s172_phase5_d1_workflow.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",

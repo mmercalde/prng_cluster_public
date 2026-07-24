@@ -2983,7 +2983,24 @@ class RangeMinerCoordinator:
         On raise/timeout: the trial stays terminally aborted, TrialCommit stays
         prohibited, staged files + reservations are RETAINED (never deleted merely
         because delivery was attempted), cleanup_status becomes 'failed', and the
-        call is retried idempotently. Idempotent by (event_id, run_id)."""
+        call is retried idempotently. Idempotent by (event_id, run_id).
+
+        D1.0 terminal-race correction [TB-D1-C1]: the terminal decision is made by
+        CAS-RESULT DISAMBIGUATION PLUS A TERMINAL-STATE RE-READ, using the ledger's
+        existing atomic `UPDATE ... WHERE state='running'` transitions — NOT a
+        lock. The pre-D1.0 code early-returned on `committed` from a possibly STALE
+        pre-read and then treated a False from mark_trial_aborted as
+        "already aborted, retry the discharge", so a commit that won the atomic race
+        in between still got its sink assembly cleared, tombstoned, and its staged
+        spools deleted. `False` is now disambiguated: False-because-COMMITTED
+        refuses; False-because-already-ABORTED retries the discharge idempotently.
+
+        NO `_lifecycle_lock` is acquired here (Team Beta binding [TB-D1-DL]):
+        `fail_trial` = `submit_abort(...).result()` is called from
+        `_handle_stripe_failure_locked` while the caller ALREADY holds
+        `_lifecycle_lock`, so acquiring it on the cleanup-executor thread would
+        deadlock permanently (RLock is reentrant only for the same thread). The
+        ledger methods' own internal `_write_lock` is unaffected."""
         now = time.time() if now is None else now
         self.ledger.create_trial(run_id, -1, now)
         trial = self.ledger.get_trial(run_id)
@@ -2993,7 +3010,20 @@ class RangeMinerCoordinator:
             return {"event": None, "cleanup": "refused", "first": False,
                     "refused": "already_committed"}
         abort_event_id = f"{run_id}:abort"
-        first = self.ledger.mark_trial_aborted(run_id, abort_event_id, now)
+        if trial is not None and trial["state"] == "aborted":
+            first = False
+        else:
+            first = self.ledger.mark_trial_aborted(run_id, abort_event_id, now)
+            if not first:
+                # The read above may now be stale. Determine which terminal
+                # transition actually won the atomic state='running' race.
+                trial = self.ledger.get_trial(run_id)
+                if trial is not None and trial["state"] == "committed":
+                    return {"event": None, "cleanup": "refused", "first": False,
+                            "refused": "already_committed"}
+                if trial is None or trial["state"] != "aborted":
+                    raise RuntimeError(
+                        f"unexpected terminal transition for {run_id!r}")
         if first:
             # fence every still-active assignment (L3): pending/claimed/staging -> cancelled
             self.ledger.cancel_active_stripes(run_id)
@@ -3590,14 +3620,21 @@ class RangeMinerCoordinator:
 # ===========================================================================
 def workflow_stages_for(prng_base: str, test_both_modes: bool):
     """§6.8 test-both-modes workflow → the ordered (family, phase) STAGES a trial
-    runs (Defect 6). test_both_modes drives all FOUR families (fwd/rev constant,
-    fwd/rev hybrid); otherwise the single forward-constant stage."""
+    runs (Defect 6). CONSTANT IS ALWAYS BIDIRECTIONAL — phases 1 (forward) and 2
+    (reverse) run for every trial, exactly as legacy Step 1 does ("PART 1:
+    CONSTANT SKIP TEST (Always runs)", window_optimizer_integration_final.py:561+).
+    The HYBRID PAIR (phases 3/4, variable skip) runs ONLY when test_both_modes.
+
+    D1.0 correction [TB-D1-B1]: the pre-D1.0 `test_both_modes=False` branch
+    returned the forward-constant stage ALONE, so such a trial executed no P2
+    reverse pass and could never produce a constant bidirectional population."""
     if test_both_modes:
         return [(prng_base, 1),
                 (f"{prng_base}_reverse", 2),
                 (f"{prng_base}_hybrid", 3),
                 (f"{prng_base}_hybrid_reverse", 4)]
-    return [(prng_base, 1)]
+    return [(prng_base, 1),
+            (f"{prng_base}_reverse", 2)]
 
 
 def build_coordinator(
