@@ -1628,6 +1628,12 @@ def gate22_coexistence():
         # same reason as D0's — PWC/ZMQ/pwc_protocol remain untouched (flagged for
         # review).
         "tests/test_s172_phase5_d1_workflow.py",
+        # Phase-5 D1.1 (four-population assembly engine + the concrete
+        # AssemblingPhase5Sink): a NEW Phase-5 module plus its own acceptance
+        # harness. It imports the miner coordinator but changes nothing in it —
+        # PWC/ZMQ/pwc_protocol remain untouched (flagged for review).
+        "miner/range_miner_npz_writer.py",
+        "tests/test_s172_phase5_d1_engine.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",
