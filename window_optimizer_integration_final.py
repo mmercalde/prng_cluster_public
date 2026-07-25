@@ -255,15 +255,55 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
                                 prng_base: str, trial_number: int,
                                 optuna_trial=None):
     """
-    Convert run_trial_persistent() output into a TestResult and update accumulator.
-    Mirrors the accumulator logic in the original run_bidirectional_test path.
+    Convert a PWC / ZMQ `step1_trial_populations_v2` result into a TestResult
+    and update the accumulator with canonical per-mode candidate records.
+
+    Mirrors the accumulator logic in the original run_bidirectional_test path —
+    and as of S172 Phase-5 D3.25 that docstring is finally TRUE. The legacy
+    sieve path appends the two modes INDEPENDENTLY at two separate sites
+    (:686 constant, :788 variable) with per-mode maps and per-mode aggregates.
+    This adapter used to union them (`for seed in bidi_constant | bidi_variable`)
+    into ONE record labelled variable, which destroyed the constant candidate of
+    any cross-mode seed before the L2 competition boundary, stamped constant-mode
+    rates and constant-biased aggregates onto variable records, and emitted a
+    string `skip_range` plus a fabricated scalar `"all"` sessions.
+
+    Ordering is trial-major, mode-minor (trial N constant, then trial N
+    variable), matching legacy. It is deterministic and decides no winner —
+    D3.5's explicit L2 key remains authoritative.
+
+    NOTE the deliberate asymmetry: `TestResult.bidirectional_count` still
+    exposes the COMBINED constant+variable total as run telemetry, but that
+    value is never copied into a record's mode-specific `bidirectional_count`.
     """
     from window_optimizer import TestResult
+    from utils.canonical_records import (
+        CanonicalRecordContractError,
+        normalize_trial_populations,
+        validate_trial_populations,
+    )
 
-    bidi_constant = pw_result.get("bidirectional_constant", set())
-    bidi_variable = pw_result.get("bidirectional_variable", set())
-    fwd_map       = pw_result.get("forward_map", {})
-    rev_map       = pw_result.get("reverse_map", {})
+    # ---- D3.25-A adapter ingress wall [C4] --------------------------------
+    # Independent of the producer's own egress validation, and FIRST: nothing
+    # below may touch the accumulator until the result is proven well-formed,
+    # so a malformed or test-mutated result fails before even one candidate is
+    # appended (G4). Two boundaries is what makes either meaningful — deleting
+    # one must be caught while the other stays intact (G11).
+    validate_trial_populations(pw_result, origin="adapter-ingress")
+
+    # Direct subscript, never `.get(name, {})`: a missing v2 field is a contract
+    # violation, not an empty population. (validate_trial_populations has
+    # already proven every one of these keys is present.)
+    fwd_map_constant = pw_result["forward_map_constant"]
+    rev_map_constant = pw_result["reverse_map_constant"]
+    fwd_map_variable = pw_result["forward_map_variable"]
+    rev_map_variable = pw_result["reverse_map_variable"]
+    bidi_constant    = pw_result["bidirectional_constant"]
+    bidi_variable    = pw_result["bidirectional_variable"]
+
+    # Telemetry only — these four lists never inform a canonical record, and no
+    # map is ever reconstructed from one (REV3 §0.3, binding: PWC builds them
+    # from the raw survivor sequence, ZMQ from map keys).
     fwd_records   = pw_result.get("forward_records", [])
     rev_records   = pw_result.get("reverse_records", [])
     fwd_h_records = pw_result.get("forward_records_hybrid", [])
@@ -271,40 +311,40 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
 
     total_bidi = len(bidi_constant) + len(bidi_variable)
 
-    # Update accumulator (same logic as original path)
     if accumulator is not None:
-        for seed in bidi_constant | bidi_variable:
-            fmr = fwd_map.get(seed, 0.0)
-            rmr = rev_map.get(seed, 0.0)
-            is_var = seed in bidi_variable
-            _union = set(fwd_map.keys()) | set(rev_map.keys())
-            accumulator['bidirectional'].append({
-                'seed':                    seed,
-                'forward_match_rate':      fmr,
-                'reverse_match_rate':      rmr,
-                'score':                   (fmr + rmr) / 2,
-                'window_size':             config.window_size,
-                'offset':                  config.offset,
-                'skip_min':                config.skip_min,
-                'skip_max':                config.skip_max,
-                'trial_number':            trial_number,
-                'prng_type':               prng_base + ("_hybrid" if is_var else ""),
-                'prng_base':               prng_base,
-                'skip_mode':               "variable" if is_var else "constant",
-                'forward_count':           len(fwd_map),
-                'reverse_count':           len(rev_map),
-                'bidirectional_count':     total_bidi,
-                'forward_only_count':      len(set(fwd_map.keys()) - set(rev_map.keys())),
-                'reverse_only_count':      len(set(rev_map.keys()) - set(fwd_map.keys())),
-                'intersection_count':      len(bidi_constant),
-                'intersection_ratio':      len(bidi_constant) / max(len(_union), 1),
-                'survivor_overlap_ratio':  len(bidi_constant) / max(len(fwd_map), 1),
-                'intersection_weight':     len(bidi_constant) / max(len(fwd_map) + len(rev_map), 1),
-                'sessions':                getattr(config, 'sessions', 'all'),
-                'skip_range':              f"{config.skip_min}-{config.skip_max}",
-                'forward_match_rate':      fmr,
-                'reverse_match_rate':      rmr,
-            })
+        # The adapter reads the mandatory WindowConfig attributes DIRECTLY and
+        # passes validated values down — `normalize_trial_populations` never
+        # receives a config object and performs no attribute lookup [C2].
+        # `sessions` is a required WindowConfig field (window_optimizer.py:86),
+        # so its absence is a malformed substitute object and fails closed here
+        # rather than being fabricated into the legacy scalar "all".
+        try:
+            _sessions = config.sessions
+        except AttributeError as _exc:
+            raise CanonicalRecordContractError(
+                f"trial {trial_number}: config {type(config).__name__} has no "
+                f"'sessions'. WindowConfig declares it as a required field; the "
+                f"legacy `getattr(config, 'sessions', 'all')` fallback that "
+                f"silently invented a session name is removed (D3.25 §3.4)."
+            ) from _exc
+
+        constant_records, variable_records = normalize_trial_populations(
+            fwd_map_constant, rev_map_constant,
+            fwd_map_variable, rev_map_variable,
+            window_size  = config.window_size,
+            offset       = config.offset,
+            skip_min     = config.skip_min,
+            skip_max     = config.skip_max,
+            sessions     = _sessions,
+            trial_number = trial_number,
+            prng_base    = prng_base,
+        )
+        # Trial-major, mode-minor. A seed present in BOTH modes yields TWO
+        # records carrying their own mode's rates and aggregates; D1/D2
+        # established that cross-mode duplication is legitimate.
+        accumulator['bidirectional'].extend(constant_records)
+        accumulator['bidirectional'].extend(variable_records)
+
         # [S166-ACCUM] Count only — full objects not retained for forward/reverse.
         accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(fwd_records) + len(fwd_h_records)
         accumulator['reverse_count'] = accumulator.get('reverse_count', 0) + len(rev_records) + len(rev_h_records)
@@ -314,9 +354,58 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
 
     return TestResult(
         config             = config,
-        forward_count      = len(fwd_map),
-        reverse_count      = len(rev_map),
+        forward_count      = len(fwd_map_constant),
+        reverse_count      = len(rev_map_constant),
         bidirectional_count= total_bidi,
+        iteration          = trial_number,
+    )
+
+
+def _build_test_result_from_miner(miner_result: dict, accumulator, config,
+                                   prng_base: str, trial_number: int,
+                                   optuna_trial=None):
+    """
+    TestResult for the RANGE-MINER path — candidate ingress is D6's, not D3.25's.
+
+    D3.25 corrects the PWC/ZMQ candidate ingress and gives those two backends a
+    versioned four-map contract. The miner is NOT one of those producers: it
+    already builds canonical 24-field records inside the Phase-5 assembly
+    engine, and D6 will append its `canonical_records_constant` /
+    `canonical_records_variable` straight off the stored `MinerTrialAssembly`
+    WITHOUT rerunning normalization (D3.25 REV3 §4).
+
+    So this call site is detached from `_build_test_result_from_pw` rather than
+    fed a v2-shaped result: routing miner output through the PWC/ZMQ contract is
+    exactly what §4 forbids, and pushing a `serve_trial` dict through the new
+    ingress wall would fail closed for the wrong reason.
+
+    Behavior is unchanged from what the shared adapter actually did for this
+    path before D3.25: `serve_trial` returns run/stripe/manifest state and none
+    of the population keys, so the old `.get(..., set()/{})` reads made every
+    count zero and appended nothing. That is preserved verbatim — including the
+    threshold-gated flush, so flush cadence does not shift — and the miner's
+    real candidates arrive with D6.
+
+    Certification status (REV3 §4):
+        PWC/ZMQ both-mode canonical candidate output   certified at D3.25
+        miner  both-mode run-level candidate output    uncertified until D6
+    """
+    from window_optimizer import TestResult
+
+    if accumulator is not None:
+        # No candidate is appended: D6 owns miner candidate ingress. The two
+        # directional counters advance by the miner's own record lists, which
+        # serve_trial does not return today (hence +0), exactly as before.
+        accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(miner_result.get("forward_records", []))
+        accumulator['reverse_count'] = accumulator.get('reverse_count', 0) + len(miner_result.get("reverse_records", []))
+        _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")
+
+    return TestResult(
+        config             = config,
+        forward_count      = len(miner_result.get("forward_map", {})),
+        reverse_count      = len(miner_result.get("reverse_map", {})),
+        bidirectional_count= (len(miner_result.get("bidirectional_constant", set()))
+                              + len(miner_result.get("bidirectional_variable", set()))),
         iteration          = trial_number,
     )
 
@@ -423,8 +512,11 @@ def run_bidirectional_test(coordinator,
                 bidirectional_count = 0,
                 iteration           = trial_number,
             )
-        return _build_test_result_from_pw(_miner_result, accumulator, config,
-                                          prng_base, trial_number, optuna_trial)
+        # D3.25 §4: the miner is NOT a `step1_trial_populations_v2` producer, so
+        # it no longer shares the PWC/ZMQ adapter. D6 wires the miner's own
+        # already-canonical records in.
+        return _build_test_result_from_miner(_miner_result, accumulator, config,
+                                             prng_base, trial_number, optuna_trial)
     # ========================================================================
     # END RANGE-MINER PATH — original path continues unchanged below
     # ========================================================================

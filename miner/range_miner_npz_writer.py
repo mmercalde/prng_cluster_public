@@ -51,6 +51,12 @@ from miner.range_miner_coordinator import (
     workflow_stages_for,
 )
 from miner.range_miner_worker import SUBSTRIPE_SCHEMA_VERSION
+# D3.25 [C3]: the frozen 24-field record constant and the one shared canonical
+# record builder now live beside each other in `utils/canonical_records.py`, so
+# PWC/ZMQ can reach the SAME derivation without importing from `miner/` (the
+# dependency direction is generic utilities <- {miner, PWC, ZMQ, adapter}).
+# Both names are re-exported below, unchanged, for every existing D1 caller.
+from utils.canonical_records import CANONICAL_RECORD_FIELDS, build_mode_records
 from utils.prng_encoding import encode_prng_type, encode_skip_mode
 
 __all__ = [
@@ -139,23 +145,22 @@ class AssemblyStateError(Exception):
 # ---------------------------------------------------------------------------
 # §6 — the frozen 24-field canonical record.
 #
-# Order and membership reproduce the LIVE Step-1 insertion order exactly:
-# seed/rates/score followed by `metadata_base`
+# RELOCATED in D3.25 [C3] to `utils/canonical_records.py`, beside the builder
+# that produces it, and imported above. Order and membership are unchanged and
+# still reproduce the LIVE Step-1 insertion order exactly: seed/rates/score
+# followed by `metadata_base`
 # (window_optimizer_integration_final.py:683-694 + :652-676 for constant;
 # identically :785-796 + :756-780 for the hybrid/variable block).
 #
 # `threshold_used` is deliberately NOT a 25th field: it is manifest identity /
 # validation metadata (§5.1), not a record field.
+#
+# The re-export is deliberate: `CANONICAL_RECORD_FIELDS` stays in this module's
+# `__all__` so every existing D1 importer — including D1.1's G9 harness, which
+# compares it against an INDEPENDENTLY hand-transcribed oracle — is untouched
+# by the move. Relocating the constant does not authorize importing it into a
+# test oracle.
 # ---------------------------------------------------------------------------
-CANONICAL_RECORD_FIELDS: Tuple[str, ...] = (
-    "seed", "forward_match_rate", "reverse_match_rate", "score",
-    "window_size", "offset", "skip_min", "skip_max", "skip_range", "sessions",
-    "trial_number", "prng_base", "skip_mode", "prng_type",
-    "forward_count", "reverse_count", "bidirectional_count",
-    "intersection_count", "intersection_ratio",
-    "forward_only_count", "reverse_only_count",
-    "survivor_overlap_ratio", "bidirectional_selectivity", "intersection_weight",
-)
 
 # The 11-field canonical trial context (9 trial-global + 2 provenance) every
 # manifest of one run must agree on (§5.2), canonicalized through the
@@ -428,58 +433,14 @@ def _read_and_validate_spool(run_id: str, manifest: Dict[str, Any]) -> Dict[str,
 
 # ---------------------------------------------------------------------------
 # §5.5/§6 — derived fields + canonical records for ONE mode.
+#
+# D3.25-B: the body moved VERBATIM to `utils.canonical_records.build_mode_records`
+# so PWC/ZMQ reach the identical derivation without a `utils -> miner` import.
+# The move is semantics-preserving by requirement, and D1.1 18/18 + D2 7/7
+# staying green is its proof. `_mode_records` remains as the private D1 alias so
+# no call site, error message or attribute lookup in this module changes.
 # ---------------------------------------------------------------------------
-def _mode_records(
-    fwd_map: Dict[int, float], rev_map: Dict[int, float],
-    ctx: Dict[str, Any], skip_mode: str, prng_type: Optional[str],
-) -> Tuple[set, List[Dict[str, Any]]]:
-    """Intersection + the frozen 24-field canonical records for one skip mode.
-
-    Every derived field is frozen from the live constant block
-    (window_optimizer_integration_final.py:652-694) and variable block
-    (:756-796), including the `max(..., 1)` denominators and the deliberate
-    duplication of `bidirectional_count` / `intersection_count`."""
-    fwd_set, rev_set = set(fwd_map), set(rev_map)
-    both = fwd_set & rev_set
-    if prng_type is None:                       # the mode did not run (§5.4)
-        return both, []
-    union = len(fwd_set | rev_set)
-    metadata_base = {
-        "window_size":               ctx["window_size"],
-        "offset":                    ctx["offset"],
-        "skip_min":                  ctx["skip_min"],
-        "skip_max":                  ctx["skip_max"],
-        "skip_range":                ctx["skip_max"] - ctx["skip_min"],
-        "sessions":                  ctx["sessions"],
-        "trial_number":              ctx["trial_number"],
-        "prng_base":                 ctx["prng_base"],
-        "skip_mode":                 skip_mode,
-        "prng_type":                 prng_type,
-        "forward_count":             len(fwd_map),
-        "reverse_count":             len(rev_map),
-        "bidirectional_count":       len(both),
-        "intersection_count":        len(both),
-        "intersection_ratio":        len(both) / max(union, 1),
-        "forward_only_count":        len(fwd_set - rev_set),
-        "reverse_only_count":        len(rev_set - fwd_set),
-        "survivor_overlap_ratio":    len(both) / max(len(fwd_set), 1),
-        "bidirectional_selectivity": len(fwd_set) / max(len(rev_set), 1),
-        "intersection_weight":       len(both) / max(len(fwd_set) + len(rev_set), 1),
-    }
-    records = []
-    for seed in sorted(both):                   # ascending seed order (§6)
-        fwd_rate, rev_rate = fwd_map[seed], rev_map[seed]
-        record = {
-            "seed":               seed,
-            "forward_match_rate": fwd_rate,
-            "reverse_match_rate": rev_rate,
-            "score":              (fwd_rate + rev_rate) / 2.0,
-        }
-        record.update(metadata_base)
-        # The frozen 24 keys, in the frozen order — gate-enforced (G9). Rebuilt
-        # explicitly rather than trusted from insertion order.
-        records.append({k: record[k] for k in CANONICAL_RECORD_FIELDS})
-    return both, records
+_mode_records = build_mode_records
 
 
 # ---------------------------------------------------------------------------

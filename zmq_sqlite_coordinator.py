@@ -32,6 +32,14 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+# S172 Phase-5 D3.25-A: the versioned `step1_trial_populations_v2` producer
+# contract, shared verbatim with PWC. `build_trial_populations` assembles the
+# return block AND validates it at producer egress, so the invariant
+# `bidirectional_M == set(forward_map_M) & set(reverse_map_M)` is asserted on
+# EVERY return path out of run_trial_zmq_sqlite — the full return and the
+# pruned early return alike.
+from utils.canonical_records import build_trial_populations
+
 logger = logging.getLogger("ZMQSQLiteCoordinator")
 
 ZMQ_JOB_PORT     = 5557
@@ -1089,14 +1097,25 @@ def run_trial_zmq_sqlite(
         print(f"      Forward: {len(fwd_map):,} survivors")
 
         if not fwd_map:
-            return {
-                "pruned": True, "reason": "forward_zero",
-                "bidirectional_count": 0,
-                "bidirectional_constant": set(), "bidirectional_variable": set(),
-                "forward_records": [], "reverse_records": [],
-                "forward_records_hybrid": [], "reverse_records_hybrid": [],
-                "forward_map": {}, "reverse_map": {},
-            }
+            # D3.25-A: the pruned early return carries the COMPLETE v2 shape.
+            # It previously carried the generic `forward_map`/`reverse_map`
+            # pair and NO variable keys at all, so the adapter's
+            # `.get(..., {})` manufactured the two missing maps silently. All
+            # four are empty here because forward-constant found nothing and
+            # no later pass ran.
+            return build_trial_populations(
+                forward_map_constant={}, reverse_map_constant={},
+                forward_map_variable={}, reverse_map_variable={},
+                bidirectional_constant=set(), bidirectional_variable=set(),
+                pruned=True, reason="forward_zero",
+                extra={
+                    "bidirectional_count": 0,
+                    "forward_records": [], "reverse_records": [],
+                    "forward_records_hybrid": [], "reverse_records_hybrid": [],
+                    "forward_map": {}, "reverse_map": {},
+                },
+                origin="zmq-egress(pruned:forward_zero)",
+            )
 
         print(f"    Running REVERSE sieve ({prng_base}_reverse) [ZMQ-SQLITE]...")
         rev = coord.run_sieve_pass(
@@ -1114,6 +1133,11 @@ def run_trial_zmq_sqlite(
 
         bidi_var = set()
         fwd_h_rec, rev_h_rec = [], []
+        # D3.25-A: the two VARIABLE maps are initialized at the same scope as
+        # the constant pair so the v2 return shape never varies. Before D3.25
+        # they existed only inside the `test_both_modes` branch (and `rev_h_map`
+        # only inside the nested `if fwd_h_map`) and were discarded on return.
+        fwd_h_map, rev_h_map = {}, {}
 
         if test_both_modes and not prng_base.endswith("_hybrid"):
             try:
@@ -1178,18 +1202,32 @@ def run_trial_zmq_sqlite(
             except Exception:
                 pass
 
-        return {
-            "pruned":                 False,
-            "bidirectional_count":    total_bidi,
-            "bidirectional_constant": bidi_const,
-            "bidirectional_variable": bidi_var,
-            "forward_map":            fwd_map,
-            "reverse_map":            rev_map,
-            "forward_records":  [{"seed":s,"match_rate":fwd_map[s]} for s in fwd_map],
-            "reverse_records":  [{"seed":s,"match_rate":rev_map[s]}  for s in rev_map],
-            "forward_records_hybrid":  fwd_h_rec,
-            "reverse_records_hybrid":  rev_h_rec,
-        }
+        # D3.25-A: the v2 four-map contract, egress-validated. The legacy
+        # `forward_map` / `reverse_map` aliases (== the CONSTANT pair) and the
+        # four record lists remain as telemetry/compatibility data ONLY; the v2
+        # adapter must never read them (G7), and no consumer may reconstruct a
+        # map from a record list — these hybrid lists are built from map KEYS
+        # here and from the raw survivor SEQUENCE in PWC, so the two are not
+        # interchangeable (REV3 §0.3, binding).
+        return build_trial_populations(
+            forward_map_constant=fwd_map,
+            reverse_map_constant=rev_map,
+            forward_map_variable=fwd_h_map,
+            reverse_map_variable=rev_h_map,
+            bidirectional_constant=bidi_const,
+            bidirectional_variable=bidi_var,
+            pruned=False, reason=None,
+            extra={
+                "bidirectional_count":    total_bidi,
+                "forward_map":            fwd_map,
+                "reverse_map":            rev_map,
+                "forward_records":  [{"seed":s,"match_rate":fwd_map[s]} for s in fwd_map],
+                "reverse_records":  [{"seed":s,"match_rate":rev_map[s]}  for s in rev_map],
+                "forward_records_hybrid":  fwd_h_rec,
+                "reverse_records_hybrid":  rev_h_rec,
+            },
+            origin="zmq-egress",
+        )
 
     finally:
         if _owns_coord:

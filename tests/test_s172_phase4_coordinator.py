@@ -1667,10 +1667,36 @@ def gate22_coexistence():
         # PWC/ZMQ/pwc_protocol remain untouched (flagged for review).
         "utils/canonical_arrays.py",
         "tests/test_s172_phase5_d3_columnizer.py",
+        # Phase-5 D3.25 (mode-preserving backend result contract + canonical
+        # candidate-ingress normalization). This is the deliverable that ENDS
+        # the "PWC/ZMQ are untouched" era, by design and by approved scope
+        # (D3.25 REV3 §6 lists persistent_worker_coordinator.py and
+        # zmq_sqlite_coordinator.py as may-modify):
+        #   * utils/canonical_records.py — NEW: the one shared canonical record
+        #     builder (`_mode_records` extracted out of the miner package) plus
+        #     the `step1_trial_populations_v2` producer contract.
+        #   * persistent_worker_coordinator.py / zmq_sqlite_coordinator.py —
+        #     both now return all four directional maps under the v2 schema
+        #     stamp, on EVERY return path including their pruned early returns,
+        #     and both egress-validate before returning. Previously each
+        #     returned only the CONSTANT map pair and structurally discarded
+        #     the two variable maps, which is precisely the defect D3.25 fixes.
+        #   * miner/range_miner_npz_writer.py (already allowed above) — now
+        #     imports the extracted builder instead of defining it.
+        #   * window_optimizer_integration_final.py (already allowed above) —
+        #     the adapter's cross-mode set union is replaced by per-mode
+        #     normalization behind an ingress validation wall.
+        "utils/canonical_records.py",
+        "persistent_worker_coordinator.py",
+        "zmq_sqlite_coordinator.py",
+        "tests/test_s172_phase5_d3_25_candidate_ingress.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
-    for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",
-                  "persistent/pwc_protocol.py"):
+    # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
+    # registration note above. The PROTOCOL file stays frozen: D3.25 changes what
+    # the two backends RETURN, never how they frame a message, so a pwc_protocol
+    # edit would still be out-of-scope drift.
+    for other in ("persistent/pwc_protocol.py",):
         assert other not in changed_py, f"{other} must remain unmodified (coexistence)"
 
     # 2) PWC + ZMQ backends still import with their trial entrypoints (coexist)

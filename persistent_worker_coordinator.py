@@ -90,6 +90,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 
+# S172 Phase-5 D3.25-A: the versioned `step1_trial_populations_v2` producer
+# contract. `build_trial_populations` assembles the return block AND validates
+# it at producer egress, so the invariant
+# `bidirectional_M == set(forward_map_M) & set(reverse_map_M)` is asserted on
+# EVERY return path out of run_trial_persistent — the full return and the
+# pruned early return alike.
+from utils.canonical_records import build_trial_populations
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ROCm stability constants (from S130/S133 learnings)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1618,15 +1626,24 @@ def run_trial_persistent(coordinator_cfg: str,
 
         if not fwd_survivors:
             pwc.shutdown()
-            return {
-                "pruned": True,
-                "reason": "forward_zero",
-                "bidirectional_count": 0,
-                "bidirectional_constant": set(),
-                "bidirectional_variable": set(),
-                "forward_records": [],
-                "reverse_records": [],
-            }
+            # D3.25-A: the pruned early return carries the COMPLETE v2 shape.
+            # It previously carried no map keys at all, and the adapter's
+            # `.get("forward_map", {})` silently manufactured empties — the
+            # exact "missing field defaults to empty" failure mode the version
+            # stamp exists to make impossible. All four maps are empty here
+            # because forward-constant found nothing and no later pass ran.
+            return build_trial_populations(
+                forward_map_constant={}, reverse_map_constant={},
+                forward_map_variable={}, reverse_map_variable={},
+                bidirectional_constant=set(), bidirectional_variable=set(),
+                pruned=True, reason="forward_zero",
+                extra={
+                    "bidirectional_count": 0,
+                    "forward_records": [],
+                    "reverse_records": [],
+                },
+                origin="pwc-egress(pruned:forward_zero)",
+            )
 
         # ── Pass 2: Reverse constant skip ────────────────────────────────────
         prng_reverse = prng_base + "_reverse"
@@ -1655,6 +1672,13 @@ def run_trial_persistent(coordinator_cfg: str,
         bidirectional_variable = set()
         fwd_records_hybrid = []
         rev_records_hybrid = []
+        # D3.25-A: the two VARIABLE maps are initialized here, at the same scope
+        # as the constant pair, so the v2 return shape never varies. Before
+        # D3.25 they existed only inside the `test_both_modes` branch and were
+        # discarded on return; a constant-only trial must still return them,
+        # empty, rather than omit them.
+        fwd_h_map = {}
+        rev_h_map = {}
 
         if test_both_modes and not prng_base.endswith("_hybrid"):
             prng_hybrid = f"{prng_base}_hybrid"
@@ -1744,18 +1768,32 @@ def run_trial_persistent(coordinator_cfg: str,
             except Exception:
                 pass
 
-        return {
-            "pruned":                 False,
-            "bidirectional_count":    total_bidi,
-            "bidirectional_constant": bidirectional_constant,
-            "bidirectional_variable": bidirectional_variable,
-            "forward_map":            fwd_map,
-            "reverse_map":            rev_map,
-            "forward_records":        [{"seed": s, "match_rate": fwd_map[s]} for s in fwd_survivors],
-            "reverse_records":        [{"seed": s, "match_rate": rev_map[s]} for s in rev_survivors],
-            "forward_records_hybrid": fwd_records_hybrid,
-            "reverse_records_hybrid": rev_records_hybrid,
-        }
+        # D3.25-A: the v2 four-map contract, egress-validated. The legacy
+        # `forward_map` / `reverse_map` aliases (== the CONSTANT pair) and the
+        # four record lists remain as telemetry/compatibility data ONLY; the v2
+        # adapter must never read them (G7), and no consumer may reconstruct a
+        # map from a record list — `forward_records_hybrid` is built from the
+        # raw survivor SEQUENCE here and from map KEYS in ZMQ, so a repeated
+        # raw seed makes list and map inequivalent (REV3 §0.3, binding).
+        return build_trial_populations(
+            forward_map_constant=fwd_map,
+            reverse_map_constant=rev_map,
+            forward_map_variable=fwd_h_map,
+            reverse_map_variable=rev_h_map,
+            bidirectional_constant=bidirectional_constant,
+            bidirectional_variable=bidirectional_variable,
+            pruned=False, reason=None,
+            extra={
+                "bidirectional_count":    total_bidi,
+                "forward_map":            fwd_map,
+                "reverse_map":            rev_map,
+                "forward_records":        [{"seed": s, "match_rate": fwd_map[s]} for s in fwd_survivors],
+                "reverse_records":        [{"seed": s, "match_rate": rev_map[s]} for s in rev_survivors],
+                "forward_records_hybrid": fwd_records_hybrid,
+                "reverse_records_hybrid": rev_records_hybrid,
+            },
+            origin="pwc-egress",
+        )
 
     finally:
         pwc.shutdown()
