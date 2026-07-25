@@ -1711,15 +1711,16 @@ def add_window_optimizer_to_coordinator():
             # Steps 2-6 unaffected — they consume bidirectional_survivors_binary.npz exclusively
             import os as _os_s145
             import numpy as _np_s145
-            _SKIP_ENC = {'constant': 0, 'variable': 1}
-            _PRNG_ENC = {
-                'java_lcg': 0, 'java_lcg_reverse': 1,
-                'mt19937': 2, 'mt19937_reverse': 3,
-                'xorshift128': 4, 'xorshift128_reverse': 5,
-                'lcg32': 6, 'lcg32_reverse': 7,
-                'minstd': 8, 'minstd_reverse': 9,
-                'randu': 10, 'randu_reverse': 11,
-            }
+            # [S172 Phase-5 D3.0] Canonical encoding seam. The inline
+            # _SKIP_ENC / _PRNG_ENC tables that used to sit here were a
+            # pre-Phase-0 fork of the registry — they disagreed with canonical
+            # on seven shared keys and had no 'java_lcg_hybrid' key at all, so
+            # `.get(..., 0)` silently wrote every hybrid survivor into this,
+            # the LIVE Step-1 NPZ, as java_lcg. utils/prng_encoding is now the
+            # single source of truth and hard-fails on an unknown identity; its
+            # ValueError propagates unwrapped by design.
+            from utils.prng_encoding import encode_prng_type as _encode_prng_type_s172
+            from utils.prng_encoding import encode_skip_mode as _encode_skip_mode_s172
 
             def _survivors_to_arrays(survivors):
                 """Convert list of survivor dicts to NPZ field arrays."""
@@ -1754,8 +1755,12 @@ def add_window_optimizer_to_coordinator():
                     'reverse_only_count':     _np_s145.array([s.get('reverse_only_count', 0.0) for s in survivors], dtype=_np_s145.float32),
                     'survivor_overlap_ratio': _np_s145.array([s.get('survivor_overlap_ratio', 0.0) for s in survivors], dtype=_np_s145.float32),
                     'score':                  _np_s145.array([s.get('score', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'skip_mode':              _np_s145.array([_SKIP_ENC.get(s.get('skip_mode', 'constant'), 0) for s in survivors], dtype=_np_s145.uint8),
-                    'prng_type':              _np_s145.array([_PRNG_ENC.get(s.get('prng_type', s.get('prng_base', 'java_lcg')), 0) for s in survivors], dtype=_np_s145.uint8),
+                    # [S172 Phase-5 D3.0] Resolution stays the caller's job —
+                    # identical prng_type -> prng_base -> 'java_lcg' chain as
+                    # before, then the canonical encoder. Only difference: an
+                    # unresolvable identity raises instead of collapsing to 0.
+                    'skip_mode':              _np_s145.array([_encode_skip_mode_s172(s.get('skip_mode', 'constant')) for s in survivors], dtype=_np_s145.uint8),
+                    'prng_type':              _np_s145.array([_encode_prng_type_s172(s.get('prng_type', s.get('prng_base', 'java_lcg'))) for s in survivors], dtype=_np_s145.uint8),
                 }
 
             _accum_npz = 'bidirectional_survivors_all.npz'

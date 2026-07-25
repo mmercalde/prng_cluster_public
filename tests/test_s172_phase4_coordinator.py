@@ -1641,6 +1641,23 @@ def gate22_coexistence():
         # untracked test path does not red this coexistence gate; PWC/ZMQ/
         # pwc_protocol remain untouched (flagged for review).
         "tests/test_s172_phase5_d2_directional_uniqueness.py",
+        # Phase-5 D3.0 (legacy seam correction: canonical PRNG/skip encoding +
+        # rectangular 22-array empty output). This deliverable DOES change
+        # production files — two of them — so both are registered explicitly:
+        #   * convert_survivors_to_binary.py — the local 12-entry
+        #     PRNG_TYPE_ENCODING / SKIP_MODE_ENCODING tables are deleted in
+        #     favour of utils/prng_encoding, and the empty case now writes all
+        #     22 zero-length arrays instead of one.
+        #   * window_optimizer_integration_final.py — the inline _PRNG_ENC /
+        #     _SKIP_ENC tables in the S145-R1 accumulator seam are likewise
+        #     replaced by the canonical encoders. Already allowed above for the
+        #     Correction-2 Defect 6 wiring; the D3.0 edit is confined to that
+        #     ~12-line encoding seam (the merge, supersede, backfill, sort and
+        #     dual-write logic are untouched).
+        # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
+        # (flagged for review).
+        "convert_survivors_to_binary.py",
+        "tests/test_s172_phase5_d3_0_encoding_contract.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",
