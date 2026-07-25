@@ -1658,6 +1658,15 @@ def gate22_coexistence():
         # (flagged for review).
         "convert_survivors_to_binary.py",
         "tests/test_s172_phase5_d3_0_encoding_contract.py",
+        # Phase-5 D3 (shared backend-neutral 24 -> 22 columnizer + independent
+        # structural validator): a NEW module under utils/ plus its own
+        # acceptance harness. It is deliberately NOT wired into any live path —
+        # the existing `_survivors_to_arrays` closure and the
+        # convert_survivors_to_binary array block stay in place and in use until
+        # D3.5 — so no producer or accumulator call site is rewired here.
+        # PWC/ZMQ/pwc_protocol remain untouched (flagged for review).
+        "utils/canonical_arrays.py",
+        "tests/test_s172_phase5_d3_columnizer.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",
