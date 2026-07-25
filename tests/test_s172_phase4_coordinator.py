@@ -1634,6 +1634,13 @@ def gate22_coexistence():
         # PWC/ZMQ/pwc_protocol remain untouched (flagged for review).
         "miner/range_miner_npz_writer.py",
         "tests/test_s172_phase5_d1_engine.py",
+        # Phase-5 D2 (directional uniqueness at BOTH enforcement layers): a NEW
+        # acceptance harness ONLY — it adds no production change (D2-A drives the
+        # unchanged serve path; D2-B probes the unchanged D1.1 writer). Registered
+        # here per the extended Team Beta standing whitelist rule so the one new
+        # untracked test path does not red this coexistence gate; PWC/ZMQ/
+        # pwc_protocol remain untouched (flagged for review).
+        "tests/test_s172_phase5_d2_directional_uniqueness.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     for other in ("persistent_worker_coordinator.py", "zmq_sqlite_coordinator.py",
