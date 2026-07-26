@@ -1737,6 +1737,25 @@ def gate22_coexistence():
         # snapshotted into either harness, and no failing check was skipped to
         # preserve a tally. utils/canonical_arrays.py, utils/prng_encoding.py
         # and convert_survivors_to_binary.py are byte-identical to 70cd6f0.
+        #
+        # Phase-5 D4 (the two-backend assembly interface + `serial_reference`):
+        #   * miner/assembly_backends.py — NEW: `ASSEMBLY_BACKENDS`,
+        #     `get_assembly_backend` (fail-closed; `process_sharded` is DECLARED
+        #     but raises NotImplementedError naming D5), the frozen
+        #     `BackendAssemblyResult` / `AssemblyMeasurement` return contract,
+        #     and `SerialReferenceBackend` — a THIN wrapper that delegates to
+        #     D1.1's `assemble_trial` and measures the call. It writes no
+        #     assembly, columnization, dedup, ordering or publication logic:
+        #     every one of those already exists and D4 calls it (gate G7 proves
+        #     that at AST level). It deliberately does NOT import
+        #     utils/run_finalizer — a backend produces a MinerTrialAssembly and
+        #     stops.
+        #   * tests/test_s172_phase5_d4_serial_backend.py — its own acceptance
+        #     harness (G1-G8, 9 mutants).
+        # No existing production module is touched, so this is a pure ADD:
+        # PWC/ZMQ/pwc_protocol remain untouched by it (flagged for review).
+        "miner/assembly_backends.py",
+        "tests/test_s172_phase5_d4_serial_backend.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
