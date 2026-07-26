@@ -1690,6 +1690,53 @@ def gate22_coexistence():
         "persistent_worker_coordinator.py",
         "zmq_sqlite_coordinator.py",
         "tests/test_s172_phase5_d3_25_candidate_ingress.py",
+        # Phase-5 D3.5 (the shared run finalizer: L2 winner selection, L3
+        # array-domain merge, immutable-generation publication):
+        #   * utils/run_finalizer.py — NEW: the one finalizer every backend
+        #     goes through. It reuses D3's `records_to_arrays` /
+        #     `validate_array_bundle` and reimplements neither.
+        #   * window_optimizer_integration_final.py (already allowed above) —
+        #     the inline S145-R1 NPZ-accumulator block is replaced by a call to
+        #     that finalizer, the legacy score-only `deduplicate_survivors` is
+        #     removed along with the `convert_survivors_to_binary.py` subprocess
+        #     fallback, and the call now sits OUTSIDE the broad swallow wrapper
+        #     so a canonical-finalization failure propagates (D3.5 §11 [B4]).
+        # PWC/ZMQ call paths and pwc_protocol remain untouched by this
+        # deliverable (flagged for review).
+        "utils/run_finalizer.py",
+        "tests/test_s172_phase5_d3_5_finalizer.py",
+        # D3.5 MIGRATION-GATE RETIREMENT CAUSED BY REMOVAL OF THE LIVE INLINE
+        # WRITER (Team Beta ruling on harness expiry). Both harnesses below are
+        # ALREADY whitelisted above for their own deliverables; they are named a
+        # second time here because D3.5 edits them for a reason that belongs to
+        # D3.5, not to D3 or D3.0, and that reason must be legible in this list:
+        #
+        #   * tests/test_s172_phase5_d3_columnizer.py — C8 drove TWO legacy
+        #     columnizers. The second was the inline `_survivors_to_arrays`
+        #     closure in window_optimizer_integration_final.py, extracted from
+        #     live source by AST line-range. D3.5 replaced the inline
+        #     run-finalization block, so that closure no longer exists and the
+        #     extraction aborted the harness at import. The inline half of C8 is
+        #     REMOVED; parity against the standalone convert_survivors_to_binary
+        #     writer is unchanged. C1-C7 and C9-C10 (incl. mutation evidence)
+        #     are untouched. Tally stays 10/10.
+        #
+        #   * tests/test_s172_phase5_d3_0_encoding_contract.py — the same
+        #     extraction fed SEVEN consumers (E1-E7, E9, E10). The machinery is
+        #     REMOVED; E1-E7 now assert against the standalone converter and,
+        #     where the check is about the encoding contract itself rather than
+        #     one writer, additionally against the canonical utils/prng_encoding
+        #     entry points. E8 is unchanged. E9 compares only the standalone
+        #     converter against the hand-written golden. E10 is reframed to the
+        #     standalone converter's mixed java_lcg constant/hybrid column.
+        #     Tally stays 10/10.
+        #
+        # This is a PLANNED EXPIRY, not drift: D3's own module docstring stated
+        # the inline closure would "stay in place and in use UNTIL D3.5". The
+        # closure is NOT retained as dead production code, its source is NOT
+        # snapshotted into either harness, and no failing check was skipped to
+        # preserve a tally. utils/canonical_arrays.py, utils/prng_encoding.py
+        # and convert_survivors_to_binary.py are byte-identical to 70cd6f0.
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

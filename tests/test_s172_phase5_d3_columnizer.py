@@ -26,12 +26,22 @@ LITERALS, hand-transcribed exactly as D3.0's harness does — not read back out 
 `utils/prng_encoding`. They are the first two keys of the alphabetically-sorted
 KERNEL_REGISTRY, so they are also the least likely to shift.
 
-C8 drives BOTH live legacy columnizers for parity. `convert_survivors_to_binary`
-is imported and driven end-to-end (JSON in -> NPZ on disk -> np.load out). The
-inline `_survivors_to_arrays` is a nested closure inside a ~2000-line function
-and is not importable, so it is extracted FROM LIVE SOURCE by AST line-range
-(the same technique D3.0's harness uses) — editing the production seam changes
-what this gate runs; nothing is copied into this file.
+C8 drives the live standalone legacy columnizer for parity:
+`convert_survivors_to_binary` is imported and driven end-to-end (JSON in -> NPZ
+on disk -> np.load out). Nothing is copied into this file.
+
+MIGRATION-GATE RETIREMENT (S172 Phase-5 D3.5, Team Beta ruling). C8 used to
+drive a SECOND legacy columnizer as well: the inline `_survivors_to_arrays`
+closure inside `window_optimizer_integration_final.py`, extracted from live
+source by AST line-range because it was a nested closure and not importable.
+That closure existed only until the shared finalizer replaced the inline
+run-finalization block, which D3's own module docstring stated explicitly
+("...stay in place and in use UNTIL D3.5"). D3.5 removed it, so this half of the
+parity check has reached its planned expiry and is REMOVED here — not stubbed,
+not snapshotted, and not kept alive as dead production code. Parity against the
+remaining standalone writer is unchanged and unweakened; the retired seam's
+behavior now lives in `utils/run_finalizer.py`, gated by
+`tests/test_s172_phase5_d3_5_finalizer.py`.
 
 C10 is the Rule-2 mutation proof. Each mutant is a TEXTUAL edit applied to the
 live `utils/canonical_arrays.py` source and exec'd into a fresh namespace; the
@@ -42,7 +52,6 @@ Against the unmodified tree the expected result is 10/10 green.
 """
 from __future__ import annotations
 
-import ast
 import contextlib
 import io
 import json
@@ -50,7 +59,6 @@ import math
 import os
 import sys
 import tempfile
-import textwrap
 import traceback
 from typing import Dict, List, Tuple
 
@@ -64,7 +72,6 @@ import utils.canonical_arrays as PROD                      # noqa: E402
 import convert_survivors_to_binary as CSB                  # noqa: E402
 
 _MODULE_PATH = os.path.join(_ROOT, "utils", "canonical_arrays.py")
-_WOIF = os.path.join(_ROOT, "window_optimizer_integration_final.py")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -269,53 +276,12 @@ def run_convert_writer(records) -> Tuple[Dict[str, np.ndarray], Tuple[str, ...]]
             return {k: z[k].copy() for k in z.files}, tuple(z.files)
 
 
-def load_inline_writer():
-    """Extract `_survivors_to_arrays` FROM LIVE SOURCE and return it callable.
-
-    Same AST line-range technique as D3.0's harness: locate the FunctionDef in
-    the module AST, walk BACKWARDS over the contiguous run of local imports and
-    underscore-name assignments that immediately precede it (the encoding seam),
-    and exec that exact line range. Whatever the seam actually does is what runs.
-    """
-    with open(_WOIF) as f:
-        src = f.read()
-    tree = ast.parse(src)
-
-    parent_body, idx = None, None
-    for node in ast.walk(tree):
-        for _field, value in ast.iter_fields(node):
-            if not isinstance(value, list):
-                continue
-            for i, child in enumerate(value):
-                if isinstance(child, ast.FunctionDef) and child.name == "_survivors_to_arrays":
-                    parent_body, idx = value, i
-    _assert(parent_body is not None,
-            "_survivors_to_arrays not found in window_optimizer_integration_final.py")
-
-    start = idx
-    while start > 0:
-        prev = parent_body[start - 1]
-        if isinstance(prev, (ast.Import, ast.ImportFrom)):
-            start -= 1
-            continue
-        if isinstance(prev, ast.Assign) and prev.targets and all(
-            isinstance(t, ast.Name) and t.id.startswith("_") for t in prev.targets
-        ):
-            start -= 1
-            continue
-        break
-
-    first_line = parent_body[start].lineno
-    last_line = parent_body[idx].end_lineno
-    block = textwrap.dedent("\n".join(src.splitlines()[first_line - 1:last_line]))
-    ns = {"__name__": "_d3_inline_seam"}
-    exec(compile(block, f"{_WOIF}:{first_line}-{last_line}", "exec"), ns)  # noqa: S102
-    fn = ns.get("_survivors_to_arrays")
-    _assert(callable(fn), "extracted _survivors_to_arrays is not callable")
-    return fn
-
-
-_inline_survivors_to_arrays = load_inline_writer()
+# The inline-writer extraction machinery (`load_inline_writer` and the
+# module-level `_inline_survivors_to_arrays` binding) lived here until D3.5
+# removed the closure it read. See the migration-gate retirement note in the
+# module docstring; it is deleted rather than adapted, because there is nothing
+# left in production for it to read and a frozen copy would gate this file
+# against itself.
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -859,7 +825,8 @@ def c7_order_preserved(mod=PROD):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# C8 — parity with BOTH corrected post-D3.0 legacy columnizers
+# C8 — parity with the standalone corrected post-D3.0 legacy columnizer
+#      (the inline writer was retired by D3.5; see the docstring's note)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def c8_parity_with_legacy(mod=PROD):
@@ -882,10 +849,10 @@ def c8_parity_with_legacy(mod=PROD):
             f"convert_survivors_to_binary on-disk key order drifted: "
             f"{list(key_order)}")
 
-    legacy_inline = _inline_survivors_to_arrays(records)
-
-    for label, legacy in (("convert_survivors_to_binary", legacy_convert),
-                          ("inline _survivors_to_arrays", legacy_inline)):
+    # The second parity target — the inline `_survivors_to_arrays` closure — was
+    # retired by D3.5 along with the block that contained it. Every assertion
+    # below against the remaining standalone writer is unchanged.
+    for label, legacy in (("convert_survivors_to_binary", legacy_convert),):
         for name in EXPECTED_ARRAY_NAMES:
             _assert(name in legacy, f"{label}: missing array {name!r}")
             got, want = d3[name], legacy[name]
@@ -1044,7 +1011,8 @@ def main():
     _check("C6: cross-mode duplicate seed survives (no unique-seed wall)",
            c6_cross_mode_seed_survives)
     _check("C7: exact order preservation + shuffle equivariance", c7_order_preserved)
-    _check("C8: parity with BOTH live legacy columnizers", c8_parity_with_legacy)
+    _check("C8: parity with the live standalone legacy columnizer",
+           c8_parity_with_legacy)
     _check("C9: validator on hand-built bundles", c9_validator)
     _check("C10: mutation proof (21 mutants, each killed by C1-C9)",
            c10_mutation_proof)
@@ -1067,8 +1035,8 @@ def main():
                 print(f"--- {name} ---\n{tb}")
         return 1
     print("All D3 gate checks green — the shared 24 -> 22 columnizer is "
-          "order-preserving, fail-closed and parity-clean against both live "
-          "legacy writers (pending Team Alpha + Team Beta review).")
+          "order-preserving, fail-closed and parity-clean against the live "
+          "standalone legacy writer (pending Team Alpha + Team Beta review).")
     return 0
 
 

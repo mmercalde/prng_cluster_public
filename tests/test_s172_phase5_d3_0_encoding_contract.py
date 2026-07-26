@@ -25,13 +25,23 @@ Every asserted numeric id is an INTEGER LITERAL hand-transcribed below, and the
 (convert_survivors_to_binary.py v3.1 `np.savez_compressed` call order), not
 read back out of the code under test.
 
-BOTH WRITERS ARE EXERCISED LIVE. `convert_survivors_to_binary` is imported and
-driven end-to-end (JSON in -> NPZ on disk -> np.load out). The inline writer's
-`_survivors_to_arrays` is a nested closure inside a ~2000-line function and is
-not importable, so it is extracted FROM LIVE SOURCE by AST (the seam's local
-imports + encoding statements + the function itself, by line range) and exec'd.
-Nothing is copied into this file — editing the production seam changes what this
-harness runs.
+THE STANDALONE WRITER IS EXERCISED LIVE. `convert_survivors_to_binary` is
+imported and driven end-to-end (JSON in -> NPZ on disk -> np.load out). Nothing
+is copied into this file — editing the production writer changes what this
+harness runs. Where a check is about the encoding contract itself rather than
+about one writer, it also asserts directly against the canonical
+`utils/prng_encoding` entry points.
+
+MIGRATION-GATE RETIREMENT (S172 Phase-5 D3.5, Team Beta ruling). D3.0 originally
+exercised a SECOND live writer: the inline `_survivors_to_arrays` closure in the
+S145-R1 accumulator block of `window_optimizer_integration_final.py`, extracted
+from live source by AST line-range because a nested closure cannot be imported.
+That seam existed only until the shared finalizer replaced the inline
+run-finalization block. D3.5 removed it, so every inline-writer assertion here
+has reached its planned expiry and is REMOVED — not stubbed, not snapshotted,
+and not kept alive as dead production code. The standalone-writer and canonical
+assertions are unchanged and unweakened; the retired seam's successor is
+`utils/run_finalizer.py`, gated by `tests/test_s172_phase5_d3_5_finalizer.py`.
 
 Ten checks (E1-E10), each constructed to FAIL on the wrong behavior. Against the
 UNMODIFIED tree at 2d37b77 the expected result is:
@@ -46,6 +56,7 @@ UNMODIFIED tree at 2d37b77 the expected result is:
     E8  FAIL  <- empty input writes ONE array (seeds=[]), not 22
     E9  PASS  (known-identity java_lcg golden; must STAY green post-fix)
     E10 FAIL  <- mixed constant+hybrid prng_type column collapses to {0}
+                 (asserted against the standalone converter post-D3.5)
 
 Run:
     cd ~/distributed_prng_analysis
@@ -53,12 +64,10 @@ Run:
     PYTHONPATH=. python3 tests/test_s172_phase5_d3_0_encoding_contract.py
 Exit 0 = all green. Exit 1 = a check failed (DO NOT COMMIT).
 """
-import ast
 import json
 import os
 import sys
 import tempfile
-import textwrap
 import traceback
 
 import numpy as np
@@ -69,7 +78,6 @@ if _ROOT not in sys.path:
 
 import convert_survivors_to_binary as CSB  # noqa: E402
 
-_WOIF = os.path.join(_ROOT, "window_optimizer_integration_final.py")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,63 +212,11 @@ def run_convert_writer(records):
     return arrays
 
 
-def load_inline_writer():
-    """Extract `_survivors_to_arrays` FROM LIVE SOURCE and return it callable.
-
-    The function is a nested closure inside the S145-R1 NPZ accumulator block of
-    window_optimizer_integration_final.py, so it cannot be imported. We locate it
-    in the module AST, walk BACKWARDS over the contiguous run of local imports and
-    underscore-name assignments that immediately precede it (the encoding seam),
-    and exec that exact line range. Whatever the seam actually does is what runs —
-    no copy is kept in this harness.
-    """
-    with open(_WOIF) as f:
-        src = f.read()
-    tree = ast.parse(src)
-
-    parent_body, idx = None, None
-    for node in ast.walk(tree):
-        for _field, value in ast.iter_fields(node):
-            if not isinstance(value, list):
-                continue
-            for i, child in enumerate(value):
-                if isinstance(child, ast.FunctionDef) and child.name == "_survivors_to_arrays":
-                    parent_body, idx = value, i
-    assert parent_body is not None, (
-        "_survivors_to_arrays not found in window_optimizer_integration_final.py"
-    )
-
-    start = idx
-    while start > 0:
-        prev = parent_body[start - 1]
-        if isinstance(prev, (ast.Import, ast.ImportFrom)):
-            start -= 1
-            continue
-        if isinstance(prev, ast.Assign) and prev.targets and all(
-            isinstance(t, ast.Name) and t.id.startswith("_") for t in prev.targets
-        ):
-            start -= 1
-            continue
-        break
-
-    first_line = parent_body[start].lineno
-    last_line = parent_body[idx].end_lineno
-    block = textwrap.dedent(
-        "\n".join(src.splitlines()[first_line - 1:last_line])
-    )
-    ns = {"__name__": "_d3_0_inline_seam"}
-    exec(compile(block, f"{_WOIF}:{first_line}-{last_line}", "exec"), ns)  # noqa: S102
-    fn = ns.get("_survivors_to_arrays")
-    assert callable(fn), "extracted _survivors_to_arrays is not callable"
-    return fn
-
-
-_inline_survivors_to_arrays = load_inline_writer()
-
-
-def run_inline_writer(records):
-    """Drive the live inline writer; return {name: ndarray}."""
-    return _inline_survivors_to_arrays(records)
+# `load_inline_writer()`, the module-level `_inline_survivors_to_arrays`
+# binding and `run_inline_writer()` lived here until D3.5 removed the closure
+# they read. See the migration-gate retirement note in the module docstring;
+# they are deleted rather than adapted, because nothing remains in production
+# for them to extract and a frozen copy would gate this file against itself.
 
 
 def _rec(**kw):
@@ -270,13 +226,10 @@ def _rec(**kw):
     return base
 
 
-def _both_prng_ids(prng_type):
-    """prng_type column (as a plain int list) from BOTH live writers."""
+def _convert_prng_ids(prng_type):
+    """prng_type column (as a plain int list) from the live standalone writer."""
     recs = [_rec(seed=101, prng_type=prng_type)]
-    return (
-        [int(v) for v in run_convert_writer(recs)["prng_type"]],
-        [int(v) for v in run_inline_writer(recs)["prng_type"]],
-    )
+    return [int(v) for v in run_convert_writer(recs)["prng_type"]]
 
 
 def _assert_raises_valueerror(label, fn):
@@ -297,11 +250,10 @@ def _assert_raises_valueerror(label, fn):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def e1_java_lcg_agrees_everywhere():
-    """java_lcg encodes to literal 0 through both writers and the canonical module."""
+    """java_lcg encodes to literal 0 through the standalone writer AND canonical."""
     from utils.prng_encoding import encode_prng_type
-    conv, inline = _both_prng_ids("java_lcg")
+    conv = _convert_prng_ids("java_lcg")
     assert conv == [ID_JAVA_LCG], f"convert writer java_lcg -> {conv}, expected [0]"
-    assert inline == [ID_JAVA_LCG], f"inline writer java_lcg -> {inline}, expected [0]"
     assert encode_prng_type("java_lcg") == ID_JAVA_LCG, "canonical java_lcg != 0"
 
 
@@ -311,17 +263,15 @@ def e2_hybrid_is_one_not_zero():
     FAILS PRE-FIX: the 12-entry legacy table has no 'java_lcg_hybrid' key, so
     `.get(..., 0)` mislabels every hybrid survivor as java_lcg.
     """
-    conv, inline = _both_prng_ids("java_lcg_hybrid")
+    from utils.prng_encoding import encode_prng_type
+    conv = _convert_prng_ids("java_lcg_hybrid")
     assert conv == [ID_JAVA_LCG_HYBRID], (
         f"convert writer java_lcg_hybrid -> {conv}, expected [1] "
         f"(got [0] = silent collapse to java_lcg)" if conv == [ID_JAVA_LCG]
         else f"convert writer java_lcg_hybrid -> {conv}, expected [1]"
     )
-    assert inline == [ID_JAVA_LCG_HYBRID], (
-        f"inline writer java_lcg_hybrid -> {inline}, expected [1] "
-        f"(got [0] = silent collapse to java_lcg)" if inline == [ID_JAVA_LCG]
-        else f"inline writer java_lcg_hybrid -> {inline}, expected [1]"
-    )
+    assert encode_prng_type("java_lcg_hybrid") == ID_JAVA_LCG_HYBRID, (
+        "canonical java_lcg_hybrid != 1")
 
 
 def e3_shared_key_now_matches_canonical():
@@ -329,36 +279,40 @@ def e3_shared_key_now_matches_canonical():
 
     FAILS PRE-FIX. One of the seven shared keys that disagreed on value.
     """
-    conv, inline = _both_prng_ids("java_lcg_reverse")
+    from utils.prng_encoding import encode_prng_type
+    conv = _convert_prng_ids("java_lcg_reverse")
     assert conv == [ID_JAVA_LCG_REVERSE], (
         f"convert writer java_lcg_reverse -> {conv}, expected [3]")
-    assert inline == [ID_JAVA_LCG_REVERSE], (
-        f"inline writer java_lcg_reverse -> {inline}, expected [3]")
+    assert encode_prng_type("java_lcg_reverse") == ID_JAVA_LCG_REVERSE, (
+        "canonical java_lcg_reverse != 3")
 
 
 def e4_unknown_prng_type_raises():
-    """An unknown prng_type raises ValueError from BOTH writers (never 0).
+    """An unknown prng_type raises ValueError from the writer AND canonical.
 
     FAILS PRE-FIX: `.get(unknown, 0)` returns 0 and the NPZ silently claims the
     survivor was java_lcg.
     """
-    recs = [_rec(seed=202, prng_type="definitely_not_a_registered_prng")]
+    from utils.prng_encoding import encode_prng_type
+    unknown = "definitely_not_a_registered_prng"
+    recs = [_rec(seed=202, prng_type=unknown)]
     _assert_raises_valueerror("convert writer / unknown prng_type",
                               lambda: run_convert_writer(recs))
-    _assert_raises_valueerror("inline writer / unknown prng_type",
-                              lambda: run_inline_writer(recs))
+    _assert_raises_valueerror("canonical encode_prng_type / unknown prng_type",
+                              lambda: encode_prng_type(unknown))
 
 
 def e5_unknown_skip_mode_raises():
-    """An unknown skip_mode raises ValueError from BOTH writers.
+    """An unknown skip_mode raises ValueError from the writer AND canonical.
 
     FAILS PRE-FIX: `.get(unknown, 0)` silently reports 'constant'.
     """
+    from utils.prng_encoding import encode_skip_mode
     recs = [_rec(seed=303, prng_type="java_lcg", skip_mode="sideways")]
     _assert_raises_valueerror("convert writer / unknown skip_mode",
                               lambda: run_convert_writer(recs))
-    _assert_raises_valueerror("inline writer / unknown skip_mode",
-                              lambda: run_inline_writer(recs))
+    _assert_raises_valueerror("canonical encode_skip_mode / unknown skip_mode",
+                              lambda: encode_skip_mode("sideways"))
 
 
 def e6_randu_identities_raise():
@@ -371,12 +325,13 @@ def e6_randu_identities_raise():
 
     FAILS PRE-FIX: the legacy table encodes them as 10 and 11.
     """
+    from utils.prng_encoding import encode_prng_type
     for name in ("randu", "randu_reverse"):
         recs = [_rec(seed=404, prng_type=name)]
         _assert_raises_valueerror(f"convert writer / {name}",
                                   lambda r=recs: run_convert_writer(r))
-        _assert_raises_valueerror(f"inline writer / {name}",
-                                  lambda r=recs: run_inline_writer(r))
+        _assert_raises_valueerror(f"canonical encode_prng_type / {name}",
+                                  lambda n=name: encode_prng_type(n))
 
 
 def e7_skip_mode_numerics_unchanged():
@@ -389,8 +344,7 @@ def e7_skip_mode_numerics_unchanged():
     from utils.prng_encoding import encode_skip_mode
     recs = [_rec(seed=1, prng_type="java_lcg", skip_mode="constant"),
             _rec(seed=2, prng_type="java_lcg", skip_mode="variable")]
-    for label, arrays in (("convert", run_convert_writer(recs)),
-                          ("inline", run_inline_writer(recs))):
+    for label, arrays in (("convert", run_convert_writer(recs)),):
         got = [int(v) for v in arrays["skip_mode"]]
         assert got == [SKIP_CONSTANT, SKIP_VARIABLE], (
             f"{label} writer skip_mode -> {got}, expected [0, 1]")
@@ -471,11 +425,10 @@ def e9_known_identity_output_unchanged():
     """Known-identity java_lcg output is byte-for-byte what the pre-fix tree wrote.
 
     All 22 arrays are compared against the hand-transcribed pre-fix golden, for
-    BOTH writers. This is the behavior-preservation gate: it is green pre-fix and
-    must STAY green post-fix.
+    the standalone writer. This is the behavior-preservation gate: it is green
+    pre-fix and must STAY green post-fix.
     """
-    for label, arrays in (("convert", run_convert_writer(E9_FIXTURE)),
-                          ("inline", run_inline_writer(E9_FIXTURE))):
+    for label, arrays in (("convert", run_convert_writer(E9_FIXTURE)),):
         assert set(arrays) == NPZ_KEYS, (
             f"{label} writer key set mismatch: {sorted(set(arrays) ^ NPZ_KEYS)}")
         for name, dtype in NPZ_CONTRACT:
@@ -488,13 +441,17 @@ def e9_known_identity_output_unchanged():
                 f"pre-fix golden {expected.tolist()}")
 
 
-def e10_inline_mixed_column_carries_both_ids():
-    """The live inline writer's prng_type column for a mixed constant+hybrid
-    fixture carries {0, 1} rather than a collapsed {0}.
+def e10_mixed_column_carries_both_ids():
+    """The live standalone writer's prng_type column for a mixed java_lcg
+    constant/hybrid fixture carries BOTH canonical ids, not a collapsed {0}.
 
     FAILS PRE-FIX: the hybrid rows silently take the .get(...,0) fallback, so the
     whole column reads java_lcg and the distinction never reaches the ML feature
     surface.
+
+    Reframed from the inline writer to the standalone converter by the D3.5
+    migration-gate retirement; the assertion itself — a mixed column must carry
+    0 AND 1, positionally — is unchanged.
     """
     recs = [
         _rec(seed=10, prng_type="java_lcg", skip_mode="constant"),
@@ -502,13 +459,13 @@ def e10_inline_mixed_column_carries_both_ids():
         _rec(seed=12, prng_type="java_lcg", skip_mode="constant"),
         _rec(seed=13, prng_type="java_lcg_hybrid", skip_mode="constant"),
     ]
-    col = run_inline_writer(recs)["prng_type"]
+    col = run_convert_writer(recs)["prng_type"]
     got = [int(v) for v in col]
     assert got == [ID_JAVA_LCG, ID_JAVA_LCG_HYBRID,
                    ID_JAVA_LCG, ID_JAVA_LCG_HYBRID], (
-        f"inline writer prng_type column -> {got}, expected [0, 1, 0, 1]")
+        f"convert writer prng_type column -> {got}, expected [0, 1, 0, 1]")
     assert set(got) == {ID_JAVA_LCG, ID_JAVA_LCG_HYBRID}, (
-        f"inline writer prng_type distinct values {sorted(set(got))}, "
+        f"convert writer prng_type distinct values {sorted(set(got))}, "
         f"expected {{0, 1}} (a collapsed {{0}} is the pre-fix bug)")
 
 
@@ -534,15 +491,15 @@ def main():
     print("=" * 78)
     print("S172 Phase-5 D3.0 — canonical encoding + rectangular empty output gate")
     print("=" * 78)
-    _check("E1: java_lcg -> 0 through both writers + canonical",
+    _check("E1: java_lcg -> 0 through the standalone writer + canonical",
            e1_java_lcg_agrees_everywhere)
     _check("E2: java_lcg_hybrid -> 1, not collapsed to 0",
            e2_hybrid_is_one_not_zero)
     _check("E3: java_lcg_reverse -> 3 (legacy said 1)",
            e3_shared_key_now_matches_canonical)
-    _check("E4: unknown prng_type raises ValueError (both writers)",
+    _check("E4: unknown prng_type raises ValueError (writer + canonical)",
            e4_unknown_prng_type_raises)
-    _check("E5: unknown skip_mode raises ValueError (both writers)",
+    _check("E5: unknown skip_mode raises ValueError (writer + canonical)",
            e5_unknown_skip_mode_raises)
     _check("E6: randu / randu_reverse raise ValueError (ids 10/11 gone)",
            e6_randu_identities_raise)
@@ -552,8 +509,8 @@ def main():
            e8_empty_output_is_rectangular)
     _check("E9: known-identity java_lcg output == pre-fix golden (22/22)",
            e9_known_identity_output_unchanged)
-    _check("E10: inline writer mixed column carries {0, 1}",
-           e10_inline_mixed_column_carries_both_ids)
+    _check("E10: standalone writer mixed column carries {0, 1}",
+           e10_mixed_column_carries_both_ids)
 
     print("=" * 78)
     passed = sum(1 for _, ok, _ in _results if ok)
@@ -565,8 +522,9 @@ def main():
             if not ok:
                 print(f"--- {name} ---\n{tb}")
         return 1
-    print("All D3.0 gate checks green — both NPZ writers are on the canonical "
-          "encoding and the empty case is rectangular (pending Team Alpha + "
+    print("All D3.0 gate checks green — the standalone NPZ writer is on the "
+          "canonical encoding and the empty case is rectangular (pending "
+          "Team Alpha + "
           "Team Beta review).")
     return 0
 

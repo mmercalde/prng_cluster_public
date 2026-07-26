@@ -73,6 +73,30 @@ except ImportError:
     run_trial_miner = None
 
 
+def _repository_state(repo_root=None) -> Tuple[str, bool]:
+    """[S172 Phase-5 D3.5 §7.3] Return (commit_sha, working_tree_clean).
+
+    Lives HERE, in the caller, and deliberately NOT inside `utils/run_finalizer`:
+    the finalizer's D3.5 §12 F15 gate asserts at source level that it spawns no
+    subprocess at all, so the two provenance facts arrive as explicit arguments
+    on its frozen public signature instead.
+
+    A certified generation must record `repository_tree_clean=True` — the first
+    certified production baseline must not claim a commit SHA while running
+    uncommitted source. Reporting the truth here is what lets the finalizer
+    refuse; this helper never "cleans up" the answer.
+    """
+    import subprocess as _subprocess_d3_5
+    root = repo_root or os.path.dirname(os.path.abspath(__file__))
+    commit = _subprocess_d3_5.run(
+        ["git", "-C", root, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    porcelain = _subprocess_d3_5.run(
+        ["git", "-C", root, "status", "--porcelain"],
+        check=True, capture_output=True, text=True).stdout
+    return commit, (porcelain.strip() == "")
+
+
 def extract_survivor_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract survivor records (seed + match_rate) from coordinator result.
@@ -1680,109 +1704,71 @@ def add_window_optimizer_to_coordinator():
         print("SAVING ALL ACCUMULATED SURVIVORS WITH METADATA")
         print(f"{'='*80}")
 
+        # ====================================================================
+        # [S172 Phase-5 D3.5] The inline NPZ-accumulator block that used to sit
+        # here is REPLACED by the shared finalizer `utils.run_finalizer`, which
+        # every backend (legacy in-process sieve, PWC, ZMQ and — via D6 — the
+        # range miner) now goes through.
+        #
+        # [§10] The legacy `deduplicate_survivors` helper is REMOVED, not merely
+        # bypassed. It selected by `lexsort((-scores, seeds))` — seed ascending,
+        # score descending, with NO trial_number and NO skip_mode key — and its
+        # output fed BOTH `bidirectional_survivors.json` and the NPZ path, so
+        # the JSON and the canonical NPZ could disagree about the winner for the
+        # same seed. Winner selection is now solely the finalizer's explicit L2
+        # key (canonical float32 score -> lowest trial_number -> constant before
+        # variable, and only as a tiebreak WITHIN one trial), and the canonical
+        # NPZ generation is authoritative.
+        # ====================================================================
+        from pathlib import Path as _Path_d3_5
+        from utils.run_finalizer import (
+            ALL_NPZ_NAME as _ALL_NPZ_NAME_d3_5,
+            BINARY_NPZ_NAME as _BINARY_NPZ_NAME_d3_5,
+            finalize_run as _finalize_run_d3_5,
+        )
+
+        # The raw current-run candidates, exactly as the backends appended them.
+        # They are NOT pre-deduplicated: the finalizer validates EVERY raw
+        # candidate through D3 before L2, so a malformed LOSING candidate fails
+        # the run instead of vanishing during selection (D3.5 §3 [B2]).
+        _raw_candidates_d3_5 = survivor_accumulator['bidirectional']
+
+        # --------------------------------------------------------------------
+        # NON-CANONICAL DIAGNOSTICS — this try/except is allowed to swallow.
+        # Nothing canonical happens inside it. That separation is the binding
+        # correction of D3.5 §11 [B4]: the previous code ran the whole NPZ
+        # accumulator inside a broad `except Exception` that printed a warning,
+        # shelled out to `convert_survivors_to_binary.py` and then returned
+        # SUCCESS — so a rejected prior or a failed publication still looked
+        # like a good run.
+        # --------------------------------------------------------------------
         try:
-            def deduplicate_survivors(survivor_list):
-                """Keep survivor with highest per-seed score for each unique seed.
-                [S163-KARG] Vectorized via numpy — replaces O(N) pure Python dict loop.
-                """
-                if not survivor_list:
-                    return []
-                import numpy as _np_dedup
-                seeds  = _np_dedup.array([s['seed'] for s in survivor_list], dtype=_np_dedup.int64)
-                scores = _np_dedup.array([s.get('score', 0.0) for s in survivor_list], dtype=_np_dedup.float32)
-                # Sort by seed asc, then score desc — argsort stable keeps last (highest score) per seed
-                # Strategy: sort by seed, then for ties keep highest score entry
-                order  = _np_dedup.lexsort((-scores, seeds))   # primary: seed asc; secondary: score desc
-                sorted_seeds = seeds[order]
-                # Keep first occurrence of each unique seed (= highest score due to sort)
-                keep_mask = _np_dedup.concatenate(([True], sorted_seeds[1:] != sorted_seeds[:-1]))
-                keep_idx  = order[keep_mask]
-                return [survivor_list[i] for i in keep_idx]
-
-            # [S163-KARG-DEDUP] TB-approved fix: skip forward/reverse dedup when
-            # output will be summary-only anyway. Only bidirectional_deduped is
-            # load-bearing (feeds NPZ accumulator + Steps 2-6). Forward/reverse
-            # dedup on 1.4M+ records was 100% wasted work at scale.
-            # Root cause: S162 NPZ accumulator failure masked this — fallback path
-            # skipped dedup entirely. S163 NPZ fix exposed the bottleneck.
-            _JSON_WRITE_LIMIT = 100_000
-
-            import time as _dedup_time
-
             _fwd_count = survivor_accumulator.get('forward_count', 0)
             _rev_count = survivor_accumulator.get('reverse_count', 0)
-            _bid_count = len(survivor_accumulator['bidirectional'])
+            _bid_count = len(_raw_candidates_d3_5)
 
-            # [S166-ACCUM] forward/reverse full objects no longer retained in bayesian mode.
-            # forward/reverse JSON output is always summary-only (count + metadata).
-            # bidirectional JSON + NPZ are unaffected — bidirectional objects still accumulated.
-            forward_summary_only = True   # [S166] always summary-only
-            reverse_summary_only = True   # [S166] always summary-only
-            _ = _fwd_count  # suppress unused warning
+            print(f"\n[CANDIDATES] fwd={_fwd_count:,} (count only)  "
+                  f"rev={_rev_count:,} (count only)  "
+                  f"raw bidirectional candidates={_bid_count:,}")
 
-            print(f"\n[DEDUP] fwd={_fwd_count:,} ({'summary-only — skipping dedup' if forward_summary_only else 'deduping'})  "
-                  f"rev={_rev_count:,} ({'summary-only — skipping dedup' if reverse_summary_only else 'deduping'})  "
-                  f"bidi={_bid_count:,} (always dedup)")
+            # [S166-ACCUM] forward/reverse full objects are not retained, so
+            # these two files have been summary-only for several sessions.
+            for _diag_name, _diag_count in (('forward_survivors.json', _fwd_count),
+                                            ('reverse_survivors.json', _rev_count)):
+                with open(_diag_name, 'w') as f:
+                    json.dump({
+                        "survivor_count": _diag_count,
+                        "note": (f"Full survivors omitted — objects not retained; "
+                                 f"see {_ALL_NPZ_NAME_d3_5}"),
+                    }, f, indent=2)
+                print(f"⚠️  {_diag_name}: summary only ({_diag_count:,}) — "
+                      f"canonical NPZ carries the full data")
 
-            # [S166-ACCUM] forward/reverse objects not retained — always summary-only.
-            forward_deduped = None
-            reverse_deduped = None
-            print(f"[DEDUP] forward: {_fwd_count:,} (count only — objects not retained)")
-            print(f"[DEDUP] reverse: {_rev_count:,} (count only — objects not retained)")
-
-            # Bidirectional — ALWAYS dedup — load-bearing path
-            _t0 = _dedup_time.time()
-            bidirectional_deduped = deduplicate_survivors(survivor_accumulator['bidirectional'])
-            print(f"[DEDUP] bidi deduped:    {_bid_count:,} → {len(bidirectional_deduped):,}  "
-                  f"({_dedup_time.time()-_t0:.3f}s)")
-
-            # Write forward_survivors.json
-            if not forward_summary_only and forward_deduped is not None:
-                with open('forward_survivors.json', 'w') as f:
-                    json.dump(sorted(forward_deduped, key=lambda x: x['seed']), f, indent=2)
-                print(f"✅ Saved forward_survivors.json: {len(forward_deduped):,} unique seeds")
-            else:
-                _summary = {
-                    "survivor_count": _fwd_count,
-                    "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_all.npz",
-                }
-                with open('forward_survivors.json', 'w') as f:
-                    json.dump(_summary, f, indent=2)
-                print(f"⚠️  forward_survivors.json: summary only ({_fwd_count:,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
-
-            # Write reverse_survivors.json
-            if not reverse_summary_only and reverse_deduped is not None:
-                with open('reverse_survivors.json', 'w') as f:
-                    json.dump(sorted(reverse_deduped, key=lambda x: x['seed']), f, indent=2)
-                print(f"✅ Saved reverse_survivors.json: {len(reverse_deduped):,} unique seeds")
-            else:
-                _summary = {
-                    "survivor_count": _rev_count,
-                    "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_all.npz",
-                }
-                with open('reverse_survivors.json', 'w') as f:
-                    json.dump(_summary, f, indent=2)
-                print(f"⚠️  reverse_survivors.json: summary only ({_rev_count:,} > {_JSON_WRITE_LIMIT:,}) — NPZ has full data")
-
-            # bidirectional_survivors.json — always written (canonical input for Steps 2-6)
-            # Same 100K guard for safety, but bidirectional count is normally much smaller.
-            if len(bidirectional_deduped) <= _JSON_WRITE_LIMIT:
-                with open('bidirectional_survivors.json', 'w') as f:
-                    json.dump(sorted(bidirectional_deduped, key=lambda x: x['seed']), f)
-                print(f"✅ Saved bidirectional_survivors.json: {len(bidirectional_deduped)} unique seeds")
-            else:
-                _summary = {
-                    "survivor_count": len(bidirectional_deduped),
-                    "note": f"Full survivors omitted (count > {_JSON_WRITE_LIMIT:,}) — see bidirectional_survivors_binary.npz",
-                }
-                with open('bidirectional_survivors.json', 'w') as f:
-                    json.dump(_summary, f, indent=2)
-                print(f"⚠️  bidirectional_survivors.json: summary only ({len(bidirectional_deduped):,} > {_JSON_WRITE_LIMIT:,}) — binary NPZ has full data")
-
-            # Print sample to confirm per-seed fields present
-            if bidirectional_deduped:
-                sample = bidirectional_deduped[0]
-                print(f"\n📊 Sample survivor:")
+            # Telemetry only, over RAW candidates. This prints no winner and
+            # decides nothing.
+            if _raw_candidates_d3_5:
+                sample = _raw_candidates_d3_5[0]
+                print(f"\n📊 Sample raw candidate:")
                 print(f"   seed: {sample['seed']}")
                 print(f"   forward_match_rate: {sample.get('forward_match_rate', 'MISSING')}")
                 print(f"   reverse_match_rate: {sample.get('reverse_match_rate', 'MISSING')}")
@@ -1790,241 +1776,94 @@ def add_window_optimizer_to_coordinator():
                 print(f"   window_size: {sample['window_size']}, trial: {sample['trial_number']}")
 
             if test_both_modes:
-                constant_count = sum(1 for s in bidirectional_deduped if s.get('skip_mode') == 'constant')
-                variable_count = sum(1 for s in bidirectional_deduped if s.get('skip_mode') == 'variable')
-                print(f"\n📈 Skip Mode Distribution:")
-                print(f"   Constant skip: {constant_count} survivors")
-                print(f"   Variable skip: {variable_count} survivors")
-
-            # [S145-R1 v2] NPZ ACCUMULATOR — direct NPZ→NPZ merge
-            # Replaces JSON accumulator (v1) — eliminates 700MB+ JSON intermediary
-            # Merge policy: best per-seed score wins on conflict (TB ruling S145-R1)
-            # Backward compatible: bidirectional_survivors_binary.npz same path/schema/22 fields
-            # Steps 2-6 unaffected — they consume bidirectional_survivors_binary.npz exclusively
-            import os as _os_s145
-            import numpy as _np_s145
-            # [S172 Phase-5 D3.0] Canonical encoding seam. The inline
-            # _SKIP_ENC / _PRNG_ENC tables that used to sit here were a
-            # pre-Phase-0 fork of the registry — they disagreed with canonical
-            # on seven shared keys and had no 'java_lcg_hybrid' key at all, so
-            # `.get(..., 0)` silently wrote every hybrid survivor into this,
-            # the LIVE Step-1 NPZ, as java_lcg. utils/prng_encoding is now the
-            # single source of truth and hard-fails on an unknown identity; its
-            # ValueError propagates unwrapped by design.
-            from utils.prng_encoding import encode_prng_type as _encode_prng_type_s172
-            from utils.prng_encoding import encode_skip_mode as _encode_skip_mode_s172
-
-            def _survivors_to_arrays(survivors):
-                """Convert list of survivor dicts to NPZ field arrays."""
-                def _parse_skip_range(val):
-                    if isinstance(val, int): return val
-                    if isinstance(val, (list, tuple)) and len(val) == 2:
-                        return int(val[1]) - int(val[0])
-                    if isinstance(val, str) and '-' in val:
-                        try: return int(val.split('-')[1]) - int(val.split('-')[0])
-                        except: return 0
-                    try: return int(val)
-                    except: return 0
-                n = len(survivors)
-                return {
-                    'seeds':                  _np_s145.array([s['seed'] for s in survivors], dtype=_np_s145.uint32),
-                    'forward_matches':        _np_s145.array([s.get('forward_match_rate', s.get('forward_matches', 0.0)) for s in survivors], dtype=_np_s145.float32),
-                    'reverse_matches':        _np_s145.array([s.get('reverse_match_rate', s.get('reverse_matches', 0.0)) for s in survivors], dtype=_np_s145.float32),
-                    'window_size':            _np_s145.array([s.get('window_size', 0) for s in survivors], dtype=_np_s145.int32),
-                    'offset':                 _np_s145.array([s.get('offset', 0) for s in survivors], dtype=_np_s145.int32),
-                    'trial_number':           _np_s145.array([s.get('trial_number', 0) for s in survivors], dtype=_np_s145.int32),
-                    'skip_min':               _np_s145.array([s.get('skip_min', 0) for s in survivors], dtype=_np_s145.int32),
-                    'skip_max':               _np_s145.array([s.get('skip_max', 0) for s in survivors], dtype=_np_s145.int32),
-                    'skip_range':             _np_s145.array([_parse_skip_range(s.get('skip_range', 0)) for s in survivors], dtype=_np_s145.int32),
-                    'forward_count':          _np_s145.array([s.get('forward_count', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'reverse_count':          _np_s145.array([s.get('reverse_count', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'bidirectional_count':    _np_s145.array([s.get('bidirectional_count', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'intersection_count':     _np_s145.array([s.get('intersection_count', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'intersection_ratio':     _np_s145.array([s.get('intersection_ratio', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'intersection_weight':    _np_s145.array([s.get('intersection_weight', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'bidirectional_selectivity': _np_s145.array([s.get('bidirectional_selectivity', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'forward_only_count':     _np_s145.array([s.get('forward_only_count', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'reverse_only_count':     _np_s145.array([s.get('reverse_only_count', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'survivor_overlap_ratio': _np_s145.array([s.get('survivor_overlap_ratio', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    'score':                  _np_s145.array([s.get('score', 0.0) for s in survivors], dtype=_np_s145.float32),
-                    # [S172 Phase-5 D3.0] Resolution stays the caller's job —
-                    # identical prng_type -> prng_base -> 'java_lcg' chain as
-                    # before, then the canonical encoder. Only difference: an
-                    # unresolvable identity raises instead of collapsing to 0.
-                    'skip_mode':              _np_s145.array([_encode_skip_mode_s172(s.get('skip_mode', 'constant')) for s in survivors], dtype=_np_s145.uint8),
-                    'prng_type':              _np_s145.array([_encode_prng_type_s172(s.get('prng_type', s.get('prng_base', 'java_lcg'))) for s in survivors], dtype=_np_s145.uint8),
-                }
-
-            _accum_npz = 'bidirectional_survivors_all.npz'
-            try:
-                # Load prior accumulated NPZ if exists
-                if _os_s145.path.exists(_accum_npz):
-                    _prior_npz = _np_s145.load(_accum_npz)
-                    _prior_seeds = _prior_npz['seeds'].astype(_np_s145.int64)
-                    _prior_scores = _prior_npz['score'].astype(_np_s145.float32)
-                    _prior_count = len(_prior_seeds)
-                    # [S163-KARG] Sort prior seeds for searchsorted (vectorized lookup)
-                    _prior_sort_order = _np_s145.argsort(_prior_seeds)
-                    _prior_seeds_sorted = _prior_seeds[_prior_sort_order]
-                else:
-                    _prior_npz = None
-                    _prior_seeds = _np_s145.array([], dtype=_np_s145.int64)
-                    _prior_scores = _np_s145.array([], dtype=_np_s145.float32)
-                    _prior_sort_order = _np_s145.array([], dtype=_np_s145.int64)
-                    _prior_seeds_sorted = _np_s145.array([], dtype=_np_s145.int64)
-                    _prior_count = 0
-
-                # Convert current run survivors to arrays
-                _new_arrays = _survivors_to_arrays(bidirectional_deduped)
-                _new_seeds = _new_arrays['seeds'].astype(_np_s145.int64)
-                _new_scores = _new_arrays['score']
-
-                # [S163-KARG] Vectorized merge — replaces pure Python dict loop
-                # Use searchsorted on sorted prior seeds for O(N log N) instead of O(N) dict
-                if _prior_count > 0:
-                    _pos = _np_s145.searchsorted(_prior_seeds_sorted, _new_seeds)
-                    _pos_clipped = _np_s145.clip(_pos, 0, _prior_count - 1)
-                    _matched = _prior_seeds_sorted[_pos_clipped] == _new_seeds
-                    # Original indices in prior arrays for matched seeds
-                    _prior_orig_idx = _prior_sort_order[_pos_clipped]
-                    # For matched: check if new score beats prior score
-                    _new_beats = _matched & (_new_scores > _prior_scores[_prior_orig_idx])
-                    _keep_new_mask = (~_matched) | _new_beats
-                    _keep_new = list(_np_s145.where(_keep_new_mask)[0])
-                    # Superseded prior indices = matched AND new beats
-                    _superseded_prior_orig = _prior_orig_idx[_new_beats]
-                    _superseded_mask = _np_s145.zeros(_prior_count, dtype=bool)
-                    if len(_superseded_prior_orig) > 0:
-                        _superseded_mask[_superseded_prior_orig] = True
-                    _keep_prior = list(_np_s145.where(~_superseded_mask)[0])
-                else:
-                    _keep_new = list(range(len(_new_seeds)))
-                    _keep_prior = []
-                    _superseded_prior_orig = _np_s145.array([], dtype=_np_s145.int64)  # [S166] no prior — nothing superseded
-
-                # Build merged field arrays
-                _FIELDS_INT32  = ['window_size','offset','trial_number','skip_min','skip_max','skip_range']
-                _FIELDS_FLOAT32 = ['forward_matches','reverse_matches','forward_count','reverse_count',
-                                   'bidirectional_count','intersection_count','intersection_ratio',
-                                   'intersection_weight','bidirectional_selectivity','forward_only_count',
-                                   'reverse_only_count','survivor_overlap_ratio','score']
-                _FIELDS_UINT8  = ['skip_mode','prng_type']
-                _FIELDS_UINT32 = ['seeds']
-
-                _merged_arrays = {}
-                for _fname in _FIELDS_UINT32 + _FIELDS_INT32 + _FIELDS_FLOAT32 + _FIELDS_UINT8:
-                    _dtype = (_np_s145.uint32 if _fname in _FIELDS_UINT32 else
-                              _np_s145.int32  if _fname in _FIELDS_INT32  else
-                              _np_s145.uint8  if _fname in _FIELDS_UINT8  else
-                              _np_s145.float32)
-                    _parts = []
-                    if _keep_prior and _prior_npz is not None and _fname in _prior_npz:
-                        _parts.append(_prior_npz[_fname][_keep_prior].astype(_dtype))
-                    if _keep_new and _fname in _new_arrays:
-                        _parts.append(_new_arrays[_fname][_keep_new].astype(_dtype))
-                    if _parts:
-                        _merged_arrays[_fname] = _np_s145.concatenate(_parts)
-                    else:
-                        _merged_arrays[_fname] = _np_s145.array([], dtype=_dtype)
-
-                # [S163-KARG-NPZ] TB-approved fix: backfill missing fields before sort.
-                # Fields absent from older prior NPZ schemas produce size-0 arrays.
-                # Backfill to zeros(seed_len) ensures rectangular NPZ — safe for all
-                # downstream readers. Tagged ValueError on wrong-length non-empty fields
-                # is caught by Patch 2 below and re-raised to prevent silent data loss.
-                _seed_len = len(_merged_arrays['seeds'])
-
-                def _dtype_for_field(_fn):
-                    if _fn in _FIELDS_UINT32:  return _np_s145.uint32
-                    if _fn in _FIELDS_INT32:   return _np_s145.int32
-                    if _fn in _FIELDS_UINT8:   return _np_s145.uint8
-                    return _np_s145.float32
-
-                for _fn in _FIELDS_UINT32 + _FIELDS_INT32 + _FIELDS_FLOAT32 + _FIELDS_UINT8:
-                    if _fn == 'seeds':
-                        continue
-                    if _fn not in _merged_arrays or len(_merged_arrays[_fn]) == 0:
-                        # Missing or empty — backfill with zeros to keep schema rectangular
-                        _merged_arrays[_fn] = _np_s145.zeros(
-                            _seed_len, dtype=_dtype_for_field(_fn)
-                        )
-                    elif len(_merged_arrays[_fn]) != _seed_len:
-                        raise ValueError(
-                            f"[S163-KARG-NPZ] Field {_fn} length "
-                            f"{len(_merged_arrays[_fn])} != seeds length {_seed_len}"
-                        )
-                # [END S163-KARG-NPZ backfill]
-
-                # Sort merged arrays by seed value (all fields now seed_len — safe)
-                _sort_idx = _np_s145.argsort(_merged_arrays['seeds'])
-                for _fname in _merged_arrays:
-                    _merged_arrays[_fname] = _merged_arrays[_fname][_sort_idx]
-
-                _total = len(_merged_arrays['seeds'])
-                _net_new = len(_keep_new)
-                _superseded_count = len(_superseded_prior_orig)
-
-                # Save accumulator NPZ
-                _np_s145.savez_compressed(_accum_npz, **_merged_arrays)
-
-                # Save as canonical bidirectional_survivors_binary.npz (Steps 2-6 input)
-                _np_s145.savez_compressed('bidirectional_survivors_binary.npz', **_merged_arrays)
-
-                print(f"\n[S145-R1 v2][NPZ ACCUMULATOR] {_total:,} total survivors across all runs")
-                print(f"   Prior kept:   {len(_keep_prior):,}")
-                print(f"   Net new:      +{_net_new:,}")
-                print(f"   Superseded:   {_superseded_count:,} (prior seeds beaten by new score)")
-                print(f"   Accumulator:  {_accum_npz}")
-                print(f"✅ bidirectional_survivors_binary.npz written ({_total:,} seeds, 22 fields)")
-
-            except ValueError as _accum_err:
-                # [S163-KARG-NPZ] Re-raise only tagged schema-mismatch ValueErrors.
-                # Untagged ValueErrors (from numpy/conversion code) still fall through
-                # to the fallback path — they may be reasonable fallback candidates.
-                # Re-raising tagged errors prevents silent data loss when
-                # bidirectional_survivors.json is summary-only (JSON guard active).
-                if str(_accum_err).startswith("[S163-KARG-NPZ]"):
-                    raise  # schema mismatch — do not silently fall back
-                print(f"\n⚠️  [S145-R1 v2][NPZ ACCUMULATOR] Failed: {_accum_err}")
-                print(f"   Falling back to per-run convert_survivors_to_binary.py")
-                import traceback as _tb_s145
-                _tb_s145.print_exc()
-                # Fallback: use original conversion path
-                from subprocess import run as subprocess_run, CalledProcessError
-                try:
-                    subprocess_run(
-                        ["python3", "convert_survivors_to_binary.py",
-                         "bidirectional_survivors.json"],
-                        check=True
-                    )
-                    print(f"✅ Fallback: converted bidirectional_survivors.json to NPZ")
-                except CalledProcessError as _e:
-                    print(f"❌ NPZ conversion failed: {_e}")
-                    raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
-            except Exception as _accum_err:
-                print(f"\n⚠️  [S145-R1 v2][NPZ ACCUMULATOR] Failed: {_accum_err}")
-                print(f"   Falling back to per-run convert_survivors_to_binary.py")
-                import traceback as _tb_s145
-                _tb_s145.print_exc()
-                # Fallback: use original conversion path
-                from subprocess import run as subprocess_run, CalledProcessError
-                try:
-                    subprocess_run(
-                        ["python3", "convert_survivors_to_binary.py",
-                         "bidirectional_survivors.json"],
-                        check=True
-                    )
-                    print(f"✅ Fallback: converted bidirectional_survivors.json to NPZ")
-                except CalledProcessError as _e:
-                    print(f"❌ NPZ conversion failed: {_e}")
-                    raise RuntimeError("Step 1 incomplete - NPZ conversion required for Step 2")
-
-            print(f"{'='*80}\n")
+                constant_count = sum(1 for s in _raw_candidates_d3_5
+                                     if s.get('skip_mode') == 'constant')
+                variable_count = sum(1 for s in _raw_candidates_d3_5
+                                     if s.get('skip_mode') == 'variable')
+                print(f"\n📈 Raw candidate skip-mode distribution:")
+                print(f"   Constant skip: {constant_count} candidates")
+                print(f"   Variable skip: {variable_count} candidates")
 
         except Exception as e:
-            print(f"⚠️  Error saving survivors with metadata: {e}")
+            print(f"⚠️  Error writing non-canonical survivor diagnostics: {e}")
             import traceback
             traceback.print_exc()
+
+        # --------------------------------------------------------------------
+        # CANONICAL FINALIZATION — deliberately OUTSIDE every swallow wrapper.
+        #
+        # A finalizer rejection (bad prior, broken provenance chain, failed
+        # publication) MUST propagate out of `optimize_window`. There is no
+        # fallback writer and no subprocess conversion: if canonical
+        # finalization fails, the previously certified generation stays current
+        # and this function does not return `results` (D3.5 §11, gate F31).
+        # --------------------------------------------------------------------
+        _repo_commit_d3_5, _repo_clean_d3_5 = _repository_state()
+
+        # From RUN CONFIGURATION, never inferred from survivor rows — an
+        # executed mode may legitimately produce zero survivors (D3.5 §8a). The
+        # `_hybrid` guard mirrors the variable-skip gate at the sieve call site.
+        _skip_modes_d3_5 = (
+            ('constant', 'variable')
+            if (test_both_modes and not prng_base.endswith('_hybrid'))
+            else ('constant',)
+        )
+
+        _artifact_d3_5 = _finalize_run_d3_5(
+            _raw_candidates_d3_5,
+            output_root=_Path_d3_5.cwd(),
+            run_id=f"step1_{prng_base}_{int(seed_start)}",   # [S142-C] canonical
+            prng_base=prng_base,
+            skip_modes_executed=_skip_modes_d3_5,
+            seed_start=int(seed_start),
+            seed_count=int(seed_count),
+            repository_commit=_repo_commit_d3_5,
+            repository_tree_clean=_repo_clean_d3_5,
+        )
+
+        print(f"\n[S172 D3.5][GENERATION PUBLISHED] "
+              f"{_artifact_d3_5.final_row_count:,} rows now current")
+        print(f"   Generation:   {_artifact_d3_5.generation_id}")
+        print(f"   Directory:    {_artifact_d3_5.generation_dir}")
+        print(f"   Raw candidates: {_artifact_d3_5.raw_candidate_count:,}")
+        print(f"   L2 winners:     {_artifact_d3_5.l2_winner_count:,}")
+        print(f"   Prior rows:     {_artifact_d3_5.prior_row_count:,}")
+        print(f"   Artifact sha256: {_artifact_d3_5.artifact_sha256}")
+        print(f"   Sidecar  sha256: {_artifact_d3_5.sidecar_sha256}")
+        print(f"   Parent generation: {_artifact_d3_5.parent_generation_id}")
+        print(f"✅ {_BINARY_NPZ_NAME_d3_5} now resolves to the certified "
+              f"generation ({_artifact_d3_5.final_row_count:,} seeds, 22 fields)")
+
+        # [S172 Phase-5 D3.5 §10] `bidirectional_survivors.json` is a
+        # POST-SUCCESS SUMMARY of the generation that was just certified. It is
+        # NO LONGER the canonical Steps 2-6 input, and it is no longer produced
+        # by an independent score-only deduplication that could disagree with
+        # the NPZ. Steps 2-6 consume the canonical NPZ.
+        with open('bidirectional_survivors.json', 'w') as f:
+            json.dump({
+                "note": (f"Post-success summary of the certified generation. "
+                         f"The canonical Steps 2-6 input is "
+                         f"{_BINARY_NPZ_NAME_d3_5}; this file decides no "
+                         f"winner and is not independently deduplicated."),
+                "generation_id":       _artifact_d3_5.generation_id,
+                "generation_dir":      str(_artifact_d3_5.generation_dir),
+                "run_id":              _artifact_d3_5.run_id,
+                "prng_base":           _artifact_d3_5.prng_base,
+                "skip_modes_executed": list(_artifact_d3_5.skip_modes_executed),
+                "seed_start":          _artifact_d3_5.seed_start,
+                "seed_count":          _artifact_d3_5.seed_count,
+                "seed_end_exclusive":  _artifact_d3_5.seed_end_exclusive,
+                "raw_candidate_count": _artifact_d3_5.raw_candidate_count,
+                "l2_winner_count":     _artifact_d3_5.l2_winner_count,
+                "prior_row_count":     _artifact_d3_5.prior_row_count,
+                "final_row_count":     _artifact_d3_5.final_row_count,
+                "artifact_sha256":     _artifact_d3_5.artifact_sha256,
+                "sidecar_sha256":      _artifact_d3_5.sidecar_sha256,
+                "created_at":          _artifact_d3_5.created_at,
+            }, f, indent=2)
+        print(f"✅ bidirectional_survivors.json written as a post-success summary")
+
+        print(f"{'='*80}\n")
 
         try:
             from integration.sieve_integration import save_bidirectional_sieve_results
