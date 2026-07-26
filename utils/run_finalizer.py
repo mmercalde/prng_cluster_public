@@ -136,19 +136,92 @@ BINARY_NPZ_NAME = "bidirectional_survivors_binary.npz"
 CANONICAL_NPZ_NAME = BINARY_NPZ_NAME
 
 ARTIFACT_SCHEMA_VERSION = "s172.d3.arrays.v1"
-SIDECAR_SCHEMA_VERSION = "s172.d3_5.provenance.v1"
+# D3.5-B bumps ONLY this one: the sidecar gained the nine seed-domain fields.
+# The arrays, their order and their dtypes are untouched, and so are the
+# PRNG/skip encoding maps — neither of the other two constants may move.
+SIDECAR_SCHEMA_VERSION = "s172.d3_5.provenance.v1.1"
 ENCODING_CONTRACT_VERSION = "s172.phase0.encoding.v1"
 
-# The exact sidecar key set (§7.3). `sidecar_sha256` is deliberately ABSENT
-# [REV3 C1]: a file cannot contain its own hash — writing the field changes the
-# bytes the field describes. It lives in `RunArtifactResult` and, for the next
-# generation, in `parent_sidecar_sha256`.
+# ---------------------------------------------------------------------------
+# Seed-domain v1.1 (D3.5-B) — honest stratum labelling.
+#
+# The `java_lcg` registry family has a 48-BIT internal state; the canonical
+# artifact stores `seeds: uint32`. The sweep therefore covers the `high16 = 0`
+# stratum — 1 part in 65,536 of the state space — and those upper 16 bits are
+# NOT invisible: they are blind to the mod-8 lane but fully visible to mod-125,
+# and at TFM's window all 65,536 high-state classes produce distinct draw
+# sequences. This is a LABELLING problem, not a storage problem: TFM does
+# functional mimicry, not state reversal, so the artifact stays `uint32` and
+# declares honestly which stratum it is.
+#
+# These nine values distinguish three concepts the artifact previously
+# conflated:
+#
+#     canonical PRNG coordinate : 48-bit internal state
+#     stored artifact coordinate: uint32 low-state component
+#     certified search stratum  : high16 = 0
+#
+# EVERY ONE IS A FIXED CONSTANT IN v1.1 — none is caller-supplied, none is read
+# from the environment, none is inferred from the candidate maximum and none is
+# copied from a supplied prior. That is precisely what stops a run publishing a
+# sidecar claiming a stratum other than the one the uint32 domain wall actually
+# enforced. A sidecar carrying any other value for any of them FAILS CLOSED.
+# ---------------------------------------------------------------------------
+SEED_SEMANTICS = "internal_state"
+SEED_STORAGE_DTYPE = "uint32"
+SEED_EFFECTIVE_BITS = 32
+SEED_HIGH16_PREFIX = 0
+SEED_DOMAIN_CONTRACT = "v1.1-stratum"
+SEED_DOMAIN_START = 0
+SEED_DOMAIN_END_EXCLUSIVE = 2 ** 32
+EXHAUSTIVE_OVER = "high16=0 stratum only"
+EXTERNAL_SEED_TRANSFORM = None
+
+# The frozen (field, value) pairs, used for BOTH payload construction and
+# exact-value validation so the two can never drift apart.
+SEED_DOMAIN_FIELDS: Tuple[Tuple[str, Any], ...] = (
+    ("seed_semantics", SEED_SEMANTICS),
+    ("seed_storage_dtype", SEED_STORAGE_DTYPE),
+    ("seed_effective_bits", SEED_EFFECTIVE_BITS),
+    ("seed_high16_prefix", SEED_HIGH16_PREFIX),
+    ("seed_domain_contract", SEED_DOMAIN_CONTRACT),
+    ("seed_domain_start", SEED_DOMAIN_START),
+    ("seed_domain_end_exclusive", SEED_DOMAIN_END_EXCLUSIVE),
+    ("exhaustive_over", EXHAUSTIVE_OVER),
+    ("external_seed_transform", EXTERNAL_SEED_TRANSFORM),
+)
+
+# Strict type domains. `bool` is REJECTED for every integer field: True == 1 in
+# Python, so a bare `isinstance(x, int)` would accept `True` as
+# `seed_high16_prefix` — and `False` would sail straight through the `== 0`
+# value pin, which is the case a value check alone can never catch.
+_SEED_DOMAIN_STR_FIELDS: Tuple[str, ...] = (
+    "seed_semantics",
+    "seed_storage_dtype",
+    "seed_domain_contract",
+    "exhaustive_over",
+)
+_SEED_DOMAIN_INT_FIELDS: Tuple[str, ...] = (
+    "seed_effective_bits",
+    "seed_high16_prefix",
+    "seed_domain_start",
+    "seed_domain_end_exclusive",
+)
+_SEED_DOMAIN_NULL_FIELDS: Tuple[str, ...] = ("external_seed_transform",)
+
+# The exact sidecar key set (§7.3), 23 keys at D3.5 and 32 at D3.5-B, in global
+# alphabetical order. `sidecar_sha256` is deliberately ABSENT [REV3 C1]: a file
+# cannot contain its own hash — writing the field changes the bytes the field
+# describes. It lives in `RunArtifactResult` and, for the next generation, in
+# `parent_sidecar_sha256`.
 SIDECAR_REQUIRED_KEYS: Tuple[str, ...] = (
     "artifact_schema_version",
     "artifact_sha256",
     "canonical_map_hash",
     "created_at",
     "encoding_contract_version",
+    "exhaustive_over",
+    "external_seed_transform",
     "final_row_count",
     "generation_id",
     "l2_winner_count",
@@ -163,13 +236,37 @@ SIDECAR_REQUIRED_KEYS: Tuple[str, ...] = (
     "row_count",
     "run_id",
     "seed_count",
+    "seed_domain_contract",
+    "seed_domain_end_exclusive",
+    "seed_domain_start",
+    "seed_effective_bits",
     "seed_end_exclusive",
+    "seed_high16_prefix",
+    "seed_semantics",
     "seed_start",
+    "seed_storage_dtype",
     "sidecar_schema_version",
     "skip_modes_executed",
 )
 
 _SIDECAR_REQUIRED_KEY_SET = frozenset(SIDECAR_REQUIRED_KEYS)
+
+# The fourteen fields a certified lineage must agree on AT EVERY LINK (§5).
+#
+# The first five were already required properties of a homogeneous lineage but
+# were never compared per link — `_validate_chain` checked hashes, ids, cycles
+# and existence only, and `prng_base` was compared solely on the selected tip in
+# `_load_prior_generation`. They are not left unchecked merely because D3.5-B
+# exposed the seam. The remaining nine are the seed-domain contract: a
+# DIFFERENT seed-domain contract requires a NEW CLEAN ROOT, never a link, which
+# is the invariant a future v2 must retain.
+_LINEAGE_INVARIANT_KEYS: Tuple[str, ...] = (
+    "prng_base",
+    "artifact_schema_version",
+    "sidecar_schema_version",
+    "encoding_contract_version",
+    "canonical_map_hash",
+) + tuple(name for name, _ in SEED_DOMAIN_FIELDS)
 
 # Canonical stored order of the executed skip modes (§8a).
 CANONICAL_SKIP_MODES: Tuple[str, ...] = ("constant", "variable")
@@ -850,6 +947,34 @@ def _validate_sidecar_payload(payload: Any, label: str) -> None:
             f"of str, got {modes!r}."
         )
 
+    # --- seed-domain v1.1 (D3.5-B): strict TYPE, then exact VALUE -----------
+    # The type pass must run FIRST. `False == 0` in Python, so a Boolean
+    # `seed_high16_prefix` or `seed_domain_start` would satisfy the value pin
+    # below and only a bool-rejecting integer guard can catch it.
+    for key in _SEED_DOMAIN_STR_FIELDS:
+        _require_str(payload[key], f"{label}: sidecar {key!r}",
+                     PriorGenerationError)
+    for key in _SEED_DOMAIN_INT_FIELDS:
+        _require_int(payload[key], f"{label}: sidecar {key!r}",
+                     PriorGenerationError)
+    for key in _SEED_DOMAIN_NULL_FIELDS:
+        if payload[key] is not None:
+            raise PriorGenerationError(
+                f"{label}: sidecar {key!r} must be null, got {payload[key]!r}. "
+                f"A v1.1 generation applies NO external transform between the "
+                f"stored uint32 coordinate and the PRNG's internal state."
+            )
+    for key, expected in SEED_DOMAIN_FIELDS:
+        if payload[key] != expected:
+            raise PriorGenerationError(
+                f"{label}: sidecar seed-domain field {key!r} is "
+                f"{payload[key]!r}, but the v1.1 contract fixes it at "
+                f"{expected!r}. Every seed-domain field is a module-owned "
+                f"constant, never caller-supplied; a generation claiming a "
+                f"stratum other than the one the uint32 domain wall actually "
+                f"enforced FAILS CLOSED and is never silently migrated."
+            )
+
 
 def _load_prior_arrays(generation_dir: Path) -> Dict[str, np.ndarray]:
     """Load the prior 22-array bundle IN ITS STORED KEY ORDER.
@@ -1102,6 +1227,21 @@ def _validate_chain(
                 f"{parent_sidecar['generation_id']!r} disagrees with the "
                 f"reference {parent_id!r}."
             )
+        # --- §5 per-link semantic contract (D3.5-B) ------------------------
+        # Topology and the publication mechanism are unchanged; this is a
+        # comparison loop, not a restructure.
+        for key in _LINEAGE_INVARIANT_KEYS:
+            if current[key] != parent_sidecar[key]:
+                raise PriorGenerationError(
+                    f"generation {current['generation_id']}: lineage field "
+                    f"{key!r} is {current[key]!r} but its declared parent "
+                    f"{parent_id!r} records {parent_sidecar[key]!r}. A "
+                    f"certified lineage is homogeneous in prng_base, in all "
+                    f"three contract versions, in the canonical map hash and "
+                    f"in every seed-domain field. A different seed-domain "
+                    f"contract requires a NEW CLEAN ROOT — it is never linked "
+                    f"as a certified parent. Failing closed."
+                )
         parent_npz = parent_dir / CANONICAL_NPZ_NAME
         if not parent_npz.is_file():
             raise PriorGenerationError(
@@ -1538,6 +1678,21 @@ def finalize_run(
         "seed_start": start,
         "seed_count": count,
         "seed_end_exclusive": end_exclusive,
+        # Seed-domain v1.1 (D3.5-B). These describe the STRATUM DOMAIN
+        # [0, 2**32) and are distinct from the per-run `seed_start` /
+        # `seed_count` / `seed_end_exclusive` coverage fields directly above:
+        # both sets coexist and neither replaces the other. Every value is
+        # inserted INTERNALLY from a module-owned constant — no argument, no
+        # environment, no inference from the candidates, no copy from a prior.
+        "seed_semantics": SEED_SEMANTICS,
+        "seed_storage_dtype": SEED_STORAGE_DTYPE,
+        "seed_effective_bits": SEED_EFFECTIVE_BITS,
+        "seed_high16_prefix": SEED_HIGH16_PREFIX,
+        "seed_domain_contract": SEED_DOMAIN_CONTRACT,
+        "seed_domain_start": SEED_DOMAIN_START,
+        "seed_domain_end_exclusive": SEED_DOMAIN_END_EXCLUSIVE,
+        "exhaustive_over": EXHAUSTIVE_OVER,
+        "external_seed_transform": EXTERNAL_SEED_TRANSFORM,
         "raw_candidate_count": len(raw_candidates),
         "l2_winner_count": len(winners),
         "prior_row_count": prior_row_count,

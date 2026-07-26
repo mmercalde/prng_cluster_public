@@ -6,14 +6,16 @@ immutable-generation publication).
 
 Spec: docs/CLAUDE_CODE_INSTRUCTIONS_S172_PHASE5_D3_5.md (REV3.1, Team Beta
 approved), frozen against HEAD 70cd6f0.
+Extended by docs/CLAUDE_CODE_INSTRUCTIONS_S172_PHASE5_D3_5_B.md (REV2, Team
+Beta approved), frozen against HEAD 46a3828 — Seed-Domain v1.1, gates S1-S9.
 
-Gates F1-F51 plus the F26 mutation set. Every gate is constructed to FAIL on the
-wrong behavior (REV3.1 §1.2).
+Gates F1-F51 and S1-S9, plus the F26 mutation set (which carries the S9 mutants).
+Every gate is constructed to FAIL on the wrong behavior (REV3.1 §1.2).
 
 INDEPENDENT ORACLES — the G9 / E8 / C1 lesson, binding (§1.3). This harness does
 NOT import `CANONICAL_ARRAY_CONTRACT`, `SIDECAR_REQUIRED_KEYS`, `ALL_NPZ_NAME`,
 `ACCUMULATOR_DIRNAME` or any other production constant and assert against it.
-The 22 array names and their frozen ORDER and dtypes, the 23 sidecar keys, the
+The 22 array names and their frozen ORDER and dtypes, the 32 sidecar keys, the
 directory layout, the alias names, the identity encodings and every tie outcome
 are HAND-TRANSCRIBED below as literals, read once from the spec and from the
 on-disk contract. Asserting a constant against itself is the exact defect
@@ -34,6 +36,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -95,19 +98,84 @@ ORACLE_ARRAYS: Tuple[Tuple[str, str], ...] = (
 )
 ORACLE_ARRAY_NAMES = tuple(n for n, _ in ORACLE_ARRAYS)
 
-# The exact 23 sidecar keys of §7.3. `sidecar_sha256` is deliberately NOT one of
-# them [REV3 C1].
-ORACLE_SIDECAR_KEYS = frozenset({
-    "generation_id", "artifact_sha256",
-    "parent_generation_id", "parent_artifact_sha256", "parent_sidecar_sha256",
-    "repository_commit", "repository_tree_clean",
-    "artifact_schema_version", "sidecar_schema_version",
-    "encoding_contract_version", "canonical_map_hash", "row_count",
-    "run_id", "prng_base", "skip_modes_executed",
-    "seed_start", "seed_count", "seed_end_exclusive",
-    "raw_candidate_count", "l2_winner_count", "prior_row_count",
-    "final_row_count", "created_at",
-})
+# The exact 32 sidecar keys — the 23 of §7.3 plus the nine seed-domain fields of
+# D3.5-B REV2 §3 — IN GLOBAL ALPHABETICAL ORDER, hand-transcribed from the brief
+# and never imported from `SIDECAR_REQUIRED_KEYS`. `sidecar_sha256` is
+# deliberately NOT one of them [REV3 C1].
+ORACLE_SIDECAR_KEY_ORDER: Tuple[str, ...] = (
+    "artifact_schema_version",
+    "artifact_sha256",
+    "canonical_map_hash",
+    "created_at",
+    "encoding_contract_version",
+    "exhaustive_over",                      # NEW
+    "external_seed_transform",              # NEW
+    "final_row_count",
+    "generation_id",
+    "l2_winner_count",
+    "parent_artifact_sha256",
+    "parent_generation_id",
+    "parent_sidecar_sha256",
+    "prior_row_count",
+    "prng_base",
+    "raw_candidate_count",
+    "repository_commit",
+    "repository_tree_clean",
+    "row_count",
+    "run_id",
+    "seed_count",
+    "seed_domain_contract",                 # NEW
+    "seed_domain_end_exclusive",            # NEW
+    "seed_domain_start",                    # NEW
+    "seed_effective_bits",                  # NEW
+    "seed_end_exclusive",
+    "seed_high16_prefix",                   # NEW
+    "seed_semantics",                       # NEW
+    "seed_start",
+    "seed_storage_dtype",                   # NEW
+    "sidecar_schema_version",
+    "skip_modes_executed",
+)
+ORACLE_SIDECAR_KEYS = frozenset(ORACLE_SIDECAR_KEY_ORDER)
+
+# The nine frozen seed-domain values (D3.5-B REV2 §3), hand-transcribed. Every
+# one is a fixed v1.1 constant — none is caller-supplied.
+ORACLE_SEED_DOMAIN: Tuple[Tuple[str, object], ...] = (
+    ("seed_semantics",            "internal_state"),
+    ("seed_storage_dtype",        "uint32"),
+    ("seed_effective_bits",       32),
+    ("seed_high16_prefix",        0),
+    ("seed_domain_contract",      "v1.1-stratum"),
+    ("seed_domain_start",         0),
+    ("seed_domain_end_exclusive", 4294967296),
+    ("exhaustive_over",           "high16=0 stratum only"),
+    ("external_seed_transform",   None),
+)
+ORACLE_SEED_DOMAIN_NAMES = tuple(n for n, _ in ORACLE_SEED_DOMAIN)
+
+# The seven stratum-identifying fields of §5's coordinate identity. Retained as
+# documentation; a certified lineage must in fact agree on all NINE [R3].
+ORACLE_STRATUM_IDENTITY = (
+    "seed_domain_contract", "seed_semantics", "seed_storage_dtype",
+    "seed_effective_bits", "seed_high16_prefix", "seed_domain_start",
+    "seed_domain_end_exclusive",
+)
+
+# §5's per-link contract — fourteen fields. The five below are already required
+# properties of a homogeneous certified lineage and, at 46a3828, NONE of them
+# was compared link-by-link: `_validate_chain` checked hashes, ids, cycles and
+# existence only [R1].
+ORACLE_LINEAGE_CONTRACT_FIELDS = (
+    "prng_base", "artifact_schema_version", "sidecar_schema_version",
+    "encoding_contract_version", "canonical_map_hash",
+)
+ORACLE_LINEAGE_KEYS = ORACLE_LINEAGE_CONTRACT_FIELDS + ORACLE_SEED_DOMAIN_NAMES
+
+# The three version strings. Exactly ONE moves in D3.5-B (§4).
+ORACLE_SIDECAR_SCHEMA_VERSION = "s172.d3_5.provenance.v1.1"
+ORACLE_PRE_V1_1_SIDECAR_SCHEMA_VERSION = "s172.d3_5.provenance.v1"
+ORACLE_ARTIFACT_SCHEMA_VERSION = "s172.d3.arrays.v1"
+ORACLE_ENCODING_CONTRACT_VERSION = "s172.phase0.encoding.v1"
 
 # Layout (§7.1), transcribed from the spec.
 ORACLE_ACCUM_DIR = ".s172_accumulator"
@@ -1801,6 +1869,434 @@ def f51_post_swap_durability_failure(RF=PROD):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# S1-S9 — D3.5-B Seed-Domain v1.1 (REV2 §6)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _canonical_bytes(payload: dict) -> bytes:
+    """Serialize under the SAME rules production uses (§8b is never bypassed)."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("utf-8")
+
+
+def _reanchor_tip(root: Path, mutate) -> dict:
+    """Rewrite the CURRENT tip's sidecar through `mutate`, then re-anchor its
+    hash-bound directory name and the `current` pointer.
+
+    Every hash stays internally consistent, so the ONLY surviving defect is the
+    mutated field — a rejection can never be attributed to a stale hash.
+    """
+    gen = root / ORACLE_ACCUM_DIR / read_current(root)
+    payload = json.loads((gen / ORACLE_SIDECAR_NAME).read_text())
+    mutate(payload)
+    raw = _canonical_bytes(payload)
+    (gen / ORACLE_SIDECAR_NAME).write_bytes(raw)
+    new_name = f"{payload['generation_id']}--{hashlib.sha256(raw).hexdigest()}"
+    gen.rename(gen.parent / new_name)
+    pointer = root / ORACLE_ACCUM_DIR / ORACLE_CURRENT
+    pointer.unlink()
+    os.symlink(f"{ORACLE_GENERATIONS}/{new_name}", pointer)
+    return payload
+
+
+def _reanchor_parent(root: Path, mutate) -> None:
+    """Two-generation chain: rewrite the PARENT's sidecar through `mutate`, then
+    re-anchor the parent directory name, the child's parent_* references, the
+    child's own directory name and the `current` pointer.
+
+    Structural validity is preserved end to end — sidecar hashes, artifact
+    hashes, generation ids and the pointer all agree — so the chain can fail on
+    nothing except the mutated lineage field.
+    """
+    generations = root / ORACLE_ACCUM_DIR / ORACLE_GENERATIONS
+    child_dir = root / ORACLE_ACCUM_DIR / read_current(root)
+    child = json.loads((child_dir / ORACLE_SIDECAR_NAME).read_text())
+    _assert(child["parent_generation_id"] is not None,
+            "fixture: the tip must already have a parent")
+    parent_dir = generations / (f"{child['parent_generation_id']}--"
+                                f"{child['parent_sidecar_sha256']}")
+    _assert(parent_dir.is_dir(), f"fixture: parent {parent_dir.name} is missing")
+
+    parent = json.loads((parent_dir / ORACLE_SIDECAR_NAME).read_text())
+    mutate(parent)
+    raw = _canonical_bytes(parent)
+    (parent_dir / ORACLE_SIDECAR_NAME).write_bytes(raw)
+    parent_hash = hashlib.sha256(raw).hexdigest()
+    new_parent = generations / f"{parent['generation_id']}--{parent_hash}"
+    parent_dir.rename(new_parent)
+
+    child["parent_generation_id"] = parent["generation_id"]
+    child["parent_sidecar_sha256"] = parent_hash
+    child["parent_artifact_sha256"] = sha256_path(new_parent / ORACLE_BINARY_NPZ)
+    raw_child = _canonical_bytes(child)
+    (child_dir / ORACLE_SIDECAR_NAME).write_bytes(raw_child)
+    new_child = (f"{child['generation_id']}--"
+                 f"{hashlib.sha256(raw_child).hexdigest()}")
+    child_dir.rename(generations / new_child)
+    pointer = root / ORACLE_ACCUM_DIR / ORACLE_CURRENT
+    pointer.unlink()
+    os.symlink(f"{ORACLE_GENERATIONS}/{new_child}", pointer)
+
+
+def _two_generation_chain(RF, root: Path):
+    first = publish(root, [cand(5, 1, "constant", 0.40)], RF=RF)
+    second = publish(root, [cand(9, 1, "constant", 0.50)], RF=RF)
+    return first, second
+
+
+def s1_sidecar_key_set_is_exactly_32(RF=PROD):
+    """The published sidecar's key set is EXACTLY the 32 hand-transcribed keys.
+
+    Read off the STORED bytes, in their stored order, rather than from
+    `SIDECAR_REQUIRED_KEYS` — asserting a constant against itself is the G9 /
+    E8 / C1 defect. Production serializes with `sort_keys=True`, so the stored
+    order IS the global alphabetical order the brief specifies.
+    """
+    root = fresh_root()
+    result = publish(root, [cand(5, 1, "constant", 0.40)], RF=RF)
+    stored = json.loads(result.sidecar_path.read_text(),
+                        object_pairs_hook=lambda pairs: tuple(k for k, _ in pairs))
+    _assert(stored == ORACLE_SIDECAR_KEY_ORDER,
+            f"S1: the sidecar key tuple is not the 32 hand-transcribed keys in "
+            f"global alphabetical order.\n  missing: "
+            f"{[k for k in ORACLE_SIDECAR_KEY_ORDER if k not in stored]}\n"
+            f"  unexpected: {[k for k in stored if k not in ORACLE_SIDECAR_KEYS]}"
+            f"\n  order: {list(stored)}")
+    _assert(len(stored) == 32, f"S1: expected 32 keys, got {len(stored)}")
+    _assert("sidecar_sha256" not in stored,
+            "S1: a file cannot contain its own hash [REV3 C1]")
+
+    # An UNEXPECTED key fails closed too — the wall is exact, not a lower bound.
+    root2 = fresh_root()
+    publish(root2, [cand(5, 1, "constant", 0.40)], RF=RF)
+    _reanchor_tip(root2, lambda p: p.__setitem__("seed_domain_note", "extra"))
+    _expect_raises("S1 (extra key)", RF.PriorGenerationError,
+                   lambda: publish(root2, [cand(9, 1, "constant", 0.5)], RF=RF))
+
+
+def s2_published_generation_carries_the_nine_values(RF=PROD):
+    """Every published v1.1 sidecar carries the nine fields at their §3 values,
+    with the correct strict types, and none of them is caller-supplied."""
+    for label, seed, seed_count in (("low stratum", 5, 1000),
+                                    # A seed ABOVE 2**16 — an implementation
+                                    # that derived the prefix from the candidate
+                                    # maximum would report high16 = 1 here.
+                                    ("seed above 2**16", 70000, 100000)):
+        root = fresh_root()
+        result = publish(root, [cand(seed, 1, "constant", 0.40)], RF=RF,
+                         seed_count=seed_count)
+        payload = json.loads(result.sidecar_path.read_text())
+        for key, expected in ORACLE_SEED_DOMAIN:
+            _assert(key in payload, f"S2 ({label}): sidecar lacks {key!r}")
+            got = payload[key]
+            _assert(got == expected and type(got) is type(expected),
+                    f"S2 ({label}): sidecar {key!r} is {got!r} "
+                    f"({type(got).__name__}), expected {expected!r} "
+                    f"({type(expected).__name__})")
+        _assert(payload["sidecar_schema_version"]
+                == ORACLE_SIDECAR_SCHEMA_VERSION,
+                f"S2 ({label}): sidecar_schema_version is "
+                f"{payload['sidecar_schema_version']!r}, expected "
+                f"{ORACLE_SIDECAR_SCHEMA_VERSION!r}")
+        # The stratum domain is NOT the per-run coverage interval; both coexist.
+        _assert(payload["seed_start"] == 0 and payload["seed_count"] == seed_count,
+                f"S2 ({label}): the per-run coverage fields were overwritten by "
+                f"the stratum-domain fields")
+
+    # --- the nine are module-owned, never part of the public API ------------
+    params = set(inspect.signature(RF.finalize_run).parameters)
+    leaked = sorted(params & set(ORACLE_SEED_DOMAIN_NAMES))
+    _assert(not leaked,
+            f"S2: finalize_run exposes seed-domain field(s) {leaked} as caller "
+            f"arguments. Every one is a module-owned constant; a caller-supplied "
+            f"value is exactly how a run publishes a sidecar claiming a stratum "
+            f"other than the one the uint32 domain wall enforced.")
+    root = fresh_root()
+    _expect_raises(
+        "S2 (caller-supplied prefix)", TypeError,
+        lambda: publish(root, [cand(5, 1, "constant", 0.40)], RF=RF,
+                        seed_high16_prefix=1))
+
+
+def s3_fail_closed_matrix(RF=PROD):
+    """One case per seed-domain field, plus the bool-as-int hazard. Each is a
+    structurally valid, correctly re-anchored generation whose ONLY defect is
+    the named field."""
+    cases = [
+        ("missing seed_high16_prefix",
+         lambda p: p.pop("seed_high16_prefix"), "seed_high16_prefix"),
+        ("seed_semantics mislabelled",
+         lambda p: p.__setitem__("seed_semantics", "external_input"),
+         "seed_semantics"),
+        ("seed_storage_dtype widened",
+         lambda p: p.__setitem__("seed_storage_dtype", "uint64"),
+         "seed_storage_dtype"),
+        ("seed_effective_bits claims the full state",
+         lambda p: p.__setitem__("seed_effective_bits", 48),
+         "seed_effective_bits"),
+        ("seed_high16_prefix claims another stratum",
+         lambda p: p.__setitem__("seed_high16_prefix", 1),
+         "seed_high16_prefix"),
+        ("seed_domain_start shifted",
+         lambda p: p.__setitem__("seed_domain_start", 1), "seed_domain_start"),
+        ("seed_domain_end_exclusive claims 2**48",
+         lambda p: p.__setitem__("seed_domain_end_exclusive", 2 ** 48),
+         "seed_domain_end_exclusive"),
+        ("exhaustive_over mislabelled",
+         lambda p: p.__setitem__("exhaustive_over",
+                                 "the full 48-bit internal state"),
+         "exhaustive_over"),
+        ("external_seed_transform non-null",
+         lambda p: p.__setitem__("external_seed_transform", "identity"),
+         "external_seed_transform"),
+        # bool-as-int. `True` is caught by the value pin as well, but `False`
+        # is NOT: False == 0 in Python, so only a bool-rejecting integer guard
+        # can refuse it. Both are asserted.
+        ("seed_high16_prefix is True (bool)",
+         lambda p: p.__setitem__("seed_high16_prefix", True),
+         "seed_high16_prefix"),
+        ("seed_high16_prefix is False (bool == 0)",
+         lambda p: p.__setitem__("seed_high16_prefix", False),
+         "seed_high16_prefix"),
+        ("seed_domain_start is False (bool == 0)",
+         lambda p: p.__setitem__("seed_domain_start", False),
+         "seed_domain_start"),
+    ]
+    for label, mutate, named in cases:
+        root = fresh_root()
+        publish(root, [cand(5, 1, "constant", 0.40)], RF=RF)
+        _reanchor_tip(root, mutate)
+        before = read_current(root)
+        exc = _expect_raises(f"S3 ({label})", RF.RunFinalizerError,
+                             lambda: publish(root, [cand(9, 1, "constant", 0.5)],
+                                             RF=RF),
+                             must_mention=(named,))
+        _assert(isinstance(exc, RF.PriorGenerationError),
+                f"S3 ({label}): expected a prior-generation rejection, got "
+                f"{type(exc).__name__}")
+        _assert(read_current(root) == before,
+                f"S3 ({label}): current moved — the rejection was not "
+                f"fail-closed")
+
+
+def s4_pre_v1_1_sidecar_fails_closed(RF=PROD):
+    """A genuine pre-v1.1 (23-key) sidecar is REJECTED, never silently read as
+    `high16 = 0`. No compatibility reader is authorized (§4)."""
+    root = fresh_root()
+    publish(root, [cand(5, 1, "constant", 0.40)], RF=RF)
+
+    def _downgrade(payload):
+        for name in ORACLE_SEED_DOMAIN_NAMES:
+            payload.pop(name, None)
+        payload["sidecar_schema_version"] = \
+            ORACLE_PRE_V1_1_SIDECAR_SCHEMA_VERSION
+
+    old = _reanchor_tip(root, _downgrade)
+    _assert(len(old) == 23,
+            f"S4 fixture: the downgraded sidecar must carry the historical 23 "
+            f"keys, it carries {len(old)}")
+    _assert(not (set(old) & set(ORACLE_SEED_DOMAIN_NAMES)),
+            "S4 fixture: the downgraded sidecar still carries a seed-domain key")
+    before = read_current(root)
+    exc = _expect_raises("S4", RF.RunFinalizerError,
+                         lambda: publish(root, [cand(9, 1, "constant", 0.5)],
+                                         RF=RF))
+    _assert(isinstance(exc, RF.PriorGenerationError),
+            f"S4: expected a prior-generation rejection, got "
+            f"{type(exc).__name__}")
+    _assert(read_current(root) == before, "S4: current moved")
+
+    # The version string alone must also fail closed, with the nine fields
+    # present and correct — a v1.1 payload wearing a pre-v1.1 label is still a
+    # generation written under a different contract.
+    root2 = fresh_root()
+    publish(root2, [cand(5, 1, "constant", 0.40)], RF=RF)
+    _reanchor_tip(root2, lambda p: p.__setitem__(
+        "sidecar_schema_version", ORACLE_PRE_V1_1_SIDECAR_SCHEMA_VERSION))
+    _expect_raises("S4 (old version label)", RF.PriorGenerationError,
+                   lambda: publish(root2, [cand(9, 1, "constant", 0.5)], RF=RF))
+
+
+def s5_valid_v1_1_publishes_and_chains(RF=PROD):
+    """A valid v1.1 generation publishes, and a two-generation chain whose links
+    agree on every stratum field validates recursively."""
+    root = fresh_root()
+    first, second = _two_generation_chain(RF, root)
+    parent = json.loads(first.sidecar_path.read_text())
+    child = json.loads(second.sidecar_path.read_text())
+
+    _assert(child["parent_sidecar_sha256"] == first.sidecar_sha256
+            and child["parent_generation_id"] == first.generation_id,
+            "S5: the child does not reference its parent")
+    for key in ORACLE_STRATUM_IDENTITY:
+        _assert(child[key] == parent[key],
+                f"S5: child and parent disagree on stratum field {key!r}: "
+                f"{child[key]!r} vs {parent[key]!r}")
+    for key, expected in ORACLE_SEED_DOMAIN:
+        _assert(parent[key] == expected and child[key] == expected,
+                f"S5: {key!r} is not the frozen v1.1 value in both links")
+
+    # A third generation walks the whole chain to the clean-start root.
+    third = publish(root, [cand(11, 1, "constant", 0.60)], RF=RF)
+    _assert(third.parent_generation_id == second.generation_id,
+            "S5: the third generation did not link to the second")
+    _assert(parent["parent_generation_id"] is None,
+            "S5: the first generation must be a clean-start root")
+    arrays, _ = load_bundle(third.binary_npz_path)
+    _assert(sorted(int(s) for s in arrays["seeds"]) == [5, 9, 11],
+            f"S5: the merged bundle lost rows: {list(arrays['seeds'])}")
+
+
+def s6_parent_disagreement_fails_closed(RF=PROD):
+    """A child whose PARENT disagrees fails closed — parameterized across all
+    nine seed-domain fields [R3] and across the five contract fields of §5's
+    per-link contract, none of which was compared per link at 46a3828 [R1].
+
+    The parent is re-anchored, so its sidecar hash, artifact hash, generation id
+    and the child's references all remain valid: the only defect is the field.
+    """
+    disagreements = {
+        "seed_semantics":            "external_input",
+        "seed_storage_dtype":        "uint64",
+        "seed_effective_bits":       48,
+        "seed_high16_prefix":        1,
+        "seed_domain_contract":      "v2.0-full-state",
+        "seed_domain_start":         1,
+        "seed_domain_end_exclusive": 2 ** 48,
+        "exhaustive_over":           "the full 48-bit internal state",
+        "external_seed_transform":   "identity",
+        "prng_base":                 "lcg32",
+        "artifact_schema_version":   "s172.d3.arrays.v0",
+        "sidecar_schema_version":    ORACLE_PRE_V1_1_SIDECAR_SCHEMA_VERSION,
+        "encoding_contract_version": "s172.phase0.encoding.v0",
+        "canonical_map_hash":        "b" * 64,
+    }
+    _assert(set(disagreements) == set(ORACLE_LINEAGE_KEYS),
+            f"S6 fixture: the case table must cover exactly the fourteen "
+            f"per-link fields; it differs by "
+            f"{sorted(set(disagreements) ^ set(ORACLE_LINEAGE_KEYS))}")
+
+    for key in ORACLE_LINEAGE_KEYS:
+        root = fresh_root()
+        _two_generation_chain(RF, root)
+        _reanchor_parent(root, lambda p, k=key: p.__setitem__(
+            k, disagreements[k]))
+        before = read_current(root)
+        exc = _expect_raises(f"S6 ({key})", RF.RunFinalizerError,
+                             lambda: publish(root, [cand(11, 1, "constant", 0.6)],
+                                             RF=RF),
+                             must_mention=(key,))
+        _assert(isinstance(exc, RF.PriorGenerationError),
+                f"S6 ({key}): expected a prior-generation rejection, got "
+                f"{type(exc).__name__}")
+        _assert(read_current(root) == before, f"S6 ({key}): current moved")
+
+
+def s7_cross_domain_lineage_mismatch(RF=PROD):
+    """[R4] A child claiming a DIFFERENT seed-domain contract / storage domain
+    from its v1.1 parent fails specifically on seed-domain incompatibility —
+    not on a malformed hash, key or JSON type.
+
+    This establishes the invariant a future v2 must retain: a different
+    seed-domain contract requires a NEW CLEAN ROOT. No v2 writer and no v2
+    sidecar schema is introduced here.
+    """
+    def _contract_only(payload):
+        # The MINIMAL cross-domain claim: the storage domain is unchanged, so
+        # the rejection can only name the contract field itself.
+        payload["seed_domain_contract"] = "v2.0-full-48bit-state"
+
+    def _full_v2_claim(payload):
+        payload["seed_domain_contract"] = "v2.0-full-48bit-state"
+        payload["seed_storage_dtype"] = "uint64"
+        payload["seed_effective_bits"] = 48
+        payload["seed_domain_end_exclusive"] = 2 ** 48
+        payload["exhaustive_over"] = "the full 48-bit internal state"
+
+    for label, mutate, named in (
+            ("contract only", _contract_only, ("seed_domain_contract",)),
+            ("contract + storage domain", _full_v2_claim,
+             ("seed-domain field",))):
+        root = fresh_root()
+        first, _second = _two_generation_chain(RF, root)
+        child = _reanchor_tip(root, mutate)
+
+        # Fixture guards: the chain is structurally intact, so nothing but the
+        # seed-domain claim can be the cause.
+        _assert(set(child) == ORACLE_SIDECAR_KEYS,
+                f"S7 ({label}) fixture: the child's key set must stay exactly "
+                f"the 32 keys")
+        _assert(child["parent_sidecar_sha256"] == first.sidecar_sha256
+                and child["parent_generation_id"] == first.generation_id,
+                f"S7 ({label}) fixture: the parent references must stay valid")
+        parent = json.loads(first.sidecar_path.read_text())
+        _assert(parent["seed_domain_contract"] == "v1.1-stratum",
+                f"S7 ({label}) fixture: the parent must remain v1.1")
+        tip = root / ORACLE_ACCUM_DIR / read_current(root)
+        _assert(tip.name.endswith(
+            "--" + hashlib.sha256(
+                (tip / ORACLE_SIDECAR_NAME).read_bytes()).hexdigest()),
+            f"S7 ({label}) fixture: the tip directory must stay hash-bound to "
+            f"its sidecar")
+
+        before = read_current(root)
+        exc = _expect_raises(f"S7 ({label})", RF.RunFinalizerError,
+                             lambda: publish(root,
+                                             [cand(11, 1, "constant", 0.6)],
+                                             RF=RF),
+                             must_mention=named)
+        _assert(isinstance(exc, RF.PriorGenerationError),
+                f"S7 ({label}): expected a prior-generation rejection, got "
+                f"{type(exc).__name__}")
+        text = str(exc)
+        named_fields = [n for n in ORACLE_SEED_DOMAIN_NAMES if n in text]
+        _assert(named_fields,
+                f"S7 ({label}): the rejection names no seed-domain field, so "
+                f"it is not attributable to seed-domain lineage "
+                f"incompatibility: {text}")
+        for wrong in ("hashes to", "is not valid", "must be a JSON object",
+                      "missing required key", "unexpected key"):
+            _assert(wrong not in text,
+                    f"S7 ({label}): the failure is attributed to {wrong!r}, "
+                    f"not to the seed-domain contract: {text}")
+        _assert(read_current(root) == before, f"S7 ({label}): current moved")
+
+
+def s8_other_versions_and_array_contract_unchanged(RF=PROD):
+    """ARTIFACT_SCHEMA_VERSION and ENCODING_CONTRACT_VERSION are unchanged from
+    46a3828, and the 22-array contract — names, order, dtypes — is untouched."""
+    root = fresh_root()
+    result = publish(root, [cand(5, 1, "constant", 0.40),
+                            cand(9, 2, "variable", 0.50)], RF=RF)
+    payload = json.loads(result.sidecar_path.read_text())
+    _assert(payload["artifact_schema_version"] == ORACLE_ARTIFACT_SCHEMA_VERSION,
+            f"S8: artifact_schema_version moved to "
+            f"{payload['artifact_schema_version']!r}; D3.5-B changes no array, "
+            f"no key order and no dtype, so it must stay "
+            f"{ORACLE_ARTIFACT_SCHEMA_VERSION!r}")
+    _assert(payload["encoding_contract_version"]
+            == ORACLE_ENCODING_CONTRACT_VERSION,
+            f"S8: encoding_contract_version moved to "
+            f"{payload['encoding_contract_version']!r}; the encoding maps are "
+            f"unchanged, so it must stay {ORACLE_ENCODING_CONTRACT_VERSION!r}")
+    _assert(RF.ARTIFACT_SCHEMA_VERSION == ORACLE_ARTIFACT_SCHEMA_VERSION
+            and RF.ENCODING_CONTRACT_VERSION == ORACLE_ENCODING_CONTRACT_VERSION,
+            "S8: a module constant disagrees with the 46a3828 literal")
+
+    for path in (result.all_npz_path, result.binary_npz_path):
+        arrays, order = load_bundle(path)
+        _assert(order == ORACLE_ARRAY_NAMES,
+                f"S8: {path.name} array order changed: {order}")
+        for name, dtype in ORACLE_ARRAYS:
+            _assert(arrays[name].dtype == np.dtype(dtype),
+                    f"S8: {path.name} {name!r} dtype is {arrays[name].dtype}, "
+                    f"expected {dtype}")
+            _assert(arrays[name].ndim == 1,
+                    f"S8: {path.name} {name!r} is not 1-D")
+        _assert(arrays["seeds"].shape[0] == 2,
+                f"S8: {path.name} row count changed")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # F26 — mutation proof
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -2063,7 +2559,135 @@ INTEGRATION_MUTANTS: List[Tuple[str, List[Tuple[str, str]], str]] = [
      "F36"),
 ]
 
+# --- S9: the D3.5-B mutation set (REV2 §6) ----------------------------------
+_M_SEED_PREFIX_PAYLOAD = '        "seed_high16_prefix": SEED_HIGH16_PREFIX,'
+_M_MISSING_KEYS = "    missing = _SIDECAR_REQUIRED_KEY_SET - keys"
+_M_READ_SIDECAR_VALIDATE = \
+    "    _validate_sidecar_payload(payload, generation_dir.name)"
+_M_LINEAGE_LOOP = "        for key in _LINEAGE_INVARIANT_KEYS:"
+_M_SEED_VALUE_PIN = "        if payload[key] != expected:"
+_M_ARTIFACT_VERSION = 'ARTIFACT_SCHEMA_VERSION = "s172.d3.arrays.v1"'
+_M_SEED_INT_LOOP = (
+    "    for key in _SEED_DOMAIN_INT_FIELDS:\n"
+    "        _require_int(payload[key], f\"{label}: sidecar {key!r}\",\n"
+    "                     PriorGenerationError)")
+_M_FINALIZE_SIG = ("    prior_generation_dir: Optional[Path] = None,\n"
+                   ") -> RunArtifactResult:")
+
+S9_MUTANTS: List[Tuple[str, List[Tuple[str, str]], List[str]]] = [
+    ("a seed-domain value INFERRED from the candidate maximum instead of the "
+     "frozen module constant",
+     [(_M_SEED_PREFIX_PAYLOAD,
+       '        "seed_high16_prefix": (max((int(r["seed"]) '
+       'for r in raw_candidates), default=0) >> 16),')],
+     ["S2"]),
+
+    ("seed_high16_prefix silently defaults to 0 when absent instead of "
+     "failing closed",
+     [(_M_MISSING_KEYS,
+       "    payload = dict(payload)\n"
+       '    payload.setdefault("seed_high16_prefix", 0)\n'
+       "    keys = set(payload)\n"
+       "    missing = _SIDECAR_REQUIRED_KEY_SET - keys")],
+     ["S3"]),
+
+    ("a compatibility reader accepts a pre-v1.1 23-key sidecar and interprets "
+     "it as high16 = 0",
+     [(_M_READ_SIDECAR_VALIDATE,
+       '    if payload.get("sidecar_schema_version") == '
+       '"s172.d3_5.provenance.v1":\n'
+       "        payload = {**{_n: _v for _n, _v in SEED_DOMAIN_FIELDS}, "
+       "**payload}\n"
+       '        payload["sidecar_schema_version"] = SIDECAR_SCHEMA_VERSION\n'
+       "    _validate_sidecar_payload(payload, generation_dir.name)")],
+     ["S4"]),
+
+    # BOTH anchors are required, for the same reason F18 needs two: the
+    # seed-domain fields are guarded by TWO deliberately redundant layers — the
+    # per-link lineage comparison and the payload value pin — so removing only
+    # one leaves the other catching the parent. Removing both isolates the
+    # seed-domain lineage contract itself, and S6 attributes the red to the
+    # seed_high16_prefix link (every other S6 case still reds correctly, so
+    # nothing else can produce this kill).
+    ("the per-link lineage check omits the nine seed-domain fields (payload "
+     "value pin for seed_high16_prefix removed too)",
+     [(_M_LINEAGE_LOOP, "        for key in _LINEAGE_INVARIANT_KEYS[:5]:"),
+      (_M_SEED_VALUE_PIN,
+       '        if key != "seed_high16_prefix" and payload[key] != expected:')],
+     ["S6"]),
+
+    # Single anchor, uniquely attributable: an ANCESTOR's prng_base is compared
+    # NOWHERE else. `_load_prior_generation` compares only the selected tip.
+    ("the per-link lineage check omits prng_base",
+     [(_M_LINEAGE_LOOP, "        for key in _LINEAGE_INVARIANT_KEYS[1:]:")],
+     ["S6"]),
+
+    ("ARTIFACT_SCHEMA_VERSION bumped although no array, key order or dtype "
+     "changed",
+     [(_M_ARTIFACT_VERSION, 'ARTIFACT_SCHEMA_VERSION = "s172.d3.arrays.v2"')],
+     ["S8"]),
+
+    # `False == 0`, so the value pin cannot see it; only the bool-rejecting
+    # integer guard can.
+    ("bool accepted as an integer seed-domain field (bare isinstance int)",
+     [(_M_SEED_INT_LOOP,
+       "    for key in _SEED_DOMAIN_INT_FIELDS:\n"
+       "        if not isinstance(payload[key], int):\n"
+       "            raise PriorGenerationError(\n"
+       '                f"{label}: sidecar {key!r} must be an int, got "\n'
+       '                f"{payload[key]!r}.")')],
+     ["S3"]),
+
+    ("a seed-domain value promoted to a finalize_run caller argument",
+     [(_M_FINALIZE_SIG,
+       "    prior_generation_dir: Optional[Path] = None,\n"
+       "    seed_high16_prefix: int = SEED_HIGH16_PREFIX,\n"
+       ") -> RunArtifactResult:"),
+      (_M_SEED_PREFIX_PAYLOAD,
+       '        "seed_high16_prefix": seed_high16_prefix,')],
+     ["S2"]),
+]
+
 _GATE_BY_NAME = {}
+
+
+def _run_mutation_set(label_prefix, mutants):
+    """Shared mutation driver: build, run the nominated gates, report the red."""
+    survivors: List[str] = []
+    for label, replacements, gate_names in mutants:
+        try:
+            mutant = build_mutant(replacements)
+        except AssertionError as exc:
+            _MUTATION_REPORT.append(
+                f"  RED  [{label_prefix}] {label}\n         anchor: {exc}")
+            continue
+        killed_by, signature = None, ""
+        for gate_name in gate_names:
+            try:
+                _GATE_BY_NAME[gate_name](mutant)
+            except Exception as exc:                        # noqa: BLE001
+                killed_by = gate_name
+                signature = (f"{type(exc).__name__}: "
+                             f"{str(exc).splitlines()[0][:150]}")
+                break
+        if killed_by is None:
+            survivors.append(f"{label} (expected kill by {gate_names})")
+            _MUTATION_REPORT.append(f"  SURVIVED  [{label_prefix}] {label}")
+        else:
+            _MUTATION_REPORT.append(
+                f"  RED  [{label_prefix}] {label}\n         killed by "
+                f"{killed_by}: {signature}")
+    return survivors
+
+
+def s9_mutation_proof(RF=PROD):
+    """The D3.5-B mutation set. Each mutant is a TEXTUAL edit to the live
+    `utils/run_finalizer.py` exec'd into a fresh namespace; the file on disk is
+    never modified."""
+    _assert(RF is PROD, "S9 runs only against the production module")
+    survivors = _run_mutation_set("S9", S9_MUTANTS)
+    _assert(not survivors,
+            "S9: mutants survived their gates:\n  " + "\n  ".join(survivors))
 
 
 def f26_mutation_proof(RF=PROD):
@@ -2140,6 +2764,11 @@ _GATE_BY_NAME.update({
     "F47": f47_sidecar_hash_binding,
     "F48": f48_modified_current_sidecar,
     "F50": f50_current_present_prior_omitted_merges,
+    "S2": s2_published_generation_carries_the_nine_values,
+    "S3": s3_fail_closed_matrix,
+    "S4": s4_pre_v1_1_sidecar_fails_closed,
+    "S6": s6_parent_disagreement_fails_closed,
+    "S8": s8_other_versions_and_array_contract_unchanged,
 })
 
 
@@ -2244,7 +2873,24 @@ GATES = [
     ("F50: current present + prior omitted -> automatic merge", f50_current_present_prior_omitted_merges),
     ("F51: post-swap fsync failure -> PublicationDurabilityError + recovery",
      f51_post_swap_durability_failure),
+    ("S1: sidecar required key set is exactly the 32 hand-transcribed keys",
+     s1_sidecar_key_set_is_exactly_32),
+    ("S2: a published v1.1 generation carries the nine seed-domain values",
+     s2_published_generation_carries_the_nine_values),
+    ("S3: seed-domain fail-closed matrix (one case per field + bool-as-int)",
+     s3_fail_closed_matrix),
+    ("S4: a pre-v1.1 sidecar fails closed, never read as high16 = 0",
+     s4_pre_v1_1_sidecar_fails_closed),
+    ("S5: a valid v1.1 chain publishes and validates recursively",
+     s5_valid_v1_1_publishes_and_chains),
+    ("S6: parent disagreement on any per-link field fails closed",
+     s6_parent_disagreement_fails_closed),
+    ("S7: cross-domain lineage mismatch fails on the seed-domain contract",
+     s7_cross_domain_lineage_mismatch),
+    ("S8: ARTIFACT/ENCODING versions and the 22-array contract unchanged",
+     s8_other_versions_and_array_contract_unchanged),
     ("F26: mutation proof", f26_mutation_proof),
+    ("S9: D3.5-B mutation proof", s9_mutation_proof),
 ]
 
 
@@ -2280,7 +2926,9 @@ def main():
     print("All D3.5 gate checks green — the shared finalizer selects L2 winners "
           "in the record domain, merges L3 in the array domain, and publishes "
           "immutable chain-authenticated generations through a single "
-          "pointer commit (pending Team Alpha + Team Beta review).")
+          "pointer commit, each labelled with the Seed-Domain v1.1 stratum "
+          "contract and homogeneous across every lineage link (pending Team "
+          "Alpha + Team Beta review).")
     return 0
 
 
