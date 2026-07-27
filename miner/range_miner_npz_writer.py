@@ -40,7 +40,12 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import (
+    Any, Dict, Iterable, Iterator, List, Mapping, NoReturn, Optional, Sequence,
+    Tuple, Type, Union,
+)
+
+import numpy as np
 
 from miner.range_miner_coordinator import (
     MinerMetadataError,
@@ -64,6 +69,20 @@ __all__ = [
     "MinerTrialAssembly",
     "AssemblingPhase5Sink",
     "assemble_trial",
+    "prepare_trial_assembly",
+    "ValidatedSpoolProjection",
+    "SEED_ENCODING_INT64",
+    "SEED_ENCODING_SIGNED_BYTES",
+    "SEED_ENCODINGS",
+    "build_validated_projection",
+    "projection_seeds",
+    "CapturedSpoolReadError",
+    "SpoolReadOutcome",
+    "CANONICAL_SPOOL_READ_ERRORS",
+    "capture_spool_read_error",
+    "raise_captured_spool_error",
+    "read_and_validate_spool",
+    "merge_validated_spools",
     "ManifestReplayConflict",
     "AssemblyConsistencyError",
     "PhaseIdentityError",
@@ -334,14 +353,362 @@ def _validate_manifest_identity(run_id: str, manifest: Dict[str, Any]) -> Dict[s
 
 
 # ---------------------------------------------------------------------------
-# §5.3 — spool read + identity + container + semantic validation.
+# §5.3 — the ordered, merge-relevant projection of ONE fully validated spool.
+#
+# LOCKED DEFINITION (Team Beta D5 ruling, finding F1). This is lossless with
+# respect to ALL state observable by canonical assembly — NOT a lossless
+# serialization of the source JSON payload. `merge_validated_spools` consumes
+# only seed and match_rate per survivor (see the merge loop below); `strategy_id`
+# and the ragged `skips` are fully validated inside `read_and_validate_spool` and
+# then DISCARDED, exactly as §5.4's numeric encoding is validated-and-discarded.
+# They never cross a process boundary because canonical assembly never observes
+# them — which is also what lets D5's artifact codec run `allow_pickle=False`
+# with no object arrays.
+#
+# Order and multiplicity are preserved EXACTLY: no sort, no dedup, no
+# normalization. Input survivor i is projection row i. An intra-spool duplicate
+# seed survives as two rows, so the §5.4 duplicate invariant still fires.
+#
+# SEED REPRESENTATION IS DUAL, AND THAT IS A CORRECTNESS REQUIREMENT [D5 REV3,
+# Team Beta hold]. The first cut of this projection stored seeds as a plain
+# `int64` array. That silently NARROWED the engine's accepted input: the §5.3
+# validator bounds a seed to the declared window `[seed_start, seed_start +
+# seed_count)` and imposes NO signed-64 bound and no non-negativity requirement
+# on `seed_start`, and the pre-D5 maps keyed on arbitrary-precision PYTHON ints.
+# A spool declaring `seed_start = 2**63` was therefore accepted before D5 and
+# raised `OverflowError` after it — a valid-input divergence, which is exactly
+# what the "the extraction changed nothing" claim may not contain. ("Unreachable
+# for java_lcg" is not a defence: the engine is base-parameterized, not
+# contractually one-family.)
+#
+# So the projection carries ONE of two lossless encodings, chosen per spool:
+#
+#   * `int64`        — the fast, common path: every seed in the spool is
+#                      signed-64 representable, so seeds are one `int64` array.
+#   * `signed_bytes` — the fallback, armed the moment ANY seed in the spool
+#                      leaves signed-64: every seed of that spool (including its
+#                      small ones) becomes a two's-complement big-endian byte run
+#                      of DETERMINISTIC SIGNED-BYTE LENGTH in one concatenated
+#                      `uint8` array, addressed by a `uint64` offsets array of
+#                      length survivor_count + 1. The encoding may be non-minimal
+#                      at negative signed-width boundaries, but decoding is exact
+#                      and canonical assembly observes the original Python
+#                      integer.
+#
+# Both encodings are plain numeric arrays: NO object array, so D5's artifact
+# codec still loads with `allow_pickle=False` (F1). Exactly one representation
+# is populated; the other seed fields are None, and `__post_init__` refuses any
+# other combination. `projection_seeds` is the ONLY decoder, and it returns
+# PYTHON ints in both cases so the merge's map keys are bit-identical to pre-D5.
 # ---------------------------------------------------------------------------
-def _read_and_validate_spool(run_id: str, manifest: Dict[str, Any]) -> Dict[str, Any]:
+SEED_ENCODING_INT64 = "int64"
+SEED_ENCODING_SIGNED_BYTES = "signed_bytes"
+SEED_ENCODINGS: Tuple[str, ...] = (SEED_ENCODING_INT64,
+                                   SEED_ENCODING_SIGNED_BYTES)
+
+_INT64_MIN = -(2 ** 63)
+_INT64_MAX = 2 ** 63 - 1
+
+
+def _encode_seed(seed: int) -> bytes:
+    """ONE seed as a two's-complement big-endian byte run whose width comes from
+    the DETERMINISTIC SIGNED-BYTE LENGTH FORMULA.
+
+    `(bit_length // 8) + 1` is the deterministic signed-byte length formula, and
+    the `+ 1` is not slack: `bit_length()` ignores the sign, so a value needing
+    exactly 8k bits of magnitude needs a (k+1)-th byte for the sign bit. 127 ->
+    1 byte, 128 -> 2, 255 -> 2, 2**63 -> 9, 0 -> 1. The ±2^(8k-1) boundaries are
+    where a `(bit_length + 7) // 8` spelling silently raises OverflowError,
+    which is the very failure mode this fallback exists to remove.
+
+    The encoding may be non-minimal at negative signed-width boundaries (-128
+    takes 2 bytes here, not 1), but decoding is exact and canonical assembly
+    observes the original Python integer: `int.from_bytes` sign-extends the run
+    back to the identical value. Round-trip fidelity is the contract; width
+    minimality is not."""
+    nbytes = (seed.bit_length() // 8) + 1
+    return seed.to_bytes(nbytes, "big", signed=True)
+
+
+def _validate_projection_shape(projection: "ValidatedSpoolProjection") -> None:
+    """Refuse any projection that is not exactly one of the two encodings, with
+    rectangular, correctly-typed arrays.
+
+    Fail-closed at CONSTRUCTION, so a half-populated or mis-typed projection
+    cannot exist to be merged — including one rebuilt by D5's artifact readback
+    from a corrupt or foreign artifact."""
+    count = projection.survivor_count
+    if not _is_int(count) or count < 0:
+        raise ValueError(f"survivor_count {count!r} is not a nonnegative int")
+    rates = projection.match_rates
+    if not isinstance(rates, np.ndarray) or rates.dtype != np.dtype(np.float64) \
+            or rates.shape != (count,):
+        raise ValueError(
+            f"match_rates must be a float64 array of shape ({count},), got "
+            f"{getattr(rates, 'dtype', type(rates).__name__)} "
+            f"{getattr(rates, 'shape', None)}")
+
+    if projection.seed_encoding == SEED_ENCODING_INT64:
+        if projection.seed_bytes is not None or projection.seed_offsets is not None:
+            raise ValueError(
+                "seed_encoding 'int64' populates seeds_i64 ONLY; the "
+                "signed_bytes fields must be None")
+        seeds = projection.seeds_i64
+        if not isinstance(seeds, np.ndarray) \
+                or seeds.dtype != np.dtype(np.int64) or seeds.shape != (count,):
+            raise ValueError(
+                f"seeds_i64 must be an int64 array of shape ({count},), got "
+                f"{getattr(seeds, 'dtype', type(seeds).__name__)} "
+                f"{getattr(seeds, 'shape', None)}")
+        return
+
+    if projection.seed_encoding == SEED_ENCODING_SIGNED_BYTES:
+        if projection.seeds_i64 is not None:
+            raise ValueError(
+                "seed_encoding 'signed_bytes' populates seed_bytes + "
+                "seed_offsets ONLY; seeds_i64 must be None")
+        blob, offsets = projection.seed_bytes, projection.seed_offsets
+        if not isinstance(blob, np.ndarray) or blob.dtype != np.dtype(np.uint8) \
+                or blob.ndim != 1:
+            raise ValueError(
+                f"seed_bytes must be a 1-D uint8 array, got "
+                f"{getattr(blob, 'dtype', type(blob).__name__)}")
+        if not isinstance(offsets, np.ndarray) \
+                or offsets.dtype != np.dtype(np.uint64) \
+                or offsets.shape != (count + 1,):
+            raise ValueError(
+                f"seed_offsets must be a uint64 array of shape ({count + 1},), "
+                f"got {getattr(offsets, 'dtype', type(offsets).__name__)} "
+                f"{getattr(offsets, 'shape', None)}")
+        # Python ints, not a uint64 diff: an out-of-order pair would WRAP to a
+        # huge positive under uint64 subtraction and pass a naive `> 0` check.
+        bounds = [int(v) for v in offsets]
+        if bounds[0] != 0 or bounds[-1] != int(blob.shape[0]):
+            raise ValueError(
+                f"seed_offsets {bounds[0]}..{bounds[-1]} do not span the "
+                f"{int(blob.shape[0])}-byte seed_bytes run exactly")
+        for k in range(count):
+            if bounds[k + 1] <= bounds[k]:
+                raise ValueError(
+                    f"seed_offsets row {k} spans "
+                    f"[{bounds[k]}, {bounds[k + 1]}) — every seed occupies at "
+                    f"least one byte and offsets must strictly increase")
+        return
+
+    raise ValueError(
+        f"unknown seed_encoding {projection.seed_encoding!r}; expected one of "
+        f"{list(SEED_ENCODINGS)}")
+
+
+@dataclass(frozen=True)
+class ValidatedSpoolProjection:
+    seed_encoding: str                   # one of SEED_ENCODINGS
+    seeds_i64: Optional[np.ndarray]      # int64, (survivor_count,) — or None
+    seed_bytes: Optional[np.ndarray]     # uint8, concatenated runs — or None
+    seed_offsets: Optional[np.ndarray]   # uint64, (survivor_count + 1,) — or None
+    match_rates: np.ndarray              # float64, (survivor_count,), aligned
+    survivor_count: int                  # rows, in survivor order
+
+    def __post_init__(self) -> None:
+        _validate_projection_shape(self)
+
+
+def build_validated_projection(
+    seeds: Sequence[int], match_rates: Sequence[float],
+) -> ValidatedSpoolProjection:
+    """Build the projection of ONE validated spool, choosing the encoding.
+
+    `seeds` are the ALREADY-VALIDATED Python ints, in survivor order — never
+    normalized, sorted or deduped here. The encoding is a property of the whole
+    spool: if a single seed leaves signed-64, the entire projection switches to
+    `signed_bytes` so one projection never mixes representations."""
+    count = len(seeds)
+    rates = np.asarray(match_rates, dtype=np.float64)
+    if all(_INT64_MIN <= seed <= _INT64_MAX for seed in seeds):
+        return ValidatedSpoolProjection(
+            seed_encoding=SEED_ENCODING_INT64,
+            seeds_i64=np.array(seeds, dtype=np.int64),
+            seed_bytes=None, seed_offsets=None,
+            match_rates=rates, survivor_count=count)
+    runs = [_encode_seed(int(seed)) for seed in seeds]
+    offsets = [0]
+    for run in runs:
+        offsets.append(offsets[-1] + len(run))
+    return ValidatedSpoolProjection(
+        seed_encoding=SEED_ENCODING_SIGNED_BYTES,
+        seeds_i64=None,
+        seed_bytes=np.frombuffer(b"".join(runs), dtype=np.uint8).copy(),
+        seed_offsets=np.array(offsets, dtype=np.uint64),
+        match_rates=rates, survivor_count=count)
+
+
+def projection_seeds(projection: ValidatedSpoolProjection) -> List[int]:
+    """Decode a projection's seeds back to PYTHON ints, in survivor order.
+
+    Python ints, not `np.int64`, on BOTH paths: pre-D5 keyed the four
+    directional maps on `int(entry[0])`, and an `np.int64` key — though equal
+    and equal-hashing — is not the pre-D5 contract, and would leak a numpy
+    scalar into every canonical record and every D6 consumer."""
+    if projection.seed_encoding == SEED_ENCODING_INT64:
+        return [int(seed) for seed in projection.seeds_i64]
+    if projection.seed_encoding == SEED_ENCODING_SIGNED_BYTES:
+        blob = projection.seed_bytes.tobytes()
+        offsets = projection.seed_offsets
+        return [int.from_bytes(blob[int(offsets[k]):int(offsets[k + 1])],
+                               "big", signed=True)
+                for k in range(projection.survivor_count)]
+    raise ValueError(
+        f"unknown seed_encoding {projection.seed_encoding!r}; expected one of "
+        f"{list(SEED_ENCODINGS)}")
+
+
+# ---------------------------------------------------------------------------
+# §5.3 — a canonical spool-read defect carried as DATA [D5 REV2, Team Beta
+# ruled option B].
+#
+# WHY THIS EXISTS. The pre-D5 `assemble_trial` INTERLEAVES read and merge: it
+# walks the deterministic order and, per position, reads that spool and
+# immediately merges it. So an earlier-position duplicate raises BEFORE a
+# later-position spool is ever read. A parallel front end cannot literally do
+# that — it must read ahead — so without this type the observable exception
+# would depend on how far ahead the readers got. Beta ruled that divergence out:
+# a parallel producer captures the canonical read defect as typed data, and the
+# parent REPLAYS it at its own position in deterministic order. Precedence is
+# then a function of `order` alone, never of completion order.
+#
+# THESE ARE CANONICAL ASSEMBLY-CONTRACT TYPES, NOT PROCESS MACHINERY. They live
+# beside the merge that consumes them, they are frozen after D5 Commit 1, and
+# the serial path never produces one — serial reads lazily and raises the
+# ORIGINAL exception object, with its original traceback, exactly as before D5.
+#
+# NEVER A PICKLED EXCEPTION INSTANCE. The descriptor round-trips class identity
+# (by allowlisted name), `.args`, the rendered message and any custom
+# attribution attributes. Traceback frames are explicitly NOT preserved (REV2
+# §3: tracebacks and backend-internal chaining are not contractual).
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class CapturedSpoolReadError:
+    error_code: str                       # canonical class name, allowlisted
+    message: str                          # exact rendered message
+    args: tuple                           # exc.args, scalar-only
+    attributes: Mapping[str, Any]         # custom identity/provenance fields
+
+
+# A per-position outcome of the spool-read front end: the validated projection,
+# or the canonical defect that spool produced.
+SpoolReadOutcome = Union[ValidatedSpoolProjection, CapturedSpoolReadError]
+
+# THE ALLOWLIST (REV2 §1). ONLY canonical spool-read defects may become a
+# descriptor. `read_and_validate_spool` funnels every I/O, size, SHA, decode,
+# container, identity and per-survivor semantic failure into exactly one class
+# — `SpoolIdentityError` — so today that hierarchy has exactly one member, and
+# this mapping is its complete enumeration.
+#
+# Fail-closed by construction: a class absent from this mapping cannot be
+# captured and cannot be reconstructed. `MemoryError`, `KeyboardInterrupt`,
+# `SystemExit`, process-pool failures, artifact-write failures and unexpected
+# programming errors are BACKEND failures, not producer defects — descriptorizing
+# one would let infrastructure masquerade as a spool contract violation, which
+# REV2 §5 forbids. A future semantic payload-validation exception in the
+# `SpoolIdentityError` hierarchy must be added HERE, deliberately.
+CANONICAL_SPOOL_READ_ERRORS: Dict[str, Type[BaseException]] = {
+    "SpoolIdentityError": SpoolIdentityError,
+}
+
+# What a descriptor may carry. Scalars (and tuples of scalars) only: the
+# descriptor crosses a process boundary, so anything richer would either fail to
+# pickle or smuggle live state — and no canonical spool-read defect needs more.
+_DESCRIPTOR_SCALARS: Tuple[type, ...] = (str, int, float, bool, type(None))
+
+
+def _is_descriptor_scalar(value: Any) -> bool:
+    if isinstance(value, tuple):
+        return all(_is_descriptor_scalar(v) for v in value)
+    return isinstance(value, _DESCRIPTOR_SCALARS)
+
+
+def capture_spool_read_error(exc: BaseException) -> CapturedSpoolReadError:
+    """Capture ONE canonical spool-read defect as a descriptor.
+
+    Refuses — with `TypeError`, loudly — anything that is not an allowlisted
+    canonical producer defect, and anything whose `.args` or custom attributes
+    are not scalar. Refusing is the point: a descriptor is the ONLY thing the
+    parent will replay as a producer defect, so a backend failure must never be
+    able to enter through this door (REV2 §5).
+
+    The serial path never calls this. It exists so a PARALLEL producer can hand
+    a canonical defect back as data instead of letting it surface out of order.
+    """
+    error_code = type(exc).__name__
+    if error_code not in CANONICAL_SPOOL_READ_ERRORS:
+        raise TypeError(
+            f"{error_code} is not a canonical spool-read defect and must not be "
+            f"captured as data: {exc!r}. Only "
+            f"{sorted(CANONICAL_SPOOL_READ_ERRORS)} may be replayed as a "
+            f"producer defect; everything else is a backend failure.")
+    if not _is_descriptor_scalar(tuple(exc.args)):
+        raise TypeError(
+            f"{error_code}.args {exc.args!r} is not scalar-only — a descriptor "
+            f"carries data, never live objects")
+    attributes = dict(vars(exc))
+    for key, value in attributes.items():
+        if not _is_descriptor_scalar(value):
+            raise TypeError(
+                f"{error_code}.{key} {value!r} is not scalar and cannot be "
+                f"round-tripped; dropping it would lose attribution the "
+                f"equivalence contract covers")
+    return CapturedSpoolReadError(
+        error_code=error_code,
+        message=str(exc),
+        args=tuple(exc.args),
+        attributes=attributes,
+    )
+
+
+def raise_captured_spool_error(descriptor: CapturedSpoolReadError) -> NoReturn:
+    """Reconstruct and raise the ORIGINAL canonical exception class.
+
+    Class, `.args`, rendered message and custom attribution are preserved; the
+    traceback is not (REV2 §3). This is the ONLY place a captured read error
+    becomes a live exception in the parent, and it fails closed rather than
+    fabricating a canonical exception it cannot reproduce faithfully.
+    """
+    cls = CANONICAL_SPOOL_READ_ERRORS.get(descriptor.error_code)
+    if cls is None:
+        raise TypeError(
+            f"cannot replay {descriptor.error_code!r}: it is not an allowlisted "
+            f"canonical spool-read defect ({sorted(CANONICAL_SPOOL_READ_ERRORS)})")
+    exc = cls(*descriptor.args)
+    for key, value in descriptor.attributes.items():
+        setattr(exc, key, value)
+    if str(exc) != descriptor.message:
+        raise ValueError(
+            f"captured {descriptor.error_code} does not round-trip: rendered "
+            f"{str(exc)!r} != captured {descriptor.message!r}")
+    raise exc
+
+
+# ---------------------------------------------------------------------------
+# §5.3 — spool read + identity + container + semantic validation.
+#
+# D5 [ruling item 1, option A]: made PUBLIC and separately callable, and its
+# return type narrowed from the parsed payload to `ValidatedSpoolProjection`, so
+# `process_sharded` workers reach the IDENTICAL validation by calling this exact
+# function rather than a second copy. The validation body below is unchanged;
+# D1.1 18/18 staying green with no test edits is the proof.
+# ---------------------------------------------------------------------------
+def read_and_validate_spool(
+    run_id: str, manifest: Dict[str, Any],
+) -> ValidatedSpoolProjection:
     """Read this manifest's staged bytes at COMMIT time and return the validated
-    payload. Everything that can go wrong — I/O, size, SHA, JSON decode, the
+    projection. Everything that can go wrong — I/O, size, SHA, JSON decode, the
     container shape, the schema/stripe/sub_index identity, and the per-survivor
     semantics — becomes SpoolIdentityError; no raw TypeError/KeyError/quirk may
-    escape [TB-D1-PV]."""
+    escape [TB-D1-PV].
+
+    The parsed payload stays LOCAL and ephemeral: only the projection escapes,
+    and it is constructed only after the ENTIRE spool has passed, so a malformed
+    survivor near the end of the JSON can never yield a partial result."""
     path = manifest.get("local_spool_path")
     stripe_id = manifest.get("stripe_id")
     sub_index = manifest.get("sub_index")
@@ -428,7 +795,21 @@ def _read_and_validate_spool(run_id: str, manifest: Dict[str, Any]) -> Dict[str,
             if not _is_int(skip):
                 _fail(f"survivor[{i}] skip[{j}] {skip!r} is not an integer "
                       f"(bool excluded)")
-    return payload
+
+    # 5. PROJECTION — built only now, after the whole spool has passed.
+    #
+    #    The seeds handed to the builder are the validated payload ints
+    #    THEMSELVES, unconverted: the window check above (`lo <= seed < hi`) is
+    #    pure Python arbitrary-precision arithmetic and must stay that way — it
+    #    never overflowed, only the projection did [REV3 §2]. The builder picks
+    #    `int64` or `signed_bytes` for the whole spool, and `projection_seeds`
+    #    reverses either back to the identical Python int, so what reaches a
+    #    directional map is bit-identical to the pre-extraction `int(entry[0])`
+    #    for EVERY seed the validator accepts — not merely for signed-64 ones.
+    rates = np.empty(len(survivors), dtype=np.float64)
+    for i, entry in enumerate(survivors):
+        rates[i] = entry[1]
+    return build_validated_projection([entry[0] for entry in survivors], rates)
 
 
 # ---------------------------------------------------------------------------
@@ -444,21 +825,167 @@ _mode_records = build_mode_records
 
 
 # ---------------------------------------------------------------------------
-# §5 — the assembly engine. ONE module-level entry point so D4/D5 call the SAME
-# derivation [TB-R2]; the sink's commit_trial is its only D1 caller.
+# §5.4 + §5.5/§6 — GLOBAL ASSEMBLY. Extracted VERBATIM from the inline block
+# that used to sit inside `assemble_trial`.
+#
+# D5 [ruling item 1, option A]: this is the SOLE authority for global assembly
+# semantics, and it is unconditionally SERIAL and PARENT-ONLY. `process_sharded`
+# parallelizes only the per-spool front end above; the four directional maps,
+# within-population duplicate detection with first-vs-dup provenance,
+# `prng_type_by_mode` last-writer-wins in loop order [F4], the two
+# intersections and the canonical enrichment all happen HERE, once, in the
+# parent. A worker must never build a map, sort, dedup, normalize or intersect.
+#
+# `ctx` and `started` are explicit PARAMETERS rather than re-derived here on
+# purpose. Both are trial-global values the caller's metadata gauntlet already
+# owns: `ctx` is built from `metas[0]` in ORIGINAL manifest-list order, whereas
+# `ordered_outcomes` is in the deterministic SORT order [F2], and `started` is
+# stamped before the gauntlet. Re-deriving either from the outcomes would change
+# which meta the context is read from and would shorten `assembly_s` — i.e. it
+# would break the very byte-equivalence this extraction has to preserve.
+#
+# THE CANONICAL REPLAY LOOP [D5 REV2 §2]. `ordered_outcomes` is consumed ONE
+# POSITION AT A TIME, and the loop body is the whole state machine both backends
+# present:
+#
+#     for position in deterministic_order:
+#         outcome = <projection or captured read error at this position>
+#         if it is a read error:  re-raise it HERE, at this position
+#         merge_insert(projection)   # may raise DirectionalDuplicateError
+#
+# Because the source is consumed lazily, the SERIAL caller's generator does not
+# read position p+1 until position p has been merged — restoring the pre-D5
+# interleaving exactly, including which of two independent producer defects
+# surfaces first. The PARALLEL caller reads ahead concurrently but yields the
+# same per-position outcomes in the same order, so it observes the same defect.
+# Completion order is irrelevant by construction; only `order` decides.
 # ---------------------------------------------------------------------------
-def assemble_trial(run_id: str, manifests: List[Dict[str, Any]]) -> MinerTrialAssembly:
-    """Derive the complete four-population assembly of one trial from its
-    accumulated ShardReadyManifests, reading each staged spool exactly once.
+def merge_validated_spools(
+    run_id: str,
+    ctx: Dict[str, Any],
+    ordered_outcomes: Iterable[
+        Tuple[Dict[str, Any], Dict[str, Any], SpoolReadOutcome]
+    ],
+    started: float,
+) -> MinerTrialAssembly:
+    """Merge per-position spool-read outcomes into the four-population assembly
+    of one trial.
 
-    Backend-independent and side-effect free: it writes nothing, deletes nothing,
-    and holds no reference to any staged path after it returns.
+    `ordered_outcomes` is `(manifest, meta, outcome)` in the SAME deterministic
+    order `assemble_trial` computes — sort key `(workflow_phase, stripe_id,
+    sub_index, attempt, event_id)` — where `outcome` is either a
+    `ValidatedSpoolProjection` or a `CapturedSpoolReadError` for that position.
+    It is an ITERABLE, not a sequence, and it is deliberately NOT materialized:
+    a lazy source is what preserves read/merge interleaving.
 
-    Raises (all fail-closed, §8): PhaseIdentityError, AssemblyConsistencyError,
-    SpoolIdentityError, DirectionalDuplicateError, AssemblyStateError; plus
-    ValueError from `utils/prng_encoding` on an unknown prng_type / skip_mode
-    (the canonical module's own hard-fail is deliberately not re-wrapped)."""
-    started = time.perf_counter()
+    The merge reads meta fields (direction, skip_mode, prng_type) AND manifest
+    fields (stripe_id, sub_index, attempt), so both must be carried alongside
+    the outcome.
+
+    Raises DirectionalDuplicateError; whatever `raise_captured_spool_error`
+    replays (a canonical SpoolIdentityError) at its own position; whatever a
+    lazy source raises while producing a position (for the serial caller, the
+    ORIGINAL SpoolIdentityError object with its original traceback); plus
+    ValueError from the canonical record builder. It performs NO I/O itself and
+    reads no staged path."""
+    maps: Dict[Tuple[str, str], Dict[int, float]] = {p: {} for p in _POPULATIONS}
+    prov: Dict[Tuple[str, str], Dict[int, Tuple[str, int, int, float]]] = {
+        p: {} for p in _POPULATIONS
+    }
+    prng_type_by_mode: Dict[str, str] = {}
+    for manifest, meta, outcome in ordered_outcomes:
+        # A canonical read defect at THIS position pre-empts every later
+        # position and is pre-empted by every earlier position's merge — which
+        # is exactly the pre-D5 precedence.
+        if isinstance(outcome, CapturedSpoolReadError):
+            raise_captured_spool_error(outcome)
+        projection = outcome
+        direction, skip_mode = meta["direction"], meta["skip_mode"]
+        prng_type_by_mode[skip_mode] = meta["prng_type"]
+        pop_map = maps[(direction, skip_mode)]
+        pop_prov = prov[(direction, skip_mode)]
+        stripe_id = manifest.get("stripe_id")
+        sub_index = int(manifest.get("sub_index", 0))
+        attempt = int(manifest.get("attempt", 0))
+        # ONE decode per spool, through the single decoder, so both encodings
+        # produce the identical Python-int map keys pre-D5 produced [REV3 §3].
+        seeds = projection_seeds(projection)
+        for k in range(projection.survivor_count):
+            seed = seeds[k]
+            match_rate = float(projection.match_rates[k])
+            if seed in pop_map:
+                f_stripe, f_sub, f_attempt, f_rate = pop_prov[seed]
+                raise DirectionalDuplicateError(
+                    f"{run_id}: seed {seed} appears twice in the "
+                    f"{direction}/{skip_mode} population "
+                    f"(first {f_stripe}/sub{f_sub}/a{f_attempt}, "
+                    f"duplicate {stripe_id}/sub{sub_index}/a{attempt}) — a "
+                    f"producer/coverage defect, never a dedup opportunity",
+                    run_id=run_id, workflow_phase=int(meta["workflow_phase"]),
+                    direction=direction, skip_mode=skip_mode, seed=seed,
+                    first_stripe=f_stripe, first_sub_index=f_sub,
+                    first_attempt=f_attempt, first_match_rate=f_rate,
+                    dup_stripe=stripe_id, dup_sub_index=sub_index,
+                    dup_attempt=attempt, dup_match_rate=match_rate)
+            pop_map[seed] = match_rate
+            pop_prov[seed] = (stripe_id, sub_index, attempt, match_rate)
+
+    fwd_c, rev_c = maps[("forward", "constant")], maps[("reverse", "constant")]
+    fwd_v, rev_v = maps[("forward", "variable")], maps[("reverse", "variable")]
+
+    # ---- §5.5/§6 intersections + canonical enrichment ----------------------
+    bidi_c, records_c = _mode_records(
+        fwd_c, rev_c, ctx, "constant", prng_type_by_mode.get("constant"))
+    bidi_v, records_v = _mode_records(
+        fwd_v, rev_v, ctx, "variable", prng_type_by_mode.get("variable"))
+
+    return MinerTrialAssembly(
+        run_id=run_id,
+        bidirectional_constant=bidi_c,
+        bidirectional_variable=bidi_v,
+        forward_map_constant=fwd_c,
+        reverse_map_constant=rev_c,
+        forward_map_variable=fwd_v,
+        reverse_map_variable=rev_v,
+        canonical_records_constant=records_c,
+        canonical_records_variable=records_v,
+        directional_counts={
+            "forward_constant":       len(fwd_c),
+            "reverse_constant":       len(rev_c),
+            "forward_variable":       len(fwd_v),
+            "reverse_variable":       len(rev_v),
+            "bidirectional_constant": len(bidi_c),
+            "bidirectional_variable": len(bidi_v),
+        },
+        timing={"assembly_s": time.perf_counter() - started},
+    )
+
+
+# ---------------------------------------------------------------------------
+# §5.1 + §5.2 + §5.4 — the METADATA GAUNTLET, extracted VERBATIM, plus the
+# deterministic spool order.
+#
+# D5 [ruling item 1, option A]: extracted so `process_sharded`'s parent can run
+# the IDENTICAL gauntlet — in the identical order — BEFORE dispatching any
+# worker, rather than growing a second copy of it. That is what makes exception
+# PRECEDENCE identical across backends: a PhaseIdentityError or
+# AssemblyConsistencyError still pre-empts every SpoolIdentityError, because no
+# spool byte is read until this function has returned.
+# ---------------------------------------------------------------------------
+def prepare_trial_assembly(
+    run_id: str, manifests: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[int]]:
+    """Run every pre-spool check and compute the deterministic spool order.
+
+    Returns `(metas, ctx, order)`:
+      * `metas`  — per-manifest trial_metadata, in ORIGINAL manifest-list order;
+      * `ctx`    — the 11-field trial context, read from `metas[0]`;
+      * `order`  — indices into `manifests`, sorted by
+                   `(workflow_phase, stripe_id, sub_index, attempt, event_id)`.
+
+    Raises AssemblyStateError, PhaseIdentityError, AssemblyConsistencyError, and
+    ValueError from `utils/prng_encoding` — every one of them BEFORE any staged
+    byte is read. Performs no I/O."""
     if not manifests:
         raise AssemblyStateError(
             f"{run_id}: cannot assemble a trial with zero retained manifests")
@@ -507,12 +1034,6 @@ def assemble_trial(run_id: str, manifests: List[Dict[str, Any]]) -> MinerTrialAs
     for skip_mode in sorted({meta["skip_mode"] for meta in metas}):
         encode_skip_mode(skip_mode)
 
-    # ---- §5.3 + §5.4 spool read -> directional maps ------------------------
-    maps: Dict[Tuple[str, str], Dict[int, float]] = {p: {} for p in _POPULATIONS}
-    prov: Dict[Tuple[str, str], Dict[int, Tuple[str, int, int, float]]] = {
-        p: {} for p in _POPULATIONS
-    }
-    prng_type_by_mode: Dict[str, str] = {}
     # Deterministic order so a duplicate is always reported against the same
     # "first" insertion regardless of manifest arrival order.
     order = sorted(
@@ -522,64 +1043,70 @@ def assemble_trial(run_id: str, manifests: List[Dict[str, Any]]) -> MinerTrialAs
                        int(manifests[i].get("sub_index", 0)),
                        int(manifests[i].get("attempt", 0)),
                        str(manifests[i].get("event_id"))))
+    return metas, ctx, order
+
+
+# ---------------------------------------------------------------------------
+# §5.3 — THE SERIAL FRONT END, as a LAZY generator [D5 REV2 §2].
+#
+# One `read_and_validate_spool` per position, in `order`, pulled by the merge
+# ONE AT A TIME. That laziness is load-bearing, not stylistic:
+#
+#   * position p is read only after position p-1 has been MERGED, so an
+#     earlier-position DirectionalDuplicateError still pre-empts a
+#     later-position SpoolIdentityError, exactly as the pre-D5 interleaved loop
+#     did. A materialized `[read(i) for i in order]` would read everything
+#     first and invert that precedence;
+#   * the serial path NEVER produces a `CapturedSpoolReadError`. A bad read
+#     raises the ORIGINAL exception object, with its original traceback, at its
+#     own position — nothing round-trips through a descriptor. That is what
+#     makes this extraction a true no-op for the serial backend.
+# ---------------------------------------------------------------------------
+def _serial_outcomes(
+    run_id: str,
+    manifests: List[Dict[str, Any]],
+    metas: List[Dict[str, Any]],
+    order: List[int],
+) -> Iterator[Tuple[Dict[str, Any], Dict[str, Any], ValidatedSpoolProjection]]:
     for i in order:
-        manifest, meta = manifests[i], metas[i]
-        direction, skip_mode = meta["direction"], meta["skip_mode"]
-        prng_type_by_mode[skip_mode] = meta["prng_type"]
-        payload = _read_and_validate_spool(run_id, manifest)
-        pop_map = maps[(direction, skip_mode)]
-        pop_prov = prov[(direction, skip_mode)]
-        stripe_id = manifest.get("stripe_id")
-        sub_index = int(manifest.get("sub_index", 0))
-        attempt = int(manifest.get("attempt", 0))
-        for entry in payload["survivors"]:
-            seed, match_rate = int(entry[0]), float(entry[1])
-            if seed in pop_map:
-                f_stripe, f_sub, f_attempt, f_rate = pop_prov[seed]
-                raise DirectionalDuplicateError(
-                    f"{run_id}: seed {seed} appears twice in the "
-                    f"{direction}/{skip_mode} population "
-                    f"(first {f_stripe}/sub{f_sub}/a{f_attempt}, "
-                    f"duplicate {stripe_id}/sub{sub_index}/a{attempt}) — a "
-                    f"producer/coverage defect, never a dedup opportunity",
-                    run_id=run_id, workflow_phase=int(meta["workflow_phase"]),
-                    direction=direction, skip_mode=skip_mode, seed=seed,
-                    first_stripe=f_stripe, first_sub_index=f_sub,
-                    first_attempt=f_attempt, first_match_rate=f_rate,
-                    dup_stripe=stripe_id, dup_sub_index=sub_index,
-                    dup_attempt=attempt, dup_match_rate=match_rate)
-            pop_map[seed] = match_rate
-            pop_prov[seed] = (stripe_id, sub_index, attempt, match_rate)
+        yield (manifests[i], metas[i],
+               read_and_validate_spool(run_id, manifests[i]))
 
-    fwd_c, rev_c = maps[("forward", "constant")], maps[("reverse", "constant")]
-    fwd_v, rev_v = maps[("forward", "variable")], maps[("reverse", "variable")]
 
-    # ---- §5.5/§6 intersections + canonical enrichment ----------------------
-    bidi_c, records_c = _mode_records(
-        fwd_c, rev_c, ctx, "constant", prng_type_by_mode.get("constant"))
-    bidi_v, records_v = _mode_records(
-        fwd_v, rev_v, ctx, "variable", prng_type_by_mode.get("variable"))
+# ---------------------------------------------------------------------------
+# §5 — the assembly engine. ONE module-level entry point so D4/D5 call the SAME
+# derivation [TB-R2]; the sink's commit_trial is its only D1 caller.
+# ---------------------------------------------------------------------------
+def assemble_trial(run_id: str, manifests: List[Dict[str, Any]]) -> MinerTrialAssembly:
+    """Derive the complete four-population assembly of one trial from its
+    accumulated ShardReadyManifests, reading each staged spool exactly once.
 
-    return MinerTrialAssembly(
-        run_id=run_id,
-        bidirectional_constant=bidi_c,
-        bidirectional_variable=bidi_v,
-        forward_map_constant=fwd_c,
-        reverse_map_constant=rev_c,
-        forward_map_variable=fwd_v,
-        reverse_map_variable=rev_v,
-        canonical_records_constant=records_c,
-        canonical_records_variable=records_v,
-        directional_counts={
-            "forward_constant":       len(fwd_c),
-            "reverse_constant":       len(rev_c),
-            "forward_variable":       len(fwd_v),
-            "reverse_variable":       len(rev_v),
-            "bidirectional_constant": len(bidi_c),
-            "bidirectional_variable": len(bidi_v),
-        },
-        timing={"assembly_s": time.perf_counter() - started},
-    )
+    Backend-independent and side-effect free: it writes nothing, deletes nothing,
+    and holds no reference to any staged path after it returns.
+
+    Raises (all fail-closed, §8): PhaseIdentityError, AssemblyConsistencyError,
+    SpoolIdentityError, DirectionalDuplicateError, AssemblyStateError; plus
+    ValueError from `utils/prng_encoding` on an unknown prng_type / skip_mode
+    (the canonical module's own hard-fail is deliberately not re-wrapped).
+
+    This is the SERIAL composition of the three shared units below;
+    `process_sharded` composes the SAME three, replacing only how the middle
+    one's per-position outcomes are produced — never when they are observed."""
+    started = time.perf_counter()
+
+    # ---- §5.1 + §5.2 + §5.4 metadata gauntlet, before any spool read --------
+    metas, ctx, order = prepare_trial_assembly(run_id, manifests)
+
+    # ---- §5.3 + §5.4 + §5.5/§6 — read and merge, INTERLEAVED, in `order` ----
+    # The generator is passed UNMATERIALIZED on purpose: the merge pulls one
+    # position at a time, so each spool is read only after the previous one has
+    # been merged. `process_sharded` swaps this generator for one fed by worker
+    # outcomes; the merge, and therefore every global-assembly semantic, is the
+    # same object in both cases.
+    return merge_validated_spools(
+        run_id, ctx,
+        _serial_outcomes(run_id, manifests, metas, order),
+        started)
 
 
 # ---------------------------------------------------------------------------
