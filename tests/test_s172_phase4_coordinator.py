@@ -1756,6 +1756,33 @@ def gate22_coexistence():
         # PWC/ZMQ/pwc_protocol remain untouched by it (flagged for review).
         "miner/assembly_backends.py",
         "tests/test_s172_phase5_d4_serial_backend.py",
+        # Phase-5 D5 (the `process_sharded` assembly backend + the
+        # semantics-preserving D1.1 extraction it plugs into). Registered here
+        # per the extended Team Beta standing whitelist rule already applied to
+        # D2/D3/D3.25/D3.5/D4 above, so D5's new paths do not red this
+        # coexistence gate. Two commits:
+        #   * COMMIT 1 — miner/range_miner_npz_writer.py (already allowed
+        #     above): `assemble_trial` is refactored into a thin serial wrapper
+        #     over three units extracted VERBATIM from its own body —
+        #     `prepare_trial_assembly` (the §5.1/§5.2/§5.4 metadata gauntlet +
+        #     the deterministic spool order), the now-public
+        #     `read_and_validate_spool` (returning the new
+        #     `ValidatedSpoolProjection` instead of the parsed payload), and
+        #     `merge_validated_spools` (the §5.4 + §5.5/§6 global assembly).
+        #     ZERO behavioural change; D1.1 staying 18/18 with no test edit is
+        #     the proof.
+        #   * COMMIT 2 — miner/assembly_shard_worker.py (NEW): the CPU-only
+        #     per-spool worker, the `allow_pickle=False` projection artifact
+        #     codec, the §5 sampled concurrent-tree RSS sampler, and the
+        #     parent-side orchestration. miner/assembly_backends.py (already
+        #     allowed above) gains the thin `ProcessShardedBackend`; its
+        #     `get_assembly_backend` name-only resolution still raises
+        #     NotImplementedError naming D5, so D4's G4 and its M2 mutant are
+        #     untouched.
+        # No PWC/ZMQ/pwc_protocol path is touched by either commit, so
+        # coexistence still holds (flagged for review).
+        "miner/assembly_shard_worker.py",
+        "tests/test_s172_phase5_d5_process_sharded.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
