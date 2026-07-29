@@ -319,14 +319,19 @@ class _FakeWorker:
         survivors = [[int(assign.seed_start) + s, r, None, [1]] for (s, r) in pop]
         payload_obj, pb = build_substripe_payload_bytes(
             assign.stripe_id, 0, assign.seed_start, assign.seed_count, survivors)
+        # [S172 D6] Echo the assignment's resolved threshold as the EFFECTIVE
+        # value, exactly as the real worker does off its executor (the parent's
+        # fail-closed provenance gate requires it on every D6 assignment).
+        eff = (assign.payload or {}).get("min_match_threshold")
         self.fs.send_msg(SubStripeResultMessage(
             worker_id=self.worker_id, stripe_id=assign.stripe_id, sub_index=0,
             seed_start=assign.seed_start, seed_count=assign.seed_count,
             survivor_count=len(survivors), inline=payload_obj, size_bytes=len(pb),
-            sha256=hashlib.sha256(pb).hexdigest()))
+            sha256=hashlib.sha256(pb).hexdigest(), effective_threshold=eff))
         self.fs.send_msg(StripeCompleteMessage(
             worker_id=self.worker_id, stripe_id=assign.stripe_id,
-            substripes_done=1, survivors_total=len(survivors)))
+            substripes_done=1, survivors_total=len(survivors),
+            effective_threshold=eff))
 
     def stop(self):
         self._stop.set()

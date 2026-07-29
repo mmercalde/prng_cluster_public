@@ -377,17 +377,25 @@ class _OverlapWorker:
         for sub_index, s_start, s_count, survivors in D2A_SUBS:
             payload_obj, pb = build_substripe_payload_bytes(
                 assign.stripe_id, sub_index, s_start, s_count, survivors)
+            # [S172 D6] Echo the assignment's resolved threshold as the
+            # EFFECTIVE value, exactly as the real worker does off its executor
+            # (the parent's fail-closed provenance gate requires it on every D6
+            # assignment, and requires all sub-stripes to agree).
             self.fs.send_msg(SubStripeResultMessage(
                 worker_id=self.worker_id, stripe_id=assign.stripe_id,
                 sub_index=sub_index, seed_start=s_start, seed_count=s_count,
                 survivor_count=len(survivors), inline=payload_obj,
-                size_bytes=len(pb), sha256=hashlib.sha256(pb).hexdigest()))
+                size_bytes=len(pb), sha256=hashlib.sha256(pb).hexdigest(),
+                effective_threshold=(assign.payload or {}).get(
+                    "min_match_threshold")))
             total_surv += len(survivors)
         # substripes_done == expected_substripes == 3; survivors_total == the true
         # sum -> coverage is the ONLY red predicate.
         self.fs.send_msg(StripeCompleteMessage(
             worker_id=self.worker_id, stripe_id=assign.stripe_id,
-            substripes_done=len(D2A_SUBS), survivors_total=total_surv))
+            substripes_done=len(D2A_SUBS), survivors_total=total_surv,
+            effective_threshold=(assign.payload or {}).get(
+                "min_match_threshold")))
 
     def stop(self):
         self._stop.set()

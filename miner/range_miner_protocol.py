@@ -124,6 +124,13 @@ class SubStripeResultMessage(MinerBaseMessage):
     spool_path: str = ""
     size_bytes: int = 0
     sha256: str = ""
+    # [S172 D6 correction] EFFECTIVE-threshold provenance. The value the kernel
+    # ACTUALLY filtered at for this sub-stripe (constant kernels: the payload's
+    # min_match_threshold; hybrid kernels: the payload's phase2_threshold, which
+    # D6 pins equal to it). WindowConfig alone is not evidence the requested
+    # value reached execution — this field is. Defaulted (like every envelope
+    # field) so a pre-D6 peer that never sets it still decodes.
+    effective_threshold: Optional[float] = None
 
 
 @dataclass
@@ -133,6 +140,11 @@ class StripeCompleteMessage(MinerBaseMessage):
     substripes_done: int = 0
     survivors_total: int = 0
     elapsed_s: float = 0.0
+    # [S172 D6 correction] the effective threshold every sub-stripe of THIS
+    # stripe filtered at. None when the stripe ran no sub-stripe; a stripe whose
+    # sub-stripes disagreed is a defect and reports the disagreement explicitly
+    # (the worker refuses to average or pick one).
+    effective_threshold: Optional[float] = None
 
 
 @dataclass

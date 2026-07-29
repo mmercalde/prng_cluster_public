@@ -1543,7 +1543,11 @@ def gate20_resolver_end_to_end():
             # payload carries BOTH mandatory hashes; dataset_sha256 is deliberately WRONG
             payload = coord.build_stripe_assign_payload(
                 dataset_path=ds, window_size=3, sessions=None, offset=0,
-                residues=[1, 2, 3], dataset_sha256="deadbeef_wrong")
+                residues=[1, 2, 3], dataset_sha256="deadbeef_wrong",
+                # [S172 D6] phase + both directional thresholds are REQUIRED
+                # keyword-only args — a payload can no longer be built without
+                # an explicit, direction-resolved threshold.
+                phase=1, forward_threshold=0.31, reverse_threshold=0.47)
             assert payload["dataset_sha256"] == "deadbeef_wrong"
             assert payload["residue_sha256"]      # residue_sha256 is mandatory, present
             fs.send_msg(StripeAssignMessage(
@@ -1783,6 +1787,72 @@ def gate22_coexistence():
         # coexistence still holds (flagged for review).
         "miner/assembly_shard_worker.py",
         "tests/test_s172_phase5_d5_process_sharded.py",
+        # Phase-5 D6 (the production integration adapter + the Zeus single-GPU
+        # certified-generation smoke). Registered here per the same extended
+        # Team Beta standing whitelist rule applied to D2/D3/D3.25/D3.5/D4/D5:
+        #   * miner/step1_ingress.py — NEW: the one seam between a committed
+        #     miner trial and the legacy Step-1 shapes. It resolves the assembly
+        #     backend (default `serial_reference`), builds the sink around it,
+        #     fetches the STORED MinerTrialAssembly fail-closed, and appends
+        #     `canonical_records_constant`/`_variable` into the accumulator
+        #     WITHOUT re-normalization. It imports neither utils/canonical_records
+        #     nor any PWC/ZMQ module — routing miner output through the D3.25
+        #     ingress wall is what REV3 §4 forbids.
+        #   * miner/range_miner_npz_writer.py (already allowed above) —
+        #     `AssemblingPhase5Sink` gains ONE optional constructor argument,
+        #     `backend=None`, and a `_assemble` seam. `None` keeps the pre-D6
+        #     behaviour verbatim (`assemble_trial`), which is why D1.1 stays
+        #     18/18 with no test edit.
+        #   * window_optimizer_integration_final.py (already allowed above) —
+        #     the edit is confined to the `use_range_miner` gate and to
+        #     `_build_test_result_from_miner`: the gate now builds the Phase-5
+        #     sink and passes it to run_trial_miner (it passed None before, so
+        #     no assembly was ever produced), and the builder ingests the stored
+        #     assembly instead of returning +0. `_build_test_result_from_pw`,
+        #     the PWC and ZMQ gates, and `_flush_npz_incremental` are all
+        #     byte-identical to 2a6e0f8 — D6's own G-TESTRESULT and
+        #     G-FLUSH-CADENCE assert exactly that against `git show`.
+        #   * tests/test_s172_phase5_d6_production_adapter.py — the 3.A
+        #     acceptance harness (7 gates + 16 mutants).
+        #   * tests/smoke_s172_phase5_d6_zeus_single_gpu.py — the 3.B
+        #     real-silicon smoke. It drives the production `use_range_miner`
+        #     call against a REAL `miner/range_miner_worker.py` process on the
+        #     passed-through RTX 3080 Ti; it is run by hand, not by this gate.
+        #   * tests/test_s172_phase5_d3_25_candidate_ingress.py (already
+        #     allowed above) — G13 and its three bite proofs are updated from
+        #     the interim "miner appends nothing / +0" contract to the D6 one.
+        #     D3.25's own note read "miner both-mode run-level candidate output
+        #     uncertified until D6"; D6 certifies it, and what G13 still guards
+        #     — PWC/ZMQ isolation, flush cadence, never a fabricated zero — is
+        #     unchanged and strengthened.
+        # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
+        # (flagged for review).
+        "miner/step1_ingress.py",
+        "tests/test_s172_phase5_d6_production_adapter.py",
+        "tests/smoke_s172_phase5_d6_zeus_single_gpu.py",
+        # Phase-5 D6 CORRECTION PASS (Team Beta's threshold blocker). The
+        # correction adds ONE more changed deliverable beyond the D6 set above:
+        #   * miner/range_miner_protocol.py — two ADDITIVE, defaulted envelope
+        #     fields (`SubStripeResultMessage.effective_threshold`,
+        #     `StripeCompleteMessage.effective_threshold`) carrying the
+        #     effective-threshold provenance leg. Additive-with-default keeps the
+        #     Phase-2 framing contract intact: every dataclass field still has a
+        #     default, and `from_dict` still filters unknown kwargs, so a pre-D6
+        #     peer decodes unchanged. No message type, no field rename, no
+        #     removal — and `persistent/pwc_protocol.py` is NOT touched.
+        #   * miner/range_miner_coordinator.py, miner/range_miner_worker.py and
+        #     window_optimizer_integration_final.py (all already allowed above) —
+        #     the single threshold chokepoint, the worker-side contract
+        #     validation + effective-threshold reporting, and the shared-authority
+        #     residue derivation at the `use_range_miner` call site.
+        #   * tests/test_s172_phase5_d6_threshold_path.py — the correction's own
+        #     acceptance harness (Beta's nine threshold checks + the four residue
+        #     session cases, with the three required threshold mutants and the
+        #     residue mutant).
+        # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
+        # (flagged for review).
+        "miner/range_miner_protocol.py",
+        "tests/test_s172_phase5_d6_threshold_path.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
@@ -1899,14 +1969,20 @@ class _FakeWorker:
         survivors = [[int(assign.seed_start), 0.9, None, [1]]]
         payload_obj, pb = build_substripe_payload_bytes(
             assign.stripe_id, 0, assign.seed_start, assign.seed_count, survivors)
+        # [S172 D6] Echo the assignment's resolved threshold as the EFFECTIVE
+        # value, exactly as the real worker does off its executor. The parent's
+        # fail-closed provenance gate requires it on every D6-generated
+        # assignment; a stub that omitted it would be modelling a worker that
+        # violates the contract.
+        eff = (assign.payload or {}).get("min_match_threshold")
         self.fs.send_msg(SubStripeResultMessage(
             worker_id=self.worker_id, stripe_id=assign.stripe_id, sub_index=0,
             seed_start=assign.seed_start, seed_count=assign.seed_count,
             survivor_count=1, inline=payload_obj, size_bytes=len(pb),
-            sha256=hashlib.sha256(pb).hexdigest()))
+            sha256=hashlib.sha256(pb).hexdigest(), effective_threshold=eff))
         self.fs.send_msg(StripeCompleteMessage(
             worker_id=self.worker_id, stripe_id=assign.stripe_id,
-            substripes_done=1, survivors_total=1))
+            substripes_done=1, survivors_total=1, effective_threshold=eff))
 
     def stop(self):
         self._stop.set()

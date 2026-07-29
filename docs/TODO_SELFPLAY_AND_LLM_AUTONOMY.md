@@ -79,6 +79,57 @@ python3 chapter_13_acceptance.py --validate-selfplay learned_policy_candidate.js
 
 **Goal:** Connect LLM recommendations to WATCHER execution
 
+> ⚠️ **BLOCKED-BY (S172 Phase 5 D6) — sieve-threshold autonomy is disconnected below the vocabulary.**
+>
+> `forward_threshold` / `reverse_threshold` are declared tunable in
+> `agent_manifests/window_optimizer.json` (lines 30–31), so **B3's manifest
+> auto-extraction (`chapter_13_parameter_vocabulary.py`) will surface them as
+> agent-proposable knobs.** But on the RANGE-MINER path they currently DO NOT
+> reach the kernel: `build_stripe_assign_payload`
+> (`miner/range_miner_coordinator.py`) omits any threshold field, and the worker
+> (`miner/range_miner_worker.py:734`) falls back to a hardcoded `0.25`.
+>
+> **Do NOT wire the sieve thresholds into `parameter_application` (Phase 10D
+> WATCHER execution) until the D6 threshold-propagation fix has landed AND a gate
+> proves an asymmetric `forward`/`reverse` value reaches the kernel unchanged.**
+> Otherwise an approved `reduce_threshold` proposal is written to
+> `parameter_change_log` as applied while the GPU filter never moves — the
+> governance layer logs a phantom adaptation.
+>
+> Verification before enabling: run the D6 threshold gate (asymmetric
+> `forward=0.31 / reverse=0.47`, mutants: drop→0.25 killed, forward-applied-to-both
+> killed). Only after it is green may the sieve thresholds be added to the Part B
+> application path — which MUST route through the single `build_stripe_assign_payload`
+> chokepoint the D6 fix establishes, never a second path.
+
+> 📌 **STATUS UPDATE (S172 Phase 5 D6 correction pass, 2026-07-28).** The D6
+> correction described above has now been implemented and gated:
+> `build_stripe_assign_payload` resolves the directional threshold per stripe
+> from the §6.8 phase table and emits it explicitly, the worker no longer
+> chooses, and `tests/test_s172_phase5_d6_threshold_path.py` proves an asymmetric
+> `forward=0.31 / reverse=0.47` reaches the real CUDA kernel unchanged (drop /
+> collapse / swap mutants all killed). **This is a precondition, not a
+> green light.** Part B must still:
+>
+> 1. Route every threshold change through that ONE chokepoint. There is no
+>    second place in the miner where a sieve threshold may be chosen, and adding
+>    one reintroduces the disconnect.
+> 2. Audit **three separate values** — `recommended`, `approved-applied`, and
+>    `effective` — and NEVER record an adaptation as applied unless the
+>    *effective execution value* matches. D6 makes this checkable: the worker
+>    reports the threshold the kernel actually filtered at
+>    (`SubStripeResultMessage.effective_threshold`), the coordinator records all
+>    three legs (`RangeMinerCoordinator.threshold_provenance`), and the trial
+>    writes `threshold_provenance.json` beside its staged output.
+> 3. Resolve a **known discrepancy left untouched by D6**:
+>    `watcher_policies.json` declares `"parameter_application": true`, but that
+>    flag is **advisory-only in reality** (`diagnostics_analysis_schema.py:76`) —
+>    nothing applies parameters. Team Beta explicitly **rejected** annotating the
+>    policy file in D6 (an unvalidated field either breaks strict policy parsing
+>    or becomes ignored metadata, and a note does not make the flag truthful), so
+>    `watcher_policies.json` is deliberately unmodified. Making that flag honest
+>    is Part B's job, not a documentation fix.
+
 ### Phase 10A: Schema & Grammar (Foundation)
 
 | # | Task | File | Lines | Status |

@@ -46,6 +46,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 import signal
 import socket
@@ -73,6 +74,8 @@ from miner.range_miner_protocol import (
     from_dict,
     message_to_bytes,
 )
+
+logger = logging.getLogger(__name__)
 
 # ===========================================================================
 # Family coverage (base-family level — §5.3, brief "Counts" box)
@@ -532,12 +535,32 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _load_window_fresh(
+def load_residue_window(
     path: str, window_size: int, sessions: Optional[list], offset: int
 ) -> List[int]:
-    """Load a residue window from disk with NO pathname cache (mirrors the parse
-    in sieve_gpu_worker.load_draws_cached but always reads fresh, so a changed
-    file is never served from a stale cache — Beta clarification 1)."""
+    """THE canonical residue-window derivation for the RANGE-MINER path.
+
+    Loads a residue window from disk with NO pathname cache (mirrors the parse in
+    sieve_gpu_worker.load_draws_cached but always reads fresh, so a changed file
+    is never served from a stale cache — Beta clarification 1).
+
+    [S172 D6 correction — shared authority, Beta §4] `sessions` is a first-class
+    INPUT, applied here and ONLY here. Both sides of the assignment consume this
+    one function:
+
+      * the WORKER, through ResidueResolver's default loader, to rebuild the
+        window it will sieve;
+      * the COORDINATOR side, through
+        window_optimizer_integration_final._miner_residues_for_config, to build
+        the residues whose sha256 is stamped into the assignment payload.
+
+    Before this fix the parent derived residues WITHOUT the session filter while
+    the worker derived them WITH it, so any single-session trial (`sessions=
+    ['midday']` or `['evening']`) produced two different ordered windows and every
+    stripe died on the residue_sha256 check. Do NOT reintroduce a second
+    session-filter implementation on either side — the asymmetry is only
+    impossible while exactly one function owns the filter.
+    """
     with open(path, "r") as f:
         data = json.load(f)
     if sessions:
@@ -550,6 +573,11 @@ def _load_window_fresh(
     start = max(0, min(int(offset), n - window_size))
     window = data[start:start + window_size]
     return [int(entry.get("full_state", entry["draw"])) for entry in window]
+
+
+# Pre-D6 private name kept as an alias — same object, so a monkeypatch or a
+# reference through either name reaches the one canonical implementation.
+_load_window_fresh = load_residue_window
 
 
 class ResidueResolver:
@@ -573,7 +601,9 @@ class ResidueResolver:
         loader: Optional[Callable[[str, int, Optional[list], int], List[int]]] = None,
         file_hasher: Optional[Callable[[str], str]] = None,
     ) -> None:
-        self._loader = loader or _load_window_fresh
+        # Shared authority (D6): the worker's default loader IS the canonical
+        # session-aware derivation the coordinator side also calls.
+        self._loader = loader or load_residue_window
         self._file_hasher = file_hasher or _sha256_file
         self._cache: Dict[tuple, List[int]] = {}
 
@@ -673,10 +703,23 @@ def _best_effort_gpu_cleanup() -> None:
 # GPU execution
 # ===========================================================================
 
+class ThresholdContractError(Exception):
+    """[S172 D6] The assignment payload's threshold fields contradict each other.
+
+    NON-RETRYABLE: a contradictory pair is a coordinator-side contract violation,
+    not a transient fault, and retrying it would filter at a value nobody asked
+    for. See build_stripe_assign_payload's THRESHOLD CONTRACT."""
+
+
 @dataclass
 class SubStripeOutcome:
     survivors: List[tuple]
     count: int
+    # [S172 D6] The threshold the KERNEL was actually launched with and the host
+    # post-filter actually applied for this sub-stripe — the `effective` leg of
+    # the requested/payload/effective provenance triple. Never re-derived
+    # downstream; set from the same local the kernel arg was built from.
+    effective_threshold: Optional[float] = None
 
 
 def _load_strategies(strategies_data: Optional[list]) -> list:
@@ -731,7 +774,28 @@ class SieveExecutor:
             default_params.update(custom_params)
 
         skip_min, skip_max = tuple(payload.get("skip_range", [0, 16]))
+        # [S172 D6] The worker does NOT choose a threshold and does NOT know
+        # about forward/reverse — the parent resolved the directional value from
+        # the §6.8 phase table and put it in the payload
+        # (build_stripe_assign_payload). The 0.25 default below survives ONLY for
+        # legacy pre-D6 payloads that carry no threshold field at all; a
+        # newly-generated D6 payload that relies on it is a defect, caught by the
+        # D6 threshold gate, not by silent fallback here.
         threshold = coerce_threshold(payload.get("min_match_threshold", None), 0.25)
+        # Contract re-validation (Beta §2): if the payload carries BOTH keys they
+        # MUST be identical — the miner launches one kernel with one threshold
+        # per stripe, so a contradictory pair means one of the two would be
+        # silently discarded depending on skip mode. Fail closed instead.
+        _mmt_raw = payload.get("min_match_threshold", None)
+        _p2t_raw = payload.get("phase2_threshold", None)
+        if _mmt_raw is not None and _p2t_raw is not None:
+            if coerce_threshold(_p2t_raw, threshold) != threshold:
+                raise ThresholdContractError(
+                    f"contradictory thresholds in stripe payload: "
+                    f"min_match_threshold={_mmt_raw!r} vs phase2_threshold="
+                    f"{_p2t_raw!r}. A miner stripe runs ONE kernel with ONE "
+                    f"threshold; refusing to filter at a value the parent did "
+                    f"not unambiguously request.")
         offset = payload.get("offset", 0)
         hybrid = is_hybrid_family(family)
         reverse = is_reverse_family(family)
@@ -785,6 +849,12 @@ class SieveExecutor:
                             "skip_sequences": skip_sequences_gpu,
                         }
                     )
+                    # See build_stripe_assign_payload (range_miner_coordinator.py)
+                    # for the constant-vs-hybrid key contract: `phase2_threshold`
+                    # is a legacy PWC name for THIS kernel's single threshold, NOT
+                    # a second stage — there is no stage-2 filter here. Which key
+                    # feeds the kernel is decided by skip mode, not by stage, and
+                    # D6 pins the two keys equal at the parent.
                     phase2_raw = payload.get("phase2_threshold", None)
                     hybrid_threshold = (
                         coerce_threshold(phase2_raw, threshold)
@@ -833,7 +903,15 @@ class SieveExecutor:
                                 survivors_out.append(
                                     (int(seed), float(rate), None, [int(skip)])
                                 )
-            return SubStripeOutcome(survivors=survivors_out, count=len(survivors_out))
+            # [S172 D6] The EFFECTIVE threshold is read off the very local the
+            # kernel arg was built from (ctx.hybrid_threshold for hybrid kernels,
+            # ctx.threshold for constant ones) and the host post-filter compared
+            # against — not recomputed from the payload, which would only prove
+            # the payload agrees with itself.
+            return SubStripeOutcome(
+                survivors=survivors_out, count=len(survivors_out),
+                effective_threshold=float(
+                    hybrid_threshold if hybrid else threshold))
         finally:
             # [S154] explicit per-array del (guarded) + FULL best-effort cleanup —
             # runs after EVERY sub-stripe, success OR exception (B3). Replicates the
@@ -1147,11 +1225,16 @@ class RangeMinerWorker:
         executor = self._executor_for()
 
         survivors_total = 0
+        # [S172 D6] Effective-threshold provenance for the stripe roll-up. Every
+        # sub-stripe of one stripe runs the same kernel with the same threshold,
+        # so a disagreement is a real defect — collected as a set and reported,
+        # never averaged or silently reduced to the first value seen.
+        effective_seen: List[float] = []
         for sub in subs:
             self.current_sub_index = sub.sub_index
             try:
                 outcome = executor(assign, sub.seed_start, sub.seed_count)
-            except (NotImplementedError, ResidueError) as e:
+            except (NotImplementedError, ResidueError, ThresholdContractError) as e:
                 # Non-retryable: uncovered family, or unresolved/mismatched window.
                 self._fail_stripe(assign, sub, e, retryable=False)
                 return
@@ -1160,12 +1243,24 @@ class RangeMinerWorker:
                 return
 
             survivors_total += outcome.count
+            eff = getattr(outcome, "effective_threshold", None)
+            if eff is not None:
+                effective_seen.append(float(eff))
             self._send(self._build_sub_result(assign, sub, outcome))
             self.progress = (sub.sub_index + 1) / len(subs) if subs else 1.0
 
         self.stripes_done += 1
         self.state = "idle"
         self.current_sub_index = -1
+        distinct_eff = sorted(set(effective_seen))
+        if len(distinct_eff) > 1:
+            # Not silently reduced: a stripe whose sub-stripes filtered at
+            # different thresholds is a defect, and the roll-up must not paper
+            # over it by reporting one of them as "the" effective value.
+            logger.error(
+                "stripe %s sub-stripes filtered at DIFFERENT thresholds %r — "
+                "reporting no single effective value (S172 D6 provenance)",
+                assign.stripe_id, distinct_eff)
         self._send(
             StripeCompleteMessage(
                 worker_id=self.worker_id,
@@ -1173,6 +1268,8 @@ class RangeMinerWorker:
                 substripes_done=len(subs),
                 survivors_total=survivors_total,
                 elapsed_s=round(time.time() - t0, 3),
+                effective_threshold=(distinct_eff[0]
+                                     if len(distinct_eff) == 1 else None),
             )
         )
 
@@ -1213,6 +1310,10 @@ class RangeMinerWorker:
             inline=payload_obj,
             size_bytes=size,
             sha256=sha,
+            # [S172 D6] provenance rides the result envelope, NOT the canonical
+            # payload_bytes — the spool/inline byte schema and its sha256 are
+            # unchanged (D5 contract untouched).
+            effective_threshold=getattr(outcome, "effective_threshold", None),
         )
         # Size-based (NOT count-based) inline/spool, WITHOUT framing a known-large
         # candidate (B2 v3): if the payload alone already meets the ceiling, spool
