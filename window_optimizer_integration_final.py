@@ -72,6 +72,27 @@ try:
 except ImportError:
     run_trial_miner = None
 
+# [S172 Phase-5 D6] The miner candidate-ingress adapter. Imported under the SAME
+# guard shape as the runner above (a host without miner/ keeps working); the
+# _use_miner gate below raises if the package is missing, so a silent no-ingress
+# path is impossible.
+try:
+    from miner.step1_ingress import (
+        MinerIngressError,
+        build_assembling_sink,
+        certified_paths,
+        ingest_assembly,
+        require_assembly,
+        resolve_assembly_backend,
+    )
+except ImportError:
+    MinerIngressError = None
+    build_assembling_sink = None
+    certified_paths = None
+    ingest_assembly = None
+    require_assembly = None
+    resolve_assembly_backend = None
+
 
 def _repository_state(repo_root=None) -> Tuple[str, bool]:
     """[S172 Phase-5 D3.5 §7.3] Return (commit_sha, working_tree_clean).
@@ -176,6 +197,32 @@ def _get_residues_for_config(config, dataset_path: str):
     window = draws[start:end]
     return [int(e.get("full_state", e["draw"])) if isinstance(e, dict) else int(e)
             for e in window]
+
+
+def _miner_residues_for_config(config, dataset_path: str):
+    """[S172 Phase-5 D6 correction] The RANGE-MINER path's residue derivation —
+    SHARED AUTHORITY with the worker (Team Beta §4).
+
+    `_get_residues_for_config` above never passes `sessions`, while the miner
+    worker rebuilds its window WITH the session filter applied
+    (`miner.range_miner_worker.load_residue_window`). For a both-sessions trial
+    the filter is a no-op and the two agreed by luck; for a single-session trial
+    (`sessions=['midday']` / `['evening']`) they diverged, the coordinator stamped
+    a residue_sha256 the worker could not reproduce, and EVERY stripe failed the
+    Blocker-6 residue check.
+
+    The fix is not a second, session-aware copy of the derivation here — it is to
+    call the SAME function the worker calls, with the session selection as an
+    explicit input. One implementation of the session filter exists in the miner;
+    this is a consumer of it, not a peer.
+
+    Deliberately a separate function from `_get_residues_for_config`: the PWC and
+    ZMQ call sites are out of scope for this correction pass and keep their
+    existing derivation byte-for-byte.
+    """
+    from miner.range_miner_worker import load_residue_window
+    return load_residue_window(dataset_path, config.window_size,
+                               config.sessions, config.offset)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -387,14 +434,14 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
 
 def _build_test_result_from_miner(miner_result: dict, accumulator, config,
                                    prng_base: str, trial_number: int,
-                                   optuna_trial=None):
+                                   optuna_trial=None, phase5_sink=None):
     """
     TestResult for the RANGE-MINER path — candidate ingress is D6's, not D3.25's.
 
     D3.25 corrects the PWC/ZMQ candidate ingress and gives those two backends a
     versioned four-map contract. The miner is NOT one of those producers: it
     already builds canonical 24-field records inside the Phase-5 assembly
-    engine, and D6 will append its `canonical_records_constant` /
+    engine, and D6 appends its `canonical_records_constant` /
     `canonical_records_variable` straight off the stored `MinerTrialAssembly`
     WITHOUT rerunning normalization (D3.25 REV3 §4).
 
@@ -403,33 +450,81 @@ def _build_test_result_from_miner(miner_result: dict, accumulator, config,
     exactly what §4 forbids, and pushing a `serve_trial` dict through the new
     ingress wall would fail closed for the wrong reason.
 
-    Behavior is unchanged from what the shared adapter actually did for this
-    path before D3.25: `serve_trial` returns run/stripe/manifest state and none
-    of the population keys, so the old `.get(..., set()/{})` reads made every
-    count zero and appended nothing. That is preserved verbatim — including the
-    threshold-gated flush, so flush cadence does not shift — and the miner's
-    real candidates arrive with D6.
+    [S172 Phase-5 D6] THE GAP IS NOW CLOSED. Pre-D6 this function read
+    `serve_trial`'s dict with `.get(..., set()/{})` — and `serve_trial` returns
+    run/stripe/manifest state and none of the population keys, so every count
+    was zero and nothing was accumulated. D6 stops reading the serve dict for
+    populations entirely and reads the STORED `MinerTrialAssembly` instead,
+    fetched from the Phase-5 sink by `run_id`:
+
+        * candidates come from `canonical_records_constant` / `_variable`
+          straight off the assembly, with NO re-normalization and without
+          touching the PWC/ZMQ D3.25 ingress (that routing is what REV3 §4
+          forbids — the miner is not a `step1_trial_populations_v2` producer);
+        * the two directional counters advance by the assembly's REAL
+          `directional_counts`, not by `+0`;
+        * an absent assembly RAISES (`MinerIngressError`) rather than
+          reproducing the old, indistinguishable-from-empty zero;
+        * the threshold-gated flush stays exactly where it was, called once per
+          trial after the append — so flush cadence does not shift, which is the
+          invariant this docstring carried through D3.25.
+
+    The returned `TestResult` shape is unchanged: the same four fields Step 1
+    already consumes, computed the same way `_build_test_result_from_pw`
+    computes them (constant maps for the two directional counts, constant +
+    variable for bidirectional). Only the values become real.
 
     Certification status (REV3 §4):
         PWC/ZMQ both-mode canonical candidate output   certified at D3.25
-        miner  both-mode run-level candidate output    uncertified until D6
+        miner  both-mode run-level candidate output    certified at D6
     """
     from window_optimizer import TestResult
 
+    if require_assembly is None or ingest_assembly is None:
+        raise ImportError(
+            "miner.step1_ingress not found — the RANGE-MINER path cannot "
+            "ingest candidates. D6 refuses to fall back to the pre-D6 "
+            "no-candidate/+0 behaviour, which is indistinguishable from a real "
+            "empty trial."
+        )
+
+    # [S172 D6 correction, Beta commit ruling] THRESHOLD-PROVENANCE WALL.
+    # Checked BEFORE candidate ingress and BEFORE any accumulator mutation, so a
+    # trial whose kernel filter is unproven cannot contribute a single candidate,
+    # let alone reach finalize_run. The parent's fail-closed gate normally aborts
+    # such a trial inside serve_trial, so reaching here unvalidated means the
+    # gate was bypassed entirely — which is exactly the case that must not
+    # silently proceed. An ABSENT flag is NOT a neutral "unknown": it means the
+    # physical evidence was never checked, so it is refused like a False.
+    _prov = miner_result.get("threshold_provenance") if isinstance(
+        miner_result, dict) else None
+    if not (isinstance(_prov, dict) and _prov.get("validated") is True):
+        raise MinerIngressError(
+            "RANGE-MINER trial reached candidate ingress without a VALIDATED "
+            "threshold provenance record "
+            f"(threshold_provenance={_prov!r}). D6 refuses to ingest candidates, "
+            "mutate the accumulator or certify a generation for a trial whose "
+            "effective sieve threshold was never proven to match the requested "
+            "one — that is the whole claim D6 makes."
+        )
+
+    # Fail closed NEXT: nothing touches the accumulator until this trial is
+    # proven to have a committed assembly (mirrors the PWC/ZMQ adapter's
+    # ingress-wall-before-append ordering, without sharing its wall).
+    _assembly = require_assembly(phase5_sink, miner_result,
+                                 trial_number=trial_number)
+
+    _counts = ingest_assembly(_assembly, accumulator)
+
     if accumulator is not None:
-        # No candidate is appended: D6 owns miner candidate ingress. The two
-        # directional counters advance by the miner's own record lists, which
-        # serve_trial does not return today (hence +0), exactly as before.
-        accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(miner_result.get("forward_records", []))
-        accumulator['reverse_count'] = accumulator.get('reverse_count', 0) + len(miner_result.get("reverse_records", []))
+        # [S152] Same call, same place, same cadence as every other backend.
         _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")
 
     return TestResult(
         config             = config,
-        forward_count      = len(miner_result.get("forward_map", {})),
-        reverse_count      = len(miner_result.get("reverse_map", {})),
-        bidirectional_count= (len(miner_result.get("bidirectional_constant", set()))
-                              + len(miner_result.get("bidirectional_variable", set()))),
+        forward_count      = _counts.forward_constant,
+        reverse_count      = _counts.reverse_constant,
+        bidirectional_count= _counts.bidirectional_total,
         iteration          = trial_number,
     )
 
@@ -475,12 +570,46 @@ def run_bidirectional_test(coordinator,
                 "Ensure miner/__init__.py and miner/range_miner_coordinator.py "
                 "are deployed to the project root."
             )
+        # ----------------------------------------------------------------
+        # [S172 Phase-5 D6] The Phase-5 sink, built around the CONFIGURED
+        # assembly backend. Pre-D6 this call passed no `phase5_sink`, so the
+        # coordinator's L6 boundary was wired to None and the trial performed
+        # no Phase-5 assembly at all — which is why there was never anything
+        # to ingest.
+        #
+        # Backend selection is a coordinator attribute so it follows the same
+        # §12.4 precedence as every other knob. `assembly_backend=None` (the
+        # normal case) resolves to `serial_reference` inside
+        # `resolve_assembly_backend`; `process_sharded` is selectable by
+        # explicit name + pool_size (via `assembly_backend_options`) and is
+        # NEVER the default — Phase 6 owns its promotion.
+        #
+        # One sink per trial: the coordinator, ledger and run_id are per-trial
+        # too, and the sink's retained-manifest retry contract (§4.0) is
+        # scoped to exactly that lifetime.
+        # ----------------------------------------------------------------
+        if build_assembling_sink is None or resolve_assembly_backend is None:
+            raise ImportError(
+                "miner.step1_ingress not found — cannot use --use-range-miner. "
+                "Without D6's ingress adapter the miner path would run, append "
+                "no candidates and report +0, which is indistinguishable from "
+                "a real empty trial."
+            )
+        _miner_backend = resolve_assembly_backend(
+            getattr(coordinator, 'assembly_backend', None),
+            **(getattr(coordinator, 'assembly_backend_options', None) or {}),
+        )
+        _miner_sink = build_assembling_sink(_miner_backend)
         _miner_result = run_trial_miner(
             coordinator_cfg        = getattr(coordinator, 'config_file', 'distributed_config.json'),
             config                 = config,
             trial_number           = trial_number,
             prng_base              = prng_base,
-            residues               = _get_residues_for_config(config, dataset_path),
+            # D6 correction: session-aware, shared with the worker's own
+            # derivation (see _miner_residues_for_config). The pre-D6 call to
+            # _get_residues_for_config dropped config.sessions and broke every
+            # single-session trial on the residue_sha256 check.
+            residues               = _miner_residues_for_config(config, dataset_path),
             total_seeds            = seed_count,
             forward_threshold      = forward_threshold,
             reverse_threshold      = reverse_threshold,
@@ -527,6 +656,10 @@ def run_bidirectional_test(coordinator,
             # exceeds any fixed 30s. Default UNBOUNDED (None) so the production path
             # runs until a terminal state; an explicit config value still binds.
             serve_timeout          = getattr(coordinator, 'serve_timeout', None),
+            # [S172 Phase-5 D6] the L6 Phase-5 boundary — assembly happens on
+            # the coordinator's commit, and the result is fetched below by
+            # run_id. Passing None here is what made this path inert.
+            phase5_sink            = _miner_sink,
         )
         if _miner_result.get("pruned"):
             return TestResult(
@@ -538,9 +671,10 @@ def run_bidirectional_test(coordinator,
             )
         # D3.25 §4: the miner is NOT a `step1_trial_populations_v2` producer, so
         # it no longer shares the PWC/ZMQ adapter. D6 wires the miner's own
-        # already-canonical records in.
+        # already-canonical records in, off the sink's stored assembly.
         return _build_test_result_from_miner(_miner_result, accumulator, config,
-                                             prng_base, trial_number, optuna_trial)
+                                             prng_base, trial_number, optuna_trial,
+                                             phase5_sink=_miner_sink)
     # ========================================================================
     # END RANGE-MINER PATH — original path continues unchanged below
     # ========================================================================

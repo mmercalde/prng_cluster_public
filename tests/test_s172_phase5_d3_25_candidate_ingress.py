@@ -842,12 +842,32 @@ def g12_d3_conformance():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# G13 — miner-path isolation (Team Beta correction round)
+# G13 — miner-path isolation (Team Beta correction round; UPDATED AT D6)
 #
 # D3.25 detached the range-miner call site (:426) from the shared PWC/ZMQ
 # adapter into `_build_test_result_from_miner`, because REV3 §4 forbids routing
 # miner output through the v2 contract and D6 owns miner candidate ingress. The
 # original 12 gates never touched that function — G13 closes the hole.
+#
+# [S172 Phase-5 D6] THE HANDOFF THIS GATE WAS WRITTEN FOR HAS HAPPENED. D3.25's
+# own certification note reads "miner both-mode run-level candidate output
+# uncertified until D6", and the pre-D6 assertions here — zero deltas, an
+# all-zero TestResult, "the miner path consumed canonical records that only D6
+# may append" — encoded that INTERIM state, not a permanent invariant. D6
+# certifies that output, so those three assertions are updated. What G13 still
+# guards, unchanged and now the whole point of it, is:
+#
+#   * ISOLATION — the miner path still never reaches the PWC/ZMQ D3.25 ingress,
+#     the four-map normalizer, or `_build_test_result_from_pw` (AST + runtime);
+#   * FLUSH CADENCE — still EXACTLY ONE `_flush_npz_incremental` call per
+#     invocation, same label, same accumulator, and none at all for a `None`
+#     accumulator;
+#   * NEVER A FABRICATED ZERO — the bare `serve_trial` dict this gate has always
+#     used carries no population keys, and D6 does not read it for populations.
+#     With no Phase-5 sink there is no publication result, so the path now
+#     RAISES instead of returning the all-zero TestResult. The accumulator
+#     deltas this gate asserted are therefore still zero — by refusal rather
+#     than by inertness, which is the stronger property.
 #
 # The fixture is a REALISTIC `serve_trial` return: exactly the seven keys
 # `RangeMinerCoordinator.serve_trial` produces (range_miner_coordinator.py:3386-3393)
@@ -857,12 +877,20 @@ def g12_d3_conformance():
 # c207e3a: given a `serve_trial` dict, that path appended nothing (the union of
 # two absent sets is empty), advanced both counters by zero, and called
 # `_flush_npz_incremental` EXACTLY ONCE with label f"chunk/trial-{trial_number}".
-# Cadence parity is therefore 1 call with that label — asserted, not assumed.
+# Cadence parity is therefore 1 call with that label — asserted, not assumed,
+# and D6 must not shift it.
 # ═════════════════════════════════════════════════════════════════════════════
 
 # The exact key set serve_trial returns — no population keys, by construction.
+# [S172 D6 correction] `threshold_provenance` is the eighth key: serve_trial now
+# returns the requested/payload/effective audit record, and `validated` is set
+# only by the parent's fail-closed provenance gate — which runs immediately
+# before commit_trial, so a `committed: True` serve result ALWAYS carries
+# `validated: True`. This oracle is a deliberate drift detector; it flagged the
+# new key, and is updated here to track the real contract.
 SERVE_TRIAL_KEYS = ("run_id", "state", "committed", "workers_registered",
-                    "stripes", "manifests", "bound_addr")
+                    "stripes", "manifests", "bound_addr",
+                    "threshold_provenance")
 
 
 def serve_trial_result():
@@ -882,6 +910,17 @@ def serve_trial_result():
         "manifests": [{"event_id": "e0", "stripe_id": "s0", "sub_index": 0},
                       {"event_id": "e1", "stripe_id": "s1", "sub_index": 0}],
         "bound_addr": ("192.168.3.177", 5700),
+        # [S172 D6 correction] the three-leg threshold audit record. `validated`
+        # True because this fixture models a COMMITTED trial, and the parent's
+        # fail-closed gate is what allows a commit to happen at all.
+        "threshold_provenance": {
+            "run_id": "run/rrig6600c-t3",
+            "requested": {"forward": 0.31, "reverse": 0.47},
+            "payload": {1: [0.31], 2: [0.47]},
+            "effective": {1: [0.31], 2: [0.47]},
+            "phase_direction": {1: "forward", 2: "reverse"},
+            "validated": True,
+        },
     }
 
 
@@ -901,12 +940,54 @@ def _flush_spy(module):
         module._flush_npz_incremental = real
 
 
+class _StoredAssemblySink:
+    """The minimum D6 reads across the L6 boundary: `get_assembly(run_id)`.
+
+    Deliberately NOT an `AssemblingPhase5Sink` — this gate is about what the
+    ADAPTER does with a stored assembly, and a stub keeps that independent of
+    the D1.1 engine (whose own 18 gates cover it)."""
+
+    def __init__(self, run_id, assembly):
+        self._run_id, self._assembly = run_id, assembly
+        self.calls = []
+
+    def get_assembly(self, run_id):
+        self.calls.append(run_id)
+        return self._assembly if run_id == self._run_id else None
+
+
+def _stored_assembly():
+    """A fully-formed assembly over this harness's four maps, with the six
+    directional counts hand-computed from them."""
+    from miner.range_miner_npz_writer import MinerTrialAssembly
+    canon_c, canon_v = normalize(module=PROD)
+    bidi_c = set(FMC) & set(RMC)
+    bidi_v = set(FMV) & set(RMV)
+    return MinerTrialAssembly(
+        run_id="run/rrig6600c-t3",
+        bidirectional_constant=bidi_c,
+        bidirectional_variable=bidi_v,
+        forward_map_constant=dict(FMC), reverse_map_constant=dict(RMC),
+        forward_map_variable=dict(FMV), reverse_map_variable=dict(RMV),
+        canonical_records_constant=canon_c,
+        canonical_records_variable=canon_v,
+        directional_counts={
+            "forward_constant": len(FMC), "reverse_constant": len(RMC),
+            "forward_variable": len(FMV), "reverse_variable": len(RMV),
+            "bidirectional_constant": len(bidi_c),
+            "bidirectional_variable": len(bidi_v),
+        },
+        timing={"assembly_s": 0.0}), canon_c, canon_v
+
+
 def g13_miner_path_isolation():
     mod = WOIF                      # honours the G11 mutant swap
+    from miner.step1_ingress import MinerIngressError
     result = serve_trial_result()
     assert set(result) == set(SERVE_TRIAL_KEYS), \
         f"fixture drifted from the serve_trial key set: {sorted(result)}"
 
+    # ---- no publication result -> RAISE, never a fabricated zero ----------
     # A PRE-POPULATED accumulator: deltas are what matter, and a function that
     # wrongly appends would be invisible against an empty one.
     sentinel = [{"seed": 111, "skip_mode": "constant", "sentinel": True},
@@ -915,17 +996,22 @@ def g13_miner_path_isolation():
            "forward_count": 17, "reverse_count": 23}
     before = (len(acc["bidirectional"]), acc["forward_count"], acc["reverse_count"])
 
-    with _flush_spy(mod) as calls:
+    with _flush_spy(mod) as calls0:
         with contextlib.redirect_stdout(io.StringIO()):
-            tr = mod._build_test_result_from_miner(
-                result, acc, make_config(), PRNG_BASE, TRIAL_NUMBER)
+            try:
+                tr0 = mod._build_test_result_from_miner(
+                    result, acc, make_config(), PRNG_BASE, TRIAL_NUMBER)
+            except MinerIngressError:
+                tr0 = None
+    assert tr0 is None, (
+        f"a serve_trial dict with NO Phase-5 sink produced a TestResult "
+        f"({tr0}) — D6 must fail closed, never fabricate a zero result")
+    assert calls0 == [], "the flush fired on a fail-closed path"
 
     after = (len(acc["bidirectional"]), acc["forward_count"], acc["reverse_count"])
-
-    # ---- zero deltas ------------------------------------------------------
     assert after[0] - before[0] == 0, (
         f"accumulator['bidirectional'] delta {after[0] - before[0]} != 0 — the "
-        f"miner path appended a candidate; D6 owns miner candidate ingress")
+        f"fail-closed path touched the accumulator")
     assert after[1] - before[1] == 0, \
         f"accumulator['forward_count'] delta {after[1] - before[1]} != 0"
     assert after[2] - before[2] == 0, \
@@ -933,11 +1019,30 @@ def g13_miner_path_isolation():
     assert acc["bidirectional"] == sentinel, \
         "the pre-existing accumulator contents were disturbed"
 
-    # ---- TestResult is all-zero ------------------------------------------
-    assert tr.forward_count == 0, tr.forward_count
-    assert tr.reverse_count == 0, tr.reverse_count
-    assert tr.bidirectional_count == 0, tr.bidirectional_count
+    # ---- with a stored assembly: real ingress, unchanged flush cadence ----
+    assembly, canon_c, canon_v = _stored_assembly()
+    sink = _StoredAssemblySink(result["run_id"], assembly)
+
+    acc = {"bidirectional": list(sentinel),
+           "forward_count": 17, "reverse_count": 23}
+    with _flush_spy(mod) as calls:
+        with contextlib.redirect_stdout(io.StringIO()):
+            tr = mod._build_test_result_from_miner(
+                result, acc, make_config(), PRNG_BASE, TRIAL_NUMBER,
+                phase5_sink=sink)
+
+    # the assembly's own records, appended after the sentinel, constant first
+    assert acc["bidirectional"] == sentinel + canon_c + canon_v, (
+        "the appended candidates are not the stored assembly's records, in "
+        "assembly order")
+    assert acc["forward_count"] == 17 + len(FMC) + len(FMV), acc["forward_count"]
+    assert acc["reverse_count"] == 23 + len(RMC) + len(RMV), acc["reverse_count"]
+    assert tr.forward_count == len(FMC), tr.forward_count
+    assert tr.reverse_count == len(RMC), tr.reverse_count
+    assert tr.bidirectional_count == (len(set(FMC) & set(RMC))
+                                      + len(set(FMV) & set(RMV))), tr
     assert tr.iteration == TRIAL_NUMBER, tr.iteration
+    assert sink.calls == [result["run_id"]], sink.calls
 
     # ---- flush cadence + label parity with the pre-D3.25 shared path ------
     assert len(calls) == 1, (
@@ -953,71 +1058,66 @@ def g13_miner_path_isolation():
     with _flush_spy(mod) as calls2:
         with contextlib.redirect_stdout(io.StringIO()):
             mod._build_test_result_from_miner(result, acc, make_config(),
-                                              PRNG_BASE, 41)
+                                              PRNG_BASE, 41, phase5_sink=sink)
     assert [lbl for _i, lbl in calls2] == ["chunk/trial-41"], calls2
 
     # accumulator=None -> no flush at all, and no crash.
     with _flush_spy(mod) as calls3:
         with contextlib.redirect_stdout(io.StringIO()):
             tr_none = mod._build_test_result_from_miner(
-                result, None, make_config(), PRNG_BASE, TRIAL_NUMBER)
+                result, None, make_config(), PRNG_BASE, TRIAL_NUMBER,
+                phase5_sink=sink)
     assert calls3 == [], f"flush fired on a None accumulator: {calls3}"
-    assert tr_none.bidirectional_count == 0
+    assert tr_none.bidirectional_count == tr.bidirectional_count
 
-    # ---- NO miner ingress: behavioral proof ------------------------------
-    # Hand the function a result that ALSO carries a fully-formed assembly with
-    # canonical records. If it performed miner ingress, these would appear.
-    from miner.range_miner_npz_writer import MinerTrialAssembly
-    canon_c, canon_v = normalize(module=PROD)
-    assembly = MinerTrialAssembly(
-        run_id="run/rrig6600c-t3",
-        bidirectional_constant=set(FMC) & set(RMC),
-        bidirectional_variable=set(FMV) & set(RMV),
-        forward_map_constant=dict(FMC), reverse_map_constant=dict(RMC),
-        forward_map_variable=dict(FMV), reverse_map_variable=dict(RMV),
-        canonical_records_constant=canon_c,
-        canonical_records_variable=canon_v,
-        directional_counts={}, timing={})
+    # ---- NO PWC/ZMQ ingress: behavioral proof ----------------------------
+    # The serve dict is BAITED with population-shaped keys. D6 reads populations
+    # ONLY from the stored assembly, so a path that ever fell back to reading
+    # the serve result would produce different numbers here.
     baited = dict(result)
-    baited["assembly"] = assembly
-    baited["canonical_records_constant"] = canon_c
-    baited["canonical_records_variable"] = canon_v
-
+    baited["forward_map"] = {9_990: 0.1, 9_991: 0.2, 9_992: 0.3}
+    baited["reverse_map"] = {9_990: 0.4}
+    baited["bidirectional_constant"] = {9_990, 9_991}
+    baited["bidirectional_variable"] = {9_992}
+    baited["forward_records"] = [{"seed": 9_990}] * 5
+    baited["reverse_records"] = [{"seed": 9_991}] * 6
     acc2 = {"bidirectional": [], "forward_count": 0, "reverse_count": 0}
     with _flush_spy(mod):
         with contextlib.redirect_stdout(io.StringIO()):
             tr2 = mod._build_test_result_from_miner(
-                baited, acc2, make_config(), PRNG_BASE, TRIAL_NUMBER)
-    assert acc2["bidirectional"] == [], (
-        f"the miner path consumed canonical records that only D6 may append: "
-        f"{acc2['bidirectional']}")
-    assert acc2["forward_count"] == 0 and acc2["reverse_count"] == 0
-    assert tr2.bidirectional_count == 0, (
-        "the miner path derived a count from the stored MinerTrialAssembly")
+                baited, acc2, make_config(), PRNG_BASE, TRIAL_NUMBER,
+                phase5_sink=sink)
+    assert acc2["bidirectional"] == canon_c + canon_v, (
+        "the miner path read candidates from the serve_trial dict instead of "
+        "the stored assembly")
+    assert acc2["forward_count"] == len(FMC) + len(FMV), acc2["forward_count"]
+    assert acc2["reverse_count"] == len(RMC) + len(RMV), acc2["reverse_count"]
+    assert tr2.forward_count == len(FMC), tr2.forward_count
+    assert tr2.bidirectional_count == tr.bidirectional_count, tr2
 
-    # ---- NO miner ingress: source proof ----------------------------------
-    # Nothing in the function body may reach for assembly state, canonical
-    # records, a manifest, a spool, or the v2 normalizer.
+    # ---- NO PWC/ZMQ ingress: source proof --------------------------------
+    # Nothing in the function body may reach the v2 normalizer, the v2 ingress
+    # wall, the PWC builder, a manifest or a spool. The assembly it DOES read is
+    # fetched through the D6 adapter, which is itself gated by the D6 harness.
     import inspect
     src = inspect.getsource(mod._build_test_result_from_miner)
     body = src.split('"""', 2)[-1]          # strip the docstring
-    for forbidden in ("MinerTrialAssembly", "canonical_records_constant",
-                      "canonical_records_variable", "assemble_trial",
-                      "normalize_trial_populations", "validate_trial_populations",
-                      "build_mode_records", "spool", "read_manifest",
+    for forbidden in ("assemble_trial", "normalize_trial_populations",
+                      "validate_trial_populations", "build_mode_records",
+                      "_build_test_result_from_pw", "spool", "read_manifest",
                       "_read_and_validate_spool"):
         assert forbidden not in body, (
             f"_build_test_result_from_miner body references {forbidden!r} — "
-            f"miner ingress belongs to D6, not D3.25")
-    assert "['bidirectional'].append" not in body and \
-           "['bidirectional'].extend" not in body, \
-        "_build_test_result_from_miner appends to the candidate accumulator"
+            f"the miner path must not share the PWC/ZMQ ingress")
 
-    # And the call site really is detached from the v2 adapter.
+    # And the call site really is detached from the v2 adapter, and wires the
+    # sink without which there would be no assembly at all.
     with open(_WOIF_PATH) as fh:
         woif_src = fh.read()
     assert "_build_test_result_from_miner(_miner_result" in woif_src, \
         "the range-miner call site no longer routes to the isolated helper"
+    assert "phase5_sink" in woif_src, \
+        "the range-miner call site no longer wires a Phase-5 sink"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1170,27 +1270,42 @@ _MUTANTS: List[Tuple[str, str, str, str, Tuple[str, ...]]] = [
         ("G8", "G9"),
     ),
     (
-        # G13 bite proof #1 — the miner path starts appending candidates, which
-        # is precisely the D6-owned ingress D3.25 must not perform.
-        "miner path appends a candidate",
+        # G13 bite proof #1 [D6] — the miner path reverts to appending nothing.
+        # Pre-D6 this WAS the required behaviour; post-D6 an inert path is the
+        # defect, because a real trial's candidates silently vanish.
+        "miner path appends no candidate",
         "woif",
-        "        accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(miner_result.get(\"forward_records\", []))",
-        "        accumulator['bidirectional'].append({'seed': 1, 'skip_mode': 'constant'})\n"
-        "        accumulator['forward_count'] = accumulator.get('forward_count', 0) + len(miner_result.get(\"forward_records\", []))",
+        "    _counts = ingest_assembly(_assembly, accumulator)",
+        "    _counts = ingest_assembly(_assembly, None)",
         ("G13",),
     ),
     (
-        # G13 bite proof #2 — the threshold-gated flush is dropped, shifting
-        # flush cadence away from the pre-D3.25 shared path.
+        # G13 bite proof #2 [D6] — the threshold-gated flush is dropped,
+        # shifting flush cadence away from the pre-D3.25 shared path.
         "miner path drops the flush call",
         "woif",
-        '        _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")\n\n'
-        "    return TestResult(\n"
-        "        config             = config,\n"
-        "        forward_count      = len(miner_result.get(\"forward_map\", {})),",
-        "    return TestResult(\n"
-        "        config             = config,\n"
-        "        forward_count      = len(miner_result.get(\"forward_map\", {})),",
+        "    if accumulator is not None:\n"
+        "        # [S152] Same call, same place, same cadence as every other backend.\n"
+        '        _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")',
+        "    if accumulator is not None:\n"
+        "        pass",
+        ("G13",),
+    ),
+    (
+        # G13 bite proof #3 [D6] — the fail-closed guard is downgraded to a
+        # swallowed exception plus the pre-D6 all-zero TestResult, which is
+        # exactly the fabricated zero D6 forbids.
+        "miner path fabricates a zero result",
+        "woif",
+        "    _assembly = require_assembly(phase5_sink, miner_result,\n"
+        "                                 trial_number=trial_number)",
+        "    try:\n"
+        "        _assembly = require_assembly(phase5_sink, miner_result,\n"
+        "                                     trial_number=trial_number)\n"
+        "    except Exception:\n"
+        "        return TestResult(config=config, forward_count=0,\n"
+        "                          reverse_count=0, bidirectional_count=0,\n"
+        "                          iteration=trial_number)",
         ("G13",),
     ),
 ]

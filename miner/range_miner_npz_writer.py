@@ -1145,10 +1145,28 @@ class AssemblingPhase5Sink(Phase5Sink):
     must not be described as repairing it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, backend: Any = None) -> None:
+        """`backend` is the D6 assembly-backend seam and is OPTIONAL.
+
+        `None` (the default, and every pre-D6 construction site) keeps the
+        behaviour verbatim: commit assembles through the module-level
+        `assemble_trial`. When a backend IS supplied it must satisfy the D4
+        `AssemblyBackend` protocol (`assemble(run_id, manifests) ->
+        BackendAssemblyResult`), and only the `.assembly` it returns is stored —
+        the measurement travels with the backend, never inside the assembly
+        (D4 §5). Duck-typed on purpose: importing `miner.assembly_backends`
+        here would invert the dependency direction (that module imports THIS
+        one).
+
+        The backend does not widen or narrow what a commit means. Whatever it
+        raises propagates UNCHANGED, so §4.0's retained-manifest retry contract
+        and the D5 exception-precedence equivalence both hold for either
+        backend.
+        """
         self._lock = threading.RLock()
         self._runs: Dict[str, _RunState] = {}
         self._tombstoned: set = set()
+        self._backend = backend
 
     # ----- §4.2 publish ----------------------------------------------------
     def publish_shard(self, manifest: Dict[str, Any]) -> None:
@@ -1191,6 +1209,21 @@ class AssemblingPhase5Sink(Phase5Sink):
             state.manifests[event_id] = stored
             state.slots[slot] = event_id
 
+    # ----- the D6 backend seam --------------------------------------------
+    def _assemble(self, run_id: str,
+                  manifests: List[Dict[str, Any]]) -> MinerTrialAssembly:
+        """Assemble one commit's retained manifests, through the configured
+        backend when there is one and through `assemble_trial` when there is not.
+
+        No try/except: on either branch the canonical D1.1 exception IS the
+        contract, and `commit_trial`'s own handler owns the retained-manifest
+        retry. The two branches must stay behaviourally interchangeable — D4's
+        `serial_reference` is a thin measured wrapper over the exact call the
+        `None` branch makes."""
+        if self._backend is None:
+            return assemble_trial(run_id, manifests)
+        return self._backend.assemble(run_id, manifests).assembly
+
     # ----- §4.3 commit -----------------------------------------------------
     def commit_trial(self, event: Dict[str, Any]) -> None:
         """Assemble the retained manifests and install the result ATOMICALLY.
@@ -1220,7 +1253,7 @@ class AssemblingPhase5Sink(Phase5Sink):
                     f"{run_id}: commit with zero retained manifests")
             # 1-2. assemble + validate entirely in LOCAL temporary state.
             try:
-                assembly = assemble_trial(run_id, list(state.manifests.values()))
+                assembly = self._assemble(run_id, list(state.manifests.values()))
             except Exception:
                 # Delete temporary assembly/result state ONLY — the accumulated
                 # manifests are retained for redelivery (§4.0/§4.3).
