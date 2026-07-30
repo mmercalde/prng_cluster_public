@@ -35,16 +35,36 @@ WHAT IS REAL HERE, AND WHAT IS HARNESS
     2. the bind address. Production binds 0.0.0.0:5700 for remote rigs; a
        single-GPU Zeus smoke binds 127.0.0.1 on an ephemeral port so it needs
        no fixed port and no second host.
-    3. the repository identity. `finalize_run` REFUSES a dirty tree (§7.3), and
-       an agent sandbox may not commit. So the harness snapshots the exact
-       source under test into a throwaway git repo (HEAD's tracked files with
-       the D6 working-tree files overlaid), commits it there, and passes THAT
-       root to the same `_repository_state` helper. The recorded SHA therefore
-       identifies a tree byte-identical to the source that ran; it is not the
-       project's own commit, and the release-grade generation is the one
-       produced after Michael commits.
+    3. the repository identity — HARNESS ONLY IN THE DEFAULT (SCRATCH) MODE.
+       `finalize_run` REFUSES a dirty tree (§7.3), and an agent sandbox may not
+       commit. So by default the harness snapshots the exact source under test
+       into a throwaway git repo (HEAD's tracked files with the D6 working-tree
+       files overlaid), commits it there, and passes THAT root to the same
+       `_repository_state` helper. The recorded SHA therefore identifies a tree
+       byte-identical to the source that ran; it is not the project's own commit.
+
+       `--release-grade` removes this harness leg entirely: no snapshot is taken
+       and the provenance comes from the REAL repository at `_ROOT`. That is the
+       mode Michael runs after committing, and the only mode whose generation is
+       certified against the project's own commit.
+
+REPOSITORY MODES (mutually exclusive; the banner names the active one)
+  SCRATCH (default)      throwaway snapshot repo; scratch SHA; cleanliness of the
+                         snapshot only. Pre-commit development mode.
+  RELEASE-GRADE          real repository at `_ROOT`. Cleanliness policy is
+                         TRACKED-CLEAN ONLY: `git status --porcelain
+                         --untracked-files=no` must be empty or the run aborts.
+                         Untracked files are PERMITTED — they are not part of the
+                         committed source that produced the artifact — but every
+                         untracked path is listed in the run output and written to
+                         the evidence record `release_grade_repository_state.json`.
+                         Note this is deliberately LOOSER than
+                         `WOI._repository_state`, whose plain `--porcelain` counts
+                         untracked; that helper's verdict is still reported, as
+                         information, alongside the tracked-only one that governs.
 
 Run:  python tests/smoke_s172_phase5_d6_zeus_single_gpu.py
+      python tests/smoke_s172_phase5_d6_zeus_single_gpu.py --release-grade
 """
 import argparse
 import json
@@ -168,6 +188,104 @@ def _source_snapshot_repo(dest: Path) -> str:
     print(f"[SNAPSHOT] source snapshot repo: {dest}")
     print(f"[SNAPSHOT] working-tree .py files overlaid on HEAD: {overlaid}")
     return dest
+
+
+def _git_lines(*args):
+    out = subprocess.run(["git", "-C", _ROOT, *args],
+                         check=True, capture_output=True, text=True).stdout
+    return [ln for ln in out.splitlines() if ln.strip()]
+
+
+def _release_grade_repository_state():
+    """Provenance from the REAL repository, under the tracked-clean-only policy.
+
+    Returns (commit, tracked_clean, tracked_dirty, untracked).
+
+    The commit — and the untracked-inclusive verdict reported as information —
+    come from the SAME production helper the run-level Step-1 finalization uses
+    (`WOI._repository_state`, window_optimizer_integration_final.py:97), so the
+    recorded SHA is the project's own commit and not a harness re-derivation.
+
+    Pass/fail is TRACKED-ONLY (`--untracked-files=no`). Untracked files are
+    permitted: they are, by definition, not part of the committed source that
+    produced the artifact, so scratch material and unrelated briefs have no
+    bearing on what this generation claims. They are not ignored either — every
+    untracked path is listed here and in the evidence record. A dirty TRACKED
+    tree aborts the run: it would mean the source that ran differs from the
+    commit the artifact names.
+    """
+    commit, clean_including_untracked = WOI._repository_state(repo_root=_ROOT)
+    tracked_dirty = _git_lines("status", "--porcelain", "--untracked-files=no")
+    untracked = _git_lines("ls-files", "--others", "--exclude-standard")
+    tracked_clean = not tracked_dirty
+
+    print("\n" + "-" * 78)
+    print("RELEASE-GRADE REPOSITORY PROVENANCE (real repository — no snapshot)")
+    print("-" * 78)
+    print(f"  repo_root                   : {_ROOT}")
+    print(f"  repository_commit           : {commit}")
+    print(f"  tracked_tree_clean (GOVERNS): {tracked_clean}   "
+          f"[git status --porcelain --untracked-files=no]")
+    print(f"  clean_including_untracked   : {clean_including_untracked}   "
+          f"[WOI._repository_state, information only]")
+    print(f"  POLICY: tracked-clean only. Untracked files are PERMITTED and "
+          f"listed below;\n          a dirty TRACKED tree aborts the run.")
+    # Tracked-dirty FIRST and under its own header: in an evidence record the two
+    # lists must never be confusable — one is a hard failure, the other is waived.
+    print(f"  TRACKED-DIRTY paths ({len(tracked_dirty)}) — these BLOCK the run:")
+    for ln in tracked_dirty:
+        print(f"          !! {ln}")
+    if not tracked_dirty:
+        print("          (none)")
+    print(f"  UNTRACKED paths ({len(untracked)}) — permitted, recorded, waived:")
+    for rel in untracked:
+        print(f"          ?  {rel}")
+    if not untracked:
+        print("          (none)")
+
+    if tracked_dirty:
+        raise AssertionError(
+            f"RELEASE-GRADE ABORT: the TRACKED working tree at {_ROOT} is dirty "
+            f"({len(tracked_dirty)} path(s) listed above). A release-grade "
+            f"generation must be certified against committed source, so it "
+            f"cannot claim commit {commit} while tracked files differ from it. "
+            f"Commit or revert them, then re-run. (Untracked files would NOT "
+            f"have blocked this run.)")
+
+    print(f"\n[RELEASE-GRADE] tracked tree clean at {commit} — certifying "
+          f"against the project's own commit")
+    return commit, tracked_clean, tracked_dirty, untracked
+
+
+def _write_evidence_record(work, artifact, commit, tracked_clean, untracked):
+    """The durable release-grade evidence record.
+
+    `finalize_run`'s sidecar carries the commit and the clean flag, but its
+    signature is frozen and cannot carry the untracked list — so the list that
+    the tracked-only policy explicitly tolerates is recorded HERE, next to the
+    run, where an auditor can see exactly what was present and waived.
+    """
+    record = {
+        "smoke": "s172_phase5_d6_zeus_single_gpu",
+        "repository_mode": "release-grade",
+        "repo_root": _ROOT,
+        "repository_commit": commit,
+        "cleanliness_policy": "tracked-clean-only (--untracked-files=no)",
+        "tracked_tree_clean": tracked_clean,
+        "untracked_permitted": True,
+        "untracked_count": len(untracked),
+        "untracked_paths": list(untracked),
+        "generation_id": artifact.generation_id,
+        "generation_dir": str(artifact.generation_dir),
+        "artifact_sha256": artifact.artifact_sha256,
+        "sidecar_sha256": artifact.sidecar_sha256,
+        "final_row_count": int(artifact.final_row_count),
+    }
+    path = Path(work) / "release_grade_repository_state.json"
+    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    print(f"\n[EVIDENCE] release-grade repository state written: {path}")
+    print(f"[EVIDENCE] untracked paths recorded: {len(untracked)}")
+    return path
 
 
 def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
@@ -340,12 +458,18 @@ def _report_threshold_provenance(staging, forward_threshold, reverse_threshold):
     return prov
 
 
-def finalize_and_verify(accumulator, gen_root, seed_start, seed_count, work):
-    # --- repository identity (see header note 3) --------------------------
-    snap = _source_snapshot_repo(work / "source_snapshot")
-    commit, clean = WOI._repository_state(repo_root=str(snap))
-    print(f"[SNAPSHOT] commit={commit} tree_clean={clean}")
-    assert clean, "the source snapshot repo is not clean"
+def finalize_and_verify(accumulator, gen_root, seed_start, seed_count, work,
+                        release_grade=False):
+    # --- repository identity (see header note 3 / REPOSITORY MODES) --------
+    untracked = None
+    if release_grade:
+        # No snapshot at all: the provenance IS the real repository's.
+        commit, clean, _dirty, untracked = _release_grade_repository_state()
+    else:
+        snap = _source_snapshot_repo(work / "source_snapshot")
+        commit, clean = WOI._repository_state(repo_root=str(snap))
+        print(f"[SNAPSHOT] commit={commit} tree_clean={clean}")
+        assert clean, "the source snapshot repo is not clean"
 
     # --- the SAME call shape as the run-level Step-1 finalization ---------
     artifact = RF.finalize_run(
@@ -360,9 +484,13 @@ def finalize_and_verify(accumulator, gen_root, seed_start, seed_count, work):
         repository_tree_clean=clean,
     )
 
+    _mode_tag = ("RELEASE-GRADE (real repository commit)" if release_grade
+                 else "SCRATCH SHA (throwaway snapshot repo)")
     print("\n" + "=" * 78)
-    print("CERTIFIED GENERATION")
+    print(f"CERTIFIED GENERATION  [{_mode_tag}]")
     print("=" * 78)
+    print(f"  repository_mode   : "
+          f"{'release-grade' if release_grade else 'scratch'}")
     print(f"  generation_id     : {artifact.generation_id}")
     print(f"  generation_dir    : {artifact.generation_dir}")
     print(f"  binary_npz_path   : {artifact.binary_npz_path}")
@@ -376,6 +504,12 @@ def finalize_and_verify(accumulator, gen_root, seed_start, seed_count, work):
     print(f"  final_rows        : {artifact.final_row_count:,}")
     print(f"  repository_commit : {artifact.repository_commit}")
     print(f"  tree_clean        : {artifact.repository_tree_clean}")
+    if release_grade:
+        print(f"  untracked (waived): {len(untracked)} path(s) — "
+              f"tracked-clean-only policy")
+        for rel in untracked:
+            print(f"                      ? {rel}")
+        _write_evidence_record(work, artifact, commit, clean, untracked)
 
     # --- D6 fail-closed path check ---------------------------------------
     from miner.step1_ingress import certified_paths
@@ -428,10 +562,46 @@ def main(argv=None):
     ap.add_argument("--forward-threshold", type=float, default=0.31)
     ap.add_argument("--reverse-threshold", type=float, default=0.47)
     ap.add_argument("--workdir", default=None)
+    ap.add_argument(
+        "--release-grade", action="store_true",
+        help=(
+            "Certify the generation against the REAL repository commit instead "
+            "of a throwaway snapshot repo. Skips the source snapshot entirely "
+            "and takes repository_commit / repository_tree_clean from "
+            "WOI._repository_state(repo_root=<repo>). CLEANLINESS POLICY: "
+            "TRACKED-CLEAN ONLY — the pass/fail check is `git status "
+            "--porcelain --untracked-files=no`, and a dirty TRACKED tree aborts "
+            "the run loudly. UNTRACKED files are PERMITTED (they are not part "
+            "of the committed source that produced the artifact), but every "
+            "untracked path is listed in the run output and written to "
+            "release_grade_repository_state.json in the workdir. Default (off) "
+            "is the pre-commit scratch-SHA mode, unchanged."))
     args = ap.parse_args(argv)
 
+    mode = "RELEASE-GRADE" if args.release_grade else "SCRATCH"
     print("=" * 78)
     print("S172 Phase 5 D6 — 3.B Zeus single-GPU certified-generation smoke")
+    print(f"REPOSITORY MODE: {mode}")
+    if args.release_grade:
+        print("  provenance : the REAL repository at "
+              f"{_ROOT} (no snapshot taken)")
+        print("  policy     : TRACKED-CLEAN ONLY — pass/fail is `git status "
+              "--porcelain")
+        print("               --untracked-files=no`; a dirty TRACKED tree "
+              "aborts the run.")
+        print("               UNTRACKED files are PERMITTED and every path is "
+              "listed in this")
+        print("               output and in the evidence record "
+              "release_grade_repository_state.json.")
+        print("  meaning    : this generation is certified against the "
+              "project's own commit.")
+    else:
+        print("  provenance : a THROWAWAY SNAPSHOT REPO — the recorded SHA is "
+              "a SCRATCH SHA,")
+        print("               not this project's commit. NOT release-grade; "
+              "re-run with")
+        print("               --release-grade from a tracked-clean repository "
+              "for that.")
     print("=" * 78)
     _nvidia_smi("before the run")
 
@@ -462,11 +632,13 @@ def main(argv=None):
               "or a larger --seed-count for a populated one.")
 
     artifact, bundle, loaded = finalize_and_verify(
-        acc, gen_root, args.seed_start, args.seed_count, work)
+        acc, gen_root, args.seed_start, args.seed_count, work,
+        release_grade=args.release_grade)
 
     _nvidia_smi("after the run")
 
     print("\n" + "=" * 78)
+    print(f"REPOSITORY MODE: {mode}  (commit {artifact.repository_commit})")
     print(f"[{_PASS}] 3.B ACCEPTANCE — certified generation produced on real "
           f"silicon,\n        22-array bundle validated, Step-2 loader read it "
           f"back ({loaded.count:,} rows),\n        and the asymmetric "
