@@ -1,0 +1,187 @@
+(torch) michael@zeus-ubuntu-vm:~/distributed_prng_analysis$ PYTHONPATH=. python3 tests/smoke_s172_phase5_d6_zeus_single_gpu.py --release-grade
+==============================================================================
+S172 Phase 5 D6 — 3.B Zeus single-GPU certified-generation smoke
+REPOSITORY MODE: RELEASE-GRADE
+  provenance : the REAL repository at /home/michael/distributed_prng_analysis (no snapshot taken)
+  policy     : TRACKED-CLEAN ONLY — pass/fail is `git status --porcelain
+               --untracked-files=no`; a dirty TRACKED tree aborts the run.
+               UNTRACKED files are PERMITTED and every path is listed in this
+               output and in the evidence record release_grade_repository_state.json.
+  meaning    : this generation is certified against the project's own commit.
+==============================================================================
+
+----- nvidia-smi (before the run) ----------------------------------------
+Wed Jul 29 17:20:39 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.163.01             Driver Version: 550.163.01     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3080 Ti     On  |   00000000:01:00.0 Off |                  N/A |
+| 44%   50C    P8             22W /  370W |     264MiB /  12288MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1371      G   /usr/lib/xorg/Xorg                              4MiB |
+|    0   N/A  N/A      2507      C   sunshine                                      248MiB |
++-----------------------------------------------------------------------------------------+
+
+[WORKDIR] /tmp/d6_zeus_smoke
+
+[TRIAL] coordinator binding 127.0.0.1:34263
+[TRIAL] seeds [0, 8,000,000) stripe=4,000,000 substripe_cap=1,000,000 window=3 forward_threshold=0.31 reverse_threshold=0.47
+[WORKER] real GPU worker pid=32719 (miner/range_miner_worker.py, cupy on device 0)
+
+----- nvidia-smi (during the CUDA sieve) ----------------------------------------
+Wed Jul 29 17:20:44 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.163.01             Driver Version: 550.163.01     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3080 Ti     On  |   00000000:01:00.0 Off |                  N/A |
+| 44%   54C    P2             97W /  370W |     539MiB /  12288MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1371      G   /usr/lib/xorg/Xorg                              4MiB |
+|    0   N/A  N/A      2507      C   sunshine                                      248MiB |
+|    0   N/A  N/A     32719      C   /home/michael/venvs/torch/bin/python3         272MiB |
++-----------------------------------------------------------------------------------------+
+[S152-FLUSH] Warning: incremental flush failed (non-fatal): [Errno 2] No such file or directory: 'bidirectional_survivors_all.npz.flush.tmp' -> 'bidirectional_survivors_all.npz'
+
+[TRIAL] returned in 23.2s: forward=398,156 reverse=383 bidirectional=319
+[ACCUM] forward_count=398,156 reverse_count=383 raw candidates=319
+
+------------------------------------------------------------------------------
+THRESHOLD PROVENANCE (S172 D6 correction — Beta §3)
+------------------------------------------------------------------------------
+  requested : forward=0.31 reverse=0.47
+  payload   : {'1': [0.31], '2': [0.47]}
+  effective : {'1': [0.31], '2': [0.47]}
+  phase->dir: {'1': 'forward', '2': 'reverse'}
+
+[PROVENANCE] requested == payload == effective for BOTH directions (forward=0.31, reverse=0.47)
+
+------------------------------------------------------------------------------
+SURVIVOR COUNTS BY DIRECTION (asymmetric thresholds)
+------------------------------------------------------------------------------
+  forward  (phase 1, threshold 0.31) : 398,156
+  reverse  (phase 2, threshold 0.47) : 383
+  bidirectional (intersection)                : 319
+
+------------------------------------------------------------------------------
+RELEASE-GRADE REPOSITORY PROVENANCE (real repository — no snapshot)
+------------------------------------------------------------------------------
+  repo_root                   : /home/michael/distributed_prng_analysis
+  repository_commit           : b08c2c5a5c51c6abb57b272709c799b073f2cbb9
+  tracked_tree_clean (GOVERNS): True   [git status --porcelain --untracked-files=no]
+  clean_including_untracked   : False   [WOI._repository_state, information only]
+  POLICY: tracked-clean only. Untracked files are PERMITTED and listed below;
+          a dirty TRACKED tree aborts the run.
+  TRACKED-DIRTY paths (0) — these BLOCK the run:
+          (none)
+  UNTRACKED paths (9) — permitted, recorded, waived:
+          ?  CLAUDE_CODE_BRIEF_S176_FOLLOWUP_v1.md
+          ?  CLAUDE_CODE_BRIEF_S177_RESUBMISSION_v1.md
+          ?  CLAUDE_CODE_BRIEF_S178_FOLLOWUP_v1.md
+          ?  CLAUDE_CODE_BRIEF_WATCHER_KPI_VALIDATION_v1.md
+          ?  docs/STEP2_BIDIRECTIONAL_SIEVE_DESCRIPTIVE_TRACE.md
+          ?  tmp/d0_rev3.diff
+          ?  tmp/d0_rev4.diff
+          ?  tmp/d2_evidence/nr_baseline_pre_edit.txt
+          ?  tmp/d2_evidence/writer_pre_mutation_sha.txt
+
+[RELEASE-GRADE] tracked tree clean at b08c2c5a5c51c6abb57b272709c799b073f2cbb9 — certifying against the project's own commit
+
+==============================================================================
+CERTIFIED GENERATION  [RELEASE-GRADE (real repository commit)]
+==============================================================================
+  repository_mode   : release-grade
+  generation_id     : gen-20260730T002104136270Z-step1_java_lcg_0
+  generation_dir    : /tmp/d6_zeus_smoke/generation_root/.s172_accumulator/generations/gen-20260730T002104136270Z-step1_java_lcg_0--99ba444b22e19d2dbb64cdb92d287b4359e30e21627da94bd7f54fbba8b4f3d8
+  binary_npz_path   : /tmp/d6_zeus_smoke/generation_root/.s172_accumulator/generations/gen-20260730T002104136270Z-step1_java_lcg_0--99ba444b22e19d2dbb64cdb92d287b4359e30e21627da94bd7f54fbba8b4f3d8/bidirectional_survivors_binary.npz
+  all_npz_path      : /tmp/d6_zeus_smoke/generation_root/.s172_accumulator/generations/gen-20260730T002104136270Z-step1_java_lcg_0--99ba444b22e19d2dbb64cdb92d287b4359e30e21627da94bd7f54fbba8b4f3d8/bidirectional_survivors_all.npz
+  sidecar_path      : /tmp/d6_zeus_smoke/generation_root/.s172_accumulator/generations/gen-20260730T002104136270Z-step1_java_lcg_0--99ba444b22e19d2dbb64cdb92d287b4359e30e21627da94bd7f54fbba8b4f3d8/provenance.json
+  artifact_sha256   : 0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0
+  sidecar_sha256    : 99ba444b22e19d2dbb64cdb92d287b4359e30e21627da94bd7f54fbba8b4f3d8
+  raw_candidates    : 319
+  l2_winners        : 319
+  prior_rows        : 0
+  final_rows        : 319
+  repository_commit : b08c2c5a5c51c6abb57b272709c799b073f2cbb9
+  tree_clean        : True
+  untracked (waived): 9 path(s) — tracked-clean-only policy
+                      ? CLAUDE_CODE_BRIEF_S176_FOLLOWUP_v1.md
+                      ? CLAUDE_CODE_BRIEF_S177_RESUBMISSION_v1.md
+                      ? CLAUDE_CODE_BRIEF_S178_FOLLOWUP_v1.md
+                      ? CLAUDE_CODE_BRIEF_WATCHER_KPI_VALIDATION_v1.md
+                      ? docs/STEP2_BIDIRECTIONAL_SIEVE_DESCRIPTIVE_TRACE.md
+                      ? tmp/d0_rev3.diff
+                      ? tmp/d0_rev4.diff
+                      ? tmp/d2_evidence/nr_baseline_pre_edit.txt
+                      ? tmp/d2_evidence/writer_pre_mutation_sha.txt
+
+[EVIDENCE] release-grade repository state written: /tmp/d6_zeus_smoke/release_grade_repository_state.json
+[EVIDENCE] untracked paths recorded: 9
+
+[PATHS] all 4 certified paths exist on disk
+[22-ARRAY] 22 arrays, order matches the frozen oracle, validate_array_bundle() passed
+[22-ARRAY] rows=319
+[SIDECAR] keys=32 schema=s172.d3_5.provenance.v1.1 encoding=s172.phase0.encoding.v1
+          run_id: step1_java_lcg_0
+          prng_base: java_lcg
+          seed_start: 0
+          seed_count: 8000000
+          final_row_count: 319
+          artifact_sha256: 0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0
+          repository_commit: b08c2c5a5c51c6abb57b272709c799b073f2cbb9
+          repository_tree_clean: True
+          canonical_map_hash: 55686c6454d8b4ce3d05a904e687813b10f02c7d711533098c777d92acdea191
+
+[STEP-2 LOADER] utils.survivor_loader.load_survivors format=npz npz_version=3 count=319 fallback_used=False
+
+----- nvidia-smi (after the run) ----------------------------------------
+Wed Jul 29 17:21:04 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.163.01             Driver Version: 550.163.01     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3080 Ti     On  |   00000000:01:00.0 Off |                  N/A |
+| 62%   56C    P2             98W /  370W |     264MiB /  12288MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1371      G   /usr/lib/xorg/Xorg                              4MiB |
+|    0   N/A  N/A      2507      C   sunshine                                      248MiB |
++-----------------------------------------------------------------------------------------+
+
+==============================================================================
+REPOSITORY MODE: RELEASE-GRADE  (commit b08c2c5a5c51c6abb57b272709c799b073f2cbb9)
+[PASS] 3.B ACCEPTANCE — certified generation produced on real silicon,
+        22-array bundle validated, Step-2 loader read it back (319 rows),
+        and the asymmetric forward=0.31 / reverse=0.47 thresholds
+        reached the CUDA kernel unchanged (requested == payload == effective).
+==============================================================================
