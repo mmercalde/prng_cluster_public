@@ -195,15 +195,52 @@ def new_accumulator():
     return {"bidirectional": [], "forward_count": 0, "reverse_count": 0}
 
 
+@contextlib.contextmanager
+def _isolated_checkpoint_root():
+    """[S172 Phase-5 D6.1] Contain the live flush inside a throwaway root.
+
+    D6.1 turned `_flush_npz_incremental` from an always-failing attempt into a
+    real provisional snapshot write, and it now resolves its directory from a
+    STABLE root (`PRNG_CHECKPOINT_ROOT`, else the production module's own
+    directory) rather than the CWD. `ingest()` drives the live adapter, so
+    without this the suite would deposit `.s172_checkpoint/<run_id>/` in the
+    repository — or, worse, in a shared production checkpoint root — on every
+    run, and never clean it up.
+
+    Per invocation: fresh temp root, restored env, directory removed.
+    """
+    import tempfile as _tempfile
+    _prev_root = os.environ.get("PRNG_CHECKPOINT_ROOT")
+    _prev_run = os.environ.get("PRNG_CHECKPOINT_RUN_ID")
+    with _tempfile.TemporaryDirectory(prefix="d3_25_ckpt_") as _tmp:
+        os.environ["PRNG_CHECKPOINT_ROOT"] = _tmp
+        os.environ["PRNG_CHECKPOINT_RUN_ID"] = "d3-25-ingest"
+        try:
+            yield _tmp
+        finally:
+            for _k, _v in (("PRNG_CHECKPOINT_ROOT", _prev_root),
+                           ("PRNG_CHECKPOINT_RUN_ID", _prev_run)):
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
+
+
 def ingest(result, config=None, accumulator=None, module=None,
            trial_number=TRIAL_NUMBER, prng_base=PRNG_BASE):
-    """Drive the live adapter, silencing its progress prints."""
+    """Drive the live adapter, silencing its progress prints.
+
+    The live adapter calls the live flush (D3.25 asserts exactly that cadence),
+    so the snapshot root is isolated per invocation — see
+    `_isolated_checkpoint_root`.
+    """
     mod = module or WOIF
     acc = new_accumulator() if accumulator is None else accumulator
     cfg = make_config() if config is None else config
-    with contextlib.redirect_stdout(io.StringIO()):
-        tr = mod._build_test_result_from_pw(result, acc, cfg, prng_base,
-                                            trial_number)
+    with _isolated_checkpoint_root():
+        with contextlib.redirect_stdout(io.StringIO()):
+            tr = mod._build_test_result_from_pw(result, acc, cfg, prng_base,
+                                                trial_number)
     return acc, tr
 
 

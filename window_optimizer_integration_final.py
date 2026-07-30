@@ -239,19 +239,478 @@ _FLUSH_EVERY = int(_os_flush.environ.get("PRNG_FLUSH_EVERY", "10"))
 # reset to 0 at process start — safe because each run is a fresh process).
 _flush_last_count = 0
 
+import sys as _sys_flush
+import hashlib as _hashlib_flush
+import socket as _socket_flush
+import time as _time_flush
+import uuid as _uuid_flush
+
+# ═════════════════════════════════════════════════════════════════════════════
+# [S172 Phase-5 D6.1] WHAT THIS IS — AND WHAT IT IS NOT
+# ═════════════════════════════════════════════════════════════════════════════
+# This is a NON-AUTHORITATIVE, FOUR-FIELD INCREMENTAL SNAPSHOT. It is not a
+# canonical accumulator checkpoint, and it must not be described as one.
+#
+# D6.1 repairs exactly four things about it: WRITING (it never once succeeded),
+# VISIBILITY (every failure was swallowed), PER-FILE ATOMIC REPLACEMENT, and
+# ISOLATION (it was aimed at paths it does not own). That is the whole scope.
+#
+# It explicitly does NOT provide:
+#   * full accumulator resume,
+#   * finalizer reconstruction,
+#   * S166 in-memory memory protection.
+#
+# THE IN-MEMORY LIST REMAINS THE FINALIZER'S AUTHORITATIVE SOURCE. The D3.5
+# finalizer consumes `survivor_accumulator['bidirectional']` directly (see
+# `_raw_candidates_d3_5` below) and requires all 24 CANONICAL_RECORD_FIELDS;
+# this snapshot carries FOUR. Nothing here may be used to reconstruct finalizer
+# input, and the snapshot stays non-authoritative until D6.2 defines the
+# 24-field schema. `_CHECKPOINT_SCHEMA_VERSION` is stamped into every member so
+# D6.2 can tell the interim four-field format apart at a glance.
+#
+# The merge-by-seed below is PROVISIONAL SNAPSHOT MAINTENANCE ONLY — it keeps
+# the snapshot a useful running picture. It is not winner selection, it decides
+# nothing, and D3.5's explicit L2 key remains the only authority on winners.
+# ═════════════════════════════════════════════════════════════════════════════
+
+_CHECKPOINT_SCHEMA_VERSION = "s172-d6.1-four-field-v1"
+
+# ── [S172 Phase-5 D6.1] snapshot namespace and path conditions ───────────────
+# The snapshot MUST NOT write to `bidirectional_survivors_all.npz` /
+# `bidirectional_survivors_binary.npz`. Since D3.5 those two names are
+# COMPATIBILITY SYMLINKS OWNED BY THE FINALIZER
+# (`utils.run_finalizer._bootstrap_root_aliases`, run_finalizer.py:1400-1404),
+# pointing into `.s172_accumulator/current/`. The finalizer FAILS CLOSED if a
+# regular file appears at either path — "the historical root artifacts were
+# removed under Ruling F, so something wrote outside the finalizer".
+#
+# This was invisible while the S152 write was broken (D1 below): the flush
+# never actually replaced anything. Repairing the write WITHOUT relocating the
+# target would have replaced both symlinks with regular four-field files, and
+# the very next `finalize_run` would have raised PublicationError — permanently
+# breaking generation publication. Verified by reproduction in D6.1.
+#
+# Beta's path conditions, each enforced below and gated:
+#   1. Git-ignored (`.gitignore`: `.s172_checkpoint/`).
+#   2. NOT dependent on the process CWD — resolved from a stable root
+#      (`PRNG_CHECKPOINT_ROOT`, else this module's own directory). `os.chdir`
+#      during a run must not move or fork the snapshot.
+#   3. RUN-ISOLATED — `.s172_checkpoint/<run_id>/`, so consecutive or
+#      concurrent runs cannot collide.
+#   4. Temp and destination on the SAME FILESYSTEM (same directory), so
+#      `os.replace` keeps its atomicity.
+#   5. NEVER resolves to either finalizer-owned alias — checked at runtime,
+#      fail-closed, not merely by naming convention.
+#   6. The schema version above is carried in the artifact itself.
+_CHECKPOINT_DIRNAME     = ".s172_checkpoint"
+_CHECKPOINT_ALL_NAME    = "incremental_survivors_all.npz"
+_CHECKPOINT_BINARY_NAME = "incremental_survivors_binary.npz"
+_CHECKPOINT_TMP_SUFFIX  = ".flush-{pid}.tmp"
+_CHECKPOINT_ROOT_ENV    = "PRNG_CHECKPOINT_ROOT"
+_CHECKPOINT_RUN_ID_ENV  = "PRNG_CHECKPOINT_RUN_ID"
+
+# The two names this snapshot may never resolve to, at any depth.
+_FINALIZER_ALIAS_NAMES = ("bidirectional_survivors_all.npz",
+                          "bidirectional_survivors_binary.npz")
+
+# ── [S172 Phase-5 D6.1] transaction identity (Beta blocker) ──────────────────
+# A crash between the two `os.replace` calls leaves a MIXED pair. Comparing
+# seed sets does NOT detect that, and D6.1's first report wrongly claimed it
+# did. Beta's counterexample: old pair holds seed 42 @ 0.40; the new
+# transaction holds seed 42 @ 0.90; a crash after replacing member A leaves
+# A=0.90 / B=0.40 with IDENTICAL seed sets {42}. Seed-set comparison reports
+# agreement across two different transactions. The same hole exists whenever
+# only the match rates change.
+#
+# Both members therefore carry a TRANSACTION IDENTITY, and both temporary
+# artifacts are produced from ONE transaction descriptor built before either is
+# written. Detection compares identity, not content shape.
+_CHECKPOINT_IDENTITY_KEYS = (
+    "checkpoint_schema_version",   # str  — interim four-field format marker
+    "checkpoint_id",               # str  — unique per transaction
+    "checkpoint_sequence",         # int  — monotonic within a run
+    "run_id",                      # str  — stable run identity
+    "logical_candidate_count",     # int  — rows in this transaction
+    "four_field_content_digest",   # str  — sha256 over all FOUR fields
+)
+# Everything except the digest; a mismatch here means the two members came from
+# DIFFERENT transactions (an interrupted replacement) rather than from one
+# transaction whose content disagrees.
+_CHECKPOINT_TXN_KEYS = tuple(k for k in _CHECKPOINT_IDENTITY_KEYS
+                             if k != "four_field_content_digest")
+
+# Pair states reported by `_flush_inspect_pair`.
+_PAIR_CONSISTENT    = "consistent"
+_PAIR_INTERRUPTED   = "interrupted_replacement"
+_PAIR_INCONSISTENT  = "inconsistent_content"
+_PAIR_INCOMPLETE    = "incomplete_pair"
+_PAIR_UNRECOVERABLE = "unrecoverable"
+_PAIR_ABSENT        = "absent"
+
+# ── [S172 Phase-5 D6.1] the S166 in-memory clear is DEFERRED, not dropped ────
+# S166 added `accumulator["bidirectional"] = []` after the flush, justified by
+# a comment asserting the survivors were already safely persisted. That
+# guarantee has NEVER held (the write always failed), and it cannot hold today
+# either (D4): this snapshot stores FOUR fields, while the D3.5 finalizer
+# consumes the IN-MEMORY list and requires all 24 CANONICAL_RECORD_FIELDS.
+# Clearing would truncate the certified generation's raw-candidate input, and
+# 20 of the 24 fields are unrecoverable from the snapshot.
+#
+# The clear stays DISABLED behind this flag, but the ORDERING property is still
+# implemented and gated: the clear may only ever run after BOTH replaces have
+# succeeded. Enabling it later is then a one-line change against a gate that
+# already proves the ordering — but it additionally requires D6.2's 24-field
+# schema plus a finalizer read-back path. That is its own tracked work item,
+# and a Phase-7 soak-safety blocker in its own right (unbounded in-memory
+# candidate growth), exactly as this flush defect was.
+_FLUSH_CLEAR_IN_MEMORY = False
+
+# ── [S172 Phase-5 D6.1] failure observability (D2) ───────────────────────────
+# The pre-D6.1 helper funnelled every failure into one indistinguishable stdout
+# "Warning:", which is precisely why a total, permanent outage went unnoticed.
+_flush_success_count = 0
+_flush_failure_count = 0
+_flush_last_error    = None
+_flush_sequence      = 0
+
+# Stable run identity, fixed at import so every flush in one process agrees.
+_FLUSH_RUN_ID_DEFAULT = (f"{_socket_flush.gethostname()}-{_os_flush.getpid()}"
+                         f"-{int(_time_flush.time())}")
+
+
+def _flush_run_id() -> str:
+    """Stable run identity — used BOTH in the path and in every member's
+    identity block, so a snapshot can always be attributed to its run."""
+    return _os_flush.environ.get(_CHECKPOINT_RUN_ID_ENV) or _FLUSH_RUN_ID_DEFAULT
+
+
+def _flush_checkpoint_root() -> str:
+    """The snapshot root — deliberately NOT `os.getcwd()`.
+
+    Beta condition 2: a run that chdirs mid-flight must not move or fork its
+    snapshot. `PRNG_CHECKPOINT_ROOT` wins when set (this is also how the gates
+    keep their writes inside a temp dir); otherwise the root is THIS MODULE's
+    directory, which is fixed for the life of the process.
+    """
+    _root = _os_flush.environ.get(_CHECKPOINT_ROOT_ENV)
+    if _root:
+        return _os_flush.path.abspath(_root)
+    return _os_flush.path.dirname(_os_flush.path.abspath(__file__))
+
+
+def _flush_checkpoint_dir() -> str:
+    """`<stable root>/.s172_checkpoint/<run_id>/` — run-isolated (condition 3)."""
+    return _os_flush.path.join(_flush_checkpoint_root(), _CHECKPOINT_DIRNAME,
+                               _flush_run_id())
+
+
+def _flush_assert_not_alias(path: str) -> None:
+    """Beta condition 5 — fail closed, never merely by naming convention.
+
+    Checks the resolved basename AND the realpath against both finalizer-owned
+    aliases, so a symlinked snapshot directory cannot smuggle a write onto
+    `.s172_accumulator/current/`.
+    """
+    if _os_flush.path.basename(path) in _FINALIZER_ALIAS_NAMES:
+        raise RuntimeError(
+            f"snapshot target {path!r} uses a finalizer-owned alias name; the "
+            f"finalizer fails closed on a regular file at those paths")
+    _real = _os_flush.path.realpath(path)
+    for _alias in _FINALIZER_ALIAS_NAMES:
+        _alias_real = _os_flush.path.realpath(
+            _os_flush.path.join(_flush_checkpoint_root(), _alias))
+        if _real == _alias_real:
+            raise RuntimeError(
+                f"snapshot target {path!r} resolves to the finalizer-owned "
+                f"alias {_alias!r}")
+
+
+def _flush_assert_same_filesystem(tmp_path: str, final_path: str) -> None:
+    """Beta condition 4 — `os.replace` is only atomic within one filesystem."""
+    _tdir = _os_flush.path.dirname(tmp_path) or "."
+    _fdir = _os_flush.path.dirname(final_path) or "."
+    if _os_flush.path.abspath(_tdir) != _os_flush.path.abspath(_fdir):
+        raise RuntimeError(
+            f"temp {tmp_path!r} and destination {final_path!r} are in "
+            f"different directories — os.replace would not be atomic")
+    if _os_flush.stat(_tdir).st_dev != _os_flush.stat(_fdir).st_dev:
+        raise RuntimeError(
+            f"temp {tmp_path!r} and destination {final_path!r} are on "
+            f"different filesystems — os.replace would not be atomic")
+
+
+def _flush_four_field_digest(seeds, scores, fwd_mr, rev_mr) -> str:
+    """sha256 over ALL FOUR fields, in canonical (seed-sorted) order.
+
+    This is what makes Beta's counterexample detectable: two transactions with
+    the same seed set but a changed score or match rate produce DIFFERENT
+    digests, where a seed-set comparison sees no difference at all.
+    """
+    _h = _hashlib_flush.sha256()
+    _h.update(_CHECKPOINT_SCHEMA_VERSION.encode("utf-8"))
+    for _name, _arr in (("seeds", seeds), ("score", scores),
+                        ("forward_match_rate", fwd_mr),
+                        ("reverse_match_rate", rev_mr)):
+        _h.update(_name.encode("utf-8"))
+        _h.update(str(_arr.dtype).encode("utf-8"))
+        _h.update(_np_flush.ascontiguousarray(_arr).tobytes())
+    return _h.hexdigest()
+
+
+def _flush_build_transaction(seeds, scores, fwd_mr, rev_mr) -> dict:
+    """ONE descriptor, built BEFORE either temp is written, stamped on BOTH."""
+    global _flush_sequence
+    _flush_sequence += 1
+    return {
+        "checkpoint_schema_version": _CHECKPOINT_SCHEMA_VERSION,
+        "checkpoint_id": _uuid_flush.uuid4().hex,
+        "checkpoint_sequence": _flush_sequence,
+        "run_id": _flush_run_id(),
+        "logical_candidate_count": int(len(seeds)),
+        "four_field_content_digest": _flush_four_field_digest(
+            seeds, scores, fwd_mr, rev_mr),
+    }
+
+
+def _flush_identity_arrays(txn: dict) -> dict:
+    """The identity block as 0-d numpy arrays (allow_pickle=False loadable)."""
+    _out = {}
+    for _k in _CHECKPOINT_IDENTITY_KEYS:
+        _v = txn[_k]
+        _out[_k] = (_np_flush.array(int(_v), dtype=_np_flush.int64)
+                    if isinstance(_v, int) else _np_flush.array(str(_v)))
+    return _out
+
+
+def _flush_read_member(path: str):
+    """Return `(identity, arrays)` for one member, or raise.
+
+    A member with no identity block is a pre-D6.1 or foreign file and is
+    REFUSED rather than guessed at.
+    """
+    with _np_flush.load(path, allow_pickle=False) as _z:
+        _files = set(_z.files)
+        _missing = [_k for _k in _CHECKPOINT_IDENTITY_KEYS if _k not in _files]
+        if _missing:
+            raise ValueError(
+                f"{path}: missing identity field(s) {_missing} — not a "
+                f"{_CHECKPOINT_SCHEMA_VERSION} snapshot member")
+        _ident = {}
+        for _k in _CHECKPOINT_IDENTITY_KEYS:
+            _val = _z[_k]
+            _ident[_k] = (int(_val) if _val.dtype.kind in "iu" else str(_val))
+        _arrays = {_k: _z[_k] for _k in _files
+                   if _k not in _CHECKPOINT_IDENTITY_KEYS}
+        return _ident, _arrays
+
+
+def _flush_identity_differs(ident_a: dict, ident_b: dict) -> bool:
+    """True when the two members came from DIFFERENT transactions.
+
+    This is the line Beta's blocker turns on. It compares TRANSACTION IDENTITY
+    — schema, checkpoint_id, sequence, run_id, logical count — NOT seed sets.
+    A seed-set comparison here would report agreement for the counterexample in
+    the header (same seeds, changed score, mixed pair).
+    """
+    return any(ident_a[_k] != ident_b[_k] for _k in _CHECKPOINT_TXN_KEYS)
+
+
+def _flush_inspect_pair(all_path: str, binary_path: str) -> dict:
+    """Classify the on-disk pair. Reads only; never mutates anything.
+
+    Beta's load contract:
+      * matching identity + digest        -> accept                (consistent)
+      * mismatched identity / sequence    -> interrupted replacement
+      * matching seeds, differing digest  -> inconsistency detected
+      * one member unreadable             -> pair incomplete
+      * neither valid                     -> recovery fails visibly
+    In EVERY outcome the in-memory records are left untouched — this function
+    cannot reach them.
+    """
+    _res = {"status": None, "all": None, "binary": None,
+            "all_error": None, "binary_error": None}
+    for _key, _path in (("all", all_path), ("binary", binary_path)):
+        if not _os_flush.path.exists(_path):
+            _res[f"{_key}_error"] = FileNotFoundError(_path)
+            continue
+        try:
+            _res[_key] = _flush_read_member(_path)
+        except Exception as _e:                                # noqa: BLE001
+            _res[f"{_key}_error"] = _e
+
+    _a, _b = _res["all"], _res["binary"]
+    if _a is None and _b is None:
+        _absent = (not _os_flush.path.exists(all_path)
+                   and not _os_flush.path.exists(binary_path))
+        _res["status"] = _PAIR_ABSENT if _absent else _PAIR_UNRECOVERABLE
+        return _res
+    if _a is None or _b is None:
+        _res["status"] = _PAIR_INCOMPLETE
+        return _res
+    if _flush_identity_differs(_a[0], _b[0]):
+        _res["status"] = _PAIR_INTERRUPTED
+        return _res
+    if _a[0]["four_field_content_digest"] != _b[0]["four_field_content_digest"]:
+        _res["status"] = _PAIR_INCONSISTENT
+        return _res
+    _res["status"] = _PAIR_CONSISTENT
+    return _res
+
+
+def _flush_tmp_name(final_path: str) -> str:
+    """The temp target for `final_path`, in the SAME directory (so `os.replace`
+    is a same-filesystem atomic rename).
+
+    [D6.1 / D1] The pre-repair code built `<final> + ".flush.tmp"` and passed
+    that NAME to `np.savez_compressed`, which appends `.npz` when the name
+    lacks one — numpy wrote `...flush.tmp.npz`, and the following
+    `os.replace("...flush.tmp", ...)` raised FileNotFoundError into a broad
+    `except`. The helper has therefore been a silent no-op since S152.
+
+    The name deliberately still has NO `.npz` tail: the suffix rewrite is
+    defeated by the WRITE MECHANISM (an open file handle — see
+    `_flush_write_npz`), not by the spelling of the name. Gating it that way is
+    strictly stronger, because the property then holds for ANY future temp
+    name, including one that reintroduces this exact bug.
+    """
+    return final_path + _CHECKPOINT_TMP_SUFFIX.format(pid=_os_flush.getpid())
+
+
+def _flush_write_npz(tmp_path: str, arrays: dict) -> None:
+    """Write a COMPLETE, fsynced temp file. Never touches a final name.
+
+    `savez_compressed` is handed an OPEN FILE HANDLE, so numpy writes to
+    exactly `tmp_path`: the implicit-`.npz` logic applies only to a string
+    filename, never to a file object.
+
+    The fsync is not decoration. `os.replace` is atomic with respect to the
+    DIRECTORY ENTRY, but without fsync a power-loss crash can leave the renamed
+    file truncated or zero-length — "atomic" without durability is not a
+    checkpoint, and durability is the point of D6.1.
+    """
+    with open(tmp_path, "wb") as _fh:
+        _np_flush.savez_compressed(_fh, **arrays)
+        _fh.flush()
+        _os_flush.fsync(_fh.fileno())
+
+
+def _flush_fsync_dir(dir_path: str) -> None:
+    """Persist the renames themselves, not just the file contents."""
+    _fd = _os_flush.open(dir_path, _os_flush.O_RDONLY)
+    try:
+        _os_flush.fsync(_fd)
+    finally:
+        _os_flush.close(_fd)
+
+
+def _flush_remove_temps(*paths) -> None:
+    """Requirement 5: temps are removed on EVERY path, success and failure."""
+    for _p in paths:
+        try:
+            _os_flush.unlink(_p)
+        except FileNotFoundError:
+            pass
+        except OSError as _ue:
+            print(f"[S152-FLUSH] Warning: could not remove temp {_p}: {_ue}",
+                  file=_sys_flush.stderr)
+
+
+def _flush_purge_stale_temps(dir_path: str) -> int:
+    """Remove temp debris left behind by a CRASHED run (crash point (a)).
+
+    A process killed mid-write cannot run its own `finally`, so its orphans are
+    collected by the next flush. Only temps whose embedded pid is NO LONGER
+    ALIVE are removed: `optimize_window` can run partition workers in parallel
+    against one CWD, and a blind `*.tmp` sweep would delete a live sibling's
+    in-flight temp. Returns the number removed.
+    """
+    import glob as _glob
+    import re as _re_flush
+    _pat = _re_flush.compile(r"\.flush-(\d+)\.tmp$")
+    _n = 0
+    for _p in _glob.glob(_os_flush.path.join(dir_path, "*.tmp")):
+        _m = _pat.search(_p)
+        if _m is None:
+            continue
+        _pid = int(_m.group(1))
+        try:
+            _os_flush.kill(_pid, 0)
+            continue          # owner still alive — not ours to remove
+        except ProcessLookupError:
+            pass              # owner is gone: genuine orphan
+        except OSError:
+            continue          # e.g. EPERM — someone else's live process
+        try:
+            _os_flush.unlink(_p)
+            _n += 1
+        except OSError:
+            pass
+    return _n
+
 
 def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
     """
-    Atomic merge-write of accumulator bidirectional survivors to NPZ.
+    Write the NON-AUTHORITATIVE four-field incremental snapshot.
 
-    - Deduplicates by seed (highest score wins).
-    - Merges with any pre-existing NPZ on disk.
-    - Writes atomically via .tmp → rename.
-    - Updates both bidirectional_survivors_all.npz  (with scores)
-      and    bidirectional_survivors_binary.npz     (Steps 2-6 format).
-    - Non-fatal: any write error is logged but does not raise.
+    This is not a canonical accumulator checkpoint and must not be used to
+    reconstruct finalizer input — the in-memory list stays the finalizer's
+    authoritative source (see the section header). The snapshot is
+    non-authoritative until D6.2 defines the 24-field schema.
+
+    - Merge-by-seed, highest score wins: PROVISIONAL SNAPSHOT MAINTENANCE ONLY.
+      It decides no winner; D3.5's explicit L2 key remains authoritative.
+    - Merges with any pre-existing snapshot member A on disk.
+    - Writes each file atomically: a complete, fsynced temp → `os.replace`.
+    - Both members are stamped with ONE transaction identity.
+
+    [D6.1] SEQUENTIAL-ATOMIC WITH SELF-REPAIR — explicitly NOT jointly atomic.
+    Both temps are written to completion first, then the two `os.replace` calls
+    run back-to-back. Each file INDIVIDUALLY is always either its complete
+    prior content or its complete new content. The PAIR is not atomic: a crash
+    between the two replaces leaves member A new and member B old.
+
+    That mixed state is detected by comparing TRANSACTION IDENTITY, never by
+    comparing seed sets. Seed-set comparison is not sufficient and D6.1's first
+    report wrongly claimed it was: two transactions can share a seed set and
+    differ only in a score or a match rate, in which case seed-set comparison
+    reports agreement across a genuinely mixed pair. See
+    `_flush_identity_differs` and the counterexample in the section header.
+
+    The mixed pair is SELF-REPAIRING for this snapshot's own purposes: the
+    in-memory list is retained, and the next flush merges the readable member A
+    with memory and rewrites both. That repairs the SNAPSHOT — it is not
+    accumulator resume and it is not finalizer reconstruction.
+
+    True joint atomicity needs a directory swap or a manifest, which is out of
+    scope — so this documents the property the code actually keeps instead of
+    claiming one it cannot. This project has already been bitten twice by a
+    stated guarantee that was never checked against the code (D4, and the
+    seed-set claim above).
+
+    [D6.1] COMPRESSION IS CORRECT HERE AND IS NOT GOVERNED BY D5 §6.7.A.
+    That ban applies to the CERTIFIED ARTIFACT written by the miner NPZ writer,
+    where D5 enforces it with `_assert_stored_uncompressed` and mutant M6a
+    (which reds on `compress_type=8`). This is a non-authoritative SNAPSHOT:
+    rewritten every `_FLUSH_EVERY` survivors, never certified, never consumed
+    by Steps 2-6, under a different name in a different directory. Do NOT
+    "harmonize" the two — making this uncompressed buys nothing, and making the
+    artifact compressed reds D5's M6a.
+
+    [D6.1] FAILURE CONTRACT (D2) — non-fatal to the trial, but never silent:
+      * EXPECTED/RECOVERABLE — an unreadable or mixed prior pair: warn on
+        stdout, drop the merge leg that cannot be read, continue from memory.
+        This is the normal post-crash path, not an incident.
+      * WRITE FAILURE (`OSError`) — loud ERROR on stderr with a traceback,
+        counted in `_flush_failure_count`, and ALL candidates retained.
+      * UNEXPECTED (any other exception) — loud UNEXPECTED ERROR on stderr with
+        a traceback, counted, and ALL candidates retained.
+    A snapshot failure never kills the trial, but stderr shows a human and
+    `_flush_failure_count` / `_flush_last_error` let a soak or WATCHER observe
+    it. The pre-D6.1 behaviour — one stdout "Warning:" for every possible
+    failure, including total outage — is what hid this defect.
     """
-    global _flush_last_count
+    global _flush_last_count, _flush_success_count, _flush_failure_count
+    global _flush_last_error
 
     bidi = accumulator.get("bidirectional", [])
     current_count = len(bidi)
@@ -260,62 +719,138 @@ def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
     if new_since_last < _FLUSH_EVERY:
         return  # not enough new survivors yet
 
-    try:
-        _ACCUM_NPZ  = "bidirectional_survivors_all.npz"
-        _BINARY_NPZ = "bidirectional_survivors_binary.npz"
+    _ckpt_dir   = _flush_checkpoint_dir()
+    _ACCUM_NPZ  = _os_flush.path.join(_ckpt_dir, _CHECKPOINT_ALL_NAME)
+    _BINARY_NPZ = _os_flush.path.join(_ckpt_dir, _CHECKPOINT_BINARY_NAME)
+    _tmp        = _flush_tmp_name(_ACCUM_NPZ)
+    _tmp_bin    = _flush_tmp_name(_BINARY_NPZ)
 
-        # Deduplicate: highest score per seed wins
+    try:
+        # Beta path conditions 4 and 5, checked BEFORE anything is written.
+        _flush_assert_not_alias(_ACCUM_NPZ)
+        _flush_assert_not_alias(_BINARY_NPZ)
+
+        _os_flush.makedirs(_ckpt_dir, exist_ok=True)
+        _flush_assert_same_filesystem(_tmp, _ACCUM_NPZ)
+        _flush_assert_same_filesystem(_tmp_bin, _BINARY_NPZ)
+        _flush_purge_stale_temps(_ckpt_dir)
+
+        # Report what the previous pair looked like — an interrupted or
+        # inconsistent pair must be VISIBLE, not silently overwritten.
+        _pair = _flush_inspect_pair(_ACCUM_NPZ, _BINARY_NPZ)
+        if _pair["status"] not in (_PAIR_ABSENT, _PAIR_CONSISTENT):
+            print(f"[S152-FLUSH] Notice: prior snapshot pair is "
+                  f"{_pair['status']} — rewriting both members from memory "
+                  f"plus whatever prior state is readable "
+                  f"(snapshot repair only; the in-memory list is untouched "
+                  f"and remains the finalizer's authoritative source)")
+
+        # Merge-by-seed, highest score wins — PROVISIONAL SNAPSHOT MAINTENANCE
+        # ONLY. This selects nothing the pipeline consumes.
         seen: dict = {}
         for s in bidi:
             seed = int(s["seed"])
             if seed not in seen or s.get("score", 0.0) > seen[seed].get("score", 0.0):
                 seen[seed] = s
 
-        # Merge with prior NPZ if it exists
-        if _os_flush.path.exists(_ACCUM_NPZ):
+        # Merge the prior member A when it is READABLE — including when the
+        # pair is interrupted/incomplete, which is exactly the state a crash
+        # leaves behind. EXPECTED/RECOVERABLE tier: never fatal.
+        if _pair["all"] is not None:
             try:
-                prior = _np_flush.load(_ACCUM_NPZ)
-                prior_seeds  = prior["seeds"]
-                prior_scores = prior.get("score", _np_flush.zeros(len(prior_seeds)))
+                prior_seeds  = _pair["all"][1]["seeds"]
+                prior_scores = _pair["all"][1].get(
+                    "score", _np_flush.zeros(len(prior_seeds)))
                 for i, pseed in enumerate(prior_seeds):
                     pseed = int(pseed)
                     pscore = float(prior_scores[i])
                     if pseed not in seen or pscore > seen[pseed].get("score", 0.0):
                         seen[pseed] = {"seed": pseed, "score": pscore}
             except Exception as _me:
-                print(f"[S152-FLUSH] Warning: could not read prior NPZ for merge: {_me}")
+                print(f"[S152-FLUSH] Warning: could not merge prior snapshot "
+                      f"member (continuing from memory): {_me}")
+        elif _pair["all_error"] is not None and _pair["status"] != _PAIR_ABSENT:
+            print(f"[S152-FLUSH] Warning: prior snapshot member A unreadable "
+                  f"(expected after a crash — continuing from memory): "
+                  f"{_pair['all_error']}")
 
-        all_survivors = list(seen.values())
+        # Canonical (seed-sorted) order, so the content digest depends on
+        # content alone and not on dict insertion order.
+        all_survivors = sorted(seen.values(), key=lambda _s: int(_s["seed"]))
         seeds  = _np_flush.array([s["seed"]  for s in all_survivors], dtype=_np_flush.uint64)
         scores = _np_flush.array([s.get("score", 0.0) for s in all_survivors], dtype=_np_flush.float32)
         fwd_mr = _np_flush.array([s.get("forward_match_rate", 0.0) for s in all_survivors], dtype=_np_flush.float32)
         rev_mr = _np_flush.array([s.get("reverse_match_rate", 0.0) for s in all_survivors], dtype=_np_flush.float32)
 
-        # Atomic write — accumulator NPZ
-        _tmp = _ACCUM_NPZ + ".flush.tmp"
-        _np_flush.savez_compressed(_tmp, seeds=seeds, score=scores)
+        # ── 1. ONE transaction descriptor, then BOTH temps from it ───────────
+        # Built before either write so the two members cannot disagree about
+        # which transaction they belong to — that identity is what makes an
+        # interrupted replacement detectable.
+        _txn = _flush_build_transaction(seeds, scores, fwd_mr, rev_mr)
+        _ident = _flush_identity_arrays(_txn)
+
+        # Sequential-atomic: no final name is touched until both new payloads
+        # exist on disk and are fsynced, so a failure while building the second
+        # payload cannot leave a half-updated pair.
+        _flush_write_npz(_tmp, dict(seeds=seeds, score=scores, **_ident))
+        _flush_write_npz(_tmp_bin, dict(seeds=seeds,
+                                        forward_match_rate=fwd_mr,
+                                        reverse_match_rate=rev_mr,
+                                        score=scores, **_ident))
+
+        # ── 2. then the two replaces, back-to-back ───────────────────────────
+        # A crash BETWEEN these two leaves a mixed pair. It is detected by
+        # TRANSACTION IDENTITY (never by seed sets — see the docstring) and the
+        # next flush rewrites both. Not jointly atomic, and never claimed to be.
         _os_flush.replace(_tmp, _ACCUM_NPZ)
-
-        # Atomic write — binary NPZ (Steps 2-6)
-        _tmp_bin = _BINARY_NPZ + ".flush.tmp"
-        _np_flush.savez_compressed(_tmp_bin, seeds=seeds,
-                                   forward_match_rate=fwd_mr,
-                                   reverse_match_rate=rev_mr,
-                                   score=scores)
         _os_flush.replace(_tmp_bin, _BINARY_NPZ)
+        _flush_fsync_dir(_ckpt_dir)
 
-        _flush_last_count = 0  # [S166] reset — list cleared below
-        # [S166] Clear the in-memory list after flush — data is safe in NPZ.
-        # Without this, the list grows unboundedly and causes OOM on Zeus.
-        accumulator["bidirectional"] = []
+        # ── 3. ONLY NOW is the on-disk snapshot pair complete ────────────────
+        _flush_last_count     = current_count
+        _flush_success_count += 1
+
+        if _FLUSH_CLEAR_IN_MEMORY:
+            # [S166 / D6.1] DISABLED — see `_FLUSH_CLEAR_IN_MEMORY`. The
+            # POSITION is the contract and is gated: the clear may only run
+            # strictly AFTER both replaces have returned, so no candidate is
+            # ever dropped on a path where the snapshot did not land.
+            accumulator["bidirectional"] = []
+            _flush_last_count = 0
+
         _tag = f" [{label}]" if label else ""
         print(
-            f"[S152-FLUSH]{_tag} NPZ flushed: {len(seeds):,} total survivors "
-            f"(+{new_since_last} new this flush, threshold={_FLUSH_EVERY})"
+            f"[S152-FLUSH]{_tag} snapshot flushed: {len(seeds):,} rows "
+            f"(+{new_since_last} new this flush, threshold={_FLUSH_EVERY}, "
+            f"seq={_txn['checkpoint_sequence']})"
         )
 
+    except OSError as _fe:
+        # WRITE FAILURE tier — recoverable in kind (ENOSPC, EACCES, EIO), but
+        # never silent. ALL candidates stay in memory.
+        import traceback as _tb_flush
+        _flush_failure_count += 1
+        _flush_last_error = _fe
+        print(f"[S152-FLUSH] ERROR: snapshot write FAILED (non-fatal to the "
+              f"trial; ALL {current_count:,} candidates retained in memory): "
+              f"{_fe!r}", file=_sys_flush.stderr)
+        _tb_flush.print_exc(file=_sys_flush.stderr)
+
     except Exception as _fe:
-        print(f"[S152-FLUSH] Warning: incremental flush failed (non-fatal): {_fe}")
+        # UNEXPECTED tier — a contract or programming error, not a disk
+        # condition. Loudest of the three, still non-fatal to the trial.
+        import traceback as _tb_flush
+        _flush_failure_count += 1
+        _flush_last_error = _fe
+        print(f"[S152-FLUSH] UNEXPECTED ERROR: incremental flush raised "
+              f"{type(_fe).__name__} (non-fatal to the trial; ALL "
+              f"{current_count:,} candidates retained in memory): {_fe!r}",
+              file=_sys_flush.stderr)
+        _tb_flush.print_exc(file=_sys_flush.stderr)
+
+    finally:
+        # Requirement 5 — temps removed on EVERY path, success and failure.
+        _flush_remove_temps(_tmp, _tmp_bin)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

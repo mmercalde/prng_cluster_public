@@ -44,6 +44,12 @@ window_candidates/
 !schema_*.json
 !bidirectional_survivors_all.npz    # [S145-R1 v2] persistent NPZ accumulator (replaces JSON)
 
+# [S172 Phase-5 D6.1] the incremental flush CHECKPOINT namespace. Run-local
+# crash-recovery state, rewritten every PRNG_FLUSH_EVERY survivors — never an
+# artifact, never committed. Deliberately separate from the finalizer's
+# `.s172_accumulator/`, whose root aliases this checkpoint must not touch.
+.s172_checkpoint/
+
 # --- Syncthing Temp Files ---
 .syncthing*
 *.tmp

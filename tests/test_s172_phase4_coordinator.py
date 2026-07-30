@@ -1809,9 +1809,13 @@ def gate22_coexistence():
         #     sink and passes it to run_trial_miner (it passed None before, so
         #     no assembly was ever produced), and the builder ingests the stored
         #     assembly instead of returning +0. `_build_test_result_from_pw`,
-        #     the PWC and ZMQ gates, and `_flush_npz_incremental` are all
-        #     byte-identical to 2a6e0f8 — D6's own G-TESTRESULT and
-        #     G-FLUSH-CADENCE assert exactly that against `git show`.
+        #     the PWC and ZMQ gates are byte-identical to 2a6e0f8 — D6's own
+        #     G-TESTRESULT asserts exactly that against `git show`.
+        #     [S172 D6.1] `_flush_npz_incremental` was ALSO byte-identical here
+        #     until D6.1, which repairs its body (see the D6.1 block below).
+        #     G-FLUSH-CADENCE now pins the flush ENTRY GATE verbatim against
+        #     2a6e0f8 instead of the whole function — the cadence rule is what
+        #     D6 owns, and it is unchanged.
         #   * tests/test_s172_phase5_d6_production_adapter.py — the 3.A
         #     acceptance harness (7 gates + 16 mutants).
         #   * tests/smoke_s172_phase5_d6_zeus_single_gpu.py — the 3.B
@@ -1853,6 +1857,41 @@ def gate22_coexistence():
         # (flagged for review).
         "miner/range_miner_protocol.py",
         "tests/test_s172_phase5_d6_threshold_path.py",
+        # Phase-5 D6.1 — incremental NPZ atomic flush and durability repair.
+        # A standalone Beta-mandated defect repair; it adds no new deliverable
+        # beyond one gate file, and changes only files already allowed above:
+        #   * window_optimizer_integration_final.py (already allowed) — the
+        #     edit is confined to the [S152] flush section. Since S152 that
+        #     helper has failed on EVERY invocation (the temp name lacked
+        #     `.npz`, numpy appended one, `os.replace` raised FileNotFoundError
+        #     into a broad `except` that printed a non-fatal warning), so
+        #     incremental durability never existed. The repair makes the write
+        #     succeed, fsyncs it, narrows the exception handling into three
+        #     visible tiers, and corrects the false S166 "already persisted"
+        #     comment.
+        #     SCOPE CHANGE, pending a Team Beta ruling: the checkpoint is also
+        #     RELOCATED to `.s172_checkpoint/`. It used to target
+        #     `bidirectional_survivors_all.npz` / `..._binary.npz` in the run
+        #     root, which since D3.5 are compatibility SYMLINKS owned by
+        #     `run_finalizer._bootstrap_root_aliases` — and the finalizer FAILS
+        #     CLOSED on a regular file there (Ruling F). Repairing the write
+        #     without relocating it would have replaced both symlinks with
+        #     regular 4-array files and made every later finalize_run raise
+        #     PublicationError. The S166 in-memory clear stays DISABLED for the
+        #     same family of reason: the D3.5 finalizer consumes the in-memory
+        #     list and needs all 24 CANONICAL_RECORD_FIELDS, which a 4-array
+        #     checkpoint cannot restore. Deferred as its own tracked item.
+        #     The D3.25 one-flush-per-trial cadence invariant is untouched, and
+        #     the entry gate is byte-identical to 2a6e0f8.
+        #   * tests/test_s172_phase5_d6_production_adapter.py (already allowed)
+        #     — G-FLUSH-CADENCE is re-anchored: it pinned whole-function
+        #     byte-identity and the FAILED write; it now pins the entry gate
+        #     plus the SUCCESSFUL flush.
+        #   * tests/test_s172_d6_1_flush_durability.py — D6.1's own acceptance
+        #     harness (13 gates + 7 mutants).
+        # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
+        # (flagged for review).
+        "tests/test_s172_d6_1_flush_durability.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

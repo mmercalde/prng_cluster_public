@@ -841,14 +841,40 @@ def g_flush_cadence(integ_src=None):
     untouched."""
     integ_src = _INTEG_SRC if integ_src is None else integ_src
 
-    # (1) the flush helper is byte-identical to the frozen commit: D6 changes
-    #     the CALLER, never the cadence rule.
+    # (1) the CADENCE RULE is byte-identical to the frozen commit.
+    #
+    #     [S172 Phase-5 D6.1] This assertion used to demand that the WHOLE of
+    #     `_flush_npz_incremental` be byte-identical to its text at
+    #     ORACLE_FROZEN_COMMIT. D6.1 repairs the body of that helper (the
+    #     never-working atomic write, the swallowing except, the false S166
+    #     guarantee), so whole-function identity is no longer the right oracle
+    #     — it would red on a mandated repair while proving nothing about
+    #     cadence.
+    #
+    #     What D6 actually owns here is the ENTRY GATE: how `_FLUSH_EVERY` and
+    #     `_flush_last_count` decide whether a flush happens at all. That text
+    #     is pinned verbatim against the frozen commit, so D6.1 (or anything
+    #     later) still cannot shift the cadence while changing the write.
     frozen_src = _git_show(ORACLE_FROZEN_COMMIT,
                            "window_optimizer_integration_final.py")
-    assert _func_src(integ_src, _INTEG_PATH, "_flush_npz_incremental") == \
-        _func_src(frozen_src, _INTEG_PATH, "_flush_npz_incremental"), (
-        "_flush_npz_incremental was modified — the flush cadence rule must not "
-        "shift")
+    _frozen_fn = _func_src(frozen_src, _INTEG_PATH, "_flush_npz_incremental")
+    _live_fn = _func_src(integ_src, _INTEG_PATH, "_flush_npz_incremental")
+
+    ORACLE_CADENCE_GATE = (
+        '    bidi = accumulator.get("bidirectional", [])\n'
+        "    current_count = len(bidi)\n"
+        "\n"
+        "    new_since_last = current_count - _flush_last_count\n"
+        "    if new_since_last < _FLUSH_EVERY:\n"
+        "        return  # not enough new survivors yet"
+    )
+    # the oracle is only trustworthy if it really is the frozen text
+    assert ORACLE_CADENCE_GATE in _frozen_fn, (
+        "the hand-transcribed cadence-gate oracle is not present at "
+        f"{ORACLE_FROZEN_COMMIT} — the oracle itself has drifted")
+    assert ORACLE_CADENCE_GATE in _live_fn, (
+        "the _flush_npz_incremental ENTRY GATE differs from its text at "
+        f"{ORACLE_FROZEN_COMMIT} — the flush cadence rule must not shift")
 
     # (2) exactly ONE flush call in the miner builder, inside the
     #     `accumulator is not None` guard, with the pre-D6 label
@@ -897,26 +923,33 @@ def g_flush_cadence(integ_src=None):
 
     # (5) the threshold gate itself still governs: below _FLUSH_EVERY the real
     #     helper returns before doing anything at all; at the threshold it
-    #     proceeds past the gate.
+    #     proceeds past the gate AND THE CHECKPOINT ACTUALLY LANDS.
     #
-    #     "Proceeds past the gate" is asserted on the helper's OUTPUT, not on a
-    #     written NPZ, because of a PRE-EXISTING [S152] defect this gate must
-    #     observe rather than repair: the temp name is
-    #     `bidirectional_survivors_all.npz.flush.tmp`, which does not end in
-    #     `.npz`, so `np.savez_compressed` appends one and writes
-    #     `...flush.tmp.npz`; the following `os.replace(_tmp, ...)` then raises
-    #     FileNotFoundError into the helper's own broad `except`, which prints a
-    #     non-fatal warning. The incremental NPZ has therefore been a no-op
-    #     since before D6 — and, because the write fails before
-    #     `accumulator["bidirectional"] = []`, the accumulator is never cleared,
-    #     so every candidate still reaches the finalizer. D6 changes neither
-    #     behaviour: the cadence rule is byte-identical (assertion 1 above) and
-    #     fixing the temp name would shift it.
+    #     [S172 Phase-5 D6.1] This assertion previously pinned the FAILED
+    #     attempt. Pre-D6.1 the temp name `...all.npz.flush.tmp` did not end in
+    #     `.npz`, so `np.savez_compressed` appended one, `os.replace` raised
+    #     FileNotFoundError into a broad `except`, and the incremental NPZ was a
+    #     permanent no-op. This gate observed that and pinned it. D6.1 repairs
+    #     it, so the gate now pins SUCCESSFUL flush behaviour instead: the
+    #     checkpoint files exist after the at-threshold call.
+    #
+    #     The accumulator is STILL not cleared, but for a different and now
+    #     deliberate reason: `_FLUSH_CLEAR_IN_MEMORY` is False, because the
+    #     4-array checkpoint cannot reconstruct the 24 CANONICAL_RECORD_FIELDS
+    #     the D3.5 finalizer consumes from the in-memory list. Candidates
+    #     therefore still all reach the finalizer — by design now, not by a bug.
     assert isinstance(WOI._FLUSH_EVERY, int) and WOI._FLUSH_EVERY > 0
     import contextlib as _ctx
     import io as _io
     with tempfile.TemporaryDirectory() as tmp:
         cwd = os.getcwd()
+        # [S172 D6.1] The snapshot root is deliberately NOT the CWD any more
+        # (Beta path condition 2), so chdir alone no longer contains the write.
+        # Pin the root and the run id, or this gate would write into the repo.
+        _prev_root = os.environ.get("PRNG_CHECKPOINT_ROOT")
+        _prev_run = os.environ.get("PRNG_CHECKPOINT_RUN_ID")
+        os.environ["PRNG_CHECKPOINT_ROOT"] = tmp
+        os.environ["PRNG_CHECKPOINT_RUN_ID"] = "d6-cadence"
         try:
             os.chdir(tmp)
             WOI._flush_last_count = 0
@@ -937,13 +970,32 @@ def g_flush_cadence(integ_src=None):
                 real(acc, label="at")
             assert "[S152-FLUSH]" in buf.getvalue(), (
                 f"the flush did not fire at the threshold: {buf.getvalue()!r}")
-            # the pre-existing defect, pinned so a future change is deliberate
+            # [D6.1] the flush now SUCCEEDS — pin the landed snapshot, in its
+            # run-isolated directory
+            _ck = WOI._flush_checkpoint_dir()
+            assert os.path.isfile(os.path.join(_ck, WOI._CHECKPOINT_ALL_NAME)), (
+                f"the at-threshold flush did not land a snapshot: "
+                f"{os.listdir(tmp)}")
+            assert os.path.isfile(os.path.join(_ck, WOI._CHECKPOINT_BINARY_NAME))
+            # [D6.1] and it did NOT write the finalizer-owned root aliases
+            for _root_name in ("bidirectional_survivors_all.npz",
+                               "bidirectional_survivors_binary.npz"):
+                assert not os.path.lexists(os.path.join(tmp, _root_name)), (
+                    f"the checkpoint wrote {_root_name} in the run root — that "
+                    f"path is a finalizer-owned compatibility symlink")
+            # the clear stays disabled: candidates still reach the finalizer
             assert len(acc["bidirectional"]) == WOI._FLUSH_EVERY, (
                 "the accumulator was cleared — candidates would stop reaching "
                 "the finalizer")
         finally:
             os.chdir(cwd)
             WOI._flush_last_count = 0
+            for _k, _v in (("PRNG_CHECKPOINT_ROOT", _prev_root),
+                           ("PRNG_CHECKPOINT_RUN_ID", _prev_run)):
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
 
 
 # ═════════════════════════════════════════════════════════════════════════════
