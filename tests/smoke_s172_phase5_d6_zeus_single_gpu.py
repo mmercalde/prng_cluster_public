@@ -116,7 +116,7 @@ class _Coordinator:
     """
 
     def __init__(self, *, port, staging_dir, seed_caps, stripe_size, substripes,
-                 backend=None, backend_options=None):
+                 backend=None, backend_options=None, miner_host="127.0.0.1"):
         self.use_range_miner = True
         self.use_persistent_workers = False
         self.use_zmq_sqlite = False
@@ -134,7 +134,11 @@ class _Coordinator:
         self.staging_high_water_files = 512
         self.compute_lease_timeout = 900.0
         self.staging_timeout = 900.0
-        self.miner_host = "127.0.0.1"       # single-GPU Zeus smoke (see header)
+        # [S172 Phase 6.0] Default "127.0.0.1" preserves the D6 3.B single-GPU
+        # Zeus smoke exactly (see header). A REMOTE ROCm target passes 0.0.0.0 so
+        # the rig's worker can dial in — the same value production uses
+        # (window_optimizer_integration_final.py:1171).
+        self.miner_host = miner_host
         self.miner_port = port
         self.node_allowlist = None
         self.serve_timeout = 1200.0
@@ -156,6 +160,235 @@ def _nvidia_smi(tag):
     out = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
     print(out.stdout.strip())
     return out.stdout
+
+
+# ===========================================================================
+# [S172 Phase 6.0] REMOTE ROCm TARGET
+#
+# Phase 6.0 runs the SAME bounded trial twice: once on this VM's RTX 3080 Ti
+# (the CUDA control, the unchanged D6 3.B path) and once on ONE RX 6600 XT in
+# CT100 `rrig6600` (the ROCm subject). Acceptance is field-for-field equality of
+# all 22 canonical arrays, so the two runs must differ in EXACTLY ONE variable:
+# which silicon executed the sieve kernel.
+#
+# WHAT IS AND IS NOT REMOTE — this matters for what the comparison proves.
+#   REMOTE: the GPU sieve only. `miner/range_miner_worker.py` runs on the rig
+#           under ~/rocm_env against a real RX 6600 XT through cupy/HIP.
+#   LOCAL : the coordinator, Phase-5 assembly, the finalizer and the NPZ writer
+#           all still run HERE, on VM 101, for BOTH runs. So a difference in the
+#           22 arrays can only come from the kernel — the writer is common mode
+#           and cannot mask or manufacture a divergence.
+#
+# WHY NO TRANSFER ADAPTER IS NEEDED (verified, not assumed): the worker chooses
+# inline-vs-spool by SIZE (range_miner_worker.py:1324, INLINE_BYTE_LIMIT =
+# 48 MiB). WOI injects no TransferAdapter, so a spooled result would fail the
+# stripe loudly at range_miner_coordinator.py:4014 rather than corrupt anything.
+# The measured CUDA control shard maximum is ~1.83 MiB — 26x under the limit —
+# so every sub-stripe result crosses the wire inline. `assert_no_spool_residue`
+# re-checks the rig spool dir after the run instead of trusting that reasoning.
+#
+# WHY THE PARTITIONING MATCHES: the coordinator sizes sub-stripes with the cap
+# the worker advertises (advertised_effective_cap -> select_seed_cap, which
+# branches on backend: 'rocm' -> amd caps, 'cuda' -> nvidia caps,
+# range_miner_worker.py:472-479). This harness advertises ALL FOUR caps equal,
+# so the effective cap is identical on both platforms and the sub-stripe
+# boundaries — hence canonical record ORDER — match by construction.
+# ===========================================================================
+
+_ROCM_FAULT_PATTERNS = (
+    "GPU reset", "ring timeout", "L2 protection fault", "VM_L2", "VMC page fault",
+    "vm fault", "amdgpu: ", "HSA_STATUS_ERROR", "hipError", "HIP error",
+    "Memory access fault", "GPU hang", "soft recovery", "MES failed",
+)
+
+
+class _RemoteRocmTarget:
+    """ONE RX 6600 XT in CT100 `rrig6600`, driven over SSH.
+
+    Deliberately additive: the CUDA path never constructs one of these, and
+    `run_smoke` keeps its original statements when `target is None`.
+    """
+
+    platform = "rocm"
+    bind_host = "0.0.0.0"
+
+    def __init__(self, *, host, user, python, repo, device, spool_dir,
+                 coordinator_addr, work):
+        self.host = host
+        self.user = user
+        self.python = python
+        self.repo = repo
+        self.device = int(device)
+        self.spool_dir = spool_dir
+        self.coordinator_addr = coordinator_addr
+        self.work = Path(work)
+        self.label = (f"ROCm / remote ({user}@{host} CT100 rrig6600, "
+                      f"RX 6600 XT device {device})")
+        self._proc = None
+
+    # ----- ssh plumbing ---------------------------------------------------
+    def _ssh_argv(self):
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                "-o", "ServerAliveInterval=15", f"{self.user}@{self.host}"]
+
+    def sh(self, cmd, timeout=180):
+        """Run a command on the rig; return stdout (stderr merged)."""
+        r = subprocess.run(self._ssh_argv() + [cmd], capture_output=True,
+                           text=True, timeout=timeout)
+        return (r.stdout or "") + (r.stderr or "")
+
+    # ----- identity + health (Beta-required, §4) --------------------------
+    def identity(self):
+        """Hardware/runtime identity, recorded verbatim into the evidence."""
+        out = self.sh(
+            'echo "## hostname"; hostname; '
+            'echo "## kernel"; uname -r; '
+            'echo "## amdgpu_module_version"; cat /sys/module/amdgpu/version; '
+            'echo "## rocm_release"; cat /opt/rocm/.info/version; '
+            'echo "## gpu_hw"; /opt/rocm/bin/rocm-smi -d %d --showhw; '
+            'echo "## gpu_id"; /opt/rocm/bin/rocm-smi -d %d --showid; '
+            'echo "## driver"; /opt/rocm/bin/rocm-smi --showdriverversion; '
+            'echo "## env_overrides"; env | grep -iE "HSA|HIP|ROCR|GPU_|AMD_" '
+            '|| echo "(none set)"'
+            % (self.device, self.device))
+        (self.work / "rocm_identity.txt").write_text(out)
+        return out
+
+    def backend_identity(self):
+        """The worker's OWN backend determination, read from production code —
+        NOT a harness assertion. range_miner_worker.py:1083 sets
+        `backend = "rocm" if rt.is_hip else "cuda"`, and that value is what
+        select_seed_cap() branches on."""
+        out = self.sh(
+            f'cd {self.repo} && {self.python} -c '
+            '"import sys; sys.path.insert(0,\'.\'); '
+            'import cupy; rt=cupy.cuda.runtime; '
+            'print(\'is_hip\', rt.is_hip); '
+            'print(\'backend_as_worker_computes_it\', '
+            '\'rocm\' if getattr(rt,\'is_hip\',False) else \'cuda\'); '
+            'print(\'runtimeGetVersion\', rt.runtimeGetVersion()); '
+            'print(\'cupy\', cupy.__version__); '
+            'p=rt.getDeviceProperties(%d); '
+            'print(\'gcnArchName\', p.get(\'gcnArchName\')); '
+            'print(\'device_name\', p.get(\'name\'))"' % self.device)
+        (self.work / "rocm_backend_identity.txt").write_text(out)
+        return out
+
+    def health(self, tag):
+        """Root-free hardware-fault surfaces, captured before AND after.
+
+        NOTE (recorded as a limitation, not papered over): CT100 is an
+        UNPRIVILEGED LXC. `dmesg` returns "read kernel buffer failed: Operation
+        not permitted", /dev/kmsg is absent and `journalctl -k` is empty, so the
+        in-container kernel ring buffer is NOT a usable signal — grepping it
+        would return "no amdgpu errors" no matter what the GPU did, which is a
+        vacuous pass. The amdgpu driver lives in the Proxmox HOST kernel. The
+        surfaces below ARE readable without root and DO move when a 6600 XT
+        resets, faults or falls off the bus."""
+        out = self.sh(
+            'echo "## dmesg_access"; (dmesg 2>&1 | tail -1) || true; '
+            'echo "## kfd_topology_nodes"; ls /sys/class/kfd/kfd/topology/nodes/ | wc -l; '
+            'echo "## dri_nodes"; ls /dev/dri/ | tr "\\n" " "; echo; '
+            'echo "## pcie_replay"; /opt/rocm/bin/rocm-smi -d %d --showreplaycount; '
+            'echo "## mem_use"; /opt/rocm/bin/rocm-smi -d %d --showmemuse; '
+            'echo "## concise"; /opt/rocm/bin/rocm-smi -d %d --showhw'
+            % (self.device, self.device, self.device))
+        (self.work / f"rocm_health_{tag}.txt").write_text(out)
+        return out
+
+    def functional_probe(self):
+        """A fresh kernel launch AFTER the run. If the GPU had reset or its
+        context been lost, this fails — which is the specific failure class
+        Phase 6.0 exists to rule out."""
+        out = self.sh(
+            f'cd {self.repo} && {self.python} -c '
+            '"import sys; sys.path.insert(0,\'.\'); import cupy as cp; '
+            'cp.cuda.Device(%d).use(); a=cp.arange(1000, dtype=cp.int64); '
+            'print(\'post_run_kernel_sum\', int((a*2).sum())); '
+            'print(\'expected\', 999*1000)"' % self.device)
+        (self.work / "rocm_post_run_probe.txt").write_text(out)
+        return out
+
+    def probe(self, tag):
+        print(f"\n----- rocm-smi ({tag}) " + "-" * 40)
+        out = self.sh('/opt/rocm/bin/rocm-smi -d %d --showuse --showmemuse '
+                      '--showtemp --showpower' % self.device)
+        print(out.strip())
+        return out
+
+    # ----- lifecycle -------------------------------------------------------
+    def prepare(self):
+        self.sh(f'rm -rf {self.spool_dir} && mkdir -p {self.spool_dir}')
+
+    def launch_worker(self, port, seed_caps, worker_log):
+        """Same module, same flags, same cap set as the CUDA path — only the
+        interpreter, the host and the coordinator address differ. `exec` lets
+        SIGHUP on channel close reach python directly."""
+        remote = (
+            f"cd {self.repo} && exec {self.python} -m miner.range_miner_worker "
+            f"--host {self.coordinator_addr} --port {port} "
+            f"--gpu-id {self.device} --device-index {self.device} "
+            f"--miner-output-dir {self.spool_dir} "
+            f"--seed-cap-nvidia {seed_caps} --seed-cap-amd {seed_caps} "
+            f"--seed-cap-nvidia-hybrid {seed_caps} "
+            f"--seed-cap-amd-hybrid {seed_caps} "
+            f"--heartbeat-interval 15")
+        self._proc = subprocess.Popen(self._ssh_argv() + [remote],
+                                      stdout=worker_log,
+                                      stderr=subprocess.STDOUT)
+        print(f"[WORKER] REMOTE ROCm worker via ssh pid={self._proc.pid} "
+              f"-> {self.user}@{self.host} "
+              f"({self.python} -m miner.range_miner_worker, "
+              f"cupy/HIP on device {self.device})")
+        print(f"[WORKER] coordinator address given to the rig: "
+              f"{self.coordinator_addr}:{port}")
+        return self._proc
+
+    def cleanup(self, port):
+        """Close the ssh channel, then PROVE no worker survives on the rig."""
+        # `pkill -f` / `pgrep -f` match the FULL command line, and THIS cleanup
+        # command necessarily mentions the worker module — so a naive pattern
+        # makes pkill kill its own shell (producing NO cleanup evidence at all)
+        # and makes pgrep count itself. Two defences, both needed:
+        #   1. the bracket trick, so the regex text is not its own literal;
+        #   2. drop the shell's own PID ($$) from the survivor list, because the
+        #      surrounding message still contains the module name as plain text.
+        left = self.sh(
+            f'pkill -f "[r]ange_miner_worker.*--port {port}" >/dev/null 2>&1; '
+            f'sleep 1; '
+            f'survivors=$(pgrep -af "[r]ange_miner_worker" '
+            f'| awk -v me=$$ "\\$1 != me"); '
+            f'echo "surviving worker processes on the rig: '
+            f'$(printf "%s" "$survivors" | grep -c . )"; '
+            f'printf "%s" "$survivors"')
+        print(f"[REMOTE CLEANUP] {left.strip()}")
+        return left
+
+    def assert_no_spool_residue(self):
+        out = self.sh(f'find {self.spool_dir} -type f | wc -l; '
+                      f'find {self.spool_dir} -type f | head -20')
+        print(f"[REMOTE SPOOL] files left in {self.spool_dir}: {out.strip()}")
+        return out
+
+
+def _scan_worker_log_for_faults(log_path):
+    """Scan the ROCm worker log for the failure class this rearchitecture
+    exists to avoid. Absence must be EVIDENCED, so print what was searched."""
+    text = Path(log_path).read_text(errors="replace") if Path(log_path).exists() else ""
+    hits = [ln for ln in text.splitlines()
+            if any(p.lower() in ln.lower() for p in _ROCM_FAULT_PATTERNS)]
+    print("\n" + "-" * 78)
+    print("ROCm WORKER LOG FAULT SCAN")
+    print("-" * 78)
+    print(f"  patterns searched : {len(_ROCM_FAULT_PATTERNS)} "
+          f"({', '.join(_ROCM_FAULT_PATTERNS[:6])}, ...)")
+    print(f"  log bytes         : {len(text):,}")
+    print(f"  matching lines    : {len(hits)}")
+    for ln in hits[:20]:
+        print(f"        !! {ln}")
+    if not hits:
+        print("        (none)")
+    return hits
 
 
 def _source_snapshot_repo(dest: Path) -> str:
@@ -289,7 +522,10 @@ def _write_evidence_record(work, artifact, commit, tracked_clean, untracked):
 
 
 def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
-              forward_threshold, reverse_threshold, workdir):
+              forward_threshold, reverse_threshold, workdir, target=None):
+    """`target=None` is the DEFAULT CUDA path — every statement it executes is
+    the original D6 3.B code, unchanged. A `_RemoteRocmTarget` swaps only the
+    bind address, the worker launch and the GPU probe."""
     work = Path(workdir)
     staging = work / "miner_output"
     staging.mkdir(parents=True, exist_ok=True)
@@ -314,7 +550,9 @@ def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
     port = _free_port()
     coordinator = _Coordinator(port=port, staging_dir=str(staging),
                                seed_caps=seed_caps, stripe_size=stripe_size,
-                               substripes=max(1, stripe_size // seed_caps))
+                               substripes=max(1, stripe_size // seed_caps),
+                               miner_host=("127.0.0.1" if target is None
+                                           else target.bind_host))
 
     accumulator = {"forward_count": 0, "reverse_count": 0, "bidirectional": []}
     holder = {}
@@ -332,7 +570,7 @@ def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
         except Exception:
             holder["err"] = traceback.format_exc()
 
-    print(f"\n[TRIAL] coordinator binding 127.0.0.1:{port}")
+    print(f"\n[TRIAL] coordinator binding {coordinator.miner_host}:{port}")
     print(f"[TRIAL] seeds [{seed_start:,}, {seed_start + seed_count:,}) "
           f"stripe={stripe_size:,} substripe_cap={seed_caps:,} "
           f"window={window_size} "
@@ -343,7 +581,13 @@ def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
     time.sleep(2.0)     # let the serve loop bind before the worker dials in
 
     worker_log = open(work / "worker.log", "w")
-    worker = subprocess.Popen(
+    if target is not None:
+        # [S172 Phase 6.0] REMOTE ROCm subject. The CUDA branch below is
+        # untouched; this branch is never taken on the default path.
+        target.prepare()
+        worker = target.launch_worker(port, seed_caps, worker_log)
+    else:
+      worker = subprocess.Popen(
         [sys.executable, "-m", "miner.range_miner_worker",
          "--host", "127.0.0.1", "--port", str(port),
          "--gpu-id", "0", "--device-index", "0",
@@ -361,17 +605,26 @@ def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
          "--seed-cap-amd-hybrid", str(seed_caps),
          "--heartbeat-interval", "15"],
         cwd=_ROOT, stdout=worker_log, stderr=subprocess.STDOUT)
-    print(f"[WORKER] real GPU worker pid={worker.pid} "
-          f"(miner/range_miner_worker.py, cupy on device 0)")
+      print(f"[WORKER] real GPU worker pid={worker.pid} "
+            f"(miner/range_miner_worker.py, cupy on device 0)")
 
     smi_during = None
     for _ in range(60):
         time.sleep(2.0)
         if smi_during is None and worker.poll() is None and t.is_alive():
-            smi_during = _nvidia_smi("during the CUDA sieve")
+            smi_during = (_nvidia_smi("during the CUDA sieve") if target is None
+                          else target.probe("during the ROCm sieve"))
         if not t.is_alive():
             break
     t.join(timeout=1200)
+
+    # [S172 Phase 6.0] §4 "clean worker exit" — capture the state that actually
+    # carries the evidence, BEFORE we tear anything down. A worker that is still
+    # alive here ran the whole trial without crashing; that, not the post-kill
+    # code, is the meaningful signal. (After terminate() the remote worker's
+    # code is the SSH CLIENT's — 255 on channel teardown — not the worker's own,
+    # so reporting it alone would be misleading.)
+    alive_before_terminate = (worker.poll() is None)
 
     try:
         worker.terminate()
@@ -379,6 +632,13 @@ def run_smoke(seed_start, seed_count, stripe_size, seed_caps, window_size,
     except Exception:
         worker.kill()
     worker_log.close()
+    if target is not None:
+        # ROCm evidence only, so the CUDA path's output stays identical to D6 3.B.
+        print(f"[WORKER] alive for the whole trial, no premature exit: "
+              f"{alive_before_terminate}")
+        print(f"[WORKER] post-terminate code {worker.poll()} "
+              f"(SSH CLIENT teardown code, not the worker's own exit status)")
+        target.cleanup(port)
 
     if t.is_alive():
         raise AssertionError("the miner trial did not terminate")
@@ -550,6 +810,87 @@ def finalize_and_verify(accumulator, gen_root, seed_start, seed_count, work,
     return artifact, bundle, loaded
 
 
+def compare_generations(cuda_npz, rocm_npz):
+    """[S172 Phase 6.0] Beta's required addition: schema-valid ROCm output does
+    NOT establish computational parity, because a platform-specific kernel
+    defect can still produce a structurally valid generation. So compare
+    field-for-field with np.array_equal across ALL 22 canonical arrays and
+    report a 22-ROW MATRIX, never a summary boolean.
+
+    A divergence is a finding to LOCALIZE: report which array, the first
+    differing index, and both values."""
+    with np.load(cuda_npz) as a:
+        cuda = {k: a[k] for k in a.files}
+        cuda_order = tuple(a.files)
+    with np.load(rocm_npz) as b:
+        rocm = {k: b[k] for k in b.files}
+        rocm_order = tuple(b.files)
+
+    print("=" * 78)
+    print("S172 Phase 6.0 — CUDA vs ROCm 22-ARRAY EQUALITY MATRIX")
+    print("=" * 78)
+    print(f"  CUDA npz : {cuda_npz}")
+    print(f"  ROCm npz : {rocm_npz}")
+    print(f"\n  canonical ORDER identical to frozen oracle (CUDA): "
+          f"{cuda_order == ORACLE_ARRAY_NAMES}")
+    print(f"  canonical ORDER identical to frozen oracle (ROCm): "
+          f"{rocm_order == ORACLE_ARRAY_NAMES}")
+    print(f"  canonical ORDER identical CUDA vs ROCm           : "
+          f"{cuda_order == rocm_order}")
+
+    print("\n" + "-" * 78)
+    print(f"  {'#':>2}  {'array':<28} {'dtype':<10} {'rows':>6}  "
+          f"{'array_equal':<11} note")
+    print("-" * 78)
+    all_equal = True
+    divergences = []
+    for i, name in enumerate(ORACLE_ARRAY_NAMES, 1):
+        if name not in cuda or name not in rocm:
+            all_equal = False
+            print(f"  {i:>2}  {name:<28} {'-':<10} {'-':>6}  "
+                  f"{'MISSING':<11} present CUDA={name in cuda} "
+                  f"ROCm={name in rocm}")
+            divergences.append((name, "missing", None, None))
+            continue
+        ca, ra = cuda[name], rocm[name]
+        eq = bool(np.array_equal(ca, ra))
+        note = ""
+        if not eq:
+            all_equal = False
+            if ca.shape != ra.shape:
+                note = f"SHAPE {ca.shape} vs {ra.shape}"
+                divergences.append((name, "shape", ca.shape, ra.shape))
+            else:
+                diff = np.flatnonzero(ca != ra)
+                j = int(diff[0])
+                note = f"first differing index {j}: CUDA={ca[j]!r} ROCm={ra[j]!r} " \
+                       f"({diff.size} of {ca.size} differ)"
+                divergences.append((name, j, ca[j], ra[j]))
+        print(f"  {i:>2}  {name:<28} {str(ca.dtype):<10} {ca.shape[0]:>6}  "
+              f"{str(eq):<11} {note}")
+    print("-" * 78)
+
+    for label, arrs in (("CUDA", cuda), ("ROCm", rocm)):
+        fwd = int(arrs['forward_count'][0]) if arrs['forward_count'].size else 0
+        rev = int(arrs['reverse_count'][0]) if arrs['reverse_count'].size else 0
+        bi = int(arrs['bidirectional_count'][0]) if arrs['bidirectional_count'].size else 0
+        print(f"  {label:<5} forward={fwd:,} reverse={rev:,} "
+              f"bidirectional={bi:,} rows={arrs['seeds'].shape[0]:,}")
+
+    print("\n" + "=" * 78)
+    if all_equal and cuda_order == rocm_order == ORACLE_ARRAY_NAMES:
+        print(f"[{_PASS}] ALL 22 CANONICAL ARRAYS ARE FIELD-FOR-FIELD EQUAL "
+              f"across CUDA and ROCm,\n        and the canonical record ORDER "
+              f"is identical on both platforms.")
+        print("=" * 78)
+        return 0
+    print(f"[{_FAIL}] CROSS-PLATFORM DIVERGENCE in "
+          f"{len(divergences)} array(s): "
+          f"{', '.join(d[0] for d in divergences)}")
+    print("=" * 78)
+    return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed-start", type=int, default=0)
@@ -576,7 +917,33 @@ def main(argv=None):
             "untracked path is listed in the run output and written to "
             "release_grade_repository_state.json in the workdir. Default (off) "
             "is the pre-commit scratch-SHA mode, unchanged."))
+    # --- [S172 Phase 6.0] remote ROCm target (default OFF = unchanged CUDA) ---
+    ap.add_argument(
+        "--rocm-remote", action="store_true",
+        help=("Run the sieve on ONE RX 6600 XT in CT100 `rrig6600` instead of "
+              "this VM's RTX 3080 Ti. The coordinator, Phase-5 assembly, "
+              "finalizer and NPZ writer still run HERE, so the only variable "
+              "is which silicon executed the kernel. Default OFF: the CUDA "
+              "path is exactly the D6 3.B path."))
+    ap.add_argument("--rocm-host", default="192.168.3.122")
+    ap.add_argument("--rocm-user", default="michael")
+    ap.add_argument("--rocm-python", default="/home/michael/rocm_env/bin/python")
+    ap.add_argument("--rocm-repo", default="/home/michael/distributed_prng_analysis")
+    ap.add_argument("--rocm-device", type=int, default=0)
+    ap.add_argument("--rocm-spool-dir",
+                    default="/home/michael/s172_phase60_spool")
+    ap.add_argument("--coordinator-addr", default="192.168.3.177",
+                    help="address the RIG dials back to (this VM on the LAN)")
+    # --- [S172 Phase 6.0] 22-array cross-platform comparator -----------------
+    ap.add_argument(
+        "--compare", nargs=2, metavar=("CUDA_NPZ", "ROCM_NPZ"), default=None,
+        help=("Compare two certified generations field-for-field with "
+              "np.array_equal across all 22 canonical arrays and print the "
+              "22-row matrix. Runs no GPU work."))
     args = ap.parse_args(argv)
+
+    if args.compare:
+        return compare_generations(args.compare[0], args.compare[1])
 
     mode = "RELEASE-GRADE" if args.release_grade else "SCRATCH"
     print("=" * 78)
@@ -603,17 +970,56 @@ def main(argv=None):
         print("               --release-grade from a tracked-clean repository "
               "for that.")
     print("=" * 78)
-    _nvidia_smi("before the run")
+    # CUDA path: this call keeps its original position, so the default path's
+    # output ordering is identical to D6 3.B.
+    if not args.rocm_remote:
+        _nvidia_smi("before the run")
 
     workdir = args.workdir or os.path.join(
         os.environ.get("TMPDIR", "/tmp"), "d6_zeus_smoke")
     os.makedirs(workdir, exist_ok=True)
     print(f"\n[WORKDIR] {workdir}")
 
+    # --- [S172 Phase 6.0] target selection -------------------------------
+    target = None
+    if args.rocm_remote:
+        target = _RemoteRocmTarget(
+            host=args.rocm_host, user=args.rocm_user, python=args.rocm_python,
+            repo=args.rocm_repo, device=args.rocm_device,
+            spool_dir=args.rocm_spool_dir,
+            coordinator_addr=args.coordinator_addr, work=workdir)
+        print("=" * 78)
+        print("EXECUTION TARGET: ROCm / REMOTE  — S172 Phase 6.0")
+        print("=" * 78)
+        print(f"  {target.label}")
+        print("  ARTIFACT CLASSIFICATION: ROCm platform-validation certified")
+        print("                           generation — NON-AUTHORITATIVE.")
+        print("                           The D6 CUDA generation at b08c2c5 "
+              "remains the")
+        print("                           authoritative release-grade artifact.")
+        print("=" * 78)
+        # CT-side source identity — proves identical source BY CONSTRUCTION.
+        ct = target.sh(f'cd {args.rocm_repo} && '
+                       f'echo "commit=$(git rev-parse HEAD)"; '
+                       f'echo "tracked_dirty=[$(git status --porcelain '
+                       f'--untracked-files=no)]"; '
+                       f'echo "untracked=[$(git ls-files --others '
+                       f'--exclude-standard | tr "\\n" " ")]"; '
+                       f'echo "dataset_sha256=$(sha256sum daily3.json)"')
+        print("\n----- CT100 DEPLOYED SOURCE IDENTITY " + "-" * 30)
+        print(ct.strip())
+        Path(workdir, "ct_source_identity.txt").write_text(ct)
+        print("\n----- ROCm HARDWARE IDENTITY " + "-" * 38)
+        print(target.identity().strip())
+        print("\n----- ROCm BACKEND IDENTITY (from production code) " + "-" * 16)
+        print(target.backend_identity().strip())
+        print("\n----- ROCm HEALTH: BEFORE " + "-" * 41)
+        print(target.health("before").strip())
+
     tr, acc, gen_root, _smi, work, prov = run_smoke(
         args.seed_start, args.seed_count, args.stripe_size, args.seed_cap,
         args.window_size, args.forward_threshold, args.reverse_threshold,
-        workdir)
+        workdir, target=target)
 
     print("\n" + "-" * 78)
     print("SURVIVOR COUNTS BY DIRECTION (asymmetric thresholds)")
@@ -635,7 +1041,32 @@ def main(argv=None):
         acc, gen_root, args.seed_start, args.seed_count, work,
         release_grade=args.release_grade)
 
-    _nvidia_smi("after the run")
+    if target is None:
+        _nvidia_smi("after the run")
+    else:
+        # --- §4 ROCm health evidence: absence must be EVIDENCED -----------
+        print("\n----- ROCm HEALTH: AFTER " + "-" * 42)
+        after = target.health("after")
+        print(after.strip())
+        before = (Path(workdir) / "rocm_health_before.txt").read_text()
+        print("\n" + "-" * 78)
+        print("ROCm HEALTH BEFORE/AFTER DIFF (§4 — the failure class this")
+        print("rearchitecture exists to avoid: GPU reset / L2 protection fault /")
+        print("VM fault / new amdgpu error)")
+        print("-" * 78)
+        import difflib
+        delta = list(difflib.unified_diff(
+            before.splitlines(), after.splitlines(),
+            fromfile="health_before", tofile="health_after", lineterm="", n=0))
+        if delta:
+            for ln in delta:
+                print(f"  {ln}")
+        else:
+            print("  (no difference — identical before and after)")
+        print("\n----- ROCm POST-RUN FUNCTIONAL PROBE " + "-" * 30)
+        print(target.functional_probe().strip())
+        _scan_worker_log_for_faults(Path(workdir) / "worker.log")
+        target.assert_no_spool_residue()
 
     print("\n" + "=" * 78)
     print(f"REPOSITORY MODE: {mode}  (commit {artifact.repository_commit})")
@@ -643,8 +1074,13 @@ def main(argv=None):
           f"silicon,\n        22-array bundle validated, Step-2 loader read it "
           f"back ({loaded.count:,} rows),\n        and the asymmetric "
           f"forward={args.forward_threshold} / reverse={args.reverse_threshold} "
-          f"thresholds\n        reached the CUDA kernel unchanged "
+          f"thresholds\n        reached the "
+          f"{'ROCm' if target is not None else 'CUDA'} kernel unchanged "
           f"(requested == payload == effective).")
+    print(f"\n[NPZ FOR PARITY COMPARISON] {artifact.binary_npz_path}")
+    if target is not None:
+        print("[CLASSIFICATION] ROCm platform-validation certified generation "
+              "— NON-AUTHORITATIVE")
     print("=" * 78)
     return 0
 
