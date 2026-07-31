@@ -1,269 +1,289 @@
 ---
 name: tfm-project-facts
-description: Verified as-built facts, superseded-artifact list, and mandatory verification procedure for Michael's TFM (Triangulated Functional Mimicry) distributed PRNG analysis project. Use this skill whenever the conversation touches TFM, the PRNG cluster, RANGE-MINER/S172, selfplay, Chapter 13/14, the bidirectional sieve, survivor pools, the NPZ contract, prediction pools, WATCHER, Zeus/VM101/rrig6600, or any file in the prng_cluster repos — even if the user does not name the project explicitly. Also use before making ANY claim that something in this project is missing, broken, unwired, unused, or current.
+description: Foundational model, verified as-built facts, superseded-artifact list, and mandatory verification procedure for Michael's TFM (Triangulated Functional Mimicry) distributed PRNG analysis project. Use this skill whenever the conversation touches TFM, the PRNG cluster, RANGE-MINER/S172, selfplay, Chapter 13/14, the bidirectional sieve, survivor pools, the NPZ contract, prediction pools, WATCHER, Zeus/VM101/rrig6600, or any file in the prng_cluster repos — even if the user does not name the project explicitly. Use before making ANY claim that something is missing, broken, unwired, unused, or current, and ALWAYS before proposing to remove, demote or simplify any component.
 ---
 
-# TFM Project — Verified Facts & Verification Procedure
+# TFM — Foundations, Verified Facts & Verification Procedure
 
-This skill exists because of a specific, repeated failure: **asserting as-built facts from
-partial reads instead of verifying them.** In one session, five separate confident claims
-were wrong, each corrected by the user or Team Beta. Every one would have been prevented by
-a single grep. This skill encodes the facts that were gotten wrong and the procedure that
-prevents it.
+**Currency:** through the S172 threshold repair (`8a55a68`, 2026-07-31).
 
-**Currency:** updated through Phase 6.0 close (2026-07-30, HEAD ≈ `fbac058`). Anything
-after that date is unverified by this document.
-
----
-
-## 1. THE RULE (non-negotiable)
-
-**Never assert that anything in this project is missing, broken, unwired, unused, current,
-or superseded without a `file:line` anchor obtained in THIS session.**
-
-Trigger phrases that require verification before the sentence is written:
-"there is no…", "nothing does…", "X is not wired", "X is missing", "the objective is…",
-"the target is…", "X was never built", "X already exists", "we should add X".
-
-If verification isn't possible (no repo access, tool unavailable), the claim must be
-labeled inline: **[UNVERIFIED]**. Do not launder a guess as a finding.
-
-**Corollary — trace the whole path.** Never classify a capability from one module. Follow
-producer → artifact → consumer. Real code with no producer for its input is *not* "wired."
-
-**Corollary — check for supersession, not just existence.** This project is 180+ sessions
-old. Finding something in the repo proves nothing about whether it is live. Before citing
-any metric, target, doc, or script as current, grep for its replacement.
-
-**Corollary — the repository is NOT the system (VIR-6).** Provisioning state — systemd
-units, cron, host config, deployed-but-uncommitted files — is invisible to every gate in
-this project, all of which read git. A repo-scoped search may never be reported as a
-system-scoped result. This corollary exists because Alpha reported "no scraper invoker
-exists" after searching a clone; an enabled boot-triggered systemd unit was found on the
-host minutes later.
-
-**Corollary — read the consumer before specifying a change.** Before changing any shared
-buffer, on-disk path, or data format: enumerate every producer, consumer, owner, lifecycle
-transition, path-type requirement, and downstream schema dependency. For path changes also
-check regular-file vs symlink ownership, compatibility aliases, atomic-replace boundaries,
-cleanup behavior, concurrent-run namespace, and restart consumers. Three briefs in a row
-were defective for skipping this.
+**§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
+Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
+cornerstone of the design — because no document any of them had read explained **why skip
+exists**. All three inferred intent from current kernel signatures, which were the defect.
+Michael stopped it. **This system has been in development over a year with the reasoning
+documented and committed. If a component looks pointless, the explanation exists and has not
+been read.**
 
 ---
 
-## 2. SETTLED FACTS (verified; do not re-derive)
+## 0. FOUNDATIONS — read before proposing any change
 
-### 2.1 Objective / target lineage — TWO pivots
+### 0.1 The hypothesis
+California Daily 3 draws are produced by a PRNG. Given observed history, find candidate
+**seeds** whose generated sequences are consistent with what was drawn, then rank those
+candidates with ML into prediction pools.
+Basis: `docs/BIDIRECTIONAL_SIEVE_MATHEMATICAL_WHITEPAPER.md`.
+
+### 0.2 Why bidirectional
+Forward: seed `s` survives if match rate ≥ τ_f. For a random seed p = 1/1000 per position, so
+survival decays exponentially in window length n. Reverse applies the same test on reversed
+indices. For **incorrect** seeds the two are approximately independent:
+
 ```
-score (training match rate)   → superseded
-holdout_hits (holdout Hit@K)  → superseded as ML target
-holdout_quality (composite)   → replaced holdout_hits
+P(survive both) ≈ P(survive forward)²      e^(−cn) → e^(−2cn)
 ```
-- Chapter 6: y-target moved from `score` to `holdout_hits`.
-- Chapter 4: `holdout_hits` was "the ONLY non-circular training target."
-- **Chapter 14:** *"holdout_hits as ML target produced R2=0.000155 on real CA Daily 3 data —
-  zero signal. holdout_quality (composite score) replaced holdout_hits."*
-- **R² IS NOT THE PROJECT OBJECTIVE.** Abandoned for measuring zero signal.
-- Pipeline objective (S140b), implemented in `chapter_13_orchestrator.py` and
-  `database_system.write_downstream_score`:
-  ```
-  downstream_score = 0.50·hit@20 + 0.30·hit@100 + 0.15·hit@300 + 0.05·pool_coverage
-  ```
-- `evaluate_pools.py` already computes coverage + **lift vs random**.
-  **Do not propose building a coverage metric — it exists.**
-- **Known open discrepancy:** selfplay inner-loop fitness still uses R²;
-  `selfplay_orchestrator.py:933` still prefers `holdout_hits`. A finding, not intended design.
+
+**Bidirectional squares the exponent — a catastrophic collapse of noise.** At exact match with
+n=50, false survival ≈ 10⁻³⁰⁰: only the true seed survives. That is why the sieve is
+bidirectional.
+
+**Reverse kernels iterate the PRNG FORWARD.** Direction comes from reversing residues on the
+host (`residues[::-1]`); there is no inverse LCG — most PRNGs aren't invertible without full
+state. **Do not flag this as a defect.**
+
+### 0.3 Why thresholds are LOOSE — and must stay tunable
+Whitepaper §7, counter-intuitive and misread every time:
+
+> Exact sieves eliminate *all* variance. Survivors = {s*}. No ranking, no gradients, **no
+> learning signal.**
+
+Loose thresholds deliberately admit a *manifold* of near-consistent seeds sharing structured
+deviations ML can learn to rank. **Loose thresholds are not sloppiness — they are a
+mathematical necessity to expose learnable structure.** ML then works in a
+survival-conditioned high-signal posterior, not raw PRNG space. This is why thresholds are
+Optuna-tuned per direction, and why a threshold silently pinned to a constant is serious.
+
+### 0.4 Why SKIP exists — the physical model
+**The part nobody had written down.**
+
+The published draw sequence is **not** an uninterrupted PRNG output stream. Per the
+*California State Lottery Daily & SuperLotto Plus Draw Procedures* (eff. 2021-06-09):
+
+- **Two pre-test draws run before every live draw** on the selected equipment (§V: Pre-Test
+  via `[Start Draw Session]`; *"Run Draw as Test"* is unchecked only afterwards). Pre-test
+  outputs are generated, verified, certified — and **never published.**
+- **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
+  Midday and evening are separate sessions with separate equipment selection.
+- Evening draws **D3, D4, Fantasy 5 and Daily Derby together** — other games' outputs sit
+  between the Daily 3 values you can see.
+
+**Therefore the observable sequence has real, structural gaps of unknown and varying size.**
+Skip models those gaps. It is a physical property of the data source, not a tuning convenience.
+
+| mode | assumption | kernels |
+|---|---|---|
+| **constant skip** | fixed stride k between observed outputs | 22 kernels, all declare `int skip_min, int skip_max` |
+| **variable skip (hybrid)** | stride varies, e.g. `[5,5,3,7,5,5,8,4,5,5]` | 22 kernels, declare `skip_sequences` + `strategy_tolerances` |
+
+`docs/CHAPTER_1_WINDOW_OPTIMIZER.md` defines the fields explicitly: **`skip_min` = "Minimum
+skip for variable PRNGs"**, **`skip_max` = "Maximum skip for variable PRNGs"**; search space
+`skip_min` 0–10, `skip_max` 10–500. The fields are documented **for the variable case**. The
+current hybrid kernels not accepting them is **the defect**, not the design.
+
+> **Standing rule.** Before recommending removal, demotion or simplification of ANY component,
+> find and cite the document explaining why it exists. **Absence of a working implementation
+> is not evidence of absent intent.** In a codebase this old, "the code doesn't do X" usually
+> means X broke — not that X was never wanted.
+
+### 0.5 Autonomy adjusts parameters, never structure
+Whitepaper §9. The loop tightens thresholds over time; WATCHER/LLM governance proposes
+*parameter* changes within governed bounds. It does not redesign the sieve.
+
+**Corollary:** every tuned parameter must physically reach the kernel and its effective value
+must be observable. A parameter the optimizer tunes but the kernel ignores is a **dead
+dimension** — the sampler steers a knob connected to nothing and an autonomous agent would
+"learn" into a void. This has now happened four times (§2.7).
+
+### 0.6 The pipeline
+```
+Step 1  Window Optimizer (Optuna TPE)   → best window(s)
+Step 2  Bidirectional Sieve             → survivors   [RANGE-MINER (S172) replaces this engine]
+Step 3  Full Scoring (26 GPUs)          → scored survivors + 91-feature vector
+Step 5  Model Training (4 families)     → best model (89 features) + diagnostics
+Step 6  Prediction Generation           → pools (20/100/300)
+Feedback  Chapter 13 daemon             → ingest draw → grade → (attribute) → decide → relearn
+```
+Carriers: the **22-array NPZ survivor contract** and the **prediction pool + coverage/lift
+score**. Detail: `docs/TFM_SYSTEM_MAP_AND_LEARNING_ARCHITECTURE_v1_2.md` (binding).
+
+### 0.7 Why RANGE-MINER exists
+PWC suffered silent hard resets / `GCVM_L2_PROTECTION_FAULT` on the RX 6600 rigs at full-fleet
+saturation, traced to launch-storm behaviour. After weeks of failed debugging the project
+pivoted to RANGE-MINER: **persistent per-GPU daemons**, standalone, producing **all** data the
+remaining steps require — *the remaining steps must not be able to tell which engine produced
+it.* That is an **interface** contract (the 22 arrays), not "match PWC's values."
+**PWC is NOT the authoritative comparator** — Beta retired it from certifying authority
+(2026-07-31); it is a flag-selectable, non-certifying diagnostic path.
+
+---
+
+## 1. THE RULE
+
+**Never assert anything is missing, broken, unwired, unused, current or superseded without a
+`file:line` anchor obtained in THIS session.** Unverifiable → label **[UNVERIFIED]**.
+
+- **Trace the whole path**: producer → artifact → consumer. Real code with no producer is not
+  "wired."
+- **Check supersession.** 180+ sessions; existence ≠ current.
+- **The repository is NOT the system (VIR-6).** systemd units, cron, host config, deployed
+  uncommitted files are invisible to every repo gate. *(Alpha reported "no scraper invoker
+  exists" from a clone; an enabled boot-triggered unit was on the host.)*
+- **Read the consumer before specifying a change** — every producer, consumer, owner,
+  lifecycle transition, path-type requirement, downstream schema dependency. For paths also:
+  regular-file vs symlink ownership, compatibility aliases, atomic-replace boundaries,
+  cleanup, concurrent-run namespace, restart consumers. *Three briefs in a row were defective
+  for skipping this.*
+- **§0.4's standing rule** — cite the design document before proposing removal.
+
+---
+
+## 2. SETTLED FACTS
+
+### 2.1 Objective lineage
+`score` → `holdout_hits` → **`holdout_quality`**. R² abandoned (0.000155 — zero signal);
+**R² is not the objective.** Pipeline objective (S140b): `0.50·hit@20 + 0.30·hit@100 +
+0.15·hit@300 + 0.05·pool_coverage`. `evaluate_pools.py` already computes coverage **and lift
+vs random** — do not propose building it. Open: selfplay inner loop still uses R²;
+`selfplay_orchestrator.py:933` prefers `holdout_hits`.
 
 ### 2.2 Feature contract
-- **91 features extracted / 89 trained** (excluded: `score`, `confidence`).
-- "~62 features" is **STALE** — `feature_importance.py:95-119` omits 31 live features.
-- 5 dead placeholders with **no producer**: `skip_mean`, `skip_std`, `skip_entropy`,
-  `survivor_velocity`, `velocity_acceleration`.
-- 14 `global_*` are stamped identically on every survivor in a run → no within-run
-  discriminating signal; random row-level folds across runs can leak run identity.
+**91 extracted / 89 trained** (excl. `score`, `confidence`). "~62" is stale by 31. Three
+namespaces: **72 survivor-local** (legitimate search space); **14 `global_*`** run-context
+(identical for every survivor — filtering can only retain/remove the whole run; random row
+folds leak run identity); **5 dead placeholders** with no producer (`skip_mean`, `skip_std`,
+`skip_entropy`, `survivor_velocity`, `velocity_acceleration`).
 
-### 2.3 The 22-array NPZ contract (`[S172 Phase-5 D3.0]`, frozen)
-- Only **4 columns carry per-seed information**: `seeds`, `forward_matches`,
-  `reverse_matches`, `score`. 10 are trial-level aggregates, 6 run/config constants,
-  2 categorical labels. `intersection_count` duplicates `bidirectional_count` (deliberate).
-- **`forward_matches`/`reverse_matches` are the only independent per-seed sieve signal and
-  are NOT in the Step-3 merge list.** Producer/consumer semantic divergence under one name.
-  Introduced `0e82155`.
-- **RANGE-MINER obligation: emit exactly the 22 arrays, nothing more.**
+### 2.3 The 22-array NPZ contract (frozen)
+Only **4 columns carry per-seed information**: `seeds`, `forward_matches`, `reverse_matches`,
+`score`. **RANGE-MINER emits exactly 22 arrays, nothing more.**
+`forward_matches`/`reverse_matches` are the only independent per-seed sieve signal and are
+**absent from the Step-3 merge list** — TB: possibly the most consequential finding in the
+trace. Needs a governed schema decision; the miner keeps emitting both regardless.
 
-### 2.4 The bidirectional sieve — reverse is BY DESIGN
-- `*_reverse_sieve` kernels iterate the PRNG **forward**; direction comes from
-  `residues[::-1]` on the host. There is **no inverse LCG** — intentional.
-- **DO NOT flag this as a defect.**
+### 2.4 Attribution
+`per_survivor_attribution.py` is real and invoked with seed identity — **implemented, invoked,
+unreachable, unconsumed.** Four blockers. Never say "wired" or "not implemented"; both wrong.
 
-### 2.5 Attribution status
-- `per_survivor_attribution.py` implements genuine single-survivor attribution for all four
-  model families; Chapter 13 calls it with seed identity.
-- Correct status: **implemented, invoked, unreachable, unconsumed.** Four blockers (no
-  producer for `predictions/ranked_predictions.json`; `chapter_13_orchestrator.py:582` reads
-  `feature_names` at the wrong nesting level; Ch13 bypasses the canonical NN loader; NN
-  attribution omits the training scaler).
-- **Never call it "wired" or "not implemented."** Both are wrong.
+### 2.5 Selfplay
+A **policy-conditioned evaluation harness**, not a learning system.
+`propose_transform_update` is a no-op; promotion seam broken
+(`chapter_13_acceptance.py:224`). All Ch13 triggers **defensive**; no opportunity trigger.
 
-### 2.6 Selfplay
-- A **policy-conditioned evaluation harness**, not a learning system. `propose_transform_update`
-  is a no-op placeholder. **Do not describe selfplay as "the TFM learning system."**
-- Promotion seam is **broken**: `chapter_13_acceptance.py:224` `SelfplayCandidate` lacks
-  `transforms`/`fingerprint`/`parent_policy_id`.
-- All Ch13 retrain triggers are **defensive**; no opportunity-seeking trigger exists.
+### 2.6 Looks-like-a-bug, isn't
+Reverse = host-side residue reversal (§0.2). Loose thresholds required (§0.3).
+`intersection_count` duplicating `bidirectional_count` is deliberate.
 
-### 2.7 Recurring defect pattern — "configured parameters don't reach kernels"
-Appears at least four times independently. **One is fixed; three remain open.**
+### 2.7 Recurring defect: tuned parameters don't reach kernels — FOUR instances
 
-| instance | status |
-|---|---|
-| RANGE-MINER miner filtered at hardcoded `0.25` | **FIXED** — D6 correction, committed `2be51d5`. Single canonical path, per-direction resolution in the parent, effective value read back off the executor, parent-side fail-closed provenance enforcement. |
-| Optuna thresholds never reach the sieve — `test_config` default args `ft`/`rt` never supplied, so **every trial runs at 0.30/0.30** while the study records suggested values | **OPEN [reverify]** — this is the *window-optimizer/PWC* path, not the miner. **Bears directly on Phase 6:** if PWC runs at 0.30/0.30 while the miner honours configured thresholds, the four-path comparison will diverge and look like a miner defect. Verify before Phase 6. |
-| Hybrid kernels hardcode `expected_skip = 5`; `skip_min`/`skip_max` are not kernel parameters | **OPEN [reverify]** |
-| Variable-skip passes run at hardcoded `0.50` while constant passes run `0.30` | **OPEN [reverify]** |
+| # | instance | status |
+|---|---|---|
+| 1 | miner filtered at hardcoded `0.25` | **FIXED** `2be51d5` — single canonical path, per-direction resolution in the parent, effective value read off the executor, parent-side fail-closed provenance |
+| 2 | Optuna thresholds dropped above `run_bidirectional_test`; every trial ran `0.30/0.30` | **FIXED** `8a55a68`. Was a **regression**: fixed `3fdf434` (04-30), silently reverted `2389b61` (07-07) by a stale-copy overwrite whose message never mentions thresholds. Both routes now use `resolve_directional_threshold()`, `is None` not truthiness (**0.0 is legitimate**) |
+| 3 | PWC hybrid filtered at `0.50` | **QUARANTINED** — `PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED`; PWC non-certifying, so the defect is made loud rather than repaired |
+| 4 | **hybrid kernels ignore sampled `skip_min`/`skip_max`; hardcoded `expected_skip = 5`** | **OPEN — next task.** 22/22 constant kernels declare skip bounds; 0/22 hybrid do. Live on the **certifying miner route**: `range_miner_worker.py` reads `skip_range` (`:776`) into `BuildContext` (`:871`), and `_hybrid_prefix` (`:177-193`) never emits it — values survive argparse, config, coordinator, ledger, manifest, payload, worker unpack and the arg-build context, then **die one call before launch.** Anchors `prng_registry.py:1027, :805, :885, :1159`. **Fix by wiring in, NOT removal (§0.4).** Forward hybrids ignore `offset` too (sampled `window_optimizer_bayesian.py:423`) — same class |
 
-Fix pattern (Team Beta, D6): **one canonical path** — resolve once in the parent, never
-reinterpret downstream, record requested/payload/effective for provenance.
+Fix pattern: **one canonical path** — resolve once in the parent, never reinterpret
+downstream, record requested/payload/effective.
 
-### 2.8 RANGE-MINER Phase 5 — as-built (S172)
-All committed and dual-pushed.
+### 2.8 RANGE-MINER Phase 5 as-built (committed, dual-pushed)
+**D3.5** shared run finalizer, immutable chain-authenticated generations; owns the root
+compatibility **symlinks** and **fails closed if a regular file appears there**.
+**D4** `serial_reference` behind a frozen two-backend interface that fails closed.
+**D5** `process_sharded` parallelizes **only** spool-local validation; parent alone owns
+merge/dedup/intersection. **Available, UNPROMOTED** (~1.6× faster high-survivor at ~2–3× RAM;
+~180× slower low-survivor).
+**D6** production adapter; miner candidates reach the Step-1 accumulator and a certified
+generation; per-direction thresholds reach the kernel with requested/payload/effective
+provenance and parent-side fail-closed enforcement; shared session-filtered residue authority.
+**D6.1** incremental checkpoint **writes for the first time** — run-isolated
+`.s172_checkpoint/<run_id>/`, open-handle write + fsync, six-field transaction identity.
+**NON-AUTHORITATIVE four-field snapshot.**
+**Phase 6.0** RX 6600 XT (ROCm) and RTX 3080 Ti (CUDA) produce a **byte-identical certified
+artifact** — same `artifact_sha256` across the D6 release-grade generation and both 6.0 runs;
+22/22 arrays equal; **no GPU reset, no `GCVM_L2_PROTECTION_FAULT`** in the host kernel log.
 
-| deliverable | what it guarantees |
-|---|---|
-| D3.5 | shared run finalizer; immutable chain-authenticated generations; owns the root compatibility **symlinks** `bidirectional_survivors_all.npz` / `_binary.npz` and **fails closed if a regular file appears there** |
-| D4 | `serial_reference` backend behind a frozen two-backend interface that fails closed |
-| D5 | `process_sharded` backend — parallelizes **only** spool-local validation; parent alone owns merge, duplicate attribution, intersection, enrichment. **Available but UNPROMOTED** (~1.6× faster high-survivor at ~2–3× RAM; ~180× slower low-survivor). `serial_reference` remains default. |
-| D6 | production integration adapter; miner candidates reach the Step-1 accumulator and a certified generation; directional thresholds reach the kernel with requested/payload/effective provenance and parent-side fail-closed enforcement; shared session-filtered residue authority |
-| D6.1 | incremental NPZ checkpoint **writes for the first time** — relocated to run-isolated `.s172_checkpoint/<run_id>/`, open-handle write + fsync, six-field transaction identity, three-tier visible failures. **NON-AUTHORITATIVE four-field snapshot.** |
-| Phase 6.0 | RX 6600 XT (ROCm) and RTX 3080 Ti (CUDA) produce a **byte-identical certified artifact** — same `artifact_sha256` across the D6 release-grade generation and both Phase 6.0 runs; 22/22 arrays equal; no GPU reset, no `GCVM_L2_PROTECTION_FAULT`, no VM fault in the host kernel log |
-
-**Authoritative artifact:** D6 release-grade generation
-`gen-20260730T002104136270Z-step1_java_lcg_0`, commit `b08c2c5`, `artifact_sha256`
-`0e0092fe…c4b0`. Now to be described as the **pre-dataset-provenance authoritative
-generation**; its sidecar will not be rewritten. The Phase 6.0 ROCm generation is
-**platform-validation, non-authoritative**.
+**Authoritative artifact:** `gen-20260730T002104136270Z-step1_java_lcg_0`, commit `b08c2c5`,
+`artifact_sha256 0e0092fe…c4b0` — the **pre-dataset-provenance authoritative generation**.
+The ROCm generation is **platform-validation, non-authoritative**.
 
 ### 2.9 Known-disabled / deliberately off
-- **S166 in-memory clear** — disabled. The candidate list is **not** cleared after a flush,
-  so RAM growth is unbounded over a long run. Cannot be enabled until the checkpoint carries
-  all 24 `CANONICAL_RECORD_FIELDS` (the snapshot carries 4). **D6.2 blocker for Phase 7.**
-- **`.s172_checkpoint/<run_id>/` is never pruned** — unbounded directory growth across a
-  soak. **D6.3 blocker for Phase 7.**
-- **`process_sharded`** — selectable, unpromoted.
-- **`/etc/systemd/system/daily3scraper.service`** — enabled since Sep 2025 with
-  `Restart=always`, target `run_daily3scraper.py` **never existed** (not in git history);
-  produced an ENOENT restart loop every boot. **Now `disable --now`; unit file retained**
-  as intentional pre-wired infrastructure. Must stay disabled until Phase 6-P2 is certified.
+**S166 in-memory clear** — disabled; candidate-list RAM growth unbounded until the checkpoint
+carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
+**`.s172_checkpoint/<run_id>/` never pruned** — **D6.3, Phase-7 blocker.**
+**`process_sharded`** selectable, unpromoted.
+**`daily3scraper.service`** — enabled since Sep 2025 with `Restart=always`, target
+`run_daily3scraper.py` **never existed**; ENOENT loop every boot. **Now `disable --now`, unit
+retained.** Stays disabled until Phase 6-P2 is certified.
+**PWC/ZMQ** retired from certifying authority; PWC hybrid additionally quarantined.
 
-### 2.10 Dataset lifecycle (Team Beta rulings, 2026-07-30)
-- The draw dataset is **mutable**. The old scraper had append **and rewrite** modes; rewrite
-  was a one-time bootstrap workaround. **The rewrite mode is being eliminated** — the new
-  scraper will publish **immutable versioned files** with an **atomic pointer-manifest file**
-  (not a bare symlink; a symlink may exist for operators but must not be a second authority).
-- **Version IDs need UTC timestamp + content identity** — "dated" alone is insufficient
-  (multiple publications can occur on one date): `daily3-20260730T184233Z-<sha256-prefix>.json`.
-- **Two separate walls, do not conflate:**
-
-| wall | proves | passes when |
-|---|---|---|
-| publication prefix | history was not rewritten | old **canonical record sequence** is an exact prefix of new |
-| accumulator input | rows share one computational input meaning | exact input-manifest digest match |
-
-- **A byte-prefix test is invalid for JSON arrays** — a complete array ends with `]`, so
-  yesterday's document is never a byte prefix of today's. Use a parsed record-sequence check.
-- **Append-only does NOT make prior scores valid on the next version.** Adding a draw changes
-  the active temporal window, survivor eligibility, gap/skip features, global frequency and
-  residue features, normalization, and any "latest N draws" calculation. **Prefix-only
-  accumulator merging is NOT approved.** Different input digest → clean accumulator lineage
-  or governed re-evaluation of every retained row.
-- **Historical corrections** publish a corrected complete snapshot as a **new dataset
-  lineage**; the old lineage is preserved and audit-retained. The scraper must stop with
-  `CORRECTION_REQUIRED` and may **not** create the corrected lineage autonomously.
-- Generations **chain** — the finalizer merges current winners with the prior generation's
-  rows (`prior_rows`). This is why input identity is a lineage invariant, not annotation.
+### 2.10 Dataset lifecycle (TB rulings 2026-07-30/31)
+- Midday and evening use **independently selected equipment** — **no evidentiary basis for
+  advancing one PRNG state through interleaved records.** Ordering is normative **within a
+  session stream**; combined-container order carries **no PRNG-advance meaning**. The
+  chronological-reorder migration was **cancelled**. Combined-session sequential sieve is
+  **non-certifying, prohibited by default**; production re-optimization is **per-session**.
+- Scraper moves to **append-only immutable versioned files** + an **atomic pointer manifest**
+  (not a bare symlink). Version IDs need UTC timestamp **and** content identity.
+- **Two walls:** *publication prefix* (history not rewritten — a **record-sequence** check; a
+  byte-prefix test is invalid for JSON arrays) and *accumulator input* (**exact
+  input-manifest digest match**). **Append-only does NOT make prior scores valid on the next
+  version** — adding a draw changes windows, eligibility, gap/skip features, global frequency,
+  normalization, any "latest N". Prefix-only merging **not approved**.
+- Corrections → **new dataset lineage**, old preserved; scraper stops with
+  `CORRECTION_REQUIRED` and may not create the corrected lineage autonomously.
+- Generations **chain** (the finalizer merges prior rows) — input identity is a lineage
+  invariant, not annotation.
 
 ---
 
-## 3. SUPERSEDED — present in repo, NOT current
+## 3. SUPERSEDED — in repo, NOT current
+R² as objective · `holdout_hits` as ML target · `feature_importance.py` 60-name list (stale by
+31) · "~62 features" · `bidirectional_survivors.json` as survivor data ·
+`docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` (fragment) · `run_full_scoring.sh` · **PWC/ZMQ as
+certifying comparators** · `full_scoring_worker.py` "50 features" · `window_optimizer.py:450`
+docstring · `RUNTIME_DATASET_PROVISIONING_CONTRACT.md` `expected_sha256` as static config ·
+scraper `--rewrite` mode · "RX 6600" on rrig6600 (they are **6600 XT**, 32 CUs — inventory per
+node) · "the writer is unconditionally frozen" (D6 added one approved `backend=None` seam).
 
-| Artifact | Status |
-|---|---|
-| R² as objective | Abandoned (zero signal on real data) |
-| `holdout_hits` as ML target | Superseded by `holdout_quality` |
-| `feature_importance.py` 60-name list | Stale by 31 features |
-| "~62 features" | Wrong; 91/89 |
-| `bidirectional_survivors.json` | No longer survivor data; 6 consumers still treat it as survivors |
-| `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` | Fragment only |
-| `run_full_scoring.sh` | Superseded by `run_step3_full_scoring.sh` v2.0.0 |
-| PWC / ZMQ transports | Superseded by RANGE-MINER (kept flag-selectable as Phase-6 oracles) |
-| `full_scoring_worker.py` docstring "50 features" | Stale |
-| `window_optimizer.py:450` docstring | Contradicts live behavior |
-| `RUNTIME_DATASET_PROVISIONING_CONTRACT.md` `expected_sha256` as static config | **Superseded** — assumes an immutable dataset; replaced by run-scoped frozen identity resolved from the pointer manifest |
-| scraper `--rewrite` mode | Being eliminated; must not reappear under another name |
-| "RX 6600" on rrig6600 | The cards are **RX 6600 XT** (32 CUs, VBIOS `…XT…`, verified via `rocm-smi --showhw`). Do **not** globally rewrite other nodes — inventory each from KFD/sysfs. |
-| "the writer is unconditionally frozen" (post-D5) | D6 added one approved extension: an optional assembly-backend seam whose `None` path is the exact pre-D6 behavior |
-
----
-
-## 4. FROZEN — reuse, never reimplement or modify
-
-- **`_l2_sort_key` / `_select_l2_winners`** (`utils/run_finalizer.py:690`, `:714`) — Ruling D.
-  Canonical one-record-per-seed rule: highest **float32** score → lowest `trial_number` →
-  constant-before-variable *within a trial only*. Same-trial/same-mode collision raises
-  `AccumulatorConsistencyError`. Comparing pre-rounding float64 **is the defect this converts
-  away**. Any reconciliation must call this authority; if importing inverts a dependency,
-  extract to a shared module — never fork.
-- **D3.5 finalizer-owned root symlinks** — `bidirectional_survivors_all.npz` /
-  `_binary.npz`. A regular file appearing there makes `finalize_run` raise `PublicationError`.
-  Nothing else may write those paths.
-- **D5 §6.7.A compressed-artifact ban** — scoped to worker transport artifacts
-  (`miner/assembly_shard_worker.py`), enforced by mutant M6a on `compress_type=8`. The D6.1
-  **checkpoint may be compressed**; the two contracts are deliberately separate. Do not
-  "harmonize" them.
-- **The 22-array NPZ contract** and the D3.25 four-map ingress contract.
-- **`distributed_config.json` bare-metal addresses** (`.120/.154/.162`) — deliberate; they
-  match the *default boot target*. `CLAUDE.md` §3 states explicitly this is **not a bug and
-  must not be corrected.**
-
----
+## 4. FROZEN — reuse, never reimplement
+- **`_l2_sort_key` / `_select_l2_winners`** (`utils/run_finalizer.py:690`, `:714`, Ruling D):
+  highest **float32** score → lowest `trial_number` → constant-before-variable *within a trial
+  only*; same-trial/same-mode collision raises `AccumulatorConsistencyError`. Comparing
+  pre-rounding float64 **is the defect this converts away.** Import; never fork.
+- **D3.5 finalizer-owned root symlinks** — a regular file there makes `finalize_run` raise
+  `PublicationError`.
+- **D5 §6.7.A compressed-artifact ban** — scoped to worker *transport* artifacts. The D6.1
+  **checkpoint may be compressed**; deliberately separate. Do not harmonize.
+- **The 22-array NPZ contract**; the D3.25 four-map ingress contract.
+- **`distributed_config.json` bare-metal addresses** (`.120/.154/.162`) — deliberate, they
+  match the *default boot target*. `CLAUDE.md` §3: **not a bug, must not be corrected.**
 
 ## 5. VERIFICATION INTEGRITY (VIR-1…6) — binding
+`docs/VERIFICATION_INTEGRITY_STANDARD.md`. Adopted after three incidents of *a check that was
+not checking, presenting as a pass*.
+**VIR-1** verification must prove its own execution; silence/truncation/reporter death/an
+inaccessible surface is never a pass. **VIR-2** vacuous-capable detectors need execution proof
+· **clean control** · **fault-injection (positive) control** · detector independence (*not
+interchangeable terms*). **VIR-3** terminate in `PASS | FAIL | UNAVAILABLE | INCOMPLETE`; only
+`PASS` accepts. **VIR-4** cleanup must not kill its reporter. **VIR-5** unobservable is not
+clean. **VIR-6** audit scope must match the claim; declare searched **and** unavailable
+surfaces.
 
-Full text: `docs/VERIFICATION_INTEGRITY_STANDARD.md`. Adopted after three incidents of *a
-check that was not checking, presenting as a check that passed* (a vacuous mutant; a flush
-that failed for months behind a non-fatal warning; a cleanup `pkill -f` that killed its own
-reporting shell).
-
-- **VIR-1** Verification must prove its own execution. Silence, truncation, reporter death,
-  or an inaccessible surface may never be read as a pass.
-- **VIR-2** Potentially vacuous detectors need: execution proof · **clean control** (does not
-  fire when clean) · **fault-injection/positive control** (does fire on an injected defect) ·
-  detector independence. *"Positive control" = fault injection; "negative/clean control" =
-  no-defect. Not interchangeable.*
-- **VIR-3** Terminate in `PASS | FAIL | UNAVAILABLE | INCOMPLETE`. Only `PASS` satisfies an
-  acceptance item. A missing completion sentinel is failure, never success.
-- **VIR-4** Cleanup must not be able to kill its reporter (no `pkill -f` from a shell whose
-  own command line matches the pattern).
-- **VIR-5** Unobservable is not clean. An empty container kernel log when host logs are
-  inaccessible is `UNAVAILABLE`, not clean. RAS counters absent on unsupported hardware are
-  `UNAVAILABLE`, not "zero errors."
-- **VIR-6** Audit scope must match the claim. Declare searched surfaces, unavailable
-  surfaces, method and bounds. A repo-scoped audit may not be reported as system-scoped.
+Gates should extract and execute the **live source** of the call site (AST), not match text —
+`2389b61` reverted a fix by whole-block replacement; a text anchor would have gone green.
 
 Every brief carries:
 ```
 Verification-integrity controls (VIR-1…6):
-- execution proof:        - clean control:        - fault-injection control:
-- completion sentinel:    - unavailable-observer behavior:
-- audit claim scope:      - searched surfaces:    - unavailable surfaces:
+- execution proof:      - clean control:      - fault-injection control:
+- completion sentinel:  - unavailable-observer behavior:
+- audit claim scope:    - searched surfaces:  - unavailable surfaces:
 ```
 
----
-
 ## 6. TOPOLOGY (verified 2026-07-30)
-
-Rigs boot **bare-metal by default**; they are currently booted into **Proxmox**.
-Pattern: `host = rig + 1`, `CT100 worker = host + 1`.
+Rigs boot **bare-metal by default**; currently in **Proxmox**. `host = rig+1`,
+`CT100 worker = host+1`.
 
 | rig | bare-metal | Proxmox host | **CT100 worker (use this)** |
 |---|---|---|---|
@@ -271,71 +291,57 @@ Pattern: `host = rig + 1`, `CT100 worker = host + 1`.
 | rrig6600b | `.154` | `.155` | **`192.168.3.156`** |
 | rrig6600c | `.162` | `.163` | **`192.168.3.164`** |
 
-- All three CTs: key auth from **VM101** works (`BatchMode=yes`), `~/rocm_env` present,
-  **8 × RX 6600 XT** visible, cupy 13.5.1 under ROCm, gfx1032, **no HSA/GFX env overrides
-  needed or set** (ROCm 6.4 supports gfx1032 natively).
-- **Venvs differ:** VM101 uses `~/venvs/torch`; the rigs use `~/rocm_env`.
-- CT100 is an **unprivileged LXC** — `dmesg`/`journalctl -k` unavailable inside; GPU kernel
-  log must be read from the **Proxmox host** (`root@.121`), where `amdgpu` lives.
-- `daily3.json` is **gitignored** — `git clone` alone cannot stand up a rig.
-- Key auth works **from VM101**, not from ser8. Commands must state their host.
-
----
+Key auth works **from VM101**, not ser8. All three CTs: `~/rocm_env`, **8 × RX 6600 XT**, cupy
+13.5.1, gfx1032, **no HSA/GFX overrides needed**. **Venvs differ** — VM101 `~/venvs/torch`,
+rigs `~/rocm_env`. CT100 is an **unprivileged LXC**: GPU kernel log must be read from the
+Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can't stand up a rig.
 
 ## 7. WORKING AGREEMENTS
-
-- **Claude = Team Alpha** (lead dev/implementation). **Team Beta** = separate approval
-  authority; rulings binding. Never impersonate Team Beta.
+- **Claude = Team Alpha** (lead dev). **Team Beta** = separate approval authority; rulings
+  binding; never impersonate. **Alpha may contest with evidence** — Ruling 20 was withdrawn
+  that way — but does not overrule.
 - **Never commit or push from the sandbox.** Deliver to `/mnt/user-data/outputs/`; Michael
   downloads to ser8, `scp`s to VM101, commits, dual-pushes.
-- **Every command must name its host.** ser8 = download target and `scp` source. VM101 =
-  the repo, all `git`, all rig SSH. Rigs = workers only.
-- **VM101 (`192.168.3.177`) is the live dev box.** Bare Zeus (`.127`, `rzeus`) is the
-  FROZEN FALLBACK — never scp working files there.
-- Use **absolute paths** for scp to VM101.
-- **Stage explicitly, never `git add -a`** — the tree usually has in-flight work.
-- Write a `SESSION_CHANGELOG_YYYYMMDD_SN.md` each session; commit to `docs/`; dual-push
-  (`git push origin main && git push public main`). **Both remotes are public-facing in
-  effect** — `origin` is private, `public` is a public mirror; everything pushed goes to both.
-- Prefer **Claude Code on VM101** for any as-built question — it reads live source **and the
-  live host**. A public clone is repo-only (VIR-6). Chat-side reasoning is provisional.
-- Every Claude Code brief: **one falsifiable question, a defined deliverable, and "write the
-  report to `docs/<n>.md`"**. Separate *investigate* briefs from *fix* briefs.
-- Long GPU/nested suites (D5 drags the whole chain) look hung under `| tail`. Check for a
-  **descendant** process before concluding a hang; a blocked parent burns no CPU.
+- **Every command must name its host.** ser8 = download target and `scp` source. VM101 = repo,
+  all `git`, all rig SSH.
+- **Stage explicitly, never `git add -a`.**
+- Session changelog to `docs/`; dual-push `origin` (private) + `public` (mirror) —
+  **everything pushed is effectively public.**
+- Prefer **Claude Code on VM101** for as-built questions — live source **and** live host. A
+  clone is repo-only (VIR-6); chat-side reasoning is provisional.
+- Briefs: one falsifiable question, a defined deliverable, "write the report to
+  `docs/<n>.md`". Separate *investigate* from *fix*.
+- Long nested suites look hung under `| tail`. Check for a **descendant** process before
+  concluding a hang; a blocked parent burns no CPU.
 
----
-
-## 8. APPROVED SEQUENCE (Team Beta)
-
+## 8. APPROVED SEQUENCE
 ```
-D6.1 ✅ · Phase 6.0 ✅
-Phase 6-P0  freeze publication/pointer/correction schemas; bootstrap publication;
-            pointer resolution, fleet provisioning, fail-before-dispatch
-Phase 6-P1  dataset provenance binding + exact-input accumulator wall
-bounded multi-rig Phase 6   (four-path verify; §17 promotion benchmark)
-D6.2 · D6.3 · Phase 6-P2    (relative order flexible)
-Phase 7     26-GPU saturation + WATCHER soak
+D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅
+next    hybrid skip-bound dead dimension (§2.7 #4) — WIRE IN, do not remove
+        study↔commit/dataset provenance binding
+6-P0    freeze publication/pointer/correction schemas; bootstrap publication;
+        pointer resolution, fleet provisioning, fail-before-dispatch
+6-P1    dataset provenance binding + exact-input accumulator wall
+bounded Phase 6 — three walls: (A) interface/consumer incl. Step-3 · (B) determinism/platform
+        · (C) **bounded independent known-answer correctness** — a reference that does NOT call
+        the miner's coordinator/backend/finalizer
+D6.2 · D6.3 · 6-P2 (order flexible)
+Phase 7  26-GPU saturation + WATCHER soak
 ```
-**Hard Phase 7 prerequisites:** 6-P0, 6-P1, D6.2, D6.3, 6-P2.
-**Bounded Phase 6 conditions:** fresh process or reset accumulator per scenario; declared max
-seed/survivor volume; host-RSS monitoring; no reliance on list clearing; no resume/restart
-acceptance claim; no WATCHER long-lived loop; no multi-trial soak. If Phase 6 becomes
-long-lived with unbounded list growth, **D6.2 moves in front of it.**
-
----
+**Hard Phase-7 prerequisites:** 6-P0, 6-P1, D6.2, D6.3, 6-P2.
+**Optuna:** constant-skip **may resume**; hybrid exploration **non-certifying only**; hybrid
+certification **blocked** until skip bounds are live; authoritative studies need provenance
+binding.
 
 ## 9. SELF-CHECK BEFORE SENDING
-
-1. Did I claim anything is missing/broken/unwired/current? → anchor or mark **[UNVERIFIED]**.
-2. Did I cite a metric or target? → is it on the supersession list (§3)?
-3. Am I proposing something that already exists? (coverage metric, downstream_score,
-   attribution engine — all already built).
-4. Did I classify a capability from one module without tracing producer → artifact → consumer?
-5. Am I about to change a shared buffer, path, or format? → did I enumerate every consumer?
-6. Is my claim system-scoped but my evidence repo-scoped? (VIR-6)
-7. Did I name the host for every command?
-8. Am I inflating a doc/code divergence into an architectural defect before checking the
-   design rationale docs?
-9. Is this a long thread? Long context degrades verification discipline. Say so and suggest a
-   fresh session for major new work.
+1. Claimed something missing/broken/unwired/current? → anchor or **[UNVERIFIED]**.
+2. **Proposing to remove, demote or simplify anything? → did I cite the doc explaining why it
+   exists (§0.4)?**
+3. Cited a metric or target? → check §3.
+4. Proposing something that already exists? (coverage metric, downstream_score, attribution
+   engine).
+5. Classified a capability from one module without tracing producer → artifact → consumer?
+6. Changing a shared buffer, path or format? → enumerated every consumer?
+7. System-scoped claim on repo-scoped evidence? (VIR-6)
+8. Named the host for every command?
+9. Long thread? Verification discipline degrades — suggest a fresh session.
