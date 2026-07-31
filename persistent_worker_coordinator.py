@@ -143,6 +143,70 @@ JOB_TIMEOUT_S = 600               # seconds max per sieve job
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [S172 THRESHOLD-REPAIR R3] PWC variable-skip (hybrid) QUARANTINE — Option B
+#
+# Beta comparator ruling §5: "optional must not mean that a known-wrong PWC
+# hybrid route remains silently runnable."
+#
+# What is wrong. `run_sieve_pass` declares `phase2_threshold: float = 0.5`
+# (below, in its signature) and the only two hybrid call sites — the forward and
+# reverse variable-skip passes in `run_trial_persistent` — never pass it. The
+# 0.5 default therefore reached the job dict, and sieve_gpu_worker.py:257-258
+# used it as `hybrid_threshold` in preference to the directional threshold. PWC
+# filtered variable-skip survivors at 0.50 while the miner and the legacy
+# coordinator filtered at the trial's own threshold, so a four-path comparison
+# on the variable-skip axis measured the oracle, not the miner.
+#
+# Why quarantine rather than propagate (Option B, not Option A). Propagating the
+# directional threshold here is two keyword arguments, but it does not make this
+# route correct: the hybrid kernels also ignore the trial's sampled
+# skip_min/skip_max and start from a hardcoded `int expected_skip = 5`
+# (prng_registry.py:1027, :805, :885, :1159) — a second, independent divergence
+# on the same axis, and a kernel-signature change to fix. Propagating only the
+# threshold would leave the route still executing a configuration nobody
+# requested, while removing the one symptom that makes that visible. PWC is no
+# longer a certifying path, so the correct disposition is to make the defect
+# loud, not to build a provenance gate for a diagnostic route.
+#
+# Scope. Variable-skip/hybrid ONLY. PWC constant-skip is untouched and still
+# runs as a non-certifying diagnostic comparator; it never used phase2_threshold.
+# There is deliberately no override flag — an escape hatch would restore exactly
+# the "silently runnable" property Beta ruled out.
+# ─────────────────────────────────────────────────────────────────────────────
+PWC_HYBRID_QUARANTINE_CODE = "PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED"
+
+
+class PwcHybridThresholdContractUncertified(RuntimeError):
+    """PWC variable-skip execution attempted while its threshold contract is uncertified."""
+
+
+def assert_pwc_hybrid_not_quarantined(prng_type: str, call_site: str = "") -> None:
+    """
+    Fail closed on any PWC variable-skip (hybrid) execution.
+
+    ONE authority, invoked at ONE place: `run_sieve_pass`, the execution boundary
+    every hybrid pass must cross, whatever called it. Scoping it there rather than
+    at the trial entry point is deliberate — see the note in
+    `run_trial_persistent`.
+    """
+    if "_hybrid" not in (prng_type or ""):
+        return
+    where = f" [{call_site}]" if call_site else ""
+    raise PwcHybridThresholdContractUncertified(
+        f"{PWC_HYBRID_QUARANTINE_CODE}: refusing PWC variable-skip execution for "
+        f"prng_type={prng_type!r}{where}. The PWC hybrid path filters at "
+        f"run_sieve_pass's phase2_threshold default (0.5) instead of the trial's "
+        f"directional threshold, and its kernels ignore the trial's "
+        f"skip_min/skip_max in favour of a hardcoded expected_skip=5. Neither is "
+        f"certified. PWC CONSTANT-skip is unaffected — run with "
+        f"test_both_modes=False. To lift this quarantine, implement Beta "
+        f"comparator ruling §5 Option A (propagate the directional threshold with "
+        f"a requested/payload/effective gate proving it reached the kernel) and "
+        f"resolve the hybrid skip-bound dead dimension."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Data structures
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
@@ -1139,6 +1203,12 @@ class PersistentWorkerCoordinator:
         """
         is_hybrid = "_hybrid" in prng_type
 
+        # [S172 THRESHOLD-REPAIR R3] Dispatch-site quarantine gate. Placed before
+        # strategy loading, chunking and any worker dispatch so nothing is
+        # executed for a hybrid pass. Covers every caller, not just
+        # run_trial_persistent.
+        assert_pwc_hybrid_not_quarantined(prng_type, call_site="run_sieve_pass")
+
         # Auto-load strategies for hybrid if not provided
         if is_hybrid and strategies is None:
             try:
@@ -1567,6 +1637,19 @@ def run_trial_persistent(coordinator_cfg: str,
     This function manages PersistentWorkerCoordinator lifecycle internally so that
     the caller (run_trial) doesn't need to know about workers at all.
     """
+    # [S172 THRESHOLD-REPAIR R3] NOTE — there is deliberately NO pre-flight
+    # quarantine check here, and this is a considered placement, not an omission.
+    # A `test_both_modes` guard at the top of this function would be earlier and
+    # would save the two constant-skip passes, but it also blocks something Beta's
+    # ruling does NOT ask to be blocked: D3.25's G1 drives this function both-mode
+    # against a FAKE sieve to assert the v2 four-map return shape on every return
+    # path, and never executes a hybrid pass. Quarantining a return-shape contract
+    # is not quarantining a known-wrong execution. The guard therefore lives at the
+    # EXECUTION boundary only — `run_sieve_pass`, which every hybrid pass must go
+    # through — so a real both-mode trial still fails closed, loudly, before any
+    # hybrid survivor exists. The cost is two already-completed constant passes and
+    # a spawned fleet; the `finally: pwc.shutdown()` below still releases them.
+
     # [S163-KARG-PWC] Pass node_allowlist so each partition only sees its own nodes.
     # Without this, both P0 and P1 read all nodes from config and launch 24 workers each,
     # competing for the same rigs. P1 wins the race; P0 gets 0 ready workers.

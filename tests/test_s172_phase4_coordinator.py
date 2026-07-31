@@ -1892,6 +1892,30 @@ def gate22_coexistence():
         # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
         # (flagged for review).
         "tests/test_s172_d6_1_flush_durability.py",
+        # S172 THRESHOLD-REPAIR (Beta Ruling 24 items 1-2, Priority-0; plus the
+        # comparator ruling §5 PWC hybrid disposition). Optuna's sampled
+        # forward/reverse thresholds were dropped before any backend, so every
+        # trial ran at the configured default while the study recorded the
+        # suggestion. Fixed 3fdf434, silently reverted 2389b61 by a stale-copy
+        # overwrite. Registered here per the same standing whitelist rule:
+        #   * window_optimizer_integration_final.py (already allowed above) —
+        #     one new module-level resolver plus the two call sites that dropped
+        #     the value (`test_config`, Route A; `_local_test`, Route B). This is
+        #     ABOVE the backend split, so it is an optimizer repair, not a PWC
+        #     repair, and the miner's D6 path is untouched.
+        #   * persistent_worker_coordinator.py (already allowed above) — the
+        #     variable-skip QUARANTINE (Option B): both hybrid entry points now
+        #     fail closed with PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED. PWC
+        #     constant-skip is unaffected and still runs as a non-certifying
+        #     diagnostic comparator.
+        #   * tests/test_s172_threshold_propagation.py — this repair's own
+        #     acceptance harness (5 gates + 3 mutants). It executes the LIVE
+        #     source of each call site rather than matching text against it,
+        #     because 2389b61 reverted the fix by replacing the whole block.
+        # miner/, sieve_gpu_worker.py, prng_registry.py and pwc_protocol.py are
+        # untouched — the harness's own G-MINER-UNCHANGED asserts exactly that
+        # against git, and D6-threshold stays 17/17 (flagged for review).
+        "tests/test_s172_threshold_propagation.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

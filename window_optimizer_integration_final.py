@@ -170,6 +170,73 @@ def extract_survivors_from_result(result: Dict[str, Any]) -> List[int]:
 
 
 # ============================================================================
+# [S172 THRESHOLD-REPAIR] Canonical directional-threshold resolution
+#
+# Beta Ruling 24 items 1-2, Priority-0. Optuna samples forward_threshold /
+# reverse_threshold and stores them on the WindowConfig
+# (window_optimizer_bayesian.py:445-452 for Route A, this file's :1835-1841 for
+# Route B), but BOTH call sites discarded them before run_bidirectional_test:
+#
+#   Route A  test_config(... ft=bounds.default_forward_threshold ...)  — the
+#            sampled value was never read; the signature default won.
+#   Route B  _local_test(... forward_threshold=_local_bounds.default_* ...) —
+#            the sampled value was in scope on `cfg`, on the adjacent line, and
+#            was overwritten by an explicit assignment.
+#
+# Every trial therefore filtered at the configured default while the study
+# recorded the sampled value. Route A was fixed in 3fdf434 (2026-04-30) and
+# silently reverted in 2389b61 (2026-07-07) when this file was overwritten from
+# a stale copy; Route B was never covered by that fix at all.
+#
+# The repair puts BOTH routes through this one function, so there is a single
+# authority for "what threshold does this trial run at" and no downstream
+# reinterpretation — the same shape the miner uses at
+# miner/range_miner_coordinator.py:3410-3419. A future stale-copy overwrite of
+# either call site changes observable behaviour and reds
+# tests/test_s172_threshold_propagation.py, which executes the live source of
+# both call sites rather than matching text against them.
+# ============================================================================
+
+_THRESHOLD_DIRECTION_ATTR = {
+    'forward': 'forward_threshold',
+    'reverse': 'reverse_threshold',
+}
+
+
+class ThresholdResolutionError(ValueError):
+    """No directional threshold could be resolved for a trial. Fail closed."""
+
+
+def resolve_directional_threshold(config, direction, explicit=None, default=None):
+    """
+    Resolve ONE trial's forward/reverse match threshold, once, in the parent.
+
+    Precedence: explicit caller argument > config attribute > supplied default.
+
+    `is None` is the ONLY fallback trigger. 0.0 is a legitimate threshold and
+    must never be silently replaced — the `getattr(...) or default` form used by
+    s172_threshold_patch.py FIX 2 would replace it, so this does not reuse that
+    shape. Raises rather than inventing a value when nothing resolves.
+    """
+    if direction not in _THRESHOLD_DIRECTION_ATTR:
+        raise ThresholdResolutionError(
+            f"unknown threshold direction {direction!r} "
+            f"(expected one of {sorted(_THRESHOLD_DIRECTION_ATTR)})"
+        )
+    if explicit is not None:
+        return float(explicit)
+    value = getattr(config, _THRESHOLD_DIRECTION_ATTR[direction], None)
+    if value is not None:
+        return float(value)
+    if default is None:
+        raise ThresholdResolutionError(
+            f"no {direction} threshold available: config carries none and no "
+            f"default was supplied — refusing to invent one"
+        )
+    return float(default)
+
+
+# ============================================================================
 # S134: PERSISTENT WORKER HELPERS
 # These are only called when use_persistent_workers=True.
 # The original run_bidirectional_test path never calls these.
@@ -1708,6 +1775,13 @@ def add_window_optimizer_to_coordinator():
                 try:
                     from coordinator import MultiGPUCoordinator as _WMCC
                     from window_optimizer_integration_final import run_bidirectional_test as _wbt
+                    # [S172 THRESHOLD-REPAIR R2] same canonical resolver the
+                    # single-process route uses — this worker is a separate
+                    # process and re-imports the module, so there is exactly one
+                    # implementation, not a partition-local copy.
+                    from window_optimizer_integration_final import (
+                        resolve_directional_threshold as _resolve_dt,
+                    )
                     from window_optimizer import (
                         WindowConfig, SearchBounds, BidirectionalCountScorer,
                     )
@@ -1795,8 +1869,20 @@ def add_window_optimizer_to_coordinator():
                             seed_count=seed_count_w,
                             prng_base=prng_base_w,
                             test_both_modes=test_both_modes_w,
-                            forward_threshold=_local_bounds.default_forward_threshold,
-                            reverse_threshold=_local_bounds.default_reverse_threshold,
+                            # [S172 THRESHOLD-REPAIR R2] Route B (--n-parallel > 1).
+                            # These two lines used to read
+                            # `_local_bounds.default_forward_threshold` /
+                            # `default_reverse_threshold`, explicitly discarding the
+                            # sampled values that _worker_obj had just put on `cfg`
+                            # (:1835-1841 below, in scope, on the adjacent line).
+                            # 3fdf434 never covered this route. Same single authority
+                            # as Route A.
+                            forward_threshold=_resolve_dt(
+                                cfg, 'forward', None,
+                                _local_bounds.default_forward_threshold),
+                            reverse_threshold=_resolve_dt(
+                                cfg, 'reverse', None,
+                                _local_bounds.default_reverse_threshold),
                             trial_number=_tctr['n'],
                             accumulator=_local_acc,
                             optuna_trial=optuna_trial,
@@ -2261,9 +2347,21 @@ def add_window_optimizer_to_coordinator():
 
         def test_config(config,
                         ss=seed_start, sc=seed_count,
-                        ft=bounds.default_forward_threshold,
-                        rt=bounds.default_reverse_threshold,
-                        optuna_trial=None):  # S115 M2
+                        ft=None, rt=None,
+                        optuna_trial=None):  # S115 M2, [S172 THRESHOLD-REPAIR R1]
+            # [S172 THRESHOLD-REPAIR R1] Route A (single-process, --n-parallel 1,
+            # the default). `ft`/`rt` used to be BOUND AT DEF TIME to
+            # bounds.default_forward_threshold / default_reverse_threshold, so the
+            # sampled values riding on `config` were never read and every trial ran
+            # at 0.30/0.30 while the study recorded the suggestion. Resolution now
+            # happens at CALL time, config first — one authority, see
+            # resolve_directional_threshold above. The caller
+            # (window_optimizer.py:481-482) passes `config` positionally and needs
+            # no change: the values are already on the object it hands over, and
+            # adding a parallel ft/rt argument there would create a second
+            # authority for the same quantity.
+            ft = resolve_directional_threshold(config, 'forward', ft, bounds.default_forward_threshold)
+            rt = resolve_directional_threshold(config, 'reverse', rt, bounds.default_reverse_threshold)
             trial_counter['count'] += 1
             # S115 M1/M5: route to partition coordinator
             if optuna_trial is not None and n_parallel > 1:
