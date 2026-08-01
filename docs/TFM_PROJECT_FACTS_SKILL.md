@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through Phase 6-P0.5 (`46a294b`, 2026-08-01).
+**Currency:** through the §4.3 admission-liveness repair (`ee0db06`, 2026-08-01).
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -206,6 +206,11 @@ A **policy-conditioned evaluation harness**, not a learning system.
 ### 2.6 Looks-like-a-bug, isn't
 Reverse = host-side residue reversal (§0.2). Loose thresholds required (§0.3).
 `intersection_count` duplicating `bidirectional_count` is deliberate.
+**`serve_timeout=None` is deliberate** — a billion-seed scan exceeds any wall clock; the
+bounded clock is on *admission* only (§2.12). **`distributed_config.json`'s bare-metal
+addresses are deliberate** — both topologies are retained as profiles (§2.11). **Chain D's
+`pending_approval`** is a valid authority boundary and the **Step-5 `allowed_params` filter**
+is a deliberate executable-interface boundary (§2.13).
 
 ### 2.7 Recurring defect: tuned parameters don't reach kernels — SIX instances
 
@@ -242,6 +247,9 @@ artifact** — same `artifact_sha256` across the D6 release-grade generation and
 `artifact_sha256 0e0092fe…c4b0` — the **pre-dataset-provenance authoritative generation**.
 The ROCm generation is **platform-validation, non-authoritative**.
 
+**Phase 6-P0** `131787d` · **6-P0.5** `d4ff1e4` · **P0.5 Q2 closure** `8600e75` — dataset
+authority, see §2.10. **§4.3 admission liveness** `ee0db06` — see §2.12.
+
 ### 2.9 Known-disabled / deliberately off
 **S166 in-memory clear** — disabled; candidate-list RAM growth unbounded until the checkpoint
 carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
@@ -272,6 +280,18 @@ here (7.649 × 10¹⁰ grid points ≈ 7.2 TiB at construction).
 - **A local single-GPU run now refuses while any rig is down** — the fail-closed reading;
   a bypass needs governing.
 - `dataset_provisioning.json` is gitignored — a fresh clone has no fleet definition.
+- **A miner-backed run HARD-FAILS** on a **missing, unreadable, invalid or empty** provisioning
+  manifest, before any coordinator construction or dispatch (`8600e75`). Unreadable and invalid
+  are decided **in the loader** — a manifest nobody can read establishes nothing for anyone —
+  and only *absent* is a caller decision.
+- **Status vocabulary, and it is load-bearing:**
+  **`UNAVAILABLE`** = a required verification was **attempted and could not complete** → fatal
+  for a miner topology. **`NOT_APPLICABLE`** = this path never needed the check → proceed.
+  *"We needed it and could not get it" is not "we did not need it."* An **unknown**
+  `remote_execution` keeps the over-constrained reading (`UNAVAILABLE`), never the clean one.
+- **`remote_execution=False` is a topology statement, NOT a bypass.** It must never become
+  Beta's Q1 refinement by the back door: a local run that still drives the 26-GPU coordinator
+  **performs remote execution** and must not declare otherwise.
 
 ### 2.10b Dataset lifecycle (TB rulings 2026-07-30/31)
 - Midday and evening use **independently selected equipment** — **no evidentiary basis for
@@ -293,14 +313,78 @@ here (7.649 × 10¹⁰ grid points ≈ 7.2 TiB at construction).
 
 ---
 
-### 2.11 Control chains, end to end
+### 2.11 Fleet authority — six mechanisms, no single definition (TB fleet ruling)
+
+**There is no single required fleet state today.** Six checks at three granularities on two
+address sets; which apply depends on the backend flag and whether the run came via WATCHER or
+the CLI.
+
+| mechanism | granularity | addresses |
+|---|---|---|
+| P0.5 dataset preflight | node | **`.122/.156/.164`** (CT100) |
+| legacy `test_connectivity` (`coordinator.py:502`) | node | `.120/.154/.162` |
+| PWC ready gate (`persistent_worker_coordinator.py:864`) | **GPU** | `.120/.154/.162` |
+| WATCHER GPU health (`preflight_check.py:293`) | GPU | `.120/.154/.162` — **non-blocking by design**, WATCHER-only |
+| boot notify | GPU | host-local, **Telegram-only, `exit 0`** |
+| miner `expected_workers` | worker daemon | **whoever connects** |
+
+**Three** point at bare metal; P0.5 points at the CT100s; two name no fixed set. The rigs are
+booted into Proxmox, so **P0.5 passes and the three bare-metal checks structurally cannot** —
+P0.5 is the only mechanism updated for the migration.
+
+**Beta's ruling: none of the six defines the fleet.** The future sole authority is a **frozen,
+run-scoped Resolved Execution Set**, created after backend and rig-profile selection but
+**before** dataset verification, GPU verification, coordinator construction or dispatch. It
+carries backend · rig profile · logical nodes and endpoints · worker/GPU identities ·
+local-vs-remote · admission count · dataset-verification targets. **WATCHER and the CLI invoke
+the same resolver.** All six become **consumers**. **A partial set must be explicit and frozen
+before the run — never inferred from which workers happened to answer**, and unknown miner
+workers must not become eligible merely because they connected.
+
+**Both topologies are retained** (TB ruling 3): `.120/.154/.162` is the deliberate bare-metal
+profile, `.122/.156/.164` the Proxmox compute endpoints. **The selected profile decides which
+endpoints enter the set.** `distributed_config.json`'s bare-metal addresses remain
+deliberate — see §4.
+
+**Q1 — local runs.** A local single-GPU run currently **refuses while any rig is down**. The
+refinement (verify only the resolved execution set) is approved **in principle** but must come
+through the shared resolver, **not** by special-casing P0.5 or weakening `require_fleet`. Until
+then the over-constrained behaviour stands.
+
+### 2.12 Admission liveness — the §4.3 hang, repaired `ee0db06`
+
+**The defect:** `assign_stripes`, `_dispatch_pending`, `process_lease_expiry` **and** the stage
+advance were all behind one guard, `len(eligible) >= expected_workers` — and `serve_timeout` is
+`None` by design. A worker loss crossing the threshold stopped lease expiry from being
+processed, so dead workers' stripes stayed `claimed` with expired leases nobody looked at:
+**the trial neither completed nor failed.** *The Blocker-3 matrix was unreachable in exactly
+the situation it exists for.*
+
+**The repair separates admission from maintenance:**
+- **ADMISSION (bounded)** — reaching `expected_workers` is a precondition for *assigning* a
+  stage, bounded by **`worker_admission_timeout`, default 180 s** (the PWC readiness window).
+  Failure is an explicit `fail_trial` naming run · stage · family · phase · expected · admitted
+  · elapsed. **The window re-arms only when `stage_idx` changes**, so worker churn cannot
+  extend it.
+- **MAINTENANCE (unbounded)** — once a stage is assigned, dispatch, lease expiry and completion
+  evaluation run **regardless of the current eligible count**. A shrunken or empty pool is a
+  legitimate input the matrix already handles.
+
+**`serve_timeout` stays `None`** — a multi-billion-seed scan exceeds any wall clock, and the
+bounded clock is on *admission only*. `expected_workers` is **not** reduced dynamically;
+`worker_pool_size` semantics and the Blocker-3 matrix are **unchanged** — the matrix is now
+*reachable*, not rewritten.
+
+### 2.13 Control chains, end to end
 *Which knobs actually reach execution. This table exists so a wiring gap is found now, not at
 Chapter 13.*
 
 | chain | emit → validate → apply → execute | state |
 |---|---|---|
 | per-direction thresholds → kernel | ✅ ✅ ✅ ✅ | **WORKS** (D6 + `8a55a68`) |
-| dataset identity → all nodes | ✅ ✅ ✅ ✅ | **WORKS** (P0.5) |
+| dataset identity → all nodes | ✅ ✅ ✅ ✅ | **WORKS** (P0.5 + Q2 closure) |
+| fleet definition → the run | ✗ — — — | **six mechanisms, no authority** (§2.11) — Resolved Execution Set is the approved fix, unbuilt |
+| worker loss → failure matrix | ✅ ✅ ✅ ✅ | **WORKS** (`ee0db06`) — was an unbounded hang |
 | Advisor → selfplay `max_episodes`, `min_fitness_threshold` | ✅ ✅ ✅ ✅ | **WORKS** |
 | Optuna `skip_min`/`skip_max` → hybrid kernel | ✅ ✅ ✅ ✗ | dies at `_hybrid_prefix` |
 | Optuna `offset` → forward hybrid | ✅ ✅ ✅ ✗ | dies in kernel args |
@@ -401,14 +485,27 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 ## 8. APPROVED SEQUENCE
 ```
 D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
-6-P0 ✅ (131787d) · 6-P0.5 ✅ (d4ff1e4 — pending Beta review)
-next    hybrid skip decision — wire-in vs output-statistic (§0.4, §2.7 #4)
-        RandomSampler control arm (after skip)
-        bounded Phase 6 — three walls: interface/consumer incl. Step-3 · determinism/platform ·
-                          bounded independent known-answer correctness
-        D6.2 · D6.3 · 6-P2 scraper
-Phase 7 26-GPU saturation + WATCHER soak
+6-P0 ✅ 131787d · 6-P0.5 ✅ d4ff1e4 · Q2 closure ✅ 8600e75 · §4.3 liveness ✅ ee0db06
+next  bounded Phase 6 — three walls: (A) interface/consumer incl. Step-3 ·
+      (B) determinism/platform · (C) bounded independent known-answer correctness
+      + RandomSampler control arm (neutral run_optimization(sampler, …), matched
+        budgets across seeds, report distributions not best-trial)
+then  Resolved Execution Set + profile-aware fleet consumers (§2.11)
+then  certify explicit full-fleet AND explicit local execution
+then  skip-output work (§0.4) · D6.2 · D6.3 · 6-P2 scraper
+Phase 7  26-GPU saturation + WATCHER soak — BLOCKED until the Resolved Execution Set lands
 ```
+**Wall C caution:** `java_lcg_cpu` (`prng_registry.py:170-183`) applies skip **once before
+generating**; the kernel applies it **between every draw** (`:987-989`). They agree only at
+`skip=0`. **Building the known-answer reference on it would validate the wrong semantics** in
+the deliverable meant to catch semantic error. *(Michael reports all 44 PRNGs were validated
+through the sieves during pipeline development — constant forward/reverse and hybrid
+variable-skip. An inventory is establishing what exists before anything is scoped as new.)*
+
+**Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
+three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
+**session-separated dataset authority** · `.gitignore:42` dead negation · the CA
+draw-procedures PDF is not in the repo.
 **Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
 three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
 **session-separated dataset authority** · `.gitignore:42` dead negation · the CA
