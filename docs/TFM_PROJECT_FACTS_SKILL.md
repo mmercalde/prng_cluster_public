@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through the S172 threshold repair (`8a55a68`, 2026-07-31).
+**Currency:** through Phase 6-P0.5 (`46a294b`, 2026-08-01).
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -76,10 +76,31 @@ Skip models those gaps. It is a physical property of the data source, not a tuni
 | **constant skip** | fixed stride k between observed outputs | 22 kernels, all declare `int skip_min, int skip_max` |
 | **variable skip (hybrid)** | stride varies, e.g. `[5,5,3,7,5,5,8,4,5,5]` | 22 kernels, declare `skip_sequences` + `strategy_tolerances` |
 
-`docs/CHAPTER_1_WINDOW_OPTIMIZER.md` defines the fields explicitly: **`skip_min` = "Minimum
-skip for variable PRNGs"**, **`skip_max` = "Maximum skip for variable PRNGs"**; search space
-`skip_min` 0–10, `skip_max` 10–500. The fields are documented **for the variable case**. The
-current hybrid kernels not accepting them is **the defect**, not the design.
+**Variable skip is a detector, not a fitting procedure.** It looks for windows where coherent
+skip structure appears — the fingerprint glimpse — and produces survivors with *varied* skip
+structure so tree/NN models have something to learn from. **The goal was never to reverse
+state; it is to extract a fingerprint.**
+
+**`skip_min`/`skip_max` ARE documented — in two readings, at two pipeline stages.** These are
+**not contradictory**; they are the same names doing different jobs:
+
+| stage | reading | source |
+|---|---|---|
+| **input** (Step 1 → 2) | *"Minimum/Maximum skip value **in pattern**"* — an **element-wise bound** on the discovered sequence. Documented hybrid default `[0,16]` | `docs/instructions.txt:1182-1183`; verbatim in `Cluster_operating_manual.txt:948-949`; present in an older revision, so it predates the current file |
+| **output** (Step 2 → 3) | *"Minimum/Maximum gap that **worked**"* — an ML feature describing what the sieve found. *"Tight skip range = stronger hypothesis"* | `PROPOSAL_ML_Architecture_Remediation_v2_0.md:150-158`; `config_manifests/feature_registry.json:336,345` |
+
+**Two registries currently disagree** — `feature_registry.json` says *"found during"* (output),
+`parameter_registry.json:160,166` says *"for sieve search"* (input). One is wrong; correct it in
+whatever change settles this.
+
+**Mechanics that correct a common misreading:** `skip_sequences` is an **output, not an input**
+(`prng_registry.py:1071`). **No pattern is generated.** `expected_skip = 5` seeds a *greedy
+per-draw adaptive search that re-centres on each hit* (`:1047`), and the ancestor file still
+carries `// Initial guess` (`prng_registry_pre_registry.py:696`) — a **guess, not a constant**.
+`strategy_tolerances` is the half-width of the per-draw **matching** window
+(`hybrid_strategy.py:20`), not generation. **No coherence scoring exists** — only `match_rate`.
+
+*(The CA draw-procedures PDF is **not in the repo** — open item.)*
 
 > **Standing rule.** Before recommending removal, demotion or simplification of ANY component,
 > find and cite the document explaining why it exists. **Absence of a working implementation
@@ -135,6 +156,11 @@ it.* That is an **interface** contract (the 22 arrays), not "match PWC's values.
   cleanup, concurrent-run namespace, restart consumers. *Three briefs in a row were defective
   for skipping this.*
 - **§0.4's standing rule** — cite the design document before proposing removal.
+- **A keyword hit is not a finding until the surrounding text is read.** *Four* absence claims
+  were falsified in one session. The last — "nobody documented skip semantics" — was made after
+  a full-tree grep **that reached the exact line and did not read it**
+  (`HYBRID_SKIP_BOUND_AUDIT.md:318` vs `instructions.txt:1182`). Widening the search surface
+  does not fix this; only reading the hits does.
 
 ---
 
@@ -153,6 +179,13 @@ namespaces: **72 survivor-local** (legitimate search space); **14 `global_*`** r
 (identical for every survivor — filtering can only retain/remove the whole run; random row
 folds leak run identity); **5 dead placeholders** with no producer (`skip_mean`, `skip_std`,
 `skip_entropy`, `survivor_velocity`, `velocity_acceleration`).
+
+**Three of those five are skip-shape statistics whose producer EXISTS on the GPU.** They are
+dead because `extract_survivor_records` (`window_optimizer_integration_final.py:147`) discards
+`skip_sequences`. The Oct-2025 output spec (`instructions.txt:1230-1245`) declares
+`skip_pattern` and `pattern_stats: {mean_skip, variance, std_dev}` per survivor — the literal
+ancestor of the three. **Reviving them requires no kernel change**, only that the host stop
+discarding the sequence.
 
 ### 2.3 The 22-array NPZ contract (frozen)
 Only **4 columns carry per-seed information**: `seeds`, `forward_matches`, `reverse_matches`,
@@ -174,14 +207,16 @@ A **policy-conditioned evaluation harness**, not a learning system.
 Reverse = host-side residue reversal (§0.2). Loose thresholds required (§0.3).
 `intersection_count` duplicating `bidirectional_count` is deliberate.
 
-### 2.7 Recurring defect: tuned parameters don't reach kernels — FOUR instances
+### 2.7 Recurring defect: tuned parameters don't reach kernels — SIX instances
 
 | # | instance | status |
 |---|---|---|
 | 1 | miner filtered at hardcoded `0.25` | **FIXED** `2be51d5` — single canonical path, per-direction resolution in the parent, effective value read off the executor, parent-side fail-closed provenance |
 | 2 | Optuna thresholds dropped above `run_bidirectional_test`; every trial ran `0.30/0.30` | **FIXED** `8a55a68`. Was a **regression**: fixed `3fdf434` (04-30), silently reverted `2389b61` (07-07) by a stale-copy overwrite whose message never mentions thresholds. Both routes now use `resolve_directional_threshold()`, `is None` not truthiness (**0.0 is legitimate**) |
 | 3 | PWC hybrid filtered at `0.50` | **QUARANTINED** — `PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED`; PWC non-certifying, so the defect is made loud rather than repaired |
-| 4 | **hybrid kernels ignore sampled `skip_min`/`skip_max`; hardcoded `expected_skip = 5`** | **OPEN — next task.** 22/22 constant kernels declare skip bounds; 0/22 hybrid do. Live on the **certifying miner route**: `range_miner_worker.py` reads `skip_range` (`:776`) into `BuildContext` (`:871`), and `_hybrid_prefix` (`:177-193`) never emits it — values survive argparse, config, coordinator, ledger, manifest, payload, worker unpack and the arg-build context, then **die one call before launch.** Anchors `prng_registry.py:1027, :805, :885, :1159`. **Fix by wiring in, NOT removal (§0.4).** Forward hybrids ignore `offset` too (sampled `window_optimizer_bayesian.py:423`) — same class |
+| 4 | **hybrid kernels ignore sampled `skip_min`/`skip_max`; `expected_skip = 5` hardcoded** | **OPEN.** 22/22 constant kernels declare skip bounds; 0/22 hybrid do. Values survive eight hops and **die at `_hybrid_prefix`** (`range_miner_worker.py:177-193`). Anchors `prng_registry.py:1027, :805, :885, :1159`. **Semantics ARE documented (§0.4)** — the "unspecified semantics" premise of `HYBRID_SKIP_BOUND_AUDIT.md:318` is **FALSE**. Decision open; **the output-statistic reading needs no kernel change at all** |
+| 5 | forward hybrids ignore `offset` (sampled `window_optimizer_bayesian.py:423`) | **OPEN** |
+| 6 | **`skip_learning_rate`** configured 0.2–0.7; kernel **hard-adapts at 1.0** | **OPEN**, newly catalogued |
 
 Fix pattern: **one canonical path** — resolve once in the parent, never reinterpret
 downstream, record requested/payload/effective.
@@ -216,8 +251,29 @@ carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
 `run_daily3scraper.py` **never existed**; ENOENT loop every boot. **Now `disable --now`, unit
 retained.** Stays disabled until Phase 6-P2 is certified.
 **PWC/ZMQ** retired from certifying authority; PWC hybrid additionally quarantined.
+**`dataset_provenance/*.json` never pruned** — same class as D6.3, newly found.
+**`random`/`grid`/`evolutionary` strategies** gated at the CLI (signature mismatch) — **not
+deleted**. Documented design was four Optuna samplers; `GridSampler` is **unconstructible**
+here (7.649 × 10¹⁰ grid points ≈ 7.2 TiB at construction).
 
-### 2.10 Dataset lifecycle (TB rulings 2026-07-30/31)
+### 2.10 Dataset authority — LIVE as of P0.5
+- **The pointer manifest is authoritative.** `daily3_current.json` → immutable
+  `daily3-<UTC>Z-<sha256[:12]>.json`. **`daily3.json` is now a legacy compatibility alias.**
+- **Resolved ONCE at run start and frozen** — manifest identity, absolute path, sha256, size,
+  record count. A pointer moving mid-run **cannot alter a run in progress**. `dataset_sha256`
+  moved from **per-trial to run scope** (`range_miner_coordinator.py:85`); a mid-study scrape
+  used to split a study across two datasets with **no error anywhere**.
+- **Dispatch is the absolute immutable path**, never the bare alias. **Fail before first worker
+  dispatch.** All three rigs provisioned through one path, digests verified **on target**.
+- `DatasetProvisioningError(ResidueError)` — chained, names absolute path **and node**.
+- **The `.json` extension is load-bearing**: `.gitignore:41` keeps published artifacts out of
+  the clean-tree check at `run_finalizer.py:1589`. **No sidecars** — the digest lives inside the
+  manifest. Do not name it `*_config.json` / `schema_*.json`.
+- **A local single-GPU run now refuses while any rig is down** — the fail-closed reading;
+  a bypass needs governing.
+- `dataset_provisioning.json` is gitignored — a fresh clone has no fleet definition.
+
+### 2.10b Dataset lifecycle (TB rulings 2026-07-30/31)
 - Midday and evening use **independently selected equipment** — **no evidentiary basis for
   advancing one PRNG state through interleaved records.** Ordering is normative **within a
   session stream**; combined-container order carries **no PRNG-advance meaning**. The
@@ -236,6 +292,28 @@ retained.** Stays disabled until Phase 6-P2 is certified.
   invariant, not annotation.
 
 ---
+
+### 2.11 Control chains, end to end
+*Which knobs actually reach execution. This table exists so a wiring gap is found now, not at
+Chapter 13.*
+
+| chain | emit → validate → apply → execute | state |
+|---|---|---|
+| per-direction thresholds → kernel | ✅ ✅ ✅ ✅ | **WORKS** (D6 + `8a55a68`) |
+| dataset identity → all nodes | ✅ ✅ ✅ ✅ | **WORKS** (P0.5) |
+| Advisor → selfplay `max_episodes`, `min_fitness_threshold` | ✅ ✅ ✅ ✅ | **WORKS** |
+| Optuna `skip_min`/`skip_max` → hybrid kernel | ✅ ✅ ✅ ✗ | dies at `_hybrid_prefix` |
+| Optuna `offset` → forward hybrid | ✅ ✅ ✅ ✗ | dies in kernel args |
+| `skip_learning_rate` → kernel | ✅ — — ✗ | kernel hard-adapts at 1.0 |
+| Advisor → `search_strategy` | ✅ partial ✗ — | dies in the override dict. **Autonomous application NOT approved** |
+| Advisor → `strategy_recommendation.json` → WATCHER | ✅ ✅ ✗ — | **no code reads the file**; the working path is in-memory |
+| diagnostics → Step-5 retry params | ✅ ✅ ✅ ✗ | filtered at the step boundary — **deliberate**; reporting fixed `f8b751c` |
+| Ch13 proposal → acceptance | ✅ ✅ ✗ — | `pending_approval` is a **valid authority boundary** |
+| GPU `skip_sequences` → ML features | ✅ — ✗ — | discarded at `…final.py:147`; kills 3 features |
+
+**Reserved authority (human only):** feature engineering · survivor thresholds · sieve
+strategy/mathematics · window-optimizer logic · PRNG-family authority · scoring logic ·
+meta-optimizer search space · model families · policy authority.
 
 ## 3. SUPERSEDED — in repo, NOT current
 R² as objective · `holdout_hits` as ML target · `feature_importance.py` 60-name list (stale by
@@ -281,7 +359,7 @@ Verification-integrity controls (VIR-1…6):
 - audit claim scope:    - searched surfaces:  - unavailable surfaces:
 ```
 
-## 6. TOPOLOGY (verified 2026-07-30)
+## 6. TOPOLOGY (verified 2026-08-01)
 Rigs boot **bare-metal by default**; currently in **Proxmox**. `host = rig+1`,
 `CT100 worker = host+1`.
 
@@ -295,6 +373,8 @@ Key auth works **from VM101**, not ser8. All three CTs: `~/rocm_env`, **8 × RX 
 13.5.1, gfx1032, **no HSA/GFX overrides needed**. **Venvs differ** — VM101 `~/venvs/torch`,
 rigs `~/rocm_env`. CT100 is an **unprivileged LXC**: GPU kernel log must be read from the
 Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can't stand up a rig.
+**All three rigs are provisioned with the frozen dataset** (P0.5, verified on target).
+`dataset_provisioning.json` is also gitignored — a fresh clone has no fleet definition.
 
 ## 7. WORKING AGREEMENTS
 - **Claude = Team Alpha** (lead dev). **Team Beta** = separate approval authority; rulings
@@ -302,8 +382,12 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
   that way — but does not overrule.
 - **Never commit or push from the sandbox.** Deliver to `/mnt/user-data/outputs/`; Michael
   downloads to ser8, `scp`s to VM101, commits, dual-pushes.
-- **Every command must name its host.** ser8 = download target and `scp` source. VM101 = repo,
-  all `git`, all rig SSH.
+- **EVERY command must name its host.** ser8 = download target and `scp` source. VM101 = repo,
+  all `git`, all rig SSH. *The single most repeated operational failure.*
+- **`source ~/venvs/torch/bin/activate` before any test command.** A bare shell yields
+  `CuPy not available` / `Optuna not available` — false reds. Watch for `(torch)`.
+- **Plans for behaviour-changing work go to Beta before implementation.** P0's procedural
+  exception was granted because it was inert; Beta stated it is **not precedent**.
 - **Stage explicitly, never `git add -a`.**
 - Session changelog to `docs/`; dual-push `origin` (private) + `public` (mirror) —
   **everything pushed is effectively public.**
@@ -316,18 +400,19 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 
 ## 8. APPROVED SEQUENCE
 ```
-D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅
-next    hybrid skip-bound dead dimension (§2.7 #4) — WIRE IN, do not remove
-        study↔commit/dataset provenance binding
-6-P0    freeze publication/pointer/correction schemas; bootstrap publication;
-        pointer resolution, fleet provisioning, fail-before-dispatch
-6-P1    dataset provenance binding + exact-input accumulator wall
-bounded Phase 6 — three walls: (A) interface/consumer incl. Step-3 · (B) determinism/platform
-        · (C) **bounded independent known-answer correctness** — a reference that does NOT call
-        the miner's coordinator/backend/finalizer
-D6.2 · D6.3 · 6-P2 (order flexible)
-Phase 7  26-GPU saturation + WATCHER soak
+D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
+6-P0 ✅ (131787d) · 6-P0.5 ✅ (d4ff1e4 — pending Beta review)
+next    hybrid skip decision — wire-in vs output-statistic (§0.4, §2.7 #4)
+        RandomSampler control arm (after skip)
+        bounded Phase 6 — three walls: interface/consumer incl. Step-3 · determinism/platform ·
+                          bounded independent known-answer correctness
+        D6.2 · D6.3 · 6-P2 scraper
+Phase 7 26-GPU saturation + WATCHER soak
 ```
+**Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
+three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
+**session-separated dataset authority** · `.gitignore:42` dead negation · the CA
+draw-procedures PDF is not in the repo.
 **Hard Phase-7 prerequisites:** 6-P0, 6-P1, D6.2, D6.3, 6-P2.
 **Optuna:** constant-skip **may resume**; hybrid exploration **non-certifying only**; hybrid
 certification **blocked** until skip bounds are live; authoritative studies need provenance
@@ -337,11 +422,12 @@ binding.
 1. Claimed something missing/broken/unwired/current? → anchor or **[UNVERIFIED]**.
 2. **Proposing to remove, demote or simplify anything? → did I cite the doc explaining why it
    exists (§0.4)?**
+3. **Did I READ the grep hits, or only count them?** (§1, fifth corollary)
 3. Cited a metric or target? → check §3.
 4. Proposing something that already exists? (coverage metric, downstream_score, attribution
    engine).
 5. Classified a capability from one module without tracing producer → artifact → consumer?
 6. Changing a shared buffer, path or format? → enumerated every consumer?
 7. System-scoped claim on repo-scoped evidence? (VIR-6)
-8. Named the host for every command?
+8. **Named the host for every command? Included the venv activation?**
 9. Long thread? Verification discipline degrades — suggest a fresh session.
