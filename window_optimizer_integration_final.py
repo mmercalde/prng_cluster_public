@@ -68,9 +68,13 @@ except ImportError:
 # on hosts without the miner/ package. Enabling --use-range-miner without the
 # package raises ImportError inside the gate below, matching the PWC/ZMQ pattern.
 try:
-    from miner import run_trial_miner
+    # [S172 §4.3] The admission-timeout DEFAULT is imported from the miner rather
+    # than restated here: one authority for the value, so the call site below can
+    # honour a coordinator override without ever baking a literal.
+    from miner import DEFAULT_WORKER_ADMISSION_TIMEOUT, run_trial_miner
 except ImportError:
     run_trial_miner = None
+    DEFAULT_WORKER_ADMISSION_TIMEOUT = None
 
 # [S172 Phase-5 D6] The miner candidate-ingress adapter. Imported under the SAME
 # guard shape as the runner above (a host without miner/ keeps working); the
@@ -1258,6 +1262,17 @@ def run_bidirectional_test(coordinator,
             # exceeds any fixed 30s. Default UNBOUNDED (None) so the production path
             # runs until a terminal state; an explicit config value still binds.
             serve_timeout          = getattr(coordinator, 'serve_timeout', None),
+            # [S172 §4.3 admission liveness, Beta Ruling 1] The serve timeout above
+            # stays UNBOUNDED; this bounds only the pre-assignment wait for the
+            # expected worker pool, so a fleet that never comes up (or a loss that
+            # crosses the threshold before a stage is assigned) fails explicitly
+            # with run/stage/expected/eligible instead of hanging forever. Resolved
+            # from the coordinator like every other knob on this call — never baked
+            # in here — defaulting to the miner's own 180s constant (the PWC
+            # readiness window) rather than a literal repeated at this call site.
+            worker_admission_timeout = getattr(
+                coordinator, 'worker_admission_timeout',
+                DEFAULT_WORKER_ADMISSION_TIMEOUT),
             # [S172 Phase-5 D6] the L6 Phase-5 boundary — assembly happens on
             # the coordinator's commit, and the result is fetched below by
             # run_id. Passing None here is what made this path inert.

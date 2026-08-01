@@ -570,9 +570,36 @@ def gate_miner_unchanged() -> str:
         "miner/range_miner_coordinator.py",
         "miner/range_miner_worker.py",
     }
+
+    # [S172 §4.3 ADMISSION LIVENESS REPAIR — Beta Ruling 1] A THIRD deliverable,
+    # registered by the same standing rule and APPENDED to the P0.5 set above
+    # rather than replacing it (the P0.5 registration and its verification below
+    # stay exactly as they were).
+    #
+    # This repair separates admission liveness from execution maintenance in
+    # serve_trial: the pre-assignment wait for expected_workers becomes bounded
+    # (worker_admission_timeout, default 180s) and fails the trial explicitly,
+    # while dispatch / lease expiry / completion evaluation run unconditionally
+    # once a stage is assigned — which is what makes the Blocker-3 failure matrix
+    # reachable after a mid-run worker loss instead of hanging silently
+    # (docs/FLEET_STATE_REQUIREMENTS_v1.md §4.3).
+    #   * miner/range_miner_coordinator.py — already in the P0.5 set above; named
+    #     again here because it changes for a reason that belongs to THIS
+    #     deliverable, and that reason must be legible in this list.
+    #   * miner/__init__.py — export-only (DEFAULT_WORKER_ADMISSION_TIMEOUT
+    #     alongside run_trial_miner) so the integration call site imports the
+    #     default instead of restating it.
+    # The kernel/executor surface this gate exists to protect is untouched, and
+    # the threshold-token bleed check below applies to these files unchanged: the
+    # repair moves a WORKER-COUNT guard, never a threshold.
+    admission_registered = {
+        "miner/range_miner_coordinator.py",
+        "miner/__init__.py",
+    }
+    registered = p05_registered | admission_registered
     offenders = sorted(p for p in touched
                        if (p.startswith(frozen_prefixes) or p in frozen_files)
-                       and p not in p05_registered)
+                       and p not in registered)
     assert not offenders, (
         "this repair must not touch the miner or the kernel/executor surface "
         f"(the miner is correct; PWC has the defect): {offenders}"
@@ -581,11 +608,11 @@ def gate_miner_unchanged() -> str:
     # A registration is a claim, so verify it rather than trust it: the exempted
     # P0.5 files must not touch threshold logic. This keeps THIS gate's actual
     # subject enforced even on the files it now permits to change.
-    if p05_registered & touched:
+    if registered & touched:
         # encoding pinned explicitly, as the D6 sub-harness call below does: the
         # diff carries non-ASCII prose and the ambient default codec is ascii.
         d = subprocess.run(["git", "diff", "--unified=0", "--",
-                            *sorted(p05_registered & touched)],
+                            *sorted(registered & touched)],
                            cwd=_ROOT, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
         assert d.returncode == 0, f"git diff failed: {d.stderr}"
@@ -598,9 +625,9 @@ def gate_miner_unchanged() -> str:
         bleed = [ln.strip() for ln in changed
                  if any(t in ln for t in threshold_tokens)]
         assert not bleed, (
-            "a P0.5-registered miner file changed THRESHOLD logic — that is "
-            "outside the registered dataset-authority scope and is exactly what "
-            f"this gate exists to catch:\n  " + "\n  ".join(bleed[:10])
+            "a REGISTERED miner file changed THRESHOLD logic — that is outside "
+            "the registered dataset-authority / admission-liveness scope and is "
+            f"exactly what this gate exists to catch:\n  " + "\n  ".join(bleed[:10])
         )
 
     # Behavioural: the D6 threshold contract still holds end to end.
@@ -621,10 +648,11 @@ def gate_miner_unchanged() -> str:
     assert got == total == 17, (
         f"D6-threshold must stay 17/17, got {got}/{total}"
     )
-    if p05_registered & touched:
+    if registered & touched:
         return ("kernel/executor surface (sieve_gpu_worker, prng_registry, "
-                "pwc_protocol) byte-identical to HEAD; the 3 P0.5-registered "
-                "miner files changed only the dataset-authority seam (no "
+                f"pwc_protocol) byte-identical to HEAD; the "
+                f"{len(registered & touched)} registered miner file(s) changed "
+                "only the dataset-authority / admission-liveness seams (no "
                 "threshold-token bleed); D6-threshold 17/17")
     return "miner/ + executor surface byte-identical to HEAD; D6-threshold 17/17"
 

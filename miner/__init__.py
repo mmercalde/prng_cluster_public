@@ -16,6 +16,9 @@ Phase 1 exports `run_trial_miner` as a callable stub so the integration
 gate at window_optimizer_integration_final.py can import it without
 raising, matching the pattern of the existing PWC / ZMQ runners.
 """
-from .range_miner_coordinator import run_trial_miner
+from .range_miner_coordinator import (
+    DEFAULT_WORKER_ADMISSION_TIMEOUT,
+    run_trial_miner,
+)
 
-__all__ = ["run_trial_miner"]
+__all__ = ["run_trial_miner", "DEFAULT_WORKER_ADMISSION_TIMEOUT"]

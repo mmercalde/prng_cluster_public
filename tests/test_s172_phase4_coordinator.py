@@ -2116,6 +2116,49 @@ def gate22_coexistence():
         "miner/dataset_authority.py",
         "scripts/provision_dataset_fleet.py",
         "tests/test_s172_phase6_p05_dataset_authority.py",
+        # §4.3 ADMISSION LIVENESS REPAIR (Beta Ruling 1, Phase-7 blocker promoted
+        # ahead of the remaining bounded Phase-6 work). This is the separate
+        # submission the P0.5 block above explicitly deferred to
+        # ("the len(eligible) >= expected_workers hang at :3714-3737 is a separate
+        # submission"), so it is registered on its own terms rather than folded
+        # into P0.5's rationale.
+        #
+        # Two already-registered production files are modified:
+        #   * miner/range_miner_coordinator.py (already allowed above) — the one
+        #     behavioural change. serve_trial's staged-assignment guard is split
+        #     into a BOUNDED admission precondition (wait for expected_workers
+        #     under worker_admission_timeout, default 180s = the PWC readiness
+        #     window; threshold not reached -> fail_trial naming run/stage/
+        #     expected/eligible) and UNBOUNDED execution maintenance (once a stage
+        #     is assigned, _dispatch_pending, process_lease_expiry and the stage
+        #     advance run regardless of the current eligible count). The Blocker-3
+        #     matrix at :2892-2969 is BYTE-IDENTICAL — the repair makes it
+        #     reachable, it does not rewrite it. expected_workers is never reduced
+        #     dynamically, worker_pool_size keeps its meaning, and serve_timeout
+        #     stays None by default: no finite serve timeout is introduced.
+        #   * window_optimizer_integration_final.py (already allowed above) — ONE
+        #     added kwarg on the existing run_trial_miner call, resolved from the
+        #     coordinator like every other knob (getattr + the miner's own
+        #     constant, no literal at the call site). The _use_miner gate is
+        #     otherwise untouched; PWC/ZMQ call paths are not involved.
+        #
+        # Two NEW paths, registered here:
+        #   * miner/__init__.py — export-only: DEFAULT_WORKER_ADMISSION_TIMEOUT is
+        #     re-exported alongside run_trial_miner so the integration call site
+        #     imports the default instead of restating 180.0 (no-hardcoding rule).
+        #     No logic, no new import edge — the module already imported from
+        #     range_miner_coordinator.
+        #   * tests/test_s172_admission_liveness.py — this repair's own acceptance
+        #     harness (Beta's six named gates plus the churn-reset gate, each run
+        #     twice: once against live source and once against an AST-located
+        #     single-line MUTANT that restores the outer threshold guard). A NEW
+        #     harness rather than gates appended here, because §6 pins this
+        #     harness's tally at 63/63 as a non-regression figure and growing it
+        #     would silently move a number other documents cite.
+        # No kernel, sampler, threshold, protocol, dataset-authority, PWC or ZMQ
+        # path is touched (flagged for review).
+        "miner/__init__.py",
+        "tests/test_s172_admission_liveness.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

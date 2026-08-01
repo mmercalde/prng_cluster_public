@@ -139,6 +139,25 @@ SH_STAGED = "staged"       # local file written, not yet hash-verified
 SH_VERIFIED = "verified"   # local size + sha256 verified
 SH_FAILED = "failed"
 
+# ---------------------------------------------------------------------------
+# [§4.3 ADMISSION LIVENESS — Beta Ruling 1] How long a stage may wait for its
+# expected worker pool to be ADMITTED before the trial fails explicitly.
+#
+# This is NOT a run/serve timeout and must never be confused with one:
+#   * ADMISSION (this value)  — bounded. It covers only the interval in which a
+#     stage has not yet been assigned and the eligible pool is short. It is armed
+#     once per STAGE and is never reset by worker churn.
+#   * EXECUTION (serve_timeout) — UNBOUNDED by default (None), by Beta's earlier
+#     correction. Once a stage is assigned, dispatch, lease expiry and completion
+#     evaluation run regardless of the current eligible count and regardless of
+#     how long the scan takes.
+#
+# 180s matches the PWC readiness window (persistent_worker_coordinator.py:826
+# and :864, `_tcp_wait_ready(expected=..., timeout_s=180.0)`) so the miner and PWC
+# agree on how long a fleet may take to come up.
+# ---------------------------------------------------------------------------
+DEFAULT_WORKER_ADMISSION_TIMEOUT = 180.0
+
 
 # ---------------------------------------------------------------------------
 # Coordinator configuration (L4 — injectable, NOT module constants)
@@ -3521,6 +3540,44 @@ class RangeMinerCoordinator:
         otherwise binds config.miner_host:miner_port. The bound address is stashed
         on self.bound_addr."""
         run_id = context["run_id"]
+        # [§4.3 ADMISSION LIVENESS — Beta Ruling 1] ADMISSION IS BOUNDED EVEN
+        # THOUGH EXECUTION IS NOT. `serve_timeout` stays None by Beta's earlier
+        # correction (a multi-billion-seed scan exceeds any wall clock), so before
+        # this repair there was NO finite bound on "waiting for the fleet to show
+        # up": fewer than expected_workers daemons meant the loop accepted
+        # connections forever with no assignment, no dispatch, no error and no
+        # timeout. This bounds ONLY the wait for admission, never the work. 180s
+        # matches the existing PWC readiness window
+        # (persistent_worker_coordinator.py:826 and :864,
+        # `_tcp_wait_ready(..., timeout_s=180.0)`), so the two backends agree on
+        # how long a fleet is allowed to take to come up.
+        #
+        # RESOLVED AND VALIDATED FIRST, before the dataset digest, the trial
+        # context or the listening socket: a misconfigured admission window is a
+        # liveness defect, so it must be refused before the run can start waiting.
+        _admission_raw = context.get("worker_admission_timeout",
+                                     DEFAULT_WORKER_ADMISSION_TIMEOUT)
+        try:
+            worker_admission_timeout = float(_admission_raw)
+        except (TypeError, ValueError):
+            # Notably None, which by analogy with serve_timeout=None would read as
+            # "disable the bound" — the one meaning this knob must never carry.
+            worker_admission_timeout = float("nan")
+        # FAIL CLOSED on a value that would restore the defect. None/0/negative/inf
+        # are exactly the shapes that turn the bounded admission wait back into the
+        # silent hang this repair exists to remove, so they are refused HERE rather
+        # than honoured into an unreachable failure matrix.
+        if not (worker_admission_timeout > 0.0
+                and math.isfinite(worker_admission_timeout)):
+            raise ValueError(
+                "worker_admission_timeout must be a POSITIVE FINITE number of "
+                f"seconds (got {context.get('worker_admission_timeout')!r}) for "
+                f"run {run_id!r}. A non-positive, absent-by-None or infinite "
+                "admission window reinstates the §4.3 silent hang: the trial would "
+                "wait for a fleet that never arrives with no assignment, no "
+                "dispatch and no terminal failure. Bound the ADMISSION wait; "
+                "execution stays unbounded via serve_timeout=None."
+            )
         family_name = context.get("family_name") or context.get("prng_base") or ""
         phase = int(context.get("phase", context.get("workflow_phase", 1)))
         total_seeds = int(context["total_seeds"])
@@ -3607,6 +3664,14 @@ class RangeMinerCoordinator:
         workflow_stages = context.get("workflow_stages") or [(family_name, phase)]
         stage_idx = 0
         stage_assigned = False
+        # [§4.3] Admission-window state. `admission_stage_idx` is the STAGE the
+        # current window belongs to, and is the ONLY thing that can re-arm it —
+        # which is how "reset only at a genuine new-stage boundary" is enforced
+        # structurally rather than by convention. Nothing in the connect/register/
+        # drop/quarantine paths touches these two names, so a worker connecting,
+        # disconnecting or flapping cannot extend the window.
+        admission_stage_idx: Optional[int] = None
+        admission_started_at: Optional[float] = None
         # [S172 D6] set ONLY by the fail-closed provenance gate below.
         # Default False: a run that never reached the gate is NOT validated,
         # and downstream refuses it. Absence is never neutral.
@@ -3711,10 +3776,72 @@ class RangeMinerCoordinator:
                         reader_threads.pop(rawsock, None)
 
                 # --- staged assignment of the workflow (Defect 6 multi-family) ---
+                # [§4.3 ADMISSION LIVENESS REPAIR — Beta Ruling 1]
+                # The pre-repair guard here was
+                #     if len(eligible) >= expected_workers and stage_idx < len(...):
+                # which put assign_stripes, _dispatch_pending, process_lease_expiry
+                # AND the stage advance behind ONE threshold test. With
+                # serve_timeout=None that made the Blocker-3 failure matrix
+                # unreachable in exactly the situation it exists for: a worker loss
+                # that dropped the pool below expected_workers silently stopped
+                # lease expiry from being processed, so the dead worker's stripes
+                # stayed `claimed` with an expired lease nobody looked at and the
+                # trial neither completed nor failed (FLEET_STATE_REQUIREMENTS_v1
+                # §4.3).
+                #
+                # The threshold test is NOT removed — it is MOVED to where it
+                # belongs, and given a bound:
+                #   * ADMISSION  — reaching expected_workers is a precondition for
+                #     ASSIGNING a stage, and is now bounded by
+                #     worker_admission_timeout. Failure to reach it is an explicit
+                #     fail_trial, not a hang.
+                #   * MAINTENANCE — once a stage IS assigned, dispatch, lease
+                #     expiry and completion evaluation run unconditionally, so a
+                #     mid-run loss reaches the matrix and the matrix decides
+                #     (constant phase -> immediate trial failure; hybrid -> the one
+                #     reassignment), and finished work still commits.
+                # expected_workers is NOT reduced dynamically, worker_pool_size
+                # keeps its current meaning, and the matrix itself is untouched.
                 eligible = _eligible()
-                if len(eligible) >= expected_workers and stage_idx < len(workflow_stages):
+                if stage_idx < len(workflow_stages):
                     fam, ph = workflow_stages[stage_idx]
                     if not stage_assigned:
+                        # ---- ADMISSION (bounded) -------------------------------
+                        # Arm the window for THIS stage. The identity test is the
+                        # enforcement of "reset only at a genuine new-stage
+                        # boundary": the window can only be re-armed when stage_idx
+                        # actually changes, so churn below the threshold cannot
+                        # extend it.
+                        if admission_stage_idx != stage_idx:
+                            admission_stage_idx = stage_idx
+                            admission_started_at = now
+                        if len(eligible) < expected_workers:
+                            waited = now - admission_started_at
+                            if waited > worker_admission_timeout:
+                                # Terminal, explicit, and diagnosable: run id,
+                                # stage, expected count and eligible count, so
+                                # WATCHER gets something to react to instead of an
+                                # indefinitely silent trial. fail_trial routes the
+                                # abort off the dispatch loop and marks the trial
+                                # aborted, which leaves provenance_validated False
+                                # -> the integration adapter refuses ingress and
+                                # the failure propagates terminally.
+                                self.fail_trial(
+                                    run_id,
+                                    reason=(
+                                        f"worker admission timeout: run {run_id!r} "
+                                        f"stage {stage_idx} (family {fam!r}, phase "
+                                        f"{ph}) expected {expected_workers} eligible "
+                                        f"worker(s), {len(eligible)} admitted after "
+                                        f"{waited:.1f}s "
+                                        f"(worker_admission_timeout="
+                                        f"{worker_admission_timeout:.1f}s)"),
+                                    now=now)
+                            # Short pool and the window is still open (or the trial
+                            # is now terminal): this stage is NOT assigned, so there
+                            # is nothing to dispatch and no lease to maintain. Keep
+                            # accepting registrations.
+                            continue
                         # Defect 2 (C4): if NO eligible worker supports this stage's
                         # variant, FAIL THE TRIAL EXPLICITLY — never strand stripes
                         # `pending` forever (which, with the now-unbounded timeout,
@@ -3728,6 +3855,14 @@ class RangeMinerCoordinator:
                             run_id, fam, ph, total_seeds, eligible,
                             stripe_prefix=_stage_prefix(stage_idx))
                         stage_assigned = True
+                    # ---- MAINTENANCE (unbounded, threshold-free) ---------------
+                    # Everything below runs for an ASSIGNED stage regardless of the
+                    # current eligible count. `eligible` is still passed to
+                    # process_lease_expiry because the matrix needs the CURRENT pool
+                    # to pick a reassignment target — a shrunken (even empty) pool is
+                    # a legitimate input that the matrix already handles (hybrid with
+                    # no alternate -> fail_trial). It is no longer a gate on whether
+                    # the matrix runs at all.
                     self._dispatch_pending(
                         run_id, fam, ph, fs_by_worker, dispatched, dataset_path,
                         dataset_sha256, window_size, sessions, offset, residues,
@@ -4334,6 +4469,13 @@ def run_trial_miner(
         # explicitly configured (the gates inject their own short value).
         "serve_timeout": kwargs.get("serve_timeout", None),
         "serve_read_deadline": kwargs.get("serve_read_deadline", 15.0),
+        # [§4.3 admission liveness] BOUNDED admission, UNBOUNDED execution. This is
+        # deliberately a separate knob from serve_timeout above and does not weaken
+        # it: it bounds only the pre-assignment wait for expected_workers. Beta
+        # Ruling 1; default DEFAULT_WORKER_ADMISSION_TIMEOUT (180s, the PWC
+        # readiness window).
+        "worker_admission_timeout": kwargs.get(
+            "worker_admission_timeout", DEFAULT_WORKER_ADMISSION_TIMEOUT),
     }
     # Default: the REAL serve loop (bound method, takes context). Injected test
     # serve keeps the (coordinator, context) shape.
