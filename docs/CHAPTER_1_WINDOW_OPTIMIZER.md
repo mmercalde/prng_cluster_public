@@ -104,13 +104,25 @@ window_optimizer.py
     │                   └─→ 26 GPUs execute sieves
     │
     └─→ Output files:
+        ├─ CERTIFIED NPZ GENERATION  ← canonical Steps 2-6 input (utils.run_finalizer)
         ├─ optimal_window_config.json
-        ├─ bidirectional_survivors.json
-        ├─ forward_survivors.json
-        ├─ reverse_survivors.json
+        ├─ bidirectional_survivors.json   (post-success SUMMARY — no seeds)
+        ├─ forward_survivors.json         (count-only stub)
+        ├─ reverse_survivors.json         (count-only stub)
         ├─ train_history.json
         └─ holdout_history.json
 ```
+
+Two corrections to the diagram above, both material:
+
+1. **`coordinator.py` is one of FOUR backends, not the path.** `run_bidirectional_test` opens
+   with a cascade — RANGE-MINER first (`window_optimizer_integration_final.py:1167-1168`),
+   then PWC, then ZMQ, then the legacy coordinator leg drawn here. Most production runs do
+   not take the drawn path. `window_optimizer.py:1143-1154` enforces a mutex: at most one of
+   `--use-persistent-workers` / `--use-zmq-sqlite` / `--use-range-miner`.
+2. **The artifact that matters is the certified NPZ generation**, assembled by
+   `utils.run_finalizer` (`:2490-2495`). See §12.1 — the three `*_survivors.json` files are
+   summaries and stubs, not survivor data.
 
 ### 2.2 Execution Flow
 
@@ -152,33 +164,106 @@ class WindowConfig:
     sessions: List[str]        # ['midday', 'evening'] or subset
     skip_min: int              # Minimum skip for variable PRNGs
     skip_max: int              # Maximum skip for variable PRNGs
-    forward_threshold: float = 0.25   # Forward sieve threshold
-    reverse_threshold: float = 0.25   # Reverse sieve threshold
+    forward_threshold: float = 0.40   # Forward sieve threshold
+    reverse_threshold: float = 0.45   # Reverse sieve threshold
 ```
+
+Live source: `window_optimizer.py:85-91`. The dataclass defaults shown above are the
+*code* defaults; they are not the effective values a run uses. Effective thresholds are
+resolved per trial by `resolve_directional_threshold()` (§7.2) and the sampled range comes
+from `distributed_config.json` (§4.1). Do not read `0.40` / `0.45` as the operating point.
+
+#### Why `skip_min` / `skip_max` exist — the physical model
+
+> **This subsection is load-bearing.** In one session Team Alpha, Team Beta and Claude Code
+> *independently* recommended removing `skip_min`/`skip_max` from variable-skip search,
+> because no document any of them had read explained why skip exists. All three inferred
+> intent from the current hybrid kernel signatures — which are the defect. The definitions
+> above are kept **verbatim** for that reason.
+
+The published draw sequence is **not** an uninterrupted PRNG output stream. Per the
+*California State Lottery Daily & SuperLotto Plus Draw Procedures* (eff. 2021-06-09):
+
+- **Two pre-test draws run before every live draw** on the selected equipment (§V: Pre-Test
+  via `[Start Draw Session]`; *"Run Draw as Test"* is unchecked only afterwards). Pre-test
+  outputs are generated, verified and certified — and **never published**.
+- **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
+  Midday and evening are separate sessions with separate equipment selection.
+- The evening session draws **Daily 3, Daily 4, Fantasy 5 and Daily Derby together** — other
+  games' outputs sit between the Daily 3 values that are observable.
+
+**Therefore the observable sequence has real, structural gaps of unknown and varying size.**
+Skip models those gaps. It is a **physical property of the data source**, not a tuning
+convenience. A fixed stride asserts the gaps are constant, which the source document
+contradicts.
+
+| mode | assumption | kernels |
+|---|---|---|
+| constant skip | fixed stride *k* between observed outputs | 22 kernels, all declare `int skip_min, int skip_max` |
+| variable skip (hybrid) | stride varies, e.g. `[5,5,3,7,5,5,8,4,5,5]` | 22 kernels, declare `skip_sequences` + `strategy_tolerances` |
+
+#### DEFECT callout (Team Beta, verbatim)
+
+```
+DEFECT — current hybrid kernels do not execute the requested
+skip_min/skip_max semantics and instead use a hard-coded stride.
+Hybrid optimization results are non-certifying.
+```
+
+Anchors: hybrid kernels hardcode `int expected_skip = 5` (`prng_registry.py:805`, `:885`,
+`:1027`, `:1159`) and neither hybrid signature declares `skip_min`/`skip_max`
+(`prng_registry.py:1007-1013` forward, `:3172-3178` reverse). On the certifying miner route
+the values survive argparse, config, coordinator, ledger, manifest, payload, worker unpack
+and `BuildContext` (`miner/range_miner_worker.py:871`), then die one call before launch in
+`_hybrid_prefix` (`:177-193`). Recorded as dead dimensions **D-1** / **D-2** (§3.1.1).
+
+**Standing rule — the fix is WIRE-IN, not removal.** Absence of a working implementation is
+not evidence of absent intent. The full transport chain exists and is intact; nobody builds
+eight hops of plumbing for a value that was never meant to arrive. Before proposing to
+remove, demote or simplify this parameter, cite this subsection and the draw-procedures
+document. The purpose of this text is that no future reader re-derives "remove it."
 
 **Methods:**
 
 | Method | Returns | Purpose |
 |--------|---------|---------|
 | `__hash__()` | `int` | Make hashable for sets/dicts |
-| `description()` | `str` | Human-readable: `W512_O100_midday+evening_S0-50_FT0.4_RT0.45` |
+| `description()` | `str` | Human-readable, format string at `window_optimizer.py:101` |
 | `to_dict()` | `Dict` | JSON serialization |
 
-**Example:**
+**Example** (values chosen inside the live bounds of §4.1 — the pre-correction example used
+`window_size=512` and `0.25`, both of which are now **unreachable**: 512 exceeds the window
+ceiling of 50 and 0.25 is below the threshold floor of 0.30):
 
 ```python
 config = WindowConfig(
-    window_size=512,
-    offset=100,
-    sessions=['midday', 'evening'],
+    window_size=12,
+    offset=0,
+    sessions=['midday'],
     skip_min=0,
-    skip_max=50,
-    forward_threshold=0.25,
-    reverse_threshold=0.25
+    skip_max=16,
+    forward_threshold=0.30,
+    reverse_threshold=0.30
 )
 print(config.description())
-# Output: W512_O100_midday+evening_S0-50_FT0.25_RT0.25
+# Output: W12_O0_midday_S0-16_FT0.3_RT0.3
 ```
+
+#### 3.1.1 Dead dimensions D-1 … D-4
+
+A **dead dimension** is a parameter the system samples or accepts but that never reaches the
+code claiming to consume it. Each is a *defect to be wired in*, never a candidate for
+removal.
+
+| id | parameter | sampled / declared at | dies at | consequence |
+|---|---|---|---|---|
+| **D-1** | `skip_min`, `skip_max` — forward hybrid (`java_lcg_hybrid`) | `window_optimizer_bayesian.py:429-434`; carried on `WindowConfig` (`window_optimizer.py:88-89`) | `_hybrid_prefix` (`miner/range_miner_worker.py:177-193`) emits 13 args, neither of them. PWC route `sieve_gpu_worker.py:259-268` discards the generic prefix. Kernel hardcodes `expected_skip = 5` | Optuna tunes a knob wired to nothing. **Live on the certifying miner route.** OPEN |
+| **D-2** | `skip_min`, `skip_max` — reverse hybrid (`java_lcg_hybrid_reverse`) | same | `_reverse_hybrid_tail` (`miner/range_miner_worker.py:200-202`) emits only `offset`; `sieve_gpu_worker.py:270-279` likewise | same class as D-1. OPEN |
+| **D-3** | `offset` — forward hybrid, `java_lcg` only | `window_optimizer_bayesian.py:423-425` | `build_java_lcg` forward-hybrid branch returns `_hybrid_prefix + [a, c]`, in-source note *"ABI-critical, NO offset"*; PWC skips `sieve_gpu_worker.py:304` via the `continue` at `:293` | Family-specific — `build_lcg32`'s forward hybrid *does* pass `offset`. `java_lcg` is the TFM target family, so this is the consequential instance. OPEN |
+| **D-4** | `--forward-threshold`, `--reverse-threshold` | declared `window_optimizer.py:1063-1066` | immediately — `args.forward_threshold` / `args.reverse_threshold` were never referenced after `parse_args()` | Operator-facing. Was a **silent no-op** on a run reporting success. **CLOSED as a silent defect: the flags now fail closed** (§10.1) |
+
+Constant-skip is fully wired on all four `java_lcg` variants; the variable-skip path is where
+the loss is.
 
 ### 3.2 SearchBounds
 
@@ -189,7 +274,7 @@ class SearchBounds:
     
     # Window parameters
     min_window_size: int = 2
-    max_window_size: int = 500
+    max_window_size: int = 50     # S139: 500 -> 50
     min_offset: int = 0
     max_offset: int = 100
     
@@ -197,29 +282,38 @@ class SearchBounds:
     min_skip_min: int = 0
     max_skip_min: int = 10
     min_skip_max: int = 10
-    max_skip_max: int = 500
+    max_skip_max: int = 250       # S139: 500 -> 250
     
     # Threshold bounds (LOW for discovery)
-    min_forward_threshold: float = 0.15
-    max_forward_threshold: float = 0.60
-    min_reverse_threshold: float = 0.15
-    max_reverse_threshold: float = 0.60
+    min_forward_threshold: float = 0.40
+    max_forward_threshold: float = 0.75
+    min_reverse_threshold: float = 0.40
+    max_reverse_threshold: float = 0.75
     
     # Defaults
-    default_forward_threshold: float = 0.25
-    default_reverse_threshold: float = 0.25
+    default_forward_threshold: float = 0.50
+    default_reverse_threshold: float = 0.50
     
     # Session options
     session_options: List[List[str]] = None  # Auto-initialized
 ```
 
+Live source: `window_optimizer.py:114-130`.
+
+> **These are the CODE defaults, and they are NOT the effective search space.**
+> `distributed_config.json` overrides them (§4.1), and it sets a *lower* threshold floor
+> (`0.30`) and a *lower* threshold default (`0.30`) than the code does. Reading the numbers
+> above as the operating bounds is the error this chapter previously made. **For effective
+> values, see the extracted snapshot in §4.1.**
+
 **Key Methods:**
 
 | Method | Returns | Purpose |
 |--------|---------|---------|
-| `from_config(path)` | `SearchBounds` | Load from distributed_config.json |
-| `random_config()` | `WindowConfig` | Generate random config within bounds |
-| `is_valid(config)` | `bool` | Validate config against bounds |
+| `from_config(path)` | `SearchBounds` | Load from distributed_config.json (`window_optimizer.py:132`) |
+| `random_config()` | `WindowConfig` | Generate random config within bounds (`:198`) |
+| `is_valid(config)` | `bool` | Validate config against bounds (`:213`) |
+| `validate_baseline_in_bounds()` | `None` | **Team Beta mandate** — raises `ValueError` when the baseline falls outside bounds (`:163-196`) |
 
 **Session Options (auto-initialized):**
 
@@ -263,60 +357,119 @@ def recall(self) -> float:
 
 ## 4. Search Bounds Configuration
 
-### 4.1 Single Source of Truth
+### 4.1 Single Source of Truth — live authority, and a dated snapshot
 
-Search bounds are loaded from `distributed_config.json`:
+**Precedence rule.** `distributed_config.json` → `search_bounds` **overrides** the code
+defaults. The merge is a per-key `dict.update()` at `window_optimizer.py:57-61`, so config
+wins key-by-key: a config block that supplies only `min` leaves `max` at the code default.
 
 ```python
 def load_search_bounds_from_config(config_path: str = "distributed_config.json") -> dict:
     """Load search bounds from config file"""
-    defaults = {
-        "window_size": {"min": 2, "max": 500},
-        "offset": {"min": 0, "max": 100},
-        "skip_min": {"min": 0, "max": 10},
-        "skip_max": {"min": 10, "max": 500},
-        "forward_threshold": {"min": 0.15, "max": 0.60, "default": 0.25},
-        "reverse_threshold": {"min": 0.15, "max": 0.60, "default": 0.25}
-    }
-    
+    defaults = { ... }          # window_optimizer.py:46-53 — CODE defaults
     try:
         with open(config_path, 'r') as f:
             config = json.load(f)
         bounds = config.get("search_bounds", {})
-        # Merge: config values override defaults
-        for key in defaults:
+        for key in defaults:            # config values override defaults
             if key in bounds:
                 defaults[key].update(bounds[key])
         return defaults
-    except (FileNotFoundError, json.JSONDecodeError):
-        return defaults  # Use defaults if config missing
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"⚠️  Could not load search_bounds from {config_path}: {e}")
+        print(f"   Using default bounds")     # window_optimizer.py:64-65
+        return defaults
 ```
 
+**Do not read numeric bounds out of this chapter.** Every numeric bound in the pre-correction
+chapter was wrong — thresholds `[0.15, 0.60] default 0.25` against a live `[0.30, 0.75]
+default 0.30`, the window ceiling 10× too large, the skip ceiling 2× too large. That is the
+same class of error that produced the "~62 features" incident. Regenerate the snapshot below
+instead of editing it by hand:
+
+```bash
+python3 scripts/extract_search_bounds_snapshot.py          # markdown block
+python3 scripts/extract_search_bounds_snapshot.py --json   # machine-readable
+```
+
+**A date alone is insufficient provenance** — multiple code states share a date. The snapshot
+therefore carries `repository_commit` (which tree) and `configuration_digest` (which
+configuration bytes) as well.
+
+<!-- BEGIN EXTRACTED BOUNDS SNAPSHOT — generated by scripts/extract_search_bounds_snapshot.py; do not hand-edit -->
+```
+Authority:
+  distributed_config.json -> search_bounds (merged over code defaults by window_optimizer.load_search_bounds_from_config; config wins, window_optimizer.py:57-61)
+
+Snapshot:
+  generated_at         : 2026-08-01T01:33:18Z
+  repository_commit    : 0c47fe34d0e276ea462bb6f2b5b972a9292f064d
+  configuration_digest : sha256:6077bb1a6c7352bd21cbde736127394f464a082dbee6b098390e15dd1f2747cc
+  status               : INFORMATIVE SNAPSHOT — NOT AUTHORITATIVE. Read the authority above for the binding values.
+
+  extracted bounds:
+    window_size        min=6, max=50, default=12
+    offset             min=0, max=100
+    skip_min           min=0, max=10
+    skip_max           min=10, max=250
+    forward_threshold  min=0.3, max=0.75, default=0.3
+    reverse_threshold  min=0.3, max=0.75, default=0.3
+```
+
+**Provenance notes carried from `distributed_config.json`** (the only in-repo record of *why* these values are what they are):
+
+- `window_size._calibration_note` — S148 Run-1 ruling: W12 is empirically preferred production baseline. Optuna still explores full [min,max] range. W12+T0.30 gives ~5 false fwd survivors/200k vs ~272 at W8/T0.25.
+- `window_size._s172_note` — S172 (2026-04-30): min raised from 2 to 6 per TB ruling. W=2/3 produces ~39%/53% survivor rate by chance alone, regardless of threshold. Threshold bounds intentionally PRESERVED so Optuna can continue optimizing across [min, max].
+<!-- END EXTRACTED BOUNDS SNAPSHOT -->
+
 ### 4.2 distributed_config.json Structure
+
+The `search_bounds` block is the authority. Its **shape** is stable; its **values** are the
+snapshot in §4.1 and must be read from there or from the file, never from a transcription.
 
 ```json
 {
     "search_bounds": {
-        "window_size": {"min": 2, "max": 500},
-        "offset": {"min": 0, "max": 100},
-        "skip_min": {"min": 0, "max": 10},
-        "skip_max": {"min": 10, "max": 500},
-        "forward_threshold": {"min": 0.15, "max": 0.60, "default": 0.25},
-        "reverse_threshold": {"min": 0.15, "max": 0.60, "default": 0.25}
+        "window_size":       {"min": …, "max": …, "default": …,
+                              "_calibration_note": "…", "_s172_note": "…"},
+        "offset":            {"min": …, "max": …},
+        "skip_min":          {"min": …, "max": …},
+        "skip_max":          {"min": …, "max": …},
+        "forward_threshold": {"min": …, "max": …, "default": …},
+        "reverse_threshold": {"min": …, "max": …, "default": …}
     }
 }
 ```
 
+The two `_note` keys are not decoration — they are the only in-repo record of *why* the
+window floor is 6, and they are carried into the §4.1 snapshot for that reason. Do not strip
+them when editing the config.
+
 ### 4.3 Threshold Philosophy
 
-**CRITICAL INSIGHT:** Target 1K-10K bidirectional survivors. Bounds: [0.15, 0.60], baseline: 0.25. See docs/THRESHOLD_GOVERNANCE.md
+**CRITICAL INSIGHT:** target **1K–10K** bidirectional survivors
+(`baselines/baseline_window_thresholds.json` → `expected_survivor_band`). For the sampled
+range and baseline, see the §4.1 snapshot — not a number quoted here. See
+`docs/THRESHOLD_GOVERNANCE.md`.
 
 ```
 The system is a behavioral fingerprint machine, NOT a filter.
 Low thresholds maximize seed discovery.
 Bidirectional intersection handles the actual filtering.
-High thresholds (0.72+) would eliminate candidates prematurely.
 ```
+
+This rationale is **correct and load-bearing**, and matches whitepaper §7: an exact sieve
+eliminates all variance, leaving `{s*}` with no ranking, no gradients and **no learning
+signal**. Loose thresholds deliberately admit a *manifold* of near-consistent seeds sharing
+structured deviations that ML can learn to rank. Loose thresholds are a mathematical
+necessity, not sloppiness. **A rewrite must keep this paragraph.**
+
+**Correction — one claim here was falsified by measurement.** The pre-correction chapter
+added *"High thresholds (0.72+) would eliminate candidates prematurely."* That was an
+a-priori assumption. The live ceiling is `0.75`, so `0.72` is inside the sampled range, and
+`baselines/baseline_window_thresholds.json` records the S148 empirical calibration
+(2026-03-19): *"Known seed survives to threshold=0.75 — ceiling safe."* The claim is removed;
+the surrounding rationale is not.
 
 ---
 
@@ -473,7 +626,8 @@ class WindowOptimizer:
 ```python
 def test_configuration(self, config: WindowConfig, 
                        seed_start: int = 0,
-                       seed_count: int = 10_000_000) -> TestResult:
+                       seed_count: int = 10_000_000,
+                       optuna_trial=None) -> TestResult:      # S119
     """
     Test a configuration.
     
@@ -481,12 +635,54 @@ def test_configuration(self, config: WindowConfig,
     Thresholds come from config.forward_threshold and config.reverse_threshold.
     """
     if self.test_configuration_func:
-        return self.test_configuration_func(config, seed_start, seed_count)
+        return self.test_configuration_func(config, seed_start, seed_count,
+                                            optuna_trial=optuna_trial)
     
     # Fallback placeholder (never called in integrated mode)
     return TestResult(config=config, forward_count=0, 
                      reverse_count=0, bidirectional_count=0, iteration=0)
 ```
+
+Live source: `window_optimizer.py:444-463`. Override: `window_optimizer_integration_final.py:2389`
+(`optimizer.test_configuration = test_config`).
+
+#### 7.2.1 INVARIANT — `resolve_directional_threshold()` is the single threshold authority
+
+The sentence *"thresholds come from `config.forward_threshold` and `config.reverse_threshold`"*
+is **true only because of a specific mechanism, and it has been false before.** A document
+that states the outcome without the invariant cannot protect it — that is the same failure
+mode as the skip-bound incident (§3.1).
+
+**The authority** is `resolve_directional_threshold()`,
+`window_optimizer_integration_final.py:210-236`. It is the *only* place a directional
+threshold is resolved. Do not add a second resolution path.
+
+| rule | why |
+|---|---|
+| Precedence **explicit > config > default** | one resolution, in the parent, never reinterpreted downstream |
+| **`is None` is the SOLE fallback trigger** | **`0.0` is a legitimate threshold.** A truthiness test (`getattr(...) or default`) silently replaces it — the shape `s172_threshold_patch.py` FIX 2 used, and deliberately not reused here |
+| **Fail closed:** raises `ThresholdResolutionError` when nothing resolves | it refuses to invent a value. Never substitute a constant, never clamp into range |
+| Record **requested / payload / effective** separately | the effective value is read back off the real executor (`miner/range_miner_worker.py:784`, `:858-863`, `:913`), so provenance is observed, not asserted |
+
+**Regression history — read this before touching the file.** Full trace:
+`docs/THRESHOLD_PATH_AUDIT_WINDOW_OPTIMIZER.md` (cited, not re-derived here).
+
+| commit | date | event |
+|---|---|---|
+| `3fdf434` | 2026-04-30 | Optuna threshold-drop bug **fixed** |
+| `2389b61` | 2026-07-07 | **silently reverted** — a Phase-0 PRNG-encoding commit rewrote `window_optimizer_integration_final.py` from a pre-fix copy. The commit message never mentions thresholds. A stale-copy overwrite |
+| `8a55a68` | 2026-07-31 | **repaired**, both routes, via the single resolver above |
+
+Between `2389b61` and `8a55a68` **every trial ran at the configured default `0.30/0.30`**
+while the study recorded the sampled suggestion. Treat every threshold value recorded in
+that window — study DBs, `step1_trial_history`, `optimal_window_config.json` — as
+**non-executed**.
+
+> **Gate design consequence.** `2389b61` reverted the fix by replacing the whole block, so a
+> text-anchor check would have gone green. Any regression gate on this invariant must
+> **execute the live call site**, not match text against it. That is what
+> `tests/test_s172_threshold_propagation.py` and `tests/test_s172_phase5_d6_threshold_path.py`
+> do.
 
 ### 7.3 optimize()
 
@@ -730,13 +926,78 @@ parser = argparse.ArgumentParser(
 # PRNG type
 --prng-type        # PRNG from registry (default: java_lcg)
 
-# Threshold parameters (governance bounds: 0.15-0.60)
---forward-threshold   # Override Optuna optimization (0.15-0.60)
---reverse-threshold   # Override Optuna optimization (0.15-0.60)
+# Threshold override flags — DECLARED BUT UNWIRED. These FAIL CLOSED.
+--forward-threshold   # passing this aborts the run (see below)
+--reverse-threshold   # passing this aborts the run (see below)
 
 # NEW: Variable skip testing
 --test-both-modes  # Test BOTH constant and variable skip patterns
 ```
+
+This list is **partial** — `window_optimizer.py:1031-1139` declares 31 flags. Bringing the
+full set into the chapter is a P1 item and is *not* done in this tranche; do not read the
+block above as complete.
+
+#### `--forward-threshold` / `--reverse-threshold` — dead dimension D-4, now fail-closed
+
+The pre-correction chapter documented these as *"Override Optuna optimization (0.15-0.60)."*
+**That override never existed.** They were declared at `window_optimizer.py:1063-1066` and
+`args.forward_threshold` / `args.reverse_threshold` were never referenced after
+`parse_args()`. An operator passing `--forward-threshold 0.6` got a **silent no-op on a run
+that reported success** — the first operator-facing dead dimension (D-4, §3.1.1). Three
+mutually inconsistent bound figures were in play at once: this chapter said `0.15-0.60`, the
+`--help` text said `0.5-0.95` / `0.6-0.98`, and the effective bounds were `0.30-0.75`.
+
+**Current behaviour:**
+
+| invocation | result |
+|---|---|
+| flag absent | existing supported path, unchanged |
+| flag present (any value, including `0.0`) | **explicit nonzero failure before coordinator construction**, diagnostic `WINDOW_OPTIMIZER_THRESHOLD_OVERRIDE_UNWIRED` |
+
+The flags are **kept declared rather than deleted from argparse**, deliberately: the operator
+intent they record is legitimate, and a named diagnostic tells the operator the capability is
+*unwired* rather than misspelled. See `window_optimizer.py` for the recorded condition under
+which they may return — they must feed the single `resolve_directional_threshold()` authority
+(§7.2.1), preserve `0.0` via `is None`, and record requested/payload/effective. **They must
+not create parallel threshold state.**
+
+#### `--strategy random | grid | evolutionary` — fail closed (signature mismatch)
+
+Only `--strategy bayesian` is functional. `WindowOptimizer.optimize` calls
+`strategy.search(..., resume_study=, study_name=, trse_context_file=,
+trial_history_context=)` (`window_optimizer.py:484-487`); only
+`BayesianOptimization.search` accepts those kwargs (`:388-391`). The other three raise
+`TypeError` on first call — verified by live `inspect.signature`:
+
+```
+RandomSearch          (self, objective_function, bounds, max_iterations, scorer)
+GridSearch            (self, objective_function, bounds, max_iterations, scorer)
+EvolutionarySearch    (self, objective_function, bounds, max_iterations, scorer)
+BayesianOptimization  (self, objective_function, bounds, max_iterations, scorer,
+                       resume_study=False, study_name='', trse_context_file=...,
+                       trial_history_context=None)
+```
+
+**Root cause is code rot, not design.** The kwargs were added incrementally to
+`BayesianOptimization` (S116/S121/S140b) and the sibling classes were never updated. The
+`SearchStrategy` ABC (`window_optimizer.py:295-310`) still declares the *old* four-argument
+convention, which is exactly why no signature check caught it. Per §0.4 these are **not**
+candidates for deletion — the remedy is to bring them up to the calling convention.
+
+Requesting one of the three now aborts with `WINDOW_OPTIMIZER_STRATEGY_UNSUPPORTED` naming
+the missing kwargs, rather than letting `TypeError` escape mid-run.
+
+**Related, and equally fail-closed:** a Bayesian request when Optuna is unavailable **fails**.
+It does not fall back to random search. Team Beta: that is *semantic substitution, not
+graceful degradation* — the operator asked for TPE and would have received uniform sampling
+under the same label, with the study recording it as Bayesian.
+
+> **Surface not corrected in this tranche:** `agent_manifests/window_optimizer.json`
+> (`search_strategy.choices`) still advertises all four strategies to WATCHER. Its `default`
+> is `bayesian`, and a request for any of the other three now fails closed at the CLI rather
+> than crashing, so the manifest is misleading but no longer dangerous. Flagged for the
+> manifest owner.
 
 ### 10.2 Mode Decision Tree
 
@@ -812,15 +1073,39 @@ window_optimizer.py                    window_optimizer_integration_final.py
 
 ### 12.1 Bayesian Mode Outputs
 
-| File | Contents |
-|------|----------|
-| `optimal_window_config.json` | Best parameters + agent_metadata |
-| `window_optimization_results.json` | Full trial history |
-| `bidirectional_survivors.json` | Intersection survivors |
-| `forward_survivors.json` | Forward sieve survivors |
-| `reverse_survivors.json` | Reverse sieve survivors |
-| `train_history.json` | 80% lottery data for training |
-| `holdout_history.json` | 20% lottery data for validation |
+> **The canonical Step-1 → Steps-2–6 carrier is the certified NPZ generation**, produced by
+> `utils.run_finalizer` (`window_optimizer_integration_final.py:2490-2495`). It is the one
+> output that matters, and the pre-correction table had no row for it. The three
+> `*_survivors.json` files are **not** the survivor data they appear to be.
+
+| File | Contents | Status |
+|------|----------|--------|
+| **certified NPZ generation** (`utils.run_finalizer`) | the **22-array NPZ contract** plus sidecar; carries `artifact_sha256`, `sidecar_sha256`, `parent_generation_id` (`window_optimizer_integration_final.py:2596-2602`). Generations **chain** — the finalizer merges prior rows | **CANONICAL — this is what Steps 2–6 consume** |
+| `optimal_window_config.json` | best parameters + `agent_metadata` (§12.2) | current |
+| `window_optimization_results.json` | full trial history (`window_optimizer_integration_final.py:2450`) | current |
+| `bidirectional_survivors.json` | **post-success SUMMARY of the certified generation** — generation IDs and sha256s, **no seeds** (`:2604-2631`). In-source: *"It is NO LONGER the canonical Steps 2-6 input… Steps 2-6 consume the canonical NPZ"* | **demoted — summary only** |
+| `forward_survivors.json` | `{"survivor_count": N, "note": "Full survivors omitted — objects not retained"}` (`:2523-2532`) | **count-only stub** |
+| `reverse_survivors.json` | as above | **count-only stub** |
+| `train_history.json` | 80% lottery data for training (`window_optimizer.py:811-819`, `:1003-1011`) | current |
+| `holdout_history.json` | 20% lottery data for validation | current |
+
+**Why forward/reverse are count-only.** `accumulator['forward']` and `accumulator['reverse']`
+are never appended to — only `accumulator['bidirectional']` is
+(`window_optimizer_integration_final.py:1018-1019`, `:1538`, `:1640`). `[S166-ACCUM]`
+(`:1529-1533`) replaced object retention with counters to stop a RAM bomb at 26-GPU scale.
+**That change is deliberate and correct** — the canonical NPZ carries what downstream needs.
+Do not "restore" full retention.
+
+> **Known defect, separate ticket (not fixed in this tranche).** In `--config-file` mode
+> `window_optimizer.py:960-976` still dedups those permanently-empty lists and writes `[]` to
+> both files while printing `"✅ Saved 0 forward survivors"`. The Bayesian path degraded
+> *honestly* (it writes a `note` explaining the omission); the config path degrades
+> **silently**.
+
+**Undocumented hard gate.** `--config-file` mode shells out to
+`convert_survivors_to_binary.py` and raises `RuntimeError("Step 1 incomplete - NPZ conversion
+required for Step 2")` on failure (`window_optimizer.py:978-988`). This is a release gate, not
+a convenience step.
 
 ### 12.2 optimal_window_config.json Structure
 
@@ -853,6 +1138,13 @@ window_optimizer.py                    window_optimizer_integration_final.py
 
 ### 12.3 Survivor Record Structure (v3.1)
 
+**The record is FLAT.** The pre-correction chapter nested the window parameters under a
+`"window_config"` key and listed a `"timestamp"` field. Neither is real: `window_size`,
+`offset`, `skip_min` and `skip_max` sit at top level in `metadata_base`
+(`window_optimizer_integration_final.py:1505-1508`), and **no `timestamp` key is produced**
+anywhere — not by `metadata_base` (`:1504-1527`) nor by the append (`:1538-1544`). Any
+consumer written against the old shape would fail.
+
 ```json
 {
     "seed": 12345678,
@@ -860,29 +1152,37 @@ window_optimizer.py                    window_optimizer_integration_final.py
     "forward_match_rate": 0.75,
     "reverse_match_rate": 0.50,
     "prng_type": "java_lcg",
+    "prng_base": "java_lcg",
     "skip_mode": "constant",
-    "window_config": {
-        "window_size": 4,
-        "offset": 26,
-        "skip_min": 1,
-        "skip_max": 108
-    },
+
+    "window_size": 4,
+    "offset": 26,
+    "skip_min": 1,
+    "skip_max": 108,
+    "skip_range": [1, 108],
+    "sessions": ["midday"],
+
     "trial_number": 6,
+    "forward_count": 8987,
+    "reverse_count": 8855,
+    "intersection_count": 8929,
+
     "bidirectional_count": 8929,
     "intersection_ratio": 0.488,
     "forward_only_count": 8987,
     "reverse_only_count": 8855,
     "survivor_overlap_ratio": 0.498,
     "bidirectional_selectivity": 1.007,
-    "intersection_weight": 0.244,
-    "timestamp": "2026-02-23T16:00:00"
+    "intersection_weight": 0.244
 }
+```
 
-# v3.0+: forward_match_rate and reverse_match_rate are PER-SEED
-# values from GPU sieve kernel (not trial-level aggregates).
-# v3.1: All 7 intersection fields restored (S104 fix).
-```
-```
+- `forward_match_rate` / `reverse_match_rate` are **per-seed** values read from the GPU sieve
+  kernel via `forward_map` / `reverse_map` (`:1536-1541`), not trial-level aggregates.
+- All 7 intersection fields are present (`:1520-1526`, constant; `:1624-1630`, variable).
+- `intersection_count` duplicating `bidirectional_count` is **deliberate** — not a defect.
+- `skip_range`, `sessions`, `prng_base`, `forward_count`, `reverse_count` and
+  `intersection_count` were absent from the pre-correction example.
 
 ---
 

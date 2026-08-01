@@ -1916,6 +1916,51 @@ def gate22_coexistence():
         # untouched — the harness's own G-MINER-UNCHANGED asserts exactly that
         # against git, and D6-threshold stays 17/17 (flagged for review).
         "tests/test_s172_threshold_propagation.py",
+        # CHAPTER-1 P0 CORRECTION, tranche 1 (items 1-5; audit db9782a §6 P0).
+        # Three behaviour changes, all fail-closed, all ABOVE the backend split
+        # — no miner, PWC, ZMQ, kernel or protocol file is touched:
+        #   * window_optimizer.py — NEW to this whitelist. (a) the dead
+        #     --forward-threshold/--reverse-threshold flags (dead dimension D-4)
+        #     now abort with WINDOW_OPTIMIZER_THRESHOLD_OVERRIDE_UNWIRED before
+        #     the coordinator is constructed, instead of being parsed and
+        #     ignored on a run that reported success; (b) --strategy
+        #     random|grid|evolutionary abort with
+        #     WINDOW_OPTIMIZER_STRATEGY_UNSUPPORTED — their search() cannot
+        #     accept the kwargs optimize() forwards, so they raised TypeError on
+        #     the first trial; the gate is derived from LIVE signatures, so
+        #     repairing a strategy clears it; and a Bayesian request with Optuna
+        #     unavailable now raises instead of silently becoming random search
+        #     (Team Beta: "semantic substitution, not graceful degradation");
+        #     (c) the invented 0.72/0.81 threshold constants are gone from both
+        #     agent_metadata and run_with_config — resolution goes through the
+        #     single resolve_directional_threshold() authority (8a55a68), the
+        #     field is OMITTED when nothing resolves, and a value is never
+        #     clamped. Per tfm-project-facts §0.4 nothing was removed: the flags
+        #     and the three strategies are GATED, with the wire-in condition
+        #     recorded in-source.
+        #   * window_optimizer_integration_final.py (already allowed above) —
+        #     ONE further edit: `strategy_map.get(name, RandomSearch())` became
+        #     require_supported_strategy(name) + strategy_map[name], because the
+        #     old form made the uncallable RandomSearch the silent default for
+        #     any unrecognised strategy name. resolve_directional_threshold and
+        #     every backend gate are byte-identical — D6-threshold stays 17/17
+        #     and threshold-propagation 5/5.
+        #   * scripts/extract_search_bounds_snapshot.py — NEW. Emits the
+        #     chapter's bounds block from the live authority with
+        #     repository_commit + configuration_digest, because a date alone
+        #     cannot distinguish two code states. Read-only; no runtime consumer.
+        #   * tests/test_chapter1_p0_corrections.py — this tranche's acceptance
+        #     harness (6 gates + 6 mutants). It EXECUTES the live call sites
+        #     (subprocess CLI exit codes, the real metadata block writing a real
+        #     file) and AST-extracts the forwarded-kwarg contract from the live
+        #     optimize() call, because 2389b61 reverted a fix by whole-block
+        #     replacement and a text anchor would have gone green.
+        # miner/, sieve_gpu_worker.py, prng_registry.py, pwc_protocol.py,
+        # persistent_worker_coordinator.py and zmq_sqlite_coordinator.py are
+        # untouched by this tranche (flagged for review).
+        "window_optimizer.py",
+        "scripts/extract_search_bounds_snapshot.py",
+        "tests/test_chapter1_p0_corrections.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

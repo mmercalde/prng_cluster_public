@@ -26,6 +26,7 @@ The key feature: This runs REAL sieves on all 26 GPUs!
 import json
 import os
 from datetime import datetime
+import inspect
 import sys
 import argparse
 import random
@@ -34,6 +35,31 @@ from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, asdict
 from abc import ABC, abstractmethod
 from integration.metadata_writer import inject_agent_metadata
+
+
+class _MappingAttrView:
+    """
+    Attribute view over a plain dict.
+
+    [S178 P0-3] ADAPTER ONLY. The single threshold authority,
+    `window_optimizer_integration_final.resolve_directional_threshold()`, reads
+    its config by attribute. Some call sites here hold a JSON dict instead of a
+    `WindowConfig`. This wraps the dict so that ONE resolver can serve both —
+    it performs no resolution, holds no defaults, and invents nothing. Missing
+    keys raise `AttributeError`, so `getattr(view, name, None)` yields `None`
+    and the resolver's `is None` fallback rule applies unchanged (0.0 survives).
+    """
+
+    __slots__ = ('_mapping',)
+
+    def __init__(self, mapping: Dict[str, Any]):
+        object.__setattr__(self, '_mapping', mapping)
+
+    def __getattr__(self, name):
+        try:
+            return object.__getattribute__(self, '_mapping')[name]
+        except KeyError:
+            raise AttributeError(name)
 
 # ============================================================================
 # CONFIG LOADER - Single Source of Truth for Search Bounds
@@ -292,8 +318,34 @@ class BidirectionalCountScorer(ScoringFunction):
 # SEARCH STRATEGIES
 # ============================================================================
 
+class StrategyContractError(RuntimeError):
+    """
+    [S178 P0-2] A requested search strategy cannot honour the optimizer's call
+    convention, or cannot be provided at all. Raised instead of substituting a
+    different algorithm behind the same request.
+    """
+
+
+# The keyword arguments `WindowOptimizer.optimize` forwards to `strategy.search`.
+# Kept beside the strategies so the gate below reads like the call site it guards;
+# `tests/test_chapter1_p0_corrections.py` proves this tuple equals the kwargs of
+# the LIVE `strategy.search(...)` call, extracted from the AST of
+# `WindowOptimizer.optimize`. A text anchor would not have caught 2389b61.
+OPTIMIZE_FORWARDED_KWARGS = (
+    'resume_study', 'study_name', 'trse_context_file', 'trial_history_context',
+)
+
+
 class SearchStrategy(ABC):
-    """Base class for search strategies"""
+    """
+    Base class for search strategies.
+
+    STALE (audit db9782a, conflict C-3): the abstract signature below is the
+    pre-S116 convention. The real convention adds OPTIMIZE_FORWARDED_KWARGS —
+    see `WindowOptimizer.optimize`. Because this ABC was never updated, no
+    signature check caught that three of the four strategies could not be
+    called. `strategy_contract_gap()` now checks the concrete classes instead.
+    """
 
     @abstractmethod
     def search(self,
@@ -402,9 +454,23 @@ class BayesianOptimization(SearchStrategy):
                                              trse_context_file=trse_context_file,
                                              trial_history_context=trial_history_context)
         else:
-            # Fallback to random search
-            print("⚠️  Optuna not available, using random search fallback")
-            return RandomSearch().search(objective_function, bounds, max_iterations, scorer)
+            # [S178 P0-2] FAIL CLOSED — was: RandomSearch().search(...).
+            #
+            # Team Beta: silently serving uniform random sampling for a
+            # requested TPE search is "semantic substitution, not graceful
+            # degradation". The operator asked for Bayesian optimization; the
+            # study, step1_trial_history and optimal_window_config.json would
+            # all have recorded the run as Bayesian while a different algorithm
+            # chose every point. Refuse instead.
+            raise StrategyContractError(
+                "WINDOW_OPTIMIZER_BAYESIAN_UNAVAILABLE: Bayesian optimization was "
+                "requested but OptunaBayesianSearch could not be constructed "
+                "(optuna missing, or window_optimizer_bayesian failed to import). "
+                "Refusing to substitute random search for a requested TPE search — "
+                "that would record a Bayesian run that never happened. "
+                "Install optuna, or request a supported strategy explicitly. "
+                "No sieve was launched and no parameter was changed."
+            )
 
     def name(self) -> str:
         return "bayesian_optimization"
@@ -421,6 +487,78 @@ class EvolutionarySearch(SearchStrategy):
 
     def name(self) -> str:
         return "evolutionary"
+
+
+# ============================================================================
+# [S178 P0-2] SEARCH-STRATEGY CALLING CONTRACT
+# ============================================================================
+# Three of the four documented strategies raised TypeError on their FIRST call
+# — after the 26-GPU coordinator had already been constructed. `optimize()`
+# forwards OPTIMIZE_FORWARDED_KWARGS; only BayesianOptimization.search accepts
+# them. The siblings still declare the pre-S116 four-positional convention, and
+# the stale SearchStrategy ABC is why no signature check caught it
+# (audit db9782a, conflict C-3).
+#
+# Per the standing rule (tfm-project-facts §0.4) the three are NOT deleted.
+# All four strategies were clearly meant to run; §6.4 of the chapter
+# distinguishes "placeholder" from "working", a distinction that would be
+# pointless if none ran. This is code rot, and the remedy is to bring the
+# signatures up to the calling convention — at which point the gate below
+# clears itself, because it is derived from LIVE signatures rather than from a
+# hardcoded list of broken names.
+
+STRATEGY_CLASSES = {
+    'random':       RandomSearch,
+    'grid':         GridSearch,
+    'bayesian':     BayesianOptimization,
+    'evolutionary': EvolutionarySearch,
+}
+
+
+def strategy_contract_gap(strategy_cls) -> tuple:
+    """
+    Which of OPTIMIZE_FORWARDED_KWARGS `strategy_cls.search` cannot accept.
+
+    Returns a sorted tuple of missing keyword names; empty tuple means the
+    strategy is callable by `WindowOptimizer.optimize`. A `**kwargs` catch-all
+    counts as accepting everything.
+    """
+    params = inspect.signature(strategy_cls.search).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return ()
+    return tuple(sorted(k for k in OPTIMIZE_FORWARDED_KWARGS if k not in params))
+
+
+def require_supported_strategy(strategy_name: str) -> type:
+    """
+    Resolve a strategy name to its class, failing closed on both an unknown name
+    and a known-but-uncallable strategy.
+
+    An unknown name previously fell through to `RandomSearch()` at
+    `window_optimizer_integration_final.py`'s strategy_map — which made the
+    broken RandomSearch the default for every typo. Same anti-pattern as the
+    Optuna fallback: a request silently becoming a different algorithm.
+    """
+    cls = STRATEGY_CLASSES.get(strategy_name)
+    if cls is None:
+        raise StrategyContractError(
+            f"WINDOW_OPTIMIZER_STRATEGY_UNKNOWN: {strategy_name!r} is not a known "
+            f"search strategy (known: {', '.join(sorted(STRATEGY_CLASSES))}). "
+            f"Refusing to fall back to random search."
+        )
+    gap = strategy_contract_gap(cls)
+    if gap:
+        raise StrategyContractError(
+            f"WINDOW_OPTIMIZER_STRATEGY_UNSUPPORTED: --strategy {strategy_name} "
+            f"cannot be run. {cls.__name__}.search() does not accept "
+            f"{', '.join(gap)}, which WindowOptimizer.optimize() forwards, so it "
+            f"would raise TypeError on the first trial — after the coordinator was "
+            f"built. Use --strategy bayesian. Per tfm-project-facts §0.4 this "
+            f"strategy is GATED, NOT deleted: bring {cls.__name__}.search() up to "
+            f"the calling convention and this gate clears itself."
+        )
+    return cls
+
 
 # ============================================================================
 # MAIN OPTIMIZER CLASS
@@ -583,7 +721,10 @@ def run_bayesian_optimization(
 
     # Lazy import to avoid circular dependency
     try:
-        from window_optimizer_integration_final import add_window_optimizer_to_coordinator, run_bidirectional_test
+        from window_optimizer_integration_final import (
+            add_window_optimizer_to_coordinator, run_bidirectional_test,
+            resolve_directional_threshold, ThresholdResolutionError,   # [S178 P0-3]
+        )
         integration_available = True
     except ImportError as e:
         integration_available = False
@@ -741,6 +882,54 @@ def run_bayesian_optimization(
             pass  # If file is corrupt, just use new config
     # === END MERGE ===
 
+    # === [S178 P0-3] D-4: METADATA REPORTS WHAT EXECUTED — IT DOES NOT INVENT ===
+    #
+    # This block used to emit `best_config.get('forward_threshold', 0.72)` and
+    # `... .get('reverse_threshold', 0.81)`. Those literals were a SECOND
+    # threshold authority, independent of the configuration actually requested
+    # and executed — the sixth instance of the dual-authority pattern, in the
+    # very file repaired at 8a55a68. 0.81 also exceeded the live governance
+    # ceiling of 0.75, but Team Beta ruled the ceiling violation the SYMPTOM;
+    # the defect is dual authority.
+    #
+    # Resolution goes through the single authority,
+    # resolve_directional_threshold() — no second resolution path. `explicit`
+    # and `default` are deliberately left unset so that the ONLY source is the
+    # winning trial's own config: `is None` is the sole fallback trigger, so a
+    # legitimate 0.0 survives, and when nothing resolves the resolver raises
+    # rather than inventing. On a raise the field is OMITTED. It is never
+    # replaced by a constant and never clamped into range.
+    _best_config_view = _MappingAttrView(best_config)
+    _executed_thresholds = {}
+    for _direction in ('forward', 'reverse'):
+        try:
+            _executed_thresholds[_direction] = resolve_directional_threshold(
+                _best_config_view, _direction)
+        except ThresholdResolutionError as _err:
+            print(f"⚠️  [D-4] no authoritative executed {_direction} threshold "
+                  f"for the winning trial — OMITTING the field rather than "
+                  f"substituting a value: {_err}")
+
+    # Provenance (observed/executed) and proposal (recommendation to the next
+    # step) are separate concerns and separate fields. They currently carry the
+    # same numbers because no governed threshold RECOMMENDER exists — inventing
+    # a recommendation is precisely the defect being repaired here. When one is
+    # introduced it writes `suggested_params`; `executed_thresholds` must keep
+    # reporting what the sieve actually ran.
+    if _executed_thresholds:
+        optimal_config['executed_thresholds'] = {
+            **{f"{_d}_threshold": _v for _d, _v in _executed_thresholds.items()},
+            'source': 'winning_trial_window_config',
+            'resolver': 'window_optimizer_integration_final.resolve_directional_threshold',
+        }
+
+    _suggested_params = {
+        "window_size": best_config['window_size'],
+        "k_folds": 5,
+    }
+    for _direction, _value in _executed_thresholds.items():
+        _suggested_params[f"{_direction}_threshold"] = _value
+
     # Inject agent_metadata for pipeline chaining
     run_id = f"step1_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(str(results)) % 100000:05d}"
     optimal_config = inject_agent_metadata(
@@ -751,12 +940,7 @@ def run_bayesian_optimization(
         pipeline_step=1,
         follow_up_agent="scorer_meta_agent",
         confidence=min(0.95, results['best_score'] * 10) if results['best_score'] > 0 else 0.5,
-        suggested_params={
-            "window_size": best_config['window_size'],
-            "forward_threshold": best_config.get('forward_threshold', 0.72),
-            "reverse_threshold": best_config.get('reverse_threshold', 0.81),
-            "k_folds": 5
-        },
+        suggested_params=_suggested_params,
         reasoning=f"Optimization found {results.get('survivors_count', 'N/A')} survivors with score {results['best_score']:.4f}"
     )
     optimal_config["run_id"] = run_id
@@ -850,7 +1034,10 @@ def run_with_config(
 
     # Lazy import to avoid circular dependency
     try:
-        from window_optimizer_integration_final import add_window_optimizer_to_coordinator, run_bidirectional_test
+        from window_optimizer_integration_final import (
+            add_window_optimizer_to_coordinator, run_bidirectional_test,
+            resolve_directional_threshold, ThresholdResolutionError,   # [S178 P0-3]
+        )
         integration_available = True
     except ImportError as e:
         integration_available = False
@@ -908,13 +1095,40 @@ def run_with_config(
     coordinator.worker_pool_size       = worker_pool_size
     coordinator.min_workers            = min_workers
 
+    # === [S178 P0-3] D-4: ONE threshold authority for this run ===
+    #
+    # Was: the WindowConfig below received NO thresholds (so it silently carried
+    # the dataclass defaults 0.40/0.45) while the sibling kwargs on
+    # run_bidirectional_test said `config.get('forward_threshold', 0.72)` /
+    # `... 0.81`. Two authorities for one quantity in a single call, and 0.81
+    # exceeded the live governance ceiling of 0.75.
+    #
+    # Now resolved ONCE, in the parent, through the single authority, and the
+    # same value is placed on the WindowConfig and passed to the backend.
+    # Precedence explicit > config > default; `is None` is the sole fallback
+    # trigger, so a config carrying 0.0 keeps 0.0. The `default` is the governed
+    # configuration value from distributed_config.json — not a magic constant —
+    # and if the config file supplies neither and search_bounds is unreadable,
+    # resolve_directional_threshold raises and the run fails closed rather than
+    # sieving at an invented threshold.
+    _bounds = SearchBounds.from_config()
+    _config_view = _MappingAttrView(config)
+    _forward_threshold = resolve_directional_threshold(
+        _config_view, 'forward', default=_bounds.default_forward_threshold)
+    _reverse_threshold = resolve_directional_threshold(
+        _config_view, 'reverse', default=_bounds.default_reverse_threshold)
+    print(f"  Thresholds (resolved): forward={_forward_threshold}, "
+          f"reverse={_reverse_threshold}")
+
     # Create WindowConfig object
     window_config = WindowConfig(
         window_size=config.get('window_size', 1024),
         offset=config.get('offset', 100),
         sessions=config.get('sessions', ['midday', 'evening']),
         skip_min=config.get('skip_min', 0),
-        skip_max=config.get('skip_max', 50)
+        skip_max=config.get('skip_max', 50),
+        forward_threshold=_forward_threshold,
+        reverse_threshold=_reverse_threshold,
     )
 
     # Run the sieves with accumulator
@@ -937,8 +1151,8 @@ def run_with_config(
             seed_count=max_seeds,
             prng_base=config.get('prng_type', 'java_lcg'),
             test_both_modes=test_both_modes,  # NEW: Pass through from config
-            forward_threshold=config.get('forward_threshold', 0.72),
-            reverse_threshold=config.get('reverse_threshold', 0.81),
+            forward_threshold=_forward_threshold,   # [S178 P0-3] same resolution
+            reverse_threshold=_reverse_threshold,   # as window_config above
             trial_number=iteration,
             accumulator=accumulator
         )
@@ -1028,8 +1242,15 @@ def main():
     )
 
     # Mode selection
+    # [S178 P0-2] The three non-bayesian names are RETAINED as choices so that
+    # requesting one produces the specific WINDOW_OPTIMIZER_STRATEGY_UNSUPPORTED
+    # diagnostic (naming the signature mismatch) rather than argparse's generic
+    # "invalid choice". They are gated, not deleted — see require_supported_strategy.
     parser.add_argument('--strategy', type=str, choices=['bayesian', 'random', 'grid', 'evolutionary'],
-                       help='Optimization strategy: bayesian (recommended), random, grid, evolutionary')
+                       help='Optimization strategy. Only "bayesian" is functional; '
+                            'random/grid/evolutionary FAIL CLOSED (their search() does not '
+                            'accept the kwargs optimize() forwards — they would raise '
+                            'TypeError on the first trial).')
     parser.add_argument('--config-file', type=str,
                        help='Run with existing optimal config (skips optimization)')
 
@@ -1059,11 +1280,17 @@ def main():
     parser.add_argument('--prng-type', type=str, default='java_lcg',
                        help='PRNG type to use (any from prng_registry)')
 
-    # Threshold parameters (overrides Optuna optimization for thresholds)
+    # [S178 P0-1] Threshold override flags — DECLARED BUT UNWIRED. See the
+    # fail-closed gate after parse_args(); passing either aborts the run.
     parser.add_argument('--forward-threshold', type=float, default=None,
-                       help='Forward sieve threshold (0.5-0.95). If not set, Optuna optimizes it.')
+                       help='UNWIRED — passing this ABORTS the run '
+                            '(WINDOW_OPTIMIZER_THRESHOLD_OVERRIDE_UNWIRED). It reaches '
+                            'no sieve and never has. Set thresholds via '
+                            'distributed_config.json search_bounds, or let Optuna sample.')
     parser.add_argument('--reverse-threshold', type=float, default=None,
-                       help='Reverse sieve threshold (0.6-0.98). If not set, Optuna optimizes it.')
+                       help='UNWIRED — passing this ABORTS the run '
+                            '(WINDOW_OPTIMIZER_THRESHOLD_OVERRIDE_UNWIRED). See '
+                            '--forward-threshold.')
 
     # NEW: Variable skip testing flag
     parser.add_argument('--resume-study', action='store_true',
@@ -1139,6 +1366,65 @@ def main():
                              'if writable, else ~/miner_output/)')
 
     args = parser.parse_args()
+
+    # ========================================================================
+    # [S178 P0-1] DEAD DIMENSION D-4 — the threshold override flags fail closed
+    # ========================================================================
+    # `--forward-threshold` / `--reverse-threshold` were declared above and
+    # `args.forward_threshold` / `args.reverse_threshold` were NEVER referenced
+    # after parse_args(). An operator passing one received a SILENT NO-OP on a
+    # run that reported success — the fifth dead dimension and the first
+    # operator-facing one (audit db9782a §4, D-4). The chapter advertised them
+    # as "Override Optuna optimization"; that override does not exist.
+    #
+    # They are KEPT IN ARGPARSE rather than deleted, deliberately. Deletion
+    # would make them "unrecognized arguments" — also a nonzero failure, but a
+    # diagnostic that says "you misspelled a flag" when the truth is "this
+    # capability is unwired". Keeping the declaration preserves the record of
+    # operator intent (tfm-project-facts §0.4: absence of an implementation is
+    # not evidence of absent intent) and lets the failure name the real cause.
+    #
+    # CONDITION UNDER WHICH THEY MAY RETURN — all four, or not at all:
+    #   1. they feed the SINGLE resolve_directional_threshold() authority
+    #      established at 8a55a68 (window_optimizer_integration_final.py:210-236)
+    #      as its `explicit` argument. They must NOT create parallel threshold
+    #      state alongside WindowConfig / SearchBounds / the config file;
+    #   2. 0.0 is preserved — `is None` is the sole fallback trigger, never
+    #      truthiness (`getattr(...) or default` silently destroys 0.0);
+    #   3. requested / payload / effective are recorded separately, per the D6
+    #      read-back pattern (miner/range_miner_coordinator.py:1644-1652);
+    #   4. this gate is deleted in the SAME change that wires them, never before.
+    #
+    # This runs before the backend mutex and long before MultiGPUCoordinator is
+    # constructed, so nothing is allocated and no sieve is launched.
+    _unwired_flags = [
+        flag for flag, value in (
+            ('--forward-threshold', args.forward_threshold),
+            ('--reverse-threshold', args.reverse_threshold),
+        ) if value is not None
+    ]
+    if _unwired_flags:
+        parser.error(
+            "WINDOW_OPTIMIZER_THRESHOLD_OVERRIDE_UNWIRED: "
+            f"{', '.join(_unwired_flags)} reaches no sieve — it never has (dead "
+            "dimension D-4). Honouring it would be a silent no-op on a run that "
+            "reports success, so the run is refused instead. Set thresholds via "
+            "distributed_config.json -> search_bounds, or let Optuna sample them. "
+            "See docs/CHAPTER_1_WINDOW_OPTIMIZER.md §10.1."
+        )
+
+    # ========================================================================
+    # [S178 P0-2] Unsupported search strategies fail closed
+    # ========================================================================
+    # `random`, `grid` and `evolutionary` raise TypeError on their first call,
+    # AFTER the 26-GPU coordinator has been constructed. Fail here instead,
+    # naming the cause (signature mismatch). Derived from live signatures, so
+    # repairing a strategy clears this gate with no edit here.
+    if args.strategy:
+        try:
+            require_supported_strategy(args.strategy)
+        except StrategyContractError as _err:
+            parser.error(str(_err))
 
     # [S172 Phase 1] Mutex validation: exactly one backend may be selected.
     _backends = [

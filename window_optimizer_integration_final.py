@@ -1674,7 +1674,8 @@ def add_window_optimizer_to_coordinator():
     from window_optimizer import (WindowOptimizer, SearchBounds,
                                    RandomSearch, GridSearch,
                                    BayesianOptimization, EvolutionarySearch,
-                                   BidirectionalCountScorer)
+                                   BidirectionalCountScorer,
+                                   require_supported_strategy)   # [S178 P0-2]
 
     def optimize_window(self,
                         dataset_path: str,
@@ -2399,7 +2400,15 @@ def add_window_optimizer_to_coordinator():
             'evolutionary': EvolutionarySearch(population_size=10)
         }
 
-        strategy = strategy_map.get(strategy_name, RandomSearch())
+        # [S178 P0-2] Fail closed. This was `strategy_map.get(strategy_name,
+        # RandomSearch())`, which made the UNCALLABLE RandomSearch the silent
+        # default for any unrecognised strategy name — the same "a request
+        # becomes a different algorithm" anti-pattern as the Optuna fallback.
+        # require_supported_strategy raises StrategyContractError on both an
+        # unknown name and a known-but-uncallable one; the instance still comes
+        # from strategy_map so the per-strategy construction args are preserved.
+        require_supported_strategy(strategy_name)
+        strategy = strategy_map[strategy_name]
         strategy._survivor_accumulator = survivor_accumulator  # [S149]
 
         # [S140b] trial history context — flows to Optuna callback
