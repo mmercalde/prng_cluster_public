@@ -2078,10 +2078,38 @@ def gate22_coexistence():
         #     basis. It copies an already-published version and verifies it on
         #     the target; it has no publish, rename or delete path.
         #   * tests/test_s172_phase6_p05_dataset_authority.py — the P0.5
-        #     acceptance harness (33 gates incl. the opt-in live-fleet gate).
+        #     acceptance harness (38 gates incl. the opt-in live-fleet gate).
         #     Every fault is injected into a tempfile publication tree; gate 31
         #     re-derives the real published digests to prove nothing published
         #     was touched.
+        #
+        # P0.5 CLOSURE CONDITION (Beta's conditional acceptance at d4ff1e4) —
+        # no new file, no new registration: the same three production files
+        # above are edited again, at the same seam.
+        #   * miner/dataset_authority.py — an unusable provisioning manifest
+        #     (missing · unreadable · invalid · empty) is now FATAL for a
+        #     miner-backed run, raised from the run-start gate before any
+        #     coordinator is constructed and before any dispatch, as
+        #     DatasetProvisioningError naming the expected absolute manifest
+        #     path. Adds FLEET_STATUS_NOT_APPLICABLE so a path with no remote
+        #     execution stops borrowing UNAVAILABLE, which Beta reserved for "a
+        #     required verification was ATTEMPTED and could not be completed".
+        #     The successful-manifest path is untouched — the new decision
+        #     function is unreachable when the manifest is usable (P0.5 harness
+        #     gate 36 replaces it with a raiser and the run still passes).
+        #   * window_optimizer.py — the existing gate call now declares
+        #     miner_backed (from args.use_range_miner) and remote_execution
+        #     (unconditionally True: both sieve entry points construct
+        #     MultiGPUCoordinator at :756 and :1079). No local-run bypass was
+        #     added — Beta's Q1 refinement is explicitly unauthorized.
+        #   * agents/watcher_agent.py — the inline absent/empty branches are
+        #     replaced by the one shared decision; remote_execution stays
+        #     UNKNOWN per step, so every non-miner step keeps today's
+        #     UNAVAILABLE and nothing is silently relabelled.
+        # No kernel, sampler, threshold, protocol, PWC or ZMQ path is involved,
+        # and range_miner_coordinator.py is NOT touched by this tranche — the
+        # len(eligible) >= expected_workers hang at :3714-3737 is a separate
+        # submission (docs/FLEET_STATE_REQUIREMENTS_v1.md §4.3).
         #
         # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
         # (flagged for review).

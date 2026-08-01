@@ -1467,12 +1467,25 @@ def main():
     from miner import dataset_authority as _dsauth
     from miner.range_miner_worker import DatasetProvisioningError as _DatasetProvErr
 
+    #
+    # [Beta P0.5 closure ruling] A MINER-BACKED run additionally hard-fails when
+    # the provisioning manifest is missing, unreadable, invalid or empty: with no
+    # manifest the system cannot establish which worker datasets must be
+    # verified, and recording UNAVAILABLE and proceeding violates the authority
+    # boundary. `remote_execution=True` is unconditional and is a statement of
+    # fact, not of policy — BOTH sieve entry points construct the 26-GPU
+    # MultiGPUCoordinator (:756 in run_bayesian_optimization, :1079 in
+    # run_with_config), so no window-optimizer run is fleet-free. Declaring
+    # otherwise for a single-GPU invocation would BE Beta's Q1 refinement, which
+    # is explicitly not authorized.
     _p05_label = (f"window_opt_{args.prng_type}_"
                   f"{args.strategy or 'config'}_{os.getpid()}")
     try:
         _p05_frozen = _dsauth.run_start_dataset_gate(
             args.lottery_file,
             run_label=_p05_label,
+            miner_backed=bool(getattr(args, 'use_range_miner', False)),
+            remote_execution=True,
         )
     except (_dsauth.DatasetAuthorityError, _DatasetProvErr) as _p05_err:
         parser.error(f"DATASET_AUTHORITY_P0_5: {_p05_err}")

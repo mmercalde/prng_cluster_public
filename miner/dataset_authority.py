@@ -103,6 +103,24 @@ PROVISIONING_MANIFEST_NAME = "dataset_provisioning.json"
 #: shows up as untracked content and cannot dirty the tree.
 RUN_PROVENANCE_DIRNAME = "dataset_provenance"
 
+# ---------------------------------------------------------------------------
+# Fleet-verification vocabulary (Beta, P0.5 closure ruling)
+# ---------------------------------------------------------------------------
+#: Every node verified on target.
+FLEET_STATUS_PASS = "PASS"
+
+#: **A required verification was ATTEMPTED and could not be completed.** That is
+#: the whole meaning of the word, and it is why it is fatal for a miner-backed
+#: run: "we needed it and could not get it" is not "we did not need it".
+FLEET_STATUS_UNAVAILABLE = "UNAVAILABLE"
+
+#: **No fleet verification was ever required** — this path performs no remote
+#: execution, so there is no worker dataset to establish. Introduced by Beta's
+#: P0.5 closure ruling precisely so that a path which never needed the check
+#: stops borrowing `UNAVAILABLE`, which would make a genuine unverifiable fleet
+#: indistinguishable from a run that had no fleet at all.
+FLEET_STATUS_NOT_APPLICABLE = "NOT_APPLICABLE"
+
 
 # ===========================================================================
 # Exceptions
@@ -953,35 +971,161 @@ def load_provisioning_nodes(
     Returns `None` when no manifest exists — a distinct answer from "a manifest
     that declares zero nodes", and the caller must treat the two differently:
     absent means fleet verification is UNAVAILABLE and must be recorded as such,
-    never quietly reported as clean.
+    never quietly reported as clean. What each of those two answers *costs* is
+    the caller's decision and lives in `resolve_absent_fleet_status()`, because
+    only the caller knows whether this run has a fleet to verify.
+
+    The other two of Beta's four conditions — **unreadable** and **invalid** —
+    are decided here, because they are not a question of topology: a manifest
+    that cannot be read or cannot be understood establishes nothing for anyone,
+    so it is fatal on every path. They were already fatal before this change,
+    but as a bare `OSError` / `JSONDecodeError` / `KeyError` escaping two frames
+    below the gate — unclassified, and outside the `except` clauses both callers
+    already had. They are now `DatasetProvisioningError`, chained to the
+    original, naming the absolute path that was read.
     """
-    path = manifest_path or default_provisioning_manifest_path()
+    path = os.path.abspath(manifest_path or default_provisioning_manifest_path())
     if not os.path.exists(path):
         return None
-    with open(path, "r") as f:
-        doc = json.load(f)
+
+    try:
+        with open(path, "r") as f:
+            doc = json.load(f)
+    except OSError as exc:
+        raise _dataset_provisioning_error()(
+            f"provisioning manifest UNREADABLE at {path}: {exc}. The fleet this "
+            f"run must verify cannot be established."
+        ) from exc
+    except ValueError as exc:            # json.JSONDecodeError is a ValueError
+        raise _dataset_provisioning_error()(
+            f"provisioning manifest INVALID (not parseable JSON) at {path}: "
+            f"{exc}. The fleet this run must verify cannot be established."
+        ) from exc
+
+    if not isinstance(doc, dict):
+        raise _dataset_provisioning_error()(
+            f"provisioning manifest INVALID at {path}: top level is "
+            f"{type(doc).__name__}, expected an object."
+        )
 
     schema_version = doc.get("manifest_schema_version")
     if schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
-        raise DatasetAuthorityError(
-            f"provisioning manifest {path!r} declares "
+        raise _dataset_provisioning_error()(
+            f"provisioning manifest INVALID at {path}: declares "
             f"manifest_schema_version={schema_version!r}; supported: "
             f"{sorted(SUPPORTED_MANIFEST_SCHEMA_VERSIONS)}"
         )
 
-    for entry in doc.get("datasets", []):
+    datasets = doc.get("datasets", [])
+    if not isinstance(datasets, list):
+        raise _dataset_provisioning_error()(
+            f"provisioning manifest INVALID at {path}: 'datasets' is "
+            f"{type(datasets).__name__}, expected a list."
+        )
+
+    for entry in datasets:
+        if not isinstance(entry, dict):
+            raise _dataset_provisioning_error()(
+                f"provisioning manifest INVALID at {path}: a 'datasets' entry "
+                f"is {type(entry).__name__}, expected an object."
+            )
         if entry.get("dataset_logical_name") != dataset_logical_name:
             continue
+        declared = entry.get("nodes", [])
+        if not isinstance(declared, list):
+            raise _dataset_provisioning_error()(
+                f"provisioning manifest INVALID at {path}: 'nodes' for "
+                f"{dataset_logical_name!r} is {type(declared).__name__}, "
+                f"expected a list."
+            )
         nodes = []
-        for n in entry.get("nodes", []):
-            nodes.append(NodeSpec(
-                node_id=n["node_id"],
-                ssh_address=n["ssh_address"],
-                ssh_user=n.get("ssh_user", "michael"),
-                local=bool(n.get("local", False)),
-            ))
+        for n in declared:
+            try:
+                nodes.append(NodeSpec(
+                    node_id=n["node_id"],
+                    ssh_address=n["ssh_address"],
+                    ssh_user=n.get("ssh_user", "michael"),
+                    local=bool(n.get("local", False)),
+                ))
+            except (KeyError, TypeError, AttributeError) as exc:
+                raise _dataset_provisioning_error()(
+                    f"provisioning manifest INVALID at {path}: node entry "
+                    f"{n!r} for {dataset_logical_name!r} is unusable ({exc!r}). "
+                    f"Each node requires node_id and ssh_address."
+                ) from exc
         return nodes
     return []
+
+
+def resolve_absent_fleet_status(
+    nodes: Optional[Sequence[NodeSpec]],
+    *,
+    manifest_path: str,
+    miner_backed: bool,
+    remote_execution: Optional[bool] = None,
+    require_fleet: bool = False,
+    context: str = "",
+) -> str:
+    """Decide what an unusable provisioning manifest COSTS this run.
+
+    Called only when no per-node verification will run — `nodes` is `None`
+    (manifest missing) or `[]` (manifest present, declares no nodes). The other
+    two of Beta's four conditions raise inside `load_provisioning_nodes()` and
+    never arrive here.
+
+    Beta's P0.5 closure ruling, which this function is:
+
+      > A missing, unreadable, invalid, or empty provisioning manifest means the
+      > system cannot establish which worker datasets must be verified.
+      > Recording `UNAVAILABLE` and proceeding **violates the authority
+      > boundary.**
+
+    So for a miner-backed run this raises, before any coordinator is
+    constructed and before any worker is dispatched. For everything else the
+    answer is a *status*, and which status is the second half of the ruling:
+    `NOT_APPLICABLE` when the caller declares it performs no remote execution
+    (there was never a fleet to verify), `UNAVAILABLE` otherwise — including
+    when the caller does not know, because "unknown" must keep the
+    over-constrained reading rather than quietly earn the clean one.
+
+    NOTE (scope): `remote_execution=False` is a statement about **topology**,
+    not a bypass. It is not, and must not become, the "local run verifies only
+    the local node" refinement — that is Beta's Q1, explicitly not authorized.
+    A local run that still drives the 26-GPU coordinator performs remote
+    execution and must not declare otherwise.
+    """
+    if nodes:
+        raise ValueError(
+            "resolve_absent_fleet_status() called with a non-empty node list; "
+            "run fleet_preflight() instead"
+        )
+
+    if nodes is None:
+        condition = "MISSING — no manifest exists at that path"
+    else:
+        condition = ("EMPTY — the manifest exists but declares no nodes for "
+                     "this dataset")
+
+    if miner_backed or require_fleet:
+        why = ("a miner-backed run" if miner_backed
+               else "fleet verification was required")
+        raise _dataset_provisioning_error()(
+            "FAIL BEFORE DISPATCH — the provisioning manifest is "
+            f"{condition}.\n"
+            f"expected provisioning manifest: {manifest_path}\n"
+            f"{('run: ' + context + chr(10)) if context else ''}"
+            f"This is {why}: the system cannot establish which worker datasets "
+            "must be verified, so it cannot verify them. Recording UNAVAILABLE "
+            "and proceeding would violate the authority boundary (Beta, P0.5 "
+            "closure ruling).\n"
+            "No coordinator was constructed, no worker was dispatched, no GPU "
+            "work started, no spool created "
+            "(RUNTIME_DATASET_PROVISIONING_CONTRACT §2)."
+        )
+
+    if remote_execution is False:
+        return FLEET_STATUS_NOT_APPLICABLE
+    return FLEET_STATUS_UNAVAILABLE
 
 
 # ===========================================================================
@@ -1054,6 +1198,8 @@ def run_start_dataset_gate(
     *,
     run_label: str,
     require_fleet: bool = False,
+    miner_backed: bool = False,
+    remote_execution: Optional[bool] = None,
     provisioning_manifest: Optional[str] = None,
     repo_root: Optional[str] = None,
     allow_unpublished_alias: bool = False,
@@ -1067,9 +1213,19 @@ def run_start_dataset_gate(
     call runs if the check failed.
 
     `require_fleet=False` with a manifest present still verifies the fleet — the
-    flag only governs what happens when **no manifest exists**. With it False the
-    absence is recorded as `UNAVAILABLE` in provenance (never as clean); with it
-    True the absence is itself a refusal.
+    flag only governs what happens when **no usable manifest exists**.
+
+    `miner_backed=True` makes all four of Beta's conditions — manifest missing,
+    unreadable, invalid, empty — fatal here, which is the P0.5 closure ruling.
+    This is the last point at which nothing has been allocated, so the refusal
+    is free: the caller has not constructed a coordinator and has not dispatched
+    a worker, because the caller has not returned from this function.
+
+    `remote_execution=False` is the caller declaring it has no fleet at all; the
+    absence is then `NOT_APPLICABLE`, not `UNAVAILABLE`. Unknown (the default,
+    `None`) keeps the over-constrained reading. See
+    `resolve_absent_fleet_status()` — including why this is not a local-run
+    bypass.
     """
     frozen = freeze_for_run(
         dataset_arg,
@@ -1077,32 +1233,32 @@ def run_start_dataset_gate(
         allow_unpublished_alias=allow_unpublished_alias,
     )
 
+    # Raises (unreadable / invalid) before returning; None = missing, [] = empty.
     nodes = load_provisioning_nodes(provisioning_manifest)
     records: List[NodeVerification] = []
-    if nodes is None:
-        fleet_status = "UNAVAILABLE"
-        msg = (
-            f"no provisioning manifest at "
-            f"{provisioning_manifest or default_provisioning_manifest_path(repo_root)} — "
-            f"per-node dataset verification did NOT run. This is UNAVAILABLE, not "
-            f"clean (VIR-5)."
+    if not nodes:
+        manifest_path = os.path.abspath(
+            provisioning_manifest or default_provisioning_manifest_path(repo_root)
         )
-        if require_fleet:
-            raise _dataset_provisioning_error()(
-                "FAIL BEFORE DISPATCH — fleet verification was required and "
-                f"could not run.\n{msg}"
-            )
-        logger.warning("[P0.5] %s", msg)
-    elif not nodes:
-        fleet_status = "UNAVAILABLE"
+        # Raises for a miner-backed run — before any coordinator construction,
+        # before any dispatch, and before any provenance is written.
+        fleet_status = resolve_absent_fleet_status(
+            nodes,
+            manifest_path=manifest_path,
+            miner_backed=miner_backed,
+            remote_execution=remote_execution,
+            require_fleet=require_fleet,
+            context=run_label,
+        )
         logger.warning(
-            "[P0.5] provisioning manifest declares no nodes for %s — per-node "
-            "verification did not run (UNAVAILABLE, not clean)",
-            frozen.dataset_logical_name,
+            "[P0.5] provisioning manifest %s at %s — per-node dataset "
+            "verification did NOT run for %s. Recorded as %s.",
+            "missing" if nodes is None else "declares no nodes",
+            manifest_path, frozen.dataset_logical_name, fleet_status,
         )
     else:
         records = fleet_preflight(frozen, nodes)     # raises on any non-PASS
-        fleet_status = "PASS"
+        fleet_status = FLEET_STATUS_PASS
 
     if write_provenance:
         write_run_provenance(run_label, frozen, records,

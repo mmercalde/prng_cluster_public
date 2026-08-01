@@ -1487,23 +1487,30 @@ class WatcherAgent:
                             step, _k, _p05_before, final_params[_k],
                         )
 
+                # [Beta P0.5 closure ruling] The manifest decision is ONE
+                # decision and it lives in dataset_authority, not here: an
+                # unusable manifest (missing · unreadable · invalid · empty) is
+                # fatal for a miner-backed step, before this step is dispatched.
+                # `remote_execution` is left UNKNOWN (None) rather than guessed
+                # per step — every non-miner step keeps today's UNAVAILABLE, and
+                # nothing is silently relabelled NOT_APPLICABLE without evidence
+                # that the step really has no fleet.
                 _p05_nodes = _dsauth.load_provisioning_nodes()
-                if _p05_nodes is None:
-                    # VIR-5: unverifiable is not clean. Recorded, never assumed.
-                    _p05_fleet_status = "UNAVAILABLE"
+                if not _p05_nodes:
                     _p05_records = []
-                    logger.warning(
-                        "[P0.5] no provisioning manifest (%s) — per-node dataset "
-                        "verification did NOT run for step %d. UNAVAILABLE, not "
-                        "clean.",
-                        _dsauth.default_provisioning_manifest_path(), step,
+                    _p05_fleet_status = _dsauth.resolve_absent_fleet_status(
+                        _p05_nodes,
+                        manifest_path=_dsauth.default_provisioning_manifest_path(),
+                        miner_backed=bool(final_params.get("use_range_miner")),
+                        remote_execution=None,
+                        context=f"watcher_step{step}",
                     )
-                elif not _p05_nodes:
-                    _p05_fleet_status = "UNAVAILABLE"
-                    _p05_records = []
                     logger.warning(
-                        "[P0.5] provisioning manifest declares no nodes — "
-                        "per-node verification did not run for step %d", step,
+                        "[P0.5] provisioning manifest %s (%s) — per-node dataset "
+                        "verification did NOT run for step %d. Recorded as %s.",
+                        "missing" if _p05_nodes is None else "declares no nodes",
+                        _dsauth.default_provisioning_manifest_path(), step,
+                        _p05_fleet_status,
                     )
                 else:
                     _p05_records = _dsauth.fleet_preflight(_p05_frozen, _p05_nodes)

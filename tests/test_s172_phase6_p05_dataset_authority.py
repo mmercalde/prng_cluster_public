@@ -726,10 +726,475 @@ def gate32_no_hybrid_skip_wire_in():
 
 
 # ===========================================================================
+# Beta P0.5 CLOSURE RULING — an unusable provisioning manifest is FATAL for a
+# miner-backed run, before any coordinator construction and any dispatch
+# ===========================================================================
+#
+#   > A missing, unreadable, invalid, or empty provisioning manifest means the
+#   > system cannot establish which worker datasets must be verified. Recording
+#   > UNAVAILABLE and proceeding **violates the authority boundary.**
+#
+# Gate 33 covers the four conditions. Gate 34 is the substance: it proves the
+# *absence of the side effects*, not merely that something was raised. Gate 35
+# is the NOT_APPLICABLE routing, gate 36 the successful-manifest clean control,
+# gate 37 the fault injection that proves 33 and 34 are not vacuous.
+
+
+def _write_manifest(path, doc):
+    with open(path, "w") as f:
+        json.dump(doc, f)
+    return path
+
+
+def _good_manifest_doc(node_id="local-test"):
+    return {"manifest_schema_version": 1, "datasets": [
+        {"dataset_logical_name": "daily3", "nodes": [
+            {"node_id": node_id, "ssh_address": "127.0.0.1", "local": True}]}]}
+
+
+def _unusable_manifest_cases(tmp):
+    """The four conditions Beta named, as (label, manifest_path) pairs.
+
+    Every one of them is a real file (or a real absence) on disk — nothing here
+    is simulated by patching the loader.
+    """
+    cases = [("missing", os.path.join(tmp, "no_such_manifest.json"))]
+
+    unreadable = _write_manifest(os.path.join(tmp, "unreadable.json"),
+                                 _good_manifest_doc())
+    os.chmod(unreadable, 0o000)
+    if os.geteuid() != 0 and not os.access(unreadable, os.R_OK):
+        cases.append(("unreadable", unreadable))       # skipped as root: root reads anything
+
+    bad_json = os.path.join(tmp, "invalid_json.json")
+    with open(bad_json, "w") as f:
+        f.write("{ nodes: [,,,")
+    cases.append(("invalid/unparseable", bad_json))
+
+    cases.append(("invalid/schema", _write_manifest(
+        os.path.join(tmp, "invalid_schema.json"),
+        {"manifest_schema_version": 2, "datasets": []})))
+
+    cases.append(("invalid/node-entry", _write_manifest(
+        os.path.join(tmp, "invalid_node.json"),
+        {"manifest_schema_version": 1, "datasets": [
+            {"dataset_logical_name": "daily3",
+             "nodes": [{"ssh_address": "10.0.0.1"}]}]})))   # no node_id
+
+    cases.append(("empty/no-nodes", _write_manifest(
+        os.path.join(tmp, "empty_nodes.json"),
+        {"manifest_schema_version": 1, "datasets": [
+            {"dataset_logical_name": "daily3", "nodes": []}]})))
+
+    cases.append(("empty/no-entry-for-dataset", _write_manifest(
+        os.path.join(tmp, "empty_other.json"),
+        {"manifest_schema_version": 1, "datasets": [
+            {"dataset_logical_name": "pa_pick3", "nodes": [
+                {"node_id": "x", "ssh_address": "10.0.0.9"}]}]})))
+    return cases
+
+
+def gate33_miner_backed_unusable_manifest_is_fatal():
+    """Beta closure: missing · unreadable · invalid · empty — all four FATAL.
+
+    Driven through the real `run_start_dataset_gate`, the same function
+    `window_optimizer.main()` calls, with `miner_backed=True`. Each refusal must
+    be a `DatasetProvisioningError` (Beta's approved classification, inside the
+    residue hierarchy) and must NAME THE EXPECTED ABSOLUTE MANIFEST PATH, per
+    Beta's Q3 ruling that the preflight message state where it looked.
+
+    Side-effect absence is asserted here too, in its cheapest form: the gate
+    writes run provenance as its last act, so a provenance file appearing under
+    `repo_root` would mean the gate ran to completion. None may exist.
+    """
+    D.clear_frozen_dataset()
+    tmp = tempfile.mkdtemp()
+    try:
+        pointer, version = make_publication(tmp)
+        alias = os.path.join(tmp, D.LEGACY_ALIAS_NAME)
+        cases = _unusable_manifest_cases(tmp)
+        assert len(cases) >= 6, f"fault substrate incomplete: {cases}"
+
+        for label, manifest in cases:
+            e = _expect(DatasetProvisioningError, D.run_start_dataset_gate,
+                        alias, run_label=f"gate33_{label}", miner_backed=True,
+                        provisioning_manifest=manifest, repo_root=tmp)
+            assert isinstance(e, ResidueError), \
+                f"{label}: must stay in the residue hierarchy"
+            assert os.path.abspath(manifest) in str(e), \
+                f"{label}: message must name the expected ABSOLUTE manifest " \
+                f"path — got {str(e)[:300]!r}"
+
+        prov = os.path.join(tmp, D.RUN_PROVENANCE_DIRNAME)
+        assert not os.path.isdir(prov) or not os.listdir(prov), \
+            "the gate wrote run provenance — it did not fail before dispatch"
+
+        # ...and the same four conditions on a NON-miner path are unchanged by
+        # this correction: missing/empty still merely record, so the ruling was
+        # applied to the topology Beta named and not to everything in reach.
+        for label, manifest in cases:
+            if label.startswith("invalid") or label == "unreadable":
+                continue          # unusable-for-anyone: fatal on every path
+            D.clear_frozen_dataset()
+            f = D.run_start_dataset_gate(
+                alias, run_label=f"gate33_nonminer_{label}", miner_backed=False,
+                provisioning_manifest=manifest, repo_root=tmp,
+                write_provenance=False)
+            assert f.path == version
+    finally:
+        D.clear_frozen_dataset()
+        for root, dirs, files in os.walk(tmp):
+            for name in files:
+                try:
+                    os.chmod(os.path.join(root, name), 0o600)
+                except OSError:
+                    pass
+        shutil.rmtree(tmp)
+
+
+# --- gate 34: the negative gate proper -------------------------------------
+# Beta's condition 3 — "no coordinator construction, no worker process, no
+# dispatch occurs" — is a claim about things that must NOT have happened, so it
+# cannot be proven by catching an exception. It is proven here by running the
+# real `window_optimizer.main()` with `--use-range-miner` in a child process
+# with an ARMED TRIPWIRE on every construction and process-creation surface it
+# could reach, and reading back four independent absence measurements:
+#
+#   1. no tripwire fired          — nothing was constructed, nothing was spawned;
+#   2. no descendant process      — measured from /proc, not inferred;
+#   3. no new entry under the repo root — no spool, no output dir, no provenance;
+#   4. the process died at argparse (SystemExit 2) naming the manifest path.
+#
+# The tripwires replace the stage AFTER the gate, never the gate itself: the
+# dataset-authority path under test is the real one (VIR-1 execution proof).
+# The only patched input is *where the manifest is looked for*.
+
+_CHILD_DRIVER = r'''
+import json, os, sys
+
+ROOT = os.environ["P05_ROOT"]
+OUT = os.environ["P05_VERDICT"]
+verdict = {"tripwires": [], "outcome": None, "exit_code": None, "stderr": "",
+           "children_after": [], "root_new_entries": []}
+
+
+def _emit():
+    with open(OUT, "w") as f:
+        json.dump(verdict, f)
+
+
+def _children(pid):
+    """Descendant PIDs, read straight out of /proc — no subprocess, no ps."""
+    out = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % entry, "rb") as fh:
+                fields = fh.read().rsplit(b")", 1)[1].split()
+            if int(fields[1]) == pid:
+                out.append(int(entry))
+        except (OSError, IndexError, ValueError):
+            continue
+    return out
+
+
+try:
+    sys.path.insert(0, ROOT)
+    os.chdir(ROOT)
+
+    from miner import dataset_authority as D
+    ABSENT = os.environ["P05_ABSENT_MANIFEST"]
+    D.default_provisioning_manifest_path = lambda repo_root=None: ABSENT
+
+    if os.environ.get("P05_REVERT") == "1":
+        # THE INJECTED FAULT: the pre-closure behaviour, verbatim in effect —
+        # record UNAVAILABLE for an absent manifest and let the run proceed.
+        def _reverted(nodes, **kw):
+            return "UNAVAILABLE"
+        D.resolve_absent_fleet_status = _reverted
+
+    import window_optimizer as W
+
+    def _trip(name, raising=True):
+        def _fire(*a, **k):
+            verdict["tripwires"].append(name)
+            if raising:
+                raise RuntimeError("TRIPWIRE " + name)
+            return "/dev/null/" + name
+        return _fire
+
+    # everything downstream of the gate
+    W.MultiGPUCoordinator = _trip("MultiGPUCoordinator")
+    W.run_bayesian_optimization = _trip("run_bayesian_optimization")
+    W.run_with_config = _trip("run_with_config")
+    try:
+        import coordinator as _C
+        _C.MultiGPUCoordinator = _trip("coordinator.MultiGPUCoordinator")
+    except ImportError:
+        pass
+    D.fleet_preflight = _trip("fleet_preflight")
+    D.provision_node_dataset = _trip("provision_node_dataset")
+    # non-raising: the run must get FURTHER than this under the injected fault
+    D.write_run_provenance = _trip("write_run_provenance", raising=False)
+    # every process-creation surface reachable from CPython
+    import subprocess as _sp
+    _sp.Popen = _trip("subprocess.Popen")
+    _sp.run = _trip("subprocess.run")
+    _sp.call = _trip("subprocess.call")
+    _sp.check_output = _trip("subprocess.check_output")
+    import socket as _sk
+    _sk.socket.connect = _trip("socket.connect")
+    _sk.socket.bind = _trip("socket.bind")
+    _sk.create_connection = _trip("socket.create_connection")
+    os.fork = _trip("os.fork")
+    os.posix_spawn = _trip("os.posix_spawn")
+    os.system = _trip("os.system")
+    import multiprocessing as _mp
+    _mp.Process.start = _trip("multiprocessing.Process.start")
+
+    before = set(os.listdir(ROOT))
+
+    import io
+    err = io.StringIO()
+    real_err = sys.stderr
+    sys.stderr = err
+    sys.argv = ["window_optimizer.py", "--strategy", "bayesian",
+                "--lottery-file", os.environ["P05_LOTTERY"],
+                "--use-range-miner", "--trials", "1"]
+    try:
+        W.main()
+        verdict["outcome"] = "RETURNED"
+    except SystemExit as exc:
+        verdict["outcome"] = "SystemExit"
+        verdict["exit_code"] = exc.code
+    except BaseException as exc:
+        verdict["outcome"] = type(exc).__name__ + ": " + str(exc)[:2000]
+    finally:
+        sys.stderr = real_err
+
+    verdict["stderr"] = err.getvalue()[-4000:]
+    verdict["children_after"] = _children(os.getpid())
+    verdict["root_new_entries"] = sorted(set(os.listdir(ROOT)) - before)
+except BaseException as exc:
+    verdict["outcome"] = "DRIVER_ERROR: " + repr(exc)[:2000]
+finally:
+    _emit()
+'''
+
+
+def _run_child_driver(revert=False, timeout=600):
+    """Run the real window_optimizer CLI path with tripwires; return the verdict."""
+    tmp = tempfile.mkdtemp()
+    try:
+        driver = os.path.join(tmp, "p05_condition3_driver.py")
+        with open(driver, "w") as f:
+            f.write(_CHILD_DRIVER)
+        out = os.path.join(tmp, "verdict.json")
+        env = dict(os.environ)
+        env.update({
+            "P05_ROOT": _ROOT,
+            "P05_VERDICT": out,
+            "P05_ABSENT_MANIFEST": os.path.join(tmp, "definitely_absent.json"),
+            "P05_LOTTERY": REAL_ALIAS,
+            "PYTHONPATH": _ROOT,
+        })
+        env.pop("P05_REVERT", None)
+        if revert:
+            env["P05_REVERT"] = "1"
+        proc = subprocess.run([sys.executable, driver], env=env, cwd=_ROOT,
+                              capture_output=True, text=True, timeout=timeout)
+        assert os.path.exists(out), (
+            "the driver produced no verdict — VIR-1: silence is not a pass.\n"
+            f"rc={proc.returncode}\nstdout tail:\n{proc.stdout[-2000:]}\n"
+            f"stderr tail:\n{proc.stderr[-2000:]}")
+        with open(out) as f:
+            verdict = json.load(f)
+        verdict["_child_rc"] = proc.returncode
+        return verdict
+    finally:
+        shutil.rmtree(tmp)
+
+
+def gate34_no_construction_no_process_no_dispatch():
+    """Beta condition 3, proven by the ABSENCE of the side effects."""
+    v = _run_child_driver()
+    assert not str(v["outcome"]).startswith("DRIVER_ERROR"), v["outcome"]
+
+    # 1. nothing constructed, nothing spawned — no tripwire fired at all
+    assert v["tripwires"] == [], (
+        f"a post-gate surface was reached: {v['tripwires']}")
+    # 2. the refusal really happened, at argparse, before any work
+    assert v["outcome"] == "SystemExit", v["outcome"]
+    assert v["exit_code"] == 2, v["exit_code"]
+    assert "DATASET_AUTHORITY_P0_5" in v["stderr"], v["stderr"][-1500:]
+    assert "FAIL BEFORE DISPATCH" in v["stderr"], v["stderr"][-1500:]
+    assert "definitely_absent.json" in v["stderr"], \
+        "the refusal must name the manifest path it looked for"
+    # 3. no descendant process was ever created — measured from /proc
+    assert v["children_after"] == [], v["children_after"]
+    # 4. no spool, no output dir, no provenance record, nothing at all
+    assert v["root_new_entries"] == [], v["root_new_entries"]
+
+
+def gate35_not_applicable_is_routed_and_distinct():
+    """Beta: `UNAVAILABLE` means ATTEMPTED and could not be completed.
+
+    A path that never needed fleet verification must not borrow that word. The
+    three answers must be three answers, and the unknown case must keep the
+    over-constrained one.
+    """
+    D.clear_frozen_dataset()
+    tmp = tempfile.mkdtemp()
+    try:
+        pointer, version = make_publication(tmp)
+        alias = os.path.join(tmp, D.LEGACY_ALIAS_NAME)
+        absent = os.path.join(tmp, "no_manifest.json")
+
+        def _status(label, **kw):
+            D.clear_frozen_dataset()
+            f = D.run_start_dataset_gate(alias, run_label=label,
+                                         provisioning_manifest=absent,
+                                         repo_root=tmp, **kw)
+            assert f.path == version
+            with open(os.path.join(tmp, D.RUN_PROVENANCE_DIRNAME,
+                                   f"{label}.json")) as fh:
+                return json.load(fh)["fleet_status"]
+
+        # THE CLEAN CONTROL: non-miner, no remote execution -> NOT_APPLICABLE
+        na = _status("gate35_na", miner_backed=False, remote_execution=False)
+        assert na == D.FLEET_STATUS_NOT_APPLICABLE, na
+        assert na != D.FLEET_STATUS_UNAVAILABLE
+
+        # remote execution, non-miner -> still UNAVAILABLE (attempted, unmet)
+        assert _status("gate35_remote", miner_backed=False,
+                       remote_execution=True) == D.FLEET_STATUS_UNAVAILABLE
+        # unknown -> UNAVAILABLE, never the clean word by default
+        assert _status("gate35_unknown",
+                       miner_backed=False) == D.FLEET_STATUS_UNAVAILABLE
+
+        # and NOT_APPLICABLE is never a way out of the miner ruling
+        _expect(DatasetProvisioningError, D.run_start_dataset_gate, alias,
+                run_label="gate35_miner", miner_backed=True,
+                remote_execution=False, provisioning_manifest=absent,
+                repo_root=tmp)
+    finally:
+        D.clear_frozen_dataset()
+        shutil.rmtree(tmp)
+
+
+def gate36_successful_manifest_path_unchanged():
+    """Beta: re-certification is needed only if successful-manifest behaviour moved.
+
+    Two proofs that it did not. Structural: with a usable manifest the entire
+    new decision function is unreachable — it is replaced by a raiser here and
+    the run still passes. Behavioural: the provenance record produced with
+    `miner_backed=True` and with `miner_backed=False` is identical field for
+    field, and identical to what a PASS fleet produced before.
+    """
+    D.clear_frozen_dataset()
+    tmp = tempfile.mkdtemp()
+    original = D.resolve_absent_fleet_status
+    try:
+        pointer, version = make_publication(tmp)
+        alias = os.path.join(tmp, D.LEGACY_ALIAS_NAME)
+        manifest = _write_manifest(os.path.join(tmp, "good.json"),
+                                   _good_manifest_doc())
+
+        def _tripwire(*a, **k):
+            raise AssertionError(
+                "the absent-manifest decision was consulted on a SUCCESSFUL "
+                "manifest — the new code is on the certified path")
+        D.resolve_absent_fleet_status = _tripwire
+
+        docs = {}
+        for label, miner in (("gate36_miner", True), ("gate36_plain", False)):
+            D.clear_frozen_dataset()
+            f = D.run_start_dataset_gate(alias, run_label=label,
+                                         miner_backed=miner,
+                                         remote_execution=True,
+                                         provisioning_manifest=manifest,
+                                         repo_root=tmp)
+            assert f.path == version
+            with open(os.path.join(tmp, D.RUN_PROVENANCE_DIRNAME,
+                                   f"{label}.json")) as fh:
+                docs[label] = json.load(fh)
+
+        for label, doc in docs.items():
+            assert doc["fleet_status"] == "PASS", (label, doc["fleet_status"])
+            assert len(doc["fleet"]) == 1 and doc["fleet"][0]["status"] == "PASS"
+            assert doc["fleet"][0]["digest"] == doc["frozen_dataset"]["sha256"]
+            assert doc["fleet"][0]["dataset_path"] == version
+
+        # identical field for field, once the two per-run stamps that MUST
+        # differ between any two runs (the label, the clock) are removed
+        _volatile = ("run_label", "recorded_utc", "frozen_utc")
+        def _stable(doc):
+            out = {k: v for k, v in doc.items() if k not in _volatile}
+            out["frozen_dataset"] = {k: v for k, v in doc["frozen_dataset"].items()
+                                     if k not in _volatile}
+            return out
+        a, b = _stable(docs["gate36_miner"]), _stable(docs["gate36_plain"])
+        assert set(a["frozen_dataset"]) >= {"sha256", "path", "version_id"}, \
+            "sanity: the comparison must not have stripped the identity itself"
+        assert a == b, "the miner flag changed a SUCCESSFUL run's provenance"
+    finally:
+        D.resolve_absent_fleet_status = original
+        D.clear_frozen_dataset()
+        shutil.rmtree(tmp)
+
+
+def gate37_fault_injection_control():
+    """VIR-2: revert the hard-fail and the two gates above must go RED.
+
+    A gate that has only ever seen the fixed code is unproven. The fault is the
+    pre-closure behaviour itself — `resolve_absent_fleet_status` returning
+    UNAVAILABLE instead of raising — injected into both detectors.
+    """
+    # --- gate 33's detector, faulted --------------------------------------
+    D.clear_frozen_dataset()
+    tmp = tempfile.mkdtemp()
+    original = D.resolve_absent_fleet_status
+    try:
+        pointer, version = make_publication(tmp)
+        alias = os.path.join(tmp, D.LEGACY_ALIAS_NAME)
+        absent = os.path.join(tmp, "no_manifest.json")
+
+        D.resolve_absent_fleet_status = lambda nodes, **kw: "UNAVAILABLE"
+        try:
+            D.run_start_dataset_gate(alias, run_label="gate37_faulted",
+                                     miner_backed=True,
+                                     provisioning_manifest=absent,
+                                     repo_root=tmp, write_provenance=False)
+            faulted_raised = False
+        except DatasetProvisioningError:
+            faulted_raised = True
+        assert not faulted_raised, \
+            "the injected fault did not take — gate 33 is not measuring it"
+    finally:
+        D.resolve_absent_fleet_status = original
+        D.clear_frozen_dataset()
+        shutil.rmtree(tmp)
+
+    # --- gate 34's detector, faulted, through the real CLI -----------------
+    v = _run_child_driver(revert=True)
+    assert not str(v["outcome"]).startswith("DRIVER_ERROR"), v["outcome"]
+    assert v["tripwires"], (
+        "the reverted run fired no tripwire — gate 34 cannot distinguish a run "
+        "that stopped from a run that never started (VACUOUS DETECTOR)")
+    assert "run_bayesian_optimization" in v["tripwires"], v["tripwires"]
+    assert "write_run_provenance" in v["tripwires"], (
+        "the reverted run must record UNAVAILABLE and PROCEED — that is the "
+        "defect Beta named", v["tripwires"])
+    # the fixed run asserts tripwires == []; the faulted run breaks exactly that
+    assert v["tripwires"] != []
+
+
+# ===========================================================================
 # Live fleet (opt-in) — read-only
 # ===========================================================================
 
-def gate33_live_fleet_verification():
+def gate38_live_fleet_verification():
     """LIVE: verify the frozen dataset on all three CT100 workers (read-only)."""
     frozen = D.resolve_pointer(REAL_POINTER)
     nodes = D.load_provisioning_nodes()
@@ -830,9 +1295,19 @@ def main():
            gate31_published_artifacts_unmodified)
     _check("Gate 32: [scope] hybrid skip NOT wired in",
            gate32_no_hybrid_skip_wire_in)
+    _check("Gate 33: [Beta closure] miner + unusable manifest → FATAL (4 conditions)",
+           gate33_miner_backed_unusable_manifest_is_fatal)
+    _check("Gate 34: [Beta closure] no coordinator, no process, no dispatch",
+           gate34_no_construction_no_process_no_dispatch)
+    _check("Gate 35: [Beta closure] NOT_APPLICABLE routed, distinct from UNAVAILABLE",
+           gate35_not_applicable_is_routed_and_distinct)
+    _check("Gate 36: [CLEAN] successful-manifest path unchanged",
+           gate36_successful_manifest_path_unchanged)
+    _check("Gate 37: [VIR-2] fault injection — revert the hard-fail, gates red",
+           gate37_fault_injection_control)
     if live:
-        _check("Gate 33: [LIVE] fleet verification, digests on target",
-               gate33_live_fleet_verification)
+        _check("Gate 38: [LIVE] fleet verification, digests on target",
+               gate38_live_fleet_verification)
 
     print("=" * 74)
     passed = sum(1 for _, ok, _ in _results if ok)
