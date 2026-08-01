@@ -1786,15 +1786,76 @@ class WatcherAgent:
                             '[WATCHER][LLM_DIAG] _is_within_policy_bounds missing -- skipping all proposals'
                         )
                     else:
+                        # [S179][TRUTHFULNESS] `Applied` may not be emitted here.
+                        # This loop runs at POLICY-validation time. The value is
+                        # then filtered again in run_step(), which merges retry
+                        # params only if the step manifest DECLARES them in
+                        # `default_params` (the step-scoped executable-interface
+                        # boundary Team Beta ruled CORRECT -- passing policy
+                        # bounds does not authorise bypassing the step's
+                        # parameter interface). So policy acceptance alone does
+                        # not mean the value reaches the dispatched script.
+                        #
+                        # Resolve that same declared interface -- same manifest,
+                        # same `default_params` key set, same path resolution as
+                        # run_step() -- so the report states the real outcome
+                        # instead of asserting one. Nothing about the filter, the
+                        # manifest or the retry payload is changed here; this is
+                        # a reporting repair only.
+                        _step_declared = None   # None => interface UNKNOWN
+                        _step_manifest = STEP_MANIFESTS.get(5)
+                        try:
+                            _mdir = getattr(
+                                getattr(self, 'config', None), 'manifests_dir', None
+                            )
+                            if _step_manifest and _mdir:
+                                _mpath = os.path.join(_mdir, _step_manifest)
+                                if os.path.isfile(_mpath):
+                                    with open(_mpath) as _mf:
+                                        _step_declared = set(
+                                            (json.load(_mf).get('default_params') or {}).keys()
+                                        )
+                        except Exception as _iface_err:
+                            # Fail truthful, not optimistic: an unreadable
+                            # interface means the outcome is unknown, and the
+                            # report below says so rather than claiming either.
+                            logger.warning(
+                                '[WATCHER][LLM_DIAG] Step-5 parameter interface '
+                                'unreadable (%s) -- proposal outcome reported as unknown',
+                                _iface_err,
+                            )
+
                         for _prop in _llm_analysis.parameter_proposals:
                             _pname = _prop.parameter
                             _pval = _prop.proposed_value
                             if self._is_within_policy_bounds(_pname, _pval):
+                                # Behaviour unchanged: the value is still offered
+                                # to the retry. run_step() decides whether it
+                                # survives the step boundary.
                                 retry_params[_pname] = _pval
-                                logger.info(
-                                    '[WATCHER][LLM_DIAG] Applied: %s = %s (%s)',
-                                    _pname, _pval, _prop.rationale[:80],
-                                )
+                                if _step_declared is None:
+                                    logger.info(
+                                        '[WATCHER][LLM_DIAG] status=policy_valid: %s = %s '
+                                        '-- proposal valid; Step-5 parameter interface could '
+                                        'not be read, so application is NOT confirmed (%s)',
+                                        _pname, _pval, _prop.rationale[:80],
+                                    )
+                                elif _pname in _step_declared:
+                                    logger.info(
+                                        '[WATCHER][LLM_DIAG] status=policy_valid_step_declared: '
+                                        '%s = %s -- proposal valid and declared by the Step-5 '
+                                        'parameter interface; passed to the retry dispatch (%s)',
+                                        _pname, _pval, _prop.rationale[:80],
+                                    )
+                                else:
+                                    logger.info(
+                                        '[WATCHER][LLM_DIAG] status=validated_not_applied: '
+                                        '%s = %s -- proposal valid, not applied: rejected by '
+                                        'the Step-5 executable parameter interface (not '
+                                        'declared in %s default_params). Retry continues with '
+                                        'the existing effective value. (%s)',
+                                        _pname, _pval, _step_manifest, _prop.rationale[:80],
+                                    )
                             else:
                                 logger.warning(
                                     '[WATCHER][LLM_DIAG] REJECTED (bounds): %s = %s',

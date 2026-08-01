@@ -1955,12 +1955,59 @@ def gate22_coexistence():
         #     file) and AST-extracts the forwarded-kwarg contract from the live
         #     optimize() call, because 2389b61 reverted a fix by whole-block
         #     replacement and a text anchor would have gone green.
+        #   * apply_s146_doc_updates.py — NEW to this whitelist, registered by the
+        #     Chapter 1 P1/P2 tranche (audit items 6-17, item 15). It is a
+        #     DOCUMENTATION GENERATOR, not pipeline code: it appends prewritten
+        #     markdown sections to chapter files under docs/ and has no runtime
+        #     consumer, no import from any pipeline module, and no effect on any
+        #     backend, kernel or protocol path. The single behavioural change is
+        #     its idempotency guard. It read
+        #         if "S146" in content and label in content:
+        #     where `label` (e.g. "CHAPTER_1 PWC S146 kernel invariants") is a
+        #     caller-side identifier that is NEVER written into any document, so
+        #     the guard could not fire and every run re-appended the section —
+        #     which is how docs/CHAPTER_1_WINDOW_OPTIMIZER.md acquired a verbatim
+        #     duplicate of its S146 kernel-invariants section (~35 redundant
+        #     lines). The guard now tests the section's own "## " heading, i.e. a
+        #     marker that IS written to the file, and fails closed when a section
+        #     has no heading rather than risking another duplicate. Verified by
+        #     running the script TWICE against a scratch docs/ copy (section
+        #     appears once) with the pre-fix guard as a positive control on the
+        #     same fixture (section appears twice) — so the check is not vacuous.
         # miner/, sieve_gpu_worker.py, prng_registry.py, pwc_protocol.py,
         # persistent_worker_coordinator.py and zmq_sqlite_coordinator.py are
         # untouched by this tranche (flagged for review).
         "window_optimizer.py",
         "scripts/extract_search_bounds_snapshot.py",
         "tests/test_chapter1_p0_corrections.py",
+        "apply_s146_doc_updates.py",
+        # CHAIN C TRUTHFULNESS HOTFIX — WATCHER reported `Applied:` for LLM
+        # parameter proposals that never reach the dispatched step. REPORTING
+        # ONLY; no miner, PWC, ZMQ, kernel or protocol path is involved:
+        #   * agents/watcher_agent.py — NEW to this whitelist. The edit is
+        #     confined to the S81_PHASE7_LLM_REFINEMENT block inside
+        #     _build_retry_params(). The `Applied: %s = %s` line was emitted at
+        #     POLICY-validation time and asserted a state that never occurs:
+        #     run_step() re-filters retry params against the step manifest's
+        #     declared `default_params`, and none of the six policy-whitelisted
+        #     params is declared by reinforcement.json, so none of them reach
+        #     the Step-5 script. Team Beta ruled that step-scoped filter CORRECT
+        #     (a deliberate executable-interface boundary), so the filter, the
+        #     manifest and the retry payload are all UNTOUCHED — the
+        #     `retry_params[name] = value` assignment still happens exactly as
+        #     before and the returned dict is unchanged. Only the emitted text
+        #     changes: a status (policy_valid_step_declared /
+        #     validated_not_applied / policy_valid when the interface cannot be
+        #     read) plus a rejection reason naming the step parameter interface.
+        #     The manifest read added here uses the SAME file, key set and path
+        #     resolution run_step() uses, so the report states the real outcome
+        #     instead of asserting one; an unreadable interface degrades to
+        #     "not confirmed", never to "applied". _is_within_policy_bounds,
+        #     agent_manifests/reinforcement.json and the Chain D
+        #     `pending_approval` / record_applied_changes() path are untouched.
+        # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
+        # (flagged for review).
+        "agents/watcher_agent.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
