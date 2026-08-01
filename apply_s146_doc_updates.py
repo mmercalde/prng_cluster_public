@@ -37,6 +37,24 @@ def backup(path):
         print(f"  BAK  (already exists, skipping copy) {os.path.basename(bak)}")
 
 
+def section_marker(section_text):
+    """
+    Return a marker string that IS actually written into the document — the
+    section's own top-level (`## `) heading.
+
+    This exists because the previous idempotency guard tested `label in content`,
+    and `label` (e.g. "CHAPTER_1 PWC S146 kernel invariants") is a caller-side
+    identifier that is NEVER written into any document. The guard could therefore
+    never fire, and every run appended the section again. That is how
+    docs/CHAPTER_1_WINDOW_OPTIMIZER.md acquired a verbatim duplicate of its
+    S146 kernel-invariants section.
+    """
+    for line in section_text.strip().splitlines():
+        if line.startswith("## "):
+            return line.strip()
+    return None
+
+
 def apply_append(filepath, label, section_text):
     """Append section_text at end of file (after a final newline)."""
     path = os.path.join(DOCS, filepath)
@@ -45,9 +63,14 @@ def apply_append(filepath, label, section_text):
         return False
 
     content = read_file(path)
-    if "S146" in content and label in content:
-        # Idempotency guard: if our marker already present, skip
-        print(f"  SKIP {label}: already patched (S146 marker found)")
+    marker = section_marker(section_text)
+    if marker is None:
+        # Fail closed: without a marker we cannot prove idempotency, so refuse to
+        # append rather than risk another duplicate.
+        print(f"  SKIP {label}: section has no '## ' heading — cannot verify idempotency")
+        return False
+    if marker in content:
+        print(f"  SKIP {label}: already patched (marker present: {marker!r})")
         return False
 
     before = len(content.splitlines())

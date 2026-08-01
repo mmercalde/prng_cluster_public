@@ -1,8 +1,27 @@
 # CHAPTER 1 PATCH — S114
+
+> # ⛔ SUPERSEDED — DO NOT IMPLEMENT FROM THIS FILE
+>
+> **Status: UNMERGED *and* SUPERSEDED** (marked 2026-07-31, S178 tranche 2). This patch was never
+> folded into `docs/CHAPTER_1_WINDOW_OPTIMIZER.md`, and while it sat unmerged its central
+> mechanism was **deleted from the code**. It is retained for history only.
+>
+> **Its surviving content has been folded into the chapter — read
+> [`CHAPTER_1_WINDOW_OPTIMIZER.md` §8.4](CHAPTER_1_WINDOW_OPTIMIZER.md) instead.**
+>
+> | this file says | actual state |
+> |---|---|
+> | Warm-start enqueues a hardcoded `W8_O43_S5-56, 0.49/0.49` as trial 0 (lines 29-48) | **DELETED by S144.** Live warm-start is context-driven from `step1_trial_history` only, gated on all six params being non-`None` (`window_optimizer_bayesian.py:627-652`). The in-source note reads *"No hardcoded fallback — CA-specific W8_O43 removed"* |
+> | Manifest `trials` default 50 → 100 (line 150) | **Neither.** `agent_manifests/window_optimizer.json` has no `trials` key — it has `window_trials: 3`; argparse `--trials` still defaults to **50** |
+> | "Key Discovery: Discrete PRNG Regime Structure", W3 → 143,959 survivors (lines 154-169) | **Superseded in meaning.** The S172 TB ruling raised `window_size.min` to **6** because *"W=2/3 produces ~39%/53% survivor rate by chance alone"* — W3's count is **noise, not signal**, and W3 can no longer be sampled |
+> | `--resume-study` flag and its rationale | **Accurate and still live.** This is the part that survived; it is now in chapter §8.4.1, along with the later `--study-name` flag this patch predates |
+>
+> Anchors verified on VM 101 at commit `40c3c83`.
+
 ## Window Optimizer: Warm-Start Enqueue + Study Resume Flag
 **Version:** v3.2.0 (patch over v3.1)
 **Session:** S114 — 2026-03-02
-**Status:** Implemented and validated
+**Status:** ~~Implemented and validated~~ → **SUPERSEDED, see banner above**
 
 ---
 
