@@ -2008,6 +2008,31 @@ def gate22_coexistence():
         # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
         # (flagged for review).
         "agents/watcher_agent.py",
+        # PHASE 6-P0 — dataset publication bootstrap. The deliverable CREATES
+        # FILES and changes NO running code, which is its defining constraint
+        # (instructions REV1 §0.2): pointer resolution at WATCHER, absolutising
+        # the dispatched path, freeze-at-run-start and the FileNotFoundError →
+        # ResidueError classification are all deferred to P0.5 precisely so the
+        # first certification after publication is not ambiguous.
+        #   * scripts/verify_dataset_publication.py — NEW, and the ONLY .py this
+        #     deliverable adds. A READ-ONLY audit tool: it re-derives the
+        #     published version file's sha256 and confirms it agrees with BOTH
+        #     the pointer manifest and the `daily3.json` compatibility alias. It
+        #     verifies and never repairs — no write, rename or delete path
+        #     exists in it. It has NO runtime consumer: no pipeline module
+        #     imports it, it is hand-run, and it is the same shape as
+        #     scripts/extract_search_bounds_snapshot.py, which is registered
+        #     above on exactly that basis. Its path resolution is __file__-
+        #     anchored, never os.getcwd().
+        # The two artifacts the deliverable publishes —
+        # daily3-<UTC>Z-<sha256[:12]>.json and daily3_current.json — are matched
+        # by .gitignore:41 `*.json` and so never reach this gate or the
+        # repository_tree_clean wall at utils/run_finalizer.py:1589; that is why
+        # the .json extension is load-bearing rather than cosmetic
+        # (docs/DATASET_PUBLICATION_SCHEMA_v1.md §5). daily3.json itself is
+        # byte-unchanged. No miner, PWC, ZMQ, kernel, protocol or optimizer file
+        # is touched by this deliverable (flagged for review).
+        "scripts/verify_dataset_publication.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
