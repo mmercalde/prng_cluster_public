@@ -50,6 +50,7 @@ logger = logging.getLogger("range_miner_coordinator")
 # guarantees Phase 4's inline normalization is byte-identical to what the worker
 # spools (Blocker 4); expected_substripes uses the SAME select_seed_cap logic the
 # worker partitions with (Blocker 7, range_miner_worker.py:467-474).
+from miner import dataset_authority
 from miner.range_miner_worker import (
     SUBSTRIPE_SCHEMA_VERSION,
     MinerFramedSocket,
@@ -79,6 +80,36 @@ def compute_dataset_sha256(path: str) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def resolve_dataset_sha256(dataset_path: str) -> str:
+    """The dataset digest for this assignment — RUN-scoped, not trial-scoped.
+
+    [S172 Phase 6-P0.5 §2.1 — the freeze is the point of the freeze]
+
+    Before P0.5 the coordinator derived `dataset_sha256` by hashing the file
+    every time `serve_trial` was entered, i.e. once **per Optuna trial**. Nothing
+    was wrong with any individual derivation; the defect was the scope. A scrape
+    landing between two trials of one study changed the bytes under the run, and
+    trial N+1 simply hashed the new file and carried on. Every downstream check
+    stayed self-consistent against a different dataset from trial N's, and no
+    error was raised anywhere — the study was split across two datasets and the
+    only surviving evidence was two different digests in two NPZ files that
+    nobody compares.
+
+    So the digest is now taken from the run-start freeze when the path being
+    assigned IS the frozen path. A pointer that moves mid-run cannot reach this
+    function's answer, which is requirement 7.
+
+    Falls back to hashing when this process has no freeze (a harness driving
+    `serve_trial` directly) or when the path is not the frozen one (a genuinely
+    different dataset). The fallback is the pre-P0.5 behaviour exactly, so no
+    existing caller changes meaning — it simply stops being the only behaviour.
+    """
+    frozen_sha = dataset_authority.run_frozen_dataset_sha256(dataset_path)
+    if frozen_sha is not None:
+        return frozen_sha
+    return compute_dataset_sha256(dataset_path)
 
 
 def event_id_for(
@@ -3404,7 +3435,8 @@ class RangeMinerCoordinator:
         if residues is None:
             raise ValueError("residues are mandatory to compute residue_sha256")
         if dataset_sha256 is None:
-            dataset_sha256 = compute_dataset_sha256(dataset_path)
+            # [S172 P0.5] run-scoped, not per-call — see resolve_dataset_sha256.
+            dataset_sha256 = resolve_dataset_sha256(dataset_path)
         if not dataset_sha256:
             raise ValueError("dataset_sha256 is mandatory in a stripe assignment")
         # Direction resolution — the §6.8 shared table, fail-closed on an unknown
@@ -3495,8 +3527,14 @@ class RangeMinerCoordinator:
         residues = context["residues"]
         dataset_path = context["dataset_path"]
 
-        # dataset_sha256 is coordinator-computed ONCE and reused for every assign.
-        dataset_sha256 = compute_dataset_sha256(dataset_path)
+        # dataset_sha256 is coordinator-resolved ONCE and reused for every assign.
+        # [S172 Phase 6-P0.5 §2.1] "ONCE" used to mean once per TRIAL — serve_trial
+        # is entered once per Optuna trial, so this line re-hashed the file between
+        # trials and a mid-study scrape silently split the study across two
+        # datasets. It now resolves from the RUN-START FREEZE when this path is the
+        # frozen one, so the identity is fixed for the whole run and a pointer that
+        # moves mid-run cannot change it (requirement 7).
+        dataset_sha256 = resolve_dataset_sha256(dataset_path)
 
         # D0 (Blocker 2 + REV4): persist the trial-GLOBAL immutable context ONCE per
         # run_id — BEFORE any window_size/offset coercion, stripe assignment, or

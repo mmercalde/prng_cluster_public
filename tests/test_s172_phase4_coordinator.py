@@ -2033,6 +2033,61 @@ def gate22_coexistence():
         # byte-unchanged. No miner, PWC, ZMQ, kernel, protocol or optimizer file
         # is touched by this deliverable (flagged for review).
         "scripts/verify_dataset_publication.py",
+        # PHASE 6-P0.5 — the behavioural cutover. Where P0 created files and
+        # changed no running code, P0.5 is the inverse and says so: it makes the
+        # pointer manifest authoritative. Every behavioural change lands in one
+        # deliverable, against the P0 baseline, so the first post-publication
+        # distributed certification has ONE cause to attribute — which is the
+        # entire reason P0 and P0.5 were split.
+        #
+        # Four already-registered production files are modified; each edit is
+        # confined to the dataset-authority seam:
+        #   * window_optimizer.py — a run-start gate after the backend mutex and
+        #     BEFORE MultiGPUCoordinator is constructed: resolve the pointer,
+        #     freeze the identity, verify the fleet, replace args.lottery_file
+        #     with the frozen absolute immutable path. No sampling, threshold,
+        #     strategy or study logic is touched.
+        #   * agents/watcher_agent.py — pointer resolution at the manifest
+        #     param merge and at get_step_io_from_manifest, so preflight and
+        #     dispatch resolve the dataset to the SAME object, plus the
+        #     fail-before-dispatch fleet check. The LLM/eval/Chain C+D paths are
+        #     untouched.
+        #   * miner/range_miner_coordinator.py — serve_trial's dataset_sha256
+        #     moves from PER-TRIAL derivation to the run-start freeze
+        #     (resolve_dataset_sha256). Unfrozen callers keep the pre-P0.5
+        #     behaviour exactly, so no existing harness changes meaning.
+        #   * miner/range_miner_worker.py — DatasetProvisioningError(ResidueError)
+        #     plus chained, path-and-node-naming classification of the bare
+        #     FileNotFoundError that used to escape mid-run. No kernel, no
+        #     branch table, no threshold path, and specifically NOT the hybrid
+        #     skip wire-in, which Beta ordered held until P0.5 certifies.
+        #
+        # Three NEW .py files, registered here:
+        #   * miner/dataset_authority.py — the whole mechanism in one module:
+        #     pointer resolution + version-grammar validation, the run-scoped
+        #     freeze, per-node provisioning/verification, and run provenance. It
+        #     imports only stdlib at module scope (the worker import that gives
+        #     it DatasetProvisioningError is deliberately lazy), so putting it on
+        #     WATCHER's and window_optimizer's import path pulls in no miner,
+        #     PWC, ZMQ or kernel code.
+        #   * scripts/provision_dataset_fleet.py — the operator tool that makes
+        #     provisioning an explicit bring-up step rather than a remembered
+        #     scp (RUNTIME_DATASET_PROVISIONING_CONTRACT §4). Hand-run, no
+        #     runtime consumer, same shape as verify_dataset_publication.py and
+        #     extract_search_bounds_snapshot.py, both registered above on that
+        #     basis. It copies an already-published version and verifies it on
+        #     the target; it has no publish, rename or delete path.
+        #   * tests/test_s172_phase6_p05_dataset_authority.py — the P0.5
+        #     acceptance harness (33 gates incl. the opt-in live-fleet gate).
+        #     Every fault is injected into a tempfile publication tree; gate 31
+        #     re-derives the real published digests to prove nothing published
+        #     was touched.
+        #
+        # PWC/ZMQ/pwc_protocol remain unmodified, so coexistence still holds
+        # (flagged for review).
+        "miner/dataset_authority.py",
+        "scripts/provision_dataset_fleet.py",
+        "tests/test_s172_phase6_p05_dataset_authority.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

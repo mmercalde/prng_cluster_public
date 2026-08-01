@@ -541,12 +541,67 @@ def gate_miner_unchanged() -> str:
     frozen_prefixes = ("miner/",)
     frozen_files = {"sieve_gpu_worker.py", "prng_registry.py",
                     "persistent/pwc_protocol.py"}
+
+    # [S172 Phase 6-P0.5] Registered exemptions, same standing rule gate 22 uses
+    # (tests/test_s172_phase4_coordinator.py:1602): a deliverable-scoped tripwire
+    # is extended by REGISTERING the later deliverable's files with a rationale,
+    # never by loosening the predicate.
+    #
+    # This gate's subject is the THRESHOLD REPAIR (8a55a68): that repair had to
+    # leave the miner alone because the miner was already correct and PWC held
+    # the defect. P0.5 is a different deliverable with different authority, and
+    # it necessarily changes the miner — the run-scoped dataset freeze and the
+    # FileNotFoundError classification both live there. Three files, all confined
+    # to the dataset-authority seam:
+    #   * miner/dataset_authority.py            — NEW; pointer resolution, the
+    #     run-start freeze, per-node provisioning/verification, run provenance.
+    #   * miner/range_miner_coordinator.py      — serve_trial's dataset_sha256
+    #     moves from per-TRIAL derivation to the run-start freeze.
+    #   * miner/range_miner_worker.py           — DatasetProvisioningError plus
+    #     chained, path-and-node-naming classification.
+    #
+    # What this gate still protects is UNCHANGED and is the part that matters
+    # here: the kernel/executor surface (sieve_gpu_worker.py, prng_registry.py)
+    # and pwc_protocol.py stay byte-identical, no threshold logic is touched by
+    # any of the three, and the behavioural half below still requires
+    # D6-threshold 17/17. Any OTHER miner/ file appearing here is still a red.
+    p05_registered = {
+        "miner/dataset_authority.py",
+        "miner/range_miner_coordinator.py",
+        "miner/range_miner_worker.py",
+    }
     offenders = sorted(p for p in touched
-                       if p.startswith(frozen_prefixes) or p in frozen_files)
+                       if (p.startswith(frozen_prefixes) or p in frozen_files)
+                       and p not in p05_registered)
     assert not offenders, (
         "this repair must not touch the miner or the kernel/executor surface "
         f"(the miner is correct; PWC has the defect): {offenders}"
     )
+
+    # A registration is a claim, so verify it rather than trust it: the exempted
+    # P0.5 files must not touch threshold logic. This keeps THIS gate's actual
+    # subject enforced even on the files it now permits to change.
+    if p05_registered & touched:
+        # encoding pinned explicitly, as the D6 sub-harness call below does: the
+        # diff carries non-ASCII prose and the ambient default codec is ascii.
+        d = subprocess.run(["git", "diff", "--unified=0", "--",
+                            *sorted(p05_registered & touched)],
+                           cwd=_ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        assert d.returncode == 0, f"git diff failed: {d.stderr}"
+        changed = [ln for ln in d.stdout.splitlines()
+                   if (ln.startswith("+") or ln.startswith("-"))
+                   and not ln.startswith(("+++", "---"))]
+        threshold_tokens = ("forward_threshold", "reverse_threshold",
+                            "resolve_directional_threshold", "min_match_threshold",
+                            "effective_threshold", "threshold_provenance")
+        bleed = [ln.strip() for ln in changed
+                 if any(t in ln for t in threshold_tokens)]
+        assert not bleed, (
+            "a P0.5-registered miner file changed THRESHOLD logic — that is "
+            "outside the registered dataset-authority scope and is exactly what "
+            f"this gate exists to catch:\n  " + "\n  ".join(bleed[:10])
+        )
 
     # Behavioural: the D6 threshold contract still holds end to end.
     suite = os.path.join(_ROOT, "tests", "test_s172_phase5_d6_threshold_path.py")
@@ -566,6 +621,11 @@ def gate_miner_unchanged() -> str:
     assert got == total == 17, (
         f"D6-threshold must stay 17/17, got {got}/{total}"
     )
+    if p05_registered & touched:
+        return ("kernel/executor surface (sieve_gpu_worker, prng_registry, "
+                "pwc_protocol) byte-identical to HEAD; the 3 P0.5-registered "
+                "miner files changed only the dataset-authority seam (no "
+                "threshold-token bleed); D6-threshold 17/17")
     return "miner/ + executor surface byte-identical to HEAD; D6-threshold 17/17"
 
 

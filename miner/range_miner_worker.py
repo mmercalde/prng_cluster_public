@@ -520,6 +520,38 @@ class ResidueVerificationError(ResidueError):
     """Loaded residues do not match the coordinator-provided residue_sha256."""
 
 
+class DatasetProvisioningError(ResidueError):
+    """The dataset this stripe needs is absent or unreadable ON THIS NODE.
+
+    [S172 Phase 6-P0.5 — Beta, P0 ruling §3 correction]
+
+    A missing dataset is **not** semantically a residue error, and it must not be
+    flattened into an undifferentiated `ResidueError`: that would preserve the
+    control flow at the cost of the operational category, leaving "this node was
+    never provisioned" indistinguishable from "these residues do not verify".
+    The two have different operators, different causes and different fixes.
+
+    It nonetheless subclasses `ResidueError` because the coordinator's failure
+    matrix routes the residue hierarchy to `stripe_error(retryable=False)`, and a
+    provisioning fault is genuinely non-retryable — retrying a stripe against a
+    node that has no dataset produces the same failure more slowly. So: keep the
+    control flow, keep the category.
+
+    Two obligations wherever this is raised, both from the ruling:
+      * **chain the original exception** (`raise … from exc`) — the underlying
+        `FileNotFoundError`/`OSError` is the evidence and must not be discarded;
+      * name the **absolute path and the node** — the failure is per-node by
+        nature, and a message that omits which node it happened on is not
+        actionable on a three-rig fleet.
+
+    Before P0.5 this surfaced as a bare `FileNotFoundError` from `_sha256_file`,
+    raised mid-run, unclassified, two layers deep inside a worker. The
+    fail-before-dispatch fleet check in `miner/dataset_authority.py` is what
+    should normally prevent this from ever being reached; this class is the
+    backstop for the case that slips past it.
+    """
+
+
 def sha256_residues(residues: List[int]) -> str:
     """Canonical residue-sequence fingerprint (contract for coordinator-supplied
     `residue_sha256`): sha256 over compact JSON of the int list."""
@@ -527,9 +559,41 @@ def sha256_residues(residues: List[int]) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def _node_identity() -> str:
+    """This worker's node name, for per-node failure messages.
+
+    `socket.gethostname()` deliberately: CT100 is created with the rig's
+    canonical hostname so that the hostname IS the coordinator identity
+    (`docs/S172_INFRASTRUCTURE_INTERFACE_v1_0.md`).
+    """
+    try:
+        return socket.gethostname()
+    except Exception:                                     # pragma: no cover
+        return "<unknown-host>"
+
+
+def _dataset_absent(path: str, exc: BaseException, what: str) -> "DatasetProvisioningError":
+    """Build the classified, chained, node-naming provisioning error (P0.5 §3)."""
+    return DatasetProvisioningError(
+        f"dataset unavailable on node {_node_identity()!r}: {what} "
+        f"{os.path.abspath(path)!r} ({type(exc).__name__}: {exc}). "
+        f"This node was not provisioned with the run's frozen dataset, or the "
+        f"file was removed after provisioning. See "
+        f"docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md §2-§4."
+    )
+
+
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    try:
+        f = open(path, "rb")
+    except FileNotFoundError as exc:
+        # [S172 Phase 6-P0.5] was a bare FileNotFoundError escaping mid-run,
+        # unclassified. Beta's §3 correction: classify, chain, name path + node.
+        raise _dataset_absent(path, exc, "cannot hash missing dataset") from exc
+    except OSError as exc:
+        raise _dataset_absent(path, exc, "cannot read dataset") from exc
+    with f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -561,7 +625,18 @@ def load_residue_window(
     session-filter implementation on either side — the asymmetry is only
     impossible while exactly one function owns the filter.
     """
-    with open(path, "r") as f:
+    try:
+        f = open(path, "r")
+    except FileNotFoundError as exc:
+        # [S172 Phase 6-P0.5] Same classification as _sha256_file. In the worker
+        # the digest check reaches the file first, so this is normally
+        # unreachable; the COORDINATOR side calls this function directly
+        # (window_optimizer_integration_final._miner_residues_for_config), and
+        # there it is the first touch.
+        raise _dataset_absent(path, exc, "cannot load residue window from") from exc
+    except OSError as exc:
+        raise _dataset_absent(path, exc, "cannot read dataset") from exc
+    with f:
         data = json.load(f)
     if sessions:
         data = [e for e in data if e.get("session") in sessions]

@@ -459,6 +459,55 @@ def resolve_repo_path(p: str) -> str:
     return _os_module.path.join(REPO_ROOT, p)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# [S172 Phase 6-P0.5] DATASET AUTHORITY — WATCHER resolves the pointer
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 6-P0 published an immutable dataset version and an atomic pointer
+# manifest, and deliberately wired nothing to them. These helpers are the wiring.
+#
+# The manifests declare the dataset under three different parameter names
+# (`lottery_file` in window_optimizer.json, `lottery_data` in trse.json,
+# `lottery_history` in prediction.json). They are the same file under three
+# names, so all three are resolved — resolving only the one that happens to be
+# on today's certifying path would leave the other two dispatching a bare,
+# CWD-relative, version-less alias.
+_P05_DATASET_PARAM_KEYS = ("lottery_file", "lottery_data", "lottery_history")
+
+
+def p05_freeze_dataset(run_label: str = "watcher"):
+    """Resolve the pointer manifest and freeze the run's dataset identity.
+
+    Idempotent by construction: `dataset_authority` holds the freeze, and a
+    second call with the same identity returns the first one rather than
+    re-resolving. That matters because WATCHER touches the dataset from three
+    places (preflight freshness, param merge, fleet preflight) and all three must
+    see the same identity — resolving the pointer three times would reintroduce,
+    inside one run, exactly the mid-run pointer-movement hole the freeze closes.
+    """
+    from miner import dataset_authority as _dsauth
+    existing = _dsauth.get_frozen_dataset()
+    if existing is not None:
+        return existing
+    alias = _os_module.path.join(REPO_ROOT, _dsauth.LEGACY_ALIAS_NAME)
+    return _dsauth.freeze_for_run(alias, run_label=run_label)
+
+
+def p05_resolve_dataset_path(p: str) -> str:
+    """Map a declared dataset path onto the run's frozen ABSOLUTE version path.
+
+    Anything that is not the legacy alias is returned unchanged — this maps the
+    one file P0 published, it is not a general path rewriter.
+
+    Resolution failure is NOT swallowed here. A WATCHER that quietly fell back to
+    the alias when the pointer was unreadable would be a gate that stops gating
+    at precisely the moment it matters.
+    """
+    from miner import dataset_authority as _dsauth
+    if _os_module.path.basename(p) != _dsauth.LEGACY_ALIAS_NAME:
+        return p
+    return p05_freeze_dataset().path
+
+
 def get_step_io_from_manifest(step: int) -> tuple:
     """
     Get required inputs and primary output from step manifest.
@@ -486,7 +535,13 @@ def get_step_io_from_manifest(step: int) -> tuple:
     if not primary_output:
         raise ValueError(f"Manifest {manifest_name} missing 'primary_output'")
     
-    required_inputs = [resolve_repo_path(p) for p in required_inputs]
+    # [S172 P0.5 §4] Preflight and dispatch must resolve the dataset to the SAME
+    # object. Before P0.5 preflight checked <REPO_ROOT>/daily3.json while the
+    # dispatched child received the bare string and resolved it against its own
+    # CWD — two resolution bases, and the gate used the one the work did not.
+    # Both sides now resolve through the pointer to one absolute immutable path.
+    required_inputs = [p05_resolve_dataset_path(resolve_repo_path(p))
+                       for p in required_inputs]
     primary_output = resolve_repo_path(primary_output)
     
     return required_inputs, primary_output
@@ -1394,6 +1449,83 @@ class WatcherAgent:
 
         # Remove output_file if present (use script default)
         final_params.pop("output_file", None)
+
+        # ====================================================================
+        # [S172 Phase 6-P0.5] DATASET AUTHORITY — resolve, freeze, verify, then
+        # (and only then) let the step be dispatched.
+        # ====================================================================
+        # This runs before the command is built and long before Popen, so every
+        # refusal below is a refusal BEFORE FIRST WORKER DISPATCH (requirement 4;
+        # RUNTIME_DATASET_PROVISIONING_CONTRACT §2 — "not at first read, not
+        # partway through a trial").
+        #
+        # Two things happen, in this order:
+        #   1. every dataset parameter this step declares is rewritten from the
+        #      bare `daily3.json` to the run's frozen ABSOLUTE immutable version
+        #      path (requirements 1, 3, 8). An absolute path has no CWD
+        #      dependence, which is what structurally closes the preflight-vs-
+        #      dispatch divergence: the child at :1948 is launched with no `cwd=`
+        #      and previously resolved the bare string against its own CWD.
+        #   2. if the step consumes the dataset, the fleet is verified — each
+        #      node's digest re-derived ON THAT NODE — and any node that is
+        #      absent, mismatched or unreachable fails the step here
+        #      (requirement 5).
+        _p05_dataset_keys = [k for k in _P05_DATASET_PARAM_KEYS if k in final_params]
+        if _p05_dataset_keys:
+            from miner import dataset_authority as _dsauth
+            from miner.range_miner_worker import (
+                DatasetProvisioningError as _P05ProvErr,
+            )
+            try:
+                _p05_frozen = p05_freeze_dataset(run_label=f"watcher_step{step}")
+                for _k in _p05_dataset_keys:
+                    _p05_before = final_params[_k]
+                    final_params[_k] = p05_resolve_dataset_path(str(_p05_before))
+                    if final_params[_k] != _p05_before:
+                        logger.info(
+                            "[P0.5] step %d param %s: %s -> %s",
+                            step, _k, _p05_before, final_params[_k],
+                        )
+
+                _p05_nodes = _dsauth.load_provisioning_nodes()
+                if _p05_nodes is None:
+                    # VIR-5: unverifiable is not clean. Recorded, never assumed.
+                    _p05_fleet_status = "UNAVAILABLE"
+                    _p05_records = []
+                    logger.warning(
+                        "[P0.5] no provisioning manifest (%s) — per-node dataset "
+                        "verification did NOT run for step %d. UNAVAILABLE, not "
+                        "clean.",
+                        _dsauth.default_provisioning_manifest_path(), step,
+                    )
+                elif not _p05_nodes:
+                    _p05_fleet_status = "UNAVAILABLE"
+                    _p05_records = []
+                    logger.warning(
+                        "[P0.5] provisioning manifest declares no nodes — "
+                        "per-node verification did not run for step %d", step,
+                    )
+                else:
+                    _p05_records = _dsauth.fleet_preflight(_p05_frozen, _p05_nodes)
+                    _p05_fleet_status = "PASS"
+                    for _r in _p05_records:
+                        logger.info("[P0.5] %s", _r.message)
+
+                _dsauth.write_run_provenance(
+                    f"watcher_step{step}", _p05_frozen, _p05_records,
+                    fleet_status=_p05_fleet_status,
+                    extra={"step": step, "script": script,
+                           "dataset_params": _p05_dataset_keys},
+                )
+            except (_dsauth.DatasetAuthorityError, _P05ProvErr) as _p05_err:
+                _msg = f"DATASET_AUTHORITY_P0_5: {_p05_err}"
+                logger.error("Step %d blocked before dispatch: %s", step, _msg)
+                print(f"❌ {_msg}")
+                return {
+                    "success": False,
+                    "error": _msg,
+                    "blocked_by": "dataset_authority_p0_5",
+                }
 
         # [S140] SEED COVERAGE TRACKER — Step 1 only
         # Reads MAX(seed_range_end) for this prng_type from exhaustive_progress.

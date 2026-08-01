@@ -1439,6 +1439,50 @@ def main():
             f"--use-range-miner may be set (got: {', '.join('--' + n.replace('_','-') for n in _enabled)})"
         )
 
+    # ========================================================================
+    # [S172 Phase 6-P0.5] RUN-START DATASET AUTHORITY GATE
+    # ========================================================================
+    # Requirements 1-8 of the P0.5 brief converge on this one place, because it
+    # is the last point at which nothing has been allocated: it runs after the
+    # backend mutex and BEFORE MultiGPUCoordinator is constructed, before any
+    # spool, before the first stripe assignment, before a single worker is
+    # dispatched. Everything this gate refuses, it refuses for free.
+    #
+    #   * the pointer manifest daily3_current.json is resolved (req 1) and
+    #     validated — a target outside the version grammar, a traversal, an
+    #     absolute path or the bare alias itself is refused (req 8);
+    #   * the resulting identity — manifest/version, ABSOLUTE path, sha256, size
+    #     and record count — is frozen for the whole run (req 2), and every later
+    #     consumer reads the freeze rather than the pointer, so a scrape landing
+    #     mid-run cannot alter a run in progress (req 7);
+    #   * args.lottery_file is REPLACED with the frozen absolute immutable path,
+    #     so what gets dispatched is never the bare, mutable daily3.json (req 3)
+    #     and never depends on any child process's CWD;
+    #   * the fleet is verified per node, with each digest re-derived ON THE
+    #     TARGET (req 5), and a failure raises here — before dispatch (req 4);
+    #   * the frozen values are written to run provenance (req 6).
+    #
+    # Failure is `parser.error`, matching the S178 P0-1/P0-2 gates above: a run
+    # that cannot establish which dataset it is running against does not start.
+    from miner import dataset_authority as _dsauth
+    from miner.range_miner_worker import DatasetProvisioningError as _DatasetProvErr
+
+    _p05_label = (f"window_opt_{args.prng_type}_"
+                  f"{args.strategy or 'config'}_{os.getpid()}")
+    try:
+        _p05_frozen = _dsauth.run_start_dataset_gate(
+            args.lottery_file,
+            run_label=_p05_label,
+        )
+    except (_dsauth.DatasetAuthorityError, _DatasetProvErr) as _p05_err:
+        parser.error(f"DATASET_AUTHORITY_P0_5: {_p05_err}")
+
+    if _p05_frozen.path != os.path.abspath(args.lottery_file):
+        print(f"📌 [P0.5] dataset pointer resolved: {args.lottery_file} → "
+              f"{_p05_frozen.path}")
+    print(f"📌 [P0.5] dataset FROZEN for this run: {_p05_frozen.describe()}")
+    args.lottery_file = _p05_frozen.path
+
     # Check mode
     if args.strategy == 'bayesian':
         # BAYESIAN OPTIMIZATION MODE
