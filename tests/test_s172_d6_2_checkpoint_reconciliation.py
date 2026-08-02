@@ -15,8 +15,12 @@ WHAT IS PROVEN HERE
     physical order, and order-permutation invariance;
   * the run-id-only resume selector: grammar, confinement, and all THREE hops of
     the operator route including WATCHER's step-scoped filter;
-  * the four-row combination matrix, and BOTH trial-namespace checks with the
-    enqueued warm-start case exercised;
+  * the four-row combination matrix; the REAL relationship between completed
+    Optuna trials and persisted record ordinals, `k` derived from a study that
+    actually ran (G-RESUME-INTEGRATED); that a resumed study must have been
+    LOADED and not silently created fresh (G-MISSING-STUDY); and that a
+    checkpoint resume under `n_parallel > 1` is refused with zero process
+    starts (G-NP2-SCOPE);
   * the NINE-row mixed-pair recovery matrix, each row its own case;
   * reconciliation: replay normalization, the same-key corruption wall, and the
     frozen `_select_l2_winners` as the only winner policy;
@@ -51,8 +55,10 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
+import textwrap
 import zipfile
 
 import numpy as np
@@ -97,7 +103,7 @@ def _mut_dir() -> str:
     return _MUT_DIR
 
 
-def _load_source(src: str, label: str):
+def _load_source(src: str, label: str, prefix: str = "_d6_2_ck_"):
     """Execute a checkpoint-module source as a standalone module.
 
     THE SWAP IS THE SOURCE EVERY GATE BUILDS FROM (§9.6): a mutant run hands the
@@ -106,7 +112,7 @@ def _load_source(src: str, label: str):
     """
     global _MUT_SEQ
     _MUT_SEQ += 1
-    name = f"_d6_2_ck_{_MUT_SEQ}"
+    name = f"{prefix}{_MUT_SEQ}"
     path = os.path.join(_mut_dir(), f"{name}.py")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(src)
@@ -1846,136 +1852,708 @@ def g_resume_provenance(c: _Counter, ck=CK) -> None:
     c.note("4 minimum fields + wording, persisted in the run-isolated directory")
 
 
-# ── addendum §4 — G-TRIAL-NAMESPACE ─────────────────────────────────────────
-def _extract_block(path: str, start: str, end: str, label: str) -> str:
-    """AST-anchored extraction of a LIVE block, dedented for execution."""
-    src = _read(path)
-    assert src.count(start) == 1, f"{label}: start anchor is not unique"
-    body = src.split(start, 1)[1]
-    assert body.count(end) >= 1, f"{label}: end anchor missing"
-    block = start + body.split(end, 1)[0]
-    lines = [ln for ln in block.splitlines() if ln.strip()]
-    indent = min(len(ln) - len(ln.lstrip()) for ln in lines)
-    return "\n".join(ln[indent:] if len(ln) > indent else ln
-                     for ln in block.splitlines())
+# ═════════════════════════════════════════════════════════════════════════════
+# BOUNDED REPAIR §1 / §2 — G-RESUME-INTEGRATED · G-MISSING-STUDY · G-NP2-SCOPE
+# ═════════════════════════════════════════════════════════════════════════════
+# WHY THESE THREE REPLACE G-TRIAL-NAMESPACE
+# -----------------------------------------
+# G-TRIAL-NAMESPACE exercised the retired guard with FABRICATED values — trial 6
+# against floor 5 — instead of constructing the real relationship between
+# completed Optuna trials and persisted record ordinals. A gate built from
+# invented numbers cannot discover an off-by-one between two real counters, and
+# that is exactly what it missed: the floor is the 1-based recovered RECORD
+# ORDINAL and `trial.number` is Optuna's 0-based study number, so after k
+# completed trials the guard evaluated `k <= k` and rejected EVERY normal
+# resume. That is the VIR-2 vacuous-detector class.
+#
+# Nothing below fabricates a number. `k` is read off a study that really ran.
+_OPTUNA_DIR = os.path.join(_ROOT, "optuna_studies")
 
 
-def g_trial_namespace(c: _Counter, ck=CK) -> None:
-    """Addendum §4 — BOTH checks, with the ENQUEUED WARM-START case exercised.
+@contextlib.contextmanager
+def _gate_cwd():
+    """A scratch working directory for the LIVE Optuna study body.
 
-    Check 1 is a pre-flight over the loaded study, before `study.optimize` is
-    entered. Check 2 fires at the very top of the objective, before dispatch.
-    Neither ever rewrites or offsets a trial number.
+    `run_optimization` writes `optimal_window_config.json` and
+    `bidirectional_survivors.json` RELATIVE to the process cwd, and it resolves
+    a resumable study through a RELATIVE `optuna_studies/<name>.db` existence
+    check while opening it by ABSOLUTE path. A scratch cwd carrying a symlink to
+    the real `optuna_studies/` keeps the live resolution path byte-for-byte
+    intact while keeping every artifact out of the repository.
+    """
+    prev = os.getcwd()
+    tmp = tempfile.mkdtemp(prefix="d6_2_gate_cwd_")
+    os.symlink(_OPTUNA_DIR, os.path.join(tmp, "optuna_studies"))
+    before = _studies_snapshot()
+    os.chdir(tmp)
+    try:
+        yield tmp
+    finally:
+        os.chdir(prev)
+        shutil.rmtree(tmp, ignore_errors=True)
+        # Nothing this gate created may outlive it. A fresh run RENAMES its
+        # study to `window_opt_<epoch>` regardless of the name requested, so
+        # tracking the requested name alone is not enough — and a leftover
+        # study is visible to a later production run's auto-discovery.
+        for name in _studies_snapshot() - before:
+            try:
+                os.remove(os.path.join(_OPTUNA_DIR, name))
+            except OSError:
+                pass
+
+
+def _studies_snapshot() -> set:
+    try:
+        return {n for n in os.listdir(_OPTUNA_DIR) if n.endswith(".db")}
+    except OSError:
+        return set()
+
+
+def _drop_study(name: str) -> None:
+    """Remove a study this gate created. The live path resolves storage under
+    the repository's `optuna_studies/`, so the DB has to live there; leaving one
+    behind would be visible to a later production run's auto-discovery."""
+    if not name:
+        return
+    base = os.path.join(_OPTUNA_DIR, name + ".db")
+    for path in (base, base + "-journal", base + "-wal", base + "-shm"):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _study_storage(name: str) -> str:
+    return "sqlite:///" + os.path.join(_OPTUNA_DIR, name + ".db")
+
+
+class _GateResult:
+    """The result surface the LIVE study body reads — nothing more."""
+
+    def __init__(self, config, count):
+        self.config = config
+        self.bidirectional_count = int(count)
+        self.forward_count = int(count)
+        self.reverse_count = int(count)
+        self.iteration = -1
+
+    def to_dict(self):
+        return {"bidirectional_count": self.bidirectional_count,
+                "forward_count": self.forward_count,
+                "reverse_count": self.reverse_count,
+                "iteration": self.iteration}
+
+
+class _GateScorer:
+    def score(self, result):
+        return float(result.bidirectional_count)
+
+
+def _live_ordinal_statements():
+    """The LIVE record-ordinal statements out of `optimize_window`, by AST.
+
+    The gate must not restate the arithmetic it is checking. These two
+    statements — the initialization from the recovered floor and the increment
+    inside `test_config` — ARE the production ordinal counter, extracted from
+    the running source and executed.
+    """
+    tree = ast.parse(_read(_INTEG_PATH))
+    ow = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "optimize_window"
+          and any(a.arg == "dataset_path" for a in n.args.args)]
+    assert len(ow) == 1, "the optimize_window definition moved"
+    inits = [n for n in ast.walk(ow[0]) if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", "") == "trial_counter" for t in n.targets)]
+    incrs = [n for n in ast.walk(ow[0]) if isinstance(n, ast.AugAssign)
+             and ast.unparse(n.target).startswith("trial_counter[")]
+    assert len(inits) == 1, f"expected one trial_counter init, got {len(inits)}"
+    assert len(incrs) == 1, f"expected one trial_counter bump, got {len(incrs)}"
+    init_src = ast.unparse(inits[0])
+    assert "_d6_2_resume_record_ordinal_floor" in init_src, (
+        f"the record counter is not initialized from the recovered record "
+        f"ordinal floor: {init_src}")
+    return init_src, ast.unparse(incrs[0])
+
+
+def _live_record_ordinal_counter(floor):
+    """Execute the live statements above; return a bump() giving the ordinal."""
+    init_src, incr_src = _live_ordinal_statements()
+    ns = {"_d6_2_resume_record_ordinal_floor": floor}
+    exec(compile(init_src, "<ordinal-init>", "exec"), ns)
+
+    def bump():
+        exec(compile(incr_src, "<ordinal-incr>", "exec"), ns)
+        return int(ns["trial_counter"]["count"])
+
+    return bump
+
+
+def _mutant_bayes(patches, label):
+    """A mutated copy of the LIVE study body, loaded as a real module."""
+    src = _read(_BAYES_PATH)
+    for old, new in patches:
+        src = _patch(src, old, new, label)
+    return _load_source(src, label, prefix="_d6_2_bayes_")
+
+
+def _run_live_study(bayes, *, objective, max_iterations, resume_study,
+                    study_name, require_loaded_study=False, seed=17):
+    """Drive the LIVE sampler-neutral study body once, CPU-only.
+
+    A RandomSampler is used deliberately: `run_optimization` takes the sampler
+    as a REQUIRED keyword and records it, so the gate cannot mislabel its own
+    arm, and nothing here depends on which sampler chooses the points.
     """
     import optuna
+    from window_optimizer import SearchBounds
+
+    search = bayes.OptunaBayesianSearch(n_startup_trials=1, seed=seed)
+    if require_loaded_study:
+        search._d6_2_require_loaded_study = True
+    sampler = optuna.samplers.RandomSampler(seed=seed)
+    with contextlib.redirect_stdout(io.StringIO()):
+        return search.run_optimization(
+            objective, SearchBounds(), max_iterations, _GateScorer(),
+            sampler=sampler,
+            sampler_metadata=bayes.describe_sampler(
+                sampler, strategy="d6_2_gate_control", seed=seed),
+            resume_study=resume_study, study_name=study_name)
+
+
+def _det_resume_integrated(m=None, *, bayes=None) -> dict:
+    """G-RESUME-INTEGRATED — THE REAL RELATIONSHIP, END TO END.
+
+    An actual run of the LIVE study body produces k completed Optuna trials
+    numbered 0…k−1 and, through the LIVE record-ordinal statements, persisted
+    ordinals 1…k. A real checkpoint is written from those records and recovered
+    through the production `_prepare_checkpoint_run_context`, which yields the
+    floor. Then the study is really resumed and the gate requires:
+
+      * Optuna trial k EXECUTES — the case the retired guard rejected;
+      * its record receives ordinal k+1;
+      * no replay-key collision on (seed, trial_number, skip_mode).
+
+    Returns the observed numbers so the gate can report them (VIR-1): a boolean
+    would not distinguish this from the vacuous predecessor.
+    """
+    import window_optimizer_integration_final as W
+    import optuna
+    if bayes is None:
+        import window_optimizer_bayesian as bayes
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    # ---- CHECK 1: the LIVE pre-flight block, executed ----------------------
-    preflight = _extract_block(
-        _BAYES_PATH,
-        "if _resume_trial_floor is not None:",
-        "# Trials remaining: full count on fresh",
-        "check-1")
-    c.check("WAITING" in preflight and "RUNNING" in preflight,
-            "the pre-flight does not scan NONTERMINAL (WAITING/RUNNING) trials")
-
-    # THE ENQUEUED CASE IS REAL: study.enqueue_trial is the S166 warm-start path
-    src = _read(_BAYES_PATH)
-    c.check("study.enqueue_trial(_ws_params)" in src,
-            "the warm-start enqueue seam moved — this gate is not exercising "
-            "the case addendum §4 exists for")
-
-    def run_preflight(study, floor):
-        ns = {"study": study, "_resume_trial_floor": floor,
-              "print": lambda *a, **k: None}
-        exec(compile(preflight, "<check-1>", "exec"), ns)
-
-    space = {"window_size": optuna.distributions.IntDistribution(2, 50),
-             "offset": optuna.distributions.IntDistribution(0, 100)}
-
-    # a study carrying an ENQUEUED (WAITING) trial numbered at/below the floor
-    study = optuna.create_study()
-    study.enqueue_trial({"window_size": 8, "offset": 0})     # -> number 0
-    waiting = [t for t in study.trials if t.state.name == "WAITING"]
-    c.check(len(waiting) == 1 and int(waiting[0].number) == 0,
-            f"the enqueued control did not produce a WAITING trial 0: "
-            f"{[(t.number, t.state.name) for t in study.trials]}")
+    rid = f"resume-integrated-{os.getpid()}"
+    study_name = ""
     try:
-        run_preflight(study, 3)
-    except RuntimeError as exc:
-        c.check("nonterminal" in str(exc).lower() and "[0]" in str(exc),
-                f"the enqueued trial was rejected for the wrong reason: {exc}")
-        c.check("never rewritten or offset" in str(exc),
-                "the rejection does not state that numbers are not renumbered")
-    else:
-        raise AssertionError(
-            "an ENQUEUED warm-start trial numbered at or below the recovered "
-            "maximum was allowed to execute — `max(existing) + 1` is not the "
-            "next number of a loaded study")
+        with _tmp_root() as root, _gate_cwd():
+            # ---- PHASE 1: an ACTUAL fresh run ---------------------------
+            numbers_1, ordinals_1 = [], []
+            bump = _live_record_ordinal_counter(None)
 
-    # clean control: the same study with a floor BELOW the enqueued number
-    run_preflight(study, -1)
-    c.n += 1
+            def objective_1(config, optuna_trial=None):
+                numbers_1.append(int(optuna_trial.number))
+                ordinals_1.append(bump())
+                return _GateResult(config, 10 + len(ordinals_1))
 
-    # ---- CHECK 2: the LIVE per-trial guard, executed ------------------------
-    guard = _extract_block(
-        _BAYES_PATH,
-        "if (_resume_trial_floor is not None",
-        "# Sample parameters from search space",
-        "check-2")
+            out = _run_live_study(bayes, objective=objective_1,
+                                  max_iterations=3, resume_study=False,
+                                  study_name="")
+            study_name = out["optuna_study"]["study_name"]
 
-    class _Trial:
-        def __init__(self, number):
-            self.number = number
+            # k is READ OFF THE STUDY THAT RAN — never a literal.
+            study = optuna.load_study(study_name=study_name,
+                                      storage=_study_storage(study_name))
+            k = len([t for t in study.trials if t.state.name == "COMPLETE"])
+            assert k > 0, "phase 1 completed no trials — nothing to derive k from"
+            assert numbers_1 == list(range(k)), (
+                f"Optuna numbered its own trials {numbers_1}, not 0…k−1 (k={k})")
+            assert ordinals_1 == list(range(1, k + 1)), (
+                f"the LIVE record ordinals were {ordinals_1}, not 1…k (k={k})")
 
-    def run_guard(number, floor):
-        ns = {"trial": _Trial(number), "_resume_trial_floor": floor}
-        exec(compile(guard, "<check-2>", "exec"), ns)
+            # ---- a real checkpoint over those records --------------------
+            seeds = [1000 + i for i in range(k)]
+            _seed_production_checkpoint(
+                W, CK, root, rid,
+                [rec(s, trial=o) for s, o in zip(seeds, ordinals_1)])
 
-    for number in (0, 3, 5):
-        try:
-            run_guard(number, 5)
-        except RuntimeError as exc:
-            c.check("does not exceed the recovered maximum" in str(exc),
-                    f"wrong rejection for trial {number}: {exc}")
-        else:
-            raise AssertionError(
-                f"trial.number {number} <= recovered maximum 5 was allowed to "
-                f"run — the check must fire BEFORE objective execution")
-    run_guard(6, 5)          # clean control: strictly above
-    run_guard(0, None)       # inert when nothing was resumed
-    c.n += 2
+            ctx, floor = _prepare(W, root, run_id=rid,
+                                  resume_checkpoint=rid, resume_study=True)
+            assert floor == k, (
+                f"the recovered record-ordinal floor is {floor}, but the run "
+                f"that produced the checkpoint persisted ordinals 1…{k}")
+            assert len(ctx.cumulative) == k, "the recovered state is incomplete"
 
-    # check 2 really is at the TOP, before any suggest/dispatch
-    objective = _extract_block(_BAYES_PATH, "def optuna_objective(trial):",
-                               "# Store result", "position")
-    guard_at = objective.index("_resume_trial_floor is not None")
-    for later in ("trial.suggest_int", "objective_function("):
-        c.check(guard_at < objective.index(later),
-                f"the per-trial check runs AFTER {later} — it must precede "
-                f"objective execution, dispatch and candidate admission")
+            # ---- PHASE 2: the resume the old guard rejected ---------------
+            numbers_2, ordinals_2 = [], []
+            bump_2 = _live_record_ordinal_counter(floor)
 
-    # ---- numbers are NEVER rewritten or offset -----------------------------
-    tree = ast.parse(src)
+            def objective_2(config, optuna_trial=None):
+                numbers_2.append(int(optuna_trial.number))
+                ordinals_2.append(bump_2())
+                return _GateResult(config, 99)
+
+            try:
+                _run_live_study(bayes, objective=objective_2,
+                                max_iterations=k + 1, resume_study=True,
+                                study_name=study_name,
+                                require_loaded_study=True)
+            except Exception as exc:                            # noqa: BLE001
+                raise AssertionError(
+                    f"the resume was REJECTED instead of continuing: "
+                    f"{type(exc).__name__}: {exc} — a normal n_parallel==1 "
+                    f"resume must EXECUTE Optuna trial {k}, whose number equals "
+                    f"the 1-based record-ordinal floor and is therefore "
+                    f"rejected by any `trial.number <= floor` comparison"
+                ) from exc
+
+            assert numbers_2 == [k], (
+                f"the resumed study ran Optuna trials {numbers_2}; the next "
+                f"legitimate number after 0…{k - 1} is {k}")
+            assert ordinals_2 == [k + 1], (
+                f"the new record took ordinal(s) {ordinals_2}; it must continue "
+                f"above the recovered maximum {k}, i.e. {k + 1}")
+
+            # ---- no replay-key collision ---------------------------------
+            # The new record reuses a RECOVERED SEED, so its ORDINAL is the only
+            # thing keeping it out of a recovered record's replay key. (The
+            # merged state is one winner per seed — reconciliation ends in the
+            # frozen `_select_l2_winners` — so what proves the point is that the
+            # union of replay keys is collision-free and the new record wins on
+            # its own ordinal, not that the row count grew.)
+            new_record = rec(seeds[0], trial=ordinals_2[0], score=0.91)
+            union = list(ctx.cumulative) + [new_record]
+            keys = {(int(r["seed"]), int(r["trial_number"]), r["skip_mode"])
+                    for r in union}
+            assert len(keys) == len(union) == k + 1, (
+                f"replay keys collided across the recovered and new records: "
+                f"{sorted(keys)}")
+            merged = CK.reconcile(ctx.cumulative, [new_record])
+            assert len(merged) == k, (
+                f"reconciliation produced {len(merged)} records over {k} "
+                f"distinct seeds")
+            assert any(int(r["trial_number"]) == ordinals_2[0] for r in merged), (
+                f"the new record did not enter the canonical state under its "
+                f"own ordinal {ordinals_2[0]}")
+
+            # the collision arm is NOT vacuous: a RESTARTED ordinal collides
+            try:
+                CK.reconcile(ctx.cumulative,
+                             [rec(seeds[0], trial=1, score=0.91)])
+            except AccumulatorConsistencyError:
+                pass
+            else:
+                raise AssertionError(
+                    "a restarted ordinal (1) did NOT collide with the recovered "
+                    "record — this gate's collision arm proves nothing")
+
+            W._clear_flush_run_context()
+            return {"k": k, "optuna_numbers": numbers_1 + numbers_2,
+                    "record_ordinals": ordinals_1 + ordinals_2,
+                    "floor": floor, "study": study_name}
+    finally:
+        _drop_study(study_name)
+
+
+def g_resume_integrated(c: _Counter, ck=CK) -> None:
+    """BOUNDED REPAIR §1.4 — replaces G-TRIAL-NAMESPACE."""
+    obs = _det_resume_integrated()
+    k = obs["k"]
+    c.check(obs["optuna_numbers"] == list(range(k + 1)),
+            f"Optuna numbers across both phases: {obs['optuna_numbers']}")
+    c.check(obs["record_ordinals"] == list(range(1, k + 2)),
+            f"record ordinals across both phases: {obs['record_ordinals']}")
+    c.check(obs["floor"] == k, f"recovered floor {obs['floor']} != k={k}")
+
+    # ---- NO comparison of trial.number against any floor survives ----------
+    bayes_src = _read(_BAYES_PATH)
+    tree = ast.parse(bayes_src)
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            text = ast.unparse(node)
+            if "trial.number" in text and "floor" in text.lower():
+                offenders.append((node.lineno, text))
+    c.check(not offenders,
+            f"a trial.number-vs-floor comparison survives in "
+            f"window_optimizer_bayesian.py: {offenders}")
+
+    # the retired seam is gone from every executable site, repo-wide
+    live = []
+    for base, _dirs, files in os.walk(_ROOT):
+        if any(part in base for part in (".git", "docs", "tests", "archive")):
+            continue
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(base, fn)
+            try:
+                src = _read(path)
+            except OSError:
+                continue
+            if "_resume_trial_floor" not in src:
+                continue
+            for node in ast.walk(ast.parse(src)):
+                if (isinstance(node, (ast.Name, ast.Attribute))
+                        and getattr(node, "id", getattr(node, "attr", ""))
+                        == "_resume_trial_floor"):
+                    live.append(f"{os.path.relpath(path, _ROOT)}:{node.lineno}")
+    c.check(not live,
+            f"the retired `_resume_trial_floor` seam is still executable at: "
+            f"{live}")
+
+    # numbers are still never rewritten or offset
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
             for t in targets:
-                if (isinstance(t, ast.Attribute) and t.attr == "number"):
+                if isinstance(t, ast.Attribute) and t.attr == "number":
                     raise AssertionError(
                         f"window_optimizer_bayesian.py:{node.lineno} assigns to "
-                        f"`.number` — Optuna trial numbers are never rewritten "
-                        f"or offset")
+                        f"`.number` — Optuna trial numbers are never rewritten")
+    c.n += 1
+    c.note(f"k={k} derived from a real run · optuna {obs['optuna_numbers']} · "
+           f"ordinals {obs['record_ordinals']} · floor={obs['floor']} · "
+           f"trial {k} executed, its record took {k + 1}")
+
+
+def _det_missing_study(m=None, *, bayes=None) -> None:
+    """BOUNDED REPAIR §1.3.5 — checkpoint + study resume where the named study
+    does NOT exist must be rejected BEFORE the first objective executes.
+
+    `create_study(..., load_if_exists=_resume)` creates a fresh study when the
+    name is absent, and a resume that silently became a fresh study restarts the
+    record ordinal against a recovered checkpoint.
+    """
+    import optuna
+    if bayes is None:
+        import window_optimizer_bayesian as bayes
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    absent = f"d6_2_gate_absent_{os.getpid()}"
+    assert not os.path.exists(os.path.join(_OPTUNA_DIR, absent + ".db")), (
+        "the 'absent' study already exists — the case is not being exercised")
+    calls = []
+
+    def objective(config, optuna_trial=None):
+        calls.append(int(optuna_trial.number))
+        return _GateResult(config, 1)
+
+    created = set()
+    try:
+        before = _studies_snapshot()
+        with _gate_cwd():
+            try:
+                _run_live_study(bayes, objective=objective, max_iterations=2,
+                                resume_study=True, study_name=absent,
+                                require_loaded_study=True)
+            except RuntimeError as exc:
+                assert "S172 D6.2" in str(exc), (
+                    f"rejected, but not by the loaded-study wall: {exc}")
+            else:
+                raise AssertionError(
+                    "a checkpoint resume against a NON-EXISTENT study was "
+                    "allowed to proceed — `load_if_exists` silently created a "
+                    "fresh study, restarting the record ordinal against a "
+                    "recovered checkpoint")
+            created = _studies_snapshot() - before
+        assert calls == [], (
+            f"objective(s) executed before the rejection: trials {calls}")
+        # NOT just `<absent>.db`: the fresh path renames the study to
+        # `window_opt_<epoch>`, so the only sound check is that NO study
+        # database appeared at all.
+        assert not created, (
+            f"study database(s) {sorted(created)} were created despite the "
+            f"rejection — it did not precede study creation")
+    finally:
+        _drop_study(absent)
+
+
+def g_missing_study(c: _Counter, ck=CK) -> None:
+    """BOUNDED REPAIR §1.4 — G-MISSING-STUDY, with its clean control."""
+    _det_missing_study()
     c.n += 1
 
-    # ---- and the RECORD-BOUND ordinal begins above the recovered namespace --
-    integ = _read(_INTEG_PATH)
-    c.check("trial_counter = {'count': int(_d6_2_resume_floor or 0)}" in integ,
-            "the record trial ordinal still restarts at 0 on a resume — "
-            "`trial_number` is part of the replay key, so a restart would "
-            "collide with a recovered record")
-    c.note("check1 rejects enqueued WAITING trial 0 at floor 3 · check2 rejects "
-           "0/3/5 at floor 5 and precedes suggest/dispatch · no renumbering")
+    # ---- CLEAN CONTROL: the same wall, with the study PRESENT --------------
+    import window_optimizer_bayesian as bayes
+    study_name = ""
+    try:
+        with _gate_cwd():
+            ran_1 = []
+
+            def objective_1(config, optuna_trial=None):
+                ran_1.append(int(optuna_trial.number))
+                return _GateResult(config, 5)
+
+            out = _run_live_study(bayes, objective=objective_1,
+                                  max_iterations=2, resume_study=False,
+                                  study_name="")
+            study_name = out["optuna_study"]["study_name"]
+            c.check(len(ran_1) == 2,
+                    f"the control run executed {len(ran_1)} trials, expected 2")
+
+            ran_2 = []
+
+            def objective_2(config, optuna_trial=None):
+                ran_2.append(int(optuna_trial.number))
+                return _GateResult(config, 5)
+
+            _run_live_study(bayes, objective=objective_2, max_iterations=3,
+                            resume_study=True, study_name=study_name,
+                            require_loaded_study=True)
+            c.check(ran_2 == [2],
+                    f"with the study PRESENT the resume must proceed and run "
+                    f"trial 2; it ran {ran_2}")
+    finally:
+        _drop_study(study_name)
+    c.note("absent study -> rejected with zero objectives and no DB created; "
+           "present study -> the same wall lets the resume through")
+
+
+# ── BOUNDED REPAIR §2 — G-NP2-SCOPE ─────────────────────────────────────────
+class _ProcessStartAttempt(RuntimeError):
+    """Raised by a sentinel the instant anything §2.2 forbids is attempted."""
+
+
+class _Sentinel:
+    def __init__(self):
+        self.events = []
+
+    def trip(self, what):
+        self.events.append(what)
+        raise _ProcessStartAttempt(what)
+
+
+class _BlockingProxy:
+    """Delegates to the real module except for the side effects §2.2 names."""
+
+    def __init__(self, real, blocked, sentinel, label):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_blocked", set(blocked))
+        object.__setattr__(self, "_sentinel", sentinel)
+        object.__setattr__(self, "_label", label)
+
+    def __getattr__(self, name):
+        if name in object.__getattribute__(self, "_blocked"):
+            label = object.__getattribute__(self, "_label")
+            sentinel = object.__getattribute__(self, "_sentinel")
+            return lambda *a, **k: sentinel.trip(f"{label}.{name}()")
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+class _OptunaStorages:
+    def __init__(self, real, sentinel):
+        self._real, self._sentinel = real, sentinel
+
+    def __getattr__(self, name):
+        if name == "RDBStorage":
+            return lambda *a, **k: self._sentinel.trip(
+                "optuna.storages.RDBStorage()")
+        return getattr(self._real, name)
+
+
+def _child_pids():
+    """Real child processes of this process, read from /proc."""
+    pids = set()
+    for tid in os.listdir("/proc/self/task"):
+        try:
+            with open(f"/proc/self/task/{tid}/children", encoding="ascii") as fh:
+                pids |= {int(p) for p in fh.read().split()}
+        except OSError:
+            continue
+    return pids
+
+
+def _nested_func_src(src: str, name: str, required_args) -> str:
+    """The dedented LIVE source of a nested function, by AST line span."""
+    tree = ast.parse(src)
+    nodes = [n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == name
+             and set(required_args) <= {a.arg for a in n.args.args}]
+    assert len(nodes) == 1, f"{name}: {len(nodes)} definitions matched"
+    lines = src.splitlines(keepends=True)
+    return textwrap.dedent(
+        "".join(lines[nodes[0].lineno - 1:nodes[0].end_lineno]))
+
+
+def _np2_positions(src: str) -> dict:
+    """Where the NP2 rejection sits relative to everything §2.2 forbids
+    preceding it. AST, never text: an `if False:` around a raise leaves the
+    text in place and would go green on a grep."""
+    tree = ast.parse(src)
+    ow = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "optimize_window"
+          and any(a.arg == "dataset_path" for a in n.args.args)]
+    assert len(ow) == 1, "the optimize_window definition moved"
+    out = {"rejections": [], "np2_block": None, "ssh": None, "study": None}
+    for node in ast.walk(ow[0]):
+        if isinstance(node, ast.If):
+            test = ast.unparse(node.test)
+            if "resume_checkpoint" in test and "n_parallel" in test and any(
+                    isinstance(s, ast.Raise) for s in ast.walk(node)):
+                out["rejections"].append(node.lineno)
+            elif (test.replace(" ", "") == "n_parallel>1"
+                  and len(node.body) > 5):
+                out["np2_block"] = node.lineno
+        if isinstance(node, ast.Call):
+            func = ast.unparse(node.func)
+            if "pre_kill_sp" in func and out["ssh"] is None:
+                out["ssh"] = node.lineno
+            if func.endswith("create_study") and out["study"] is None:
+                out["study"] = node.lineno
+    return out
+
+
+def _det_np2_scope(m=None, *, src=None) -> dict:
+    """BOUNDED REPAIR §2 — `resume_checkpoint` + `n_parallel > 1` is rejected
+    with ZERO worker or process starts.
+
+    Two independent arms. POSITION: the rejection's guard sits above the NP2
+    block, above the shared-study creation and above the [NP2-KILL] SSH.
+    EXECUTION: the live function is actually called with `n_parallel=2` while
+    every process-start and study-creation surface is sentinelled, and the real
+    child-process count is compared before and after.
+    """
+    import window_optimizer_integration_final as W
+    src = _read(_INTEG_PATH) if src is None else src
+
+    pos = _np2_positions(src)
+    assert len(pos["rejections"]) == 1, (
+        f"expected exactly one `resume_checkpoint + n_parallel` rejection in "
+        f"optimize_window, found {len(pos['rejections'])} at {pos['rejections']}")
+    reject = pos["rejections"][0]
+
+    # ---- EXECUTION ARM (first: a moved rejection must kill BEHAVIOURALLY, ---
+    # ---- not merely on a line number) --------------------------------------
+    fn_src = _nested_func_src(src, "optimize_window", ("self", "dataset_path"))
+    ns = dict(W.__dict__)
+    exec(compile(fn_src, "<np2-scope>", "exec"), ns)
+    optimize_window = ns["optimize_window"]
+
+    sentinel = _Sentinel()
+    import multiprocessing as _real_mp
+    import optuna as _real_optuna
+    import subprocess as _real_sp
+    import types as _types
+
+    sp_proxy = _BlockingProxy(_real_sp, ("run", "Popen", "call", "check_call",
+                                         "check_output"), sentinel,
+                              "subprocess")
+    mp_proxy = _BlockingProxy(_real_mp, ("Process", "Pool", "Queue",
+                                         "SimpleQueue"), sentinel,
+                              "multiprocessing")
+    op_proxy = _BlockingProxy(_real_optuna, ("create_study", "load_study"),
+                              sentinel, "optuna")
+    object.__setattr__(op_proxy, "storages",
+                       _OptunaStorages(_real_optuna.storages, sentinel))
+    db_stub = _types.ModuleType("database_system")
+
+    def _no_db(*_a, **_k):
+        raise RuntimeError("database_system is stubbed out for this gate")
+    db_stub.DistributedPRNGDatabase = _no_db
+
+    saved = {name: sys.modules.get(name) for name in
+             ("subprocess", "multiprocessing", "optuna", "database_system")}
+    real_fork = getattr(os, "fork", None)
+    before = _child_pids()
+    raised = None
+    try:
+        sys.modules["subprocess"] = sp_proxy
+        sys.modules["multiprocessing"] = mp_proxy
+        sys.modules["optuna"] = op_proxy
+        sys.modules["database_system"] = db_stub
+        if real_fork is not None:
+            os.fork = lambda: sentinel.trip("os.fork()")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                optimize_window(_types.SimpleNamespace(),
+                                dataset_path=__file__,
+                                seed_start=0, seed_count=10,
+                                max_iterations=2, n_parallel=2,
+                                resume_study=True,
+                                study_name=f"d6_2_np2_gate_{os.getpid()}",
+                                resume_checkpoint=f"np2-gate-{os.getpid()}")
+            except_name = "NOTHING RAISED"
+        except W.CheckpointResumeError as exc:
+            raised, except_name = exc, "CheckpointResumeError"
+        except _ProcessStartAttempt as exc:
+            except_name = f"_ProcessStartAttempt({exc})"
+        except Exception as exc:                                # noqa: BLE001
+            except_name = f"{type(exc).__name__}: {exc}"
+    finally:
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+        if real_fork is not None:
+            os.fork = real_fork
+    after = _child_pids()
+
+    assert not sentinel.events, (
+        f"the NP2 path started or created {sentinel.events} BEFORE the "
+        f"rejection — §2.2 requires the refusal above study creation, worker "
+        f"launch, SSH and any other fleet action")
+    assert raised is not None, (
+        f"resume_checkpoint + n_parallel=2 was not rejected: {except_name}")
+    assert "n_parallel" in str(raised) and "1" in str(raised), (
+        f"the rejection does not name the scope limit: {raised}")
+    new = after - before
+    assert not new, f"the rejection left {len(new)} new child process(es): {new}"
+
+    # ---- POSITION ARM ------------------------------------------------------
+    for key, what in (("np2_block", "the `if n_parallel > 1:` block"),
+                      ("study", "the shared Optuna study creation"),
+                      ("ssh", "the [NP2-KILL] SSH to every rig")):
+        assert pos[key] is not None, f"{what} is no longer locatable"
+        assert reject < pos[key], (
+            f"the NP2 rejection is at line {reject}, BELOW {what} at line "
+            f"{pos[key]} — a checkpoint resume would drive the fleet before "
+            f"being rejected")
+
+    return {"rejection_line": reject, "np2_block_line": pos["np2_block"],
+            "study_line": pos["study"], "ssh_line": pos["ssh"],
+            "children_before": len(before), "children_after": len(after),
+            "sentinel_events": list(sentinel.events)}
+
+
+def g_np2_scope(c: _Counter, ck=CK) -> None:
+    """BOUNDED REPAIR §2.2 — CPU-only. No rig, no GPU, no network."""
+    obs = _det_np2_scope()
+    c.check(obs["rejection_line"] < obs["np2_block_line"],
+            f"rejection at {obs['rejection_line']} is not above the NP2 block "
+            f"at {obs['np2_block_line']}")
+    c.check(obs["sentinel_events"] == [],
+            f"process/study starts before the rejection: "
+            f"{obs['sentinel_events']}")
+    c.check(obs["children_after"] == obs["children_before"],
+            f"child processes changed {obs['children_before']} -> "
+            f"{obs['children_after']}")
+
+    # the clean control: n_parallel == 1 does NOT hit this rejection
+    positions = _np2_positions(_read(_INTEG_PATH))
+    c.check(len(positions["rejections"]) == 1,
+            "the NP2 rejection is not a single guard")
+    src = _read(_INTEG_PATH)
+    tree = ast.parse(src)
+    guard = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+             and n.lineno == positions["rejections"][0]][0]
+    ns = {"resume_checkpoint": "some-run-id", "n_parallel": 1,
+          "CheckpointResumeError": RuntimeError}
+    exec(compile(ast.Module(body=[guard], type_ignores=[]),
+                 "<np2-clean>", "exec"), ns)          # must NOT raise
+    c.n += 1
+    ns_fresh = {"resume_checkpoint": "", "n_parallel": 8,
+                "CheckpointResumeError": RuntimeError}
+    exec(compile(ast.Module(body=[guard], type_ignores=[]),
+                 "<np2-fresh>", "exec"), ns_fresh)    # must NOT raise
+    c.n += 1
+    c.note(f"rejection line {obs['rejection_line']} < NP2 block "
+           f"{obs['np2_block_line']} < study {obs['study_line']} < "
+           f"[NP2-KILL] SSH {obs['ssh_line']} · 0 sentinel events · children "
+           f"{obs['children_before']}->{obs['children_after']} · "
+           f"n_parallel==1 and no-checkpoint pass through")
+
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2471,11 +3049,35 @@ def g_mutants() -> None:
                    lambda _m: _assert_combination_mutant(),
                    "G-COMBINATION-MATRIX", None)
 
-    _positive_control("M23", lambda _m: _det_enqueued_guard())
-    _record_mutant("M23 an enqueued trial at or below the recovered maximum "
-                   "executes",
-                   lambda _m: _assert_enqueued_mutant(),
-                   "G-TRIAL-NAMESPACE", None)
+    # ---- BOUNDED REPAIR §1 / §2 mutants ------------------------------------
+    # M23 replaces the retired enqueued-trial mutant: the defect that mattered
+    # was never an enqueued warm-start trial, it was comparing Optuna's 0-based
+    # number against the 1-based record-ordinal floor at all.
+    _positive_control("M23", lambda _m: _det_resume_integrated())
+    _record_mutant("M23 the `trial.number <= floor` comparison reinstated in "
+                   "the objective (on a resume, `_resumed_completed` IS the "
+                   "recovered record-ordinal floor)",
+                   lambda _m: _det_resume_integrated(bayes=_mutant_bayes(
+                       [(_M23_ANCHOR, _M23_MUTATED)], "M23")),
+                   "G-RESUME-INTEGRATED", None)
+
+    # M24 and M25 each remove ONE behaviour that is guarded in TWO places, so
+    # each patches both sites; the concept injected is single.
+    _positive_control("M24", lambda _m: _det_np2_scope())
+    _record_mutant("M24 the NP2 rejection moved below the fork point (the "
+                   "fleet is driven, then the resume is rejected)",
+                   lambda _m: _det_np2_scope(src=_mutated_integration_src(
+                       [(_M24_ANCHOR_A, _M24_MUTATED_A),
+                        (_M24_ANCHOR_B, _M24_MUTATED_B)], "M24")),
+                   "G-NP2-SCOPE", None)
+
+    _positive_control("M25", lambda _m: _det_missing_study())
+    _record_mutant("M25 the missing-study case falls back to a fresh study "
+                   "(both loaded-study walls bypassed)",
+                   lambda _m: _det_missing_study(bayes=_mutant_bayes(
+                       [(_M25_ANCHOR_A, _M25_MUTATED_A),
+                        (_M25_ANCHOR_B, _M25_MUTATED_B)], "M25")),
+                   "G-MISSING-STUDY", None)
 
 
 def _det_roundtrip_modes(m) -> None:
@@ -2544,40 +3146,45 @@ def _assert_combination_mutant() -> None:
         W._clear_flush_run_context()
 
 
-def _det_enqueued_guard() -> None:
-    """Clean control for M23: the live pre-flight rejects the enqueued trial."""
-    import optuna
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    preflight = _extract_block(
-        _BAYES_PATH, "if _resume_trial_floor is not None:",
-        "# Trials remaining: full count on fresh", "m23")
-    study = optuna.create_study()
-    study.enqueue_trial({"window_size": 8, "offset": 0})
-    ns = {"study": study, "_resume_trial_floor": 3,
-          "print": lambda *a, **k: None}
-    try:
-        exec(compile(preflight, "<m23>", "exec"), ns)
-    except RuntimeError:
-        return
-    raise AssertionError("an enqueued trial at or below the recovered maximum "
-                         "was allowed to execute")
+# ── BOUNDED REPAIR mutation anchors (each asserted unique by `_patch`) ───────
+#
+# M23 — reinstate exactly the defect Beta found. On a resume `_resumed_completed`
+# IS the recovered record-ordinal floor (k completed trials -> k persisted
+# ordinals), and the next Optuna number is k, so `k <= k` rejects the resume.
+# Gated on `_resume` so the fresh phase still runs and the kill is attributable
+# to the resume, not to a study that never started.
+_M23_ANCHOR = ('        def optuna_objective(trial):\n'
+               '            """Optuna objective function"""\n')
+_M23_MUTATED = (
+    '        def optuna_objective(trial):\n'
+    '            """Optuna objective function"""\n'
+    '            if _resume and int(trial.number) <= int(_resumed_completed):\n'
+    '                raise RuntimeError(\n'
+    '                    "[M23] reinstated trial.number <= floor: "\n'
+    '                    f"trial.number {trial.number} does not exceed the "\n'
+    '                    f"recovered maximum {_resumed_completed}")\n')
+
+_M25_ANCHOR_A = "        if _require_loaded_study and not _resume:"
+_M25_MUTATED_A = "        if False:  # M25 — fall back to a fresh study"
+_M25_ANCHOR_B = "        if _require_loaded_study and len(study.trials) == 0:"
+_M25_MUTATED_B = "        if False:  # M25 — accept the freshly created study"
+
+_M24_ANCHOR_A = "        if resume_checkpoint and int(n_parallel) > 1:"
+_M24_MUTATED_A = "        if False:  # M24 — the early rejection is disabled"
+_M24_ANCHOR_B = "            _rq = _mp.Queue()"
+_M24_MUTATED_B = (
+    "            if resume_checkpoint and int(n_parallel) > 1:\n"
+    "                raise CheckpointResumeError(\n"
+    "                    '[M24] rejected only after the fleet was driven; "
+    "n_parallel 1')\n"
+    "            _rq = _mp.Queue()")
 
 
-def _assert_enqueued_mutant() -> None:
-    """The mutant: scan only COMPLETE trials (i.e. ignore WAITING/RUNNING)."""
-    import optuna
-    preflight = _extract_block(
-        _BAYES_PATH, "if _resume_trial_floor is not None:",
-        "# Trials remaining: full count on fresh", "m23mut")
-    mutated = _patch(preflight, "in ('WAITING', 'RUNNING')", "in ('COMPLETE',)",
-                     "M23")
-    study = optuna.create_study()
-    study.enqueue_trial({"window_size": 8, "offset": 0})
-    ns = {"study": study, "_resume_trial_floor": 3,
-          "print": lambda *a, **k: None}
-    exec(compile(mutated, "<m23mut>", "exec"), ns)
-    raise AssertionError("an enqueued trial at or below the recovered maximum "
-                         "was allowed to execute")
+def _mutated_integration_src(patches, label) -> str:
+    src = _read(_INTEG_PATH)
+    for old, new in patches:
+        src = _patch(src, old, new, label)
+    return src
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2629,7 +3236,9 @@ GATES = [
     ("G-CONTEXT-DIGEST", g_context_digest),
     ("G-CURSOR-NOT-CLAIMED", g_cursor_not_claimed),
     ("G-RESUME-PROVENANCE", g_resume_provenance),
-    ("G-TRIAL-NAMESPACE", g_trial_namespace),
+    ("G-RESUME-INTEGRATED", g_resume_integrated),
+    ("G-MISSING-STUDY", g_missing_study),
+    ("G-NP2-SCOPE", g_np2_scope),
 ]
 
 

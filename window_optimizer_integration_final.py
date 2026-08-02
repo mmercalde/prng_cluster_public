@@ -358,6 +358,21 @@ import uuid as _uuid_flush
 # A resumed run recovers the accumulated CANONICAL STATE and
 # continues optimization under its own trial namespace; where the SEARCH had got
 # to remains entirely Optuna's, and nothing here claims otherwise.
+#
+# PARALLELISM SCOPE (BOUNDED REPAIR §2), stated in both directions so it cannot
+# be over-read OR under-read:
+#   * D6.2 checkpoint recovery AND the S166 in-memory clear are certified ONLY
+#     for the default single-Optuna-trial path, `n_parallel == 1`. A
+#     `--resume-checkpoint` request with `n_parallel > 1` is REJECTED as the
+#     first executable statement of `optimize_window`, above the NP2 block —
+#     before study creation, worker launch, the [NP2-KILL] SSH to every rig, any
+#     other fleet action, and any candidate admission.
+#   * THAT PATH STILL DISTRIBUTES EACH SIEVE TRIAL ACROSS THE FULL GPU CLUSTER.
+#     The limit is on Optuna parallelism, not on fleet use.
+#   * NO NP2 CLAIM IS MADE. Not resume, not accumulator clearing. The forked
+#     partition workers carry no installed D6.2 run context, and concurrent
+#     partition writers cannot safely share the present checkpoint member pair;
+#     that needs a separate transaction design.
 # ═════════════════════════════════════════════════════════════════════════════
 
 from utils.checkpoint_d6_2 import (                              # [S172 D6.2]
@@ -949,7 +964,12 @@ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
                                     resume_study: bool):
     """Build the D6.2 run context, honouring §4.4's combination matrix.
 
-    Returns `(context, recovered_max_trial_number_or_None)`.
+    Returns `(context, resume_record_ordinal_floor_or_None)` — the second value
+    is the maximum PERSISTED RECORD ORDINAL recovered from the checkpoint
+    (`trial_number` in the canonical record domain, 1-based). It is NOT an
+    Optuna trial number and has no arithmetic relationship to one; its sole
+    consumer is the process-local record counter in `optimize_window`
+    (BOUNDED REPAIR §1.3.2).
 
     §4.4 — THE TRIAL-NUMBER COLLISION. `trial_number` is part of the replay key
     `(seed, trial_number, skip_mode)`. A checkpoint-only resume with a FRESH
@@ -963,9 +983,13 @@ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
         ------------------------------------------------------------------
         no                 no             normal fresh run
         no                 yes            existing Optuna behaviour, unchanged
-        yes                yes            continue, only above the recovered
-                                          trial namespace (enforced by the two
-                                          checks in the Optuna study body)
+        yes                yes            continue, with the persisted record
+                                          ordinal continuing above the
+                                          recovered maximum (the counter in
+                                          `optimize_window`), and the resumed
+                                          Optuna study PROVEN to have been
+                                          loaded rather than silently created
+                                          fresh (BOUNDED REPAIR §1.3.5)
         yes                no             MUST NOT begin new trials -> rejected
                                           with a specific error, because this
                                           codebase has no reconstruct/finalize-
@@ -1042,13 +1066,16 @@ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
         resume_provenance=_outcome.provenance())
     _install_flush_run_context(_ctx)
 
-    _floor = max((int(r["trial_number"]) for r in _outcome.records),
-                 default=None)
+    # [BOUNDED REPAIR §1.3.1] The maximum recovered RECORD ORDINAL. Named for
+    # what it is: `trial_number` is a canonical RECORD field, 1-based, produced
+    # by the process-local counter in `optimize_window` — never `trial.number`.
+    _record_ordinal_floor = max(
+        (int(r["trial_number"]) for r in _outcome.records), default=None)
     print(f"[S172-D6.2-CHECKPOINT] RESUMED run_id={_run_id} "
           f"row={_outcome.row} records={len(_outcome.records):,} "
           f"state={_outcome.canonical_state_digest[:12]}… "
           f"next_sequence={_outcome.next_sequence} "
-          f"recovered_max_trial_number={_floor}")
+          f"resume_record_ordinal_floor={_record_ordinal_floor}")
     print(f"[S172-D6.2-CHECKPOINT] the optimizer execution cursor is NOT "
           f"restored — D6.2 does not claim it (REV5 §0).")
 
@@ -1058,7 +1085,7 @@ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
         # same-transaction pair) does not, because there is nothing to repair.
         _install_repaired_checkpoint_pair(_ctx, {})
     _write_resume_provenance(_ctx)
-    return _ctx, _floor
+    return _ctx, _record_ordinal_floor
 
 
 #: §4.5 — where the durable resumed-run provenance is persisted. A sibling of
@@ -1928,6 +1955,43 @@ def add_window_optimizer_to_coordinator():
         #          (WATCHER's step-scoped filter DROPS an undeclared key —
         #           agents/watcher_agent.py:1312 `if key in allowed_params`)
         #   hop 2  window_optimizer.py -> coordinator.optimize_window(...) kwargs
+        #
+        # ── [S172 D6.2 BOUNDED REPAIR §2] D6.2 IS SCOPED TO n_parallel == 1 ──
+        # THIS REJECTION MUST REMAIN THE FIRST EXECUTABLE STATEMENT OF THIS
+        # METHOD. `_prepare_checkpoint_run_context` — where the §4.4 combination
+        # matrix, the run-context digest and the checkpoint recovery all live —
+        # runs roughly 600 lines BELOW, after the `n_parallel > 1` block has
+        # already created the shared Optuna study, SSH'd every AMD rig
+        # ([NP2-KILL]), cleaned TCP ports and forked its partition processes.
+        # On that path a checkpoint resume would be validated only AFTER the
+        # fleet had been driven and the study mutated.
+        #
+        # The forked partition workers also carry NO installed D6.2 run context,
+        # so their flush attempts cannot clear the in-memory accumulator and the
+        # S166 OOM protection is not real there; and concurrent partition
+        # writers cannot safely share the single checkpoint member pair, which
+        # needs a separate transaction design. D6.2 therefore makes NO NP2
+        # claim of any kind — not resume, not accumulator clearing.
+        #
+        # The scope limit is on OPTUNA PARALLELISM ONLY. The certified
+        # `n_parallel == 1` path still distributes every sieve trial across the
+        # full GPU cluster through the coordinator.
+        if resume_checkpoint and int(n_parallel) > 1:
+            raise CheckpointResumeError(
+                f"resume_checkpoint={resume_checkpoint!r} was requested with "
+                f"n_parallel={n_parallel}. S172 D6.2 checkpoint recovery and "
+                f"the S166 in-memory clear are certified ONLY for the default "
+                f"single-Optuna-trial path (n_parallel == 1); that path still "
+                f"distributes each sieve trial across the full GPU cluster. "
+                f"Under n_parallel > 1 the resume would be validated only "
+                f"AFTER study creation, the [NP2-KILL] SSH to every rig, port "
+                f"cleanup and the partition fork; the forked workers would "
+                f"carry no installed D6.2 run context, so their flushes could "
+                f"not clear memory; and concurrent partition writers cannot "
+                f"safely share one checkpoint member pair. Rejected here, "
+                f"before study creation, worker launch, any fleet action or "
+                f"any candidate admission — no process was started. Re-run "
+                f"with --n-parallel 1 to use --resume-checkpoint.")
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -2590,15 +2654,16 @@ def add_window_optimizer_to_coordinator():
             if (test_both_modes and not prng_base.endswith('_hybrid'))
             else ('constant',)
         )
-        _d6_2_context, _d6_2_resume_floor = _prepare_checkpoint_run_context(
-            dataset_path=dataset_path,
-            prng_base=prng_base,
-            skip_modes_executed=_skip_modes_d6_2,
-            seed_start=int(seed_start),
-            seed_count=int(seed_count),
-            resume_checkpoint=resume_checkpoint,
-            resume_study=resume_study,
-        )
+        _d6_2_context, _d6_2_resume_record_ordinal_floor = \
+            _prepare_checkpoint_run_context(
+                dataset_path=dataset_path,
+                prng_base=prng_base,
+                skip_modes_executed=_skip_modes_d6_2,
+                seed_start=int(seed_start),
+                seed_count=int(seed_count),
+                resume_checkpoint=resume_checkpoint,
+                resume_study=resume_study,
+            )
         _install_flush_run_context(_d6_2_context)
 
         if not _np2_complete:
@@ -2606,8 +2671,8 @@ def add_window_optimizer_to_coordinator():
             bounds = SearchBounds.from_config()
             # [S172 D6.2 §4.4] The record's `trial_number` comes from THIS
             # counter (see `test_config` below), not from `trial.number`. It is
-            # a process-local ordinal that restarts at 1 every run, and it is
-            # the value that lands in the replay key
+            # a process-local RECORD ORDINAL, 1-based, that restarts at 1 every
+            # fresh run, and it is the value that lands in the replay key
             # `(seed, trial_number, skip_mode)`. On a resume it therefore has to
             # CONTINUE above the recovered maximum rather than restart, or the
             # first new trial would collide with recovered trial 1 under a
@@ -2620,11 +2685,19 @@ def add_window_optimizer_to_coordinator():
             # recovered trials never happened, and it does not restore the
             # optimizer execution cursor (REV5 §0) — where the SEARCH is remains
             # entirely Optuna's.
-            trial_counter = {'count': int(_d6_2_resume_floor or 0)}
-            if _d6_2_resume_floor:
+            #
+            # [BOUNDED REPAIR §1.3.2] THIS IS THE FLOOR'S ONLY CONSUMER. The
+            # value is a RECORD ORDINAL, which is why it is named one: the old
+            # name (`_resume_trial_floor`) asserted a relationship to Optuna
+            # trial numbers that does not exist, and that false name is what
+            # produced the off-by-one that rejected every normal resume. It is
+            # never forwarded to the study body and never compared against
+            # `trial.number`.
+            trial_counter = {'count': int(_d6_2_resume_record_ordinal_floor or 0)}
+            if _d6_2_resume_record_ordinal_floor:
                 print(f"[S172-D6.2-CHECKPOINT] record trial ordinal begins "
                       f"above the recovered namespace: next trial_number = "
-                      f"{int(_d6_2_resume_floor) + 1}")
+                      f"{int(_d6_2_resume_record_ordinal_floor) + 1}")
 
         def test_config(config,
                         ss=seed_start, sc=seed_count,
@@ -2690,16 +2763,22 @@ def add_window_optimizer_to_coordinator():
         require_supported_strategy(strategy_name)
         strategy = strategy_map[strategy_name]
         strategy._survivor_accumulator = survivor_accumulator  # [S149]
-        # [S172 D6.2 §4.4 / addendum §4] The recovered trial-number floor, on
-        # the same attribute seam S149 already established for the accumulator.
+        # [S172 D6.2 §4.4 / BOUNDED REPAIR §1.3] What crosses the S149 attribute
+        # seam is a BOOLEAN — "a checkpoint resume is in force" — and NOT the
+        # recovered record-ordinal floor. `f7583bc` forwarded the floor and the
+        # study body compared `trial.number` against it; the floor is a 1-based
+        # record ordinal and `trial.number` is Optuna's 0-based number, so every
+        # normal resume was rejected. The floor's only consumer is
+        # `trial_counter` above, in this layer, where the quantity it measures
+        # actually lives.
+        #
         # Deliberately NOT a new entry in `OPTIMIZE_FORWARDED_KWARGS`: that
         # tuple is AST-gated against the live `strategy.search(...)` call and is
         # also what `strategy_contract_gap` measures the three gated strategies
-        # against, so widening it would change an unrelated contract. The value
-        # is read and ENFORCED in the Optuna study body (pre-flight over
-        # nonterminal trials, and a per-trial check at the top of the
-        # objective) — it is not an advisory that dies in an override dict.
-        strategy._resume_trial_floor = _d6_2_resume_floor
+        # against, so widening it would change an unrelated contract. The flag
+        # is read and ENFORCED in the Optuna study body (the loaded-study wall,
+        # §1.3.5) — it is not an advisory that dies in an override dict.
+        strategy._d6_2_require_loaded_study = bool(resume_checkpoint)
 
         # [S140b] trial history context — flows to Optuna callback
         _trial_history_ctx = {

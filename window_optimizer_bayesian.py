@@ -501,36 +501,30 @@ class OptunaBayesianSearch:
         best_result = None
         best_score = float('-inf')
         
-        # [S172 D6.2 §4.4 / addendum §4] The recovered trial-number floor.
-        # Arrives on the same attribute seam S149/S152 established for
-        # `_survivor_accumulator`; `None` means no checkpoint was resumed and
-        # every check below is inert.
-        _resume_trial_floor = getattr(self, '_resume_trial_floor', None)
+        # ── [S172 D6.2 BOUNDED REPAIR §1.3] THE OPTUNA NUMBER IS NOT THE ────
+        # ── RECORD ORDINAL, AND IS NEVER COMPARED AGAINST ITS FLOOR ─────────
+        # `f7583bc` forwarded a value named `_resume_trial_floor` here and
+        # compared `trial.number` against it in two places. That comparison was
+        # WRONG BY CONSTRUCTION and rejected every normal resume: the floor is
+        # the recovered maximum RECORD ORDINAL, which is 1-based
+        # (`trial_counter['count']`, window_optimizer_integration_final.py:2623
+        # → :2646), while `trial.number` is Optuna's 0-based study number. After
+        # k completed trials Optuna has used 0…k−1, the persisted ordinals are
+        # 1…k, the next legitimate Optuna number is k and the floor is k — so
+        # `k <= k` raised on every resume.
+        #
+        # The floor's ONLY legitimate consumer is the persisted record counter,
+        # and it lives in the integration layer. Nothing in this file reads it,
+        # and no comparison of `trial.number` against any floor exists here.
+        #
+        # What DOES arrive on the S149/S152 attribute seam is a single boolean:
+        # whether a checkpoint resume is in force. It is consumed exactly once,
+        # by the loaded-study wall below (§1.3.5), and it is never arithmetic.
+        _require_loaded_study = bool(
+            getattr(self, '_d6_2_require_loaded_study', False))
 
         def optuna_objective(trial):
             """Optuna objective function"""
-            # ── [S172 D6.2 addendum §4] CHECK 2, at the VERY TOP ────────────
-            # "After obtaining each Optuna trial, verify its actual
-            # `trial.number` exceeds the recovered maximum", and perform that
-            # check BEFORE objective execution, dispatch or candidate
-            # admission. Trials are obtained through `study.optimize(...)`, not
-            # ask/tell, so `trial.number` is first readable HERE — which is why
-            # this is the seam and why nothing above it may dispatch.
-            #
-            # The number is NEVER rewritten or offset. A trial that would run
-            # at or below the recovered maximum aborts the study instead.
-            if (_resume_trial_floor is not None
-                    and int(trial.number) <= int(_resume_trial_floor)):
-                raise RuntimeError(
-                    f"[S172 D6.2] resumed study produced trial.number "
-                    f"{trial.number}, which does not exceed the recovered "
-                    f"maximum trial number {int(_resume_trial_floor)}. "
-                    f"trial_number is part of the replay key "
-                    f"(seed, trial_number, skip_mode), so running it could "
-                    f"collide with a recovered record under the same key with "
-                    f"different canonical contents. The number is NOT "
-                    f"rewritten or offset — the run stops instead.")
-
             # Sample parameters from search space
             window_size = trial.suggest_int('window_size',
                                            bounds.min_window_size, 
@@ -712,6 +706,32 @@ class OptunaBayesianSearch:
             if not _resume_found:
                 print(f"   📊 No resumable study found — starting fresh")
 
+        # ── [S172 D6.2 BOUNDED REPAIR §1.3.5] THE RESUMED STUDY MUST EXIST ───
+        # `optuna.create_study(..., load_if_exists=_resume)` below CREATES a
+        # fresh study when the named one does not exist. A checkpoint resume
+        # that silently became a fresh study would restart the persisted record
+        # ordinal against a RECOVERED checkpoint — the replay-key collision on
+        # `(seed, trial_number, skip_mode)` this whole area exists to prevent.
+        #
+        # `_resume` is set ONLY after `optuna.load_study(...)` returned a study
+        # carrying completed trials, so it is positive evidence that the study
+        # existed and was loaded — not an inference from the request. The
+        # rejection sits ABOVE study creation and therefore before the first
+        # objective can execute, before any dispatch and before any candidate
+        # is admitted.
+        if _require_loaded_study and not _resume:
+            raise RuntimeError(
+                f"[S172 D6.2] a checkpoint resume is in force "
+                f"(--resume-checkpoint) but NO existing Optuna study was "
+                f"loaded (resume_study={resume_study}, "
+                f"study_name={study_name!r}). `load_if_exists` would create a "
+                f"FRESH study here, and a fresh study is not the study the "
+                f"recovered checkpoint was taken from: the persisted record "
+                f"ordinal would restart against recovered records and collide "
+                f"on the replay key (seed, trial_number, skip_mode). No study "
+                f"is created, no objective is executed and no candidate is "
+                f"admitted.")
+
         if not _resume:
             # S125: always SQLite (JournalFileBackend removed -- n_parallel parallelism
             # now owned by multiprocessing dispatcher in integration layer; n_jobs=1 here)
@@ -730,6 +750,19 @@ class OptunaBayesianSearch:
             load_if_exists=_resume
         )
         print(f"   📊 Optuna study: optuna_studies/{study_name}.db")
+
+        # The wall above is checked against the DISCOVERY bookkeeping; this one
+        # is checked against the OBJECT that was actually constructed, so a
+        # future change to `load_if_exists` cannot make the resume silently
+        # fresh without one of the two reding. Still before the first objective.
+        if _require_loaded_study and len(study.trials) == 0:
+            raise RuntimeError(
+                f"[S172 D6.2] a checkpoint resume is in force but the study "
+                f"actually constructed ({study_name!r}) carries NO trials — it "
+                f"was created here, not loaded. A fresh study is not the study "
+                f"the recovered checkpoint was taken from. No objective has "
+                f"executed and no candidate has been admitted.")
+
         self._trial_history_context = trial_history_context  # [S140b]
 
         # [S144] Warm-start: enqueue from trial_history_context ONLY.
@@ -759,37 +792,14 @@ class OptunaBayesianSearch:
         else:
             print("   ✅ Resume mode: skipping warm-start (already in DB)")
 
-        # ── [S172 D6.2 addendum §4] CHECK 1 — PRE-FLIGHT over the loaded study
-        # Run BEFORE `study.optimize` is entered, and it is not the same thing
-        # as `max(existing) + 1`: a loaded study can carry NONTERMINAL trials
-        # whose numbers were allocated earlier. `study.enqueue_trial(...)` above
-        # is the S166 warm-start path, so the queued case is real here, not
-        # theoretical — an enqueued trial sits in WAITING with a number already
-        # assigned, and it can be at or below the recovered maximum.
-        #
-        # Any such trial is REJECTED. It is never renumbered and never quietly
-        # dropped: a second trial-number authority and false provenance is
-        # exactly what §4.4 forbids.
-        if _resume_trial_floor is not None:
-            _floor = int(_resume_trial_floor)
-            _nonterminal = [t for t in study.trials
-                            if t.state.name in ('WAITING', 'RUNNING')]
-            _offenders = sorted(int(t.number) for t in _nonterminal
-                                if int(t.number) <= _floor)
-            print(f"   [S172 D6.2] resumed trial namespace: recovered max "
-                  f"trial_number={_floor}; nonterminal study trials="
-                  f"{sorted(int(t.number) for t in _nonterminal)}")
-            if _offenders:
-                raise RuntimeError(
-                    f"[S172 D6.2] the resumed study carries nonterminal "
-                    f"(WAITING/RUNNING) trial(s) {_offenders} at or below the "
-                    f"recovered maximum trial_number {_floor}. Resuming them "
-                    f"would re-enter the recovered trial namespace and could "
-                    f"produce a record colliding with a recovered one on the "
-                    f"replay key (seed, trial_number, skip_mode). Optuna trial "
-                    f"numbers are never rewritten or offset, so the run stops "
-                    f"here — before objective execution, dispatch or candidate "
-                    f"admission.")
+        # [S172 D6.2 BOUNDED REPAIR §1.3.4] The addendum §4 pre-flight scan over
+        # nonterminal (WAITING/RUNNING) trials USED TO SIT HERE. It is retired
+        # with the per-trial check: both compared Optuna's 0-based `trial.number`
+        # against a 1-based record-ordinal floor, a relationship that does not
+        # exist. An enqueued warm-start trial is not a replay-key hazard — the
+        # replay key carries the PERSISTED RECORD ORDINAL, which continues from
+        # the recovered maximum in the integration layer and cannot re-enter the
+        # recovered namespace no matter what number Optuna hands out.
 
         # Trials remaining: full count on fresh, remainder on resume
         # S125: n_parallel>1 dispatched externally; this path always n_jobs=1

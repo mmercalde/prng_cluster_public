@@ -19,8 +19,11 @@ truncated stump**.
 
 THE ASYMMETRIC ARCHITECTURE (REV5 §0, settled — do not reopen)
 ==============================================================
-  * **Member A is a marker / compatibility stub.** It carries `seeds`, `score`
-    and its complete identity block, and NOTHING more. It is never an
+  * **Member A is a marker / compatibility stub.** It carries `seed`, `score`
+    and its complete identity block, and NOTHING more. The field name is
+    `seed` — the singular canonical record field, not a plural array name; the
+    ratified record domain and `MEMBER_A_PAYLOAD_FIELDS` both use `seed`, and
+    the earlier `seeds` wording here was stale. It is never an
     accumulator backup, is never described as one, and no path here consumes it
     as one.
   * **Member B is the sole recovery payload.** Loss or corruption of B is
@@ -53,6 +56,17 @@ WHAT THIS MODULE DELIBERATELY DOES NOT DO
     goes through `utils.prng_encoding` (REV5 §2.1, G-ENCODING-AUTHORITY);
   * it performs NO newest-directory discovery at any layer, and it never
     reconstructs a scalar `sessions` string into `[scalar]`.
+
+PARALLELISM SCOPE (BOUNDED REPAIR §2)
+=====================================
+D6.2 checkpoint recovery and the S166 in-memory clear are certified ONLY for
+the default single-Optuna-trial path (`n_parallel == 1`), where a
+`--resume-checkpoint` request with `n_parallel > 1` is rejected as the first
+executable statement of `optimize_window`. **That path still distributes each
+sieve trial across the full GPU cluster** — the limit is on Optuna parallelism,
+not on fleet use. NO claim is made for `n_parallel > 1`: not resume, not
+accumulator clearing. Concurrent partition writers cannot safely share the
+member pair defined here; that needs a separate transaction design.
 """
 from __future__ import annotations
 

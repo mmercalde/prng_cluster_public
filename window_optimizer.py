@@ -448,11 +448,17 @@ class BayesianOptimization(SearchStrategy):
             # be copied onto the inner search object or getattr(self,...) finds None.
             if hasattr(self, '_survivor_accumulator'):
                 self.optuna_search._survivor_accumulator = self._survivor_accumulator
-            # [S172 D6.2 §4.4] Same seam, same reason: this class delegates
-            # immediately, so a value left on the outer strategy would never be
-            # seen by the study body that has to ENFORCE it.
-            if hasattr(self, '_resume_trial_floor'):
-                self.optuna_search._resume_trial_floor = self._resume_trial_floor
+            # [S172 D6.2 §4.4, BOUNDED REPAIR §1.3] Same seam, same reason: this
+            # class delegates immediately, so a value left on the outer strategy
+            # would never be seen by the study body that has to ENFORCE it.
+            #
+            # What travels is a BOOLEAN — "a checkpoint resume is in force" —
+            # not the record-ordinal floor. The floor is consumed only by the
+            # persisted record counter in the integration layer; forwarding it
+            # here is what let it be compared against `trial.number`.
+            if hasattr(self, '_d6_2_require_loaded_study'):
+                self.optuna_search._d6_2_require_loaded_study = \
+                    self._d6_2_require_loaded_study
             # Use real Optuna implementation
             return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
                                              resume_study=resume_study, study_name=study_name,
