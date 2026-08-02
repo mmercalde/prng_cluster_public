@@ -634,6 +634,28 @@ hits = [i+1 for i, l in enumerate(lines)
 len(hits)   # 43
 ```
 
+**Machine-readable form, so the gate can check it rather than a reader having to.** The block
+below is what `tests/test_chapter2_content_gate.py` parses and re-derives against live
+`prng_registry.py` on every run. If the registry gains or loses a kernel, **this block goes stale
+and the gate goes red** — which is the point. Do not hand-edit it to make a gate pass; re-run the
+method and fix the prose with it.
+
+<!-- BEGIN LANE TEST COUNT — machine-checked against prng_registry.py -->
+```
+    source_file:            prng_registry.py
+    method:                 structural-3line-conjunction
+    lane_test_count:        43
+    total_kernels:          44
+    single_lane_exception:  mt19937_hybrid_multi_strategy_sieve
+    cast_variant_count:     31
+    index_split:            residues[i]=30, residues[draw_idx]=13
+```
+<!-- END LANE TEST COUNT -->
+
+> **Read `cast_variant_count` and `index_split` as corroboration, not as competing answers.**
+> 30 + 13 = 43 is the same set counted another way; 31 is a formatting subset of it. They are
+> recorded because each was, at some point, mistaken for the answer.
+
 **Why three counts existed, and what each one actually measures.** All three are reproducible;
 they simply do not measure the same thing.
 

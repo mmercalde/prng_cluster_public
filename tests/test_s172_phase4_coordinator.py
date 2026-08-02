@@ -2318,6 +2318,47 @@ def gate22_coexistence():
         # No kernel, sampler, threshold, protocol, dataset-authority, PWC or ZMQ
         # path is touched (flagged for review).
         "tests/test_s172_admission_binding.py",
+        # ─────────────────────────────────────────────────────────────────────
+        # CHAPTER-2 CONTENT GATE (the Chapter 1 + 2 closure pass, 2026-08-02).
+        # Registered by the same standing rule as every block above and APPENDED
+        # to them; nothing earlier is rewritten.
+        #
+        # ZERO production files change. The closure pass was documentation-only
+        # (docs/CHAPTER_1_WINDOW_OPTIMIZER.md and
+        # docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md, both .md and so invisible to
+        # this gate), and the closure itself surfaced the finding that motivated
+        # the one new path: Chapter 1 is covered by
+        # tests/test_chapter1_p0_corrections.py, and Chapter 2 was covered by
+        # NOTHING — its claims were protected by review only.
+        #   * tests/test_chapter2_content_gate.py — NEW, and the ONLY .py this
+        #     deliverable adds. Six gates + six mutants over
+        #     docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md, scoped to CONTENT PRESENCE
+        #     and SOURCE AGREEMENT, never prose style: §5.1's skip rationale and
+        #     the standing WIRE-IN rule, §6's three-lane explanation with its
+        #     count RE-DERIVED from live prng_registry.py, §5.4's defect callout
+        #     re-derived by AST from range_miner_worker's prefix builders, anchor
+        #     resolution, the §14 closure statement, and an anti-truncation gate.
+        #     It is READ-ONLY: it imports no pipeline module, executes no CLI, and
+        #     touches no GPU, rig, fleet or pipeline. Mutants are written to
+        #     tempfile copies, never into the repo.
+        #
+        #     Deliberately NOT modelled on its Chapter 1 sibling in one respect:
+        #     four of that harness's twelve arms shell out to the real CLI and so
+        #     require a reachable fleet — during this very closure pass they went
+        #     red because the rigs were powered off, which is a fleet fact and not
+        #     a documentation fact (Chapter 1 §17.2 records it). This harness has
+        #     no such dependency by design, so a red here always means the chapter
+        #     or its source agreement actually changed.
+        #
+        #     Its own fault-injection control is unusually literal: M6 reproduces
+        #     248e48c — the "chore: move CHAPTER docs" commit that copied a
+        #     34-line fragment over the 709-line chapter — and the harness was
+        #     additionally run against the ACTUAL post-destruction file recovered
+        #     by `git show 248e48c:docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md`, where
+        #     all six gates go red.
+        # No kernel, sampler, threshold, protocol, dataset-authority, execution-set,
+        # PWC or ZMQ path is touched (flagged for review).
+        "tests/test_chapter2_content_gate.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
