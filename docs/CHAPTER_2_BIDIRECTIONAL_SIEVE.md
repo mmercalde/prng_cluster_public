@@ -1,128 +1,1089 @@
+# Chapter 2: The Bidirectional Sieve (Step 2)
+
+## TFM Pipeline — Operating Guide
+
+**Version:** 4.0.0 — restore-and-audit
+**Status:** RESTORED from `d14dcdd` and audited against live source at `eed3904`
+**Subject:** Step 2 — the bidirectional residue sieve, and RANGE-MINER, the engine that
+now executes it
+**Authority for this pass:** `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_2_RESTORE.md` (REV1);
+reconnaissance `docs/CHAPTER_2_SOURCE_MAP_v1.md`
 
 ---
 
-## 14. Inter-Chunk GPU Cleanup (Added 2026-01-26)
+## 0. What this chapter is, and how it was produced
 
-### Problem Identified
+### 0.1 The recovery
 
-Step 1 forward sieves process seeds in chunks (~19K seeds/chunk). With large seed spaces (e.g., 500K seeds = 26 chunks), VRAM fragmentation accumulated without cleanup, causing intermittent GPU hangs:
+This chapter was destroyed, not lost. At `d14dcdd` it was 743 lines (§1–14). The commit
+`248e48c` — *"chore: move CHAPTER docs to docs/ folder"* — copied a **34-line root-level
+fragment over the 743-line chapter** and deleted the root file, leaving §14 alone. Two later
+commits appended §15 twice verbatim, producing the 128-line fragment that stood until now.
+
+The content below §1–§6 and §9 was recovered with:
+
+```
+git show d14dcdd:docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md
+```
+
+**This is the same defect class the project has already named once** — the stale-copy
+overwrite that silently reverted the threshold fix at `2389b61`
+(`docs/TFM_PROJECT_FACTS_SKILL.md` §2.7 #2). Two known instances, same mechanism, both
+invisible in the commit message.
+
+### 0.2 Recovered is not verified
+
+**Every recovered line is pre-S172.** The original chapter described `sieve_filter.py` /
+`GPUSieve` as *the* engine; RANGE-MINER did not exist when it was written. This pass therefore
+did three different things to three different parts of it:
+
+| § | disposition | basis |
+|---|---|---|
+| 1–4 | **recovered, verified, corrected in four places** | live kernels + whitepaper |
+| 5 | **recovered and EXTENDED** — §5.1 and §5.6 are new and exist nowhere else | live source + the physical model |
+| 6 | **recovered, verified, one central claim corrected** | live kernel text |
+| 7 | **new** — the `offset` disposition Chapter 1's audit deferred here | live source |
+| old 7–13 | **re-scoped, not restored** — superseded engine; replaced by §8, which cites | source map §1 |
+| old 14 | **retained, corrected, re-scoped** → §9 | live source + live hosts |
+| old 15 | **superseded** → §10 | PWC retirement, 2026-07-31 |
+
+Section 12 lists what this pass changed and why. Section 13 is the verification declaration.
+
+### 0.3 Boundary — whitepaper vs chapter
+
+`docs/BIDIRECTIONAL_SIEVE_MATHEMATICAL_WHITEPAPER.md` (167 lines) says **why** bidirectional
+sieving works. **This chapter says what the system does when it runs one.** Mathematics is
+cited here, never restated. Where the two genuinely diverge, §3.5 names the divergence and
+does not resolve it — that is a question for Team Beta, not for a description of as-built
+behaviour.
+
+### 0.4 Terminology
+
+This is **TFM — Triangulated Functional Mimicry**: functional mimicry of PRNG surface output.
+It is **not seed recovery**, and §5.6 is the section that explains why that distinction is
+load-bearing rather than cosmetic. Where a cited document's own title uses other wording, the
+title is reproduced exactly so it remains findable.
+
+---
+
+## 1. Mathematical Foundation
+
+### 1.1 The observable-data problem
+
+The draw operator runs an internal PRNG and publishes only a reduced value. For the family TFM
+actually sieves — `java_lcg` — the live kernel is explicit about the widths
+(`prng_registry.py:958-1004`):
+
+```
+internal LCG state      48 bits    state = (a*state + c) & 0xFFFFFFFFFFFF     HIDDEN
+extracted output        32 bits    output = (state >> 16) & 0xFFFFFFFF        HIDDEN
+published draw           0..999    compared as output % 1000                  VISIBLE
+```
+
+**Correction against the recovered text.** The original §1.1 described a *32-bit internal
+state* reduced mod 1000. That is wrong for `java_lcg`: the state is **48-bit**, and the 32-bit
+quantity is the *extracted output*, not the state. The recovered arithmetic downstream is
+unaffected — it was always about the output space — but the width statement was not.
+
+`a = 25214903917`, `c = 11` (`prng_registry.py:1004` default params; hardcoded in the three
+non-parameterised kernels at `:3125-3126`).
+
+**The seed domain is not 2³².** The kernels mask the seed to 48 bits (`state = seed & m`,
+`prng_registry.py:973`, `:3132`). The recovered summary's "starting seed space:
+4,300,000,000 (2³²)" describes the *output* space. What is actually scanned is a
+**configured range**, partitioned as contiguous macro-stripes over
+`[base_start, base_start + total_seeds)` (`miner/range_miner_coordinator.py`
+`partition_macro_stripes`) — not the whole domain.
+
+**One as-built detail with no consequence today.** The residue loader resolves each observed
+value as `entry.get("full_state", entry["draw"])`
+(`miner/range_miner_worker.py:650`). If a dataset ever carried a `full_state` field, the sieve
+would compare against full 32-bit outputs rather than 0–999 draws. **The live dataset carries
+no such field** — verified this session: 0 of 18068 records in `daily3.json`, whose keys are
+exactly `{date, session, draw}`. The branch is a forward-compatibility seam, currently inert.
+It would not change the match test either way (§6.3).
+
+### 1.2 The collision space
+
+For any single published draw, roughly **4.3 million** distinct 32-bit outputs reduce to it:
+
+```
+2³² / 1000 = 4,294,967,296 / 1000 ≈ 4.3 × 10⁶ collisions per draw
+```
+
+One draw constrains almost nothing. Filtering across many draws is the entire mechanism.
+
+### 1.3 Sequential filtering — and the regime this system does *not* run in
+
+Each additional draw multiplies the constraint. **At exact match** (τ = 1):
+
+| After draw | Calculation | Expected random survivors |
+|---|---|---|
+| 1 | 2³² / 1000 | ~4,300,000 |
+| 2 | 4.3M / 1000 | ~4,300 |
+| 3 | 4,300 / 1000 | ~4.3 |
+| 4 | 4.3 / 1000 | ~0.004 |
+| N | 2³² / 1000ᴺ | → 0 |
+
+The recovered text presented this table, and its 10⁻¹¹⁹¹ figure for N = 400, as *the* operating
+characteristic of the sieve. **It is not.** It is the τ = 1 limit — the whitepaper's §6, which
+states it for n = 50 as ≈ 10⁻³⁰⁰.
+
+**TFM deliberately does not run at τ = 1.** Whitepaper §7, and
+`docs/TFM_PROJECT_FACTS_SKILL.md` §0.3:
+
+> Exact sieves eliminate *all* variance. Survivors = {s\*}. No ranking, no gradients,
+> **no learning signal.**
+
+Loose thresholds admit a *manifold* of near-consistent seeds that share structured deviations
+ML can rank. **Loose thresholds are a mathematical necessity, not sloppiness.** They are why
+thresholds are Optuna-tuned per direction, and why a threshold silently pinned to a constant is
+a serious defect rather than a cosmetic one — a class that has now occurred six times
+(skill §2.7).
+
+**Read §1.3 and §1.4 as the bound the sieve is measured against, never as the population it
+produces.** A reader who takes 10⁻¹¹⁹¹ as the operating false-positive rate will conclude every
+survivor is the true seed, which §4.3 corrects.
+
+### 1.4 General probability formula (τ = 1 only)
+
+```
+Expected random survivors = 2³² / 1000ᴺ
+```
+
+| Draws (N) | Expected random survivors, τ = 1 |
+|---|---|
+| 4 | 0.004 |
+| 10 | 4.3 × 10⁻²¹ |
+| 100 | 4.3 × 10⁻²⁹¹ |
+| 400 | 4.3 × 10⁻¹¹⁹¹ |
+
+For the loose-threshold regime the system actually runs, the governing statement is the
+whitepaper's §5 — `P(B) ≈ P(F)²`, squaring the exponent — not this table.
+
+---
+
+## 2. Forward Sieve
+
+### 2.1 What it does
+
+The forward sieve walks the observed window from the **oldest** position toward the newest,
+scoring each candidate seed on how many positions it reproduces.
+
+### 2.2 What the kernel actually computes
+
+The recovered §2.2 gave a set-intersection pseudocode (`survivors = survivors ∩ matching_seeds`
+per draw). **The kernel does not do that.** It never materialises per-draw candidate sets. Each
+thread owns one seed, walks the whole window once per skip hypothesis, and keeps a **match
+rate** (`prng_registry.py:958-1004`):
+
+```c
+for (int skip = skip_min; skip <= skip_max; skip++) {
+    unsigned long long state = seed & m;
+    for (int o = 0; o < offset; o++) state = (a*state + c) & m;   // pre-advance
+    for (int s = 0; s < skip;   s++) state = (a*state + c) & m;   // burn before first draw
+    int matches = 0;
+    for (int i = 0; i < k; i++) {
+        state = (a*state + c) & m;
+        unsigned int output = (state >> 16) & 0xFFFFFFFF;
+        if (/* three-lane test — see §6 */) matches++;
+        for (int s = 0; s < skip; s++) state = (a*state + c) & m; // burn between draws
+    }
+    float rate = ((float)matches) / ((float)k);
+    if (rate > best_rate) { best_rate = rate; best_skip_val = skip; }
+}
+if (best_rate >= threshold) { /* emit seed, best_rate, best_skip_val */ }
+```
+
+Four properties that the set-intersection sketch obscures and that matter downstream:
+
+1. **The output is a rate, not a boolean.** `match_rates` is one of only four NPZ columns
+   carrying per-seed information (skill §2.3). The sieve is a *scorer* with a threshold, not a
+   set filter.
+2. **Skip is maximised over, not fixed.** One seed is tested at every skip in
+   `[skip_min, skip_max]` and keeps its **best** rate and the skip that achieved it
+   (`:992-995`). This is why a survivor is a *pair* (§5.5).
+3. **Ties resolve to the lowest skip** — the comparison is `rate > best_rate`, strictly
+   greater, so the first skip achieving a rate wins. Transcribed and pinned by the Phase 6
+   known-answer reference (`tests/phase6/known_answer_reference.py:80-86`).
+4. **The rate is float32 and compared against a float32 threshold.** Doing that arithmetic in
+   float64 puts boundary survivors on the wrong side of `>=`
+   (`tests/phase6/known_answer_reference.py:72-78`).
+
+### 2.3 Skip burn placement
+
+`skip` states are burned **before the first draw and between every subsequent pair** — not once
+up front. This is the single most consequential detail in the kernel loop, because it is
+exactly where the CPU reference in the registry disagrees (§12, F-6).
+
+---
+
+## 3. Reverse Sieve
+
+### 3.1 What it does
+
+The reverse sieve scores the same seeds against the **time-reversed** observation window.
+
+### 3.2 Key insight: same PRNG, different direction
+
+> **"Reverse" refers to the ORDER of the target data, NOT to inverting the PRNG.**
+
+This is the most misread fact in the subject area, and it is correct in the recovered text.
+Confirmed against live source this session:
+
+- **The host reverses the residues.** `residues[::-1] if reverse else residues`
+  (`miner/range_miner_worker.py:888`; legacy `sieve_filter.py:232`, `:395`;
+  PWC `sieve_gpu_worker.py:189`).
+- **The reverse kernel iterates the generator forward.** `java_lcg_reverse_sieve`
+  (`prng_registry.py:3115-3169`) is the same recurrence `state = (a*state + c) & m`, step for
+  step, as the forward kernel (`:3143` vs `:982`). **There is no modular inverse and no
+  backward recurrence anywhere in the tree.**
+- **Direction is a name test.** `is_reverse_family()` is a plain
+  `family_name.endswith("_reverse")` (`miner/range_miner_worker.py:116`).
+
+Most PRNGs are not invertible without full state. The reverse sieve is a **time-reversed
+target**, not a time-reversed generator.
+
+**Do not "fix" this.** It is listed under looks-like-a-bug-isn't (skill §2.6).
+
+### 3.3 Why reverse matters
+
+| Failure mode | Caught by |
+|---|---|
+| Early match, late divergence | Reverse sieve |
+| Late match, early divergence | Forward sieve |
+| Consistency in one direction only | Bidirectional intersection |
+
+### 3.4 The ABI consequence
+
+Because every fixed-skip reverse kernel **hardcodes its generator parameters in the kernel
+body** (`prng_registry.py:3125-3126`) instead of taking them as arguments, forward and reverse
+constant kernels **do not share an argument layout**. The reverse-constant ABI is
+`_constant_prefix + int32(offset)` = **12 args with no family tail**; only the forward constant
+branch carries a family-specific tail (`miner/range_miner_worker.py:205-212`). Arity varies by
+variant and family: reverse-constant 12, reverse-hybrid 14, `java_lcg` forward-hybrid 15,
+`lcg32` forward-hybrid 17.
+
+This contract is documented **only** in that module's own comments (source map G-4). It is
+load-bearing for anyone reasoning about the sieve.
+
+### 3.5 One genuine divergence from the whitepaper — stated, not resolved
+
+Whitepaper §4 (`:57-59`) defines the reverse predicate as
+
+```
+R(s) = (1/n) Σ 1[ G(s, −i) = d_{n+1−i} ] ≥ τ_r
+```
+
+— a generator evaluated at a **negative index**, i.e. a backward step. **The implementation
+evaluates `G(s, i)` forward against a reversed residue array.** The draw term matches; the
+generator term does not.
+
+The consequence, stated descriptively: for one seed the forward and reverse passes generate the
+**identical** output sequence and differ only in what that sequence is compared against.
+Whitepaper §4's independence premise (`:61-62`) — on which §5's squaring of the exponent
+(`:79`) rests — is stated about a construction in which they would not be identical.
+
+**This chapter does not assert the statistical consequence either way.** That is a mathematics
+question and mathematics is the whitepaper's side of the boundary (§0.3). It is recorded here
+as an open item (§12, F-7) so that a reader meets it deliberately rather than by inference.
+
+**A related documentation hazard, not to be inherited:** two registry descriptions say "fixed
+skip **backward** validation" (`prng_registry.py:3911`, `:3917`) for kernels whose bodies are
+forward recurrences, while others correctly say "forward" (`:4099`, `:4118`). The kernel text
+governs.
+
+---
+
+## 4. Bidirectional Intersection
+
+### 4.1 The core principle
+
+```
+bidirectional_survivors = forward_survivors ∩ reverse_survivors
+```
+
+A seed survives bidirectionally iff it clears the forward threshold on the forward-ordered
+window **and** the reverse threshold on the reversed window.
+
+### 4.2 The mechanism is a set intersection and nothing more
+
+Stated precisely, because the recovered text left it implicit: the combination is
+`forward_set & reverse_set`. There is **no joint gate, no re-verification of the surviving
+pair, and no combined-rate threshold.** The two passes are independent scored runs whose seed
+sets are intersected. `intersection_count` duplicating `bidirectional_count` is deliberate
+(skill §2.6).
+
+### 4.3 What survivors mean — corrected
+
+The recovered §4.3 asserted:
+
+> **"Survivors are NOT false positives."** At 10⁻¹¹⁹¹ probability, they exist because they
+> actually match the PRNG behavior … they represent the true seed.
+
+**This is false in the regime TFM operates in, and it contradicts the system's own design.**
+It is true only at τ = 1, which §1.3 establishes the system deliberately avoids. At the loose
+thresholds the sieve is *required* to use, the survivor population is by construction a
+**manifold of near-consistent seeds** (whitepaper §7) — admitting non-true seeds is the
+*purpose*, because a population of exactly one has no variance and therefore no learning
+signal.
+
+The corrected statement:
+
+> **A survivor is a scored candidate, not a verdict.** The sieve reduces 2³²-scale output space
+> to a survival-conditioned population with enough internal variance for ML to rank
+> (whitepaper §8). Survivors may be the true seed, one of several true seeds, a partial match
+> valid before a reseed event, or a near-consistent neighbour admitted on purpose. **Deciding
+> which is Step 3 and Step 5's job, not Step 2's.**
+
+This correction is the reason `forward_matches` and `reverse_matches` matter: they are the only
+independent per-seed sieve signal, and they are **absent from the Step-3 merge list** — flagged
+as possibly the most consequential finding in the descriptive trace (skill §2.3). The miner
+emits both regardless.
+
+---
+
+## 5. Skip/Gap Handling
+
+> **This section is the reason this deliverable exists.** §5.1 and §5.6 are written here for
+> the first time; they existed nowhere in the repository. Read §5.1 before forming any opinion
+> about whether `skip_min`/`skip_max` should exist.
+
+### 5.1 Why skip exists — the physical model
+
+**The published draw sequence is not an uninterrupted PRNG output stream.**
+
+Per the *California State Lottery Daily & SuperLotto Plus Draw Procedures* (effective
+2021-06-09):
+
+1. **Two pre-test draws run before every live draw** on the selected equipment (§V: Pre-Test
+   via `[Start Draw Session]`; *"Run Draw as Test"* is unchecked only afterwards). Pre-test
+   outputs are generated, verified and certified — and **never published.**
+2. **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
+   Midday and evening are separate sessions with separate equipment selection.
+3. **The evening session draws Daily 3, Daily 4, Fantasy 5 and Daily Derby together.** Other
+   games' outputs sit between the Daily 3 values an observer can see.
+
+**Therefore the observable sequence contains real, structural gaps of unknown and varying
+size.** Skip models those gaps. **It is a physical property of the data source, not a tuning
+convenience.**
+
+#### 5.1.1 Why this paragraph is in this chapter
+
+In one session, **Team Alpha, Team Beta and Claude Code independently recommended deleting
+`skip_min`/`skip_max`** — a cornerstone of the design. All three inferred design intent from
+current hybrid kernel signatures, which are themselves the defect (§5.4). None of them was
+wrong to read the code; the code genuinely does not consume those bounds on the hybrid path.
+**They were wrong because the document explaining why skip exists did not exist to be read.**
+Michael stopped the removal.
+
+**This section is that document.** A future reader who reaches the hybrid kernel signature and
+concludes "these parameters are unused, remove them" has re-derived a conclusion that has
+already been made and already been rejected. **The correct action on finding skip bounds unwired
+is to wire them in, not to remove them** (`docs/HYBRID_SKIP_BOUND_AUDIT.md` §7).
+
+*Open item: the source PDF is **not in the repo**. Its absence is the root cause of the
+near-removal and remains an open backlog item.*
+
+### 5.2 Constant skip mode
+
+A fixed stride between consecutive observed values.
+
+| Skip | Meaning |
+|---|---|
+| 0 | Every PRNG output is published |
+| 1 | Every other output is published |
+| N | Every (N+1)ᵗʰ output is published |
+
+**22 of 22 constant kernels declare `int skip_min, int skip_max`** and search the whole range
+per seed, keeping the best (`prng_registry.py:963` signature, `:972` loop, `:992-995`
+maximisation). The bounds reach the kernel: `_constant_prefix` emits them at
+`miner/range_miner_worker.py:171-172`.
+
+### 5.3 Variable skip mode (hybrid)
+
+The stride varies between observations — e.g. `[5, 5, 3, 7, 5, 5, 8, 4]`.
+
+**What the hybrid kernel actually does** (`prng_registry.py:1005-1081`), correcting a common
+misreading:
+
+- **No pattern is supplied and none is generated.** `skip_sequences` is an **output**
+  (`:1054` records the per-draw stride, `:1075-1077` emits it).
+- It runs a **greedy per-draw adaptive search**: from a running estimate `expected_skip`, it
+  tries every stride in `[expected_skip − tolerance, expected_skip + tolerance]` (`:1033-1035`)
+  and, on a hit, **re-centres the estimate on the stride that hit** (`:1048`).
+- `expected_skip` is **hardcoded to 5** (`:1027`). The ancestor file still carries
+  `// Initial guess` (`prng_registry_pre_registry.py:696`) — **a guess, not a constant.**
+- `strategy_tolerances` is the **half-width of the per-draw matching window** (`:1023`), not a
+  generation parameter. `strategy_max_misses` is a consecutive-miss abort (`:1022`, `:1055-1058`).
+- **No coherence scoring exists.** The only score is `match_rate`.
+- Forward hybrid scans all strategies and keeps the best (`:1061-1067`); **reverse hybrid
+  returns on the first strategy clearing the threshold** (`:3239`) and does not maximise at all.
+
+The five documented strategies — Strict Continuous, Lenient Continuous, Aggressive Reseed,
+Balanced Hybrid (default), Extreme Tolerance — are strategy *parameterisations* of that one
+algorithm, not distinct algorithms.
+
+### 5.4 The defect: hybrid kernels do not execute the requested skip semantics
+
+**0 of 22 hybrid kernels declare `skip_min`/`skip_max`** (`docs/HYBRID_SKIP_BOUND_AUDIT.md`;
+signature at `prng_registry.py:1007-1012` — 15 params ending
+`float threshold, unsigned long long a, unsigned long long c`).
+
+The sampled bounds survive **eight hops** — argparse, config, coordinator, ledger, manifest,
+payload, worker unpack, and the arg-build context — and then **die one call before launch**:
+
+```
+miner/range_miner_worker.py   skip_range unpacked from payload
+                          →   BuildContext.skip_min / skip_max
+                          →   _hybrid_prefix()  (:177-193)  ← never emits them
+```
+
+Verified at HEAD this session: `_hybrid_prefix` (`:179-193`) returns 13 elements, none of which
+is a skip bound, while `_constant_prefix` (`:162-174`) emits both at `:171-172`. **The asymmetry
+is in the argument builder, not in the payload.**
+
+**Consequence, stated plainly: hybrid optimization results are non-certifying.** A trial's skip
+range cannot constrain a hybrid pass; the search space advertises a dimension the kernel does
+not read. This is skill §2.7 #4 and remains **OPEN** — described here, not repaired.
+
+### 5.5 Survivor identity
+
+**A survivor is a (seed, skip-hypothesis) pair — not a seed.**
+
+```json
+{ "seed": 244139, "skip": 5, "skip_mode": "constant", "match_rate": 0.98 }
+```
+
+This was §5.4 of the deleted chapter and is one of the three corroborations for §5.6. It is
+also why §2.2's per-seed skip maximisation matters: the emitted `best_skips` column *is* the
+hypothesis half of the pair.
+
+### 5.6 Design intent — the fingerprint framing
+
+**The goal was never to reverse state. It is to extract a fingerprint.**
+
+The published sequence exposes only fragments of PRNG state before other outputs interleave
+(§5.1). Variable skip therefore exists to **find the windows where coherent skip structure
+surfaces** — the fingerprint glimpse — and to produce survivors with *varied* skip structure so
+that tree and neural models have something to rank on.
+
+**Variable skip is a detector, not a fitting procedure.** It is not trying to recover the
+generator's state; it is trying to locate the intervals in which the observable stream briefly
+behaves coherently, and to characterise them well enough that a model can tell a strong
+hypothesis from a weak one.
+
+This framing is corroborated on three of four elements and was **written down nowhere**:
+
+| element | corroboration |
+|---|---|
+| variable skip yields a *characterised* hypothesis, not a state | the (seed, skip) survivor pair, §5.5 — deleted §5.4 at `d14dcdd` |
+| skip structure is meant to become model-rankable features | the Oct-2025 output spec: `skip_pattern` + `pattern_stats {mean_skip, variance, std_dev}` per survivor, `docs/instructions.txt:1236-1247` |
+| skip bounds are a *search* concept at the input stage | `--skip-min` / `--skip-max` "…value **in pattern**", `docs/instructions.txt:1182-1183` |
+| **the framing itself** | **NOT FOUND anywhere in the repository. This section is its home.** |
+
+### 5.7 `skip_min`/`skip_max` are documented — in two readings, at two stages
+
+Not a contradiction. The same names do two different jobs at two pipeline stages
+(`docs/SKIP_SEMANTICS_SEARCH_v1.md`):
+
+| stage | reading | source |
+|---|---|---|
+| **input** (Step 1 → 2) | *"Minimum/Maximum skip value **in pattern**"* — an element-wise bound on the discovered sequence; documented hybrid default `[0, 16]` | `docs/instructions.txt:1182-1183` (verified this session) |
+| **output** (Step 2 → 3) | *"Minimum/Maximum gap that **worked**"* — an ML feature describing what the sieve found; *"Tight skip range = stronger hypothesis"* | `docs/PROPOSAL_ML_Architecture_Remediation_v2_0.md:150-158` (verified this session) |
+
+**Two registries currently disagree** about which reading is authoritative:
+`config_manifests/feature_registry.json` says "found during" (output);
+`config_manifests/parameter_registry.json:160,166` says "for sieve search" (input). One is
+wrong; correcting it belongs to whichever change settles the semantics.
+
+**These two readings have different costs.** The **output** reading needs no kernel change at
+all — it is blocked only by the host discarding `skip_sequences` (§8.6). The **input** reading is
+§5.4 and needs the hybrid ABI wired. Conflating them is what makes the sampler-comparison
+sequencing error possible (§11.4).
+
+---
+
+## 6. Three-Lane CRT Architecture
+
+> **Restored from the deleted §6.** This was the **only prose explanation in the project's
+> history** of a test that is live in every kernel and had been undocumented since `248e48c`.
+> One of its central claims does not survive verification; §6.4 corrects it.
+
+### 6.1 The construction
+
+```
+1000 = 8 × 125        gcd(8, 125) = 1     ← coprime
+```
+
+By the Chinese Remainder Theorem, agreement mod 1000 decomposes into agreement mod 8 and
+agreement mod 125.
+
+### 6.2 The test, as it exists in the kernel
+
+Live and verbatim at `prng_registry.py:984-986` (forward constant), `:1042-1044` (forward
+hybrid), `:3146-3148` (reverse constant) — **39 occurrences of the lane test across the live
+registry**, one per kernel:
+
+```c
+if (((output % 1000) == (unsigned int)(residues[i] % 1000)) &&
+    ((output %    8) == (unsigned int)(residues[i] %    8)) &&
+    ((output %  125) == (unsigned int)(residues[i] %  125))) matches++;
+```
+
+| Lane | Role as built |
+|---|---|
+| mod 1000 | full published value |
+| mod 8 | low three bits |
+| mod 125 | the coprime complement |
+
+### 6.3 Lane disagreement = prune — true, and vacuous
+
+The recovered §6.3 called this "algebraic necessity, not heuristic". **The algebra is right and
+the emphasis is misleading.** Because 1000 = 8 × 125 with gcd(8, 125) = 1, CRT gives:
+
+```
+x ≡ y (mod 8)  ∧  x ≡ y (mod 125)   ⟺   x ≡ y (mod 1000)
+```
+
+So the mod-8 and mod-125 conjuncts are **implied by** the mod-1000 conjunct. **No lane can
+disagree once lane 1 agrees.** The three-lane test is exactly equivalent to
+`(output % 1000) == (residues[i] % 1000)` alone.
+
+Verified two ways this session: by the CRT argument above, which holds for all integers
+regardless of residue magnitude (so it is unaffected by the `full_state` seam of §1.1); and by
+exhaustive check over `x ∈ [0, 4000) × d ∈ [0, 1000)` — **0 cases in which the three-lane test
+and the mod-1000 test differ.**
+
+### 6.4 Triple-validation power — **corrected**
+
+The recovered §6.4 claimed:
+
+> Single mod 1000 match: ~0.1% false positive rate per draw.
+> Triple validation: ~0.00001% false positive rate per draw.
+> **Effectively requires full 32-bit state match.**
+
+**This is incorrect, by roughly four orders of magnitude.** A redundant conjunct adds no
+filtering power. The per-draw false-positive rate under the three-lane test is exactly the
+mod-1000 rate:
+
+```
+P(random output matches one draw) = 1/1000 = 0.1%
+```
+
+and the test emphatically does **not** require a full 32-bit state match — ~4.3 million
+distinct outputs still pass each draw (§1.2). The sieve's actual filtering power comes from
+**sequential accumulation across k draws** (§1.3) and from **bidirectional intersection**
+(§4), not from the lane decomposition.
+
+**The redundancy is independently confirmed in-repo**, which corrects the source map's
+expectation that §6 was the only surviving account: the Phase 6 known-answer reference states
+it explicitly at `tests/phase6/known_answer_reference.py:66-70` —
+
+> *"Because 1000 = 8 x 125 with gcd(8,125) = 1, the mod-1000 test already implies the other
+> two; the redundancy is transcribed verbatim anyway rather than 'simplified', because the job
+> of a reference is to mirror the specification, not to improve it."*
+
+That reference is the one used by the Miner Known-Answer Transfer Gate, so the gate's 8/8
+exact-set equality result is consistent with the lanes being redundant — the gate would produce
+the same populations either way.
+
+### 6.5 Why this is documented, not removed
+
+**Do not remove the lanes on the strength of §6.4.** Three reasons, in order of weight:
+
+1. **It is out of scope here.** This is a documentation pass; the brief prohibits repairs.
+2. **The transcription is deliberate on the reference side** and would have to change in
+   lockstep on both sides, under a gate, to preserve byte-identity guarantees.
+3. **The redundancy may encode an intended architecture that was never built.** A genuine
+   three-lane CRT sieve would compute candidate sets *per lane* and CRT-recombine them — a
+   different and potentially much faster construction. What the kernel contains is the
+   *consistency identity* of that design, evaluated redundantly, not the design itself.
+   Whether that architecture was intended and abandoned is **not determinable from the
+   surfaces available** and is recorded as an open question (§12, F-3).
+
+**What §6 correctly establishes and what it does not:** the lane decomposition is a valid CRT
+identity (§6.1–6.3, correct as recovered). The claim of *added filtering power* (§6.4) is not
+supported. A reader should carry the first and discard the second.
+
+### 6.6 A separate and legitimate use of lanes
+
+Lane agreement **is** load-bearing elsewhere, where it is measured rather than ANDed:
+`survivor_scorer.py:421-424` and `:612-614` compute `lane_agreement_8`, `lane_agreement_125`
+and their mean `lane_consistency` as **graded ML features** over predictions vs actuals. There
+the lanes are *not* redundant — partial agreement mod 8 with disagreement mod 125 is a real,
+informative state that a boolean mod-1000 test cannot express. **The lane concept is sound; its
+use as a conjunctive gate in the kernel is what is redundant.**
+
+---
+
+## 7. `offset` — one name, incompatible meanings
+
+`docs/CHAPTER_1_AUDIT_v1.md` C-2 found `offset` carries **three incompatible definitions**,
+could not settle the collision from Chapter 1's surfaces, and deferred it here. This chapter
+picks the implemented meaning and states it.
+
+### 7.1 The definitions in circulation
+
+| source | definition |
+|---|---|
+| old Chapter §3.1 | "time offset from current draw" |
+| host code | **head-relative array index** into the session-filtered draw list |
+| `docs/instructions.txt:1181` | "temporal alignment (**PRNG steps** to skip before sequence)" |
+| `config_manifests/parameter_registry.json:38-43` | advance seeds by **`offset*(skip+1)`** before testing |
+
+### 7.2 What the code does — both of them, from one value
+
+The certifying path uses the **same scalar for two different jobs**, verified at HEAD:
+
+- **Host, as a data index:** `start = max(0, min(int(offset), n - window_size)); window =
+  data[start:start + window_size]` (`miner/range_miner_worker.py:648-649`), read from
+  `payload.get("offset", 0)` at `:694`.
+- **Device, as a generator pre-advance:** `ScalarArg(ctx.offset, "int32")`
+  (`miner/range_miner_worker.py:196-197`), read from the same `payload.get("offset", 0)` at
+  `:874`, consumed by the kernel as `for (o = 0; o < offset; o++) state = step(state)`
+  (`prng_registry.py:974-976`).
+
+**So `offset` simultaneously shifts which records are observed and how far the generator is
+pre-advanced.**
+
+### 7.3 The consequence, described
+
+That coupling is **self-consistent only at `skip = 0`**. When each observed draw consumes one
+PRNG output, shifting the window by one record and pre-advancing by one step keep the two
+aligned. At `skip = N`, each observed draw consumes `N+1` outputs, so a one-record window shift
+should correspond to a `(skip+1)`-step pre-advance — **which is exactly the formula
+`parameter_registry.json` specifies and the kernel does not implement.** The kernel advances
+`offset` steps flat.
+
+This resolves the part of C-2 that Chapter 1 left open: `parameter_registry.json` is not merely
+an outlier description, it describes the alignment the other two definitions would need in
+order to be jointly coherent at non-zero skip.
+
+**Additionally, forward hybrid kernels take no `offset` at all** — the `java_lcg` forward hybrid
+signature ends `float threshold, unsigned long long a, unsigned long long c` with no offset
+parameter (`prng_registry.py:1007-1012`; builder comment `miner/range_miner_worker.py:219`).
+On that path the window shifts and the generator does not pre-advance whatsoever. That is
+skill §2.7 #5, **OPEN**.
+
+**Described, not repaired**, per the brief.
+
+---
+
+## 8. The engine today: RANGE-MINER
+
+> The deleted §7–§13 documented `sieve_filter.py` / `GPUSieve` as *the* engine: component flow,
+> ROCm prelude, class methods, `run_sieve`, `run_hybrid_sieve`, CLI and integration points.
+> **That engine is superseded and those sections are not restored.** This section states the
+> current architecture and **cites** the authoritative documents rather than duplicating them.
+
+### 8.1 Why the engine changed
+
+PWC suffered silent hard resets and `GCVM_L2_PROTECTION_FAULT` on the RX 6600 XT rigs at
+full-fleet saturation, traced to launch-storm behaviour. After weeks of failed debugging the
+project pivoted to **RANGE-MINER: persistent per-GPU daemons** (skill §0.7).
+
+The replacement is an **interface** contract — the frozen 22-array NPZ survivor bundle — not a
+"match PWC's values" contract. **The remaining steps must not be able to tell which engine
+produced their input.**
+
+### 8.2 Structure
+
+| Module | Role |
+|---|---|
+| `miner/range_miner_coordinator.py` | stripe ledger, state machine, macro partitioning, L8 reconciliation, §6.8 phase table, threshold payload + provenance enforcement |
+| `miner/range_miner_worker.py` | READY handshake, sub-stripe loop, per-family kernel ABI builders, residue-window authority, inline-vs-spool transport |
+| `miner/range_miner_npz_writer.py` | Phase-5 assembly: spool validation, canonical replay, trial assembly |
+| `miner/assembly_backends.py` | frozen two-backend interface (`serial_reference` \| `process_sharded`) |
+| `miner/step1_ingress.py` | Step-1 accumulator ingress + certified-path resolution |
+| `miner/range_miner_protocol.py` | 8 message types, length-prefixed JSON framing |
+
+### 8.3 Seed-domain partitioning
+
+The **coordinator** partitions the domain into contiguous macro-stripes with **no gap and no
+overlap**; a macro-stripe may exceed one GPU's capacity. The **worker** then partitions its one
+assigned macro-stripe into GPU-safe sub-stripes at runtime, with the cap branching on backend
+(`rocm` → AMD caps, `cuda` → NVIDIA caps). The coordinator sizes `expected_substripes` using the
+**same** cap the worker will partition with.
+
+Completion is proved, not assumed: a stripe is complete only when sub-stripes done == expected
+== distinct sub-indices, seed counts sum, survivor counts sum, **and** the sub-stripe ranges
+tile the parent exactly. Gap or overlap → not complete.
+
+Anchors: `miner/range_miner_coordinator.py` `partition_macro_stripes`,
+`advertised_effective_cap`, `expected_substripes_for`, `_coverage_exact`,
+`evaluate_stripe_completion`; `miner/range_miner_worker.py:472` `select_seed_cap`, `:493`
+`partition_stripe`. See `docs/CHAPTER_2_SOURCE_MAP_v1.md` Source 6 for the line-level table.
+
+### 8.4 Residue-window authority
+
+**One derivation function, shared by parent and worker, session-filtered:**
+`load_residue_window()` (`miner/range_miner_worker.py:602-650`), reached from the coordinator
+side via `_miner_residues_for_config()`
+(`window_optimizer_integration_final.py:273`, consumed at `:1218`).
+
+Its docstring records the D6 defect it closes (`:611-626`): the parent used to derive residues
+*without* the session filter while the worker applied it, so every single-session trial died on
+the `residue_sha256` check. It says explicitly: **"Do NOT reintroduce a second session-filter
+implementation on either side."**
+
+Identity is by **content, not pathname**: `sha256_residues()` (`:555-559`) hashes compact JSON
+of the int list.
+
+Dataset-side contract — index = position in the PRNG output stream, `offset` slices from the
+oldest end, and `load_residue_window` named as "the correctness-critical consumer":
+`docs/DAILY3_CONSUMER_CONTRACT_v1.md` §4.1–§4.4, §7. **Cite, do not re-derive.**
+
+### 8.5 Thresholds
+
+**Cite, do not re-derive:** `docs/THRESHOLD_PATH_AUDIT_WINDOW_OPTIMIZER.md` (384 lines) and
+`docs/S172_THRESHOLD_PROPAGATION_REPAIR_REPORT.md` (419 lines, commit `8a55a68`).
+
+Post-`8a55a68` live state: one canonical resolver `resolve_directional_threshold()`
+(`window_optimizer_integration_final.py:214`) used by both routes. The **parent** resolves
+direction per stripe via the §6.8 phase table and stamps `min_match_threshold` into the
+assignment payload; the **worker does not choose a threshold and does not know about
+forward/reverse**. Contradictory `min_match_threshold` / `phase2_threshold` pairs **fail
+closed**.
+
+Provenance is a **triple — requested / payload / effective** — recorded per sub-stripe and per
+stripe, with parent-side fail-closed enforcement: effective MUST be present, all sub-stripes of
+a stripe MUST agree, and disagreement or absence is a **certification failure**, not a warning.
+
+### 8.6 Assembly, the NPZ contract, and one live feature loss
+
+Assembly runs behind a **frozen two-backend interface that fails closed** — no silent default.
+`serial_reference` remains the production default; `process_sharded` is implemented,
+**available and UNPROMOTED**, and parallelises *only* spool-local validation — the parent alone
+owns merge, dedup and intersection.
+
+The carrier is the **frozen 22-array NPZ contract** (`utils/canonical_arrays.py`
+`CANONICAL_ARRAY_CONTRACT`; record side `utils/canonical_records.py`). **Only four columns carry
+per-seed information:** `seeds`, `forward_matches`, `reverse_matches`, `score`.
+
+> **Naming trap.** `EXPECTED_NPZ_KEYS` — named in `CLAUDE.md` §6 Phase 5 — **exists in the tree
+> only as a forbidden-token string** in `tests/test_s172_phase4_coordinator.py`. There is no
+> symbol by that name. The contract wall lives under the `utils/canonical_arrays.py` /
+> `utils/canonical_records.py` names. Do not write code or docs around a symbol that does not
+> exist.
+
+**Where skip structure is lost.** `extract_survivor_records()`
+(`window_optimizer_integration_final.py:125-166`) reduces each survivor to
+`{'seed', 'match_rate'}` and **discards `skip_sequences`**. That single discard is what kills the
+three dead skip features `skip_mean`, `skip_std`, `skip_entropy` — whose producer *exists on the
+GPU* (§5.3) and whose Oct-2025 ancestor spec is `pattern_stats` (§5.6). **Reviving them requires
+no kernel change**, only that the host stop discarding the sequence. This is the **output**
+reading of §5.7, and it is the cheap half.
+
+### 8.7 The finalizer is frozen
+
+`utils/run_finalizer.py` — `_l2_sort_key`, `_select_l2_winners`, L3 merge, global seed-ascending
+sort. **Import it; never fork it** (skill §4). Same-trial/same-mode collision raises
+`AccumulatorConsistencyError`. Generations chain; input identity is a lineage invariant.
+
+---
+
+## 9. Inter-Chunk GPU Cleanup (legacy engine, added 2026-01-26)
+
+> Retained from the recovered §14, with corrected anchors and re-scoped applicability. This is a
+> real historical fault-mode record on a path that still runs, and **deleting a documented fix
+> invites its removal from the code.**
+
+### 9.1 Problem
+
+Step-1 forward sieves process seeds in chunks (~19K seeds/chunk). At 500K seeds ≈ 26 chunks,
+VRAM fragmentation accumulated without cleanup and produced intermittent GPU hangs:
+
 ```
 Error: HW Exception by GPU node-11... reason: GPU Hang
 ```
 
-### Root Cause
+| Step | Chunks/invocation | Cleanup frequency | Result |
+|---|---|---|---|
+| Step 1 | ~26 | once at exit | **GPU hangs** |
+| Step 2.5 / 3 | 1 | every invocation | stable |
 
-| Step | Chunks/Invocation | Cleanup Frequency | Result |
-|------|-------------------|-------------------|--------|
-| Step 1 | ~26 | Once at exit | **GPU hangs** |
-| Step 2.5/3 | 1 | Every invocation | Stable |
+### 9.2 Fix
 
-### Fix Applied
+Inter-chunk cleanup in **both** forward-sieve loops of `sieve_filter.py`. The guard text is
+unchanged from the original record; **the line numbers moved** — the recovered §14 said
+"lines 230, 385"; the calls are now at **`sieve_filter.py:326-327` and `:481-482`**, with the
+end-of-run call at `:788` and the helper defined at `:90` (all verified this session):
 
-Added inter-chunk cleanup to both forward sieve loops in `sieve_filter.py` (lines 230, 385):
 ```python
 if chunk_start + chunk_size < seed_end:
     _best_effort_gpu_cleanup()
 ```
 
-Also added `gc.collect()` to `_best_effort_gpu_cleanup()`.
+`gc.collect()` was added to `_best_effort_gpu_cleanup()`.
 
-### Validation
+### 9.3 Validation as recorded
 
-- 20/20 benchmark trials: 0 GPU hangs
-- All 26 GPUs healthy post-run
-- Performance overhead: <5%
+20/20 benchmark trials with 0 GPU hangs; all 26 GPUs healthy post-run; <5% overhead.
+
+### 9.4 Scope — this is not a current mitigation for the certifying engine
+
+**§9 describes the legacy chunked engine.** RANGE-MINER's persistent per-GPU daemons exist
+*precisely because* launch-storm behaviour caused `GCVM_L2_PROTECTION_FAULT` on the rigs
+(§8.1), and Phase 6.0 recorded **no GPU reset and no `GCVM_L2` fault** on either platform. Do
+not read §9 as describing how the current engine avoids GPU hangs — it describes how the
+superseded one was patched to.
+
+### 9.5 The ROCm prelude — dead on every live rig
+
+The recovered §8 documented the ROCm environment prelude as a critical, load-bearing
+mitigation. It is still present (`sieve_filter.py:23-35`) and its hostname list has since been
+extended to three entries:
+
+```python
+if HOST in ("rig-6600", "rig-6600b", "rig-6600c"):
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    os.environ.setdefault("HSA_ENABLE_SDMA", "0")
+```
+
+**The guard never fires.** Queried from VM 101 this session, the live worker hostnames are
+`rrig6600`, `rrig6600b`, `rrig6600c` — CT100 is created with the rig's canonical hostname so
+that `socket.gethostname()` *is* the coordinator identity. **None of the three matches the
+tuple** (`rrig6600` ≠ `rig-6600`).
+
+**Harmless today**, and this is why it went unnoticed: the current ROCm stack on all three rigs
+needs **no HSA/GFX overrides** (skill §6). But the branch is dead, and
+`docs/DOCUMENTATION_AUDIT_20260131.md:93-99` — which rated Chapter 2 a "LOW / single line" fix,
+namely *add `rig-6600c`* — proposed a change in the **same wrong naming convention**, so
+applying it would not have made the guard fire either.
+
+Recorded as a finding (§12, F-5). **Not repaired here.** Note also that the audit entry rated
+Chapter 2's condition against the 743-line version, before anyone noticed §1–13 were gone.
 
 ---
 
-## 15. Persistent Worker Execution Path (S146)
+## 10. Non-certifying diagnostic paths
 
-### Two Sieve Execution Backends
+> Replaces the recovered §15, which was present **twice verbatim** in the fragment
+> (`:38-83` and `:85-128`) — the same duplication flagged for the sibling chapter in
+> `docs/CHAPTER_1_AUDIT_v1.md`.
 
-As of S146, Step 1 supports two sieve execution backends:
+**Team Beta retired PWC/ZMQ from certifying authority on 2026-07-31** (skill §0.7, §3). It
+remains a flag-selectable, non-certifying diagnostic backend reached via
+`--use-persistent-workers`. Its hybrid path is **additionally quarantined** as
+`PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED`, because it filters at a hardcoded `0.50` — the
+defect is made loud rather than repaired, since the path cannot certify anything either way
+(skill §2.7 #3).
 
-| Mode | Flag | Backend path |
-|------|------|-------------|
-| Default (legacy) | (none) | `coordinator.py` → `sieve_filter.py` |
-| Persistent workers | `--use-persistent-workers` | `PWC` → `sieve_gpu_worker.py --persistent` |
+**Do not cite PWC results as comparators.** The S146 numbers in the deleted §15 (313
+bidirectional survivors, 666 in the accumulator) are historical operating records of a path
+that no longer carries authority, and are not restated here as current.
 
-The persistent worker path keeps sieve workers alive between trials, eliminating
-SSH process spawn overhead on every chunk.
-
-### Persistent Worker Call Chain
-
-```
-watcher_agent.py
-  └─► window_optimizer_integration_final.py  (use_persistent_workers=True)
-        └─► run_trial_persistent()   (persistent_worker_coordinator.py:669)
-              └─► PersistentWorkerCoordinator
-                    Zeus:    execute_local_sieve_job()  ──► sieve_filter.py
-                    Remote:  _dispatch_to_worker()       ──► sieve_gpu_worker.py --persistent
-```
-
-### Hybrid Routing in sieve_gpu_worker.py
-
-`sieve_gpu_worker.py` handles four sieve pass types:
-
-| Pass type | Kernel family field | Arg tail |
-|-----------|---------------------|----------|
-| Constant skip forward | `prng_families` (base) | standard |
-| Constant skip reverse | `prng_families` (reverse) | standard |
-| Hybrid forward | `prng_families` (hybrid) | `threshold, a, c` |
-| Hybrid reverse | `prng_families` (hybrid_reverse) | `threshold, offset` |
-
-The hybrid forward and reverse branches are implemented as **separate elif blocks** —
-they must not share kernel_args construction.
-
-### S146 Validation
-
-All 4 pass types validated on live hardware (3 trials, 10M seeds, Zeus + 3 rigs):
-313 bidirectional survivors found (274 constant + 40 variable skip).
-666 total in NPZ accumulator after S146 preprod run.
+`sieve_filter.py`, `sieve_filter_INTEGRATED.py`, `reverse_sieve_filter.py` and its backups are
+likewise not the certifying path. `docs/CHAPTER_2_SOURCE_MAP_v1.md` §7 inventories all of them
+by name. **None of them is to be deleted** — a standing ruling of 2026-07-31 leaves the known
+duplicates alone deliberately; the inventory exists so a reader does not mistake one for
+current.
 
 ---
 
-## 15. Persistent Worker Execution Path (S146)
+## 11. What is certified, and what is not
 
-### Two Sieve Execution Backends
+### 11.1 Bounded Phase 6 — CERTIFIED and CLOSED (`d98298c`, TB ruling 2026-08-02)
 
-As of S146, Step 1 supports two sieve execution backends:
+- **Wall A** — the complete consumer chain: frozen 22-array bundle → validation → Step-2 load
+  without fallback → dict conversion → Step-3 chunks → real GPU scorer, with **value-by-value**
+  metadata comparison, closing the "keys present but values defaulted" class.
+- **Wall B** — repetition, assembly-backend equivalence, current CUDA/ROCm equivalence, and
+  **node-assignment independence across two different ROCm rig pairs**. All five arms reproduced
+  `artifact_sha256 0e0092fe…c4b0`.
+- **Miner Known-Answer Transfer Gate** — all four active TFM variants through their real
+  `SieveExecutor.execute` ABI paths; **8/8 populations exact-set equal**, zero missing, extra or
+  mismatched; F5–F7 prove reference independence by rejecting three wrong semantics.
 
-| Mode | Flag | Backend path |
-|------|------|-------------|
-| Default (legacy) | (none) | `coordinator.py` → `sieve_filter.py` |
-| Persistent workers | `--use-persistent-workers` | `PWC` → `sieve_gpu_worker.py --persistent` |
+### 11.2 The scope limit — stated explicitly
 
-The persistent worker path keeps sieve workers alive between trials, eliminating
-SSH process spawn overhead on every chunk.
+**Wall A and Wall B used constant-skip generations.** **Hybrid worker semantics are covered by
+the transfer gate, not by a four-phase Wall-A consumer run.** The scratch generations are **not**
+release-grade; future publication still uses `--release-grade`.
 
-### Persistent Worker Call Chain
+### 11.3 What is therefore *not* proven about Step 2
+
+- **Hybrid/variable-skip certification is blocked** — §5.4's skip bounds do not reach the
+  kernel. Optuna constant-skip exploration **may resume**; hybrid exploration is
+  **non-certifying only**.
+- **Combined-session sequential sieving is non-certifying and prohibited by default.** Midday
+  and evening use independently selected equipment (§5.1), so there is **no evidentiary basis
+  for advancing one PRNG state through interleaved records**. Ordering is normative *within a
+  session stream*; combined-container order carries **no PRNG-advance meaning**. Production
+  re-optimization is **per-session**.
+- **Path coverage is partial.** `docs/S172_SIEVE_PATH_VERIFICATION_SCOPE.md` frames it as four
+  sieve paths × 6 covered families = 24 variants, and warns these are "two DIFFERENT claims —
+  do not conflate."
+
+### 11.4 A sequencing correction Team Beta issued against Alpha
+
+The certifying four-phase TPE-vs-random sampler comparison **cannot** be scheduled merely
+*"after the skip-output work."* The approved skip-output work (§8.6) restores `skip_mean` /
+`skip_std` / `skip_entropy`; **it does not connect `skip_min`/`skip_max` to the hybrid
+kernels** — that is the separate, unresolved input-bound interpretation of §5.7. The comparison
+must wait until **either** hybrid search-input bounds have defined effective semantics, **or**
+the comparison uses an explicitly phase-aware search space that does not pretend dead hybrid
+dimensions are active. **Completing skip-output alone does not remove the dead-dimension
+caveat.**
+
+---
+
+## 12. Audit findings from this pass
+
+Findings are numbered F-1…F-8. **None is repaired here** — this is a documentation deliverable
+and repairs are out of scope by the brief.
+
+| # | Finding | Anchor | Disposition |
+|---|---|---|---|
+| **F-1** | **§6.4's triple-validation claim is wrong by ~4 orders of magnitude.** The three-lane test is CRT-redundant with mod 1000; per-draw FP is 1/1000, not 1e-7, and it does not require a full 32-bit state match | `prng_registry.py:984-986`, `:1042-1044`, `:3146-3148`; corroborated `tests/phase6/known_answer_reference.py:66-70` | **corrected in §6.4.** Lanes **not** to be removed (§6.5) |
+| **F-2** | **§4.3's "survivors are NOT false positives" is false** in the loose-threshold regime the system requires, and contradicts whitepaper §7 | whitepaper `:116-131`; skill §0.3 | **corrected in §4.3** |
+| **F-3** | The lane redundancy may be the residue of an intended lane-parallel CRT architecture that was never built; not determinable from available surfaces | — | **open question**, §6.5 |
+| **F-4** | **`offset` drives a host data-slice and a device pre-advance from one scalar**; coherent only at `skip = 0`. `parameter_registry.json`'s `offset*(skip+1)` is the alignment the kernel does not implement | `miner/range_miner_worker.py:648-649`, `:694`, `:874`, `:196-197`; `prng_registry.py:974-976` | **settles the open half of Chapter 1 audit C-2**; described, §7 |
+| **F-5** | **The ROCm prelude hostname guard is dead on every live rig** — tuple says `rig-6600*`, live hostnames are `rrig6600*`. `DOCUMENTATION_AUDIT_20260131.md:93-99`'s proposed one-line fix used the same wrong convention | `sieve_filter.py:23-35`; live `hostname` from all three CT100s this session | **new**, §9.5. Harmless today (no overrides needed) |
+| **F-6** | §1.1's "32-bit internal state" is wrong for `java_lcg` — the state is 48-bit; 32 bits is the extracted output | `prng_registry.py:969`, `:983` | **corrected in §1.1** |
+| **F-7** | Whitepaper §4's `G(s,−i)` assumes a backward step; the implementation is forward-against-reversed-residues, so forward and reverse generate identical sequences for one seed | whitepaper `:57-62`, `:79`; `prng_registry.py:3143`; `miner/range_miner_worker.py:888` | **named, not resolved**, §3.5 — Beta's side of the boundary |
+| **F-8** | Residues resolve as `entry.get("full_state", entry["draw"])`; no live record carries `full_state` (0 of 18068) | `miner/range_miner_worker.py:650`; `daily3.json` inspected this session | **inert seam**, recorded §1.1 |
+
+### 12.1 Open items this chapter inherits but does not own
+
+- **The CA draw-procedures PDF is not in the repo** (§5.1) — the root cause of the near-removal
+  of `skip_min`/`skip_max`.
+- **No `TB_RULING_*` document exists for the 2026-07-30/31 session-stream rulings** (source map
+  G-2); §11.3 cites a skill summary for a binding constraint. Every other adjudicated area has a
+  ruling file.
+- **`docs/STEP2_BIDIRECTIONAL_SIEVE_DESCRIPTIVE_TRACE.md` is untracked** and would be lost by a
+  clean checkout. It is a legitimate prior-art input for the legacy/PWC half and should be
+  tracked before being cited stably. **Its §8.5/O7 — "Optuna thresholds never reach a kernel" —
+  is superseded by `8a55a68`; do not inherit that claim.**
+- **`java_lcg_cpu` non-zero-skip mismatch** — the registry CPU reference applies `skip` once
+  before generating; the kernel applies it between every draw (§2.3). **They agree only at
+  `skip = 0`.** TB: separate bounded audit before Phase 7, **no fix authorized**. A known-answer
+  reference built on it would validate the wrong semantics.
+- **The 44-entry registry vs 4 compiled variants** — registry size is load-bearing for the
+  uint8 `prng_type` encoding even though only 4 entries are ever compiled in production.
+- **`forward_matches`/`reverse_matches` are absent from the Step-3 merge list** (§4.3) — needs a
+  governed schema decision.
+
+---
+
+## 13. Verification declaration (VIR-1…6)
+
+**execution proof (VIR-1).** Every `file:line` in this chapter was obtained on VM 101 at
+`eed3904` this session, by `Read` or `/bin/grep -n` against the working tree, except where
+explicitly attributed to a cited audit. **Anchors were re-verified rather than carried over:**
+`docs/CHAPTER_2_SOURCE_MAP_v1.md` surveyed at `73dbacf`, and several `miner/` anchors have since
+moved (e.g. `load_residue_window` 538→602, `residues[::-1]` 813→888,
+`resolve_directional_threshold` 210→214, `_miner_residues_for_config` 290→273). All anchors
+cited here are HEAD-current. The CRT redundancy (§6.3) was additionally established by
+executed arithmetic, not only by argument.
+
+**clean control (VIR-2).** Sections verified **correct and unchanged** from the recovered text,
+with no correction required:
+
+| § | verified correct as recovered | basis |
+|---|---|---|
+| 1.2 | collision space, 2³²/1000 ≈ 4.3 × 10⁶ | arithmetic |
+| 1.3 table, 1.4 table | the τ = 1 arithmetic itself is right — only its framing as the operating regime was wrong | arithmetic; whitepaper §6 |
+| 2.1 | forward = oldest → newest | `prng_registry.py:981-990` |
+| 2.3 (recovered 2.3) | per-seed GPU loop shape: advance, extract, compare, skip | `prng_registry.py:981-989` |
+| 3.1, 3.3 | reverse = newest → oldest; the failure-mode table | `:3142-3155` |
+| **3.2** | **"reverse" = order of data, not PRNG inversion — verbatim correct** | `miner/range_miner_worker.py:888`, `:116`; `prng_registry.py:3143` |
+| 4.1 | `bidirectional = forward ∩ reverse` | design + §4.2 |
+| 4.2 | eliminates directional bias | whitepaper §5 |
+| 5.2 | constant-skip semantics table (skip=N → every (N+1)ᵗʰ) | `prng_registry.py:972-990` |
+| 5.3 (recovered) | five hybrid strategies; variable-skip motivation | `:1021-1067` |
+| 5.5 (recovered 5.4) | survivor = (seed, skip) pair | `:992-1002` |
+| 6.1 | 1000 = 8 × 125, gcd = 1, CRT decomposition | arithmetic |
+| 6.2 | the three lanes and their roles | `:984-986` |
+| 6.3 | "lane disagreement ⇒ impossible" — algebraically true (emphasis corrected, claim not) | CRT |
+| 9.1–9.3 (recovered 14) | fault mode, root-cause table, guard text, 20/20 validation | `sieve_filter.py:326-327`, `:481-482` |
+
+Sections **corrected**: 1.1 (F-6), 1.3/1.4 framing, 2.2 (mechanism), 4.3 (F-2), 6.4 (F-1),
+9.2 anchors, 9.5 (F-5). Sections **re-scoped, not restored**: recovered 7–13 → §8. Sections
+**superseded**: recovered 15 → §10. Sections **new**: 5.1, 5.6, 7.
+
+**fault-injection / positive control (VIR-2).** **Not applicable, and stated rather than
+omitted.** This pass ran no detector, gate or harness that could pass vacuously. The one
+executed check (§6.3's exhaustive CRT comparison) is a mathematical identity test whose
+negative result is the finding, not a pass.
+
+**completion sentinel (VIR-3).** See below.
+
+**unavailable-observer (VIR-5).** Nothing in this chapter is established by pipeline execution.
+Every claim about runtime behaviour is traced by source, and is labelled as such.
+
+**audit claim scope (VIR-6).**
+
+*Searched surfaces:* VM 101 working tree at `eed3904` — `prng_registry.py` (java_lcg forward
+constant/hybrid, reverse constant/hybrid), `sieve_filter.py`, `miner/range_miner_worker.py`,
+`window_optimizer_integration_final.py`, `survivor_scorer.py`,
+`tests/phase6/known_answer_reference.py`, `daily3.json` (parsed, all 18068 records),
+`docs/` (whitepaper, source map, Chapter 1 + its audit, instructions.txt, ML remediation
+proposal); `git show d14dcdd:` for the recovered chapter. `/bin/grep` used throughout so
+`.json` and gitignored files were included. **One live-system check:** `hostname` over SSH from
+VM 101 to all three CT100 workers (`.122`, `.156`, `.164`) — this is what established F-5, and
+it is the one claim here that a repository-only reader could not have made.
+
+*Unavailable surfaces — declared, not assumed clean:*
+
+1. **`miner/`, `agents/` and `window_optimizer.py` are owned by a concurrent Resolved Execution
+   Set session.** `miner/range_miner_worker.py` was **read** (not edited) and its anchors are
+   HEAD-current as of this session; if that session lands changes, re-verify §5.4, §7.2 and
+   §8.4. **No collision was observed** — this pass edited only
+   `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md`.
+2. **Deployed source on the rigs was not compared against VM 101.** Every kernel claim here is a
+   claim about the VM 101 tree. The hostname query is the sole system-scoped fact. **Repo ≠
+   system.**
+3. **No runtime values.** No GPU, sieve, miner, WATCHER or pipeline execution. Threshold, skip
+   and partition behaviour is traced by source, never measured.
+4. **The 40 non-java_lcg registry kernels were not read.** Only `java_lcg`, `java_lcg_reverse`,
+   `java_lcg_hybrid`, `java_lcg_hybrid_reverse` were opened. The "39 lane-test occurrences"
+   count (§6.2) is a grep count over the live registry, not 39 individually read kernels.
+5. **The CA draw-procedures PDF is not in the repo.** §5.1 is transcribed from the project's
+   own record of it (skill §0.4) and the brief, not from the primary source.
+6. **Team Beta's ruling texts** exist outside the repo except where transcribed.
+
+---
+
+### Completion sentinel
 
 ```
-watcher_agent.py
-  └─► window_optimizer_integration_final.py  (use_persistent_workers=True)
-        └─► run_trial_persistent()   (persistent_worker_coordinator.py:669)
-              └─► PersistentWorkerCoordinator
-                    Zeus:    execute_local_sieve_job()  ──► sieve_filter.py
-                    Remote:  _dispatch_to_worker()       ──► sieve_gpu_worker.py --persistent
+STATUS:  PASS
 ```
 
-### Hybrid Routing in sieve_gpu_worker.py
+`PASS` is claimed for the **declared scope**: the chapter is restored from `d14dcdd`, §1–4 and
+§14 are verified against live source with corrections stated, §5 and §6 are restored and
+extended, §7–13 are re-scoped with citations rather than duplication, and eight findings are
+recorded with anchors. **It is not a claim that Step 2 is fully verified** — §11.3 states
+exactly what remains unproven, and §12.1 lists six inherited open items this chapter does not
+own.
 
-`sieve_gpu_worker.py` handles four sieve pass types:
+---
 
-| Pass type | Kernel family field | Arg tail |
-|-----------|---------------------|----------|
-| Constant skip forward | `prng_families` (base) | standard |
-| Constant skip reverse | `prng_families` (reverse) | standard |
-| Hybrid forward | `prng_families` (hybrid) | `threshold, a, c` |
-| Hybrid reverse | `prng_families` (hybrid_reverse) | `threshold, offset` |
+## Version History
 
-The hybrid forward and reverse branches are implemented as **separate elif blocks** —
-they must not share kernel_args construction.
+```
+Version 4.0.0 — 2026-08-01  RESTORE-AND-AUDIT
+- RECOVERED §1-14 from d14dcdd (743 lines), destroyed by stale-copy overwrite at 248e48c
+- §5.1  NEW: the physical model of why skip exists (pre-test draws, per-session equipment,
+        co-drawn evening games) — existed nowhere in the repository
+- §5.6  NEW: Michael's fingerprint framing — the goal was never to reverse state
+- §6    RESTORED and verified; §6.4's triple-validation claim CORRECTED (CRT-redundant)
+- §4.3  CORRECTED: "survivors are NOT false positives" is false at loose thresholds
+- §1.1  CORRECTED: java_lcg state is 48-bit, not 32-bit
+- §7    NEW: settles the open half of Chapter 1 audit C-2 (offset)
+- §8    RE-SCOPED: recovered §7-13 replaced by RANGE-MINER, citing not duplicating
+- §9    RETAINED from §14, anchors corrected (230/385 → 326-327/481-482), scope narrowed
+- §9.5  NEW: ROCm prelude hostname guard is dead on every live rig
+- §10   SUPERSEDES the twice-duplicated §15 (PWC retired from certifying authority)
 
-### S146 Validation
+Version 3.0.0 — 2025-12-30   (recovered) mathematical foundation, forward/reverse
+                             clarification, probability calculations, bidirectional power
+Version 2.3.1 — 2025-10-29   (recovered) fixed control flow in execute_sieve_job
+Version 2.3   — 2025-10-29   (recovered) fixed hardcoded 512 buffer in run_hybrid_sieve
+```
 
-All 4 pass types validated on live hardware (3 trials, 10M seeds, Zeus + 3 rigs):
-313 bidirectional survivors found (274 constant + 40 variable skip).
-666 total in NPZ accumulator after S146 preprod run.
+---
+
+*End of Chapter 2: The Bidirectional Sieve*
