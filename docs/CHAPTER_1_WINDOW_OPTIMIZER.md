@@ -6,6 +6,11 @@
 module docstring declares `Version: 2.0  Date: 2025-11-15` (`window_optimizer.py:5-6`); the string
 `3.1` appears in no source file. Do not read it as a code version.
 
+**Status:** **CLOSED at `81ef3f1`, 2026-08-02** — verified-and-bounded, not finished. See **§17**
+for the closure statement, what remains open and where it is tracked, and the closure sentinel.
+**Authority for the closure pass:** `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_1_AND_2_CLOSURE.md`
+(REV1).
+
 **Purpose:** Bayesian optimization of window parameters + survivor generation
 
 **Live modules — Step 1 has THREE load-bearing files, not two:**
@@ -17,10 +22,20 @@ module docstring declares `Version: 2.0  Date: 2025-11-15` (`window_optimizer.py
 | `window_optimizer_bayesian.py` | **the module the old header omitted** — owns the entire Optuna search space, study storage and warm-start |
 
 **Line counts are a moving target — re-derive, do not cite this table.** Measured on VM 101 at
-commit `40c3c83` (`wc -l`): `window_optimizer.py` **1592**, `window_optimizer_integration_final.py`
-**2688**, `window_optimizer_bayesian.py` **984**. The pre-correction header claimed `~868 + ~595`.
-The correct action on any doubt is to run `wc -l`, not to trust the figure above — the same
-discipline §4.1 applies to search bounds.
+commit `81ef3f1` (`wc -l`, 2026-08-02): `window_optimizer.py` **1753**,
+`window_optimizer_integration_final.py` **2703**, `window_optimizer_bayesian.py` **1157**. The
+pre-correction header claimed `~868 + ~595`. The correct action on any doubt is to run `wc -l`,
+not to trust the figure above — the same discipline §4.1 applies to search bounds.
+
+> **This table has already gone stale once inside this chapter's own lifetime, which is the point
+> of the warning.** At the `40c3c83` correction pass the three files were **1592 / 2688 / 984**.
+> Bounded Phase 6 (`d98298c`) added **+173** to `window_optimizer_bayesian.py` (the neutral
+> `run_optimization` core, `describe_sampler`, `OptunaRandomSearch`, `SAMPLER_ENTRYPOINTS` —
+> §8.1.2), and the Resolved Execution Set (`63e627f`) plus admission binding (`eff6616`) added
+> **+161** to `window_optimizer.py`, all of it inside `main()`. **Every anchor in this chapter
+> above `window_optimizer.py:1239` is unaffected by that growth and was re-verified unchanged;
+> the anchors below it moved.** Where a citation could be made by function or symbol name instead
+> of a line, it now is — that form survives edits and a line number does not.
 
 > **Two stale duplicate copies exist and are RULED to be left in place** (2026-07-31):
 > `docs/window_optimizer_integration_final.py` (1877 lines) and `modules/window_optimizer.py`
@@ -47,6 +62,14 @@ discipline §4.1 applies to search bounds.
 12. [Output Files](#12-output-files)
 13. [Agent Metadata Injection](#13-agent-metadata-injection)
 14. [Complete Method Reference](#14-complete-method-reference)
+15. [Dependencies Summary](#15-dependencies-summary)
+16. [Chapter Summary](#16-chapter-summary)
+17. [Closure statement](#17-closure-statement)
+
+> Entries 15–17 were missing from this list; 15 and 16 predate the closure pass and 17 was added
+> by it. **§17 is the last section in the file**, after the unnumbered appendices (Next Chapter,
+> the Persistent Worker call chain and its Optuna resume notes, and the S146 kernel invariants) —
+> the closure statement closes the chapter, appendices included.
 
 ---
 
@@ -241,8 +264,8 @@ Anchors: hybrid kernels hardcode `int expected_skip = 5` (`prng_registry.py:805`
 `:1027`, `:1159`) and neither hybrid signature declares `skip_min`/`skip_max`
 (`prng_registry.py:1007-1013` forward, `:3172-3178` reverse). On the certifying miner route
 the values survive argparse, config, coordinator, ledger, manifest, payload, worker unpack
-and `BuildContext` (`miner/range_miner_worker.py:871`), then die one call before launch in
-`_hybrid_prefix` (`:177-193`). Recorded as dead dimensions **D-1** / **D-2** (§3.1.1).
+and `BuildContext` (constructed at `miner/range_miner_worker.py:943`), then die one call before
+launch in `_hybrid_prefix` (`:177-193`). Recorded as dead dimensions **D-1** / **D-2** (§3.1.1).
 
 **Standing rule — the fix is WIRE-IN, not removal.** Absence of a working implementation is
 not evidence of absent intent. The full transport chain exists and is intact; nobody builds
@@ -284,13 +307,69 @@ removal.
 
 | id | parameter | sampled / declared at | dies at | consequence |
 |---|---|---|---|---|
-| **D-1** | `skip_min`, `skip_max` — forward hybrid (`java_lcg_hybrid`) | `window_optimizer_bayesian.py:429-434`; carried on `WindowConfig` (`window_optimizer.py:114-115`) | `_hybrid_prefix` (`miner/range_miner_worker.py:177-193`) emits 13 args, neither of them. PWC route `sieve_gpu_worker.py:259-268` discards the generic prefix. Kernel hardcodes `expected_skip = 5` | Optuna tunes a knob wired to nothing. **Live on the certifying miner route.** OPEN |
+| **D-1** | `skip_min`, `skip_max` — forward hybrid (`java_lcg_hybrid`) | `optuna_objective` (`window_optimizer_bayesian.py:516-521`); carried on `WindowConfig` (`window_optimizer.py:114-115`) | `_hybrid_prefix` (`miner/range_miner_worker.py:177-193`) emits 13 args, neither of them. PWC route `sieve_gpu_worker.py:259-268` discards the generic prefix. Kernel hardcodes `expected_skip = 5` | Optuna tunes a knob wired to nothing. **Live on the certifying miner route.** OPEN |
 | **D-2** | `skip_min`, `skip_max` — reverse hybrid (`java_lcg_hybrid_reverse`) | same | `_reverse_hybrid_tail` (`miner/range_miner_worker.py:200-202`) emits only `offset`; `sieve_gpu_worker.py:270-279` likewise | same class as D-1. OPEN |
-| **D-3** | `offset` — forward hybrid, `java_lcg` only | `window_optimizer_bayesian.py:423-425` | `build_java_lcg` forward-hybrid branch returns `_hybrid_prefix + [a, c]`, in-source note *"ABI-critical, NO offset"*; PWC skips `sieve_gpu_worker.py:304` via the `continue` at `:293` | Family-specific — `build_lcg32`'s forward hybrid *does* pass `offset`. `java_lcg` is the TFM target family, so this is the consequential instance. OPEN |
+| **D-3** | `offset` — forward hybrid, `java_lcg` only | `optuna_objective` (`window_optimizer_bayesian.py:510-512`) | `build_java_lcg` forward-hybrid branch returns `_hybrid_prefix + [a, c]`, in-source note *"ABI-critical, NO offset"*; PWC skips `sieve_gpu_worker.py:304` via the `continue` at **`:298`** | Family-specific — `build_lcg32`'s forward hybrid *does* pass `offset`. `java_lcg` is the TFM target family, so this is the consequential instance. OPEN — and see §3.1.2, which settles what D-3 *is* and what it is not |
 | **D-4** | `--forward-threshold`, `--reverse-threshold` | declared `window_optimizer.py:1285-1294` | immediately — `args.forward_threshold` / `args.reverse_threshold` were never referenced after `parse_args()` | Operator-facing. Was a **silent no-op** on a run reporting success. **CLOSED as a silent defect: the flags now fail closed** (§10.1) |
 
 Constant-skip is fully wired on all four `java_lcg` variants; the variable-skip path is where
 the loss is.
+
+#### 3.1.2 `offset` — settles audit conflict C-2, and states what it does NOT settle
+
+`docs/CHAPTER_1_AUDIT_v1.md` **C-2** found `offset` carrying **three incompatible definitions**,
+could not settle the collision from Chapter 1's surfaces, and deferred it to Chapter 2. Chapter 2
+§7 investigated it and recorded finding **F-4**. That finding is absorbed here.
+
+| source | definition |
+|---|---|
+| this chapter's §3.1 field comment | *"time offset from current draw"* |
+| host code | **head-relative array index** into the session-filtered draw list |
+| `docs/instructions.txt:1181` | *"temporal alignment (**PRNG steps** to skip before sequence)"* |
+| `config_manifests/parameter_registry.json:38-43` | advance seeds by **`offset*(skip+1)`** before testing |
+
+**What the code does — both jobs, from one payload scalar.** On the certifying miner route the
+same `offset` is read twice out of `payload.get("offset", 0)`:
+
+- **Host, as a data index** — `start = max(0, min(int(offset), n - window_size)); window =
+  data[start:start + window_size]` in `load_residue_window` (`miner/range_miner_worker.py:648-649`,
+  read at `:694`).
+- **Device, as a generator pre-advance** — `_offset_tail` emits `ScalarArg(ctx.offset, "int32")`
+  (`miner/range_miner_worker.py:196-197`, read at `:874`), consumed by the kernel as
+  `for (o = 0; o < offset; o++) state = step(state)` (`prng_registry.py:974-976`).
+
+**The coupling is self-consistent only at `skip = 0`.** When each observed draw consumes one PRNG
+output, shifting the window by one record and pre-advancing by one step stay aligned. At
+`skip = N` each observed draw consumes `N+1` outputs, so a one-record window shift *should*
+correspond to a `(skip+1)`-step pre-advance — which is exactly the formula
+`parameter_registry.json` states and the kernel does not implement. The kernel advances `offset`
+steps flat.
+
+> **Team Beta ruling — this settles C-2 as an OBSERVED INCONSISTENCY, not as the repair.**
+> `parameter_registry.json` is **not** merely an outlier description, which is what the audit
+> provisionally concluded; it describes the alignment the other two definitions would need in
+> order to be jointly coherent at non-zero skip. But **`offset*(skip+1)` is not a general fix.**
+> It is well defined only for **constant** skip. Under **variable** skip the per-record
+> consumption varies by construction, so **no single `(skip+1)` multiplier exists** — the correct
+> pre-advance for a window shift depends on the particular stride sequence, which is an *output*
+> of the search, not an input to it (Chapter 2 §5.3).
+>
+> **F-4 therefore belongs inside the future hybrid input-semantics design, not a standalone
+> arithmetic patch.** Applying a flat `offset*(skip+1)` in isolation would harden constant-skip
+> semantics into a path whose hybrid half still has no defined input-bound meaning (D-1/D-2).
+> The two must be decided together. **Described, not repaired.**
+
+**Additionally — and this is D-3 above — forward hybrid kernels take no `offset` at all.** The
+`java_lcg` forward-hybrid signature ends `float threshold, unsigned long long a, unsigned long
+long c` with no offset parameter (`prng_registry.py:1007-1012`; builder comment
+`miner/range_miner_worker.py:219`). On that path the window shifts and the generator does not
+pre-advance whatsoever.
+
+**The audit's own chapter action is discharged here.** The §3.1 field comment is a
+natural-language reading of "start the window N draws in" that is correct *only if* index 0 is the
+oldest retained draw — which is what `load_residue_window` implements: `offset` slices from the
+**oldest** end (`docs/DAILY3_CONSUMER_CONTRACT_v1.md` §4.1–§4.4). The chapter never stated that
+precondition; it now does. Full treatment: `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` §7.
 
 ### 3.2 SearchBounds
 
@@ -442,8 +521,8 @@ Authority:
   distributed_config.json -> search_bounds (merged over code defaults by window_optimizer.load_search_bounds_from_config; config wins, window_optimizer.py:57-61)
 
 Snapshot:
-  generated_at         : 2026-08-01T01:33:18Z
-  repository_commit    : 0c47fe34d0e276ea462bb6f2b5b972a9292f064d
+  generated_at         : 2026-08-02T07:37:03Z
+  repository_commit    : 81ef3f11b0ca59f16cc85ee86776a4b3f976f150
   configuration_digest : sha256:6077bb1a6c7352bd21cbde736127394f464a082dbee6b098390e15dd1f2747cc
   status               : INFORMATIVE SNAPSHOT — NOT AUTHORITATIVE. Read the authority above for the binding values.
 
@@ -461,6 +540,15 @@ Snapshot:
 - `window_size._calibration_note` — S148 Run-1 ruling: W12 is empirically preferred production baseline. Optuna still explores full [min,max] range. W12+T0.30 gives ~5 false fwd survivors/200k vs ~272 at W8/T0.25.
 - `window_size._s172_note` — S172 (2026-04-30): min raised from 2 to 6 per TB ruling. W=2/3 produces ~39%/53% survivor rate by chance alone, regardless of threshold. Threshold bounds intentionally PRESERVED so Optuna can continue optimizing across [min, max].
 <!-- END EXTRACTED BOUNDS SNAPSHOT -->
+
+> **Regenerated at closure, and the values did not move.** The block above was re-emitted by
+> `scripts/extract_search_bounds_snapshot.py` at `81ef3f1` and spliced in by script — it was not
+> transcribed. `repository_commit` advanced `0c47fe3…` → `81ef3f1…`, and
+> `configuration_digest` is **byte-identical** to the previous snapshot
+> (`sha256:6077bb1a…2747cc`). **That identity is the finding, not a formality:** the six
+> `search_bounds` entries have not changed since the correction pass, so every numeric bound this
+> chapter defers to §4.1 for is still the operating value. A changed digest with unchanged
+> printed numbers would have meant a `_note` or an unread key had moved.
 
 > **Defect in the snapshot generator, flagged not fixed.** The `Authority:` line above is emitted
 > by `scripts/extract_search_bounds_snapshot.py` with a **hardcoded, now-stale** anchor
@@ -659,8 +747,8 @@ class RandomSearch(SearchStrategy):
 
 | Strategy | Status | Notes |
 |----------|--------|-------|
-| `GridSearch` | Placeholder — `return {}` (`window_optimizer.py:403`) | Not used in integrated mode |
-| `EvolutionarySearch` | Placeholder — `return {}` (`:478`) | Not used in integrated mode |
+| `GridSearch` | Placeholder — `GridSearch.search` is `return {}` (`window_optimizer.py:410-412`) | Not used in integrated mode |
+| `EvolutionarySearch` | Placeholder — `EvolutionarySearch.search` is `return {}` (`:484-486`) | Not used in integrated mode |
 
 > **"Placeholder" records a deletion, not a design decision.** Both classes had complete working
 > bodies — `GridSearch` a four-deep nested loop over windows × offsets × sessions × skip ranges —
@@ -708,8 +796,9 @@ def test_configuration(self, config: WindowConfig,
                      reverse_count=0, bidirectional_count=0, iteration=0)
 ```
 
-Live source: `window_optimizer.py:582-601`. Override: `window_optimizer_integration_final.py:2389`
-(`optimizer.test_configuration = test_config`).
+Live source: `window_optimizer.py:582-601`. Override: the `test_config` closure inside
+`optimize_window`, bound at `window_optimizer_integration_final.py:2405`
+(`optimizer.test_configuration = test_config`; the closure itself is `:2364-2403`).
 
 #### 7.2.1 INVARIANT — `resolve_directional_threshold()` is the single threshold authority
 
@@ -719,8 +808,10 @@ that states the outcome without the invariant cannot protect it — that is the 
 mode as the skip-bound incident (§3.1).
 
 **The authority** is `resolve_directional_threshold()`,
-`window_optimizer_integration_final.py:210-236`. It is the *only* place a directional
-threshold is resolved. Do not add a second resolution path.
+`window_optimizer_integration_final.py:214-240` (its `ThresholdResolutionError` is declared
+immediately above at `:210-211`). It is the *only* place a directional threshold is resolved.
+Do not add a second resolution path. **Cite it by name** — the function has already moved once
+(`:210` → `:214`) without changing at all.
 
 | rule | why |
 |---|---|
@@ -824,17 +915,97 @@ The other 24, grouped by the change that introduced them:
 #### 8.1.1 The Optuna search space — seven sampled dimensions
 
 The chapter never stated the search space, which is the substance of §8. Optuna samples exactly
-seven dimensions (`window_optimizer_bayesian.py:420-441`):
+seven dimensions, all inside the **`optuna_objective` closure**
+(`window_optimizer_bayesian.py:504-572`, sampling block `:507-529`):
 
 | dimension | anchor | note |
 |---|---|---|
-| `window_size` | `:420-422` | bounds per §4.1 snapshot |
-| `offset` | `:423-425` | **dead on the `java_lcg` forward hybrid** — D-3, §3.1.1 |
-| `session_idx` | `:426-428` | indexes `session_options`; applied at `:448`. See §8.3.1 — the combined option is prohibited by default |
-| `skip_min` | `:429-431` | **dead on both hybrid directions** — D-1/D-2 |
-| `skip_max` | `:432-434` | floor is `max(skip_min, bounds.min_skip_max)` (`:433`), so the space is **not** a plain rectangle — the two skip dimensions are coupled |
-| `forward_threshold` | `:437-439` | reaches the kernel via `resolve_directional_threshold()` (§7.2.1) |
-| `reverse_threshold` | `:440-442` | as above |
+| `window_size` | `:507-509` | bounds per §4.1 snapshot |
+| `offset` | `:510-512` | **dead on the `java_lcg` forward hybrid** — D-3, §3.1.1; semantics settled in §3.1.2 |
+| `session_idx` | `:513-515` | indexes `session_options`; applied at `:535`. See §8.3.1 — the combined option is prohibited by default |
+| `skip_min` | `:516-518` | **dead on both hybrid directions** — D-1/D-2 |
+| `skip_max` | `:519-521` | floor is `max(skip_min, bounds.min_skip_max)` (`:520`), so the space is **not** a plain rectangle — the two skip dimensions are coupled |
+| `forward_threshold` | `:524-526` | reaches the kernel via `resolve_directional_threshold()` (§7.2.1) |
+| `reverse_threshold` | `:527-529` | as above |
+
+> **These anchors moved and the space did not.** At the previous correction pass the same seven
+> dimensions were at `:420-441`. Bounded Phase 6 (`d98298c`) lifted the study body out of
+> `search()` into the sampler-neutral `run_optimization` (§8.1.2), carrying `optuna_objective`
+> ~87 lines down with it. **The sampled dimensions, their bounds, the `skip_max` coupling and the
+> objective are unchanged** — verified line-by-line this session. `:420-441` now points at the
+> thin TPE entrypoint, which is why a line-only citation to this block is a trap; **cite
+> `optuna_objective` by name.**
+
+#### 8.1.2 The sampler-neutral core — `run_optimization(..., sampler, sampler_metadata)`
+
+**This section postdates the rest of the chapter.** Bounded Phase 6 (`d98298c`, certified and
+closed 2026-08-02) extracted TPE-sampler construction *out* of the study body. The chapter as
+corrected described a single Optuna path that always built a `TPESampler`; that is no longer the
+shape of the code.
+
+**The core** is `OptunaBayesianSearch.run_optimization` (`window_optimizer_bayesian.py:457-827`).
+Live signature, read by `inspect.signature` this session:
+
+```
+run_optimization(self, objective_function, bounds, max_iterations, scorer, *,
+                 sampler, sampler_metadata: Dict,
+                 resume_study: bool = False, study_name: str = '',
+                 trse_context_file: str = 'trse_context.json',
+                 trial_history_context: dict = None) -> Dict
+```
+
+**`sampler` and `sampler_metadata` sit after the bare `*`, and neither has a default.** They are
+**required and keyword-only**. That is deliberate, and the reason is recorded in-source at
+`:478-483`: so *"a caller cannot get TPE by omission and then report the run as something else"*,
+and because *"an unlabelled run is not a control."* Nothing in the body names, assumes or prefers
+a sampler class (`:470-471`). **Do not add a default to either argument** — a default would
+restore exactly the mislabelling the extraction exists to prevent.
+
+**The two entrypoints are thin wrappers over that one body:**
+
+| entrypoint | anchor | sampler it builds | strategy label |
+|---|---|---|---|
+| `OptunaBayesianSearch.search` | `:420-452` | `TPESampler(n_startup_trials=…, seed=…, multivariate=True)` (`:438-442`) | `optuna_bayesian` |
+| `OptunaRandomSearch.search` | `:885-904` | `RandomSampler(seed=…)` (`:894-895`) | `optuna_random_control` |
+
+Both call `describe_sampler()` (`:834-861`) to build the binding record — sampler class, sampler
+module, Optuna version, seed, strategy label — which travels into the result dict. The `strategy`
+key now reports **the sampler that actually chose the points**, instead of a hardcoded
+`'optuna_bayesian'`.
+
+`OptunaRandomSearch` (`:864-904`) is the **operator-selected RandomSampler control arm**: the same
+search space, objective, warm-start rule, pruner, storage and result shape as the TPE arm,
+differing in exactly one variable. Its docstring (`:870-872`) is explicit that the pre-existing
+`window_optimizer.RandomSearch` (§6.3) is **not** a control — that class samples with Python's
+`random` module outside Optuna entirely and shares none of the above. `n_startup_trials` is
+inherited but meaningless for `RandomSampler` and is recorded as `None` rather than carried over
+(`:876-878`), so the record cannot imply a warm-up that did not happen.
+
+> **`SAMPLER_ENTRYPOINTS` is deliberately NOT wired to anything.** The registry
+> (`window_optimizer_bayesian.py:909-912`) maps the two strategy labels to their classes, and the
+> comment immediately above it (`:907-908`) states the constraint in source: *"Deliberately NOT
+> wired to any advisor, WATCHER policy or `strategy_recommendation.json`."* Verified by search
+> this session: the **only** consumer anywhere in the tree is the comparison harness
+> `tests/phase6/sampler_control_arm.py` (`:251`, `:417`). No advisor, no WATCHER policy, no
+> manifest and no `strategy_recommendation.json` reader touches it.
+>
+> **Autonomous sampler selection is reserved authority (Team Beta)**, alongside sieve strategy,
+> feature engineering and the meta-optimizer search space. `OptunaRandomSearch` exists to be
+> chosen *deliberately by an operator*; nothing in the codebase selects it on its own, and the
+> class docstring says so (`:880-882`). **A future change that lets an advisor pick a sampler is
+> a governance change, not a wiring change.**
+
+> **Two limits on this section, stated rather than omitted.**
+> 1. **Sampler provenance is unverified.** `run_optimization` trusts the caller-supplied
+>    `sampler_class` / `sampler_module` / `optuna_version` in `sampler_metadata` and does not
+>    check them against the actual object. The two existing wrappers are correctly labelled, so
+>    nothing submitted is invalidated — but **a fail-before-study guard is required before direct
+>    use of the neutral core or registration of a third sampler.** Open, tracked in the
+>    project-facts skill §2.9.
+> 2. **TPE remains the production default by status quo.** The RandomSampler arm is
+>    **non-certifying**. The certifying four-phase TPE-vs-random comparison is blocked on the
+>    dead-dimension question — see §8.3.1 and the sequencing correction in
+>    `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` §11.4.
 
 ### 8.2 Execution Flow
 
@@ -946,20 +1117,20 @@ which are visible from the code:
 | constraint | state | anchor / authority |
 |---|---|---|
 | **Hybrid certification** | **BLOCKED** until the sampled `skip_min`/`skip_max` actually reach the hybrid kernel. Hybrid exploration is permitted **non-certifying only**; constant-skip may resume normally | dead dimensions D-1/D-2 (§3.1.1); the DEFECT callout in §3.1 |
-| **PWC hybrid path** | **QUARANTINED** — raises rather than running. Scope is variable-skip only; PWC constant-skip is untouched and still runs as a non-certifying diagnostic comparator. There is deliberately **no override flag** — an escape hatch would restore the "silently runnable" property Beta ruled out | `persistent_worker_coordinator.py:176` `PWC_HYBRID_QUARANTINE_CODE = "PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED"` |
+| **PWC hybrid path** | **QUARANTINED** — raises rather than running. Scope is variable-skip only; PWC constant-skip is untouched and still runs as a non-certifying diagnostic comparator. There is deliberately **no override flag** — an escape hatch would restore the "silently runnable" property Beta ruled out | `PWC_HYBRID_QUARANTINE_CODE = "PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED"`, `persistent_worker_coordinator.py:188` (raised at `:208`) |
 | **Session scope** | Production re-optimization is **per-session**. Combined-session *sequential* sieving is **non-certifying and prohibited by default** | Team Beta ruling, 2026-07-30/31 |
 
 **Why per-session.** Midday and evening draws use **independently selected equipment**, so there
 is no evidentiary basis for advancing one PRNG state through interleaved records. Ordering is
 normative *within* a session stream; combined-container order carries no PRNG-advance meaning.
 
-> **Known gap, reported not resolved.** The sampler can still select the prohibited mode:
-> `session_options` still offers `['midday','evening']` as its first entry
-> (`window_optimizer.py:182-186`) and Optuna samples across all three
-> (`window_optimizer_bayesian.py:426-427`, applied at `:448`). Both the chapter and the code
-> predate the ruling. An
-> autonomous run can therefore currently select a configuration that cannot be certified. The
-> code remedy is outside this chapter's scope and is flagged as a governance risk.
+> **Known gap, reported not resolved — re-verified OPEN at `81ef3f1`.** The sampler can still
+> select the prohibited mode: `session_options` still offers `['midday','evening']` as its first
+> entry (`window_optimizer.py:182-186`, unchanged) and Optuna samples across all three
+> (`window_optimizer_bayesian.py:513-515`, applied at `:535`). Both the chapter and the code
+> predate the ruling. An autonomous run can therefore currently select a configuration that
+> cannot be certified. The code remedy is outside this chapter's scope and is flagged as a
+> governance risk.
 
 ---
 
@@ -972,18 +1143,24 @@ normative *within* a session stream; combined-container order carries no PRNG-ad
 
 #### 8.4.1 `--resume-study` / `--study-name` — accurate as patched
 
-Study selection (`window_optimizer_bayesian.py:560-605`):
+Study selection now lives in the sampler-neutral core (§8.1.2), `run_optimization`
+(`window_optimizer_bayesian.py:643-703`). **Behaviour is unchanged from the previous pass; only
+the line numbers moved (`:560-605` → `:643-703`), re-verified step-by-step this session:**
 
 1. `--study-name`, when given, **takes priority over auto-select** — the candidate list becomes
-   that one DB (`:562-566`). The patch missed this flag; it was added later.
+   that one DB (`:645-647`). The patch missed this flag; it was added later.
 2. Otherwise candidates are `optuna_studies/window_opt_*.db` sorted by **mtime, newest first**
-   (`:567-573`).
+   (`:649-653`).
 3. A candidate is resumable when it has `COMPLETE` trials **and** either fewer than
-   `max_iterations` of them **or** an explicit `--study-name` was given (`:590`). The explicit
+   `max_iterations` of them **or** an explicit `--study-name` was given (`:670`). The explicit
    name therefore also lets you extend a study that already reached its trial count.
-4. On resume, `load_if_exists=True` and the remaining trial count is
-   `max_iterations - completed` (`:596-597`, `:622`). Otherwise a fresh study is created
-   (`:607-611`).
+4. On resume, `load_if_exists=_resume` and the remaining trial count is
+   `max_iterations - completed` (`:672-677`, `:702`). Otherwise a fresh study is created
+   (`:687-691`, name and storage path built at `:640-641`).
+
+Because the sampler is now supplied by the caller, `optuna.create_study(..., sampler=sampler, …)`
+(`:696-703`) is the single place either arm's sampler is installed — the resume rules above apply
+identically to the TPE and RandomSampler arms.
 
 **When to use it** — the patch's rationale still holds and is worth keeping:
 
@@ -1003,20 +1180,23 @@ deliberate, recorded decision.
 > **Do not implement the patch's warm-start block.** It enqueued a hardcoded California-specific
 > `W8_O43_S5-56, 0.49/0.49` as trial 0. **S144 removed that hardcoded fallback outright**, with
 > the in-source note *"Warm-start: enqueue from trial_history_context ONLY. No hardcoded fallback
-> — CA-specific W8_O43 removed"* (`window_optimizer_bayesian.py:627-629`).
+> — CA-specific W8_O43 removed"* (`window_optimizer_bayesian.py:707-709`).
 
-Live behaviour (`:630-652`):
+Live behaviour (`:710-732`) — **unchanged from the previous pass; anchors moved `:630-652` →
+`:710-732` with the extraction into `run_optimization`, and every clause was re-read this
+session:**
 
 - Warm start applies **only on a fresh study** — on resume it is skipped, because the trial is
-  already in the DB (`:651`).
+  already in the DB (`:731-732`).
 - The source is **context-driven**: `trial_history_context`, populated from `step1_trial_history`.
-  With no context, there is no warm start and Optuna explores freely (`:650`).
+  With no context, there is no warm start and Optuna explores freely (`:729-730`).
 - It is gated on **all six** of `warm_start_window`, `warm_start_offset`, `warm_start_skip_min`,
   `warm_start_skip_max`, `warm_start_fwd_thresh`, `warm_start_rev_thresh` being non-`None`
-  (`:639`). If any is missing the enqueue is skipped with an explicit message — it does **not**
-  partially enqueue.
-- `session_idx` is carried separately, defaulting to `0` (`:638`), and is included in the enqueued
-  params because the objective function requires it (`:643`, S166).
+  (`:719`). If any is missing the enqueue is skipped with an explicit message (`:727-728`) — it
+  does **not** partially enqueue.
+- `session_idx` is carried separately, defaulting to `0` (`:718`), and is included in the enqueued
+  params because the objective function requires it (`:723`, S166).
+- The enqueue itself is `study.enqueue_trial(_ws_params)` (`:725`).
 
 **Consequence:** a new or different dataset gets **no** warm start by design. That is the correct
 behaviour — the previous design seeded every study with a config tuned to one dataset.
@@ -1165,9 +1345,14 @@ the legacy helper was **removed, not bypassed**. `deduplicate()` governs only th
 
 ### 10.1 Arguments
 
-**All 38 flags**, as declared at `window_optimizer.py:1249-1364`. Defaults are the argparse
+**All 40 flags**, as declared at `window_optimizer.py:1249-1383`. Defaults are the argparse
 defaults read from that range; where a flag carries a *bound* rather than a default, the bound
 lives in the §4.1 snapshot, never here.
+
+> **Changed since the correction pass: 38 → 40.** The Resolved Execution Set (`63e627f`) added
+> `--rig-profile` and `--execution-set-nodes` (both below), and pushed the four miner flags down
+> by 19 lines. **Every flag anchor from `:1249` through `:1348` is unchanged and was re-verified
+> individually this session**; only the four miner anchors moved.
 
 **Mode selection and I/O**
 
@@ -1227,24 +1412,44 @@ lives in the §4.1 snapshot, never here.
 |---|---|---|---|
 | `--use-persistent-workers` | `False` | PWC backend (S134). **Non-certifying**; hybrid path quarantined (§8.3) | `:1315` |
 | `--use-zmq-sqlite` | `False` | ZMQ/SQLite backend (S158D). **Non-certifying** | `:1318` |
-| `--use-range-miner` | `False` | RANGE-MINER stripe backend (S172) — **the certifying route** | `:1355` |
+| `--use-range-miner` | `False` | RANGE-MINER stripe backend (S172) — **the certifying route** | `:1374` |
 | `--pwc-transport` | `tcp` | `ssh` \| `tcp` (S162) | `:1320` |
 | `--min-workers` | `24` | PWC readiness gate (S162) | `:1323` |
-| `--worker-pool-size` | `8` | PWC worker pool (S134) | `:1326` |
+| `--worker-pool-size` | `8` | PWC worker pool (S134). **Under a frozen execution set this is now the REQUEST, not the answer** — see below | `:1326` |
 | `--seed-cap-nvidia` | `5_000_000` | per-dispatch seed cap, NVIDIA (S137) | `:1328` |
 | `--seed-cap-amd` | `2_000_000` | per-dispatch seed cap, AMD (S137) | `:1330` |
-| `--miner-stripe-size` | `67_108_864` | seeds per stripe per GPU (S172 §6.2) | `:1357` |
-| `--miner-substripes` | `8` | sub-stripes per stripe, sized to fit the watchdog | `:1359` |
-| `--miner-output-dir` | `None` | auto-detect `/dev/shm/prng/miner/` if writable, else `~/miner_output/` | `:1364` |
+| `--miner-stripe-size` | `67_108_864` | seeds per stripe per GPU (S172 §6.2) | `:1376` |
+| `--miner-substripes` | `8` | sub-stripes per stripe, sized to fit the watchdog | `:1378` |
+| `--miner-output-dir` | `None` | auto-detect `/dev/shm/prng/miner/` if writable, else `~/miner_output/` | `:1383` |
+
+**Fleet selection — NEW, added by the Resolved Execution Set (`63e627f`)**
+
+| flag | default | purpose | anchor |
+|---|---|---|---|
+| `--rig-profile` | `None` → `default_profile` in `rig_profiles_config.json` | `baremetal` \| `proxmox`. Every machine is a boot-selector (`CLAUDE.md` §3); **both topologies are retained** and this picks which endpoints enter the resolved execution set. It is a topology *selector*, not a correction — the bare-metal addresses in `distributed_config.json` are deliberate | `:1352-1360` |
+| `--execution-set-nodes` | `None` → the full declared fleet | comma-separated logical node ids (`localhost`, `rrig6600,rrig6600b`). **This is how a PARTIAL fleet is declared — explicitly, and frozen before the run.** A partial set is never inferred from which workers happen to answer, and a named node that does not exist is an error, never a silent drop | `:1361-1368` |
+
+> **Why these two are in a chapter about the window optimizer.** They are resolved and **frozen at
+> run start**, in `main()`, *after* backend selection and rig-profile selection but **before**
+> dataset verification, GPU verification, `MultiGPUCoordinator` construction and any dispatch —
+> the placement is the contract (`window_optimizer.py:1461-1471`, in-source). Step 1 is where the
+> fleet becomes a fact for the whole run. Consequence for `--worker-pool-size`: with a set frozen,
+> admission expectation is `min(requested pool size, count of selected worker identities)`, and
+> **both numbers are recorded in the set identity** — a run that asked for 8 and was clamped to 2
+> is distinguishable from one that asked for 2. With no set frozen the requested value is used
+> unchanged. Full treatment is outside this chapter; see the project-facts skill §2.11–§2.12b.
 
 > **Backend mutex.** At most one of `--use-persistent-workers` / `--use-zmq-sqlite` /
 > `--use-range-miner` may be set; two or more is an argparse error naming the offending flags
-> (`window_optimizer.py:1429-1441`). The check runs **before** `MultiGPUCoordinator` is
-> constructed.
+> (`window_optimizer.py:1448-1459`). The check runs **before** `MultiGPUCoordinator` is
+> constructed — and, since `63e627f`, before the execution set is resolved, because the mutex is
+> where the backend becomes a fact.
 
-> **Count provenance.** 38 is a live count (`grep -c add_argument window_optimizer.py`, VM 101 at
-> `40c3c83`), and it was also 38 at the audit base `77dc629`. `CHAPTER_1_AUDIT_v1.md` §3 §10.1
-> states 31; that figure is an undercount and should not be propagated.
+> **Count provenance.** 40 is a live count (`/bin/grep -c add_argument window_optimizer.py`, VM 101
+> at `81ef3f1`, 2026-08-02). It was **38** at `40c3c83` and at the audit base `77dc629`.
+> `CHAPTER_1_AUDIT_v1.md` §3 §10.1 states 31; that figure is an undercount and should not be
+> propagated. **Re-count rather than cite** — this number has now moved once inside this chapter's
+> lifetime.
 
 #### `--forward-threshold` / `--reverse-threshold` — dead dimension D-4, now fail-closed
 
@@ -1329,8 +1534,8 @@ why, and stops there. Per §0.4 these are **not** candidates for deletion.
 
 > **One prescription is explicitly ruled out, and is recorded here so it is not re-proposed.**
 > "Bring the signatures up to the calling convention" is **insufficient and misleading**.
-> `GridSearch.search` (`window_optimizer.py:403`) and `EvolutionarySearch.search` (`:478`) are
-> `return {}`. The contract gate is derived from **live signatures**
+> `GridSearch.search` (`window_optimizer.py:410-412`) and `EvolutionarySearch.search`
+> (`:484-486`) are `return {}`. The contract gate is derived from **live signatures**
 > (`strategy_contract_gap()`, `:518`), so adding the four kwargs would **clear the gate while
 > `search()` still returns an empty dict** — `optimize()` would hand `{}` back to the integration
 > layer with no `best_config` and no `all_results`, *after* the 26-GPU coordinator had been
@@ -1343,16 +1548,76 @@ why, and stops there. Per §0.4 these are **not** candidates for deletion.
 Requesting one of the three now aborts with `WINDOW_OPTIMIZER_STRATEGY_UNSUPPORTED` naming
 the missing kwargs, rather than letting `TypeError` escape mid-run.
 
+> **A second prescription is ruled out, and quantified here so it is not re-proposed either:
+> "just restore Grid as an Optuna `GridSampler` arm." `GridSampler` is unconstructible against
+> the live bounds.** Added at closure (`81ef3f1`, 2026-08-02); the arithmetic below was executed
+> this session, not transcribed.
+>
+> `GridSampler.__init__` materialises the **entire** cartesian product eagerly —
+> `self._all_grids = list(itertools.product(*self._search_space.values()))`, verified by
+> `inspect.getsource` against the installed **optuna 4.4.0** — and then *shuffles that list*. It
+> is not a lazy iterator, so the cost is paid at construction, before a single trial runs.
+>
+> Enumerating the seven sampled dimensions (§8.1.1) at their live §4.1 bounds:
+>
+> | dimension | live range | grid points |
+> |---|---|---|
+> | `window_size` | 6 … 50 | 45 |
+> | `offset` | 0 … 100 | 101 |
+> | `session_idx` | 0 … 2 | 3 |
+> | `skip_min` | 0 … 10 | 11 |
+> | `skip_max` | 10 … 250 | 241 |
+> | `forward_threshold` | 0.30 … 0.75, rounded to 2 dp (`:538`) | 46 |
+> | `reverse_threshold` | 0.30 … 0.75, rounded to 2 dp (`:539`) | 46 |
+>
+> ```
+> 45 × 101 × 3 × 11 × 241 × 46 × 46  =  76,485,750,660  ≈  7.649 × 10¹⁰ grid points
+> ```
+>
+> At `sys.getsizeof(7-tuple) = 96` bytes plus an 8-byte list slot — **measured** on this
+> interpreter, not assumed — that is `76,485,750,660 × 104 = 7.95 × 10¹²` bytes ≈ **7.23 TiB of
+> resident RAM at construction**, excluding the shuffle's own working set. VM 101 has nothing
+> close to that.
+>
+> **What this does and does not mean.** It is not an argument for deleting `GridSearch` (§0.4
+> forbids that, and the ruled-out prescription above still stands). It means the *documented*
+> four-sampler design is **not implementable as stated for Grid at the current bounds** — a real
+> Grid arm would require an explicitly coarsened per-dimension grid, which is a **design decision
+> with governance consequences** (it changes what "grid search over the search space" means), not
+> a restoration. That decision is Beta's, and this chapter does not make it. The two threshold
+> dimensions alone contribute a 46 × 46 factor and are the obvious coarsening target, but naming
+> the target is not the same as authorising it.
+
 **Related, and equally fail-closed:** a Bayesian request when Optuna is unavailable **fails**.
 It does not fall back to random search. Team Beta: that is *semantic substitution, not
 graceful degradation* — the operator asked for TPE and would have received uniform sampling
 under the same label, with the study recording it as Bayesian.
 
-> **Surface not corrected in this tranche:** `agent_manifests/window_optimizer.json`
-> (`search_strategy.choices`) still advertises all four strategies to WATCHER. Its `default`
-> is `bayesian`, and a request for any of the other three now fails closed at the CLI rather
-> than crashing, so the manifest is misleading but no longer dangerous. Flagged for the
-> manifest owner.
+> **Surface not corrected in this tranche, re-verified at `81ef3f1`:**
+> `agent_manifests/window_optimizer.json` still advertises all four strategies to WATCHER. Its
+> `default_params.strategy` is `bayesian`, and a request for any of the other three now fails
+> closed at the CLI rather than crashing, so the manifest is misleading but no longer dangerous.
+> Flagged for the manifest owner.
+>
+> **Three further manifest observations, recorded this session and NOT repaired** (the manifest is
+> out of scope for a documentation pass):
+>
+> 1. **`args_map` maps `forward-threshold` and `reverse-threshold`** — the two flags that now
+>    **fail closed** (below). `default_params` supplies neither key, so the mapping is dormant and
+>    no WATCHER run currently trips it. It would abort the run if either key were ever added.
+> 2. **`parameter_bounds` is a live admission gate that is looser than §4.1's authority.**
+>    `agents/step_runner/command_builder.py:151-170` validates supplied parameters against it and
+>    rejects out-of-range values. Its numbers are **not** the §4.1 bounds: `window_size` min **2**
+>    (the S172 TB ruling raised the search floor to **6**), `offset` max **2000** (live **100**),
+>    `skip_min` max **50** (live **10**), `skip_max` **20–500** (live **10–250**). It cannot widen
+>    the Optuna search space — that is read from `distributed_config.json` by
+>    `SearchBounds.from_config()` — but it **would accept** a WATCHER-proposed `window_size=2`,
+>    which is precisely the value the S172 ruling excluded as chance-driven. Two surfaces, one
+>    quantity, different answers; recorded as open, not resolved here.
+> 3. **`--rig-profile` and `--execution-set-nodes` are absent from `args_map`.** WATCHER therefore
+>    cannot select a rig profile or declare a partial execution set; a WATCHER-launched run takes
+>    the configured `default_profile` and the full declared fleet. Whether that is the intended
+>    boundary is a governance question for the manifest owner, not a defect this chapter asserts.
 
 ### 10.2 Mode Decision Tree
 
@@ -1396,33 +1661,37 @@ from window_optimizer_integration_final import add_window_optimizer_to_coordinat
 
 The integration layer (`window_optimizer_integration_final.py`) provides:
 
-1. **`add_window_optimizer_to_coordinator()`** (`:1668`) — monkey-patches `optimize_window()` (`:1680`) onto the coordinator
-2. **`run_bidirectional_test()`** (`:1134`) — selects a backend (§11.3), runs forward+reverse sieves, computes the intersection
-3. **Artifact publication** — hands off to `utils.run_finalizer` (`:2500`) for the certified generation
+1. **`add_window_optimizer_to_coordinator()`** (`:1683-2703`) — monkey-patches `optimize_window()` (`:1695-2684`) onto the coordinator
+2. **`run_bidirectional_test()`** (`:1138-1680`) — selects a backend (§11.3), runs forward+reverse sieves, computes the intersection
+3. **Artifact publication** — hands off to `utils.run_finalizer` (imported `:2515-2519`, called `:2603`) for the certified generation
 
 > **The old third item — "collects survivors across all trials with metadata" — is materially
 > wrong now.** The layer no longer accumulates forward/reverse survivor *objects*: `[S166-ACCUM]`
-> replaced object retention with counters to stop a RAM bomb at 26-GPU scale (`:1021`, `:1529`,
-> `:1633`, `:2041`, `:2530`). Bidirectional records are still accumulated with full metadata.
-> Final artifact assembly moved out of this layer entirely — the in-source note at `:2485` records
-> that the local assembly was **replaced by** the shared finalizer, not wrapped by it.
+> replaced object retention with counters to stop a RAM bomb at 26-GPU scale (`:1025`, `:1544`,
+> `:1648`, `:2056`, `:2545`). Bidirectional records are still accumulated with full metadata.
+> Final artifact assembly moved out of this layer entirely — the in-source note at `:2498-2513`
+> records that the local assembly was **replaced by** the shared finalizer, not wrapped by it,
+> and that the legacy `deduplicate_survivors` helper was **removed, not merely bypassed**
+> (`:2504-2512`).
 
 ### 11.3 Backend cascade — `run_bidirectional_test` has FOUR backends
 
-§2.1's diagram draws only the legacy coordinator leg. `run_bidirectional_test` (`:1134`) opens
-with a cascade of `getattr`-gated branches, in this order:
+§2.1's diagram draws only the legacy coordinator leg. `run_bidirectional_test` (`:1138-1680`)
+opens with a cascade of `getattr`-gated branches, in this order:
 
 | order | backend | gate | anchor | status |
 |---|---|---|---|---|
-| 1 | **RANGE-MINER** | `use_range_miner` | `:1158-1168` | **the certifying route** (S172 Phase 4) |
-| 2 | **PWC** | `use_persistent_workers` | `:1285-1290` | non-certifying diagnostic; **hybrid quarantined** (§8.3.1) |
-| 3 | **ZMQ/SQLite** | `use_zmq_sqlite` | `:1331-1335` | non-certifying (S158D) |
-| 4 | **legacy coordinator** | none — fall-through | after `:1281` | the path §2.1 draws |
+| 1 | **RANGE-MINER** | `use_range_miner` | `:1162-1172` | **the certifying route** (S172 Phase 4) |
+| 2 | **PWC** | `use_persistent_workers` | `:1300-1304` | non-certifying diagnostic; **hybrid quarantined** (§8.3.1) |
+| 3 | **ZMQ/SQLite** | `use_zmq_sqlite` | `:1346-1349` | non-certifying (S158D) |
+| 4 | **legacy coordinator** | none — fall-through | after the three gates | the path §2.1 draws |
 
-Selection is mutually exclusive, enforced at argparse (`window_optimizer.py:1429-1441`), and the
-miner gate is deliberately placed first *"so miner selection wins unambiguously"* (`:1160-1161`).
+Selection is mutually exclusive, enforced at argparse (`window_optimizer.py:1448-1459`), and the
+miner gate is deliberately placed first *"so miner selection wins unambiguously"* (`:1164-1165`).
 Each of the two additive gates records in-source that it makes **zero changes to the path below
-it** (`:1286`, `:1332`).
+it** (`:1301`, `:1347`). **Cite these by gate variable — `_use_miner` (`:1171`), `_use_pw`
+(`:1304`), `_use_zmq` (`:1349`) — rather than by comment-block line; the whole cascade shifted
++15 lines between the correction pass and closure without changing at all.**
 
 **Consequence for the reader:** most production runs do not take the path §2.1 draws, and a
 question of the form "what does Step 1 do here?" cannot be answered without first knowing which
@@ -1457,7 +1726,7 @@ window_optimizer.py                    window_optimizer_integration_final.py
 > **This diagram is a skeleton, and it omits two stages that matter.** (a) "Forward sieve /
 > Reverse sieve (coordinator)" is only the **fourth** of four backends — see §11.3. (b) The
 > diagram ends at "return survivors", but the run is not finished there: publication of the
-> certified NPZ generation happens via `utils.run_finalizer` (`:2500`), which is the artifact
+> certified NPZ generation happens via `utils.run_finalizer.finalize_run` (`:2603`), which is the artifact
 > Steps 2–6 actually consume (§12.1). "Accumulate survivors" also overstates the forward/reverse
 > legs, which are counters (§11.2).
 
@@ -1468,25 +1737,27 @@ window_optimizer.py                    window_optimizer_integration_final.py
 ### 12.1 Bayesian Mode Outputs
 
 > **The canonical Step-1 → Steps-2–6 carrier is the certified NPZ generation**, produced by
-> `utils.run_finalizer` (`window_optimizer_integration_final.py:2490-2495`). It is the one
+> `utils.run_finalizer.finalize_run` (`window_optimizer_integration_final.py:2603`). It is the one
 > output that matters, and the pre-correction table had no row for it. The three
 > `*_survivors.json` files are **not** the survivor data they appear to be.
 
 | File | Contents | Status |
 |------|----------|--------|
-| **certified NPZ generation** (`utils.run_finalizer`) | the **22-array NPZ contract** plus sidecar; carries `artifact_sha256`, `sidecar_sha256`, `parent_generation_id` (`window_optimizer_integration_final.py:2596-2602`). Generations **chain** — the finalizer merges prior rows | **CANONICAL — this is what Steps 2–6 consume** |
+| **certified NPZ generation** (`utils.run_finalizer`) | the **22-array NPZ contract** plus sidecar; carries `artifact_sha256`, `sidecar_sha256` and the generation lineage fields (`window_optimizer_integration_final.py:2639-2653`). Generations **chain** — the finalizer merges prior rows | **CANONICAL — this is what Steps 2–6 consume** |
 | `optimal_window_config.json` | best parameters + `agent_metadata` (§12.2) | current |
-| `window_optimization_results.json` | full trial history (`window_optimizer_integration_final.py:2450`) | current |
-| `bidirectional_survivors.json` | **post-success SUMMARY of the certified generation** — generation IDs and sha256s, **no seeds** (`:2604-2631`). In-source: *"It is NO LONGER the canonical Steps 2-6 input… Steps 2-6 consume the canonical NPZ"* | **demoted — summary only** |
-| `forward_survivors.json` | `{"survivor_count": N, "note": "Full survivors omitted — objects not retained"}` (`:2523-2532`) | **count-only stub** |
+| `window_optimization_results.json` | full trial history, written by `optimizer.save_results(results, output_file)` (`window_optimizer_integration_final.py:2474`; the `output_file` parameter defaults to `'window_optimization.json'` at `:1703` and is passed in by the caller) | current |
+| `bidirectional_survivors.json` | **post-success SUMMARY of the certified generation** — generation IDs and sha256s, **no seeds** (`:2628-2655`). In-source: *"It is NO LONGER the canonical Steps 2-6 input… Steps 2-6 consume the canonical NPZ"* (`:2628-2632`) | **demoted — summary only** |
+| `forward_survivors.json` | `{"survivor_count": N, "note": "Full survivors omitted — objects not retained; see <all-NPZ name>"}` (`:2545-2554`) | **count-only stub** |
 | `reverse_survivors.json` | as above | **count-only stub** |
 | `train_history.json` | 80% lottery data for training (`window_optimizer.py:984-1003`, `:1205-1228`) | current |
 | `holdout_history.json` | 20% lottery data for validation | current |
 
 **Why forward/reverse are count-only.** `accumulator['forward']` and `accumulator['reverse']`
 are never appended to — only `accumulator['bidirectional']` is
-(`window_optimizer_integration_final.py:1018-1019`, `:1538`, `:1640`). `[S166-ACCUM]`
-(`:1529-1533`) replaced object retention with counters to stop a RAM bomb at 26-GPU scale.
+(`window_optimizer_integration_final.py:1022-1023`, `:1553`, `:1655`); the forward/reverse legs
+increment `accumulator['forward_count']` / `['reverse_count']` instead (`:1026-1027`, `:1547-1548`,
+`:1649-1650`). `[S166-ACCUM]` (`:1544-1546`) replaced object retention with counters to stop a RAM
+bomb at 26-GPU scale.
 **That change is deliberate and correct** — the canonical NPZ carries what downstream needs.
 Do not "restore" full retention.
 
@@ -1502,6 +1773,13 @@ required for Step 2")` on failure (`window_optimizer.py:1194-1202`). This is a r
 a convenience step.
 
 ### 12.2 optimal_window_config.json Structure
+
+> **The values below are ILLUSTRATIVE SHAPE ONLY and two of them are unreachable.** Noted at
+> closure rather than silently rewritten, because the shape is what this section documents:
+> `window_size: 256` exceeds the live window ceiling of **50**, and `skip_max: 30` sits inside
+> `[10, 250]` but the pair was never produced by a live run. This is the same defect §3.1's
+> example already carries a correction for. **Read the keys, not the numbers**; for reachable
+> values see the §4.1 snapshot.
 
 ```json
 {
@@ -1535,8 +1813,8 @@ a convenience step.
 **The record is FLAT.** The pre-correction chapter nested the window parameters under a
 `"window_config"` key and listed a `"timestamp"` field. Neither is real: `window_size`,
 `offset`, `skip_min` and `skip_max` sit at top level in `metadata_base`
-(`window_optimizer_integration_final.py:1505-1508`), and **no `timestamp` key is produced**
-anywhere — not by `metadata_base` (`:1504-1527`) nor by the append (`:1538-1544`). Any
+(`window_optimizer_integration_final.py:1520-1523`), and **no `timestamp` key is produced**
+anywhere — not by `metadata_base` (`:1519-1542`) nor by the append (`:1553-1559`). Any
 consumer written against the old shape would fail.
 
 ```json
@@ -1572,8 +1850,10 @@ consumer written against the old shape would fail.
 ```
 
 - `forward_match_rate` / `reverse_match_rate` are **per-seed** values read from the GPU sieve
-  kernel via `forward_map` / `reverse_map` (`:1536-1541`), not trial-level aggregates.
-- All 7 intersection fields are present (`:1520-1526`, constant; `:1624-1630`, variable).
+  kernel via `forward_map` / `reverse_map` (`:1550-1557` constant, `:1652-1659` variable), not
+  trial-level aggregates.
+- All 7 intersection fields are present (`:1535-1541` in `metadata_base`, constant; `:1639-1645`
+  in `metadata_base_hybrid`, variable).
 - `intersection_count` duplicating `bidirectional_count` is **deliberate** — not a defect.
 - `skip_range`, `sessions`, `prng_base`, `forward_count`, `reverse_count` and
   `intersection_count` were absent from the pre-correction example.
@@ -1692,26 +1972,32 @@ optimal_config = inject_agent_metadata(
 
 **Chapter 1: Window Optimizer** covers Step 1 of the pipeline:
 
-Structure of `window_optimizer.py`, extracted from the module AST on VM 101 at commit `40c3c83`.
-The pre-correction table summed to ~580 lines against a file that is **1592**; every figure in it
-was low by roughly a factor of three. **Re-extract rather than cite this table** — it is a
-snapshot, exactly like §4.1's bounds.
+Structure of `window_optimizer.py`, **re-extracted from the module AST on VM 101 at commit
+`81ef3f1`** (2026-08-02). The pre-correction table summed to ~580 lines against a file that was
+**1592**; every figure in it was low by roughly a factor of three. **Re-extract rather than cite
+this table** — it is a snapshot, exactly like §4.1's bounds, and it has already moved once.
 
 | Component | Live range | Lines | Purpose |
 |-----------|-----------|-------|---------|
-| Config-bounds loader | `:40-92` | 49 | `_MappingAttrView`, `load_search_bounds_from_config()` |
+| Config-bounds loader | `:40-92` | 53 | `_MappingAttrView`, `load_search_bounds_from_config()` |
 | Data structures | `:100-284` | 185 | `WindowConfig` (32), `SearchBounds` (114), `TestResult` (35) |
-| Scoring functions | `:290-315` | 25 | `ScoringFunction` ABC, `BidirectionalCountScorer` |
-| Strategy fail-closed guards | `:321-337`, `:518-560` | ~50 | `StrategyContractError`, `OPTIMIZE_FORWARDED_KWARGS`, `strategy_contract_gap()`, `require_supported_strategy()` |
+| Scoring functions | `:290-315` | 26 | `ScoringFunction` ABC, `BidirectionalCountScorer` |
+| Strategy fail-closed guards | `:321-337`, `:518-560` | ~60 | `StrategyContractError`, `OPTIMIZE_FORWARDED_KWARGS`, `strategy_contract_gap()`, `require_supported_strategy()` |
 | Search strategies | `:339-489` | 151 | `SearchStrategy` ABC (24), `RandomSearch` (38), `GridSearch` (13), `BayesianOptimization` (60), `EvolutionarySearch` (12) |
 | `WindowOptimizer` class | `:567-634` | 68 | main coordinator |
-| `run_bayesian_optimization()` | `:663-1006` | 344 | Bayesian entry point |
-| `run_with_config()` | `:1009-1236` | 228 | config-mode entry point |
-| CLI / `main()` | `:1239-1588` | 350 | 38 flags, backend mutex, dispatch |
+| `run_bayesian_optimization()` | `:663-1006` | 344 | Bayesian entry point, 31 parameters |
+| `run_with_config()` | `:1009-1236` | 228 | config-mode entry point, 13 parameters |
+| CLI / `main()` | `:1239-1749` | **511** | 40 flags, backend mutex, execution-set freeze, P0.5 dataset gate, dispatch |
 
-Note the shape this reveals: the two entry points and the CLI are **922 lines — 58% of the
-module** — while the data structures and strategies the chapter spends most of its length on are
-361. The chapter's §§3–7 are not proportional to where the code is.
+**Everything above `main()` is byte-for-byte where the correction pass left it.** The only row
+that moved is the last: `main()` grew from **350 to 511 lines** (`:1239-1588` → `:1239-1749`) when
+the Resolved Execution Set and admission binding landed. That is also why the flag count went
+38 → 40 (§10.1).
+
+Note the shape this reveals, now more pronounced than before: the two entry points and the CLI are
+**1083 lines — 62% of the module** — while the data structures and strategies the chapter spends
+most of its length on are **336**. The chapter's §§3–7 are not proportional to where the code is,
+and the imbalance is growing.
 
 **Key Insight:** The window optimizer doesn't run sieves directly — it delegates to the integration layer which coordinates real 26-GPU sieve execution.
 
@@ -1737,10 +2023,19 @@ supersedes it, including:
 - the 22-array NPZ contract as the Step-1 → Step-2 → Step-3 carrier
 - RANGE-MINER's stripe/sub-stripe model and where it diverges from the legacy path
 
-> **Status — `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` is a 128-line FRAGMENT, not a chapter**
-> (verified `wc -l` this session). It is **pending restore-and-audit**; the reconstruction map is
-> `docs/CHAPTER_2_SOURCE_MAP_v1.md` (651 lines). **Do not describe Chapter 2 as complete, and do
-> not cite the fragment as a reference for Step 2.**
+> **Status — SUPERSEDED, and corrected at closure.** This paragraph previously read *"Chapter 2
+> is a 128-line FRAGMENT, not a chapter … pending restore-and-audit … do not cite the fragment."*
+> **That is no longer true.** `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` was **restored from
+> `d14dcdd` and audited at `e1225a7`**, corrected at `e50e35f`, and **closed alongside this
+> chapter at `81ef3f1`** — **1208 lines**, verified `wc -l` this session. It is now the reference
+> for Step 2 and this chapter cites it for `offset` semantics (§3.1.2), the three-lane CRT test,
+> and the hybrid skip-bound defect. The reconstruction map `docs/CHAPTER_2_SOURCE_MAP_v1.md`
+> (651 lines) remains as the reconnaissance record.
+>
+> **The staleness itself is the lesson.** This paragraph was accurate when written and became
+> false without anyone editing it, because it described *another document's state*. A chapter that
+> asserts the condition of a sibling artifact acquires that artifact's maintenance burden. Prefer
+> pointing at a document over grading it.
 
 ---
 
@@ -1751,22 +2046,25 @@ supersedes it, including:
 ## Persistent Worker Call Chain (S130/S134/S135)
 
 When `--use-persistent-workers` is set, `window_optimizer_integration_final.py` routes through the
-`run_trial_persistent()` shim in `persistent_worker_coordinator.py:1612` instead of the standard
+`run_trial_persistent()` shim in `persistent_worker_coordinator.py:1632` instead of the standard
 coordinator path. **PWC is a non-certifying diagnostic backend** (§8.3.1, §11.3), and its hybrid
 path is quarantined.
 
 Call chain:
 ```
 watcher_agent.py
-  -> window_optimizer_integration_final.py  (use_persistent_workers=True, gate :1285-1290)
-    -> run_trial_persistent()               (persistent_worker_coordinator.py:1612)
+  -> window_optimizer_integration_final.py  (use_persistent_workers=True, gate :1300-1304)
+    -> run_trial_persistent()               (persistent_worker_coordinator.py:1632)
       -> PersistentWorkerCoordinator
-            Remote:  _dispatch_to_worker()  -> sieve_gpu_worker.py --persistent   (:956)
+            Remote:  _dispatch_to_worker()  (:976)
+                     worker launched as `{WORKER_SCRIPT} --gpu-id N --persistent` (:613,
+                     WORKER_SCRIPT = "sieve_gpu_worker.py" at :152)
 ```
 
 **Two corrections to the pre-correction appendix, both verified this session:**
 
-1. **`run_trial_persistent()` is at `:1612`, not `:669`** — the old anchor was off by 943 lines.
+1. **`run_trial_persistent()` is at `:1632`, not `:669`** — the old anchor was off by 963 lines.
+   *(It was `:1612` at the correction pass and has since moved by 20; cite it by name.)*
 2. **The "Zeus: `execute_local_sieve_job()` → `sieve_filter.py`" leg has been removed from the
    diagram because no such function exists.** `/bin/grep -rn` across every `.py` in the tree
    returns **no definition** — only a prose comment (`persistent_worker_coordinator.py:17`) and
@@ -1781,7 +2079,7 @@ watcher_agent.py
 > false in all three named files and has been for a long time. `window_optimizer.py:759-761` and
 > `:774` set `use_persistent_workers`, `use_zmq_sqlite`, `pwc_transport` and `use_range_miner` on
 > the coordinator (and `:1087-1088` again in config mode); the flags are declared at `:1315-1330`;
-> and `window_optimizer_integration_final.py` gates on them at `:1285-1290`. The *narrower*
+> and `window_optimizer_integration_final.py` gates on them at `:1300-1304`. The *narrower*
 > statement that remains true is that the PWC gate is **additive** — when the flag is off, the
 > path below it is untouched (`:1286`). Do not rely on the original wording: a reader who
 > believed it would expect PWC changes to be containable in one file.
@@ -1792,17 +2090,22 @@ Flag: `--resume-study`, optionally with `--study-name <name>`. Full semantics �
 `--study-name` priority rule the S114 patch predates — are in **§8.4.1**.
 
 **Storage: SQLite.** The pre-correction appendix said *"JournalStorage (not SQLite)"*; that is
-**backwards**. Storage is SQLite throughout (`window_optimizer_bayesian.py:561`, `:580`, `:611`),
-and `:608-609` records the migration explicitly: *"S125: always SQLite (JournalFileBackend removed
+**backwards**. Storage is SQLite throughout (`window_optimizer_bayesian.py:641`, `:660`, `:691`),
+and `:688-689` records the migration explicitly: *"S125: always SQLite (JournalFileBackend removed
 — n_parallel parallelism now owned by multiprocessing dispatcher in integration layer;
 n_jobs=1 here)."* Trial-unique output paths prevent cross-trial collisions.
 
-> **The "active study" line has been removed as unverifiable.** It named
-> `window_opt_1772507547.db` (21 trials as of S132). **That database does not exist** — it is not
-> in `optuna_studies/` (61 `.db` files present, newest `window_opt_1778552567.db`) nor in
-> `optuna_studies/archive/`. Its trial count cannot be verified and no replacement figure is
-> asserted. Naming a "current" study in a chapter is a staleness generator regardless; use
-> `--study-name` at run time and let auto-select handle the rest.
+> **The "active study" line has been removed as unverifiable, and re-checked at closure.** It named
+> `window_opt_1772507547.db` (21 trials as of S132). **That database still does not exist** —
+> confirmed absent from `optuna_studies/` again this session. Its trial count cannot be verified
+> and no replacement figure is asserted.
+>
+> **Naming a "current" study in a chapter is a staleness generator, and the replacement figures
+> proved it.** The correction pass recorded "61 `.db` files present, newest
+> `window_opt_1778552567.db"`; at closure the directory holds **75** and the newest is
+> `window_opt_1785633881.db`. Both counts were true when written and neither is worth carrying.
+> **Do not restate a study inventory here** — use `--study-name` at run time and let auto-select
+> (§8.4.1) handle the rest.
 
 ### enable_pruning / n_parallel Fix History (S116/S118/S123)
 
@@ -1842,8 +2145,9 @@ All scalar kernel args must be explicitly cast: `cp.int32(n_seeds)`, `cp.int32(k
 > **Correction — this invariant holds for constant-skip families ONLY.** It is true at
 > `sieve_gpu_worker.py:214`, where the generic prefix is built. It is **false for hybrids**:
 > `:259-268` (forward) and `:270-279` (reverse) rebuild `kernel_args` from scratch and never
-> re-add `skip_min`/`skip_max`. So the appendix asserts as a preserved invariant precisely the
-> thing that is broken — this is dead dimensions **D-1/D-2** (§3.1.1) seen from the kernel side.
+> re-add `skip_min`/`skip_max`, then `continue` past the generic launch at `:298`. So the
+> appendix asserts as a preserved invariant precisely the thing that is broken — this is dead
+> dimensions **D-1/D-2** (§3.1.1) seen from the kernel side.
 > Per §0.4 the remedy is **wire-in, not removal**, and it is the separately-briefed next
 > deliverable. Until then, hybrid certification is blocked (§8.3.1).
 
@@ -1855,3 +2159,145 @@ count = min(int(survivor_count_gpu[0].get()), n_seeds)
 
 Applied to both hybrid and non-hybrid extraction paths to prevent buffer overrun on
 corrupt kernel writes.
+
+---
+
+## 17. Closure statement
+
+### 17.1 Verified against
+
+**Commit `81ef3f1`, 2026-08-02**, on VM 101 (`192.168.3.177`), working tree, venv
+`~/venvs/torch`. The chapter's corrections pass ran against `40c3c83`; since then bounded Phase 6
+(`d98298c`) changed `window_optimizer_bayesian.py` by **+233/−90**, and the Resolved Execution
+Set (`63e627f`) and admission binding (`eff6616`) changed `window_optimizer.py` again. **This
+pass re-verified rather than assumed.**
+
+### 17.2 What is verified
+
+**Every `file:line` anchor was checked against HEAD.** Live line counts at `81ef3f1`:
+`window_optimizer.py` **1753**, `window_optimizer_bayesian.py` **1157**,
+`window_optimizer_integration_final.py` **2703**.
+
+The drift proved **systematic and explainable**, which is why it could be corrected rather than
+re-derived: `window_optimizer.py` grew **only inside `main()`**, so every anchor above `:1239` is
+unaffected and every anchor below it moved by a fixed amount; `window_optimizer_bayesian.py`
+shifted by the `run_optimization` extraction; `window_optimizer_integration_final.py` shifted
++4 early / +15 late.
+
+**Automated residual check.** After correction, all **289** parsed anchors across **11** cited
+files resolve within their file's line count — zero anchors point past EOF, and zero cite a file
+that does not exist. *This proves range validity, not content:* content was verified by reading
+the cited lines section by section, and where a citation is stable by symbol the chapter now
+**prefers the symbol** (§7.2.1 says so explicitly — `resolve_directional_threshold` *"has already
+moved once without changing at all"*).
+
+**The five items of the closure brief:**
+
+| # | item | disposition |
+|---|---|---|
+| 1 | re-verify every anchor; prefer symbol citations | **done** — ~26 anchor groups corrected; symbol-first convention applied in §7.2.1, §8.1.1, §11.3, §12.1 |
+| 2 | regenerate the §4.1 snapshot by script | **done, machine-generated, not hand-edited.** `scripts/extract_search_bounds_snapshot.py`; `repository_commit` `0c47fe3…` → `81ef3f1…`; **`configuration_digest` byte-identical** at `sha256:6077bb1a…2747cc` — the bounds themselves did not move |
+| 3 | the sampler-neutral core | **done** — new **§8.1.2**: `run_optimization(..., *, sampler, sampler_metadata)`, both **required and keyword-only with no default**; TPE and Random are thin wrappers; `SAMPLER_ENTRYPOINTS` **deliberately unwired** from any advisor, WATCHER policy or `strategy_recommendation.json` — autonomous sampler selection is **reserved authority** |
+| 4 | gated strategies still described as gated, not deleted | **verified, and completed.** §6.4 and §10.1 still describe them as CLI-gated and **not** deleted; the four-Optuna-sampler design intent is still recorded. **The `GridSampler` unconstructibility fact was missing and has been added** with the arithmetic executed this session |
+| 5 | absorb Chapter 2's F-4 into C-2 | **done** — new **§3.1.2**. Settles C-2 as an **observed inconsistency, NOT the repair** |
+
+**Clean control (VIR-2) — verified correct and unchanged, no edit required.** **62 of the
+chapter's 95 sections** were re-checked and needed no change, including every section in §5
+(scoring), §13 (agent metadata), §14 (method reference, all six subsections) and §15
+(dependencies), plus §3.1/3.2/3.3, §4.2/4.3, §6.1–6.3, §7.1/7.3/7.4, §8.1/8.2/8.2.1/8.3/8.4.3/
+8.4.4, §9.1/9.2/9.2.1, §10.2, §11.1, and the S146 kernel-invariant appendix. **A closure pass
+that reported only its edits would give no evidence the rest was checked**, and "closed" would
+then mean nothing.
+
+**Fault-injection control (VIR-3) — the gate was run, and the fleet-state finding is recorded.**
+`docs/CHAPTER_1_WINDOW_OPTIMIZER.md` is covered by `tests/test_chapter1_p0_corrections.py`, so
+per the brief it was executed. **Final result: `SENTINEL : PASS`, 12/12** (6 gates + 6 mutants),
+including the two mutants that specifically detect this pass's class of edit — **M5** (hand-edit
+a bound in the chapter snapshot) and **M6** (remove the skip defect callout) — both correctly
+red under mutation.
+
+> **Recorded because it is worth knowing about the closure state: four of these twelve arms
+> depend on a reachable GPU fleet.** Earlier in this same session the gate returned
+> `SENTINEL : FAIL`, 8/12, with `G-FLAG-FAILCLOSED`, `G-STRATEGY-FAILCLOSED`, `M1` and `M2` all
+> failing on one assertion — *"clean control: bayesian did not reach
+> `run_bayesian_optimization`"* — because the **P0.5 dataset-provisioning preflight refused**:
+> `No route to host` to `.122`/`.156`/`.164`. A ping sweep confirmed **all six rig addresses
+> down**, both the Proxmox CT set and the bare-metal set.
+>
+> That was `UNAVAILABLE` under VIR-5 — *a required verification attempted and unable to
+> complete* — **not** a regression, and the reading was **proven rather than asserted**, three
+> ways:
+> 1. **Empirically, single-variable.** The fleet came up; the *same edited chapter*, same gate,
+>    same commit, went 8/12 → **12/12**. Only fleet reachability changed.
+> 2. **Clean control.** The **pristine** chapter at `81ef3f1` (via `git stash`) under fleet-up
+>    also returns **12/12** — so the edits neither introduce a failure nor mask one.
+> 3. **Structurally.** Only `gate_snapshot_extracted`, `gate_skip_defect_note`, `M5` and `M6`
+>    ever open the `CHAPTER` path
+>    (`tests/test_chapter1_p0_corrections.py:64`, `:578-579`, `:646`, `:680-681`, `:707`). The
+>    four arms that were red **never read the chapter file at all**, so a documentation edit
+>    cannot reach them.
+>
+> **The standing fact this leaves:** these four arms are **not** a pure documentation gate. They
+> shell out to the real CLI, and the fail-closed P0.5 dataset authority — correctly — refuses
+> before dispatch when nodes are unreachable. **A green 12/12 therefore certifies the chapter
+> *and* asserts a reachable fleet; a red one does not by itself indict the chapter.** Anyone
+> re-running this gate must check fleet state before reading a failure as a documentation defect.
+> Recorded as an observation for the gate owner, **not a proposal to change the gate.**
+
+### 17.3 What remains open, and where it is tracked
+
+**Nothing found this pass was repaired** — the brief is documentation-only, and no code, test,
+config or manifest was touched.
+
+| Open item | Where tracked | Status |
+|---|---|---|
+| **D-1 / D-2** — hybrid `skip_min`/`skip_max` sampled but never reaching the kernel | §3.1.1, §8.3.1, S146 appendix | **OPEN.** Remedy is **wire-in, not removal** (§0.4); separately briefed. Hybrid certification blocked until then |
+| **D-3** — `offset` on the `java_lcg` forward hybrid | §3.1.1, §3.1.2 | **OPEN**, and see C-2 below |
+| **D-4** — the two threshold CLI flags | §10.1 | **CLOSED as a silent no-op** — now **fail-closed**. The `args_map` mapping is dormant (§10.1) |
+| **C-2 / Chapter 2 F-4** — `offset` drives host slice *and* device pre-advance from one scalar | §3.1.2; Chapter 2 §7.3 | **Settled as an OBSERVED INCONSISTENCY, not repaired.** Beta: no single `offset*(skip+1)` multiplier exists under variable skip; belongs in the future **hybrid input-semantics design**, not a standalone arithmetic patch |
+| **Combined-session sampling can select a prohibited mode** | §8.3.1 | **re-verified OPEN at `81ef3f1`.** `session_options` still offers `['midday','evening']` first (`window_optimizer.py:182-186`) and Optuna still samples across all three (`window_optimizer_bayesian.py:513-515`, applied `:535`). An autonomous run can select a configuration that **cannot be certified**. Governance risk; code remedy out of scope |
+| **`run_with_config` writes `[]` and prints success** | §9.3, §12.1 | **behavioural defect, separate ticket.** `accumulator['forward']`/`['reverse']` are never appended to; the run prints *"✅ Saved 0 forward survivors"*. The Bayesian path degrades **honestly** (writes a `note`); this path degrades **silently** |
+| **TRSE `except` handler would itself raise `NameError`** | §8.4 note (`:1075-1077`) | **separate ticket. `UNAVAILABLE` — unverified at runtime.** The "non-fatal" path calls a `logger` the scope does not define |
+| **`min_workers` has two defaults for one quantity** | §9.1 note | **OPEN** — **1** in the signature (`window_optimizer.py:1022`) vs **24** at the CLI (`:1323`). Reported, not resolved |
+| **`args_map` maps two now-fail-closed flags** | §10.1 | dormant — `default_params` supplies neither key; would abort a run if either were added. Flagged for the manifest owner |
+| **`parameter_bounds` is a live admission gate looser than §4.1** | §10.1 | **new this pass, OPEN.** `agents/step_runner/command_builder.py:151-170` validates against it: `window_size` min **2** where the S172 TB ruling raised the search floor to **6**; `offset` max 2000 vs 100; `skip_min` max 50 vs 10; `skip_max` 20–500 vs 10–250. It cannot widen the Optuna space, but **would accept a WATCHER-proposed `window_size=2`** — precisely the value S172 excluded as chance-driven |
+| **`--rig-profile` / `--execution-set-nodes` absent from `args_map`** | §10.1 | **new this pass.** WATCHER cannot select a rig profile or declare a partial execution set; a WATCHER-launched run takes `default_profile` and the full declared fleet. Governance question for the manifest owner, **not a defect this chapter asserts** |
+| **`GridSampler` unconstructible at live bounds** (7.649 × 10¹⁰ points ≈ 7.23 TiB) | §10.1 | **new this pass.** The documented four-sampler design is not implementable as stated for Grid without an explicitly coarsened grid — a **design decision for Beta**, not a restoration |
+| **The strategy repair itself** | §10.1 | pending Beta ruling (`TEAM_ALPHA_AUTONOMY_CONTROL_SURFACE_SUBMISSION.md` Q3). Two prescriptions are explicitly **ruled out** and recorded so they are not re-proposed |
+| **Sampler provenance is unverified**; TPE remains default by status quo | §8.1.2 | stated limits of the neutral core |
+| **Four arms of the executable gate require a reachable fleet** | §17.2 | new this pass; observation for the gate owner |
+
+### 17.4 What this chapter is NOT
+
+- **Not an operator runbook for the gated strategies.** `random`, `grid` and `evolutionary` are
+  documented **because they are broken and must not be silently re-enabled**. Nothing here is a
+  procedure for running them; two proposed repairs are explicitly ruled out, and per §0.4 none
+  of the three is a candidate for deletion.
+- **Not a code version.** The "revision 3.1" on the header is documentation-only and appears in
+  no source file (the live module docstring says `Version: 2.0`).
+- **Not a certification of the hybrid path.** D-1/D-2 remain unwired; hybrid certification is
+  blocked (§8.3.1), and §12.2's example config is **illustrative shape only** — two of its values
+  are unreachable under live bounds.
+- **Not an authority on the bounds.** §4.1 is a **dated, machine-generated snapshot**; the live
+  authority is `distributed_config.json` read through `SearchBounds.from_config()`. Where the
+  snapshot and the manifest disagree, that disagreement is a finding (§10.1), not a licence to
+  pick one.
+- **Not a claim that Step 1 is fully verified.** It documents Step 1 **as built**, including
+  where as-built diverges from its own manifest and from the documented design.
+
+### 17.5 Closure sentinel
+
+```
+CHAPTER 1 CLOSURE:  PASS
+```
+
+**`PASS` means verified-and-bounded, not finished.** It is claimed for exactly this scope: every
+anchor re-verified against `81ef3f1` with the drift corrected, the §4.1 snapshot machine-
+regenerated, the sampler-neutral core documented, the gated strategies confirmed gated and not
+deleted (and the missing `GridSampler` fact supplied), Chapter 2's F-4 absorbed into C-2, the
+executable gate run **green 12/12 including both chapter-reading mutants**, and every open item
+enumerated in §17.3 with where it is tracked. It is **not** a claim that Step 1 is verified, that
+the hybrid path is certified, or that any dead dimension, ticket or conflict was repaired.
+
+**Files changed by this pass:** `docs/CHAPTER_1_WINDOW_OPTIMIZER.md` and
+`docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` only. No code, tests, config or manifests.

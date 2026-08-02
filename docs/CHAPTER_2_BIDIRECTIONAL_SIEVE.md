@@ -2,12 +2,15 @@
 
 ## TFM Pipeline — Operating Guide
 
-**Version:** 4.0.0 — restore-and-audit
-**Status:** RESTORED from `d14dcdd` and audited against live source at `eed3904`
+**Version:** 4.2.0 — closed
+**Status:** **CLOSED at `81ef3f1`, 2026-08-02** — verified-and-bounded, not finished. Restored
+from `d14dcdd`, audited at `eed3904`, corrected at `e50e35f`, closed at `81ef3f1`. See **§14**
+for the closure statement, what remains open, and the closure sentinel.
 **Subject:** Step 2 — the bidirectional residue sieve, and RANGE-MINER, the engine that
 now executes it
-**Authority for this pass:** `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_2_RESTORE.md` (REV1);
-reconnaissance `docs/CHAPTER_2_SOURCE_MAP_v1.md`
+**Authority for this pass:** `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_1_AND_2_CLOSURE.md` (REV1).
+Prior passes: `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_2_RESTORE.md` (REV1); reconnaissance
+`docs/CHAPTER_2_SOURCE_MAP_v1.md`
 
 ---
 
@@ -85,8 +88,23 @@ state* reduced mod 1000. That is wrong for `java_lcg`: the state is **48-bit**, 
 quantity is the *extracted output*, not the state. The recovered arithmetic downstream is
 unaffected — it was always about the output space — but the width statement was not.
 
-`a = 25214903917`, `c = 11` (`prng_registry.py:1004` default params; hardcoded in the three
-non-parameterised kernels at `:3125-3126`).
+`a = 25214903917`, `c = 11` — **two anchor corrections at closure**
+(`81ef3f1`, 2026-08-02):
+
+- **The default-params anchor was wrong.** `prng_registry.py:1004` is the closing `'''` of the
+  `JAVA_LCG_KERNEL` source string, not a parameter block. The `java_lcg` `default_params` live in
+  the registry dictionary at **`:3963-3966`** (and `java_lcg_hybrid`'s at `:3976-3979`). Cite the
+  entry by key — `PRNG_REGISTRY['java_lcg']['default_params']` — because the registry dict is far
+  from the kernel strings and moves independently of them.
+- **The count was wrong: it is two kernels, not three.** `a` is hardcoded in exactly **two**
+  kernel bodies — `java_lcg_reverse_sieve` (`:3125-3126`) and `java_lcg_hybrid_reverse_sieve`
+  (`:3182-3183`). Verified by counting every occurrence of the literal in the file: six sites,
+  of which two are the CUDA hardcodes above, two are Python `kwargs.get('a', 25214903917)`
+  defaults (`:113`, `:172`), and two are the registry `default_params` entries (`:3964`,
+  `:3977`). **Both hardcoded kernels are reverse kernels**; the forward kernels take `a`/`c` as
+  arguments. That is the same forward/reverse asymmetry §3.4 describes as the ABI consequence,
+  and it is the reason the number matters — a third such kernel would have meant a forward path
+  was also frozen, which it is not.
 
 **The seed domain is not 2³².** The kernels mask the seed to 48 bits (`state = seed & m`,
 `prng_registry.py:973`, `:3132`). The recovered summary's "starting seed space:
@@ -579,15 +597,78 @@ agreement mod 125.
 
 ### 6.2 The test, as it exists in the kernel
 
-Live and verbatim at `prng_registry.py:984-986` (forward constant), `:1042-1044` (forward
-hybrid), `:3146-3148` (reverse constant) — **39 occurrences of the lane test across the live
-registry**, one per kernel:
+Live and verbatim at `prng_registry.py:984-986` (`java_lcg_flexible_sieve`, forward constant),
+`:1042-1044` (`java_lcg_hybrid_multi_strategy_sieve`, forward hybrid), `:3146-3148`
+(`java_lcg_reverse_sieve`, reverse constant) — all three **re-verified unchanged at closure**
+(`81ef3f1`, 2026-08-02):
 
 ```c
 if (((output % 1000) == (unsigned int)(residues[i] % 1000)) &&
     ((output %    8) == (unsigned int)(residues[i] %    8)) &&
     ((output %  125) == (unsigned int)(residues[i] %  125))) matches++;
 ```
+
+> The block above is byte-exact for `:984-986` and `:3146-3148`. The hybrid form at `:1042-1044`
+> is the same conjunction with the loop index named `draw_idx` instead of `i`, and it opens a
+> brace rather than ending in `matches++;` because the hybrid body also resets
+> `consecutive_misses`. Same test, different surrounding block.
+
+#### 6.2.1 The count — settled
+
+**The chapter previously claimed "39 occurrences … one per kernel". That number is withdrawn.
+It is not reproducible by any method, and the "one per kernel" gloss was also wrong.**
+
+**The number is 43**, and it is 43 of the registry's **44** kernels — not one per kernel.
+
+**Method (this is the method the number must be reproducible by).** A lane test is counted where
+a line compares `output % 1000` against a `residues[…] % 1000` term **and the following two
+lines carry the mod-8 and mod-125 conjuncts of the same comparison.** Structural, not textual:
+it counts the conjunction the section is about, and is indifferent to casts, spacing, index
+naming and whether the body ends in `matches++;` or opens a brace. Reproduce it with:
+
+```python
+lines = open('prng_registry.py').read().split('\n')
+hits = [i+1 for i, l in enumerate(lines)
+        if '% 1000' in l and '% 8' in '\n'.join(lines[i:i+3])
+                         and '% 125' in '\n'.join(lines[i:i+3])]
+len(hits)   # 43
+```
+
+**Why three counts existed, and what each one actually measures.** All three are reproducible;
+they simply do not measure the same thing.
+
+| Count | What it measures | Verdict |
+|---|---|---|
+| **43** | complete three-lane conjunctions | **the right number** — it counts the test §6.2 prints |
+| 31 | the subset written with the `(unsigned int)` cast on the residue side | a **formatting** variant — 12 of the 43 omit the cast; C integer promotion makes it semantically inert |
+| 30 + 13 | the same 43, partitioned by loop-index name (`residues[i]` in constant kernels, `residues[draw_idx]` in hybrid kernels) | **the same 43**, split by an incidental naming difference |
+| 39 | — | **matches no method.** Withdrawn |
+
+31 was the strict-pattern count that the corrections session could not reconcile; it is a real
+count of a real thing, but the thing is a coding-style split with no bearing on the sieve. 30+13
+is 43 arrived at by a different route, which is corroboration rather than a competing answer.
+
+**The 44th kernel — the exception that "one per kernel" hid.** `mt19937_hybrid_multi_strategy_sieve`
+(`prng_registry.py:773`) is the only kernel in the registry that does **not** run the three-lane
+test. It reduces once and compares once:
+
+```c
+unsigned int draw = output % 1000;          // :820
+if (draw == residues[draw_idx]) {           // :821
+```
+
+This is worth stating precisely because §6.3 proves the three-lane test is **exactly equivalent**
+to this single comparison. The mt19937 kernel is therefore not a defect and not a missing lane —
+it is the same predicate written without the two redundant conjuncts, and it is evidence that the
+redundancy in the other 43 is a convention rather than a requirement. It is also **outside TFM's
+sieve path**: TFM sieves `java_lcg` only (`CLAUDE.md` §7), and mt19937 is one of the five
+families the miner raises `NotImplementedError` for.
+
+> **Why the chapter now names the method and not just the number.** The withdrawn 39 survived
+> because it was carried as a bare figure with no stated way to re-derive it, so no later reader
+> could tell whether it was stale, mis-transcribed, or measuring something else. **A number in a
+> chapter must be reproducible by the method the chapter names** — the snippet above is that
+> method, and re-running it is the whole audit.
 
 | Lane | Role as built |
 |---|---|
@@ -1031,7 +1112,7 @@ and repairs are out of scope by the brief.
 | **F-5** | **The ROCm prelude hostname guard is dead on every live rig** — tuple says `rig-6600*`, live hostnames are `rrig6600*`. `DOCUMENTATION_AUDIT_20260131.md:93-99`'s proposed one-line fix used the same wrong convention | `sieve_filter.py:23-35`; live `hostname` from all three CT100s this session | **CONFIRMED dead legacy branch; NOT a Phase-7 blocker.** Harmless today (no overrides needed). **Do not rename the hosts** — that activates obsolete overrides. A later repair must first decide whether the prelude is supported, and if retained **key it from an explicit platform/profile property, never another hostname tuple.** §9.5 |
 | **F-6** | §1.1's "32-bit internal state" is wrong for `java_lcg` — the state is 48-bit; 32 bits is the extracted output | `prng_registry.py:969`, `:983` | **corrected in §1.1** |
 | **F-7** | Whitepaper §4's `G(s,−i)` assumes a backward step; the implementation is forward-against-reversed-residues, so forward and reverse generate identical sequences for one seed | whitepaper `:57-62`, `:79`; `prng_registry.py:3143`; `miner/range_miner_worker.py:888` | **named, not resolved**, §3.5 — Beta's side of the boundary |
-| **F-8** | Residues resolve as `entry.get("full_state", entry["draw"])`; no live record carries `full_state` (0 of 18068) | `miner/range_miner_worker.py:650`; `daily3.json` inspected this session; `create_synthetic_full_state.py:3-4`, `:27`; `tests/phase6/known_answer_gate.py:211-216`; `known_answer_reference.py:409-411` | **Inert in the live dataset, purpose known.** It is the **synthetic known-answer / multi-modulo validation hook** (Wall C ruling) — **not** a "forward-compatibility seam." It changes the **residue source, not the comparison width**: the predicate still reduces mod 1000/8/125. Recorded §1.1 |
+| **F-8** | Residues resolve as `entry.get("full_state", entry["draw"])`; no live record carries `full_state` (0 of 18068) | `miner/range_miner_worker.py:650`; `daily3.json` inspected this session; `create_synthetic_full_state.py:3-4`, `:27`; `tests/phase6/known_answer_gate.py:211-216`; `tests/phase6/known_answer_reference.py:409-411` | **Inert in the live dataset, purpose known.** It is the **synthetic known-answer / multi-modulo validation hook** (Wall C ruling) — **not** a "forward-compatibility seam." It changes the **residue source, not the comparison width**: the predicate still reduces mod 1000/8/125. Recorded §1.1 |
 
 ### 12.1 Open items this chapter inherits but does not own
 
@@ -1117,19 +1198,49 @@ it is the one claim here that a repository-only reader could not have made.
 
 *Unavailable surfaces — declared, not assumed clean:*
 
-1. **`miner/`, `agents/` and `window_optimizer.py` are owned by a concurrent Resolved Execution
-   Set session.** `miner/range_miner_worker.py` was **read** (not edited) and its anchors are
-   HEAD-current as of this session; if that session lands changes, re-verify §5.4, §7.2 and
-   §8.4. **No collision was observed** — this pass edited only
-   `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md`.
+1. ~~**`miner/`, `agents/` and `window_optimizer.py` are owned by a concurrent Resolved Execution
+   Set session.**~~ **DISCHARGED at closure (`81ef3f1`, 2026-08-02).** The obligation this
+   surface created was: *"if that session lands changes, re-verify §5.4, §7.2 and §8.4."*
+   **That session landed** — the Resolved Execution Set (`63e627f`) and admission binding
+   (`eff6616`). The re-verification was performed:
+
+   - `git diff --stat eed3904..81ef3f1` over `miner/`, `agents/` and `window_optimizer.py` shows
+     four files changed — `agents/watcher_agent.py`, `miner/dataset_authority.py`,
+     `miner/range_miner_coordinator.py`, `window_optimizer.py`. **`miner/range_miner_worker.py`
+     is not among them**, and `prng_registry.py` and `window_optimizer_integration_final.py` are
+     unchanged over the same span.
+   - Every anchor in §5.4, §7.2 and §8.4 was nonetheless re-read at `81ef3f1` rather than
+     inferred from the diff: `prng_registry.py:1007-1012`, `:974-976`;
+     `miner/range_miner_worker.py:196-197`, `:648-649`, `:602-650`;
+     `window_optimizer_integration_final.py:273`. **All exact, none moved.**
+
+   The three sections are therefore **verified unchanged**, not merely unchallenged. This pass
+   again edited only `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md`.
 2. **Deployed source on the rigs was not compared against VM 101.** Every kernel claim here is a
    claim about the VM 101 tree. The hostname query is the sole system-scoped fact. **Repo ≠
    system.**
 3. **No runtime values.** No GPU, sieve, miner, WATCHER or pipeline execution. Threshold, skip
    and partition behaviour is traced by source, never measured.
-4. **The 40 non-java_lcg registry kernels were not read.** Only `java_lcg`, `java_lcg_reverse`,
-   `java_lcg_hybrid`, `java_lcg_hybrid_reverse` were opened. The "39 lane-test occurrences"
-   count (§6.2) is a grep count over the live registry, not 39 individually read kernels.
+4. **The 40 non-java_lcg registry kernels were not read in full.** Only `java_lcg`,
+   `java_lcg_reverse`, `java_lcg_hybrid`, `java_lcg_hybrid_reverse` were opened end to end.
+
+   **Amended at closure (`81ef3f1`, 2026-08-02).** This surface previously read: *"The '39
+   lane-test occurrences' count (§6.2) is a grep count over the live registry, not 39
+   individually read kernels."* Both halves are now superseded:
+
+   - **The number is 43, not 39** (§6.2.1), and 39 is withdrawn as unreproducible.
+   - **It is no longer a bare grep count.** The count is structural — a mod-1000 comparison
+     whose following two lines carry the mod-8 and mod-125 conjuncts — and §6.2.1 publishes the
+     four-line program that produces it, so the figure is re-derivable without reading 44
+     kernels. Each of the 43 sites was additionally resolved to its owning kernel, which is how
+     the 44th (`mt19937_hybrid_multi_strategy_sieve`, `:773`) was identified as the single-lane
+     exception and the old "one per kernel" gloss was retired.
+
+   **What remains genuinely unavailable:** the *bodies* of the 40 non-java_lcg kernels are still
+   unread. This chapter asserts that each contains the lane conjunction and nothing about what
+   else it does. That is sufficient for §6, which is a claim about one predicate, and
+   insufficient for any claim about those families' correctness — which this chapter does not
+   make, and which is moot for TFM (java_lcg only).
 5. **The CA draw-procedures PDF is not in the repo**, and was **not read in this pass either**.
    §5.1's citation is marked **`UNAVAILABLE`**. It was originally transcribed from the project's
    own record of it (skill §0.4) — **and that record was itself wrong about the pre-test count**,
@@ -1153,11 +1264,133 @@ recorded with anchors. **It is not a claim that Step 2 is fully verified** — �
 exactly what remains unproven, and §12.1 lists six inherited open items this chapter does not
 own.
 
+> The sentinel above belongs to the **restoration and correction** pass (`eed3904`). The
+> **closure** pass carries its own, in §14 below. They are not the same claim and are not
+> merged.
+
+---
+
+## 14. Closure statement
+
+### 14.1 Verified against
+
+**Commit `81ef3f1`, 2026-08-02**, on VM 101 (`192.168.3.177`), working tree, venv
+`~/venvs/torch`. The chapter's body was written against `eed3904`; this pass re-verified it
+against `81ef3f1` rather than assuming the interval was quiet.
+
+### 14.2 What is verified this pass
+
+**The one open item is closed.** §6.2's unreproducible "39 occurrences" is withdrawn and
+replaced by **43**, with the counting method published as executable code (§6.2.1) so the figure
+is re-derivable rather than trusted. The three candidate counts are reconciled — 31 measures a
+formatting variant, 30+13 is the same 43 by another route, and 39 measures nothing. The "one per
+kernel" gloss is retired: it is 43 of 44 kernels, with
+`mt19937_hybrid_multi_strategy_sieve` (`prng_registry.py:773`) the single-lane exception.
+
+**Two §1.1 anchor errors corrected** — `prng_registry.py:1004` is the closing `'''` of a kernel
+string, not the `default_params` block (`:3963-3966`); and `a`/`c` are hardcoded in **two**
+kernel bodies (`:3125-3126`, `:3182-3183`), not three, both of them reverse kernels.
+
+**The chapter's own re-verification obligation is discharged.** VIR-6 unavailable-surface #1
+made §5.4, §7.2 and §8.4 conditional on a concurrent session landing. It landed (`63e627f`,
+`eff6616`). All anchors in those three sections were re-read at `81ef3f1` and **none moved**;
+`miner/range_miner_worker.py`, `prng_registry.py` and `window_optimizer_integration_final.py`
+are unchanged over `eed3904..81ef3f1`.
+
+**Clean control (VIR-2) — verified correct and unchanged, no edit required:**
+
+| § | re-verified at `81ef3f1` | basis |
+|---|---|---|
+| 6.2 code block | the three-lane conjunction, byte-exact | `prng_registry.py:984-986`, `:3146-3148`; `:1042-1044` modulo the `draw_idx` index name |
+| 5.4 | hybrid kernel signature and the skip-semantics defect | `prng_registry.py:1007-1012` |
+| 7.2 | both `offset` consumers — host slice and device pre-advance | `miner/range_miner_worker.py:648-649`, `:196-197`; `prng_registry.py:974-976` |
+| 8.4 | residue-window authority | `miner/range_miner_worker.py:602-650`; `window_optimizer_integration_final.py:273` |
+| 6.1, 6.3 | CRT construction and the redundancy argument | arithmetic; unchanged |
+| §13 VIR-2 table (19 rows) | carried forward from `eed3904`; the files backing it are unchanged over the interval | `git diff --stat eed3904..81ef3f1` |
+
+**Fault-injection control (VIR-3): `NOT_APPLICABLE`, and stated rather than omitted.** This is a
+documentation pass, and **no executable gate covers this chapter** — `tests/` contains
+`test_chapter1_p0_corrections.py` and no Chapter 2 equivalent, verified this session. Chapter 1's
+edits were gated and run; Chapter 2's could not be. **That asymmetry is itself an open
+governance item** (§14.3), not a clean result.
+
+### 14.3 What remains open, and where it is tracked
+
+**Nothing found this pass was repaired.** Every item below is carried, not closed.
+
+| Open item | Where tracked | Disposition |
+|---|---|---|
+| **F-3** — the lane redundancy may be residue of an unbuilt lane-parallel CRT architecture | §6.5 | **open question**, not determinable from available surfaces |
+| **F-4** — `offset` drives host slice and device pre-advance from one scalar | §7.3; Chapter 1 §3.1.2 | **CONFIRMED, not repaired.** Settles Chapter 1 audit C-2 as an **observed inconsistency, not the repair.** No single `offset*(skip+1)` multiplier exists under variable skip; belongs in the future **hybrid input-semantics design**, not a standalone arithmetic patch |
+| **F-5** — ROCm prelude hostname guard dead on every live rig | §9.5 | **CONFIRMED dead legacy branch, NOT a Phase-7 blocker.** Harmless today. **Do not rename the hosts** — that activates obsolete overrides. Any repair must key from an explicit platform/profile property, never another hostname tuple |
+| **F-7** — whitepaper `G(s,−i)` vs forward-against-reversed-residues | §3.5 | **named, not resolved** — Beta's side of the boundary |
+| The six §12.1 inherited items | §12.1 | inherited, **not owned** by this chapter: the missing CA PDF, the absent `TB_RULING_*` for the 2026-07-30/31 stream, the untracked descriptive trace, the `java_lcg_cpu` non-zero-skip mismatch (**no fix authorized**), the 44-entry registry vs 4 compiled variants, and `forward_matches`/`reverse_matches` absent from the Step-3 merge list |
+| **No executable gate covers this chapter** | this section | new this pass. Chapter 1 has `tests/test_chapter1_p0_corrections.py`; Chapter 2 has no equivalent, so its claims are protected by review only. Recorded as an observation for the gate owner, **not a proposal** |
+| VIR-6 surfaces 2, 3, 5, 6 | §13 | still `UNAVAILABLE`: rig-deployed source never compared against VM 101; no runtime values; the CA PDF unread; Beta ruling texts external |
+| VIR-6 surface 4, residual half | §13 | the **bodies** of the 40 non-java_lcg kernels remain unread. The lane-count claim no longer depends on reading them; nothing else about those families is asserted |
+
+### 14.4 What this chapter is NOT
+
+- **Not a proof that Step 2 is verified.** §11.3 states exactly what is unproven. The chapter
+  documents **the sieve as built**, including where as-built diverges from the whitepaper (§3.5)
+  and from its own parameter registry (§7.3).
+- **Not a certification of hybrid worker semantics.** Hybrid is covered by the **Phase-6 transfer
+  gate**, *not* by a four-phase Wall-A consumer run. §5.4's defect — hybrid kernels do not execute
+  the requested skip semantics — is **described and open**, and no run in the record has certified
+  the hybrid path end to end.
+- **Not a claim about the other 40 registry families.** TFM sieves `java_lcg` only; the miner
+  raises `NotImplementedError` for the five uncovered families. §6.2.1's count is a claim about
+  one predicate's occurrence, not about those kernels' correctness.
+- **Not an operator runbook.** No procedure here is written to be executed.
+- **Not a system-scoped document.** Every kernel claim is a claim about the **VM 101 tree**. The
+  only system-scoped fact in the chapter is the `hostname` query that established F-5.
+
+### 14.5 Closure sentinel
+
+```
+CHAPTER 2 CLOSURE:  PASS
+```
+
+**`PASS` means verified-and-bounded, not finished.** It is claimed for exactly this scope: the
+§6.2 count is settled and reproducible by a published method, the two §1.1 anchor errors are
+corrected, the chapter's declared re-verification obligation is discharged against live source,
+and everything still open is enumerated in §14.3 with where it is tracked. It is **not** a claim
+that Step 2 is verified, that the hybrid path is certified, or that any F-item was repaired.
+
+**Files changed by this pass:** `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` only.
+
 ---
 
 ## Version History
 
 ```
+Version 4.2.0 — 2026-08-02  CLOSURE PASS (verified against 81ef3f1)
+- §6.2  SETTLED: the "39 occurrences of the lane test" claim is WITHDRAWN as unreproducible.
+        The number is 43, in 43 of the registry's 44 kernels. New §6.2.1 publishes the
+        counting method as executable code so the figure is re-derivable, reconciles the
+        three candidate counts (31 = a (unsigned int)-cast formatting variant; 30+13 = the
+        same 43 split by loop-index name; 39 = no method), and retires the "one per kernel"
+        gloss by naming the exception: mt19937_hybrid_multi_strategy_sieve (:773) tests
+        mod 1000 only, at :820-821. Not a defect — §6.3 already proves the three-lane test
+        is exactly equivalent to that single comparison.
+- §1.1  CORRECTED: prng_registry.py:1004 is the closing ''' of JAVA_LCG_KERNEL, not the
+        default_params block. Correct anchor :3963-3966 (java_lcg), :3976-3979 (hybrid).
+        Prefer the dict key PRNG_REGISTRY['java_lcg']['default_params'].
+- §1.1  CORRECTED: a/c are hardcoded in TWO kernel bodies, not three — java_lcg_reverse_sieve
+        (:3125-3126) and java_lcg_hybrid_reverse_sieve (:3182-3183). Both are REVERSE kernels;
+        the forward kernels take a/c as arguments (the §3.4 ABI asymmetry).
+- §13   VIR-6 surface 1 DISCHARGED: the concurrent Resolved Execution Set session landed
+        (63e627f, eff6616). §5.4, §7.2 and §8.4 anchors were re-read at 81ef3f1 — none moved;
+        range_miner_worker.py, prng_registry.py and window_optimizer_integration_final.py are
+        unchanged over eed3904..81ef3f1.
+- §13   VIR-6 surface 4 AMENDED: superseded by §6.2.1. The residual unavailability — the
+        BODIES of the 40 non-java_lcg kernels are still unread — is retained explicitly.
+- §14   NEW: closure statement. Verified against / what is verified / what remains open and
+        where tracked / what the chapter is NOT / closure sentinel. Records that NO executable
+        gate covers this chapter (Chapter 1 has one; Chapter 2 has no equivalent) as an open
+        governance observation.
+- NO code, tests, config or manifests touched. No F-item repaired. Nothing removed.
+
 Version 4.1.0 — 2026-08-01  THREE FACTUAL CORRECTIONS (Beta closure conditions)
 - §5.1  CORRECTED: "two pre-test draws before every live draw" was WRONG and Alpha-introduced.
         One automatic pre-test SESSION for automatic Daily draws; additional pre-test draws
