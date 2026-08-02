@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through the §4.3 admission-liveness repair (`ee0db06`, 2026-08-01).
+**Currency:** through bounded Phase 6 certification (`d98298c`, 2026-08-02).
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -208,8 +208,10 @@ Reverse = host-side residue reversal (§0.2). Loose thresholds required (§0.3).
 `intersection_count` duplicating `bidirectional_count` is deliberate.
 **`serve_timeout=None` is deliberate** — a billion-seed scan exceeds any wall clock; the
 bounded clock is on *admission* only (§2.12). **`distributed_config.json`'s bare-metal
-addresses are deliberate** — both topologies are retained as profiles (§2.11). **Chain D's
-`pending_approval`** is a valid authority boundary and the **Step-5 `allowed_params` filter**
+addresses are deliberate** — both topologies are retained as profiles (§2.11). **`run_optimization`'s `sampler` and `sampler_metadata` are
+REQUIRED and keyword-only with no default** — deliberately, so a caller cannot get TPE by
+omission and then report the run as something else; an unlabelled run is not a control.
+**Chain D's `pending_approval`** is a valid authority boundary and the **Step-5 `allowed_params` filter**
 is a deliberate executable-interface boundary (§2.13).
 
 ### 2.7 Recurring defect: tuned parameters don't reach kernels — SIX instances
@@ -250,6 +252,21 @@ The ROCm generation is **platform-validation, non-authoritative**.
 **Phase 6-P0** `131787d` · **6-P0.5** `d4ff1e4` · **P0.5 Q2 closure** `8600e75` — dataset
 authority, see §2.10. **§4.3 admission liveness** `ee0db06` — see §2.12.
 
+**Bounded Phase 6 — CERTIFIED and CLOSED** `d98298c` (TB ruling, 2026-08-02). Wall A: the
+complete consumer chain — frozen 22-array bundle → validation → Step-2 load without fallback →
+dict conversion → Step-3 chunks → real GPU scorer, with **value-by-value** metadata comparison
+(closing the "keys present but values defaulted" class). Wall B: repetition, assembly-backend
+equivalence, current CUDA/ROCm equivalence, and **node-assignment independence across two
+different ROCm rig pairs** — all five arms reproduced `0e0092fe…c4b0`. **Miner Known-Answer
+Transfer Gate:** all four active TFM variants through their real `SieveExecutor.execute` ABI
+paths; **eight populations exact-set equal, zero missing / extra / mismatched**; F5–F7 prove
+reference independence by rejecting three wrong semantics.
+
+**Certification scope is explicit:** Wall A/B used **constant-skip** generations; **hybrid worker
+semantics are covered by the transfer gate, not by a full four-phase Wall-A consumer run.**
+The scratch generations are **not** release-grade — future publication still uses
+`--release-grade`.
+
 ### 2.9 Known-disabled / deliberately off
 **S166 in-memory clear** — disabled; candidate-list RAM growth unbounded until the checkpoint
 carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
@@ -260,6 +277,19 @@ carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
 retained.** Stays disabled until Phase 6-P2 is certified.
 **PWC/ZMQ** retired from certifying authority; PWC hybrid additionally quarantined.
 **`dataset_provenance/*.json` never pruned** — same class as D6.3, newly found.
+**Sampler provenance is unverified** — `run_optimization()` trusts caller-supplied
+`sampler_class` / `sampler_module` / `optuna_version` and does not check them against the actual
+object. Existing TPE and Random wrappers are correctly labelled, so nothing submitted is
+invalidated; **a fail-before-study guard is required before direct use of the neutral core or
+registration of another sampler.**
+**`process_sharded` import invariant has no gate** — TB **REQUIRES** one: fresh spawned
+interpreter · real Step-1 module surface · invoke the **production**
+`assembly_shard_worker.assert_cpu_only()` (do not duplicate its forbidden list) · cover **both**
+`torch` and `cupy` · plus a mutant introducing a module-level GPU import that proves it reds.
+Required hardening, **not** a Phase 6 blocker — the real `process_sharded` arm passed.
+**`quick_test_all_22.sh`** is **differential/liveness evidence only, never known-answer
+correctness evidence** (TB). Its output path is now timestamped so the supersession record
+survives.
 **`random`/`grid`/`evolutionary` strategies** gated at the CLI (signature mismatch) — **not
 deleted**. Documented design was four Optuna samplers; `GridSampler` is **unconstructible**
 here (7.649 × 10¹⁰ grid points ≈ 7.2 TiB at construction).
@@ -386,7 +416,8 @@ Chapter 13.*
 | fleet definition → the run | ✗ — — — | **six mechanisms, no authority** (§2.11) — Resolved Execution Set is the approved fix, unbuilt |
 | worker loss → failure matrix | ✅ ✅ ✅ ✅ | **WORKS** (`ee0db06`) — was an unbounded hang |
 | Advisor → selfplay `max_episodes`, `min_fitness_threshold` | ✅ ✅ ✅ ✅ | **WORKS** |
-| Optuna `skip_min`/`skip_max` → hybrid kernel | ✅ ✅ ✅ ✗ | dies at `_hybrid_prefix` |
+| Optuna `skip_min`/`skip_max` → hybrid kernel | ✅ ✅ ✅ ✗ | dies at `_hybrid_prefix`. **The approved skip-OUTPUT work does NOT fix this** — see §8 |
+| miner kernels → independent reference | ✅ ✅ ✅ ✅ | **WORKS** — transfer gate, 8/8 populations exact-set equal (`d98298c`) |
 | Optuna `offset` → forward hybrid | ✅ ✅ ✅ ✗ | dies in kernel args |
 | `skip_learning_rate` → kernel | ✅ — — ✗ | kernel hard-adapts at 1.0 |
 | Advisor → `search_strategy` | ✅ partial ✗ — | dies in the override dict. **Autonomous application NOT approved** |
@@ -473,6 +504,11 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 - **Plans for behaviour-changing work go to Beta before implementation.** P0's procedural
   exception was granted because it was inert; Beta stated it is **not precedent**.
 - **Stage explicitly, never `git add -a`.**
+- **Never reuse a filename when uploading to chat.** Same-named uploads deduplicate somewhere
+  upstream and arrive as **empty stubs** — six transfers were lost this way in one session
+  before the cause was found. Give every upload a unique name. `.diff` and `.png` were 100%
+  reliable; repeated `.txt`/`.md` names were not. **The repository is the fallback channel**:
+  commit and push, then the reader clones — that path has never failed.
 - Session changelog to `docs/`; dual-push `origin` (private) + `public` (mirror) —
   **everything pushed is effectively public.**
 - Prefer **Claude Code on VM101** for as-built questions — live source **and** live host. A
@@ -485,16 +521,34 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 ## 8. APPROVED SEQUENCE
 ```
 D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
-6-P0 ✅ 131787d · 6-P0.5 ✅ d4ff1e4 · Q2 closure ✅ 8600e75 · §4.3 liveness ✅ ee0db06
-next  bounded Phase 6 — three walls: (A) interface/consumer incl. Step-3 ·
-      (B) determinism/platform · (C) bounded independent known-answer correctness
-      + RandomSampler control arm (neutral run_optimization(sampler, …), matched
-        budgets across seeds, report distributions not best-trial)
-then  Resolved Execution Set + profile-aware fleet consumers (§2.11)
-then  certify explicit full-fleet AND explicit local execution
-then  skip-output work (§0.4) · D6.2 · D6.3 · 6-P2 scraper
-Phase 7  26-GPU saturation + WATCHER soak — BLOCKED until the Resolved Execution Set lands
+6-P0 ✅ · 6-P0.5 ✅ · Q2 closure ✅ · §4.3 liveness ✅ · Wall C struck ✅
+bounded Phase 6 ✅ CERTIFIED and CLOSED d98298c
+next   Resolved Execution Set + profile-aware fleet consumers (§2.11)
+       process_sharded import gate (TB-required, §2.9)
+       skip-OUTPUT work · D6.2 · D6.3 · 6-P2 scraper
+Phase 7  BLOCKED by the Resolved Execution Set, D6.2, and the other pre-Phase-7 obligations
 ```
+
+**⚠ Sampler-comparison sequencing — a correction TB issued against Alpha.** The certifying
+four-phase TPE-vs-random comparison **cannot** be scheduled merely *"after the skip-output
+work."* The approved skip-output work retains observed sequences and restores `skip_mean` /
+`skip_std` / `skip_entropy`. **It does NOT connect `skip_min`/`skip_max` to the hybrid kernels**
+— that is the separate, unresolved **input-bound** interpretation. The comparison must wait
+until **either** hybrid search-input bounds have defined effective semantics, **or** the
+comparison uses an **explicitly phase-aware search space that does not pretend dead hybrid
+dimensions are active.** Skip-output may proceed first; completing it alone **does not remove
+the dead-dimension caveat.**
+
+**TPE remains the production default by status quo** — the five-seed run is a valid constant-skip
+datapoint and useful directional evidence, **not** a certification of superiority and **not**
+authority for autonomous sampler selection.
+
+**Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
+three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
+**session-separated dataset authority** · `.gitignore:42` dead negation · the CA
+draw-procedures PDF is not in the repo · the `java_lcg_cpu` non-zero-skip mismatch at
+`survivor_scorer.py:124` / `full_scoring_worker.py:305` (TB: separate bounded audit before
+Phase 7, **no fix authorized**).
 **Wall C caution:** `java_lcg_cpu` (`prng_registry.py:170-183`) applies skip **once before
 generating**; the kernel applies it **between every draw** (`:987-989`). They agree only at
 `skip=0`. **Building the known-answer reference on it would validate the wrong semantics** in
