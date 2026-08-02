@@ -1,0 +1,690 @@
+{
+  "abi": {
+    "java_lcg": {
+      "arg_signature": [
+        "buffer:uint64[50000]",
+        "buffer:uint32[4]",
+        "buffer:uint64[50000]",
+        "buffer:float32[50000]",
+        "buffer:uint8[50000]",
+        "buffer:uint32[1]",
+        "scalar:int32=50000",
+        "scalar:int32=4",
+        "scalar:int32=0",
+        "scalar:int32=16",
+        "scalar:float32=0.25",
+        "scalar:uint64=25214903917",
+        "scalar:uint64=11",
+        "scalar:int32=0"
+      ],
+      "blocks": 196,
+      "kernel_repr": "RawKernel",
+      "n_args": 14,
+      "threads": 256
+    },
+    "java_lcg_hybrid": {
+      "arg_signature": [
+        "buffer:uint64[25000]",
+        "buffer:uint32[4]",
+        "buffer:uint64[25000]",
+        "buffer:float32[25000]",
+        "buffer:uint32[100000]",
+        "buffer:uint32[25000]",
+        "buffer:uint32[1]",
+        "scalar:int32=25000",
+        "scalar:int32=4",
+        "buffer:int32[2]",
+        "buffer:int32[2]",
+        "scalar:int32=2",
+        "scalar:float32=0.25",
+        "scalar:uint64=25214903917",
+        "scalar:uint64=11"
+      ],
+      "blocks": 98,
+      "kernel_repr": "RawKernel",
+      "n_args": 15,
+      "threads": 256
+    },
+    "java_lcg_hybrid_reverse": {
+      "arg_signature": [
+        "buffer:uint64[25000]",
+        "buffer:uint32[4]",
+        "buffer:uint64[25000]",
+        "buffer:float32[25000]",
+        "buffer:uint32[100000]",
+        "buffer:uint32[25000]",
+        "buffer:uint32[1]",
+        "scalar:int32=25000",
+        "scalar:int32=4",
+        "buffer:int32[2]",
+        "buffer:int32[2]",
+        "scalar:int32=2",
+        "scalar:float32=0.25",
+        "scalar:int32=3"
+      ],
+      "blocks": 98,
+      "kernel_repr": "RawKernel",
+      "n_args": 14,
+      "threads": 256
+    },
+    "java_lcg_reverse": {
+      "arg_signature": [
+        "buffer:uint64[50000]",
+        "buffer:uint32[4]",
+        "buffer:uint64[50000]",
+        "buffer:float32[50000]",
+        "buffer:uint8[50000]",
+        "buffer:uint32[1]",
+        "scalar:int32=50000",
+        "scalar:int32=4",
+        "scalar:int32=0",
+        "scalar:int32=16",
+        "scalar:float32=0.25",
+        "scalar:int32=0"
+      ],
+      "blocks": 196,
+      "kernel_repr": "RawKernel",
+      "n_args": 12,
+      "threads": 256
+    }
+  },
+  "authority": "docs/CLAUDE_CODE_INSTRUCTIONS_BOUNDED_PHASE_6.md \u00a73",
+  "clean_control": [
+    {
+      "dataset_sha256": "e5ea42f1d4f53cebb8d3a4b21331be76fa3de70db13fb5b8c50d2ae2b3db730e",
+      "effective_skip_range": [
+        0,
+        16
+      ],
+      "effective_threshold": 0.25,
+      "elapsed_s": 17.4,
+      "exact_set_equal": true,
+      "expected_count": 3377,
+      "extra": [],
+      "k": 4,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[50000]",
+          "buffer:uint32[4]",
+          "buffer:uint64[50000]",
+          "buffer:float32[50000]",
+          "buffer:uint8[50000]",
+          "buffer:uint32[1]",
+          "scalar:int32=50000",
+          "scalar:int32=4",
+          "scalar:int32=0",
+          "scalar:int32=16",
+          "scalar:float32=0.25",
+          "scalar:uint64=25214903917",
+          "scalar:uint64=11",
+          "scalar:int32=0"
+        ],
+        "blocks": 196,
+        "kernel_repr": "RawKernel",
+        "n_args": 14,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 3377,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "window_size"
+      ],
+      "phase": 1,
+      "planted_recovered": true,
+      "planted_seed": 123412345,
+      "population": "java_lcg_dense",
+      "residue_sha256": "bd935a4f9670862309dc8d9f22c5848f02f843a0026fbe4dbe7931ca84cd2191",
+      "seed_count": 50000,
+      "seed_start": 123400000,
+      "status": "PASS",
+      "threshold": 0.25,
+      "variant": "java_lcg",
+      "verbatim_coordinator_payload": true
+    },
+    {
+      "dataset_sha256": "2910cf17a7795c817173caf2ea1a27f7c27075a6aa300a51752d223b0da89922",
+      "effective_skip_range": [
+        0,
+        6
+      ],
+      "effective_threshold": 0.625,
+      "elapsed_s": 6.53,
+      "exact_set_equal": true,
+      "expected_count": 1,
+      "extra": [],
+      "k": 8,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[50000]",
+          "buffer:uint32[8]",
+          "buffer:uint64[50000]",
+          "buffer:float32[50000]",
+          "buffer:uint8[50000]",
+          "buffer:uint32[1]",
+          "scalar:int32=50000",
+          "scalar:int32=8",
+          "scalar:int32=0",
+          "scalar:int32=6",
+          "scalar:float32=0.625",
+          "scalar:uint64=25214903917",
+          "scalar:uint64=11",
+          "scalar:int32=0"
+        ],
+        "blocks": 196,
+        "kernel_repr": "RawKernel",
+        "n_args": 14,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 1,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "skip_range",
+        "window_size"
+      ],
+      "phase": 1,
+      "planted_recovered": true,
+      "planted_seed": 123412345,
+      "population": "java_lcg_tight",
+      "residue_sha256": "de213128f0189bba5c88b2254aa704cab34685fb17da271ac3c4974aae235b17",
+      "seed_count": 50000,
+      "seed_start": 123400000,
+      "status": "PASS",
+      "threshold": 0.625,
+      "variant": "java_lcg",
+      "verbatim_coordinator_payload": false
+    },
+    {
+      "dataset_sha256": "e53d68a8a659964229c8ca222ffb9909c72e97af81548d842f35e74ac1bd87df",
+      "effective_skip_range": [
+        0,
+        16
+      ],
+      "effective_threshold": 0.25,
+      "elapsed_s": 14.95,
+      "exact_set_equal": true,
+      "expected_count": 3363,
+      "extra": [],
+      "k": 4,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[50000]",
+          "buffer:uint32[4]",
+          "buffer:uint64[50000]",
+          "buffer:float32[50000]",
+          "buffer:uint8[50000]",
+          "buffer:uint32[1]",
+          "scalar:int32=50000",
+          "scalar:int32=4",
+          "scalar:int32=0",
+          "scalar:int32=16",
+          "scalar:float32=0.25",
+          "scalar:int32=0"
+        ],
+        "blocks": 196,
+        "kernel_repr": "RawKernel",
+        "n_args": 12,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 3363,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "window_size"
+      ],
+      "phase": 2,
+      "planted_recovered": true,
+      "planted_seed": 987612345,
+      "population": "java_lcg_reverse_dense",
+      "residue_sha256": "0ade388c09b19b19aa7a13e6b47dc5927690485206db5207b85820e1d1e87ffc",
+      "seed_count": 50000,
+      "seed_start": 987600000,
+      "status": "PASS",
+      "threshold": 0.25,
+      "variant": "java_lcg_reverse",
+      "verbatim_coordinator_payload": true
+    },
+    {
+      "dataset_sha256": "658fdfcb56df6f6b99e063480c206eba6a0853b0441c7842f4a5bd374fd4eaf1",
+      "effective_skip_range": [
+        0,
+        6
+      ],
+      "effective_threshold": 0.625,
+      "elapsed_s": 6.6,
+      "exact_set_equal": true,
+      "expected_count": 1,
+      "extra": [],
+      "k": 8,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[50000]",
+          "buffer:uint32[8]",
+          "buffer:uint64[50000]",
+          "buffer:float32[50000]",
+          "buffer:uint8[50000]",
+          "buffer:uint32[1]",
+          "scalar:int32=50000",
+          "scalar:int32=8",
+          "scalar:int32=0",
+          "scalar:int32=6",
+          "scalar:float32=0.625",
+          "scalar:int32=0"
+        ],
+        "blocks": 196,
+        "kernel_repr": "RawKernel",
+        "n_args": 12,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 1,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "skip_range",
+        "window_size"
+      ],
+      "phase": 2,
+      "planted_recovered": true,
+      "planted_seed": 987612345,
+      "population": "java_lcg_reverse_tight",
+      "residue_sha256": "e5cf3b9dc5f9cb04194c9dc924ae0a2c9d62308eeaaba78297c5a0acefb198b0",
+      "seed_count": 50000,
+      "seed_start": 987600000,
+      "status": "PASS",
+      "threshold": 0.625,
+      "variant": "java_lcg_reverse",
+      "verbatim_coordinator_payload": false
+    },
+    {
+      "dataset_sha256": "23d694ac5f8f4207a7bb5d6e9fcc30f6a79d2a96d83a7f1c49c24872149bde2b",
+      "effective_skip_range": [
+        0,
+        16
+      ],
+      "effective_threshold": 0.25,
+      "elapsed_s": 4.74,
+      "exact_set_equal": true,
+      "expected_count": 1196,
+      "extra": [],
+      "k": 4,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[25000]",
+          "buffer:uint32[4]",
+          "buffer:uint64[25000]",
+          "buffer:float32[25000]",
+          "buffer:uint32[100000]",
+          "buffer:uint32[25000]",
+          "buffer:uint32[1]",
+          "scalar:int32=25000",
+          "scalar:int32=4",
+          "buffer:int32[2]",
+          "buffer:int32[2]",
+          "scalar:int32=2",
+          "scalar:float32=0.25",
+          "scalar:uint64=25214903917",
+          "scalar:uint64=11"
+        ],
+        "blocks": 98,
+        "kernel_repr": "RawKernel",
+        "n_args": 15,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 1196,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "strategies",
+        "window_size"
+      ],
+      "phase": 3,
+      "planted_recovered": true,
+      "planted_seed": 555012345,
+      "population": "java_lcg_hybrid_dense",
+      "residue_sha256": "ed61e32751f6ae43d7438d69acad04715f7c2df35da8ccc1d604b5ca64f33987",
+      "seed_count": 25000,
+      "seed_start": 555000000,
+      "status": "PASS",
+      "threshold": 0.25,
+      "variant": "java_lcg_hybrid",
+      "verbatim_coordinator_payload": false
+    },
+    {
+      "dataset_sha256": "0abc077bbd251d8c19062f31bf9f257ebca2a103500660c5bada5752af03443c",
+      "effective_skip_range": [
+        0,
+        16
+      ],
+      "effective_threshold": 0.625,
+      "elapsed_s": 9.2,
+      "exact_set_equal": true,
+      "expected_count": 1,
+      "extra": [],
+      "k": 8,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[25000]",
+          "buffer:uint32[8]",
+          "buffer:uint64[25000]",
+          "buffer:float32[25000]",
+          "buffer:uint32[200000]",
+          "buffer:uint32[25000]",
+          "buffer:uint32[1]",
+          "scalar:int32=25000",
+          "scalar:int32=8",
+          "buffer:int32[2]",
+          "buffer:int32[2]",
+          "scalar:int32=2",
+          "scalar:float32=0.625",
+          "scalar:uint64=25214903917",
+          "scalar:uint64=11"
+        ],
+        "blocks": 98,
+        "kernel_repr": "RawKernel",
+        "n_args": 15,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 1,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "strategies",
+        "window_size"
+      ],
+      "phase": 3,
+      "planted_recovered": true,
+      "planted_seed": 555012345,
+      "population": "java_lcg_hybrid_tight",
+      "residue_sha256": "502c9138998d42e47557a9e4d0c0cad5fa6a0587e5b959bc84a8739796c34dc5",
+      "seed_count": 25000,
+      "seed_start": 555000000,
+      "status": "PASS",
+      "threshold": 0.625,
+      "variant": "java_lcg_hybrid",
+      "verbatim_coordinator_payload": false
+    },
+    {
+      "dataset_sha256": "ee9342ca95d8229ffdd4b75cbed44c40efbd07ea76fe386c74a0a5b198d1ef5e",
+      "effective_skip_range": [
+        0,
+        16
+      ],
+      "effective_threshold": 0.25,
+      "elapsed_s": 2.06,
+      "exact_set_equal": true,
+      "expected_count": 572,
+      "extra": [],
+      "k": 4,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[25000]",
+          "buffer:uint32[4]",
+          "buffer:uint64[25000]",
+          "buffer:float32[25000]",
+          "buffer:uint32[100000]",
+          "buffer:uint32[25000]",
+          "buffer:uint32[1]",
+          "scalar:int32=25000",
+          "scalar:int32=4",
+          "buffer:int32[2]",
+          "buffer:int32[2]",
+          "scalar:int32=2",
+          "scalar:float32=0.25",
+          "scalar:int32=3"
+        ],
+        "blocks": 98,
+        "kernel_repr": "RawKernel",
+        "n_args": 14,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 572,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "strategies",
+        "window_size"
+      ],
+      "phase": 4,
+      "planted_recovered": true,
+      "planted_seed": 777012345,
+      "population": "java_lcg_hybrid_reverse_dense",
+      "residue_sha256": "be90559ffe34078f92bd17b32323d31c00dbcde1e0aa04e5f90fa443662474fd",
+      "seed_count": 25000,
+      "seed_start": 777000000,
+      "status": "PASS",
+      "threshold": 0.25,
+      "variant": "java_lcg_hybrid_reverse",
+      "verbatim_coordinator_payload": false
+    },
+    {
+      "dataset_sha256": "c5c66cd2c1df33988371c8a8ca1d16ad1b1e2a4e3c6a130af2fde212166b7514",
+      "effective_skip_range": [
+        0,
+        16
+      ],
+      "effective_threshold": 0.625,
+      "elapsed_s": 3.94,
+      "exact_set_equal": true,
+      "expected_count": 1,
+      "extra": [],
+      "k": 8,
+      "kernel_launch": {
+        "arg_signature": [
+          "buffer:uint64[25000]",
+          "buffer:uint32[8]",
+          "buffer:uint64[25000]",
+          "buffer:float32[25000]",
+          "buffer:uint32[200000]",
+          "buffer:uint32[25000]",
+          "buffer:uint32[1]",
+          "scalar:int32=25000",
+          "scalar:int32=8",
+          "buffer:int32[2]",
+          "buffer:int32[2]",
+          "scalar:int32=2",
+          "scalar:float32=0.625",
+          "scalar:int32=3"
+        ],
+        "blocks": 98,
+        "kernel_repr": "RawKernel",
+        "n_args": 14,
+        "threads": 256
+      },
+      "mismatch_count": 0,
+      "missing": [],
+      "observed_count": 1,
+      "payload_keys": [
+        "dataset",
+        "dataset_sha256",
+        "min_match_threshold",
+        "offset",
+        "phase2_threshold",
+        "residue_sha256",
+        "sessions",
+        "strategies",
+        "window_size"
+      ],
+      "phase": 4,
+      "planted_recovered": true,
+      "planted_seed": 777012345,
+      "population": "java_lcg_hybrid_reverse_tight",
+      "residue_sha256": "57784e0a2375a0828253f84d3cb87a53a87a2b93d4d0c7060a75ccb97e3dcfec",
+      "seed_count": 25000,
+      "seed_start": 777000000,
+      "status": "PASS",
+      "threshold": 0.625,
+      "variant": "java_lcg_hybrid_reverse",
+      "verbatim_coordinator_payload": false
+    }
+  ],
+  "fault_injection": [
+    {
+      "description": "remove one true survivor (123400002) from the observation",
+      "evidence": "missing=1 extra=0 mismatch=0",
+      "id": "F1_drop_one",
+      "rejected": true
+    },
+    {
+      "description": "inject one EXTRA false survivor (123449999)",
+      "evidence": "missing=0 extra=1 mismatch=0",
+      "id": "F2_add_spurious",
+      "rejected": true
+    },
+    {
+      "description": "perturb one match_rate by 1 binary32 ULP (seed 123400002)",
+      "evidence": "missing=0 extra=0 mismatch=1",
+      "id": "F3_rate_1ulp",
+      "rejected": true
+    },
+    {
+      "description": "perturb one hybrid skip-sequence entry (seed 555000026)",
+      "evidence": "missing=0 extra=0 mismatch=1",
+      "id": "F4_skip_seq",
+      "rejected": true
+    },
+    {
+      "description": "expectations under the java.util.Random constructor scramble (pa_sieve_validation_harness semantics)",
+      "evidence": "missing=3063 extra=3182 mismatch=188; faulted reference produced 3258 survivors vs 3377 correct",
+      "id": "F5_java_scramble",
+      "rejected": true
+    },
+    {
+      "description": "expectations under output = state>>17 (pa_sieve_validation_harness semantics)",
+      "evidence": "missing=3071 extra=3153 mismatch=212; faulted reference produced 3295 survivors vs 3377 correct",
+      "id": "F6_shift_17",
+      "rejected": true
+    },
+    {
+      "description": "expectations with skip applied ONCE before generating instead of between draws (java_lcg_cpu semantics \u2014 Beta's Wall-C caution)",
+      "evidence": "missing=1433 extra=1436 mismatch=930; faulted reference produced 3374 survivors vs 3377 correct",
+      "id": "F7_skip_once",
+      "rejected": true
+    },
+    {
+      "description": "drive the production worker with min_match_threshold=0.5 instead of 0.25",
+      "evidence": "missing=3372 extra=0 mismatch=0; engine returned 5 survivors vs 3377 expected",
+      "id": "F8_engine_offspec",
+      "rejected": true
+    }
+  ],
+  "gate": "miner_known_answer_transfer",
+  "path_evidence": {
+    "payload_interpretation.contradictory_thresholds": {
+      "detail": "contradictory thresholds in stripe payload: min_match_threshold=0.25 vs phase2_threshold=0.35. A miner stripe runs ONE kernel with ONE threshold; refusing to fi",
+      "detected": true,
+      "raised": "ThresholdContractError"
+    },
+    "residue_resolution.dataset_sha256_absent": {
+      "detail": "assignment payload missing mandatory dataset_sha256",
+      "detected": true,
+      "raised": "ResidueResolutionError"
+    },
+    "residue_resolution.dataset_sha256_mismatch": {
+      "detail": "dataset_sha256 mismatch: payload=0000000000000000000000000000000000000000000000000000000000000000, computed=e5ea42f1d4f53cebb8d3a4b21331be76fa3de70db13fb5b8c50d",
+      "detected": true,
+      "raised": "ResidueVerificationError"
+    },
+    "residue_resolution.residue_sha256_mismatch": {
+      "detail": "residue_sha256 mismatch: payload=0000000000000000000000000000000000000000000000000000000000000000, computed=bd935a4f9670862309dc8d9f22c5848f02f843a0026fbe4dbe79",
+      "detected": true,
+      "raised": "ResidueVerificationError"
+    },
+    "residue_resolution.window_fields_absent": {
+      "detail": "assignment payload lacks dataset/window_size to resolve the residue window and no usable residue reference was provided; refusing to run against stale data (B1)",
+      "detected": true,
+      "raised": "ResidueResolutionError"
+    }
+  },
+  "path_evidence_ok": true,
+  "provenance": {
+    "gate_sha256": "04d1f92562cf6efe856cbf963a67559c326f01873568e81a56e2421a12e6e913",
+    "kernels": {
+      "java_lcg": {
+        "default_params": {
+          "a": 25214903917,
+          "c": 11
+        },
+        "kernel_name": "java_lcg_flexible_sieve",
+        "kernel_source_bytes": 1775,
+        "kernel_source_sha256": "dbad586c55c2d6f76466c80d838049da792fc8e8b650bfb3adf08dd8938e336c",
+        "seed_type": "uint64"
+      },
+      "java_lcg_hybrid": {
+        "default_params": {
+          "a": 25214903917,
+          "c": 11
+        },
+        "kernel_name": "java_lcg_hybrid_multi_strategy_sieve",
+        "kernel_source_bytes": 3318,
+        "kernel_source_sha256": "b237b8757f0e4c9e7c1d40edb0dd5769659125efdd67cc5c07c53294afa76cbb",
+        "seed_type": "uint64"
+      },
+      "java_lcg_hybrid_reverse": {
+        "default_params": null,
+        "kernel_name": "java_lcg_hybrid_reverse_sieve",
+        "kernel_source_bytes": 3027,
+        "kernel_source_sha256": "6936e6c47b2ffa2cb0325b3c7fa95d5255f50acc750282204dfa57f9a91c13e7",
+        "seed_type": "uint64"
+      },
+      "java_lcg_reverse": {
+        "default_params": null,
+        "kernel_name": "java_lcg_reverse_sieve",
+        "kernel_source_bytes": 2075,
+        "kernel_source_sha256": "47b4e7de5d239686494bc8141eec39db28f0f8eab2b82eb39b042206c0051020",
+        "seed_type": "uint64"
+      }
+    },
+    "reference_sha256": "369bf5c4e5e81523f4d4a396cbcce076a7ee66c08f4e1876a89ce42ceb97f837"
+  },
+  "sentinel": "PASS"
+}

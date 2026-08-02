@@ -362,8 +362,40 @@ def finalize_incremental_output(study, output_config_path: str = "optimal_window
 # ============================================================================
 
 class OptunaBayesianSearch:
-    """Bayesian optimization using Optuna's TPE sampler"""
-    
+    """Optuna-driven window search.
+
+    [S184 bounded Phase 6 §4 — SAMPLER-NEUTRAL CORE]
+    ------------------------------------------------
+    This class used to construct a `TPESampler` in the middle of its own search
+    body, so "run an Optuna study over this search space" and "use TPE" were the
+    same statement and could not be separated. Team Beta's direction for the
+    RandomSampler control arm was explicit: do NOT route every sampler through a
+    permanently *Bayesian*-named entrypoint, because a RandomSampler run that
+    reports itself as `strategy: optuna_bayesian` is a mislabelled record, not a
+    control.
+
+    So the study body now lives in `run_optimization(..., sampler,
+    sampler_metadata)`, which is sampler-agnostic and names nothing after TPE.
+    `search()` is a thin TPE entrypoint over it, unchanged in signature and
+    behaviour; `OptunaRandomSearch.search()` is the equally thin RandomSampler
+    entrypoint. EVERYTHING ELSE — search space, objective wrapper, warm start,
+    pruning, storage, incremental save, telemetry, result shape — is shared by
+    construction, which is what makes the two arms comparable at all.
+
+    This also closes the two defects that made the old `--strategy random` path
+    unusable as a control (skill 2.9): `RandomSearch.search` cannot accept the
+    kwargs `WindowOptimizer.optimize` forwards (signature mismatch), and
+    `GridSearch`/`EvolutionarySearch` have vacuous `return {}` bodies. Neither of
+    those classes is touched or deleted here — per tfm-project-facts §0.4 they
+    stay gated — but the control arm no longer needs them: it is an Optuna study
+    with a different sampler, not a different code path.
+
+    NOT APPROVED, and deliberately not built: autonomous sampler selection.
+    Sampler choice is reserved authority (brief §4). Nothing here reads
+    `strategy_recommendation.json` or an advisor override; the sampler is chosen
+    by the operator at the entrypoint and recorded in `sampler_metadata`.
+    """
+
     def __init__(self, n_startup_trials=5, seed=None,
                  enable_pruning=False, n_parallel=1):  # S115 R3
         """
@@ -377,12 +409,15 @@ class OptunaBayesianSearch:
         self.n_parallel = n_parallel
         if not OPTUNA_AVAILABLE:
             raise ImportError("Optuna not available. Install with: pip install optuna")
-        
+
         self.n_startup_trials = n_startup_trials
         self.seed = seed
         optuna.logging.set_verbosity(optuna.logging.WARNING)
-    
-    def search(self, 
+
+    # -----------------------------------------------------------------
+    # Thin TPE entrypoint — signature and behaviour unchanged
+    # -----------------------------------------------------------------
+    def search(self,
                objective_function: Callable,
                bounds: 'SearchBounds',
                max_iterations: int,
@@ -391,24 +426,76 @@ class OptunaBayesianSearch:
                study_name: str = '',
                trse_context_file: str = 'trse_context.json',
                trial_history_context: dict = None) -> Dict:  # S121, [S140b]
+        """Run the Optuna study with the TPE sampler.
+
+        S119: multivariate=True — models param correlations jointly
+        (window_size <-> skip_max etc.). Safe: the search space is static
+        (skip_max lower bound always = 10), Optuna 4.4.0 tested.
         """
-        Run Bayesian optimization using Optuna
-        
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.filterwarnings('ignore', message='.*multivariate.*')
+            sampler = TPESampler(
+                n_startup_trials=self.n_startup_trials,
+                seed=self.seed,
+                multivariate=True   # S119
+            )
+        return self.run_optimization(
+            objective_function, bounds, max_iterations, scorer,
+            sampler=sampler,
+            sampler_metadata=describe_sampler(
+                sampler, strategy='optuna_bayesian',
+                seed=self.seed, n_startup_trials=self.n_startup_trials,
+                multivariate=True),
+            resume_study=resume_study, study_name=study_name,
+            trse_context_file=trse_context_file,
+            trial_history_context=trial_history_context)
+
+    # -----------------------------------------------------------------
+    # The sampler-neutral study body
+    # -----------------------------------------------------------------
+    def run_optimization(self,
+                         objective_function: Callable,
+                         bounds: 'SearchBounds',
+                         max_iterations: int,
+                         scorer: ResultScorer,
+                         *,
+                         sampler,
+                         sampler_metadata: Dict,
+                         resume_study: bool = False,
+                         study_name: str = '',
+                         trse_context_file: str = 'trse_context.json',
+                         trial_history_context: dict = None) -> Dict:
+        """
+        Run an Optuna study over the window search space with a CALLER-SUPPLIED
+        sampler. Nothing in this body names, assumes or prefers a sampler class.
+
         Args:
-            objective_function: Function that takes WindowConfig and returns OptimizationResult
-            bounds: Search space boundaries
-            max_iterations: Number of iterations
-            scorer: Function to score results
-            
+            objective_function: takes a WindowConfig, returns an OptimizationResult
+            bounds: search space boundaries
+            max_iterations: trial budget
+            scorer: converts a result into the scalar Optuna maximises
+            sampler: any `optuna.samplers.BaseSampler`. REQUIRED and keyword-only
+                — there is deliberately no default, so a caller cannot get TPE
+                by omission and then report the run as something else.
+            sampler_metadata: the record that travels into the result dict as
+                `sampler` and `strategy`. Build it with `describe_sampler()`.
+                REQUIRED for the same reason: an unlabelled run is not a control.
+
         Returns:
-            Dictionary with best config, all results, etc.
+            Dictionary with best config, all results, the Optuna study summary
+            and the sampler record.
         """
+        _strategy_label = sampler_metadata.get('strategy', 'optuna')
         print(f"\n{'='*80}")
-        print(f"🎯 BAYESIAN OPTIMIZATION (Optuna TPE)")
-        print(f"   Startup trials: {self.n_startup_trials}")
+        print(f"🎯 OPTUNA WINDOW OPTIMIZATION")
+        print(f"   Sampler: {sampler_metadata.get('sampler_class')} "
+              f"(optuna {sampler_metadata.get('optuna_version')})")
+        print(f"   Strategy label: {_strategy_label}")
+        print(f"   Sampler seed: {sampler_metadata.get('sampler_seed')}")
         print(f"   Total trials: {max_iterations}")
         print(f"{'='*80}\n")
-        
+
         # Storage for all results
         all_results = []
         best_result = None
@@ -534,18 +621,11 @@ class OptunaBayesianSearch:
         else:
             print("[TRSE] No context found — running Step 1 with default bounds")
 
-        # Create study with TPE sampler
-        # S119: multivariate=True — models param correlations jointly (window_size↔skip_max etc.)
-        # Safe: search space is static (skip_max lower bound always=10), Optuna 4.4.0 tested.
-        import warnings as _warnings
-        with _warnings.catch_warnings():
-            _warnings.filterwarnings('ignore', message='.*multivariate.*')
-            sampler = TPESampler(
-                n_startup_trials=self.n_startup_trials,
-                seed=self.seed,
-                multivariate=True   # S119
-            )
-        
+        # [S184] The sampler arrives as an argument. It is NOT constructed here —
+        # that is the whole point of `run_optimization`. See `search()` for the
+        # TPE construction (multivariate=True, S119) and `OptunaRandomSearch`
+        # for the RandomSampler control arm.
+
         # Create persistent storage for the study
         import time
         import glob as _glob
@@ -705,7 +785,11 @@ class OptunaBayesianSearch:
         # [S145-R1] Guard: return safely when all trials pruned
         if best_result is None:
             return {
-                'strategy': 'optuna_bayesian',
+                # [S184] the ACTUAL sampler's label, never a hardcoded
+                # 'optuna_bayesian' — a RandomSampler run that self-reports as
+                # Bayesian is exactly the mislabelling Beta ruled out.
+                'strategy': _strategy_label,
+                'sampler': dict(sampler_metadata),
                 'best_config': {},
                 'best_result': {'bidirectional_count': 0, 'forward_count': 0, 'reverse_count': 0},
                 'best_score': best_score,
@@ -725,18 +809,107 @@ class OptunaBayesianSearch:
             _best_params = {}
 
         return {
-            'strategy': 'optuna_bayesian',
+            # [S184] see the all-pruned branch above — the label follows the
+            # sampler that actually chose the points.
+            'strategy': _strategy_label,
+            'sampler': dict(sampler_metadata),
             'best_config': best_result.config.to_dict(),
             'best_result': best_result.to_dict(),
             'best_score': best_score,
             'all_results': [r.to_dict() for r in all_results],
             'iterations': len(all_results),
             'optuna_study': {
+                'study_name': study_name,
                 'best_trial': _best_trial_num,
                 'best_value': _best_value,
                 'best_params': _best_params
             }
         }
+
+
+# ============================================================================
+# [S184 bounded Phase 6 §4] SAMPLER METADATA + THE RandomSampler CONTROL ARM
+# ============================================================================
+
+def describe_sampler(sampler, *, strategy: str, seed=None, **extra) -> Dict:
+    """The binding record for a sampler arm.
+
+    Brief §4: "The comparison must bind: sampler class and Optuna version ·
+    sampler seed · trial budget · warm-start mode · objective definition ·
+    effective search-space digest · effective skip semantics · repository commit
+    and tree state · dataset/input-manifest digest · study identity."
+
+    This function owns the first two legs and the strategy label. The remaining
+    legs are run-scoped rather than sampler-scoped, so the comparison harness
+    (`tests/phase6/sampler_control_arm.py`) binds them alongside this record
+    rather than duplicating them here — a sampler object cannot know the dataset
+    digest and should not pretend to.
+
+    `sampler_seed` is recorded as passed rather than read back off the sampler:
+    Optuna keeps the seed inside a private RNG, so reading it back would either
+    fail or report a derived value. What matters for reproducibility is the
+    value the operator supplied, and that is what is stored.
+    """
+    rec = {
+        'strategy': strategy,
+        'sampler_class': type(sampler).__name__,
+        'sampler_module': type(sampler).__module__,
+        'optuna_version': getattr(optuna, '__version__', None) if OPTUNA_AVAILABLE else None,
+        'sampler_seed': seed,
+    }
+    rec.update(extra)
+    return rec
+
+
+class OptunaRandomSearch(OptunaBayesianSearch):
+    """The OPERATOR-SELECTED RandomSampler control arm (brief §4).
+
+    An Optuna study over the SAME search space, objective, warm-start rule,
+    pruner, storage and result shape as the TPE arm — differing in exactly one
+    variable, the sampler. That single-variable property is what makes it a
+    control; the pre-existing `window_optimizer.RandomSearch` is not a control,
+    because it samples with Python's `random` module outside Optuna entirely and
+    shares none of the above.
+
+    It subclasses the TPE entrypoint only to reuse the shared `run_optimization`
+    body — it overrides `search()` completely and never calls TPESampler.
+    `n_startup_trials` is inherited but MEANINGLESS here (RandomSampler has no
+    startup phase); it is recorded in the metadata as `None` rather than carried
+    over, so the record cannot imply a warm-up that did not happen.
+
+    AUTONOMOUS SELECTION IS NOT APPROVED. Beta reserved sampler choice; this
+    class exists to be chosen deliberately by an operator, and nothing in the
+    codebase selects it on its own.
+    """
+
+    def search(self,
+               objective_function: Callable,
+               bounds: 'SearchBounds',
+               max_iterations: int,
+               scorer: ResultScorer,
+               resume_study: bool = False,
+               study_name: str = '',
+               trse_context_file: str = 'trse_context.json',
+               trial_history_context: dict = None) -> Dict:
+        from optuna.samplers import RandomSampler
+        sampler = RandomSampler(seed=self.seed)
+        return self.run_optimization(
+            objective_function, bounds, max_iterations, scorer,
+            sampler=sampler,
+            sampler_metadata=describe_sampler(
+                sampler, strategy='optuna_random_control',
+                seed=self.seed, n_startup_trials=None, multivariate=None),
+            resume_study=resume_study, study_name=study_name,
+            trse_context_file=trse_context_file,
+            trial_history_context=trial_history_context)
+
+
+# Operator-selected sampler arms. Deliberately NOT wired to any advisor,
+# WATCHER policy or strategy_recommendation.json — see the class docstrings.
+SAMPLER_ENTRYPOINTS = {
+    'optuna_bayesian': OptunaBayesianSearch,
+    'optuna_random_control': OptunaRandomSearch,
+}
 
 
 # ============================================================================

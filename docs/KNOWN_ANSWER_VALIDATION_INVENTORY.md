@@ -131,10 +131,19 @@ control.
 
 This is where the "all 44 were tested" claim needs qualifying.
 
-- **`test_ALL_46_prngs_10M.sh`** — runs all 46 named variants against real `daily3.json` at 10 M
+- **`test_ALL_46_prngs_10M.sh`** — runs the named variants against real `daily3.json` at 10 M
   seeds and greps output for `COMPLETED`. **No planted seed, no expected answer.** This is a
-  liveness/smoke sweep. It is also stale: it names **46** variants; the live registry has **44**
-  (§2).
+  liveness/smoke sweep and must not be cited as correctness evidence.
+
+  > **[S184 CORRECTION — bounded Phase 6 §6, Beta-ordered.]** The claim above that it "names 46
+  > variants" was **WRONG**, and so was the inference drawn from it elsewhere in this document.
+  > Re-verified this session against the live `KERNEL_REGISTRY` on VM 101: the `PRNGS` array
+  > contains **44** entries — **11 in each of four categories**, not 11/11/12/12 as its own two
+  > "Reverse" comments claimed — and **all 44 are valid registry names covering the registry
+  > exactly** (set difference empty in both directions). It contains **no invalid names** and
+  > would **not** hard-fail on that account. Only the filename, the echoed header and the
+  > category comments were stale; those have been corrected in place. The filename is retained
+  > deliberately so existing references keep resolving.
 - **`quick_test_all_22.sh`** — runs forward vs reverse for 20 pairs and asserts only that the
   survivor **counts differ**. Differential, not known-answer.
 - **Its committed result — `reverse_kernel_test_results.txt` — is vacuous.** All 20 rows read
@@ -192,8 +201,12 @@ KERNEL_REGISTRY count: 44
 11 base families × 4 modes. `docs/STEP2_BIDIRECTIONAL_SIEVE_DESCRIPTIVE_TRACE.md:507` is
 correct at 44. **These are stale at 46:** `docs/CHAPTER_8_PRNG_REGISTRY.md:36,64,962,1036`,
 `docs/TRIANGULATED_FUNCTIONAL_MIMICRY_VERIFIED_v1_0.md:51,64,136,139,277,564,646,658`,
-`docs/PROJECT_FILE_CATALOG.md:126,377`. `test_ALL_46_prngs_10M.sh` would hard-fail on the two
-names that no longer resolve.
+`docs/PROJECT_FILE_CATALOG.md:126,377`.
+
+> **[S184 CORRECTION]** This sentence previously read "`test_ALL_46_prngs_10M.sh` would hard-fail
+> on the two names that no longer resolve." That is **FALSE** and is struck. The script's array
+> holds 44 entries and every one resolves in `KERNEL_REGISTRY`; only its *filename and comments*
+> carried the stale 46. See the correction at §1.5.
 
 **CPU-reference coverage is asymmetric — 26 of 44:**
 
@@ -277,7 +290,7 @@ resolution, stripe assignment, dedup, and NPZ finalization. No legacy harness to
 | `manual_kernel_test.py` | Needs CuPy + a GPU. VM101 has a 3080 Ti. Kernel arg list is hand-written against the current signature — **verify before trusting**; arg counts have moved (`tests/test_s172_phase3_worker.py` asserts 12/13/14-length prefixes). |
 | coordinator-routed harnesses (§1.3) | `MultiGPUCoordinator` still exists (`coordinator.py:231, :436, :1061, :2265`), but `distributed_config.json` holds the **bare-metal** rig addresses `.120/.154/.162`, and the rigs are currently in **Proxmox** (CT100s at `.122/.156/.164`). They would not reach a rig unbooted. Fixtures also absent. |
 | `regenerate_all_tests_1234.sh` | scp targets `.120` / `.154` — stale endpoints, and only two of three rigs. |
-| `test_ALL_46_prngs_10M.sh` | Names 46 variants against a 44-entry registry → hard-fails. Also spins 26 GPUs; **out of scope, never to be launched by an agent.** |
+| `test_ALL_46_prngs_10M.sh` | **[S184 CORRECTION]** Does **not** hard-fail on names: its array holds 44 entries and all 44 resolve in `KERNEL_REGISTRY`; only the filename/header/category comments were stale (now corrected in place). It remains a liveness sweep with no expected answer — **not** known-answer evidence. Spins 26 GPUs; **out of scope, never to be launched by an agent.** |
 
 ---
 

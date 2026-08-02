@@ -125,9 +125,15 @@ in place** rather than left to be found and trusted.
    superseded in place.
 4. **Correct the `full_state` characterisation** in `DAILY3_CONSUMER_CONTRACT_v1.md` per §2 — the
    warning stands, the explanation was wrong.
-5. **Registry count:** the live registry is **44**, not 46. Eight documents are stale and
-   `test_ALL_46_prngs_10M.sh` **would hard-fail**. Docs-only; Alpha requests it fold into the
-   chapter track.
+5. **Registry count:** the live registry is **44**, not 46. Eight documents are stale.
+
+   > **[S184 CORRECTION — bounded Phase 6 §6, Beta-ordered.]** The clause "`test_ALL_46_prngs_
+   > 10M.sh` **would hard-fail**" is **WRONG** and is struck. Beta checked and Alpha re-verified
+   > against the live registry: the script's array holds **44** entries, **11 in each of four
+   > categories**, and **every name resolves** — it covers `KERNEL_REGISTRY` exactly. The staleness
+   > was confined to the filename, the echoed header and two "(12)" category comments; those are
+   > now corrected in place. The script is still **not** known-answer evidence (no expected
+   > answer), but the failure mode asserted here does not exist.
 
 ## 7. Alpha process note
 

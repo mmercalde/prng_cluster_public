@@ -2159,6 +2159,53 @@ def gate22_coexistence():
         # path is touched (flagged for review).
         "miner/__init__.py",
         "tests/test_s172_admission_liveness.py",
+        # ─────────────────────────────────────────────────────────────────────
+        # S184 BOUNDED PHASE 6 (Walls A and B, the Miner Known-Answer Transfer
+        # Gate, and the RandomSampler control arm). Registered by the same
+        # standing rule as every block above and APPENDED to them — nothing
+        # earlier is rewritten, and P0.5's strengthening of G-MINER-UNCHANGED
+        # (which greps registered diffs for threshold tokens) is untouched.
+        #
+        # ONE production file changes, and it is NOT in this gate's protected
+        # surface:
+        #   * window_optimizer_bayesian.py — §4's sampler-neutral extraction.
+        #     The TPE-sampler construction moves OUT of the study body into a
+        #     thin `search()` entrypoint, and the body becomes
+        #     `run_optimization(..., sampler, sampler_metadata)` with both new
+        #     arguments REQUIRED and keyword-only. `OptunaRandomSearch` is added
+        #     as the operator-selected RandomSampler control arm, and the result
+        #     dict's `strategy` key now reports the sampler that actually chose
+        #     the points instead of a hardcoded 'optuna_bayesian'. Beta's
+        #     direction, verbatim in substance: do not route all samplers through
+        #     a permanently Bayesian-named entrypoint. No search-space change, no
+        #     objective change, no threshold logic, no warm-start change, no
+        #     autonomous sampler selection (reserved authority — nothing reads an
+        #     advisor recommendation to pick a sampler).
+        #
+        # FOUR NEW test paths, no production code:
+        #   * tests/phase6/known_answer_reference.py — the INDEPENDENT stdlib
+        #     reference for the four java_lcg variants (imports json, hashlib and
+        #     struct only; no registry, miner, coordinator, backend, finalizer,
+        #     cupy or numpy).
+        #   * tests/phase6/known_answer_gate.py — §3's transfer gate: eight
+        #     bounded populations, exact-set comparison, five worker-path
+        #     negative controls, eight fault injections.
+        #   * tests/phase6/wall_ab_gate.py — §1 and §2. NOTE it is deliberately
+        #     CUPY-FREE AT IMPORT TIME (lazy `_woi()` / `_d6()`), because D5's
+        #     spawn children re-import `__main__` and assembly_shard_worker's
+        #     §6.7.A guard refuses a worker holding a GPU context.
+        #   * tests/phase6/sampler_control_arm.py — §4's matched-budget,
+        #     multi-seed sampler comparison over a bounded real-sieve objective.
+        #
+        # No kernel, protocol, dataset-authority, PWC or ZMQ path is touched. The
+        # miner/ tree and sieve_gpu_worker.py / prng_registry.py are BYTE-
+        # UNCHANGED by this deliverable, so G-MINER-UNCHANGED needs no new
+        # registration at all (flagged for review).
+        "window_optimizer_bayesian.py",
+        "tests/phase6/known_answer_reference.py",
+        "tests/phase6/known_answer_gate.py",
+        "tests/phase6/wall_ab_gate.py",
+        "tests/phase6/sampler_control_arm.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the

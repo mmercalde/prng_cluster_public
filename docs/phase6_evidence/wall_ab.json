@@ -1,0 +1,1206 @@
+{
+  "arms": [
+    {
+      "array_order": [
+        "seeds",
+        "forward_matches",
+        "reverse_matches",
+        "window_size",
+        "offset",
+        "trial_number",
+        "skip_min",
+        "skip_max",
+        "skip_range",
+        "forward_count",
+        "reverse_count",
+        "bidirectional_count",
+        "intersection_count",
+        "intersection_ratio",
+        "intersection_weight",
+        "bidirectional_selectivity",
+        "forward_only_count",
+        "reverse_only_count",
+        "survivor_overlap_ratio",
+        "score",
+        "skip_mode",
+        "prng_type"
+      ],
+      "artifact_sha256": "0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0",
+      "assembly_backend": "serial_reference (default)",
+      "assembly_backend_options": null,
+      "bidirectional_count": 319,
+      "binary_npz_path": "/tmp/claude-1000/-home-michael-distributed-prng-analysis/e6e67a75-ec88-4e04-98bc-a0cc084ef92b/scratchpad/wallAB3/cuda_run1/generation_root/.s172_accumulator/generations/gen-20260802T011719898562Z-step1_java_lcg_0--08a61e450972431c54550f44366597446cf22b23536a7f66267225173e75501f/bidirectional_survivors_binary.npz",
+      "bind_host": "127.0.0.1",
+      "elapsed_s": 23.3,
+      "final_row_count": 319,
+      "forward_count": 398156,
+      "generation_id": "gen-20260802T011719898562Z-step1_java_lcg_0",
+      "label": "cuda_run1",
+      "raw_candidates": 319,
+      "reverse_count": 383,
+      "sidecar_sha256": "08a61e450972431c54550f44366597446cf22b23536a7f66267225173e75501f",
+      "snapshot_commit": "de540cb8ef78e40214b6cae4d92cb1c49497e837",
+      "threshold_provenance": {
+        "effective": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "payload": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "phase_direction": {
+          "1": "forward",
+          "2": "reverse"
+        },
+        "requested": {
+          "forward": 0.31,
+          "reverse": 0.47
+        },
+        "run_id": "distributed_config_t1_02d490d3",
+        "validated": true
+      },
+      "worker_alive_through_trial": [
+        false
+      ],
+      "workers": [
+        {
+          "device": 0,
+          "kind": "cuda-local",
+          "label": "CUDA / local (zeus-ubuntu-vm device 0)",
+          "node_id": "zeus-ubuntu-vm"
+        }
+      ]
+    },
+    {
+      "array_order": [
+        "seeds",
+        "forward_matches",
+        "reverse_matches",
+        "window_size",
+        "offset",
+        "trial_number",
+        "skip_min",
+        "skip_max",
+        "skip_range",
+        "forward_count",
+        "reverse_count",
+        "bidirectional_count",
+        "intersection_count",
+        "intersection_ratio",
+        "intersection_weight",
+        "bidirectional_selectivity",
+        "forward_only_count",
+        "reverse_only_count",
+        "survivor_overlap_ratio",
+        "score",
+        "skip_mode",
+        "prng_type"
+      ],
+      "artifact_sha256": "0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0",
+      "assembly_backend": "serial_reference (default)",
+      "assembly_backend_options": null,
+      "bidirectional_count": 319,
+      "binary_npz_path": "/tmp/claude-1000/-home-michael-distributed-prng-analysis/e6e67a75-ec88-4e04-98bc-a0cc084ef92b/scratchpad/wallAB3/cuda_run2/generation_root/.s172_accumulator/generations/gen-20260802T011750759742Z-step1_java_lcg_0--54d067af5bb576d66a5fce2655d5476b3a246ad8e1cdc7b4fd99a33c90bfc681/bidirectional_survivors_binary.npz",
+      "bind_host": "127.0.0.1",
+      "elapsed_s": 23.4,
+      "final_row_count": 319,
+      "forward_count": 398156,
+      "generation_id": "gen-20260802T011750759742Z-step1_java_lcg_0",
+      "label": "cuda_run2",
+      "raw_candidates": 319,
+      "reverse_count": 383,
+      "sidecar_sha256": "54d067af5bb576d66a5fce2655d5476b3a246ad8e1cdc7b4fd99a33c90bfc681",
+      "snapshot_commit": "d9bc9aca24120be6e45a548da8c5dbd1345401a0",
+      "threshold_provenance": {
+        "effective": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "payload": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "phase_direction": {
+          "1": "forward",
+          "2": "reverse"
+        },
+        "requested": {
+          "forward": 0.31,
+          "reverse": 0.47
+        },
+        "run_id": "distributed_config_t1_e710288b",
+        "validated": true
+      },
+      "worker_alive_through_trial": [
+        false
+      ],
+      "workers": [
+        {
+          "device": 0,
+          "kind": "cuda-local",
+          "label": "CUDA / local (zeus-ubuntu-vm device 0)",
+          "node_id": "zeus-ubuntu-vm"
+        }
+      ]
+    },
+    {
+      "array_order": [
+        "seeds",
+        "forward_matches",
+        "reverse_matches",
+        "window_size",
+        "offset",
+        "trial_number",
+        "skip_min",
+        "skip_max",
+        "skip_range",
+        "forward_count",
+        "reverse_count",
+        "bidirectional_count",
+        "intersection_count",
+        "intersection_ratio",
+        "intersection_weight",
+        "bidirectional_selectivity",
+        "forward_only_count",
+        "reverse_only_count",
+        "survivor_overlap_ratio",
+        "score",
+        "skip_mode",
+        "prng_type"
+      ],
+      "artifact_sha256": "0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0",
+      "assembly_backend": "process_sharded",
+      "assembly_backend_options": {
+        "pool_size": 4
+      },
+      "bidirectional_count": 319,
+      "binary_npz_path": "/tmp/claude-1000/-home-michael-distributed-prng-analysis/e6e67a75-ec88-4e04-98bc-a0cc084ef92b/scratchpad/wallAB3/cuda_sharded/generation_root/.s172_accumulator/generations/gen-20260802T011815682980Z-step1_java_lcg_0--56165a0227071f156f416ecb6fe2f79371e47cd4d9a12de58243c5d34831834a/bidirectional_survivors_binary.npz",
+      "bind_host": "127.0.0.1",
+      "elapsed_s": 22.9,
+      "final_row_count": 319,
+      "forward_count": 398156,
+      "generation_id": "gen-20260802T011815682980Z-step1_java_lcg_0",
+      "label": "cuda_sharded",
+      "raw_candidates": 319,
+      "reverse_count": 383,
+      "sidecar_sha256": "56165a0227071f156f416ecb6fe2f79371e47cd4d9a12de58243c5d34831834a",
+      "snapshot_commit": "4ba73bccaae9f2ae984ca5fb57b64202a52950f9",
+      "threshold_provenance": {
+        "effective": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "payload": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "phase_direction": {
+          "1": "forward",
+          "2": "reverse"
+        },
+        "requested": {
+          "forward": 0.31,
+          "reverse": 0.47
+        },
+        "run_id": "distributed_config_t1_9f627b8e",
+        "validated": true
+      },
+      "worker_alive_through_trial": [
+        false
+      ],
+      "workers": [
+        {
+          "device": 0,
+          "kind": "cuda-local",
+          "label": "CUDA / local (zeus-ubuntu-vm device 0)",
+          "node_id": "zeus-ubuntu-vm"
+        }
+      ]
+    },
+    {
+      "array_order": [
+        "seeds",
+        "forward_matches",
+        "reverse_matches",
+        "window_size",
+        "offset",
+        "trial_number",
+        "skip_min",
+        "skip_max",
+        "skip_range",
+        "forward_count",
+        "reverse_count",
+        "bidirectional_count",
+        "intersection_count",
+        "intersection_ratio",
+        "intersection_weight",
+        "bidirectional_selectivity",
+        "forward_only_count",
+        "reverse_only_count",
+        "survivor_overlap_ratio",
+        "score",
+        "skip_mode",
+        "prng_type"
+      ],
+      "artifact_sha256": "0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0",
+      "assembly_backend": "serial_reference (default)",
+      "assembly_backend_options": null,
+      "bidirectional_count": 319,
+      "binary_npz_path": "/tmp/claude-1000/-home-michael-distributed-prng-analysis/e6e67a75-ec88-4e04-98bc-a0cc084ef92b/scratchpad/wallAB3/rigs_ab/generation_root/.s172_accumulator/generations/gen-20260802T011841540609Z-step1_java_lcg_0--7e2fedebad7d5daf3033c0090c7f3282c12a885fda6e40677a5f354b522db7f2/bidirectional_survivors_binary.npz",
+      "bind_host": "0.0.0.0",
+      "elapsed_s": 18.7,
+      "final_row_count": 319,
+      "forward_count": 398156,
+      "generation_id": "gen-20260802T011841540609Z-step1_java_lcg_0",
+      "label": "rigs_ab",
+      "raw_candidates": 319,
+      "reverse_count": 383,
+      "sidecar_sha256": "7e2fedebad7d5daf3033c0090c7f3282c12a885fda6e40677a5f354b522db7f2",
+      "snapshot_commit": "04fbbbd2a3744d0946273fa5df7e4a14f8a56c3c",
+      "threshold_provenance": {
+        "effective": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "payload": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "phase_direction": {
+          "1": "forward",
+          "2": "reverse"
+        },
+        "requested": {
+          "forward": 0.31,
+          "reverse": 0.47
+        },
+        "run_id": "distributed_config_t1_410c0d68",
+        "validated": true
+      },
+      "worker_alive_through_trial": [
+        true,
+        true
+      ],
+      "workers": [
+        {
+          "device": 0,
+          "kind": "rocm-remote",
+          "label": "ROCm / remote (michael@192.168.3.122 rrig6600 device 0)",
+          "node_id": "rrig6600"
+        },
+        {
+          "device": 0,
+          "kind": "rocm-remote",
+          "label": "ROCm / remote (michael@192.168.3.156 rrig6600b device 0)",
+          "node_id": "rrig6600b"
+        }
+      ]
+    },
+    {
+      "array_order": [
+        "seeds",
+        "forward_matches",
+        "reverse_matches",
+        "window_size",
+        "offset",
+        "trial_number",
+        "skip_min",
+        "skip_max",
+        "skip_range",
+        "forward_count",
+        "reverse_count",
+        "bidirectional_count",
+        "intersection_count",
+        "intersection_ratio",
+        "intersection_weight",
+        "bidirectional_selectivity",
+        "forward_only_count",
+        "reverse_only_count",
+        "survivor_overlap_ratio",
+        "score",
+        "skip_mode",
+        "prng_type"
+      ],
+      "artifact_sha256": "0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0",
+      "assembly_backend": "serial_reference (default)",
+      "assembly_backend_options": null,
+      "bidirectional_count": 319,
+      "binary_npz_path": "/tmp/claude-1000/-home-michael-distributed-prng-analysis/e6e67a75-ec88-4e04-98bc-a0cc084ef92b/scratchpad/wallAB3/rigs_bc/generation_root/.s172_accumulator/generations/gen-20260802T011905277375Z-step1_java_lcg_0--97b7e1c6f5ee048a5f69297430f0d54eb3bb0d79dc672531ba2ba0ea18e594d0/bidirectional_survivors_binary.npz",
+      "bind_host": "0.0.0.0",
+      "elapsed_s": 19.6,
+      "final_row_count": 319,
+      "forward_count": 398156,
+      "generation_id": "gen-20260802T011905277375Z-step1_java_lcg_0",
+      "label": "rigs_bc",
+      "raw_candidates": 319,
+      "reverse_count": 383,
+      "sidecar_sha256": "97b7e1c6f5ee048a5f69297430f0d54eb3bb0d79dc672531ba2ba0ea18e594d0",
+      "snapshot_commit": "311031bddfdec9bc8ae94cabcb8a73a24b24b986",
+      "threshold_provenance": {
+        "effective": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "payload": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "phase_direction": {
+          "1": "forward",
+          "2": "reverse"
+        },
+        "requested": {
+          "forward": 0.31,
+          "reverse": 0.47
+        },
+        "run_id": "distributed_config_t1_ce4dac66",
+        "validated": true
+      },
+      "worker_alive_through_trial": [
+        true,
+        true
+      ],
+      "workers": [
+        {
+          "device": 0,
+          "kind": "rocm-remote",
+          "label": "ROCm / remote (michael@192.168.3.156 rrig6600b device 0)",
+          "node_id": "rrig6600b"
+        },
+        {
+          "device": 0,
+          "kind": "rocm-remote",
+          "label": "ROCm / remote (michael@192.168.3.164 rrig6600c device 0)",
+          "node_id": "rrig6600c"
+        }
+      ]
+    }
+  ],
+  "authority": "docs/CLAUDE_CODE_INSTRUCTIONS_BOUNDED_PHASE_6.md \u00a71,\u00a72",
+  "config": {
+    "forward_threshold": 0.31,
+    "offset": 0,
+    "reverse_threshold": 0.47,
+    "seed_cap": 1000000,
+    "seed_count": 8000000,
+    "seed_start": 0,
+    "sessions": [
+      "midday",
+      "evening"
+    ],
+    "skip_max": 16,
+    "skip_min": 0,
+    "stripe_size": 4000000,
+    "window_size": 3
+  },
+  "gate": "s172_bounded_phase6_wall_a_wall_b",
+  "provenance": {
+    "assembly_backends_exercised": [
+      "process_sharded",
+      "serial_reference (default)"
+    ],
+    "dataset_frozen_path": "/home/michael/distributed_prng_analysis/daily3-20260801T145551443433Z-513648160d35.json",
+    "dataset_lineage_id": null,
+    "dataset_pointer_manifest": "/home/michael/distributed_prng_analysis/daily3_current.json",
+    "dataset_pointer_manifest_sha256": "ef3275264a906b7064e9e50b87d41e1e7a0c02071716a5b083ca0d6e57f3250a",
+    "dataset_record_count": 18068,
+    "dataset_sha256": "513648160d356617c22a1e543ae1c9c65f4921ec21718989308b1f70c00768f6",
+    "dataset_size_bytes": 1380711,
+    "dataset_version_id": "daily3-20260801T145551443433Z-513648160d35",
+    "effective_skip_semantics": "kernel skip range from the assignment payload, default [0,16]; trial metadata skip_min=0 skip_max=16; skip burned BEFORE the first draw and BETWEEN every subsequent pair (inter-draw). Constant-skip only \u2014 the hybrid kernels' skip bounds are dead (skill 2.7 #4) and no hybrid phase ran here.",
+    "prng_family": "java_lcg",
+    "prng_variants_executed": [
+      "java_lcg (phase 1, forward constant)",
+      "java_lcg_reverse (phase 2, reverse constant)"
+    ],
+    "repository_clean_including_untracked": false,
+    "repository_commit": "76e8eafcae335b9afa81399ada09bc5a93b76dd7",
+    "repository_tracked_clean": false,
+    "repository_tracked_dirty_paths": [
+      "M docs/KNOWN_ANSWER_VALIDATION_INVENTORY.md",
+      " M docs/TEAM_ALPHA_WALL_C_SUBMISSION.md",
+      " M quick_test_all_22.sh",
+      " M reverse_kernel_test_results.txt",
+      " M test_ALL_46_prngs_10M.sh",
+      " M tests/test_s172_phase4_coordinator.py",
+      " M window_optimizer_bayesian.py"
+    ],
+    "repository_untracked_count": 4,
+    "seed_domain": {
+      "contract": "contiguous uint64 half-open [start, start+count)",
+      "exact_range": [
+        0,
+        8000000
+      ],
+      "seed_count": 8000000,
+      "seed_start": 0
+    },
+    "skip_mode": "constant (test_both_modes=False)",
+    "thresholds": {
+      "effective": {
+        "cuda_run1": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "cuda_run2": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "cuda_sharded": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "rigs_ab": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "rigs_bc": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        }
+      },
+      "payload": {
+        "cuda_run1": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "cuda_run2": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "cuda_sharded": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "rigs_ab": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        },
+        "rigs_bc": {
+          "1": [
+            0.31
+          ],
+          "2": [
+            0.47
+          ]
+        }
+      },
+      "requested": {
+        "forward": 0.31,
+        "reverse": 0.47
+      }
+    },
+    "window_selection": {
+      "offset": 0,
+      "sessions": [
+        "midday",
+        "evening"
+      ],
+      "window_size": 3
+    }
+  },
+  "wall_a": {
+    "artifact_sha256": "0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0",
+    "faults": [
+      {
+        "description": "remove `reverse_matches` from the 22-array bundle",
+        "evidence": "rejected with ArrayBundleError",
+        "id": "FA1_missing_array",
+        "rejected": true
+      },
+      {
+        "description": "widen `score` from float32 to float64",
+        "evidence": "rejected with ArrayBundleError",
+        "id": "FA2_wrong_dtype",
+        "rejected": true
+      },
+      {
+        "description": "truncate `seeds` by one row",
+        "evidence": "rejected with ArrayBundleError",
+        "id": "FA3_ragged_length",
+        "rejected": true
+      },
+      {
+        "description": "hand extract_survivors_full a seeds-only bundle (the 14/47-features regression shape)",
+        "evidence": "rejected with ValueError",
+        "id": "FA4_metadata_loss",
+        "rejected": true
+      },
+      {
+        "description": "point the Step-2 loader at a missing NPZ; a silent fallback_used=False would be undetectable",
+        "evidence": "rejected with FileNotFoundError",
+        "id": "FA5_loader_fallback_visible",
+        "rejected": true
+      }
+    ],
+    "generation_id": "gen-20260802T011719898562Z-step1_java_lcg_0",
+    "legs": {
+      "A1 frozen 22-array contract": {
+        "detail": "22 arrays, order == frozen oracle, all shaped (319,)",
+        "dtypes": {
+          "bidirectional_count": "float32",
+          "bidirectional_selectivity": "float32",
+          "forward_count": "float32",
+          "forward_matches": "float32",
+          "forward_only_count": "float32",
+          "intersection_count": "float32",
+          "intersection_ratio": "float32",
+          "intersection_weight": "float32",
+          "offset": "int32",
+          "prng_type": "uint8",
+          "reverse_count": "float32",
+          "reverse_matches": "float32",
+          "reverse_only_count": "float32",
+          "score": "float32",
+          "seeds": "uint32",
+          "skip_max": "int32",
+          "skip_min": "int32",
+          "skip_mode": "uint8",
+          "skip_range": "int32",
+          "survivor_overlap_ratio": "float32",
+          "trial_number": "int32",
+          "window_size": "int32"
+        },
+        "pass": true,
+        "would_fail_if": "an array is added, removed, renamed, reordered or not per-row"
+      },
+      "A2 validate_array_bundle()": {
+        "detail": "passed",
+        "pass": true,
+        "would_fail_if": "dtype/length/NaN/contract violation in any of the 22 arrays"
+      },
+      "A3 Step-2 loader, fallback_used=False": {
+        "detail": "format=npz npz_version=3 count=319 fallback_used=False",
+        "pass": true,
+        "would_fail_if": "the loader cannot read the NPZ and silently falls back to JSON"
+      },
+      "A4 NPZ->dict preserves every field": {
+        "detail": "319 records x 22 fields; missing=[] extra=[]",
+        "fields": [
+          "bidirectional_count",
+          "bidirectional_selectivity",
+          "forward_count",
+          "forward_matches",
+          "forward_only_count",
+          "intersection_count",
+          "intersection_ratio",
+          "intersection_weight",
+          "offset",
+          "prng_type",
+          "reverse_count",
+          "reverse_matches",
+          "reverse_only_count",
+          "score",
+          "seed",
+          "skip_max",
+          "skip_min",
+          "skip_mode",
+          "skip_range",
+          "survivor_overlap_ratio",
+          "trial_number",
+          "window_size"
+        ],
+        "pass": true,
+        "would_fail_if": "extract_survivors_full drops a field \u2014 this is the exact regression that once left 14/47 ML features at zero"
+      },
+      "A4b NPZ->dict value round-trip": {
+        "detail": "7,018 values compared, 0 mismatched",
+        "pass": true,
+        "would_fail_if": "a value is coerced, truncated or reordered in the conversion"
+      },
+      "A5 Step-3 chunk generation": {
+        "detail": "3 chunks of <= 107; 319 records read back; field set preserved in every chunk; byte round-trip equal",
+        "pass": true,
+        "would_fail_if": "chunking drops records, drops fields, or reorders them"
+      },
+      "A6 survivors_with_scores, no metadata loss": {
+        "detail": "107 scored, 91 features/record, sieve metadata present=['forward_count', 'reverse_count', 'bidirectional_count', 'skip_min', 'skip_max', 'skip_range'], value mismatches=0",
+        "feature_count": 91,
+        "pass": true,
+        "would_fail_if": "the sieve metadata does not survive the chunk->scorer boundary, or arrives with scorer defaults instead of miner values"
+      }
+    },
+    "rows": 319,
+    "sentinel": "PASS"
+  },
+  "wall_b": {
+    "cited": [
+      {
+        "caveat": "the Phase 6.0 ROCm run executed the PRE-P0.5 worker (miner/range_miner_worker.py at 8e2f5bf). The current worker at HEAD is a different file. This citation is therefore evidence about the KERNEL and the platform, not about the current worker source.",
+        "claim": "identical artifact_sha256 0e0092feeb02e22d28557ddf4d8e421941d6117bcc0448d7f7323ec402c1c4b0 across the D6 release-grade generation and both Phase 6.0 runs; 22/22 arrays field-for-field equal; 398,156 / 383 / 319 forward/reverse/bidirectional; no GPU reset and no GCVM_L2_PROTECTION_FAULT in the host kernel log",
+        "leg": "B1 CUDA vs ROCm",
+        "source": "docs/S172_PHASE_6_0_ROCM_PARITY_EVIDENCE.md, commit 23fa413",
+        "status": "CITED \u2014 NOT RE-RUN IN THIS SESSION"
+      }
+    ],
+    "comparisons": [
+      {
+        "a": "cuda_run1",
+        "all_arrays_equal": true,
+        "arrays": [
+          {
+            "array": "seeds",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "window_size",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "offset",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "trial_number",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_min",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_max",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_range",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_weight",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_selectivity",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "survivor_overlap_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "score",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_mode",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "prng_type",
+            "equal": true,
+            "note": ""
+          }
+        ],
+        "artifact_sha256_equal": true,
+        "b": "cuda_run2",
+        "identical": true,
+        "order_equal": true,
+        "title": "B2 REPEATED RUN vs REPEATED RUN (fresh, CUDA)"
+      },
+      {
+        "a": "cuda_run1",
+        "all_arrays_equal": true,
+        "arrays": [
+          {
+            "array": "seeds",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "window_size",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "offset",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "trial_number",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_min",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_max",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_range",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_weight",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_selectivity",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "survivor_overlap_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "score",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_mode",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "prng_type",
+            "equal": true,
+            "note": ""
+          }
+        ],
+        "artifact_sha256_equal": true,
+        "b": "cuda_sharded",
+        "identical": true,
+        "order_equal": true,
+        "title": "B3 serial_reference vs process_sharded (fresh, CUDA)"
+      },
+      {
+        "a": "rigs_ab",
+        "all_arrays_equal": true,
+        "arrays": [
+          {
+            "array": "seeds",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "window_size",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "offset",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "trial_number",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_min",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_max",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_range",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_weight",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_selectivity",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "survivor_overlap_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "score",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_mode",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "prng_type",
+            "equal": true,
+            "note": ""
+          }
+        ],
+        "artifact_sha256_equal": true,
+        "b": "rigs_bc",
+        "identical": true,
+        "order_equal": true,
+        "title": "B4a MULTI-RIG {a,b} vs {b,c} \u2014 node-assignment independence (fresh)"
+      },
+      {
+        "a": "cuda_run1",
+        "all_arrays_equal": true,
+        "arrays": [
+          {
+            "array": "seeds",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_matches",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "window_size",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "offset",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "trial_number",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_min",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_max",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_range",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "intersection_weight",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "bidirectional_selectivity",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "forward_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "reverse_only_count",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "survivor_overlap_ratio",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "score",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "skip_mode",
+            "equal": true,
+            "note": ""
+          },
+          {
+            "array": "prng_type",
+            "equal": true,
+            "note": ""
+          }
+        ],
+        "artifact_sha256_equal": true,
+        "b": "rigs_ab",
+        "identical": true,
+        "order_equal": true,
+        "title": "B4b SINGLE CUDA GPU vs TWO ROCm RIGS \u2014 engine output independent of fleet shape AND platform (fresh)"
+      }
+    ],
+    "fault_injection": {
+      "evidence": "all_arrays_equal=False artifact_sha256_equal=False",
+      "id": "FB1_one_value_perturbed",
+      "rejected": true
+    },
+    "sentinel": "PASS"
+  }
+}

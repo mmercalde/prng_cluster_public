@@ -1,3 +1,72 @@
+================================================================================
+SUPERSEDED — NOT VALIDATION EVIDENCE
+================================================================================
+[S184 bounded Phase 6 §6 — marked in place by Team Beta's order. The original
+20 result rows below are PRESERVED VERBATIM; nothing has been deleted, and this
+header is the only addition.]
+
+WHAT THIS FILE IS
+  A record of a reverse-kernel run across 20 PRNG variants. Every single row
+  reads "Forward=0, Reverse=0, BOTH ZERO". There are no positive rows anywhere
+  in the file.
+
+WHY IT IS NOT EVIDENCE OF ANYTHING
+  All results were BOTH ZERO, and NO POSITIVE CONTROL was established. Nothing
+  in this run demonstrated that the detector could produce a non-zero result
+  when a non-zero result was the correct answer. A run that returns zero
+  everywhere is consistent with two completely different worlds:
+
+      (a) the kernels are correct and there genuinely were no survivors;
+      (b) the kernels, the harness, the residues, the thresholds or the launch
+          path were broken in a way that returns zero unconditionally.
+
+  This file cannot distinguish them. That is the definition of a VACUOUS
+  DETECTOR: a check that was not checking, presenting as a result.
+
+PROHIBITED FROM CITATION UNDER VIR-2
+  docs/VERIFICATION_INTEGRITY_STANDARD.md, VIR-2: a vacuous-capable detector
+  requires execution proof, a CLEAN CONTROL, a FAULT-INJECTION (POSITIVE)
+  CONTROL, and detector independence. This run has none of the three controls.
+  It must not be cited as reverse-kernel correctness evidence, as sieve
+  correctness evidence, or as coverage evidence, in any document, brief,
+  submission or changelog.
+
+  This is a statement about THIS ARTEFACT, not about the reverse kernels. The
+  kernels are not being called wrong here — they are simply not evidenced by
+  this file one way or the other.
+
+THE REPLACEMENT GATE
+  tests/phase6/known_answer_gate.py — the S172 bounded Phase 6 Miner
+  Known-Answer Transfer Gate (authority:
+  docs/CLAUDE_CODE_INSTRUCTIONS_BOUNDED_PHASE_6.md §3).
+
+  It supplies precisely what this file lacks, for the four java_lcg variants
+  including BOTH reverse variants (java_lcg_reverse, java_lcg_hybrid_reverse):
+    * an expectation computed by an INDEPENDENT stdlib reference
+      (tests/phase6/known_answer_reference.py) that imports no project code;
+    * POPULATED survivor sets — thousands of survivors per dense population, so
+      a zero result is a detectable failure rather than the only outcome;
+    * an EXACT-SET comparison of the complete bounded survivor set, which
+      catches extra false survivors as well as missing true ones;
+    * a planted seed recovered at match rate 1.0, which is the positive control
+      this file never had;
+    * eight FAULT INJECTIONS the comparator is required to reject, three of
+      them re-deriving expectations under genuinely wrong semantics;
+    * an unambiguous PASS / FAIL / UNAVAILABLE / INCOMPLETE sentinel and a
+      non-zero exit status on anything but PASS.
+
+  Note the scope difference, which is deliberate and not a regression: this
+  superseded file lists 20 variants, the replacement gate covers 4. Team Beta
+  STRUCK the broad 44-PRNG requirement — known-answer validation of the
+  registry is established pre-repository practice and is not being repeated.
+  The replacement gate asks a narrower and different question: whether that
+  result TRANSFERS to RANGE-MINER, which did not exist when the original work
+  was done. Twenty rows of zeros is not broader coverage than four exact-set
+  comparisons; it is no coverage at all.
+
+================================================================================
+ORIGINAL CONTENT BELOW — PRESERVED VERBATIM, NOT EVIDENCE
+================================================================================
 java_lcg: Forward=0, Reverse=0, ⚠️  BOTH ZERO
 java_lcg_hybrid: Forward=0, Reverse=0, ⚠️  BOTH ZERO
 mt19937: Forward=0, Reverse=0, ⚠️  BOTH ZERO

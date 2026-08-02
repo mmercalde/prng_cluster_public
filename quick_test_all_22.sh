@@ -29,7 +29,23 @@ echo "QUICK TEST: ALL 22 REVERSE KERNELS"
 echo "Test: 25k seeds, window 512, skip 0-10"
 echo "================================================================================"
 
-RESULTS_FILE="reverse_kernel_test_results.txt"
+# [S184 bounded Phase 6 §6] This script used to write `reverse_kernel_test_
+# results.txt` and TRUNCATE it (`> $RESULTS_FILE`). Team Beta ordered that file
+# marked SUPERSEDED IN PLACE with its original rows preserved; a generator that
+# truncates it would silently undo that order on the next run. So the output now
+# goes to a timestamped file and the superseded record is never touched.
+#
+# Note also what this script actually asserts: only that the forward and reverse
+# survivor COUNTS DIFFER. It is a differential check, not a known-answer test,
+# and its "BOTH ZERO" branch is explicitly not counted as either pass or fail —
+# which is how a 20/20 all-zero run came to be committed as if it were a result.
+# For known-answer evidence on the four java_lcg variants see
+# tests/phase6/known_answer_gate.py.
+RESULTS_FILE="reverse_kernel_test_results_$(date -u +%Y%m%dT%H%M%SZ).txt"
+if [ -e "reverse_kernel_test_results.txt" ]; then
+    echo "NOTE: reverse_kernel_test_results.txt is SUPERSEDED and will not be"
+    echo "      overwritten. Writing this run to: $RESULTS_FILE"
+fi
 > $RESULTS_FILE
 
 passed=0
