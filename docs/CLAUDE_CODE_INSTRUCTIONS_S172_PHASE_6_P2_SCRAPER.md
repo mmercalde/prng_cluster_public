@@ -1,156 +1,142 @@
-# CLAUDE_CODE_INSTRUCTIONS_S172_PHASE_6_P2_SCRAPER.md — REV3 (DRAFT — pending Beta)
+# CLAUDE_CODE_INSTRUCTIONS_S172_PHASE_6_P2_SCRAPER.md — REV4 (DRAFT — pending Beta)
 
 **S172 — Phase 6-P2: append-only immutable dataset publication.**
 
-**Base:** HEAD (current). Claude Code on **VM101** as `michael`, venv `~/venvs/torch`.
+**Pre-implementation commit: `07a2032661cdb3078358cd143838cf1eba0d32d9`** (`07a2032`).
+Claude Code on **VM101** as `michael`, venv `~/venvs/torch`.
 **Authority:** `docs/DATASET_PUBLICATION_SCHEMA_v1.md` (FROZEN, `manifest_schema_version: 1`).
 **Where this brief and the schema differ, the schema wins.**
 
 ---
 
-## 0. Verified state of the real dataset — measured on VM101 this session
+## 0. REV3 → REV4
 
-Beta's correction 2 rests on claims about the existing data. **They were measured, not assumed.**
+Beta ruled the transition (§2) and returned four corrections. **Correction 1 is a logic error in
+Alpha's own terminal-day rule, not a tightening of it** — see §3.1. Everything else in REV3 was
+ratified.
+
+---
+
+## 1. Verified state of the real dataset — measured on VM101
 
 | fact | measured |
 |---|---|
-| record count | **18,068** |
+| records | **18,068** |
 | span | `2000-01-01 evening` → `2026-02-26 midday` |
-| session values present | **exactly** `{evening, midday}` |
-| stored order vs canonical `(date asc, evening<midday)` | **MATCHES CANONICAL** |
-| `2026-02-26` records | **midday only — evening ABSENT** |
-| single-session dates | **1,040 of 9,554** — but **1,038 are 2000-2002** (evening-only era), then 2019: **1**, 2026: **1** |
+| sessions present | **exactly** `{evening, midday}` |
+| stored order vs canonical | **MATCHES CANONICAL** |
+| `2026-02-26` | **midday only — evening ABSENT** |
+| single-session dates | **1,040 of 9,554** — **1,038 are 2000-2002** (evening-only era); 2019: **1**; 2026: **1** |
 
-**Two consequences.**
-
-**The authority state is valid**, so publication does not halt under Beta correction 3's ordering
-wall. Good — but it must still be *checked*, not assumed, because that is what §3 is for.
-
-**Beta's backfill case fires on publication one.** The dataset ends `2026-02-26 midday`; the next
-scrape finds `2026-02-26 evening`, which sorts **before** it. That is a **backfill, not an
-append**.
-
-**And it is structural, not a one-off** — any scrape ending on a midday record guarantees the next
-run backfills. §2.3 addresses that. `2019-01-25` evening-only is a separate anomaly, recorded in
-BACKLOG, **not P2's work**.
+`2019-01-25` evening-only is a separate anomaly → BACKLOG, **not P2's work**.
 
 ---
 
-## 1. ⚠ The defect being removed
+## 2. THE TRANSITION — Beta's binding ruling: option (a), fail closed
 
-`main()` accumulates into `all_draws`, then:
+**Option (b) is REJECTED.** It cannot be characterized as "rejoining at a day boundary": it would
+**insert a record before the already-published `2026-02-26 midday`**, so L001's record sequence
+would **no longer be a prefix**. That directly violates the frozen lineage contract.
 
-```python
-Path(OUTPUT_FILE).write_text(json.dumps(all_draws, indent=2))   # OUTPUT_FILE = "daily3.json"
-```
+**If a live scrape supplies `2026-02-26 evening`, publication against L001 MUST halt with
+`NON_APPEND_INSERTION_REQUIRED`:**
 
-**It never reads the existing dataset.** With `--recent` (`start_year = end_year = TODAY.year`),
-**`daily3_scraper.py --json --recent` replaces 18,068 records with the current year alone.** No
-merge, no dedup, no error, exit status success. `write_text` is not atomic, so a crash mid-write
-truncates outright.
+- **preserve L001 byte-for-byte;**
+- **write no version and no pointer;**
+- **report every insertion key and canonical position;**
+- **do NOT autonomously create L002;**
+- the later live-scrape **dry run** determines the exact contents of a **separately authorized**
+  new-lineage transition.
 
-`daily3scraper.service` — enabled since Sep 2025, `Restart=always`, targeting a
-`run_daily3scraper.py` that **never existed** — has looped ENOENT every boot. **That loop is the
-only thing that has prevented this.** See §7.
+**If the source does not contain that evening record, no transition exception fires** and ordinary
+merge rules govern the later records.
 
-## 1.1 Current behaviour, verified at source (ser8 Revision 1.5)
-
-Full overwrite · never reads prior data · **no dedup** (the PA descendant's header claims dedup;
-the CA original has none) · **no sort** · no versions, lineage, manifest or correction concept ·
-emits `date`/`session`/`draw` · `int("000")` → `0`, **correct** per the consumer contract.
-
-## 1.2 Scope of change
-
-**Keep:** `fetch_draws`, parsing, row filtering, CLI, the year loop. Not the defect, not revised.
-**Replace entirely:** everything from `all_draws` to disk.
-**Structure the publication as a separate module** so the contract is testable without the network.
+**G-VERSION-ONE-CASE (required):** existing terminal `2026-02-26 midday` **plus** scraped
+`2026-02-26 evening` **must halt**. Gate this exact case.
 
 ---
 
-## 2. Canonical order, backfills, and the day boundary
+## 3. Canonical order, deferral, and backfills
 
-### 2.1 The order — bound
+### 3.0 The order — bound
 
 ```
 (date ascending, session precedence: evening BEFORE midday)
 ```
 
-**Allowed session values are exactly `evening` and `midday`.** An unknown value **fails
-validation** — it never acquires an invented ordering.
+Allowed session values are **exactly** `evening` and `midday`. An unknown value **fails
+validation** — it never acquires an invented ordering. JSON whitespace and object-key order are
+irrelevant; **array record order is semantic.**
 
-**JSON whitespace and object-key order are irrelevant. Array record order is semantic.**
+**Never sort the prior version.** The current version must already equal its canonical ordering or
+publication **halts as invalid authority state**. *(Measured today: it does. The check still runs.)*
 
-### 2.2 Never sort the prior version
+### 3.1 Terminal midday-only deferral — CORRECTED
 
-**Do not sort the current published version.** Sorting it would silently hide a non-canonical
-published sequence. **The current version must already equal its canonical ordering, or
-publication halts as invalid authority state.**
+**Alpha's REV3 rule was wrong.** It said to hold the final date when it *"carries a midday
+record."* Under the bound order **every complete date ends with its midday record**, so that rule
+would **defer every complete terminal date indefinitely** and the dataset would never advance.
 
-*(Measured today: it does. The check must still run.)*
+**Replace it with an exact post-dedup session-set rule on the terminal date:**
 
-### 2.3 Backfill halt — and the day-boundary rule that keeps it meaningful
+| terminal-date sessions | behaviour |
+|---|---|
+| `{evening, midday}` | **publish normally** |
+| `{midday}` | **defer that date** |
+| `{evening}` | **publish normally** — a later midday remains an **append** under canonical order |
+| anything else | **validation failure** |
 
-**A new record that sorts INSIDE the prior sequence is a backfill, not an append.** It halts with
+**Call this a terminal midday-only deferral.** It is **not** a claim that the day is physically
+complete or incomplete — only that a midday-without-evening trailing edge is the shape that would
+force a backfill next run.
+
+**A deferral produces a structured result DISTINCT from ordinary `NO_CHANGE`, carrying the deferred
+keys:**
+
+- if **other publishable additions exist** → **publish them** and **report** the deferred terminal
+  date;
+- if **nothing else changed** → **write nothing** and return **`DEFERRED`**.
+
+**Note this rule does not rescue publication one.** The *existing published* version ends
+`{midday}`-only; deferral governs what P2 publishes going forward, so §2's halt still applies.
+The two are independent.
+
+### 3.2 Backfill halt
+
+**A new record sorting INSIDE the prior sequence is a backfill, not an append** →
 **`NON_APPEND_INSERTION_REQUIRED`**: no version written · pointer unchanged · no autonomous lineage
-· **report the insertion keys and positions for human lineage review.**
-
-**Alpha's addition — the terminal partial day.** Without this the halt fires on ordinary runs, and
-a scraper that needs a human decision most times it runs is not usable.
-
-> **Publish through the last COMPLETE day. Hold back a terminal partial day.**
->
-> If the final date in the merged sequence carries a **midday** record, its **evening** record may
-> still be pending at the source. **Drop that date's records from this publication** and pick them
-> up on the next run. Every publication then ends on a day boundary, so every subsequent scrape is
-> a genuine append, and `NON_APPEND_INSERTION_REQUIRED` becomes an **anomaly signal** rather than a
-> routine event.
-
-**Why the rule is about the TERMINAL record and not about "both sessions present."** A
-"both sessions required" rule would reject **1,038 legitimate 2000-2002 evening-only dates**. Those
-dates predate CA Daily 3's midday draw. **They are complete.** The rule applies only to the trailing
-edge, where a session may still be pending.
-
-**A held-back date is not a deletion and not a conflict.** It is deferred. Say so in the report and
-log it.
-
-### 2.4 ⚠ TRANSITION QUESTION — for Beta, NOT for the implementer
-
-**The existing published version already ends at a partial day** (`2026-02-26 midday`, evening
-absent). So publication one inherits the problem regardless of §2.3, which governs only what P2
-publishes going forward.
-
-Two options, and **Alpha will not choose**:
-
-**(a)** The first publication **halts** with `NON_APPEND_INSERTION_REQUIRED` and a human makes a
-one-time lineage decision.
-**(b)** The day-boundary rule applies **retroactively when computing the merge**, so the merge
-treats `2026-02-26` as pending on both sides and the sequence rejoins cleanly at a day boundary.
-
-**(b) is less disruptive; (a) is more conservative and keeps the wall absolute on its first real
-test.** This is a one-time transition, not a policy — **flagged for ruling. Implement neither until
-Beta answers.** Until then, gate the §2.3 rule and the halt; leave the transition unimplemented.
+· **report insertion keys and canonical positions**.
 
 ---
 
-## 3. Validate the current authority BEFORE merging (Beta correction 3)
+## 4. `--recent` must not lose a deferred record across a calendar boundary
 
-Run the **frozen publication validation authority** — or **extract and reuse it. Never create a
-weaker duplicate.**
+**The defect:** `--recent` sets `start_year = end_year = TODAY.year`. A record deferred on
+**December 31** is then **never re-fetched** in January — the deferral would silently lose it.
 
-**Fail before writing on any of:** missing or malformed pointer · schema mismatch · forbidden
-target name · missing target · filename/version-ID disagreement · size mismatch · record-count
-mismatch · first/last-record mismatch · **full digest mismatch** · filename-prefix mismatch ·
-invalid lineage identity · **prior sequence not equal to its canonical ordering** (§2.2).
+**Required, for `--recent`:** derive the scrape range **from the validated current authority**:
 
-**Mutants:** a corrupted pointer · **a valid-JSON target with one changed digit** (proves the
-digest check is real and not a shape check).
+```
+start_year = year(current_manifest_target.last_draw.date)
+end_year   = current year
+```
+
+**Fetch every year in that inclusive range.** This preserves overlap with the last published
+boundary **and** permits catch-up after extended scraper downtime.
+
+**⚠ The pre-fetch authority read selects the scrape range ONLY.** Publication must still
+**reacquire the writer lock and revalidate the authority before merging** (§6). The two reads are
+separate and the second is authoritative.
+
+**G-CALENDAR-BOUNDARY (required):** a record deferred on **31 December** is **re-fetched in
+January and subsequently published.**
 
 ---
 
-## 4. The merge (Beta correction 1)
+## 5. The merge
 
-**Inputs:** the validated current manifest and its immutable target; **and** the newly scraped
-records, **which may be only a partial year**.
+**Inputs:** the validated current manifest and its immutable target; **and** newly scraped records,
+**which may be only a partial year**.
 
 **Draw identity is `(date, session)`.**
 
@@ -161,201 +147,239 @@ records, **which may be only a partial year**.
 | scraped record conflicts with an **already-published** key | halt **`CORRECTION_REQUIRED`** |
 | published key **absent** from a partial scrape | **retained** |
 | previously unseen key | **added** |
-| **any** missing scrape record | **never** interpreted as a deletion |
+| **any** missing scrape record | **never** a deletion |
 
-**No-change result.** If the merged canonical sequence **equals** the current sequence: return
-no-change and **write nothing** — no version file, no pointer update, no timestamp-only generation,
-no predecessor link.
-
-**Gates:** identical repeated scrape · subset-only scrape with no new records · subset containing
-one valid new record · exact duplicate rows · conflicting duplicates within the scrape.
+**No-change:** if the merged canonical sequence **equals** the current sequence → write **nothing**
+— no version, no pointer update, no timestamp-only generation, no predecessor link.
 
 ---
 
-## 5. Durable publication — the full transaction (Beta correction 4)
+## 6. Durable publication — settled primitives (Beta correction 3)
 
-**Atomic pointer replacement alone is insufficient.** Order is binding:
+**REV3 left two choices to the implementer. They are settled here.**
+
+- **Install immutable versions with same-filesystem `os.link(temp, final)`, then unlink the temp.**
+- **Do NOT use `open(final, "x")` to copy bytes into a visible final name** — that can **expose a
+  partial final file**.
+- **Hold `fcntl.flock(LOCK_EX)` on an opened publication-root DIRECTORY**, from **before the
+  pointer is read** through **the final directory fsync**, **including no-change and failure
+  cleanup paths.**
+
+**The transaction, in binding order:**
 
 ```
- 1. acquire ONE publication-writer lock          (before reading the pointer)
- 2. validate (§3) and merge (§4) under that lock
- 3. serialize deterministically; derive the digest from the EXACT BYTES written
- 4. write the version to a same-directory temporary .json
- 5. flush + fsync it
- 6. validate it FROM DISK
- 7. install the final version name atomically, WITHOUT overwriting any existing path
- 8. fsync the directory
- 9. write + flush + fsync the manifest temporary
-10. os.replace the pointer; fsync the directory again
+ 1. open the publication-root directory; fcntl.flock(LOCK_EX)
+ 2. read + validate the pointer and its target (§7)
+ 3. merge (§5), apply §3.1 deferral and §3.2 / §2 halts
+ 4. serialize deterministically; derive the digest from the EXACT BYTES
+ 5. write the version to a same-directory temporary .json
+ 6. flush + fsync it
+ 7. validate it FROM DISK
+ 8. os.link(temp, final); unlink temp        <- no-clobber install
+ 9. fsync the directory
+10. write + flush + fsync the manifest temporary
+11. os.replace the pointer; fsync the directory again
+12. release the lock (also on every no-change and failure path)
 ```
 
-**`os.replace` is correct for the mutable pointer and FORBIDDEN for installing an immutable version
-file — it can overwrite an existing artifact.** Use a no-clobber primitive: `os.link(tmp, final)`
-then unlink the temp, or `open(final, "x")`. **State which, and prove it raises on a pre-existing
-path.**
+**`os.replace` is correct for the mutable pointer and FORBIDDEN for the immutable version install**
+— it can overwrite an existing artifact. **The lock must not require a permanent non-`.json`
+sidecar**; a directory advisory lock satisfies this.
 
-**The writer lock must not require a permanent non-`.json` sidecar** — that would dirty the tree and
-break §6. **A directory advisory lock is acceptable.**
+### 6.1 Crash recovery
 
-### 5.1 Crash recovery — the unavoidable window
+Between steps 8 and 11 a **complete version exists while the pointer still names its predecessor.**
 
-Between steps 7 and 10 a **complete version exists while the pointer still names its predecessor.**
+On retry: an **exactly matching, fully validated orphan may be ADOPTED**; it must **never be
+overwritten**. **Multiple ambiguous matching candidates fail closed.**
 
-On retry: an **exactly matching, fully validated orphan may be ADOPTED.** It must **never be
-overwritten.** **Multiple ambiguous matching candidates fail closed.**
+### 6.2 Concurrency — a real two-process gate
 
-**Crash gates at:** partial temporary-version write · complete version before final-name
-installation · final version installed before pointer replacement · manifest temporary write before
-replacement · pointer replacement before final directory sync.
-
-**Invariant: every visible final-name version is always complete and digest-valid.**
+**Two publishers starting from the same predecessor must serialize, re-read authority under the
+lock, and produce a valid single chain — never two competing successors.** This is a **real
+two-process test**, not a simulated one.
 
 ---
 
-## 6. `daily3.json` — PERMANENTLY FROZEN (Beta ruling, §3.4 now closed)
+## 7. Current-authority validation, and evaluation precedence (Beta correction 4)
 
-**Do not refresh it. Ever.** P0.5 already made `daily3_current.json` authoritative and classified
-`daily3.json` as a **legacy compatibility alias**. Any consumer still opening it remains
-**intentionally stale** until separately migrated.
+### 7.1 Authority source
 
-**G-ALIAS-FROZEN:** the alias's **bytes, digest, size and mtime** are unchanged across **all five**
-of: successful append · no-change publication · correction halt · injected crash · malformed
+**All operational dataset facts derive from `daily3_current.json` and its validated target.**
+**The frozen `daily3.json` may be read ONLY by `G-ALIAS-FROZEN`.**
+
+### 7.2 Failure precedence — binding order
+
+```
+1. current-authority validation
+2. scraped-record validation
+3. intra-scrape SOURCE_CONFLICT
+4. published-key CORRECTION_REQUIRED
+5. NON_APPEND_INSERTION_REQUIRED
+6. terminal midday-only deferral
+7. no-change
+8. publication
+```
+
+### 7.3 Authority validation — individually named gates
+
+**REV3's vague "twelve authority failures" is replaced.** One named gate per condition:
+
+`G-AUTH-POINTER-MISSING` · `G-AUTH-POINTER-MALFORMED` · `G-AUTH-SCHEMA-MISMATCH` ·
+`G-AUTH-FORBIDDEN-TARGET-NAME` · `G-AUTH-TARGET-MISSING` · `G-AUTH-FILENAME-VERSIONID-DISAGREE` ·
+`G-AUTH-SIZE-MISMATCH` · `G-AUTH-RECORD-COUNT-MISMATCH` · **`G-AUTH-FIRST-RECORD-MISMATCH`** ·
+**`G-AUTH-LAST-RECORD-MISMATCH`** · `G-AUTH-DIGEST-MISMATCH` · `G-AUTH-FILENAME-PREFIX-MISMATCH` ·
+`G-AUTH-INVALID-LINEAGE-ID` · `G-AUTH-NONCANONICAL-PRIOR-ORDER`
+
+**First-record and last-record mismatches are exercised INDEPENDENTLY** — not as one combined case.
+
+**Mutants:** a corrupted pointer · **a valid-JSON target with one changed digit**.
+
+Run the **frozen publication validation authority**, or **extract and reuse it. Never create a
+weaker duplicate.**
+
+---
+
+## 8. `daily3.json` — PERMANENTLY FROZEN
+
+**Do not refresh it. Ever.** P0.5 made `daily3_current.json` authoritative and classified
+`daily3.json` a **legacy compatibility alias**. Consumers still opening it remain **intentionally
+stale** until separately migrated.
+
+**G-ALIAS-FROZEN:** bytes, digest, size and mtime unchanged across **all five** of: successful
+append · no-change publication · correction halt · injected crash · malformed
 current-publication state.
 
-## 6.1 G-TREE-CLEAN — corrected (Beta correction 6)
-
-The development repo may already hold the uncommitted P2 implementation, so **requiring a literally
-empty `git status` is invalid or vacuous.** The gate must either:
-
-- compare porcelain **before vs after** publication and prove **publication added nothing**; or
-- operate in a **temporary git repository carrying the real ignore rules**.
-
-**The `.sha256` sidecar mutant must produce the ONLY new porcelain entry.**
+**G-TREE-CLEAN:** either compare porcelain **before vs after** and prove publication added nothing,
+**or** operate in a **temporary git repository carrying the real ignore rules**. **The `.sha256`
+mutant must produce the ONLY new porcelain entry.**
 
 ---
 
-## 7. Source ownership and deployment (Beta correction 5)
-
-REV2 named two off-repository copies and never named the target. **P2 code must be tracked. An
-off-repository edit on ser8 cannot be the sole production implementation.**
-
-REV3 specifies:
+## 9. Source ownership and deployment
 
 | item | value |
 |---|---|
-| canonical scraper, tracked path | **`daily3_scraper.py`** at repo root — beside `pa_pick3_scraper.py`, which is already tracked there |
-| publication module, tracked path | **`utils/dataset_publication.py`** — `utils/` holds the existing frozen authorities (`canonical_arrays`, `canonical_records`, `prng_encoding`, `run_finalizer`) and the dependency direction is right: publication must not import from `miner/` |
-| retained Revision 1.5 source | record the **sha256 of `ser8:~/Downloads/daily3_scraper.py`** in the report and in the commit message, so the pre-P2 baseline is identifiable forever |
-| ser8 copies | **RETIRED as sources.** `~/Downloads/` and `~/cluster_controller/` become historical artifacts, not deployment targets. The tracked repo file is the only implementation. |
-| invocation | operator: `python3 daily3_scraper.py --json --recent` from the repo root. Service activation is **§8, separate work.** |
+| canonical scraper, tracked | **`daily3_scraper.py`** at repo root |
+| publication module, tracked | **`utils/dataset_publication.py`** — must not import from `miner/` |
+| Revision 1.5 baseline | record the **sha256** of the retained source in report and commit message |
+| ser8 copies | **RETIRED as authorities** — historical artifacts, not deployment targets |
+| invocation | `python3 daily3_scraper.py --json --recent` from the repo root |
 
-**Stop condition, unchanged:** if a **divergent** copy of `daily3_scraper.py` exists on VM101 or
-Zeus, **STOP and report** — that is a second lineage and a different target. *(ser8's two copies are
-byte-identical, Revision 1.5, confirmed.)*
+**Stop condition:** a **divergent** copy on VM101 or Zeus → **STOP and report** (second lineage).
+*(ser8's two copies are byte-identical Revision 1.5, confirmed.)*
 
----
+## 10. Service — separate work, NOT here
 
-## 8. Service sequencing — separate work, do NOT do it here
+**Do not repoint the current unit at the real scraper.** A terminating scraper under
+`Restart=always` **executes continuously and hammers the source site.**
 
-**Do not re-enable `daily3scraper.service` by repointing its current unit at the real scraper.**
-**A terminating scraper under `Restart=always` would execute continuously and hammer the source
-site.**
+After certification: one-shot service **plus timer** (or an explicitly scheduled wrapper) ·
+real-scrape **dry run with no publication** · resolve any correction/backfill halt · **one
+controlled publication** · post-publication verifier **PASS** · **only then** enablement.
 
-After P2 certification, activation is its own work: a **one-shot service plus timer** (or an
-explicitly scheduled long-running wrapper) · a **real-scrape dry run with no publication** ·
-resolution of any correction/backfill halt · **one controlled publication** · **post-publication
-verifier PASS** · **only then** enablement.
+## 11. Do not "fix" the 22 zero-draw records
 
----
-
-## 9. Do not "fix" the 22 zero-draw records
-
-`draw == 0` is **genuine data** — `000` is a legitimate outcome; 22 sits inside the observed
-per-value range 4-32 (median 18, expected 18.07); indices span 254 to 16,939, not clustered at an
-import boundary.
-
-**The defect is in two consumers, both off the certifying path**, both using `entry.get("draw") or …`:
-`digit_sequential_sieve.py:161-162` and `coordinator.py:1881`. The certifying loader is zero-safe
+`draw == 0` is **genuine data** — `000` is legitimate; 22 sits inside the observed range 4-32
+(median 18, expected 18.07); indices 254-16,939, not clustered at an import boundary. The defect is
+in two consumers **off the certifying path**, both using `entry.get("draw") or …`:
+`digit_sequential_sieve.py:161-162`, `coordinator.py:1881`. The certifying loader is zero-safe
 (`miner/range_miner_worker.py:575`). `DAILY3_CONSUMER_CONTRACT_v1.md` §9 MUST #5 requires `0` be
-emitted as `0`. **Fixing the droppers is separate, non-certifying, and never bundled with a data
-publication.**
+emitted as `0`. **Never bundled with a data publication.**
 
-## 10. Out of scope
+## 12. Out of scope
 
-Session splits `daily3_midday.json` / `daily3_evening.json` — **not covered by the frozen schema**,
-unversioned and unbound, deliberate open item. The zero-droppers. The certifying Step-1 path. The
-`2019-01-25` anomaly (BACKLOG). Service activation (§8). The §2.4 transition (awaiting ruling).
+Session splits (unversioned, unbound, deliberate open item) · the zero-droppers · the certifying
+Step-1 path · `2019-01-25` (BACKLOG) · service activation (§10) · **creating L002** (§2).
 
 ---
 
-## 11. Gates — `tests/test_s172_phase_6_p2_publication.py`
+## 13. Gates — `tests/test_s172_phase_6_p2_publication.py`
 
 **Every gate uses a temporary publication root. No gate touches the real `daily3.json` or the
-network** — feed the publication module fixture records directly.
+network.**
 
-**Merge (§4):** identical repeated scrape → no-change, **nothing written** · subset-only, no new
-records → no-change · subset + one new record → one new version · exact duplicate rows → collapse ·
-conflicting duplicates in scrape → **`SOURCE_CONFLICT`** · scraped vs published conflict →
-**`CORRECTION_REQUIRED`**, nothing written, **no `L002`** · published key absent from partial scrape
-→ **retained, never deleted**.
+**Transition:** **`G-VERSION-ONE-CASE`** (§2) — terminal `2026-02-26 midday` + scraped
+`2026-02-26 evening` → **halt**, L001 byte-identical, no version, no pointer, no L002, insertion
+keys and positions reported.
 
-**Order and backfill (§2):** canonical order is `(date asc, evening<midday)` · unknown session
-**fails validation** · prior version **not sorted**; a non-canonical prior **halts** · a record
-sorting inside the prior sequence → **`NON_APPEND_INSERTION_REQUIRED`**, keys and positions
-reported · **G-DAY-BOUNDARY:** a scrape ending on a midday record **holds that date back**, and the
-next run appends both its records cleanly · **G-HISTORICAL-SINGLE:** an evening-only date in the
-**interior** (2000-2002 shape) publishes normally and is **never** treated as partial.
+**Deferral (§3.1):** `{evening, midday}` → publish · **`{midday}` → defer** · `{evening}` →
+publish, and a later midday **appends** · unknown session → **validation failure** · deferral with
+other additions → **publish those + report deferred** · deferral alone → **write nothing, return
+`DEFERRED`** · **`DEFERRED` is distinguishable from `NO_CHANGE`.**
 
-**Authority (§3):** all twelve failure modes · mutants: corrupted pointer · **valid-JSON target,
-one changed digit**.
+**Calendar (§4):** **`G-CALENDAR-BOUNDARY`** — deferred 31 Dec re-fetched in January and published ·
+scrape range derived from authority `last_draw.date` · **the pre-fetch read does not substitute for
+the under-lock revalidation.**
 
-**Durability (§5):** the ten-step order · **version install refuses to overwrite an existing path**
-· five crash gates · **orphan adoption**: exact match adopted and **never overwritten**; **multiple
-ambiguous candidates fail closed** · every visible final-name version complete and digest-valid.
+**Merge (§5):** identical repeated scrape → nothing written · subset-only → no-change · subset + one
+new record → one version · exact duplicates collapse · intra-scrape conflict → `SOURCE_CONFLICT` ·
+published conflict → `CORRECTION_REQUIRED`, nothing written, no L002 · absent published key →
+**retained**.
 
-**Identity:** `filename == version_id + ".json"` · 12-hex prefix matches the full digest's first 12
-· `record_count`, `size_bytes`, `first_draw`, `last_draw` correct · `predecessor_sha256` chains
-within a lineage, `null` on a lineage's first.
+**Order (§3):** canonical order · prior **not sorted**; non-canonical prior **halts** · backfill →
+`NON_APPEND_INSERTION_REQUIRED` · **`G-HISTORICAL-SINGLE`:** an **interior** evening-only date
+(2000-2002 shape) publishes normally and is **never** treated as partial.
 
-**§6:** G-ALIAS-FROZEN across all five scenarios · G-TREE-CLEAN corrected form ·
-**G-ZERO-DRAWS:** `draw == 0` survives unmodified.
+**Authority (§7.3):** the fourteen named gates, first/last record **independent**.
+
+**Precedence (§7.2):** construct inputs triggering **two** conditions at once and prove the
+**earlier** one wins. At minimum: authority-invalid + source-conflict → authority ·
+correction + insertion → correction · insertion + deferral → insertion.
+
+**Durability (§6):** the twelve-step order · **`os.link` refuses a pre-existing path** ·
+**`open(final,"x")` byte-copy is absent** (AST) · lock held across **no-change and failure** paths ·
+five crash gates (partial temp write · complete version pre-install · installed pre-pointer ·
+manifest temp pre-replace · pointer replaced pre-final-fsync) · **orphan adoption**: exact match
+adopted, never overwritten; **ambiguous candidates fail closed** · **`G-CONCURRENCY`: two real
+processes from one predecessor → serialized, single valid chain.**
+
+**Identity:** `filename == version_id + ".json"` · 12-hex prefix matches the digest's first 12 ·
+`record_count`, `size_bytes`, `first_draw`, `last_draw` correct · `predecessor_sha256` chains,
+`null` on a lineage's first.
+
+**§8:** `G-ALIAS-FROZEN` five scenarios · `G-TREE-CLEAN` corrected form · **`G-ZERO-DRAWS`**.
 
 **Mutants:** restore the overwrite-with-subset path · byte-prefix test (**must red on a
-reformatting case**) · derive canonical order from scrape order · sort the prior version · rewrite
-a prior record instead of halting · create `L002` autonomously · treat a missing scrape record as a
-deletion · publish a terminal partial day · **`os.replace` for the version install** · skip an
-fsync · adopt a **non**-matching orphan · overwrite an orphan · write a `.sha256` sidecar
-(**the only new porcelain entry**) · refresh `daily3.json` · drop `predecessor_sha256` · drop a
-zero-draw record.
+reformatting case**) · **REV3's broken "carries a midday record" predicate** (must red by deferring
+a complete `{evening,midday}` terminal date) · `--recent` reverts to current-year-only (**must red
+G-CALENDAR-BOUNDARY**) · derive canonical order from scrape order · sort the prior version ·
+rewrite a prior record instead of halting · create L002 autonomously · missing scrape record read as
+deletion · `os.replace` for the version install · skip an fsync · release the lock before the final
+fsync · adopt a **non**-matching orphan · overwrite an orphan · `.sha256` sidecar (**only new
+porcelain entry**) · refresh `daily3.json` · drop `predecessor_sha256` · drop a zero-draw record ·
+reorder the §7.2 precedence.
 
 ---
 
-## 12. Report
+## 14. Report
 
-`docs/S172_PHASE_6_P2_IMPLEMENTATION_REPORT.md`: the §7 tracked paths and the Revision 1.5 sha256 ·
-the VM101/Zeus divergent-copy check · the publication module and its seam · the canonical order and
-**proof it is not scrape-derived** · the merge matrix results · **the day-boundary rule's two gates**
-· the twelve authority failures · the no-clobber install primitive and its refusal proof · the five
-crash gates and orphan-adoption evidence · G-ALIAS-FROZEN across five scenarios · the corrected
-G-TREE-CLEAN form · gate/mutant counts · confirmation **no gate touched the real dataset or the
-network** · **§2.4 left unimplemented pending Beta**. Then STOP for Team Alpha review.
+`docs/S172_PHASE_6_P2_IMPLEMENTATION_REPORT.md`: §9's tracked paths and the Revision 1.5 sha256 ·
+the VM101/Zeus divergent-copy check · the publication module and its seam · **the corrected
+terminal-date session-set predicate and its four rows** · `DEFERRED` vs `NO_CHANGE` distinguishability
+· the `--recent` range derivation and the calendar-boundary evidence · the fourteen named authority
+gates with first/last independent · the §7.2 precedence evidence · **`os.link` install with its
+refusal proof** · the flock scope including failure paths · five crash gates and orphan adoption ·
+**the two-process concurrency result** · `G-VERSION-ONE-CASE` · `G-ALIAS-FROZEN` five scenarios ·
+gate/mutant counts · confirmation **no gate touched the real dataset or the network**.
+Then STOP for Team Alpha review.
 
 ---
 
 ## Verification-integrity controls (VIR-1…6)
 
 - **execution proof:** each gate prints its name and a non-trivial assertion count; crash gates
-  report the artifacts present at the injected point.
-- **clean control:** a normal append publishes, chains, and leaves the tree clean.
-- **fault-injection control:** §11's mutant list, four-part kill rule — prove each red comes **from
-  its injected defect**.
+  report the artifacts present at the injected point; the concurrency gate reports both PIDs and
+  the resulting chain.
+- **clean control:** a normal append publishes, chains, defers nothing, and leaves the tree clean.
+- **fault-injection control:** §13's mutants, four-part kill rule — prove each red comes **from its
+  injected defect**.
 - **completion sentinel:** `PASS | FAIL | UNAVAILABLE | INCOMPLETE`; only `PASS` accepts.
-- **unavailable-observer behavior:** no fleet dependency — must pass with all rigs down. Any
-  `UNAVAILABLE` arm is a finding.
-- **audit claim scope:** §0's dataset facts are **measured on VM101 this session**. The scraper
-  characterization is from **ser8 Revision 1.5** — **not** a repo file, because none existed until
-  it was tracked.
-- **searched surfaces:** tracked repo; ser8 `~/Downloads/` and `~/cluster_controller/` (via
-  Michael); the live `daily3.json` on VM101.
-- **unavailable surfaces:** whether a **divergent** copy exists on VM101/Zeus — §7's stop condition
-  closes it; the remote page's row ordering, which **no gate may depend on**.
+- **unavailable-observer behavior:** no fleet dependency — must pass with all rigs down.
+- **audit claim scope:** §1's facts are **measured on VM101**; the scraper characterization is from
+  **ser8 Revision 1.5**. Repo pinned at **`07a2032`**.
+- **searched surfaces:** tracked repo at `07a2032`; ser8 `~/Downloads/` and `~/cluster_controller/`
+  via Michael; the live `daily3.json` on VM101.
+- **unavailable surfaces:** whether a **divergent** copy exists on VM101/Zeus (§9 stop condition);
+  **what the source currently publishes for `2026-02-26 evening`** — only the §10 dry run
+  establishes it, and **no gate may depend on it.**
