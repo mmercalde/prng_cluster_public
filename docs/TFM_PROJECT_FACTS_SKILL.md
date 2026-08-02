@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through admission binding (`eff6616`, 2026-08-02).
+**Currency:** through D6.2 (`f7583bc`, 2026-08-02).
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -291,13 +291,38 @@ The scratch generations are **not** release-grade — future publication still u
 `--release-grade`.
 
 ### 2.9 Known-disabled / deliberately off
-**S166 in-memory clear** — disabled; candidate-list RAM growth unbounded until the checkpoint
-carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
+**S166 in-memory clear — NOW ENABLED** (`f7583bc`). `_FLUSH_CLEAR_IN_MEMORY = True`; the
+checkpoint carries the complete 24-field canonical state and the finalizer is fed the
+reconstructed cumulative state, not the truncated stump. **The OOM protection is real for the
+first time.** D6.2: 29/29 gates, 377 assertions, 23/23 mutants.
 **`.s172_checkpoint/<run_id>/` never pruned** — **D6.3, Phase-7 blocker.**
 **`process_sharded`** selectable, unpromoted.
 **`daily3scraper.service`** — enabled since Sep 2025 with `Restart=always`, target
 `run_daily3scraper.py` **never existed**; ENOENT loop every boot. **Now `disable --now`, unit
 retained.** Stays disabled until Phase 6-P2 is certified.
+**⚠ THAT ENOENT LOOP WAS A SAFETY INTERLOCK, NOT MERELY A DEFECT.** `daily3_scraper.py`
+(**Revision 1.5**, located on ser8 and now tracked at repo root) does
+`Path(OUTPUT_FILE).write_text(json.dumps(all_draws, indent=2))` — **a full overwrite that never
+reads the existing dataset**. With `--recent` (`start_year = end_year = TODAY.year`),
+**`daily3_scraper.py --json --recent` replaces 18,068 records with the current year alone.** No
+merge, no dedup, no error, **exit status success**. `write_text` is not atomic either.
+**Repointing that unit at the real scraper — an obvious, well-intentioned repair — would have
+destroyed the canonical dataset on the next boot.** After 6-P2 certifies, activation is a
+**one-shot service plus timer**: a terminating scraper under `Restart=always` runs continuously
+and hammers the source.
+**`daily3_scraper.py` had NEVER been in git history** and is not gitignored — the producer of the
+canonical dataset was never under version control. Same class as `agent_manifests/trse.json`.
+**`pa_pick3_scraper.py`'s header claims dedup and sorting; the CA original does NEITHER** — do not
+infer CA behaviour from the PA descendant.
+**`_RusageChildrenSampler` measures the wrong thing and passes by luck.**
+`tests/test_s172_phase5_d5_process_sharded.py:2107-2119` reads
+`getrusage(RUSAGE_CHILDREN).ru_maxrss` — a **process-lifetime** high-water mark over every child
+ever reaped, **not scoped to its `with` block**, despite a docstring saying "any SINGLE reaped
+child". Measured: 0 → trivial child 10 MiB → **one torch child 378 MiB** → another trivial child
+**still 378 MiB**. `G-RSS` therefore depends on no earlier child exceeding its own ~339 MiB
+tree-sum; when the import gate first sat beside `G-NO-GPU`, G-RSS red and **mutant M8 survived**,
+deterministically. Contained by ordering. **Any future D5 arm reaping a large child reds it the
+same way.** Scope-correct fix (delta from `__enter__`) flagged, not actioned — BACKLOG.
 **PWC/ZMQ** retired from certifying authority; PWC hybrid additionally quarantined.
 **TRSE F1 is manifest drift, not a design error.** `TRSE_INTEGRATION_PLAN_S121.md` §2B shows
 **six** `default_params`; the live `agent_manifests/trse.json` has **seven** — `trse_context`
@@ -312,11 +337,21 @@ no git history and no repo-scoped audit can see it.
 object. Existing TPE and Random wrappers are correctly labelled, so nothing submitted is
 invalidated; **a fail-before-study guard is required before direct use of the neutral core or
 registration of another sampler.**
-**`process_sharded` import invariant has no gate** — TB **REQUIRES** one: fresh spawned
-interpreter · real Step-1 module surface · invoke the **production**
-`assembly_shard_worker.assert_cpu_only()` (do not duplicate its forbidden list) · cover **both**
-`torch` and `cupy` · plus a mutant introducing a module-level GPU import that proves it reds.
-Required hardening, **not** a Phase 6 blocker — the real `process_sharded` arm passed.
+**`process_sharded` import gate — CLOSED** (`e0513ba`).
+`tests/test_s172_process_sharded_import_gate.py`, **7 gates + 3 mutants**, wired into D5 via one
+`_check` row; **D5 is now 25 gates**. Fresh interpreter, production `_FORBIDDEN_GPU_MODULES`
+**read not restated**, both `torch` and `cupy` injected at runtime, mutants exit 3 with
+`ShardArtifactError` naming the module.
+**The surface is the MINER chain, not the Step-1 host module — and that is not a compromise.**
+`window_optimizer_integration_final` **holds cupy at import time** via `sieve_filter.py:51-52`
+(module-scope `import cupy`, reached from `…final.py:53`), so importing the Step-1 host and
+calling `assert_cpu_only()` **reds on a clean tree**; the brief's literal wording was
+unsatisfiable. The gate uses `miner` + `miner.step1_ingress` (AST-derived, transitively all 9
+miner modules) — **precisely the chain `assert_cpu_only`'s docstring describes**. `G-HOST-BOUNDARY`
+**measures** the exclusion rather than assuming it.
+*Corollary: the Step-1 host process legitimately holds a GPU library. Assembly workers are safe
+because they are **spawned**, not forked. Making the host GPU-free solves nothing; switching
+assembly to `fork` breaks the invariant silently.*
 **`quick_test_all_22.sh`** is **differential/liveness evidence only, never known-answer
 correctness evidence** (TB). Its output path is now timestamped so the supersession record
 survives.
@@ -491,6 +526,58 @@ Chapter 13.*
 strategy/mathematics · window-optimizer logic · PRNG-family authority · scoring logic ·
 meta-optimizer search space · model families · policy authority.
 
+### 2.14 The dataset, MEASURED — invisible to every repo-scoped search
+
+`daily3.json` is gitignored, so **no clone-based audit can see any of this.** Measured on VM101,
+2026-08-02.
+
+| fact | value |
+|---|---|
+| records | **18,068** |
+| span | `2000-01-01 evening` → **`2026-02-26 midday`** |
+| session values | **exactly** `{evening, midday}` |
+| canonical order | **`(date ascending, session: evening BEFORE midday)`** — the stored file **MATCHES** it |
+| `2026-02-26` | **midday ONLY — evening ABSENT.** The dataset ends mid-day |
+| single-session dates | **1,040 of 9,554** — **1,038 are 2000-2002** (the evening-only era, before CA Daily 3 had a midday draw); 2019: **1**; 2026: **1** |
+| staleness | last record `2026-02-26`; the scraper has not run since |
+
+**Three rules this falsifies, two of them already written by Alpha:**
+1. **"Both sessions required" completeness is WRONG** — it rejects 1,038 legitimate 2000-2002
+   evening-only dates. Those dates are complete.
+2. **"The terminal date carries a midday record" is WRONG** — under the bound order **every
+   complete date ends with its midday record**, so such a rule defers every complete terminal date
+   **forever**. *(Alpha shipped exactly this in 6-P2 REV3; Beta caught it.)* The correct form is a
+   post-dedup **session-set** test: `{midday}` defers · `{evening, midday}` and `{evening}` publish
+   · anything else fails validation.
+3. **`2019-01-25` is evening-only in the modern era** — an anomaly, not a pattern. BACKLOG.
+
+### 2.15 Three-hop parameter route — a new Step-1 parameter dies silently at hop 1
+
+| # | hop | anchor |
+|---|---|---|
+| 1 | `agent_manifests/window_optimizer.json` → `default_params` (+ `args_map`, `param_docs`) | **WATCHER's step-scoped filter DROPS any key not declared** — `agents/watcher_agent.py:1290-1314`, `if key in declared` |
+| 2 | explicit kwarg at the call site | `window_optimizer.py:790-810` |
+| 3 | the method signature | `window_optimizer_integration_final.py:1695-1710` |
+
+Adding only hop 3 gives a parameter that exists, accepts a value and **never receives one from
+production** — the `Advisor → strategy_recommendation.json → WATCHER` dead-chain shape and the TRSE
+F1 manifest drift, in a third place. **Gate the route, not the parameter.**
+
+### 2.16 The record's `trial_number` is NOT `optuna_trial.number`
+
+`trial_counter = {'count': 0}` (`window_optimizer_integration_final.py:2361`) → `+= 1` (`:2382`) →
+`trial_number=trial_counter['count']` (`:2399`). A **process-local 1-based ordinal that restarts
+every run.** `optuna_trial.number` is study-scoped, 0-based, and reaches only partition routing
+(`:2384`) and `result.iteration`.
+
+**They are different quantities, and `trial_number` is part of the replay key
+`(seed, trial_number, skip_mode)`.** A guard placed on `trial.number` does **not** close a
+replay-key collision. *(Beta's D6.2 addendum §4 was aimed at the wrong counter; D6.2 implements
+those checks as specified* **and** *continues the record ordinal from the recovered maximum, which
+is what actually closes it.)* `study.enqueue_trial` (`window_optimizer_bayesian.py:725`) is the
+S166 warm-start path, so a resumed study really can carry trials numbered below a recovered
+maximum.
+
 ## 3. SUPERSEDED — in repo, NOT current
 R² as objective · `holdout_hits` as ML target · `feature_importance.py` 60-name list (stale by
 31) · "~62 features" · `bidirectional_survivors.json` as survivor data ·
@@ -501,6 +588,17 @@ scraper `--rewrite` mode · "RX 6600" on rrig6600 (they are **6600 XT**, 32 CUs 
 node) · "the writer is unconditionally frozen" (D6 added one approved `backend=None` seam).
 
 ## 4. FROZEN — reuse, never reimplement
+- **`canonical_map_hash()`** (`utils/run_finalizer.py:486`, **exported**) — SHA-256 over canonical
+  JSON of `ENCODING_VERSION` + `PRNG_TYPE_ENCODING` + `SKIP_MODE_ENCODING`. **`ENCODING_VERSION`
+  alone is insufficient:** `tests/test_prng_encoding.py` pins `len(PRNG_TYPE_ENCODING) == 44`, so
+  **renaming a registry key preserves both the count and the version string while renumbering every
+  id after it alphabetically.**
+- **The three pre-L2 protections**, live order at `utils/run_finalizer.py:1606-1611`:
+  `_validate_raw_candidates` (`:665`) · `_validate_candidate_coverage` (`:558`) ·
+  `_validate_candidate_identity` (`:634`). **All private, none in `__all__` — import anyway or
+  extract; never fork.**
+- **`utils/prng_encoding`** — the string↔uint8 codec. Exists because **three divergent hardcoded
+  dicts once collapsed unknown/hybrid `prng_type` to `0`**, destroying provenance.
 - **`_l2_sort_key` / `_select_l2_winners`** (`utils/run_finalizer.py:690`, `:714`, Ruling D):
   highest **float32** score → lowest `trial_number` → constant-before-variable *within a trial
   only*; same-trial/same-mode collision raises `AccumulatorConsistencyError`. Comparing
@@ -576,21 +674,33 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
   clone is repo-only (VIR-6); chat-side reasoning is provisional.
 - Briefs: one falsifiable question, a defined deliverable, "write the report to
   `docs/<n>.md`". Separate *investigate* from *fix*.
-- Long nested suites look hung under `| tail`. Check for a **descendant** process before
-  concluding a hang; a blocked parent burns no CPU.
+- **Long suites: `python3 -u <suite> | tee /tmp/<name>.log`, or `nohup`. NEVER pipe to `tail`** —
+  it buffers and prints nothing until completion, so a live run is indistinguishable from a hang.
+  Check for a **descendant** process before concluding a hang; a blocked parent burns no CPU.
+- **Phase-4 Gate 22 builds `changed_py` from `git status --porcelain`, which includes UNTRACKED
+  files.** Any new test file reds it and propagates to D5's `NR` arm. **Expected during
+  development, not a regression, and NOT a reason to widen Gate 22.** Commit the file. *(Arose
+  twice; the answer is the same both times.)*
+- **Build a `git add` list from the report's "Files changed" section, never from recall.** *(A
+  D6.2 stage list omitted hops 1 and 2 of §2.15 — it would have shipped a `resume_checkpoint`
+  unreachable from WATCHER, alongside the gate proving otherwise.)*
+- **A whole-file JSON rewrite is the `2389b61` mechanism.** Escaped-unicode churn in untouched
+  lines means the file was re-serialized, not edited. Diff the **decoded structures**, not the
+  text, before committing.
 
 ## 8. APPROVED SEQUENCE
 ```
 D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
 6-P0 ✅ · 6-P0.5 ✅ · Q2 closure ✅ · §4.3 liveness ✅ · Wall C struck ✅
 bounded Phase 6 ✅ CERTIFIED d98298c
-Resolved Execution Set ✅ 63e627f · admission binding + freeze retraction ✅ eff6616
-Chapter 2 restored ✅ e1225a7 and corrected ✅
-next   process_sharded import gate (TB-REQUIRED, §2.9)
-       D6.2 · D6.3 · 6-P2 scraper
-       skip-OUTPUT work · sampler provenance guard
-       java_lcg_cpu non-zero-skip reachability audit (TB: before Phase 7, NO fix authorized)
-Phase 7  26-GPU saturation + WATCHER soak
+Resolved Execution Set ✅ 63e627f · admission binding ✅ eff6616
+Chapters 1 and 2 closed ✅ ef4b1c6 + content gate 09bbfbf
+process_sharded import gate ✅ CLOSED e0513ba — D5 now 25/25
+D6.2 ✅ IMPLEMENTED f7583bc — 29/29, 377 assertions, 23/23 mutants; awaiting Beta certification
+next   D6.3  — retention; investigation brief written, sequenced AFTER D6.2 (25 dirs on disk)
+       6-P2  — REV4 with Beta; option (a) BINDING (fail-closed halt, no autonomous L002)
+Phase 7  26-GPU saturation + WATCHER soak — blocked ONLY by D6.2 certification.
+         Beta: the multi-stripe protocol item does NOT block it.
 ```
 
 **⚠ Sampler-comparison sequencing — a correction TB issued against Alpha.** The certifying
@@ -646,3 +756,12 @@ binding.
 7. System-scoped claim on repo-scoped evidence? (VIR-6)
 8. **Named the host for every command? Included the venv activation?**
 9. Long thread? Verification discipline degrades — suggest a fresh session.
+10. **Writing a rule? Enumerate every case in its input space and state the behaviour for each
+    BEFORE submitting.** A rule validated only against the case that motivated it is untested.
+    *(6-P2 REV3's terminal-day predicate was written for `{midday}` and never tried against
+    `{evening, midday}`, where it defers forever.)*
+11. **A ruling that says "decide X" is decided in THAT revision, not the next one.** *(Twice in
+    D6.2.)*
+12. **Target: any brief closes in ≤3 review rounds.** D6.2 took five, 6-P2 took four, and **every
+    round was an Alpha defect, not reviewer padding.** The import gate closed in one — because the
+    existing gate was read in full before the brief was written. **Read first, then draft.**
