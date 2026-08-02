@@ -1348,6 +1348,25 @@ def main():
     parser.add_argument('--warm-start-session-idx', type=int, default=None,
                        help='[S166] Warm-start: session_idx for trial 0 (0=midday+evening, 1=midday, 2=evening).')
 
+    # ── [RESOLVED EXECUTION SET] the run's fleet, declared not discovered ──
+    parser.add_argument('--rig-profile', default=None,
+                       choices=['baremetal', 'proxmox'],
+                       help='Which boot target the rigs are on for THIS run. Every '
+                            'machine is a boot-selector: bare Ubuntu on its original '
+                            'address, or Proxmox with the workload in CT100 at a '
+                            'different one (CLAUDE.md §3). Both topologies are '
+                            'retained; this picks which endpoints enter the resolved '
+                            'execution set. Default: default_profile in '
+                            'rig_profiles_config.json.')
+    parser.add_argument('--execution-set-nodes', default=None,
+                       help='Comma-separated logical node ids (e.g. "localhost" or '
+                            '"rrig6600,rrig6600b") to run against. Naming a subset is '
+                            'how a PARTIAL fleet is declared — explicitly, and frozen '
+                            'before the run. A partial set is never inferred from which '
+                            'workers happen to answer, and a named node that does not '
+                            'exist is an error, never a silent drop. Default: the full '
+                            'declared fleet.')
+
     # [S172 Phase 1] RANGE-MINER backend (mutually exclusive with --use-persistent-workers
     # and --use-zmq-sqlite). Phase 1 is scaffolding-only; enabling this flag will import
     # miner.range_miner_coordinator.run_trial_miner which raises NotImplementedError until
@@ -1440,6 +1459,64 @@ def main():
         )
 
     # ========================================================================
+    # [RESOLVED EXECUTION SET] RUN-START FLEET AUTHORITY — resolve once, freeze
+    # ========================================================================
+    # PLACEMENT IS THE CONTRACT (Beta): after backend selection — the mutex
+    # immediately above is where the backend becomes a fact — and after rig
+    # profile selection, but BEFORE dataset verification (the P0.5 gate is the
+    # next block), BEFORE GPU verification, BEFORE MultiGPUCoordinator is
+    # constructed (:756 / :1079, both reached from the strategy branches far
+    # below) and before any dispatch. Every one of those is a consumer, so all
+    # of them must run against a set that already exists and can no longer
+    # change.
+    #
+    # Six mechanisms used to answer "what is the fleet?" differently, on two
+    # disjoint address sets, and three of them structurally could not pass in
+    # the current boot state. They are all still here, none deleted — they now
+    # read this.
+    #
+    # `remote_execution` is NOT passed to the dataset gate as a flag any more:
+    # it is DERIVED from the set (`any node not local`), which is what stops it
+    # from ever becoming a bypass. A run whose set includes rigs performs remote
+    # execution and cannot declare otherwise; a run whose set is one local node
+    # does not, and says so truthfully.
+    from execution_set import (
+        resolve_execution_set as _resolve_xset,
+        freeze_execution_set as _freeze_xset,
+        ExecutionSetError as _XSetError,
+    )
+    if args.use_range_miner:
+        _xset_backend = 'miner'
+    elif args.use_persistent_workers:
+        _xset_backend = 'pwc'
+    elif args.use_zmq_sqlite:
+        _xset_backend = 'zmq'
+    else:
+        _xset_backend = 'legacy'
+    # Recorded, never re-imposed: the miner's `expected_workers` and the PWC's
+    # `min_workers` keep their existing meanings and their existing values. The
+    # set carries the admission count so provenance shows what this run expected,
+    # not so that anything downstream is overridden by it.
+    _xset_admission = (args.worker_pool_size if _xset_backend == 'miner'
+                       else args.min_workers if _xset_backend == 'pwc'
+                       else None)
+    _xset_declared = None
+    if args.execution_set_nodes:
+        _xset_declared = [p.strip() for p in args.execution_set_nodes.split(',')
+                          if p.strip()]
+    try:
+        _xset = _freeze_xset(_resolve_xset(
+            backend=_xset_backend,
+            invoked_by='window_optimizer.main',
+            rig_profile=args.rig_profile,
+            declared_nodes=_xset_declared,
+            admission_count=_xset_admission,
+        ))
+    except _XSetError as _xset_err:
+        parser.error(f"EXECUTION_SET: {_xset_err}")
+    print(f"📌 [EXEC-SET] {_xset.describe()}")
+
+    # ========================================================================
     # [S172 Phase 6-P0.5] RUN-START DATASET AUTHORITY GATE
     # ========================================================================
     # Requirements 1-8 of the P0.5 brief converge on this one place, because it
@@ -1472,12 +1549,22 @@ def main():
     # the provisioning manifest is missing, unreadable, invalid or empty: with no
     # manifest the system cannot establish which worker datasets must be
     # verified, and recording UNAVAILABLE and proceeding violates the authority
-    # boundary. `remote_execution=True` is unconditional and is a statement of
-    # fact, not of policy — BOTH sieve entry points construct the 26-GPU
-    # MultiGPUCoordinator (:756 in run_bayesian_optimization, :1079 in
-    # run_with_config), so no window-optimizer run is fleet-free. Declaring
-    # otherwise for a single-GPU invocation would BE Beta's Q1 refinement, which
-    # is explicitly not authorized.
+    # boundary. That ruling is untouched — it is what still runs whenever no
+    # execution set is frozen.
+    #
+    # [RESOLVED EXECUTION SET] With a set frozen (always, on this path), the
+    # verification TARGETS come from the set and `remote_execution` is DERIVED
+    # from it rather than asserted here. The pre-set comment said `True` was
+    # unconditional because both sieve entry points construct the 26-GPU
+    # MultiGPUCoordinator, so no window-optimizer run was fleet-free — that was
+    # exactly right at the time, and it is precisely what the resolver changes:
+    # the coordinator's node list is now filtered to the set, so a run whose set
+    # is one local node genuinely drives one local node. This IS Beta's Q1
+    # refinement, and it arrives the way Beta required — through the shared
+    # resolver, with no special-casing of P0.5 and no weakening of
+    # `require_fleet`. `remote_execution=False` still means "no fleet", never
+    # "skip the fleet": a one-node set still verifies that node and still
+    # refuses if it fails.
     _p05_label = (f"window_opt_{args.prng_type}_"
                   f"{args.strategy or 'config'}_{os.getpid()}")
     try:
@@ -1485,7 +1572,8 @@ def main():
             args.lottery_file,
             run_label=_p05_label,
             miner_backed=bool(getattr(args, 'use_range_miner', False)),
-            remote_execution=True,
+            remote_execution=_xset.remote_execution,
+            execution_set=_xset,
         )
     except (_dsauth.DatasetAuthorityError, _DatasetProvErr) as _p05_err:
         parser.error(f"DATASET_AUTHORITY_P0_5: {_p05_err}")

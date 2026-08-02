@@ -1,0 +1,62 @@
+{
+  "manifest_schema_version": 1,
+  "_contract": "docs/CLAUDE_CODE_INSTRUCTIONS_RESOLVED_EXECUTION_SET.md",
+  "_what_this_is": "The rig-profile JOIN TABLE for the Resolved Execution Set. Every machine in the cluster is a boot-selector (CLAUDE.md §3): it boots bare Ubuntu on its original address, OR Proxmox, under which the workload runs in CT100 at a different address. Both address sets are valid and BOTH ARE RETAINED (Team Beta fleet ruling 3). This file is the only place that says which two addresses belong to the SAME logical node, so the resolver can pick one profile and every consumer then agrees.",
+  "_what_this_is_not": "NOT a third source of truth. gpu_count / gpu_type / python_env / script_path stay in distributed_config.json; the CT100 dataset endpoints stay in dataset_provisioning.json. This file only JOINS them, and execution_set.py CROSS-CHECKS every endpoint it declares against whichever of those two files describes it — a divergence is fatal, not silently preferred. That closes FLEET_STATE_REQUIREMENTS_v1 §5.4-4 (\"nothing compares the two files\") rather than adding a fourth copy to drift.",
+  "_naming": "Named *_config.json deliberately: .gitignore:41 ignores *.json and .gitignore:43 (!*_config.json) un-ignores this shape, so this file IS tracked and IS visible to git status — the opposite of dataset_provisioning.json, which must stay ignored. A fleet DEFINITION belongs in the repository; a fleet PROVISIONING RECORD does not.",
+
+  "default_profile": "proxmox",
+  "_default_profile_note": "The DECLARED default, and it is a declaration about the fleet, never a probe of it. Beta: a partial or selected set must be explicit and frozen before the run, never inferred from which machines happened to answer — so the resolver does not ping anything to decide this. It is 'proxmox' because all three rigs are currently booted into Proxmox and the CT100 endpoints are what the Beta-ratified P0.5 dataset authority already verifies against; declaring 'baremetal' here today would resolve a set of endpoints that are not running. When the rigs are booted back to their default bare-metal target, flip this one value (or pass --rig-profile baremetal) and all six consumers move together. distributed_config.json's bare-metal addresses stay exactly as they are — deliberate, CLAUDE.md §3, must not be corrected.",
+
+  "profiles": ["baremetal", "proxmox"],
+
+  "nodes": [
+    {
+      "node_id": "localhost",
+      "config_hostname": "localhost",
+      "worker_hostname": "zeus-ubuntu-vm",
+      "_worker_hostname_note": "socket.gethostname() on VM101, verified live 2026-08-01. The miner worker identity is f'{socket.gethostname()}:gpu{id}', so this is what a local worker calls itself. execution_set.py FAILS CLOSED if the live local hostname stops matching this — a renamed box must be a loud error, never a silently unadmitted worker.",
+      "local": true,
+      "ssh_user": "michael",
+      "endpoints": {
+        "baremetal": "localhost",
+        "proxmox": "localhost"
+      },
+      "_endpoint_note": "VM101 is the box the optimizer runs on and is not itself a boot-selector target in this table; it is the same node under either rig profile."
+    },
+    {
+      "node_id": "rrig6600",
+      "config_hostname": "192.168.3.120",
+      "worker_hostname": "rrig6600",
+      "local": false,
+      "ssh_user": "michael",
+      "endpoints": {
+        "baremetal": "192.168.3.120",
+        "proxmox": "192.168.3.122"
+      },
+      "_endpoint_note": "host = rig + 1, CT100 worker = host + 1 (RUNBOOK_v1.6_PATCH FIX 1). CT100 is created with --hostname rrig6600 so socket.gethostname() reports the RIG name under either boot target — which is why worker_hostname is profile-independent."
+    },
+    {
+      "node_id": "rrig6600b",
+      "config_hostname": "192.168.3.154",
+      "worker_hostname": "rrig6600b",
+      "local": false,
+      "ssh_user": "michael",
+      "endpoints": {
+        "baremetal": "192.168.3.154",
+        "proxmox": "192.168.3.156"
+      }
+    },
+    {
+      "node_id": "rrig6600c",
+      "config_hostname": "192.168.3.162",
+      "worker_hostname": "rrig6600c",
+      "local": false,
+      "ssh_user": "michael",
+      "endpoints": {
+        "baremetal": "192.168.3.162",
+        "proxmox": "192.168.3.164"
+      }
+    }
+  ]
+}

@@ -1287,6 +1287,81 @@ class WatcherAgent:
     # PREFLIGHT AND CLEANUP HELPERS (Team Beta Integration)
     # ════════════════════════════════════════════════════════════════════════
 
+    def _step1_declared_params(self, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Step 1's manifest defaults merged with the caller's params, step-scoped.
+
+        Step 1 is the only step that selects a sieve BACKEND, so it is the only
+        step that can answer "what is this run's backend?" — and the answer must
+        be the same one step 1 itself will compute, which is why the manifest
+        defaults and the same declared-keys filter are applied here rather than
+        reading `params` raw.
+        """
+        declared: Dict[str, Any] = {}
+        manifest_name = STEP_MANIFESTS.get(1)
+        if manifest_name:
+            manifest_path = os.path.join(self.config.manifests_dir, manifest_name)
+            if os.path.exists(manifest_path):
+                try:
+                    with open(manifest_path) as f:
+                        declared = (json.load(f).get("default_params", {}) or {})
+                except Exception as e:                       # noqa: BLE001
+                    logger.warning(f"Could not load step-1 manifest defaults "
+                                   f"for the execution set: {e}")
+        merged = {**declared}
+        for key, value in (params or {}).items():
+            if key in declared:                              # step-scoped filter
+                merged[key] = value
+        return merged
+
+    def _ensure_execution_set(self, params: Dict[str, Any] = None):
+        """Resolve and freeze the run's execution set, once per WATCHER process.
+
+        Returns the frozen `ResolvedExecutionSet`, or a blocked step-result dict
+        if the fleet cannot be established. A run that cannot name the machines
+        it runs on does not start — the same posture P0.5 takes toward a dataset
+        it cannot identify.
+        """
+        from execution_set import (
+            active_execution_set, resolve_execution_set, freeze_execution_set,
+            ExecutionSetError,
+        )
+        existing = active_execution_set()
+        if existing is not None:
+            return existing
+
+        p = self._step1_declared_params(params)
+        if p.get("use_range_miner"):
+            backend = "miner"
+        elif p.get("use_persistent_workers"):
+            backend = "pwc"
+        elif p.get("use_zmq_sqlite"):
+            backend = "zmq"
+        else:
+            backend = "legacy"
+        admission = (p.get("worker_pool_size") if backend == "miner"
+                     else p.get("min_workers") if backend == "pwc"
+                     else None)
+        nodes = p.get("execution_set_nodes")
+        if isinstance(nodes, str):
+            nodes = [x.strip() for x in nodes.split(",") if x.strip()]
+
+        try:
+            s = freeze_execution_set(resolve_execution_set(
+                backend=backend,
+                invoked_by="watcher_agent.run_step",
+                rig_profile=p.get("rig_profile"),
+                declared_nodes=nodes,
+                admission_count=admission,
+            ))
+        except ExecutionSetError as err:
+            msg = f"EXECUTION_SET: {err}"
+            logger.error("Step blocked before preflight: %s", msg)
+            print(f"❌ {msg}")
+            return {"success": False, "error": msg,
+                    "blocked_by": "execution_set"}
+        logger.info("[EXEC-SET] %s", s.describe())
+        return s
+
     def _run_preflight_check(self, step: int) -> Tuple[bool, str]:
         """
         Run preflight checks before executing a step.
@@ -1377,6 +1452,30 @@ class WatcherAgent:
             return None
 
         logger.info(f"Running Step {step}: {script}")
+
+        # ====================================================================
+        # [RESOLVED EXECUTION SET] RUN-START FLEET AUTHORITY
+        # ====================================================================
+        # WATCHER and the CLI invoke THE SAME RESOLVER — Beta's requirement, and
+        # the reason this is `execution_set.resolve_execution_set` and not a
+        # WATCHER-shaped reimplementation of it. Identical inputs produce an
+        # identical `set_id` on both paths, which is what makes G-SAME-RESOLVER
+        # checkable rather than asserted.
+        #
+        # First on the step, deliberately: everything after this line is a
+        # consumer. `_run_preflight_check` immediately below is the WATCHER GPU
+        # health check (one of the six), the P0.5 dataset gate further down is
+        # another, and the child `window_optimizer.py` process resolves the same
+        # set again for the coordinator it constructs. Resolving after any of
+        # them would mean a decision was already made without the set.
+        #
+        # Frozen ONCE PER WATCHER PROCESS, not per step: the fleet is a property
+        # of the run, not of step 4. Subsequent steps re-enter this and get the
+        # same frozen object back.
+        _xset_result = self._ensure_execution_set(params)
+        if isinstance(_xset_result, dict):
+            return _xset_result                    # blocked — fleet unestablished
+
         # PREFLIGHT CHECK (Team Beta Item A)
         preflight_passed, preflight_msg = self._run_preflight_check(step)
         if not preflight_passed:
@@ -1495,7 +1594,24 @@ class WatcherAgent:
                 # per step — every non-miner step keeps today's UNAVAILABLE, and
                 # nothing is silently relabelled NOT_APPLICABLE without evidence
                 # that the step really has no fleet.
-                _p05_nodes = _dsauth.load_provisioning_nodes()
+                # [RESOLVED EXECUTION SET] Same change as the CLI's P0.5 gate,
+                # for the same reason: WHICH NODES ARE THIS RUN'S was never
+                # P0.5's decision. The set was frozen at the top of run_step, so
+                # WATCHER and the child window_optimizer.py verify the same
+                # nodes at the same endpoints instead of one checking the CT100s
+                # while the other checks bare metal. Everything P0.5 gets right
+                # is untouched: on-target digest re-derivation, fail-before-
+                # dispatch, and the UNAVAILABLE / NOT_APPLICABLE vocabulary
+                # below (still reached whenever no set is frozen).
+                _p05_xset = _dsauth._active_execution_set()
+                if _p05_xset is not None:
+                    _p05_nodes = _p05_xset.dataset_verification_targets()
+                    logger.info(
+                        "[P0.5] step %d verification targets from execution set "
+                        "%s: %s", step, _p05_xset.set_id()[:12],
+                        [n.node_id for n in _p05_nodes])
+                else:
+                    _p05_nodes = _dsauth.load_provisioning_nodes()
                 if not _p05_nodes:
                     _p05_records = []
                     _p05_fleet_status = _dsauth.resolve_absent_fleet_status(

@@ -1129,6 +1129,37 @@ def resolve_absent_fleet_status(
 
 
 # ===========================================================================
+# The Resolved Execution Set — this module is a CONSUMER of it, not an author
+# ===========================================================================
+# P0.5 was the ONE mechanism of the six that had been updated for the Proxmox
+# migration, so it alone verified the CT100 endpoints while three others still
+# checked the bare-metal addresses. It is not being retired or loosened here:
+# its fail-before-dispatch behaviour, its per-node on-target digest re-derivation
+# and its Beta-ratified UNAVAILABLE / NOT_APPLICABLE vocabulary are untouched.
+# What changes is only WHICH NODES ARE THIS RUN'S — which was never P0.5's
+# decision to make, and is now the resolved set's.
+#
+# Imported lazily and defensively: `dataset_authority` must stay importable on
+# its own (workers, harnesses, a bare clone), and a missing resolver must degrade
+# to today's behaviour rather than break the dataset authority.
+
+def _active_execution_set():
+    try:
+        from execution_set import active_execution_set
+    except Exception:                                    # noqa: BLE001
+        return None
+    return active_execution_set()
+
+
+def _active_execution_set_provenance():
+    try:
+        from execution_set import execution_set_provenance
+    except Exception:                                    # noqa: BLE001
+        return None
+    return execution_set_provenance()
+
+
+# ===========================================================================
 # Run provenance (requirement 6)
 # ===========================================================================
 
@@ -1151,6 +1182,14 @@ def run_provenance_record(
         "fleet_status": fleet_status,
         "fleet": [r.to_provenance() for r in (node_records or [])],
     }
+    # [Resolved Execution Set] The run's frozen fleet authority, READ BACK from
+    # the freeze rather than reconstructed here — so the record shows what the
+    # run actually verified against, and the "which nodes were these?" question
+    # has one answer that survives the run. None when no set is frozen (a direct
+    # harness call); both production entry points always freeze one.
+    _xset_prov = _active_execution_set_provenance()
+    if _xset_prov is not None:
+        doc["execution_set"] = _xset_prov
     if extra:
         doc["extra"] = dict(extra)
     return doc
@@ -1204,6 +1243,7 @@ def run_start_dataset_gate(
     repo_root: Optional[str] = None,
     allow_unpublished_alias: bool = False,
     write_provenance: bool = True,
+    execution_set: Optional[Any] = None,
 ) -> FrozenDataset:
     """Resolve, freeze, verify the fleet, record provenance — before any dispatch.
 
@@ -1226,6 +1266,10 @@ def run_start_dataset_gate(
     `None`) keeps the over-constrained reading. See
     `resolve_absent_fleet_status()` — including why this is not a local-run
     bypass.
+
+    `execution_set` (or the process-frozen one) supersedes the provisioning
+    manifest as the source of VERIFICATION TARGETS — never as the source of
+    leniency. See the block below.
     """
     frozen = freeze_for_run(
         dataset_arg,
@@ -1233,9 +1277,49 @@ def run_start_dataset_gate(
         allow_unpublished_alias=allow_unpublished_alias,
     )
 
+    # -----------------------------------------------------------------
+    # WHICH NODES ARE THIS RUN'S? — the resolved execution set decides.
+    # -----------------------------------------------------------------
+    # Beta's Q1 refinement arrives HERE and only through the shared resolver:
+    # a run whose set is one local node verifies THAT node; a run whose set is
+    # three rigs verifies three. The set decides, not a flag — `require_fleet`
+    # is not weakened and P0.5 is not special-cased. A one-node set that fails
+    # still refuses: nothing below makes a failing node passable.
+    #
+    # `load_provisioning_nodes` is NOT retired — it remains the source when no
+    # set is frozen (harnesses, direct calls, every pre-existing test), and the
+    # resolver cross-checks the profile map against this same manifest, so the
+    # two can no longer disagree silently.
+    # SCOPE, precisely: the set decides WHICH NODES ARE VERIFIED. It does not
+    # decide whether the provisioning authority boundary applies. Beta's P0.5
+    # closure ruling — an unusable manifest is fatal for a miner-backed run,
+    # because the system cannot establish which WORKER datasets must be
+    # provisioned and verified — is preserved verbatim below and is still
+    # reached before any node is contacted. The one case the set legitimately
+    # answers on its own is a set with NO remote node: there is no worker
+    # dataset to establish, so the remote-provisioning record is genuinely
+    # NOT_APPLICABLE and the local node is verified directly. That is Q1, and it
+    # is the only behaviour that changes.
+    xset = execution_set if execution_set is not None else _active_execution_set()
+    records: List[NodeVerification] = []
+
     # Raises (unreadable / invalid) before returning; None = missing, [] = empty.
     nodes = load_provisioning_nodes(provisioning_manifest)
-    records: List[NodeVerification] = []
+
+    if xset is not None and (nodes or not xset.remote_execution):
+        targets = xset.dataset_verification_targets()
+        logger.info("[P0.5] verification targets from execution set %s "
+                    "(profile=%s%s): %s",
+                    xset.set_id()[:12], xset.rig_profile,
+                    ", PARTIAL" if xset.partial else "",
+                    [n.node_id for n in targets])
+        records = fleet_preflight(frozen, targets)       # raises on any non-PASS
+        fleet_status = FLEET_STATUS_PASS
+        if write_provenance:
+            write_run_provenance(run_label, frozen, records,
+                                 fleet_status=fleet_status, repo_root=repo_root)
+        return frozen
+
     if not nodes:
         manifest_path = os.path.abspath(
             provisioning_manifest or default_provisioning_manifest_path(repo_root)

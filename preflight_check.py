@@ -54,6 +54,18 @@ RAMDISK_CHECK_TIMEOUT_SECONDS = 10
 RAMDISK_REMEDIATION_TIMEOUT_SECONDS = 60
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [RESOLVED EXECUTION SET] consumer seam — see coordinator.py for the rationale.
+# Lazy, defensive, and a no-op when no set is frozen.
+# ─────────────────────────────────────────────────────────────────────────────
+def _execution_set_nodes(node_dicts, *, consumer: str):
+    try:
+        from execution_set import filter_config_nodes
+    except ImportError:
+        return list(node_dicts)
+    return filter_config_nodes(node_dicts, consumer=consumer)
+
+
 @dataclass
 class PreflightResult:
     """Result of preflight checks."""
@@ -149,9 +161,20 @@ class PreflightChecker:
             return {"nodes": []}
     
     def _parse_nodes(self) -> List[Dict]:
-        """Extract remote nodes (skip localhost)."""
+        """Extract remote nodes (skip localhost).
+
+        [RESOLVED EXECUTION SET] `check_gpu_health` compared the live rocm-smi
+        count against `distributed_config.json`'s `gpu_count` at the BARE-METAL
+        addresses — a comparison that cannot complete while the rigs are in
+        Proxmox. The node list and the addresses now come from the run's frozen
+        set instead. Deliberately unchanged: this checker stays NON-BLOCKING
+        (`check_all` records GPU issues via `add_warning` and still counts the
+        check as passed, :192-206), and localhost is still excluded, because
+        neither property is a defect. Only the target list moves.
+        """
         nodes = []
-        for node in self.config.get("nodes", []):
+        for node in _execution_set_nodes(self.config.get("nodes", []),
+                                         consumer="PreflightChecker"):
             hostname = node.get("hostname", "")
             if hostname and hostname != "localhost":
                 nodes.append({

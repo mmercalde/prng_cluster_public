@@ -99,6 +99,18 @@ from typing import Dict, List, Optional, Any, Tuple
 from utils.canonical_records import build_trial_populations
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [RESOLVED EXECUTION SET] consumer seam — see coordinator.py for the rationale.
+# Lazy, defensive, and a no-op when no set is frozen.
+# ─────────────────────────────────────────────────────────────────────────────
+def _execution_set_nodes(node_dicts, *, consumer: str):
+    try:
+        from execution_set import filter_config_nodes
+    except ImportError:
+        return list(node_dicts)
+    return filter_config_nodes(node_dicts, consumer=consumer)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ROCm stability constants (from S130/S133 learnings)
 # ─────────────────────────────────────────────────────────────────────────────
 ROCM_SPAWN_STAGGER_S   = 4.0   # seconds between worker spawns per gpu_id
@@ -308,7 +320,15 @@ class PersistentWorkerCoordinator:
             self.logger.error(f"Cannot load {self.config_file}: {e}")
             return
 
-        for nc in cfg.get("nodes", []):
+        # [RESOLVED EXECUTION SET] The PWC ready gate (:864, min_workers) is the
+        # real per-GPU, full-fleet, blocking check — and it was pointed at the
+        # bare-metal addresses, so it structurally cannot pass while the rigs are
+        # booted into Proxmox. The gate itself is UNCHANGED: `min_workers` keeps
+        # its value and its meaning, the live GPU probe still caps the spawn, and
+        # a short pool is still a `RuntimeError` before dispatch. Only the node
+        # list and the addresses now come from the run's frozen set.
+        for nc in _execution_set_nodes(cfg.get("nodes", []),
+                                       consumer="PersistentWorkerCoordinator"):
             hostname = nc["hostname"]
             # [S163-KARG-PWC] Apply node_allowlist filter BEFORE building any per-node
             # state (semaphores, respawn_locks, S156 cleanup targets, worker launches).

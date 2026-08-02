@@ -107,6 +107,23 @@ except ImportError:
     print("Note: hybrid_strategy module not available. Hybrid mode disabled.")
 import atexit
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [RESOLVED EXECUTION SET] consumer seam
+# ─────────────────────────────────────────────────────────────────────────────
+# One named function, so "this consumer reads the resolved set" is a thing that
+# can be observed — and reverted, which is what G-MUTANT does to prove the gate
+# is not vacuous. The import is lazy and defensive: coordinator.py must stay
+# importable without the resolver, and with no set frozen this returns the
+# config's node list untouched, i.e. exactly the pre-existing behaviour.
+def _execution_set_nodes(node_dicts, *, consumer: str):
+    try:
+        from execution_set import filter_config_nodes
+    except ImportError:
+        return list(node_dicts)
+    return filter_config_nodes(node_dicts, consumer=consumer)
+
+
 # Progress monitor auto-launch
 _progress_monitor_process = None
 _progress_monitor_tmux_pane = None
@@ -283,8 +300,20 @@ class MultiGPUCoordinator:
         try:
             with open(self.config_file, 'r') as f:
                 config = json.load(f)
+            # [RESOLVED EXECUTION SET] `test_connectivity()` (:502) was one of the
+            # six mechanisms that decided the fleet for itself — it required every
+            # node in distributed_config.json to answer, at the BARE-METAL
+            # addresses, which structurally cannot pass while the rigs are booted
+            # into Proxmox. It is not retired: it still preflights every node and
+            # still returns False if any fails. It just no longer chooses WHICH
+            # nodes or WHICH addresses — the run's frozen set does, and the
+            # selected rig profile supplies the endpoint. distributed_config.json
+            # is READ ONLY; its bare-metal addresses are deliberate (CLAUDE.md §3)
+            # and are never rewritten on disk. With no set frozen this is a no-op.
+            _node_configs = _execution_set_nodes(config.get('nodes', []),
+                                                 consumer='MultiGPUCoordinator')
             self.nodes = []
-            for node_config in config.get('nodes', []):
+            for node_config in _node_configs:
                 node = WorkerNode(
                     hostname=node_config['hostname'],
                     gpu_count=node_config['gpu_count'],
@@ -337,7 +366,9 @@ class MultiGPUCoordinator:
 
         # v1.7.4.1 FIX: Initialize per-node concurrency limits from config
         # (Moved here from __init__ because self.nodes and config are now available)
-        for node_config in config.get('nodes', []):
+        # Same re-pointed list as above — the concurrency map must be keyed by the
+        # SAME hostnames self.nodes carries, or every lookup misses.
+        for node_config in _node_configs:
             hostname = node_config['hostname']
             limit = node_config.get('max_concurrent_script_jobs', 99)
             self._node_max_concurrent[hostname] = limit

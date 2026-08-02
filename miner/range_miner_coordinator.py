@@ -160,6 +160,22 @@ DEFAULT_WORKER_ADMISSION_TIMEOUT = 180.0
 
 
 # ---------------------------------------------------------------------------
+# [RESOLVED EXECUTION SET] consumer seam for the registration path.
+# ---------------------------------------------------------------------------
+# One named function, so the membership decision has a single site that can be
+# observed — and reverted, which is what G-MUTANT does. Lazy and defensive: the
+# miner package must stay importable standalone (it deploys to the rigs), and
+# with no set frozen every worker is admitted, i.e. exactly the Phase-4
+# behaviour every existing loopback gate was written against.
+def _execution_set_admission(worker_id):
+    try:
+        from execution_set import is_admitted_worker
+    except ImportError:
+        return True, None
+    return is_admitted_worker(worker_id)
+
+
+# ---------------------------------------------------------------------------
 # Coordinator configuration (L4 — injectable, NOT module constants)
 # ---------------------------------------------------------------------------
 @dataclass
@@ -1777,15 +1793,31 @@ class RangeMinerCoordinator:
         capabilities: Optional[Dict[str, Any]],
         node_config: NodeConfig,
         now: Optional[float] = None,
+        admission_reason: Optional[str] = None,
     ) -> WorkerConnection:
         """Bind a worker's connection and validate its advertised capabilities.
         A cap inconsistency quarantines the worker (registered-but-ineligible,
         durably visible in the workers table) rather than dropping it or picking
-        a value. Returns the bound (possibly quarantined) connection."""
+        a value. Returns the bound (possibly quarantined) connection.
+
+        [RESOLVED EXECUTION SET — G-NO-INFERENCE] `admission_reason`, when the
+        caller supplies one, is a refusal decided BEFORE this worker said
+        anything about itself: it is not in the run's frozen execution set.
+        Beta: *unknown miner workers must not become eligible merely because they
+        connected.* It is deliberately expressed as a QUARANTINE and not as a
+        dropped connection, because quarantine is the mechanism this coordinator
+        already has for registered-but-ineligible, and it leaves a durable row
+        naming the refusal instead of an unexplained disconnect. It composes with
+        the capability check rather than replacing it — a worker can be both
+        unlisted and misconfigured, and the record should say so."""
         capabilities = capabilities or {}
         seed_caps = capabilities.get("seed_caps") or {}
         variants = capabilities.get("supported_variants") or []
-        reason = self._validate_caps(seed_caps)
+        cap_reason = self._validate_caps(seed_caps)
+        if admission_reason and cap_reason:
+            reason = f"{admission_reason} ALSO: {cap_reason}"
+        else:
+            reason = admission_reason or cap_reason
         status = "quarantined" if reason else "eligible"
         self.ledger.upsert_worker(
             worker_id, hostname, backend, seed_caps, variants, node_config,
@@ -4096,9 +4128,24 @@ class RangeMinerCoordinator:
                 "the duplicate registration (Defect 3)", msg.worker_id)
             return "reject_dup_worker"
         node = self._resolve_node_config(msg.worker_id, msg.hostname, node_allowlist)
+        # [RESOLVED EXECUTION SET — G-NO-INFERENCE] The defect Beta named lived
+        # exactly here: `_resolve_node_config` FILTERS NOTHING (it falls back to
+        # the configured spool root for an undescribed hostname), there was no
+        # expected-membership list anywhere, and the only count in the system was
+        # `expected_workers` — so a worker from any host became eligible by the
+        # single act of dialling in, and a pool assembled from strangers could
+        # satisfy the admission threshold. Membership is now decided against the
+        # set that was frozen BEFORE the run started. `expected_workers`,
+        # `worker_pool_size`, the bounded-admission window and the Blocker-3
+        # matrix are all untouched — an unlisted worker simply never enters
+        # `_eligible()`, which is what "must not become eligible" means.
+        _admitted, _admission_reason = _execution_set_admission(msg.worker_id)
+        if not _admitted:
+            logger.warning("[EXEC-SET] %s", _admission_reason)
         wconn = self.register_worker(
             worker_id=msg.worker_id, hostname=msg.hostname, backend=msg.backend,
-            capabilities=msg.capabilities, node_config=node)
+            capabilities=msg.capabilities, node_config=node,
+            admission_reason=_admission_reason)
         worker_by_sock[rawsock] = msg.worker_id
         wconn_by_worker[msg.worker_id] = wconn
         fs_by_worker[msg.worker_id] = fs_by_sock[rawsock]

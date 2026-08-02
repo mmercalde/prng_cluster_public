@@ -2206,6 +2206,72 @@ def gate22_coexistence():
         "tests/phase6/known_answer_gate.py",
         "tests/phase6/wall_ab_gate.py",
         "tests/phase6/sampler_control_arm.py",
+        # ─────────────────────────────────────────────────────────────────────
+        # RESOLVED EXECUTION SET (Team Beta fleet ruling; a Phase 7 blocker).
+        # Registered by the same standing rule as every block above and APPENDED
+        # to them — nothing earlier is rewritten, and P0.5's strengthening of
+        # G-MINER-UNCHANGED (which greps registered diffs for threshold tokens)
+        # is untouched.
+        #
+        # Beta ruled that NONE of the six existing fleet mechanisms defines the
+        # fleet, and that one frozen run-scoped set must — with all six becoming
+        # CONSUMERS. Nothing is deleted; each mechanism is re-pointed at the set
+        # instead of deciding for itself.
+        #
+        # ONE NEW production module:
+        #   * execution_set.py — the resolver, the frozen set, and the consumer
+        #     helpers. Stdlib only at module scope (the `NodeSpec` import from
+        #     dataset_authority is deliberately lazy), so putting it on
+        #     window_optimizer's and WATCHER's import path pulls in no miner,
+        #     PWC, ZMQ or kernel code. It performs NO network I/O of any kind:
+        #     membership is declared, never inferred from what answered, which
+        #     is the defect Beta named.
+        #
+        # TWO already-unregistered production files, each edited at exactly one
+        # seam — a `_execution_set_nodes()` call that re-points the node list at
+        # the resolved set and is a no-op when no set is frozen:
+        #   * coordinator.py — `load_configuration`, so the legacy
+        #     `test_connectivity` fleet check stops choosing its own nodes and
+        #     addresses. The check itself, the S115 node_allowlist filter and the
+        #     per-node concurrency map are otherwise untouched, and
+        #     distributed_config.json is READ ONLY — its bare-metal addresses are
+        #     deliberate (CLAUDE.md §3) and are never rewritten.
+        #   * preflight_check.py — `_parse_nodes`, so WATCHER's GPU health check
+        #     targets the resolved endpoints. It stays NON-BLOCKING BY DESIGN
+        #     (check_all still records GPU issues via add_warning and counts the
+        #     check passed) and localhost is still excluded.
+        #
+        # Already registered above and edited again here, at the same one seam:
+        # persistent_worker_coordinator.py (`_load_config`), window_optimizer.py
+        # (resolve+freeze after the backend mutex, before the P0.5 gate),
+        # agents/watcher_agent.py (the same resolver, before its preflight),
+        # miner/dataset_authority.py (verification TARGETS come from the set;
+        # the Beta-ratified fail-before-dispatch behaviour and the
+        # UNAVAILABLE / NOT_APPLICABLE vocabulary are unchanged — P0.5 38/38
+        # still green, including gate 34's no-coordinator/no-process/no-dispatch
+        # proof and gate 37's fault-injection control), and
+        # miner/range_miner_coordinator.py (`_serve_register` consults set
+        # membership; an unlisted worker is registered-but-QUARANTINED, using
+        # the mechanism the coordinator already had for registered-but-
+        # ineligible).
+        #
+        # NOT touched, deliberately: the admission timeout, serve_timeout,
+        # expected_workers, worker_pool_size semantics and the Blocker-3 matrix.
+        # No kernel, sampler, threshold, protocol, PWC or ZMQ path is touched
+        # (flagged for review).
+        #
+        # ONE NEW test path, no production code:
+        #   * tests/test_s172_resolved_execution_set.py — the nine-gate matrix
+        #     (G-RESOLVE-ONCE, G-FROZEN, G-SAME-RESOLVER, G-PROFILE,
+        #     G-NO-INFERENCE, G-PARTIAL-EXPLICIT, G-CONSUMERS, G-LOCAL,
+        #     G-MUTANT) with five consumer mutants. A NEW harness rather than
+        #     gates appended here, for the same reason the admission-liveness
+        #     harness was: §6 pins this harness's tally at 63/63 and growing it
+        #     would silently move a number other documents cite.
+        "execution_set.py",
+        "coordinator.py",
+        "preflight_check.py",
+        "tests/test_s172_resolved_execution_set.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
