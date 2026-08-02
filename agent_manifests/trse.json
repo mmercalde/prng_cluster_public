@@ -1,0 +1,26 @@
+{
+  "agent_name": "trse_agent",
+  "description": "Step 0: Temporal Regime Segmentation Engine — characterises the current draw regime before window optimization. Produces trse_context.json consumed passively by Step 1 to narrow search bounds.",
+  "pipeline_step": 0,
+  "version": "1.15.1",
+  "required_inputs": ["daily3.json"],
+  "primary_output": "trse_context.json",
+  "evaluation_type": "file_exists",
+  "disable_llm_parsing": true,
+  "disable_heuristic_parsing": true,
+  "retry_policy": "none",
+  "skip_on_fail": true,
+  "skip_on_fail_reason": "Step 0 is advisory — Step 1 runs with default bounds if trse_context.json absent",
+  "default_params": {
+    "lottery_data": "daily3.json",
+    "output": "trse_context.json",
+    "window_size": 400,
+    "stride": 50,
+    "k_clusters": 5,
+    "recommended_window_size": 8,
+    "trse_context": "trse_context.json"
+  },
+  "arg_style": "named",
+  "success_condition": ["trse_context.json"],
+  "notes": "[S121] Step 0 is optional/passive. If trse_context.json is absent, Step 1 runs with default bounds. Step 0 influence is limited to Step 1 SearchBounds narrowing only — Steps 2-6 unchanged."
+}
