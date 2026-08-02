@@ -2550,12 +2550,18 @@ INTEGRATION_MUTANTS: List[Tuple[str, List[Tuple[str, str]], str]] = [
        "            print(f'warning: {_swallowed}')\n"
        "            _artifact_d3_5 = None")],
      "F31"),
+    # [S172 D6.2] RE-ANCHORED, not weakened. The injected defect is unchanged —
+    # a score-only legacy deduplicator wrapped around the finalizer's input, to
+    # be killed by F36 — but the line it wraps moved: D6.2 enables the S166
+    # in-memory clear, so `survivor_accumulator['bidirectional']` is now only
+    # the post-checkpoint tail and the finalizer is fed the reconstructed
+    # cumulative state via `_checkpoint_finalizer_input`.
     ("score-only legacy dedup left active",
-     [("        _raw_candidates_d3_5 = survivor_accumulator['bidirectional']",
+     [("        _raw_candidates_d3_5 = _checkpoint_finalizer_input(survivor_accumulator)",
        "        def deduplicate_survivors(survivor_list):\n"
        "            return survivor_list\n"
        "        _raw_candidates_d3_5 = deduplicate_survivors(\n"
-       "            survivor_accumulator['bidirectional'])")],
+       "            _checkpoint_finalizer_input(survivor_accumulator))")],
      "F36"),
 ]
 

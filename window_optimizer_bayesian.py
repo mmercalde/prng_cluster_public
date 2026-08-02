@@ -501,10 +501,38 @@ class OptunaBayesianSearch:
         best_result = None
         best_score = float('-inf')
         
+        # [S172 D6.2 §4.4 / addendum §4] The recovered trial-number floor.
+        # Arrives on the same attribute seam S149/S152 established for
+        # `_survivor_accumulator`; `None` means no checkpoint was resumed and
+        # every check below is inert.
+        _resume_trial_floor = getattr(self, '_resume_trial_floor', None)
+
         def optuna_objective(trial):
             """Optuna objective function"""
+            # ── [S172 D6.2 addendum §4] CHECK 2, at the VERY TOP ────────────
+            # "After obtaining each Optuna trial, verify its actual
+            # `trial.number` exceeds the recovered maximum", and perform that
+            # check BEFORE objective execution, dispatch or candidate
+            # admission. Trials are obtained through `study.optimize(...)`, not
+            # ask/tell, so `trial.number` is first readable HERE — which is why
+            # this is the seam and why nothing above it may dispatch.
+            #
+            # The number is NEVER rewritten or offset. A trial that would run
+            # at or below the recovered maximum aborts the study instead.
+            if (_resume_trial_floor is not None
+                    and int(trial.number) <= int(_resume_trial_floor)):
+                raise RuntimeError(
+                    f"[S172 D6.2] resumed study produced trial.number "
+                    f"{trial.number}, which does not exceed the recovered "
+                    f"maximum trial number {int(_resume_trial_floor)}. "
+                    f"trial_number is part of the replay key "
+                    f"(seed, trial_number, skip_mode), so running it could "
+                    f"collide with a recovered record under the same key with "
+                    f"different canonical contents. The number is NOT "
+                    f"rewritten or offset — the run stops instead.")
+
             # Sample parameters from search space
-            window_size = trial.suggest_int('window_size', 
+            window_size = trial.suggest_int('window_size',
                                            bounds.min_window_size, 
                                            bounds.max_window_size)
             offset = trial.suggest_int('offset', 
@@ -730,6 +758,38 @@ class OptunaBayesianSearch:
                 print("   ℹ️  Warm-start skipped: no trial_history_context -- Optuna explores freely")
         else:
             print("   ✅ Resume mode: skipping warm-start (already in DB)")
+
+        # ── [S172 D6.2 addendum §4] CHECK 1 — PRE-FLIGHT over the loaded study
+        # Run BEFORE `study.optimize` is entered, and it is not the same thing
+        # as `max(existing) + 1`: a loaded study can carry NONTERMINAL trials
+        # whose numbers were allocated earlier. `study.enqueue_trial(...)` above
+        # is the S166 warm-start path, so the queued case is real here, not
+        # theoretical — an enqueued trial sits in WAITING with a number already
+        # assigned, and it can be at or below the recovered maximum.
+        #
+        # Any such trial is REJECTED. It is never renumbered and never quietly
+        # dropped: a second trial-number authority and false provenance is
+        # exactly what §4.4 forbids.
+        if _resume_trial_floor is not None:
+            _floor = int(_resume_trial_floor)
+            _nonterminal = [t for t in study.trials
+                            if t.state.name in ('WAITING', 'RUNNING')]
+            _offenders = sorted(int(t.number) for t in _nonterminal
+                                if int(t.number) <= _floor)
+            print(f"   [S172 D6.2] resumed trial namespace: recovered max "
+                  f"trial_number={_floor}; nonterminal study trials="
+                  f"{sorted(int(t.number) for t in _nonterminal)}")
+            if _offenders:
+                raise RuntimeError(
+                    f"[S172 D6.2] the resumed study carries nonterminal "
+                    f"(WAITING/RUNNING) trial(s) {_offenders} at or below the "
+                    f"recovered maximum trial_number {_floor}. Resuming them "
+                    f"would re-enter the recovered trial namespace and could "
+                    f"produce a record colliding with a recovered one on the "
+                    f"replay key (seed, trial_number, skip_mode). Optuna trial "
+                    f"numbers are never rewritten or offset, so the run stops "
+                    f"here — before objective execution, dispatch or candidate "
+                    f"admission.")
 
         # Trials remaining: full count on fresh, remainder on resume
         # S125: n_parallel>1 dispatched externally; this path always n_jobs=1

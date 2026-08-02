@@ -317,34 +317,66 @@ import time as _time_flush
 import uuid as _uuid_flush
 
 # ═════════════════════════════════════════════════════════════════════════════
-# [S172 Phase-5 D6.1] WHAT THIS IS — AND WHAT IT IS NOT
+# [S172 Phase-5 D6.2] WHAT THIS IS — AND WHAT IT IS NOT
 # ═════════════════════════════════════════════════════════════════════════════
-# This is a NON-AUTHORITATIVE, FOUR-FIELD INCREMENTAL SNAPSHOT. It is not a
-# canonical accumulator checkpoint, and it must not be described as one.
+# This is the CANONICAL 24-FIELD ACCUMULATOR CHECKPOINT. D6.1's predecessor was
+# a NON-AUTHORITATIVE FOUR-FIELD SNAPSHOT under `s172-d6.1-four-field-v1`, and
+# that is exactly why the S166 in-memory clear had to stay disabled: the D3.5
+# finalizer consumes the in-memory list and requires all 24
+# CANONICAL_RECORD_FIELDS, and four cannot make 24.
 #
-# D6.1 repairs exactly four things about it: WRITING (it never once succeeded),
-# VISIBILITY (every failure was swallowed), PER-FILE ATOMIC REPLACEMENT, and
-# ISOLATION (it was aimed at paths it does not own). That is the whole scope.
+# D6.1 repaired WRITING (it never once succeeded), VISIBILITY (every failure was
+# swallowed), PER-FILE ATOMIC REPLACEMENT and ISOLATION (it was aimed at paths
+# it does not own). D6.2 keeps all four of those properties and adds the three
+# that make the clear safe:
+#   * the complete 24-field canonical state, so the state is reconstructible;
+#   * two SEPARATE identities — `canonical_state_digest` (shared, content only)
+#     and `member_content_digest` (per member, identity included) — so a mixed
+#     pair and a tampered identity block are distinguishable failures;
+#   * a run-id-only resume path, so a resumed run supplies the finalizer
+#     COMPLETE 24-field input rather than the truncated stump left in memory.
 #
-# It explicitly does NOT provide:
-#   * full accumulator resume,
-#   * finalizer reconstruction,
-#   * S166 in-memory memory protection.
+# THE ASYMMETRIC ARCHITECTURE IS BINDING (REV5 §0, settled):
+#   MEMBER A IS A MARKER / COMPATIBILITY STUB. It carries `seed`, `score` and
+#   its identity block, nothing more. IT IS NEVER AN ACCUMULATOR BACKUP and no
+#   path here describes or consumes it as one.
+#   MEMBER B IS THE SOLE RECOVERY PAYLOAD. Loss or corruption of B is
+#   unrecoverable and fails closed regardless of A.
 #
-# THE IN-MEMORY LIST REMAINS THE FINALIZER'S AUTHORITATIVE SOURCE. The D3.5
-# finalizer consumes `survivor_accumulator['bidirectional']` directly (see
-# `_raw_candidates_d3_5` below) and requires all 24 CANONICAL_RECORD_FIELDS;
-# this snapshot carries FOUR. Nothing here may be used to reconstruct finalizer
-# input, and the snapshot stays non-authoritative until D6.2 defines the
-# 24-field schema. `_CHECKPOINT_SCHEMA_VERSION` is stamped into every member so
-# D6.2 can tell the interim four-field format apart at a glance.
+# The schema, both digests, the CSR `sessions` encoding, the run-id grammar, the
+# nine-row recovery matrix and reconciliation all live in `utils/checkpoint_d6_2`
+# — a shared module, so the same executable definitions serve the flush, the
+# resume path and the gates. `_CHECKPOINT_SCHEMA_VERSION` is imported from there
+# and is NOT restated here: one authority for the marker that tells the D6.1
+# four-field format apart from this one.
 #
-# The merge-by-seed below is PROVISIONAL SNAPSHOT MAINTENANCE ONLY — it keeps
-# the snapshot a useful running picture. It is not winner selection, it decides
-# nothing, and D3.5's explicit L2 key remains the only authority on winners.
+# Winner selection is STILL not decided here. Reconciliation ends in the frozen
+# `_select_l2_winners`, imported from `utils.run_finalizer` and never forked.
+#
+# SCOPE, stated so it cannot be over-read: D6.2
+# does not restore the optimizer execution cursor.
+# A resumed run recovers the accumulated CANONICAL STATE and
+# continues optimization under its own trial namespace; where the SEARCH had got
+# to remains entirely Optuna's, and nothing here claims otherwise.
 # ═════════════════════════════════════════════════════════════════════════════
 
-_CHECKPOINT_SCHEMA_VERSION = "s172-d6.1-four-field-v1"
+from utils.checkpoint_d6_2 import (                              # [S172 D6.2]
+    CHECKPOINT_SCHEMA_VERSION as _CHECKPOINT_SCHEMA_VERSION,
+    IDENTITY_KEYS as _CHECKPOINT_IDENTITY_KEYS,
+    MEMBER_A_NAME as _CHECKPOINT_ALL_NAME,
+    MEMBER_B_NAME as _CHECKPOINT_BINARY_NAME,
+    CHECKPOINT_DIRNAME as _CHECKPOINT_DIRNAME,
+    CheckpointError as _CheckpointError,
+    RunContext as _CheckpointRunContext,
+    build_run_context_digest as _build_run_context_digest,
+    recover_checkpoint as _recover_checkpoint,
+    reconcile as _reconcile_candidates,
+    resolve_checkpoint_dir as _resolve_checkpoint_dir,
+    run_context_components as _run_context_components,
+    validate_new_raw_records as _validate_new_raw_records,
+    validate_run_id as _validate_checkpoint_run_id,
+    write_transaction as _write_checkpoint_transaction,
+)
 
 # ── [S172 Phase-5 D6.1] snapshot namespace and path conditions ───────────────
 # The snapshot MUST NOT write to `bidirectional_survivors_all.npz` /
@@ -373,9 +405,10 @@ _CHECKPOINT_SCHEMA_VERSION = "s172-d6.1-four-field-v1"
 #   5. NEVER resolves to either finalizer-owned alias — checked at runtime,
 #      fail-closed, not merely by naming convention.
 #   6. The schema version above is carried in the artifact itself.
-_CHECKPOINT_DIRNAME     = ".s172_checkpoint"
-_CHECKPOINT_ALL_NAME    = "incremental_survivors_all.npz"
-_CHECKPOINT_BINARY_NAME = "incremental_survivors_binary.npz"
+#
+# [D6.2] The three names above are IMPORTED from `utils/checkpoint_d6_2` with the
+# rest of the schema, so the flush and the resume path cannot drift apart about
+# which files a checkpoint consists of.
 _CHECKPOINT_TMP_SUFFIX  = ".flush-{pid}.tmp"
 _CHECKPOINT_ROOT_ENV    = "PRNG_CHECKPOINT_ROOT"
 _CHECKPOINT_RUN_ID_ENV  = "PRNG_CHECKPOINT_RUN_ID"
@@ -384,7 +417,7 @@ _CHECKPOINT_RUN_ID_ENV  = "PRNG_CHECKPOINT_RUN_ID"
 _FINALIZER_ALIAS_NAMES = ("bidirectional_survivors_all.npz",
                           "bidirectional_survivors_binary.npz")
 
-# ── [S172 Phase-5 D6.1] transaction identity (Beta blocker) ──────────────────
+# ── [S172 Phase-5 D6.1/D6.2] transaction identity (Beta blocker) ─────────────
 # A crash between the two `os.replace` calls leaves a MIXED pair. Comparing
 # seed sets does NOT detect that, and D6.1's first report wrongly claimed it
 # did. Beta's counterexample: old pair holds seed 42 @ 0.40; the new
@@ -396,45 +429,35 @@ _FINALIZER_ALIAS_NAMES = ("bidirectional_survivors_all.npz",
 # Both members therefore carry a TRANSACTION IDENTITY, and both temporary
 # artifacts are produced from ONE transaction descriptor built before either is
 # written. Detection compares identity, not content shape.
-_CHECKPOINT_IDENTITY_KEYS = (
-    "checkpoint_schema_version",   # str  — interim four-field format marker
-    "checkpoint_id",               # str  — unique per transaction
-    "checkpoint_sequence",         # int  — monotonic within a run
-    "run_id",                      # str  — stable run identity
-    "logical_candidate_count",     # int  — rows in this transaction
-    "four_field_content_digest",   # str  — sha256 over all FOUR fields
-)
-# Everything except the digest; a mismatch here means the two members came from
-# DIFFERENT transactions (an interrupted replacement) rather than from one
-# transaction whose content disagrees.
-_CHECKPOINT_TXN_KEYS = tuple(k for k in _CHECKPOINT_IDENTITY_KEYS
-                             if k != "four_field_content_digest")
-
-# Pair states reported by `_flush_inspect_pair`.
-_PAIR_CONSISTENT    = "consistent"
-_PAIR_INTERRUPTED   = "interrupted_replacement"
-_PAIR_INCONSISTENT  = "inconsistent_content"
-_PAIR_INCOMPLETE    = "incomplete_pair"
-_PAIR_UNRECOVERABLE = "unrecoverable"
-_PAIR_ABSENT        = "absent"
-
-# ── [S172 Phase-5 D6.1] the S166 in-memory clear is DEFERRED, not dropped ────
-# S166 added `accumulator["bidirectional"] = []` after the flush, justified by
-# a comment asserting the survivors were already safely persisted. That
-# guarantee has NEVER held (the write always failed), and it cannot hold today
-# either (D4): this snapshot stores FOUR fields, while the D3.5 finalizer
-# consumes the IN-MEMORY list and requires all 24 CANONICAL_RECORD_FIELDS.
-# Clearing would truncate the certified generation's raw-candidate input, and
-# 20 of the 24 fields are unrecoverable from the snapshot.
 #
-# The clear stays DISABLED behind this flag, but the ORDERING property is still
-# implemented and gated: the clear may only ever run after BOTH replaces have
-# succeeded. Enabling it later is then a one-line change against a gate that
-# already proves the ordering — but it additionally requires D6.2's 24-field
-# schema plus a finalizer read-back path. That is its own tracked work item,
-# and a Phase-7 soak-safety blocker in its own right (unbounded in-memory
-# candidate growth), exactly as this flush defect was.
-_FLUSH_CLEAR_IN_MEMORY = False
+# [D6.2] The identity block is now the eleven `IDENTITY_KEYS` imported above.
+# D6.1's single `four_field_content_digest` has become TWO SEPARATE IDENTITIES —
+# `canonical_state_digest` (shared, content only, no identity field) and
+# `member_content_digest` (per member, covering every identity field including
+# the state digest, and excluding only itself). Classification of a pair is no
+# longer a local helper: `utils.checkpoint_d6_2.recover_checkpoint` implements
+# the nine-row mixed-pair matrix, and the flush's own post-write check is
+# `validate_installed_pair`.
+
+# ── [S172 Phase-5 D6.2] the S166 in-memory clear is ENABLED ──────────────────
+# S166 added `accumulator["bidirectional"] = []` after the flush, justified by a
+# comment asserting the survivors were already safely persisted. THE GUARANTEE
+# WAS DOUBLY FALSE: the write always failed (D6.1/D1) *and* four fields could
+# never have backed it (D6.1/D4), because the D3.5 finalizer consumes the
+# in-memory list and requires all 24 CANONICAL_RECORD_FIELDS.
+#
+# D6.2 makes the guarantee true rather than merely re-asserting it. The
+# checkpoint now carries the complete canonical state, the state is validated
+# through the three walls `finalize_run` applies before L2, BOTH members are
+# read back and validated after installation, and the finalizer is fed the
+# reconstructed cumulative state instead of whatever happens to be left in
+# memory. Only then does the clear run.
+#
+# The ORDERING remains the contract and remains gated: the clear may only ever
+# run strictly AFTER both replaces have returned AND after the installed pair
+# validates, so no candidate is ever dropped on a path where the checkpoint did
+# not land. A failure anywhere retains every candidate in memory.
+_FLUSH_CLEAR_IN_MEMORY = True
 
 # ── [S172 Phase-5 D6.1] failure observability (D2) ───────────────────────────
 # The pre-D6.1 helper funnelled every failure into one indistinguishable stdout
@@ -470,9 +493,16 @@ def _flush_checkpoint_root() -> str:
 
 
 def _flush_checkpoint_dir() -> str:
-    """`<stable root>/.s172_checkpoint/<run_id>/` — run-isolated (condition 3)."""
-    return _os_flush.path.join(_flush_checkpoint_root(), _CHECKPOINT_DIRNAME,
-                               _flush_run_id())
+    """`<stable root>/.s172_checkpoint/<run_id>/` — run-isolated (condition 3).
+
+    [D6.2] Resolved through the SAME `resolve_checkpoint_dir` the resume path
+    uses, so the write side and the read side cannot disagree about where a
+    checkpoint lives, and so the run-id grammar (addendum §3: single component,
+    no separator, no `.`/`..`) plus the realpath containment check apply to the
+    WRITER too — not only to an operator-supplied selector. There is no
+    newest-directory discovery here or anywhere below it.
+    """
+    return _resolve_checkpoint_dir(_flush_checkpoint_root(), _flush_run_id())
 
 
 def _flush_assert_not_alias(path: str) -> None:
@@ -510,122 +540,50 @@ def _flush_assert_same_filesystem(tmp_path: str, final_path: str) -> None:
             f"different filesystems — os.replace would not be atomic")
 
 
-def _flush_four_field_digest(seeds, scores, fwd_mr, rev_mr) -> str:
-    """sha256 over ALL FOUR fields, in canonical (seed-sorted) order.
-
-    This is what makes Beta's counterexample detectable: two transactions with
-    the same seed set but a changed score or match rate produce DIFFERENT
-    digests, where a seed-set comparison sees no difference at all.
-    """
-    _h = _hashlib_flush.sha256()
-    _h.update(_CHECKPOINT_SCHEMA_VERSION.encode("utf-8"))
-    for _name, _arr in (("seeds", seeds), ("score", scores),
-                        ("forward_match_rate", fwd_mr),
-                        ("reverse_match_rate", rev_mr)):
-        _h.update(_name.encode("utf-8"))
-        _h.update(str(_arr.dtype).encode("utf-8"))
-        _h.update(_np_flush.ascontiguousarray(_arr).tobytes())
-    return _h.hexdigest()
-
-
-def _flush_build_transaction(seeds, scores, fwd_mr, rev_mr) -> dict:
-    """ONE descriptor, built BEFORE either temp is written, stamped on BOTH."""
-    global _flush_sequence
-    _flush_sequence += 1
-    return {
-        "checkpoint_schema_version": _CHECKPOINT_SCHEMA_VERSION,
-        "checkpoint_id": _uuid_flush.uuid4().hex,
-        "checkpoint_sequence": _flush_sequence,
-        "run_id": _flush_run_id(),
-        "logical_candidate_count": int(len(seeds)),
-        "four_field_content_digest": _flush_four_field_digest(
-            seeds, scores, fwd_mr, rev_mr),
-    }
+# ═════════════════════════════════════════════════════════════════════════════
+# [S172 Phase-5 D6.2] THE RUN CONTEXT — resolved ONCE at run start, then frozen
+# ═════════════════════════════════════════════════════════════════════════════
+# The flush can no longer be a pure function of the accumulator. It must:
+#   * run the three walls `finalize_run` applies before L2 over every NEWLY
+#     observed raw record (REV5 §7.2) — and two of those walls need the run's
+#     declared seed interval and run identity;
+#   * stamp `run_context_digest` into both members (§4.3);
+#   * maintain the CUMULATIVE canonical state across flushes, because the clear
+#     is now enabled and memory holds only what arrived since the last flush.
+#
+# All of that is exactly the information a resumed run must be able to verify it
+# is resuming, so it is one object, installed once, and never re-derived
+# mid-run. A flush with NO installed context FAILS CLOSED and clears nothing: an
+# absent context is not a neutral "unknown", it means nobody established what
+# this run is, and clearing memory against an unverifiable checkpoint is the
+# precise failure D6.2 exists to prevent.
+_flush_run_context = None
 
 
-def _flush_identity_arrays(txn: dict) -> dict:
-    """The identity block as 0-d numpy arrays (allow_pickle=False loadable)."""
-    _out = {}
-    for _k in _CHECKPOINT_IDENTITY_KEYS:
-        _v = txn[_k]
-        _out[_k] = (_np_flush.array(int(_v), dtype=_np_flush.int64)
-                    if isinstance(_v, int) else _np_flush.array(str(_v)))
-    return _out
+def _install_flush_run_context(context) -> None:
+    """Install this process's D6.2 run context. Once per run."""
+    global _flush_run_context, _flush_sequence
+    _flush_run_context = context
+    _flush_sequence = int(getattr(context, "sequence", 0))
 
 
-def _flush_read_member(path: str):
-    """Return `(identity, arrays)` for one member, or raise.
-
-    A member with no identity block is a pre-D6.1 or foreign file and is
-    REFUSED rather than guessed at.
-    """
-    with _np_flush.load(path, allow_pickle=False) as _z:
-        _files = set(_z.files)
-        _missing = [_k for _k in _CHECKPOINT_IDENTITY_KEYS if _k not in _files]
-        if _missing:
-            raise ValueError(
-                f"{path}: missing identity field(s) {_missing} — not a "
-                f"{_CHECKPOINT_SCHEMA_VERSION} snapshot member")
-        _ident = {}
-        for _k in _CHECKPOINT_IDENTITY_KEYS:
-            _val = _z[_k]
-            _ident[_k] = (int(_val) if _val.dtype.kind in "iu" else str(_val))
-        _arrays = {_k: _z[_k] for _k in _files
-                   if _k not in _CHECKPOINT_IDENTITY_KEYS}
-        return _ident, _arrays
+def _active_flush_run_context():
+    """The installed run context, or None. Never discovers one."""
+    return _flush_run_context
 
 
-def _flush_identity_differs(ident_a: dict, ident_b: dict) -> bool:
-    """True when the two members came from DIFFERENT transactions.
-
-    This is the line Beta's blocker turns on. It compares TRANSACTION IDENTITY
-    — schema, checkpoint_id, sequence, run_id, logical count — NOT seed sets.
-    A seed-set comparison here would report agreement for the counterexample in
-    the header (same seeds, changed score, mixed pair).
-    """
-    return any(ident_a[_k] != ident_b[_k] for _k in _CHECKPOINT_TXN_KEYS)
+def _clear_flush_run_context() -> None:
+    """Drop the context — for harnesses and for a process that genuinely starts
+    a new run in-process. Never called mid-run on the certifying path."""
+    global _flush_run_context
+    _flush_run_context = None
 
 
-def _flush_inspect_pair(all_path: str, binary_path: str) -> dict:
-    """Classify the on-disk pair. Reads only; never mutates anything.
-
-    Beta's load contract:
-      * matching identity + digest        -> accept                (consistent)
-      * mismatched identity / sequence    -> interrupted replacement
-      * matching seeds, differing digest  -> inconsistency detected
-      * one member unreadable             -> pair incomplete
-      * neither valid                     -> recovery fails visibly
-    In EVERY outcome the in-memory records are left untouched — this function
-    cannot reach them.
-    """
-    _res = {"status": None, "all": None, "binary": None,
-            "all_error": None, "binary_error": None}
-    for _key, _path in (("all", all_path), ("binary", binary_path)):
-        if not _os_flush.path.exists(_path):
-            _res[f"{_key}_error"] = FileNotFoundError(_path)
-            continue
-        try:
-            _res[_key] = _flush_read_member(_path)
-        except Exception as _e:                                # noqa: BLE001
-            _res[f"{_key}_error"] = _e
-
-    _a, _b = _res["all"], _res["binary"]
-    if _a is None and _b is None:
-        _absent = (not _os_flush.path.exists(all_path)
-                   and not _os_flush.path.exists(binary_path))
-        _res["status"] = _PAIR_ABSENT if _absent else _PAIR_UNRECOVERABLE
-        return _res
-    if _a is None or _b is None:
-        _res["status"] = _PAIR_INCOMPLETE
-        return _res
-    if _flush_identity_differs(_a[0], _b[0]):
-        _res["status"] = _PAIR_INTERRUPTED
-        return _res
-    if _a[0]["four_field_content_digest"] != _b[0]["four_field_content_digest"]:
-        _res["status"] = _PAIR_INCONSISTENT
-        return _res
-    _res["status"] = _PAIR_CONSISTENT
-    return _res
+def _flush_next_checkpoint_id() -> str:
+    """A fresh transaction id. ONE descriptor per transaction, built before
+    either temp is written and stamped on BOTH members — that identity is what
+    makes an interrupted replacement detectable at all."""
+    return _uuid_flush.uuid4().hex
 
 
 def _flush_tmp_name(final_path: str) -> str:
@@ -721,67 +679,70 @@ def _flush_purge_stale_temps(dir_path: str) -> int:
 
 def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
     """
-    Write the NON-AUTHORITATIVE four-field incremental snapshot.
+    Write the CANONICAL 24-FIELD accumulator checkpoint, then clear what it
+    persisted.
 
-    This is not a canonical accumulator checkpoint and must not be used to
-    reconstruct finalizer input — the in-memory list stays the finalizer's
-    authoritative source (see the section header). The snapshot is
-    non-authoritative until D6.2 defines the 24-field schema.
+    [D6.2] THE BINDING ORDER (§8), and the clear is the LAST step:
 
-    - Merge-by-seed, highest score wins: PROVISIONAL SNAPSHOT MAINTENANCE ONLY.
-      It decides no winner; D3.5's explicit L2 key remains authoritative.
-    - Merges with any pre-existing snapshot member A on disk.
-    - Writes each file atomically: a complete, fsynced temp → `os.replace`.
-    - Both members are stamped with ONE transaction identity.
+        construct cumulative canonical state
+        write both temporary artifacts
+        fsync/close as required
+        validate both temporary artifacts
+        replace destination A
+        replace destination B
+        validate the installed pair
+        only then clear the flushed in-memory entries
 
-    [D6.1] SEQUENTIAL-ATOMIC WITH SELF-REPAIR — explicitly NOT jointly atomic.
-    Both temps are written to completion first, then the two `os.replace` calls
-    run back-to-back. Each file INDIVIDUALLY is always either its complete
-    prior content or its complete new content. The PAIR is not atomic: a crash
-    between the two replaces leaves member A new and member B old.
+    A failure at ANY step leaves every candidate in memory. A mutant that clears
+    between the two replaces must fail, and does: the clear is textually and
+    causally after `_write_checkpoint_transaction` returns, and that function
+    only returns after re-reading BOTH installed members from disk.
 
-    That mixed state is detected by comparing TRANSACTION IDENTITY, never by
-    comparing seed sets. Seed-set comparison is not sufficient and D6.1's first
-    report wrongly claimed it was: two transactions can share a seed set and
-    differ only in a score or a match rate, in which case seed-set comparison
-    reports agreement across a genuinely mixed pair. See
-    `_flush_identity_differs` and the counterexample in the section header.
+    [D6.2] THREE PROTECTIONS BEFORE ANY CLEAR (§7.2). Every NEWLY OBSERVED raw
+    record passes the walls `finalize_run` applies before L2, in its order:
+    `_validate_raw_candidates` -> `_validate_candidate_coverage` ->
+    `_validate_candidate_identity`. They are IMPORTED, not duplicated. This must
+    happen BEFORE reconciliation, because reconciliation compacts losers away
+    and a malformed LOSING candidate must fail the run rather than vanish during
+    selection.
 
-    The mixed pair is SELF-REPAIRING for this snapshot's own purposes: the
-    in-memory list is retained, and the next flush merges the readable member A
-    with memory and rewrites both. That repairs the SNAPSHOT — it is not
-    accumulator resume and it is not finalizer reconstruction.
+    [D6.2] MEMBER ASYMMETRY. Member A is a MARKER / COMPATIBILITY STUB carrying
+    `seed`, `score` and its identity block. It is not an accumulator backup, it
+    is never merged from, and nothing here reads it as a source of state. Member
+    B is the sole recovery payload. The pre-D6.2 "merge the prior member A from
+    disk" step is GONE — with the clear enabled the cumulative state lives in the
+    run context, seeded from member B on resume, so member A never has to be
+    read back as data.
 
-    True joint atomicity needs a directory swap or a manifest, which is out of
-    scope — so this documents the property the code actually keeps instead of
-    claiming one it cannot. This project has already been bitten twice by a
-    stated guarantee that was never checked against the code (D4, and the
-    seed-set claim above).
+    [D6.1, retained] SEQUENTIAL-ATOMIC WITH SELF-REPAIR, and
+    explicitly NOT jointly atomic. Both temps are written to completion first, then the two
+    `os.replace` calls run back-to-back. Each file INDIVIDUALLY is always either
+    its complete prior content or its complete new content. The PAIR is not
+    atomic: a crash between the two replaces leaves member A new and member B
+    old. That mixed state is detected by TRANSACTION IDENTITY, never by
+    comparing seed sets, and `recover_checkpoint`'s nine-row matrix decides what
+    it means. True joint atomicity needs a directory swap or a manifest, which
+    is out of scope — so this documents the property the code actually keeps
+    instead of claiming one it cannot.
 
-    [D6.1] COMPRESSION IS CORRECT HERE AND IS NOT GOVERNED BY D5 §6.7.A.
-    That ban applies to the CERTIFIED ARTIFACT written by the miner NPZ writer,
-    where D5 enforces it with `_assert_stored_uncompressed` and mutant M6a
-    (which reds on `compress_type=8`). This is a non-authoritative SNAPSHOT:
-    rewritten every `_FLUSH_EVERY` survivors, never certified, never consumed
-    by Steps 2-6, under a different name in a different directory. Do NOT
-    "harmonize" the two — making this uncompressed buys nothing, and making the
-    artifact compressed reds D5's M6a.
+    [D6.1, retained] COMPRESSION IS CORRECT HERE AND IS NOT GOVERNED BY D5
+    §6.7.A. That ban applies to the CERTIFIED ARTIFACT written by the miner NPZ
+    writer, where D5 enforces it with `_assert_stored_uncompressed` and mutant
+    M6a (which reds on `compress_type=8`). The checkpoint is written under a
+    different name in a different directory and is never consumed by Steps 2-6.
+    Do NOT "harmonize" the two — making this uncompressed buys nothing, and
+    making the artifact compressed reds D5's M6a.
 
-    [D6.1] FAILURE CONTRACT (D2) — non-fatal to the trial, but never silent:
-      * EXPECTED/RECOVERABLE — an unreadable or mixed prior pair: warn on
-        stdout, drop the merge leg that cannot be read, continue from memory.
-        This is the normal post-crash path, not an incident.
+    [D6.1, retained] FAILURE CONTRACT (D2) — non-fatal to the trial, never
+    silent:
       * WRITE FAILURE (`OSError`) — loud ERROR on stderr with a traceback,
         counted in `_flush_failure_count`, and ALL candidates retained.
-      * UNEXPECTED (any other exception) — loud UNEXPECTED ERROR on stderr with
-        a traceback, counted, and ALL candidates retained.
-    A snapshot failure never kills the trial, but stderr shows a human and
-    `_flush_failure_count` / `_flush_last_error` let a soak or WATCHER observe
-    it. The pre-D6.1 behaviour — one stdout "Warning:" for every possible
-    failure, including total outage — is what hid this defect.
+      * UNEXPECTED (any other exception, including every `CheckpointError` and
+        `AccumulatorConsistencyError`) — loud UNEXPECTED ERROR on stderr with a
+        traceback, counted, and ALL candidates retained.
     """
     global _flush_last_count, _flush_success_count, _flush_failure_count
-    global _flush_last_error
+    global _flush_last_error, _flush_sequence
 
     bidi = accumulator.get("bidirectional", [])
     current_count = len(bidi)
@@ -790,9 +751,24 @@ def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
     if new_since_last < _FLUSH_EVERY:
         return  # not enough new survivors yet
 
-    _ckpt_dir   = _flush_checkpoint_dir()
-    _ACCUM_NPZ  = _os_flush.path.join(_ckpt_dir, _CHECKPOINT_ALL_NAME)
-    _BINARY_NPZ = _os_flush.path.join(_ckpt_dir, _CHECKPOINT_BINARY_NAME)
+    _ctx = _active_flush_run_context()
+    if _ctx is None:
+        # FAIL CLOSED, LOUDLY, AND CLEAR NOTHING. An absent context is not a
+        # neutral "unknown": it means no run identity, no declared seed
+        # interval and no `run_context_digest`, so the three walls cannot run
+        # and a written checkpoint could never be verified on resume.
+        _flush_failure_count += 1
+        _flush_last_error = RuntimeError("no D6.2 run context installed")
+        print(f"[S172-D6.2-CHECKPOINT] ERROR: no run context is installed, so "
+              f"the canonical checkpoint cannot be written or verified "
+              f"(non-fatal to the trial; ALL {current_count:,} candidates "
+              f"retained in memory, NOTHING cleared). "
+              f"`_install_flush_run_context` must run at run start.",
+              file=_sys_flush.stderr)
+        return
+
+    _ckpt_dir   = _ctx.checkpoint_dir
+    _ACCUM_NPZ, _BINARY_NPZ = _ctx.member_paths()
     _tmp        = _flush_tmp_name(_ACCUM_NPZ)
     _tmp_bin    = _flush_tmp_name(_BINARY_NPZ)
 
@@ -806,94 +782,54 @@ def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
         _flush_assert_same_filesystem(_tmp_bin, _BINARY_NPZ)
         _flush_purge_stale_temps(_ckpt_dir)
 
-        # Report what the previous pair looked like — an interrupted or
-        # inconsistent pair must be VISIBLE, not silently overwritten.
-        _pair = _flush_inspect_pair(_ACCUM_NPZ, _BINARY_NPZ)
-        if _pair["status"] not in (_PAIR_ABSENT, _PAIR_CONSISTENT):
-            print(f"[S152-FLUSH] Notice: prior snapshot pair is "
-                  f"{_pair['status']} — rewriting both members from memory "
-                  f"plus whatever prior state is readable "
-                  f"(snapshot repair only; the in-memory list is untouched "
-                  f"and remains the finalizer's authoritative source)")
+        # ── §7.2 THE THREE WALLS, over every NEWLY OBSERVED raw record ───────
+        # Before reconciliation, because reconciliation compacts losers away.
+        _new_records = list(bidi)
+        _validate_new_raw_records(
+            _new_records,
+            seed_start=_ctx.seed_start,
+            seed_end_exclusive=_ctx.seed_end_exclusive,
+            prng_base=_ctx.prng_base,
+            skip_modes_executed=_ctx.skip_modes_executed)
 
-        # Merge-by-seed, highest score wins — PROVISIONAL SNAPSHOT MAINTENANCE
-        # ONLY. This selects nothing the pipeline consumes.
-        seen: dict = {}
-        for s in bidi:
-            seed = int(s["seed"])
-            if seed not in seen or s.get("score", 0.0) > seen[seed].get("score", 0.0):
-                seen[seed] = s
+        # ── §8 step 1: construct the cumulative canonical state ──────────────
+        # Replay normalization, then the frozen `_select_l2_winners`. This is
+        # NOT a second winner policy: step 2 collapses a bit-identical 24-field
+        # replay, step 3 raises on a same-key/different-content collision, and
+        # only step 4 selects — through the imported L2 key, never a local one.
+        _cumulative = _reconcile_candidates(_ctx.cumulative, _new_records)
 
-        # Merge the prior member A when it is READABLE — including when the
-        # pair is interrupted/incomplete, which is exactly the state a crash
-        # leaves behind. EXPECTED/RECOVERABLE tier: never fatal.
-        if _pair["all"] is not None:
-            try:
-                prior_seeds  = _pair["all"][1]["seeds"]
-                prior_scores = _pair["all"][1].get(
-                    "score", _np_flush.zeros(len(prior_seeds)))
-                for i, pseed in enumerate(prior_seeds):
-                    pseed = int(pseed)
-                    pscore = float(prior_scores[i])
-                    if pseed not in seen or pscore > seen[pseed].get("score", 0.0):
-                        seen[pseed] = {"seed": pseed, "score": pscore}
-            except Exception as _me:
-                print(f"[S152-FLUSH] Warning: could not merge prior snapshot "
-                      f"member (continuing from memory): {_me}")
-        elif _pair["all_error"] is not None and _pair["status"] != _PAIR_ABSENT:
-            print(f"[S152-FLUSH] Warning: prior snapshot member A unreadable "
-                  f"(expected after a crash — continuing from memory): "
-                  f"{_pair['all_error']}")
+        # ── §8 steps 2-7: write, validate, replace A, replace B, validate ────
+        _txn = _write_checkpoint_transaction(
+            _ctx, _cumulative,
+            checkpoint_id=_flush_next_checkpoint_id(),
+            write_npz=_flush_write_npz,
+            replace=_os_flush.replace,
+            fsync_dir=_flush_fsync_dir,
+            tmp_name=_flush_tmp_name)
+        _flush_sequence = _txn["checkpoint_sequence"]
 
-        # Canonical (seed-sorted) order, so the content digest depends on
-        # content alone and not on dict insertion order.
-        all_survivors = sorted(seen.values(), key=lambda _s: int(_s["seed"]))
-        seeds  = _np_flush.array([s["seed"]  for s in all_survivors], dtype=_np_flush.uint64)
-        scores = _np_flush.array([s.get("score", 0.0) for s in all_survivors], dtype=_np_flush.float32)
-        fwd_mr = _np_flush.array([s.get("forward_match_rate", 0.0) for s in all_survivors], dtype=_np_flush.float32)
-        rev_mr = _np_flush.array([s.get("reverse_match_rate", 0.0) for s in all_survivors], dtype=_np_flush.float32)
-
-        # ── 1. ONE transaction descriptor, then BOTH temps from it ───────────
-        # Built before either write so the two members cannot disagree about
-        # which transaction they belong to — that identity is what makes an
-        # interrupted replacement detectable.
-        _txn = _flush_build_transaction(seeds, scores, fwd_mr, rev_mr)
-        _ident = _flush_identity_arrays(_txn)
-
-        # Sequential-atomic: no final name is touched until both new payloads
-        # exist on disk and are fsynced, so a failure while building the second
-        # payload cannot leave a half-updated pair.
-        _flush_write_npz(_tmp, dict(seeds=seeds, score=scores, **_ident))
-        _flush_write_npz(_tmp_bin, dict(seeds=seeds,
-                                        forward_match_rate=fwd_mr,
-                                        reverse_match_rate=rev_mr,
-                                        score=scores, **_ident))
-
-        # ── 2. then the two replaces, back-to-back ───────────────────────────
-        # A crash BETWEEN these two leaves a mixed pair. It is detected by
-        # TRANSACTION IDENTITY (never by seed sets — see the docstring) and the
-        # next flush rewrites both. Not jointly atomic, and never claimed to be.
-        _os_flush.replace(_tmp, _ACCUM_NPZ)
-        _os_flush.replace(_tmp_bin, _BINARY_NPZ)
-        _flush_fsync_dir(_ckpt_dir)
-
-        # ── 3. ONLY NOW is the on-disk snapshot pair complete ────────────────
+        # ── §8 step 8: ONLY NOW is the on-disk pair complete and verified ────
         _flush_last_count     = current_count
         _flush_success_count += 1
 
         if _FLUSH_CLEAR_IN_MEMORY:
-            # [S166 / D6.1] DISABLED — see `_FLUSH_CLEAR_IN_MEMORY`. The
-            # POSITION is the contract and is gated: the clear may only run
-            # strictly AFTER both replaces have returned, so no candidate is
-            # ever dropped on a path where the snapshot did not land.
+            # [S166 / D6.2] The POSITION is the contract and is gated: the clear
+            # runs strictly AFTER both replaces have returned AND after the
+            # installed pair has been read back and validated, so no candidate
+            # is ever dropped on a path where the checkpoint did not land. What
+            # is cleared is now recoverable — that is the whole of D6.2.
             accumulator["bidirectional"] = []
             _flush_last_count = 0
 
         _tag = f" [{label}]" if label else ""
         print(
-            f"[S152-FLUSH]{_tag} snapshot flushed: {len(seeds):,} rows "
-            f"(+{new_since_last} new this flush, threshold={_FLUSH_EVERY}, "
-            f"seq={_txn['checkpoint_sequence']})"
+            f"[S172-D6.2-CHECKPOINT]{_tag} canonical checkpoint written: "
+            f"{_txn['logical_candidate_count']:,} canonical records "
+            f"(+{new_since_last} raw this flush, threshold={_FLUSH_EVERY}, "
+            f"seq={_txn['checkpoint_sequence']}, "
+            f"state={_txn['canonical_state_digest'][:12]}…, "
+            f"cleared={'yes' if _FLUSH_CLEAR_IN_MEMORY else 'no'})"
         )
 
     except OSError as _fe:
@@ -902,26 +838,294 @@ def _flush_npz_incremental(accumulator: dict, label: str = "") -> None:
         import traceback as _tb_flush
         _flush_failure_count += 1
         _flush_last_error = _fe
-        print(f"[S152-FLUSH] ERROR: snapshot write FAILED (non-fatal to the "
-              f"trial; ALL {current_count:,} candidates retained in memory): "
-              f"{_fe!r}", file=_sys_flush.stderr)
+        print(f"[S172-D6.2-CHECKPOINT] ERROR: checkpoint write FAILED "
+              f"(non-fatal to the trial; ALL {current_count:,} candidates "
+              f"retained in memory, NOTHING cleared): {_fe!r}",
+              file=_sys_flush.stderr)
         _tb_flush.print_exc(file=_sys_flush.stderr)
 
     except Exception as _fe:
         # UNEXPECTED tier — a contract or programming error, not a disk
-        # condition. Loudest of the three, still non-fatal to the trial.
+        # condition. Loudest of the three, still non-fatal to the trial. Every
+        # CheckpointError and every AccumulatorConsistencyError lands here.
         import traceback as _tb_flush
         _flush_failure_count += 1
         _flush_last_error = _fe
-        print(f"[S152-FLUSH] UNEXPECTED ERROR: incremental flush raised "
-              f"{type(_fe).__name__} (non-fatal to the trial; ALL "
-              f"{current_count:,} candidates retained in memory): {_fe!r}",
-              file=_sys_flush.stderr)
+        print(f"[S172-D6.2-CHECKPOINT] UNEXPECTED ERROR: canonical checkpoint "
+              f"raised {type(_fe).__name__} (non-fatal to the trial; ALL "
+              f"{current_count:,} candidates retained in memory, NOTHING "
+              f"cleared): {_fe!r}", file=_sys_flush.stderr)
         _tb_flush.print_exc(file=_sys_flush.stderr)
 
     finally:
         # Requirement 5 — temps removed on EVERY path, success and failure.
         _flush_remove_temps(_tmp, _tmp_bin)
+
+
+def _checkpoint_finalizer_input(accumulator: dict) -> list:
+    """The COMPLETE 24-field candidate list `finalize_run` must receive (§8).
+
+    With the clear enabled, `accumulator['bidirectional']` is only the tail that
+    has arrived since the last checkpoint — the truncated stump. The finalizer's
+    input is the cumulative canonical state reconciled with that tail, which is
+    what makes "the finalizer still receives complete 24-field input via the
+    resume path" a property of the code rather than a claim about it.
+
+    With NO context installed nothing was ever cleared, so the raw list IS the
+    complete input and is returned unchanged.
+
+    §4.5 wording, deliberately: the finalizer's `raw_candidate_count` becomes
+    *the records supplied to the finalizer by the resumed execution* — neither
+    the original process's raw count nor a cumulative count across all
+    pre-compaction observations. NO SIDECAR-FIELD PARITY IS CLAIMED.
+    """
+    _tail = list(accumulator.get("bidirectional", []))
+    _ctx = _active_flush_run_context()
+    if _ctx is None:
+        return _tail
+    # The same three walls, over the records that never reached a checkpoint —
+    # otherwise a malformed loser in the tail could vanish in reconciliation
+    # instead of failing the run.
+    _validate_new_raw_records(
+        _tail,
+        seed_start=_ctx.seed_start,
+        seed_end_exclusive=_ctx.seed_end_exclusive,
+        prng_base=_ctx.prng_base,
+        skip_modes_executed=_ctx.skip_modes_executed)
+    return _reconcile_candidates(_ctx.cumulative, _tail)
+
+
+class CheckpointResumeError(RuntimeError):
+    """[S172 D6.2] A resume request cannot be honoured. Always fail-closed.
+
+    Distinct from `utils.checkpoint_d6_2.CheckpointError`: that family covers
+    the artifact (schema, identity, recovery), this one covers the REQUEST —
+    an unusable combination of controls, or a trial namespace that would
+    manufacture corruption.
+    """
+
+
+def _checkpoint_dataset_identity(dataset_path: str):
+    """The run's dataset IDENTITY and DIGEST for `run_context_digest` (§4.3).
+
+    Prefers the P0.5 frozen identity, which is the run's authority: resolved
+    once at run start, immutable, and carrying the version id the pointer
+    manifest published. Falls back to deriving the digest from the file itself
+    only when this process never froze one (a harness, a direct call) — never to
+    a default, and never to a value that would make two different datasets look
+    like one.
+
+    Returns `(version_id, filename, sha256)`. The ABSOLUTE PATH IS DELIBERATELY
+    NOT A COMPONENT: §4.3 excludes a mutable path, and the path is not part of
+    what makes two runs the same run — the digest is.
+    """
+    from miner.dataset_authority import get_frozen_dataset, sha256_file
+    _frozen = get_frozen_dataset()
+    if _frozen is not None and _os_flush.path.abspath(dataset_path) == _frozen.path:
+        return _frozen.version_id, _frozen.filename, _frozen.sha256
+    return (None, _os_flush.path.basename(dataset_path),
+            sha256_file(dataset_path))
+
+
+def _checkpoint_execution_set_id():
+    """The frozen execution set's `set_id`, or the CANONICAL NULL (§4.3).
+
+    `active_execution_set()` is the CONSUMER api and every call counts as a
+    consumer read — including a `None` read, which is the case that matters
+    (Beta's freeze-after-read retraction). Both production entry points freeze
+    before reaching here, so `None` means "inapplicable", never "not yet".
+    """
+    try:
+        from execution_set import active_execution_set
+    except ImportError:                                     # pragma: no cover
+        return None
+    _set = active_execution_set()
+    return None if _set is None else _set.set_id()
+
+
+def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
+                                    skip_modes_executed, seed_start: int,
+                                    seed_count: int, resume_checkpoint: str,
+                                    resume_study: bool):
+    """Build the D6.2 run context, honouring §4.4's combination matrix.
+
+    Returns `(context, recovered_max_trial_number_or_None)`.
+
+    §4.4 — THE TRIAL-NUMBER COLLISION. `trial_number` is part of the replay key
+    `(seed, trial_number, skip_mode)`. A checkpoint-only resume with a FRESH
+    Optuna study restarts trial numbering, so a new record can collide with a
+    recovered one on the same key with different canonical contents — which
+    §6.1 correctly raises as corruption. A RESTART WOULD MANUFACTURE CORRUPTION,
+    so that combination is rejected here, BEFORE a single new candidate can be
+    admitted:
+
+        resume_checkpoint  resume_study   behaviour
+        ------------------------------------------------------------------
+        no                 no             normal fresh run
+        no                 yes            existing Optuna behaviour, unchanged
+        yes                yes            continue, only above the recovered
+                                          trial namespace (enforced by the two
+                                          checks in the Optuna study body)
+        yes                no             MUST NOT begin new trials -> rejected
+                                          with a specific error, because this
+                                          codebase has no reconstruct/finalize-
+                                          only surface to offer instead
+
+    "Independent controls" means neither argument aliases or implicitly enables
+    the other. It does NOT mean every combination may continue optimization —
+    and nothing here silently turns one control on because the other was set.
+    """
+    _version_id, _filename, _sha = _checkpoint_dataset_identity(dataset_path)
+    _commit, _clean = _repository_state()
+    _components = _run_context_components(
+        dataset_version_id=_version_id,
+        dataset_filename=_filename,
+        dataset_sha256=_sha,
+        repository_commit=_commit,
+        prng_base=prng_base,
+        skip_modes_executed=tuple(skip_modes_executed),
+        seed_start=int(seed_start),
+        seed_count=int(seed_count),
+        execution_set_id=_checkpoint_execution_set_id(),
+    )
+    _digest = _build_run_context_digest(_components)
+
+    if not resume_checkpoint:
+        # Rows 1 and 2 of the matrix: a fresh checkpoint under THIS process's
+        # run id. `resume_study` keeps its existing Optuna behaviour, untouched.
+        _run_id = _validate_checkpoint_run_id(_flush_run_id())
+        _ctx = _CheckpointRunContext(
+            run_id=_run_id,
+            checkpoint_dir=_resolve_checkpoint_dir(_flush_checkpoint_root(),
+                                                   _run_id),
+            run_context_digest=_digest, prng_base=prng_base,
+            skip_modes_executed=tuple(skip_modes_executed),
+            seed_start=int(seed_start), seed_count=int(seed_count),
+            components=_components)
+        print(f"[S172-D6.2-CHECKPOINT] fresh run context: run_id={_run_id} "
+              f"context={_digest[:12]}… dir={_ctx.checkpoint_dir}")
+        return _ctx, None
+
+    # ---- resume requested --------------------------------------------------
+    if not resume_study:
+        # Row 4. Rejected BEFORE optimization, with a specific error.
+        raise CheckpointResumeError(
+            f"resume_checkpoint={resume_checkpoint!r} was requested with "
+            f"resume_study=False. A checkpoint-only resume MUST NOT begin new "
+            f"trials: a fresh Optuna study restarts trial numbering, and "
+            f"trial_number is part of the replay key (seed, trial_number, "
+            f"skip_mode), so a new record would collide with a recovered one "
+            f"under the same key with different canonical contents — a restart "
+            f"would MANUFACTURE the corruption §6.1 raises. Reconstructing or "
+            f"finalizing the recovered accumulator without optimizing is not "
+            f"offered here because no such surface exists in this entrypoint; "
+            f"pass --resume-study together with --resume-checkpoint, and the "
+            f"resumed study must begin above the recovered trial namespace."
+        )
+
+    _run_id = _validate_checkpoint_run_id(resume_checkpoint)
+    _dir = _resolve_checkpoint_dir(_flush_checkpoint_root(), _run_id)
+    _outcome = _recover_checkpoint(_dir, run_id=_run_id,
+                                   run_context_digest=_digest)
+
+    _ctx = _CheckpointRunContext(
+        run_id=_run_id, checkpoint_dir=_dir, run_context_digest=_digest,
+        prng_base=prng_base, skip_modes_executed=tuple(skip_modes_executed),
+        seed_start=int(seed_start), seed_count=int(seed_count),
+        components=_components,
+        # §4.6 — the NEXT sequence exceeds the highest STRUCTURALLY VALID
+        # sequence observed in either member, including a discarded newer A
+        # marker. `write_transaction` increments, so the context carries
+        # `next - 1`.
+        sequence=int(_outcome.next_sequence) - 1,
+        cumulative=[dict(r) for r in _outcome.records],
+        resume_provenance=_outcome.provenance())
+    _install_flush_run_context(_ctx)
+
+    _floor = max((int(r["trial_number"]) for r in _outcome.records),
+                 default=None)
+    print(f"[S172-D6.2-CHECKPOINT] RESUMED run_id={_run_id} "
+          f"row={_outcome.row} records={len(_outcome.records):,} "
+          f"state={_outcome.canonical_state_digest[:12]}… "
+          f"next_sequence={_outcome.next_sequence} "
+          f"recovered_max_trial_number={_floor}")
+    print(f"[S172-D6.2-CHECKPOINT] the optimizer execution cursor is NOT "
+          f"restored — D6.2 does not claim it (REV5 §0).")
+
+    if _outcome.repair_pair:
+        # §5 — a fresh pair is installed and validated BEFORE optimization
+        # continues. Rows 1, 2, 4 and 5 all reach here; row 6 (a consistent
+        # same-transaction pair) does not, because there is nothing to repair.
+        _install_repaired_checkpoint_pair(_ctx, {})
+    _write_resume_provenance(_ctx)
+    return _ctx, _floor
+
+
+#: §4.5 — where the durable resumed-run provenance is persisted. A sibling of
+#: the checkpoint members inside the run-isolated directory, so it travels with
+#: the thing it describes and is removed with it; never a finalizer-owned path.
+_RESUME_PROVENANCE_NAME = "resume_provenance.json"
+
+
+def _write_resume_provenance(context) -> None:
+    """§4.5 — record the resumed-run provenance DURABLY, at minimum:
+    recovered checkpoint run id · checkpoint id and sequence ·
+    `canonical_state_digest` · recovered canonical-record count.
+
+    Written with the same fsync-then-atomic-replace discipline as the members,
+    because provenance that can be lost by a crash is not provenance. It is
+    ALSO echoed into the finalizer's post-success summary by `optimize_window`,
+    so a reader of the certified generation can find it without knowing the
+    checkpoint directory exists.
+    """
+    if context.resume_provenance is None:
+        return
+    _path = _os_flush.path.join(context.checkpoint_dir,
+                                _RESUME_PROVENANCE_NAME)
+    _tmp = _flush_tmp_name(_path)
+    _payload = dict(context.resume_provenance)
+    _payload["run_context_digest"] = context.run_context_digest
+    _payload["run_context_components"] = context.components
+    try:
+        with open(_tmp, "w", encoding="utf-8") as _fh:
+            json.dump(_payload, _fh, indent=2, sort_keys=True)
+            _fh.flush()
+            _os_flush.fsync(_fh.fileno())
+        _os_flush.replace(_tmp, _path)
+        _flush_fsync_dir(context.checkpoint_dir)
+    finally:
+        _flush_remove_temps(_tmp)
+    print(f"[S172-D6.2-CHECKPOINT] resume provenance written: {_path}")
+
+
+def _install_repaired_checkpoint_pair(context, accumulator: dict) -> None:
+    """§5 — recovery installs and validates a FRESH PAIR before optimization
+    continues, sequenced per §4.6.
+
+    Called only on the resume path. It writes the recovered state straight back
+    out as a complete, validated transaction, which is what repairs a mixed pair
+    (row 2, 4 and 5) rather than leaving the run to trust a half-installed one.
+    It does NOT clear anything: the accumulator is empty at this point and there
+    is nothing this transaction has persisted on its behalf.
+    """
+    _os_flush.makedirs(context.checkpoint_dir, exist_ok=True)
+    _path_a, _path_b = context.member_paths()
+    _flush_assert_not_alias(_path_a)
+    _flush_assert_not_alias(_path_b)
+    _tmp_a, _tmp_b = _flush_tmp_name(_path_a), _flush_tmp_name(_path_b)
+    try:
+        _flush_assert_same_filesystem(_tmp_a, _path_a)
+        _flush_assert_same_filesystem(_tmp_b, _path_b)
+        _txn = _write_checkpoint_transaction(
+            context, context.cumulative,
+            checkpoint_id=_flush_next_checkpoint_id(),
+            write_npz=_flush_write_npz, replace=_os_flush.replace,
+            fsync_dir=_flush_fsync_dir, tmp_name=_flush_tmp_name)
+    finally:
+        _flush_remove_temps(_tmp_a, _tmp_b)
+    print(f"[S172-D6.2-CHECKPOINT] repaired pair installed and validated at "
+          f"sequence {_txn['checkpoint_sequence']} "
+          f"({_txn['logical_candidate_count']:,} canonical records)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1705,7 +1909,25 @@ def add_window_optimizer_to_coordinator():
                         study_name: str = '',
                         n_parallel: int = 1,
                         enable_pruning: bool = False,
-                        trse_context_file: str = 'trse_context.json'):  # S123 TRSE thread
+                        trse_context_file: str = 'trse_context.json',  # S123 TRSE thread
+                        resume_checkpoint: str = ''):  # [S172 D6.2] hop 3 of 3
+        # ── [S172 Phase-5 D6.2 §4.1] THE SELECTOR IS A RUN ID. ONE API. ──────
+        # `resume_checkpoint` is a CHECKPOINT RUN ID, never a path and never a
+        # handle. Empty means no resume. It is resolved EXCLUSIVELY beneath
+        # `.s172_checkpoint/<run_id>/`, with no absolute path, no `..`, no
+        # newest-directory discovery at any layer, and no mutable path in
+        # `run_context_digest`. Addendum §3 adds the grammar wall: a single
+        # opaque component, because path confinement alone would still let
+        # `foo/bar` behave like a handle — the exact two-API ambiguity §4.1
+        # exists to close.
+        #
+        # THIS IS HOP 3 OF 3 (§4.2). Adding the parameter alone leaves the
+        # resume path dead, which is the `Advisor -> strategy_recommendation.json
+        # -> WATCHER` pattern and the TRSE F1 manifest drift. The other two:
+        #   hop 1  agent_manifests/window_optimizer.json -> default_params
+        #          (WATCHER's step-scoped filter DROPS an undeclared key —
+        #           agents/watcher_agent.py:1312 `if key in allowed_params`)
+        #   hop 2  window_optimizer.py -> coordinator.optimize_window(...) kwargs
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -2356,10 +2578,53 @@ def add_window_optimizer_to_coordinator():
                 'bidirectional': []
             }
 
+        # ════════════════════════════════════════════════════════════════════
+        # [S172 Phase-5 D6.2] RUN CONTEXT + RESUME — before the first trial
+        # ════════════════════════════════════════════════════════════════════
+        # Resolved ONCE here and frozen, because everything below depends on it:
+        # the three finalizer walls the flush runs, the `run_context_digest`
+        # stamped into both members, and the cumulative canonical state the
+        # finalizer is ultimately fed. Nothing here is re-derived mid-run.
+        _skip_modes_d6_2 = (
+            ('constant', 'variable')
+            if (test_both_modes and not prng_base.endswith('_hybrid'))
+            else ('constant',)
+        )
+        _d6_2_context, _d6_2_resume_floor = _prepare_checkpoint_run_context(
+            dataset_path=dataset_path,
+            prng_base=prng_base,
+            skip_modes_executed=_skip_modes_d6_2,
+            seed_start=int(seed_start),
+            seed_count=int(seed_count),
+            resume_checkpoint=resume_checkpoint,
+            resume_study=resume_study,
+        )
+        _install_flush_run_context(_d6_2_context)
+
         if not _np2_complete:
             optimizer = WindowOptimizer(self, dataset_path)
             bounds = SearchBounds.from_config()
-            trial_counter = {'count': 0}
+            # [S172 D6.2 §4.4] The record's `trial_number` comes from THIS
+            # counter (see `test_config` below), not from `trial.number`. It is
+            # a process-local ordinal that restarts at 1 every run, and it is
+            # the value that lands in the replay key
+            # `(seed, trial_number, skip_mode)`. On a resume it therefore has to
+            # CONTINUE above the recovered maximum rather than restart, or the
+            # first new trial would collide with recovered trial 1 under a
+            # different canonical content — the corruption §4.4 forbids
+            # manufacturing.
+            #
+            # This is NOT "offsetting or rewriting an Optuna trial number": no
+            # Optuna number is read, written or shifted here. It is the local
+            # record ordinal resuming its own history instead of pretending the
+            # recovered trials never happened, and it does not restore the
+            # optimizer execution cursor (REV5 §0) — where the SEARCH is remains
+            # entirely Optuna's.
+            trial_counter = {'count': int(_d6_2_resume_floor or 0)}
+            if _d6_2_resume_floor:
+                print(f"[S172-D6.2-CHECKPOINT] record trial ordinal begins "
+                      f"above the recovered namespace: next trial_number = "
+                      f"{int(_d6_2_resume_floor) + 1}")
 
         def test_config(config,
                         ss=seed_start, sc=seed_count,
@@ -2425,6 +2690,16 @@ def add_window_optimizer_to_coordinator():
         require_supported_strategy(strategy_name)
         strategy = strategy_map[strategy_name]
         strategy._survivor_accumulator = survivor_accumulator  # [S149]
+        # [S172 D6.2 §4.4 / addendum §4] The recovered trial-number floor, on
+        # the same attribute seam S149 already established for the accumulator.
+        # Deliberately NOT a new entry in `OPTIMIZE_FORWARDED_KWARGS`: that
+        # tuple is AST-gated against the live `strategy.search(...)` call and is
+        # also what `strategy_contract_gap` measures the three gated strategies
+        # against, so widening it would change an unrelated contract. The value
+        # is read and ENFORCED in the Optuna study body (pre-flight over
+        # nonterminal trials, and a per-trial check at the top of the
+        # objective) — it is not an advisory that dies in an override dict.
+        strategy._resume_trial_floor = _d6_2_resume_floor
 
         # [S140b] trial history context — flows to Optuna callback
         _trial_history_ctx = {
@@ -2522,7 +2797,16 @@ def add_window_optimizer_to_coordinator():
         # They are NOT pre-deduplicated: the finalizer validates EVERY raw
         # candidate through D3 before L2, so a malformed LOSING candidate fails
         # the run instead of vanishing during selection (D3.5 §3 [B2]).
-        _raw_candidates_d3_5 = survivor_accumulator['bidirectional']
+        #
+        # [S172 D6.2 §8] With the S166 clear ENABLED, this list is only the tail
+        # that arrived since the last checkpoint — the TRUNCATED STUMP. The
+        # finalizer's input is the cumulative canonical state reconstructed from
+        # the checkpoint, reconciled with that tail, which is what makes "the
+        # finalizer still receives complete 24-field input via the resume path"
+        # a property of the code. `_checkpoint_finalizer_input` also runs the
+        # same three walls over the tail, so a malformed LOSING candidate in it
+        # fails the run rather than vanishing during reconciliation.
+        _raw_candidates_d3_5 = _checkpoint_finalizer_input(survivor_accumulator)
 
         # --------------------------------------------------------------------
         # NON-CANONICAL DIAGNOSTICS — this try/except is allowed to swallow.
@@ -2651,6 +2935,16 @@ def add_window_optimizer_to_coordinator():
                 "artifact_sha256":     _artifact_d3_5.artifact_sha256,
                 "sidecar_sha256":      _artifact_d3_5.sidecar_sha256,
                 "created_at":          _artifact_d3_5.created_at,
+                # [S172 D6.2 §4.5] Resumed-run provenance, echoed here so a
+                # reader of the certified generation finds it without knowing
+                # the checkpoint directory exists. `raw_candidate_count` above
+                # is "the records supplied to the finalizer by the resumed
+                # execution" — neither the original process's raw count nor a
+                # cumulative count across all pre-compaction observations.
+                # NO SIDECAR-FIELD PARITY IS CLAIMED.
+                "d6_2_checkpoint_run_id":  _d6_2_context.run_id,
+                "d6_2_run_context_digest": _d6_2_context.run_context_digest,
+                "d6_2_resume_provenance":  _d6_2_context.resume_provenance,
             }, f, indent=2)
         print(f"✅ bidirectional_survivors.json written as a post-success summary")
 

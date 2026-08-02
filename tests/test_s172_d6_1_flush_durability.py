@@ -27,17 +27,38 @@ brief did not anticipate and which made the briefed repair unsafe:
       subsequent `finalize_run` raise PublicationError — permanently breaking
       generation publication. G-NO-ALIAS-COLLISION pins the repair.
 
-The checkpoint therefore lives in its own namespace, and the S166 in-memory
-clear stays DISABLED (`_FLUSH_CLEAR_IN_MEMORY = False`) because a 4-array
-checkpoint cannot reconstruct the 24 CANONICAL_RECORD_FIELDS the D3.5 finalizer
-consumes from the in-memory list. The clear's ORDERING property is gated anyway
-— with the flag forced on — so enabling it later is a one-line change against a
-gate that already proves it.
+The checkpoint therefore lives in its own namespace.
+
+[S172 Phase-5 D6.2] PORTED, NOT WEAKENED — and this suite is no longer the
+authority on the payload.
+--------------------------------------------------------------------------
+D6.1 deliberately left the S166 in-memory clear DISABLED and stamped the
+checkpoint `s172-d6.1-four-field-v1`, because four arrays cannot reconstruct the
+24 CANONICAL_RECORD_FIELDS the D3.5 finalizer consumes. D6.2 supplies those 24
+fields, so BOTH of those facts are now deliberately false:
+
+  * `_CHECKPOINT_SCHEMA_VERSION` is D6.2's marker — REV5 §3.3 requires the
+    four-field marker to CHANGE;
+  * `_FLUSH_CLEAR_IN_MEMORY` is True — REV5 §8;
+  * the four-field content digest and `_flush_inspect_pair` no longer exist:
+    D6.2 splits the identity into `canonical_state_digest` (shared, content
+    only) and `member_content_digest` (per member), and classification moved to
+    `utils.checkpoint_d6_2.recover_checkpoint`'s nine-row matrix.
+
+Every assertion that pinned one of those three has been RE-POINTED at the
+replacement property, and nothing else in this suite has been relaxed. The
+DURABILITY properties D6.1 exists for — the `.npz` suffix defeat, per-file
+atomic replacement, temp cleanup on every path, the pid-keyed stale-temp purge,
+path conditions, alias isolation, failure visibility, cadence and the
+clear-strictly-last ordering — are all still gated here, against the D6.2 flush.
+Payload correctness (the 24 fields, both digests, CSR sessions, reconciliation,
+resume and the recovery matrix) belongs to
+`tests/test_s172_d6_2_checkpoint_reconciliation.py`.
 
 Oracles are hand-transcribed. Every gate must FAIL on wrong behaviour, proven
 by the mutants under the four-part kill rule.
 
-Run:  python3 tests/test_s172_d6_1_flush_durability.py
+Run:  python3 -u tests/test_s172_d6_1_flush_durability.py
 """
 
 from __future__ import annotations
@@ -59,6 +80,9 @@ if _ROOT not in sys.path:
 
 _INTEG_PATH = "window_optimizer_integration_final.py"
 _INTEG_FULL = os.path.join(_ROOT, _INTEG_PATH)
+
+#: [D6.2] The flush's log prefix moved with its payload.
+_TAG = "[S172-D6.2-CHECKPOINT]"
 
 _CHECKS: list[tuple[str, bool, str]] = []
 _MUTANTS: list[tuple[str, str, str, str]] = []
@@ -148,14 +172,57 @@ def _active(src: str):
         _ACTIVE_SRC = prev
 
 
-def _fresh(clear_in_memory: bool = False, flush_every: int | None = None):
-    """A pristine copy of the flush section under test."""
+#: [D6.2] The declared seed interval every gate's candidates must fall inside.
+#: `_validate_candidate_coverage` is one of the three walls the flush now runs,
+#: so a gate's seeds are no longer arbitrary integers.
+_GATE_SEED_START = 0
+_GATE_SEED_COUNT = 1_000_000
+
+
+def _install_context(mod, run_id: str | None = None):
+    """[D6.2] Install a run context on a freshly loaded flush section.
+
+    The flush FAILS CLOSED with no context — an absent context means nobody
+    established what this run is, so the three walls cannot run and a written
+    checkpoint could never be verified on resume. Every gate therefore installs
+    one, exactly as `optimize_window` does at run start.
+    """
+    import utils.checkpoint_d6_2 as _ck
+    run_id = run_id or mod._flush_run_id()
+    components = _ck.run_context_components(
+        dataset_version_id="daily3-20260801T000000000000Z-abcdef123456",
+        dataset_filename="daily3-20260801T000000000000Z-abcdef123456.json",
+        dataset_sha256="ab" * 32, repository_commit="c" * 40,
+        prng_base="java_lcg", skip_modes_executed=("constant",),
+        seed_start=_GATE_SEED_START, seed_count=_GATE_SEED_COUNT,
+        execution_set_id=None)
+    context = _ck.RunContext(
+        run_id=run_id,
+        checkpoint_dir=_ck.resolve_checkpoint_dir(mod._flush_checkpoint_root(),
+                                                  run_id),
+        run_context_digest=_ck.build_run_context_digest(components),
+        prng_base="java_lcg", skip_modes_executed=("constant",),
+        seed_start=_GATE_SEED_START, seed_count=_GATE_SEED_COUNT,
+        components=components)
+    mod._install_flush_run_context(context)
+    return context
+
+
+def _fresh(clear_in_memory: bool = False, flush_every: int | None = None,
+           context: bool = True):
+    """A pristine copy of the flush section under test.
+
+    [D6.2] `clear_in_memory` defaults to False so the pre-existing gates keep
+    observing the accumulator after a flush; the PRODUCTION default is True and
+    is pinned separately by `g_clear_after`.
+    """
     src = _ACTIVE_SRC if _ACTIVE_SRC is not None else _flush_section_src()
     mod = _load_section(src, "production" if _ACTIVE_SRC is None else "mutant")
     if flush_every is not None:
         mod._FLUSH_EVERY = flush_every
     mod._flush_last_count = 0
     mod._FLUSH_CLEAR_IN_MEMORY = clear_in_memory
+    mod.__d6_1_needs_context__ = context
     return mod
 
 
@@ -253,10 +320,29 @@ def _in_tmp(run_id: str | None = None):
                     os.environ[k] = v
 
 
-def _cands(seeds, score=0.5):
-    return [{"seed": int(s), "score": score,
-             "forward_match_rate": 0.4, "reverse_match_rate": 0.6}
-            for s in seeds]
+def _cands(seeds, score=0.5, trial=1, mode="constant"):
+    """[D6.2] FULL canonical 24-field records.
+
+    The pre-D6.2 four-field stub is no longer sufficient: the flush runs
+    `_validate_raw_candidates` (D3's strict 24-field validator) over every newly
+    observed record before anything is written or cleared, so a gate feeding
+    four fields would fail the wall rather than exercise the durability property
+    it is testing.
+    """
+    prng_type = "java_lcg" if mode == "constant" else "java_lcg_hybrid"
+    return [{
+        "seed": int(s), "forward_match_rate": 0.4, "reverse_match_rate": 0.6,
+        "score": score, "window_size": 8, "offset": 0, "skip_min": 0,
+        "skip_max": 16, "skip_range": 16, "sessions": ["midday"],
+        "trial_number": int(trial), "prng_base": "java_lcg",
+        "skip_mode": mode, "prng_type": prng_type,
+        "forward_count": 10.0, "reverse_count": 12.0,
+        "bidirectional_count": 3.0, "intersection_count": 3.0,
+        "intersection_ratio": 0.25, "forward_only_count": 7.0,
+        "reverse_only_count": 9.0, "survivor_overlap_ratio": 0.3,
+        "bidirectional_selectivity": 10.0 / 12.0,
+        "intersection_weight": 3.0 / 22.0,
+    } for s in seeds]
 
 
 def _ckpt_paths(mod, root=None):
@@ -272,11 +358,46 @@ def _ckpt_paths(mod, root=None):
 
 
 def _run(mod, acc, label="t"):
-    """Invoke the flush, capturing stdout and stderr."""
+    """Invoke the flush, capturing stdout and stderr.
+
+    [D6.2] The run context is installed HERE, not in `_fresh`, because it is
+    derived from `PRNG_CHECKPOINT_ROOT` / `PRNG_CHECKPOINT_RUN_ID` and those are
+    only set once a gate has entered `_in_tmp()`. Installing it at the single
+    call site keeps every existing gate body unchanged.
+    """
+    if getattr(mod, "__d6_1_needs_context__", True):
+        _ctx = mod._active_flush_run_context()
+        if _ctx is None or _ctx.checkpoint_dir != mod._flush_checkpoint_dir():
+            _install_context(mod)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         mod._flush_npz_incremental(acc, label=label)
     return out.getvalue(), err.getvalue()
+
+
+def _pair_status(mod, allp, binp):
+    """[D6.2] Classify the on-disk pair through the PRODUCTION recovery matrix.
+
+    `_flush_inspect_pair` and its `_PAIR_*` vocabulary are gone: D6.2 replaced
+    the single four-field content digest with two separate identities and moved
+    classification into `utils.checkpoint_d6_2.recover_checkpoint`, whose nine
+    rows are gated in `tests/test_s172_d6_2_checkpoint_reconciliation.py`. This
+    helper reduces that richer answer to the coarse label D6.1's durability
+    gates need, WITHOUT reimplementing any of the decision.
+
+    Returns one of: "absent" · "consistent" · the recovery row name · "failed:…".
+    """
+    import utils.checkpoint_d6_2 as _ck
+    if not os.path.exists(allp) and not os.path.exists(binp):
+        return "absent"
+    ctx = mod._active_flush_run_context()
+    try:
+        outcome = _ck.recover_checkpoint(
+            os.path.dirname(binp), run_id=ctx.run_id,
+            run_context_digest=ctx.run_context_digest)
+    except Exception as exc:                                    # noqa: BLE001
+        return f"failed:{type(exc).__name__}"
+    return ("consistent" if outcome.row == _ck.ROW_CONSISTENT else outcome.row)
 
 
 def _temps_in(d):
@@ -311,8 +432,15 @@ class _OsProxy:
 
 
 def _seeds_on_disk(path):
+    """[D6.2] The seed column is `seed`, not `seeds`.
+
+    REV5 §2.1 is explicit: the checkpoint stores RECORD field names, and the
+    `seed -> seeds` / `*_match_rate -> *_matches` renames belong to the ARRAY
+    domain only ("do not apply that rename here"). Member A's approved payload
+    is that record field plus `score`.
+    """
     with np.load(path) as z:
-        return sorted(int(s) for s in z["seeds"])
+        return sorted(int(s) for s in z["seed"])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -628,8 +756,13 @@ def g_cumulative(mod=None):
         # flush 2 — new seeds 4,5 plus a REPEAT of 2 at a HIGHER score.
         # With the clear disabled the list still holds 1..3, so this also
         # exercises re-flushing already-persisted candidates (idempotence).
+        # [D6.2] the re-observation of seed 2 carries a DISTINCT trial number.
+        # `(seed, trial_number, skip_mode)` is the replay key: two different
+        # scores under ONE key is corruption, not a competition, and the flush
+        # now (correctly) raises `AccumulatorConsistencyError` on it. Winner
+        # selection between DIFFERENT trials is what this gate is about.
         acc["bidirectional"] = _cands([1, 2, 3], score=0.5) + \
-            _cands([4, 5], score=0.5) + _cands([2], score=0.99)
+            _cands([4, 5], score=0.5) + _cands([2], score=0.99, trial=2)
         _run(mod, acc)
         assert _seeds_on_disk(allp) == [1, 2, 3, 4, 5], (
             f"cumulative seed set wrong: {_seeds_on_disk(allp)}")
@@ -637,14 +770,20 @@ def g_cumulative(mod=None):
 
         # highest score per seed wins
         with np.load(allp) as z:
-            got = dict(zip((int(s) for s in z["seeds"]),
+            got = dict(zip((int(s) for s in z["seed"]),
                            (float(v) for v in z["score"])))
         assert abs(got[2] - 0.99) < 1e-6, (
             f"dedup did not keep the highest score for seed 2: {got[2]}")
         assert abs(got[1] - 0.5) < 1e-6, got[1]
 
-        # the PRIOR-CHECKPOINT merge is what carries seeds forward: drop the
-        # in-memory list entirely and the persisted seeds must survive
+        # [D6.2] The CUMULATIVE CANONICAL STATE is what carries seeds forward:
+        # drop the in-memory list entirely and the persisted seeds must survive.
+        # Note what changed and why — D6.1 re-read member A from disk and merged
+        # it; D6.2 never does, because member A is a MARKER STUB and must never
+        # be consumed as an accumulator backup. The cumulative state lives in
+        # the run context (and is seeded from member B on resume), so the
+        # property this gate asserts is unchanged while the mechanism is now the
+        # one the asymmetric architecture allows.
         acc["bidirectional"] = _cands([6], score=0.5)
         mod._flush_last_count = 0
         _run(mod, acc)
@@ -697,16 +836,21 @@ def g_crash_restart(mod=None):
         acc["bidirectional"] = _cands([1, 2, 3, 4])
         _run(m, acc)
 
-        # RESTART SEES: a MIXED pair — _all advanced, _binary did not.
-        assert _seeds_on_disk(allp) == [1, 2, 3, 4], "(b) _all did not advance"
-        assert _seeds_on_disk(binp) == [1, 2], "(b) _binary advanced"
+        # RESTART SEES: a MIXED pair — member A advanced, member B did not.
+        assert _seeds_on_disk(allp) == [1, 2, 3, 4], "(b) member A did not advance"
+        assert _seeds_on_disk(binp) == [1, 2], "(b) member B advanced"
         # ...and it is detected by TRANSACTION IDENTITY. Seed-set comparison is
         # NOT the detector — see G-TRANSACTION-IDENTITY for the case where the
         # seed sets are identical and only a score differs.
-        assert m._flush_inspect_pair(allp, binp)["status"] == \
-            m._PAIR_INTERRUPTED, (
-            "(b) the mixed pair was not classified as an interrupted "
-            "replacement")
+        # [D6.2] A is at n+1, B at n — the A-FIRST crash. The recovery matrix
+        # names it row 4 ("A a valid NEWER uncommitted marker"): A is discarded,
+        # B is recovered, and the repaired sequence initializes ABOVE A. The
+        # blanket "higher valid sequence wins" rule would recover A here, which
+        # is why the A cases are disambiguated at all.
+        import utils.checkpoint_d6_2 as _ck_b
+        assert _pair_status(m, allp, binp) == _ck_b.ROW_A_NEWER, (
+            f"(b) the mixed pair was not classified as the A-first crash: "
+            f"{_pair_status(m, allp, binp)}")
         # each file is INDIVIDUALLY complete and loadable
         for p in (allp, binp):
             with zipfile.ZipFile(p) as zf:
@@ -771,7 +915,7 @@ def g_cadence(mod=None):
     with _in_tmp() as root:
         acc = {"bidirectional": _cands(range(9))}
         out, err = _run(m, acc, label="below")
-        assert "[S152-FLUSH]" not in out, f"fired below threshold: {out!r}"
+        assert _TAG not in out, f"fired below threshold: {out!r}"
         assert err == "", f"stderr below threshold: {err!r}"
         assert os.listdir(root) == [], (
             f"the flush wrote below threshold: {os.listdir(root)}")
@@ -779,7 +923,7 @@ def g_cadence(mod=None):
         # (4) at threshold: it fires AND the checkpoint actually lands
         acc["bidirectional"] = _cands(range(10))
         out, err = _run(m, acc, label="at")
-        assert "[S152-FLUSH]" in out, f"did not fire at threshold: {out!r}"
+        assert _TAG in out, f"did not fire at threshold: {out!r}"
         allp, binp, _ = _ckpt_paths(m, root)
         assert os.path.isfile(allp) and os.path.isfile(binp), (
             "the at-threshold flush did not land a checkpoint — this gate now "
@@ -790,7 +934,7 @@ def g_cadence(mod=None):
         # (5) `_flush_last_count` advanced, so the NEXT call is gated again
         assert m._flush_last_count == 10, m._flush_last_count
         out, _err = _run(m, acc, label="again")
-        assert "[S152-FLUSH]" not in out, (
+        assert _TAG not in out, (
             "the flush fired again with no new survivors — the cadence gate "
             "no longer advances")
 
@@ -859,8 +1003,14 @@ def g_visible_failure(mod=None):
             f"condition — stderr={err!r}")
         assert m3._flush_failure_count == 1
 
-    # (4) the EXPECTED/RECOVERABLE tier stays quiet on stderr: a corrupt prior
-    #     checkpoint warns on stdout and the flush still succeeds
+    # (4) [D6.2] A corrupt member A on disk is simply OVERWRITTEN, quietly.
+    #
+    # D6.1 warned here because it MERGED the prior member A back in and had to
+    # say when it could not. D6.2 never reads member A as data — A is a MARKER
+    # STUB, and consuming it as an accumulator backup is precisely what §0
+    # forbids — so there is no "could not merge the prior" condition left to
+    # report. The property that survives, and is asserted, is that a corrupt
+    # prior member does NOT escalate to an error and does NOT stop the flush.
     m4 = _fresh(flush_every=2)
     with _in_tmp() as root:
         allp, _binp, cdir = _ckpt_paths(m4, root)
@@ -869,13 +1019,29 @@ def g_visible_failure(mod=None):
             fh.write(b"not an npz at all")
         acc = {"bidirectional": _cands([1, 2, 3])}
         out, err = _run(m4, acc)
-        assert "Warning" in out, (
-            f"a corrupt prior checkpoint did not warn on stdout: {out!r}")
         assert "ERROR" not in err, (
-            f"the recoverable tier was escalated to an error: {err!r}")
+            f"a corrupt prior member was escalated to an error: {err!r}")
         assert m4._flush_success_count == 1, (
-            "the flush did not recover from a corrupt prior checkpoint")
+            "the flush did not proceed past a corrupt prior member")
         assert _seeds_on_disk(allp) == [1, 2, 3]
+
+    # (5) [D6.2] NO RUN CONTEXT is a loud, fail-closed condition — and it clears
+    #     nothing. An absent context is not a neutral "unknown": it means nobody
+    #     established the run identity, the declared seed interval or the
+    #     `run_context_digest`, so the three walls cannot run and the checkpoint
+    #     could never be verified on resume.
+    m5 = _fresh(flush_every=2, context=False)
+    m5._FLUSH_CLEAR_IN_MEMORY = True
+    with _in_tmp():
+        m5._clear_flush_run_context()
+        acc = {"bidirectional": _cands([1, 2, 3])}
+        out, err = _run(m5, acc)
+        assert "ERROR" in err and "no run context" in err, (
+            f"a missing run context was not surfaced: stdout={out!r} "
+            f"stderr={err!r}")
+        assert len(acc["bidirectional"]) == 3, (
+            "the accumulator was cleared with no run context installed")
+        assert m5._flush_failure_count == 1
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -889,37 +1055,46 @@ def g_transaction_identity(mod=None):
     transactions, one seed set. Seed-set comparison reports agreement; only
     transaction identity detects it.
 
-    This gate asserts BOTH halves: that seed-set comparison genuinely cannot
-    see the difference (so the gate has teeth), and that the production
-    detector classifies it as an interrupted replacement.
+    This gate asserts BOTH halves: that seed-set comparison genuinely cannot see
+    the difference (so the gate has teeth), and that the production detector
+    classifies the pair correctly.
+
+    [D6.2] RE-POINTED, NOT RELAXED. `_flush_inspect_pair` / `_PAIR_*` /
+    `four_field_content_digest` are gone — D6.2 split the single content digest
+    into `canonical_state_digest` (shared, content only) and
+    `member_content_digest` (per member, identity included) and moved
+    classification into `recover_checkpoint`'s NINE-ROW MATRIX. The blocker's
+    property is unchanged and is asserted here against that matrix; the matrix's
+    own nine rows are gated in
+    `tests/test_s172_d6_2_checkpoint_reconciliation.py` (G-RECOVERY-MATRIX).
     """
+    import utils.checkpoint_d6_2 as _ck
+
     # ── the score-only case ─────────────────────────────────────────────────
     m = _fresh(flush_every=1)
     with _in_tmp() as root:
         allp, binp, _ = _ckpt_paths(m, root)
 
-        acc = {"bidirectional": [{"seed": 42, "score": 0.40,
-                                  "forward_match_rate": 0.40,
-                                  "reverse_match_rate": 0.40}]}
+        acc = {"bidirectional": _cands([42], score=0.40)}
         _run(m, acc)
-        assert m._flush_inspect_pair(allp, binp)["status"] == m._PAIR_CONSISTENT
+        assert _pair_status(m, allp, binp) == "consistent"
 
-        # transaction 2: SAME seed, higher score — crash after the first replace
+        # transaction 2: SAME seed, higher score, a DISTINCT trial (the replay
+        # key is (seed, trial_number, skip_mode) — one key with two contents is
+        # corruption, not a new transaction). Crash after the first replace.
         m._flush_last_count = 0
         proxy = _OsProxy(fail_replace_on=2)
         m._os_flush = proxy
-        acc["bidirectional"] = [{"seed": 42, "score": 0.90,
-                                 "forward_match_rate": 0.40,
-                                 "reverse_match_rate": 0.40}]
+        acc["bidirectional"] = _cands([42], score=0.90, trial=2)
         _out, err = _run(m, acc)
         assert proxy.replace_calls == 2, "the mixed state was not produced"
         assert "ERROR" in err
 
         # the pair really is mixed, and the seed sets really are identical
         with np.load(allp) as z:
-            a_score = float(z["score"][0])
+            a_score = max(float(v) for v in z["score"])
         with np.load(binp) as z:
-            b_score = float(z["score"][0])
+            b_score = max(float(v) for v in z["score"])
         assert abs(a_score - 0.90) < 1e-6, a_score
         assert abs(b_score - 0.40) < 1e-6, b_score
         assert _seeds_on_disk(allp) == _seeds_on_disk(binp) == [42], (
@@ -930,97 +1105,126 @@ def g_transaction_identity(mod=None):
         seed_set_says_agree = _seeds_on_disk(allp) == _seeds_on_disk(binp)
         assert seed_set_says_agree, "the premise of the blocker has changed"
 
-        # ...and the production detector does not
-        status = m._flush_inspect_pair(allp, binp)["status"]
-        assert status == m._PAIR_INTERRUPTED, (
+        # ...and the production detector does not. It reports the A-FIRST crash
+        # (row 4), which is a DIFFERENT answer from "consistent" — reached
+        # through the identity block, never through the seed sets.
+        status = _pair_status(m, allp, binp)
+        assert status == _ck.ROW_A_NEWER, (
             f"a mixed pair with identical seed sets was classified {status!r}, "
-            f"not an interrupted replacement — seed-set comparison is not "
-            f"sufficient and this is exactly Beta's counterexample")
+            f"not the A-first crash — seed-set comparison is not sufficient and "
+            f"this is exactly Beta's counterexample")
 
     # ── the match-rate-only case (same hole) ────────────────────────────────
     m2 = _fresh(flush_every=1)
     with _in_tmp() as root:
         allp, binp, _ = _ckpt_paths(m2, root)
-        acc = {"bidirectional": [{"seed": 7, "score": 0.5,
-                                  "forward_match_rate": 0.10,
-                                  "reverse_match_rate": 0.10}]}
+        acc = {"bidirectional": _cands([7], score=0.5)}
+        acc["bidirectional"][0]["forward_match_rate"] = 0.10
+        acc["bidirectional"][0]["reverse_match_rate"] = 0.10
         _run(m2, acc)
         m2._flush_last_count = 0
         m2._os_flush = _OsProxy(fail_replace_on=2)
-        acc["bidirectional"] = [{"seed": 7, "score": 0.5,
-                                 "forward_match_rate": 0.95,
-                                 "reverse_match_rate": 0.95}]
+        nxt = _cands([7], score=0.5, trial=2)
+        nxt[0]["forward_match_rate"] = 0.95
+        nxt[0]["reverse_match_rate"] = 0.95
+        acc["bidirectional"] = nxt
         _run(m2, acc)
         assert _seeds_on_disk(allp) == _seeds_on_disk(binp) == [7]
-        assert m2._flush_inspect_pair(allp, binp)["status"] == \
-            m2._PAIR_INTERRUPTED, (
+        assert _pair_status(m2, allp, binp) == _ck.ROW_A_NEWER, (
             "a mixed pair differing only in match rates was not detected")
 
-    # ── the five load outcomes Beta specified ───────────────────────────────
+    # ── the load outcomes Beta specified ────────────────────────────────────
     m3 = _fresh(flush_every=1)
     with _in_tmp() as root:
         allp, binp, cdir = _ckpt_paths(m3, root)
+        _install_context(m3)
 
         # absent
-        assert m3._flush_inspect_pair(allp, binp)["status"] == m3._PAIR_ABSENT
+        assert _pair_status(m3, allp, binp) == "absent"
 
-        # matching identity + digest -> accept
+        # matching identity + digests -> accept
         acc = {"bidirectional": _cands([1, 2, 3])}
         _run(m3, acc)
-        assert m3._flush_inspect_pair(allp, binp)["status"] == m3._PAIR_CONSISTENT
+        assert _pair_status(m3, allp, binp) == "consistent"
 
-        # both members carry the full identity block, and they MATCH
-        ia, _aa = m3._flush_read_member(allp)
-        ib, _bb = m3._flush_read_member(binp)
-        for k in m3._CHECKPOINT_IDENTITY_KEYS:
+        # both members carry the full identity block, and they AGREE on
+        # everything a normal installed pair must agree on. `member_role` and
+        # `member_content_digest` are EXPECTED to differ — they persist
+        # different payloads by design — and that difference is asserted, not
+        # merely tolerated.
+        ia, _pa, _oa = _ck.read_member(allp)
+        ib, _pb, _ob = _ck.read_member(binp)
+        for k in _ck.TRANSACTION_INVARIANT_KEYS:
             assert ia[k] == ib[k], f"identity field {k!r} differs across members"
+        assert ia["member_content_digest"] != ib["member_content_digest"], (
+            "the two members report the SAME member_content_digest; A is a "
+            "marker stub and B carries the state, so equal digests mean one of "
+            "them is not what it claims")
+        assert ia["member_role"] == _ck.MEMBER_A_ROLE
+        assert ib["member_role"] == _ck.MEMBER_B_ROLE
         assert ia["checkpoint_schema_version"] == m3._CHECKPOINT_SCHEMA_VERSION
         assert ia["logical_candidate_count"] == 3, ia
         assert ia["run_id"] == m3._flush_run_id()
         assert isinstance(ia["checkpoint_sequence"], int)
 
-        # matching seeds but differing field digest -> inconsistency detected
+        # a tampered member fails its OWN digest under an unchanged identity
         tampered = os.path.join(cdir, "tampered.npz")
         with np.load(binp) as z:
             payload = {k: z[k] for k in z.files}
-        payload["four_field_content_digest"] = np.array("0" * 64)
+        payload["score"] = payload["score"] + np.float32(0.25)
         with open(tampered, "wb") as fh:
             np.savez_compressed(fh, **payload)
         os.replace(tampered, binp)
-        assert m3._flush_inspect_pair(allp, binp)["status"] == \
-            m3._PAIR_INCONSISTENT, (
-            "a digest mismatch under one transaction identity was not "
-            "reported as an inconsistency")
+        assert _pair_status(m3, allp, binp).startswith("failed:"), (
+            "a tampered member B under one transaction identity was not "
+            "reported as unrecoverable — B is the SOLE recovery payload")
 
-        # one unreadable member -> incomplete
+        # one unreadable member -> B lost -> fail closed regardless of A
         with open(binp, "wb") as fh:
             fh.write(b"truncated garbage")
-        assert m3._flush_inspect_pair(allp, binp)["status"] == \
-            m3._PAIR_INCOMPLETE
+        assert _pair_status(m3, allp, binp).startswith("failed:")
 
         # neither valid -> recovery fails visibly, in-memory untouched
         with open(allp, "wb") as fh:
             fh.write(b"also garbage")
         acc_before = _cands([1, 2, 3])
         acc2 = {"bidirectional": list(acc_before)}
-        assert m3._flush_inspect_pair(allp, binp)["status"] == \
-            m3._PAIR_UNRECOVERABLE
+        assert _pair_status(m3, allp, binp).startswith("failed:")
         assert acc2["bidirectional"] == acc_before, (
             "inspecting an unrecoverable pair touched the in-memory records")
 
-    # ── a pre-D6.1 member with no identity block is REFUSED, not guessed ────
+    # ── a pre-D6.2 member with no identity block is REFUSED, not guessed ────
     m4 = _fresh(flush_every=1)
     with _in_tmp() as root:
         allp, binp, cdir = _ckpt_paths(m4, root)
         os.makedirs(cdir, exist_ok=True)
+        _install_context(m4)
         for p in (allp, binp):
             with open(p, "wb") as fh:
                 np.savez_compressed(fh, seeds=np.array([1], dtype=np.uint64),
                                     score=np.array([0.5], dtype=np.float32))
-        assert m4._flush_inspect_pair(allp, binp)["status"] == \
-            m4._PAIR_UNRECOVERABLE, (
+        assert _pair_status(m4, allp, binp).startswith("failed:"), (
             "a member with no identity block was accepted — an unversioned "
             "file must be refused, not interpreted")
+
+        # ...and so is a member stamped with the D6.1 FOUR-FIELD marker. That is
+        # what the schema version is for: D6.2 must be able to tell the interim
+        # format apart at a glance rather than mis-decode it.
+        with np.load(binp) as z:
+            pass
+        legacy = {"seeds": np.array([1], dtype=np.uint64),
+                  "score": np.array([0.5], dtype=np.float32),
+                  "checkpoint_schema_version": np.array(
+                      "s172-d6.1-four-field-v1"),
+                  "checkpoint_id": np.array("x"),
+                  "checkpoint_sequence": np.array(1, dtype=np.int64),
+                  "run_id": np.array(m4._flush_run_id()),
+                  "logical_candidate_count": np.array(1, dtype=np.int64),
+                  "four_field_content_digest": np.array("0" * 64)}
+        with open(binp, "wb") as fh:
+            np.savez_compressed(fh, **legacy)
+        assert _pair_status(m4, allp, binp).startswith("failed:"), (
+            "a D6.1 four-field member was accepted by the D6.2 reader")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1130,15 +1334,24 @@ def g_path_conditions(mod=None):
     # (6) the schema version is explicit and carried IN the artifact
     assert isinstance(mod._CHECKPOINT_SCHEMA_VERSION, str)
     assert mod._CHECKPOINT_SCHEMA_VERSION, "the schema version is empty"
-    assert "four-field" in mod._CHECKPOINT_SCHEMA_VERSION, (
-        f"the schema version {mod._CHECKPOINT_SCHEMA_VERSION!r} does not mark "
-        f"the interim four-field format, so D6.2 cannot distinguish it")
+    # [D6.2] REV5 §3.3: "checkpoint_schema_version — UPDATE — the four-field
+    # marker must change". The version is now imported from
+    # `utils/checkpoint_d6_2` rather than restated here, so there is exactly one
+    # authority for the marker that tells the two formats apart.
+    assert "four-field" not in mod._CHECKPOINT_SCHEMA_VERSION, (
+        f"the schema version is still {mod._CHECKPOINT_SCHEMA_VERSION!r} — the "
+        f"D6.1 four-field marker MUST change now that the payload carries all "
+        f"24 canonical fields, or a D6.1 member and a D6.2 member would be "
+        f"indistinguishable")
+    import utils.checkpoint_d6_2 as _ck_ver
+    assert mod._CHECKPOINT_SCHEMA_VERSION == _ck_ver.CHECKPOINT_SCHEMA_VERSION, (
+        "the flush section restates the schema version instead of importing it")
     with _in_tmp() as root:
         allp, binp, _ = _ckpt_paths(mod, root)
         mod._flush_last_count = 0
         _run(mod, {"bidirectional": _cands([1, 2])})
         for p in (allp, binp):
-            ident, _arrays = mod._flush_read_member(p)
+            ident, _payload, _order = _ck_ver.read_member(p)
             assert ident["checkpoint_schema_version"] == \
                 mod._CHECKPOINT_SCHEMA_VERSION
 
@@ -1298,23 +1511,44 @@ def g_comment_truth(mod=None):
             f"comment documenting a false guarantee is itself the D4 defect")
 
     # the replacement states the properties that DO hold, and no more
+    #
+    # [D6.2] Four D6.1 phrases are RETIRED because the facts they stated are no
+    # longer true, and a comment restating a superseded fact is the same D4
+    # defect in the other direction:
+    #   "NON-AUTHORITATIVE" / "not a canonical accumulator checkpoint" — the
+    #       checkpoint IS canonical now; it carries all 24 fields;
+    #   "PROVISIONAL SNAPSHOT MAINTENANCE ONLY" — the merge is real
+    #       reconciliation ending in the frozen `_select_l2_winners`;
+    #   "THE IN-MEMORY LIST REMAINS THE FINALIZER'S AUTHORITATIVE SOURCE" — the
+    #       finalizer is now fed the reconstructed cumulative state, because the
+    #       in-memory list is cleared.
+    # What is still TRUE, and still required, is everything below.
     for required in ("SEQUENTIAL-ATOMIC WITH SELF-REPAIR",
                      "explicitly NOT jointly atomic",
                      "_FLUSH_CLEAR_IN_MEMORY",
-                     "NON-AUTHORITATIVE",
-                     "not a canonical accumulator checkpoint",
-                     "PROVISIONAL SNAPSHOT MAINTENANCE ONLY",
-                     "THE IN-MEMORY LIST REMAINS THE FINALIZER'S AUTHORITATIVE "
-                     "SOURCE",
-                     "TRANSACTION IDENTITY"):
+                     "TRANSACTION IDENTITY",
+                     "MARKER / COMPATIBILITY STUB",
+                     "SOLE RECOVERY PAYLOAD"):
         assert required in integ, (
             f"the repaired documentation does not state {required!r}")
 
-    # and the scope disclaimers Beta requires, verbatim in intent
-    for required in ("full accumulator resume", "finalizer reconstruction",
-                     "S166 in-memory memory protection"):
+    # the retired claims must be GONE, not merely unasserted
+    for retired, why in (
+        ("NON-AUTHORITATIVE, FOUR-FIELD INCREMENTAL SNAPSHOT",
+         "the checkpoint now carries all 24 canonical fields"),
+        ("PROVISIONAL SNAPSHOT MAINTENANCE ONLY",
+         "the merge is reconciliation through the frozen L2 selector"),
+        ("THE IN-MEMORY LIST REMAINS THE FINALIZER'S AUTHORITATIVE SOURCE",
+         "the finalizer is fed the reconstructed cumulative state"),
+    ):
+        assert retired not in integ, (
+            f"the code still claims {retired!r} — {why}, so that statement is "
+            f"now false and is the D4 defect in the other direction")
+
+    # and the scope disclaimer that STILL holds
+    for required in ("does not restore the optimizer execution cursor",):
         assert required in integ, (
-            f"the code does not disclaim {required!r} — D6.1 must not be read "
+            f"the code does not disclaim {required!r} — D6.2 must not be read "
             f"as providing it")
 
 
@@ -1350,28 +1584,31 @@ def g_mutants():
            _patch(src, old_write, new_write, "M1"),
            "savez_compressed(tmp_path", g_suffix, "G-SUFFIX")
 
-    # ── M2: move the list-clear BEFORE the replaces ─────────────────────────
-    old_order = (
-        "        _os_flush.replace(_tmp, _ACCUM_NPZ)\n"
-        "        _os_flush.replace(_tmp_bin, _BINARY_NPZ)\n"
-        "        _flush_fsync_dir(_ckpt_dir)")
-    new_order = (
-        "        if _FLUSH_CLEAR_IN_MEMORY:\n"
-        "            accumulator[\"bidirectional\"] = []\n"
-        "        _os_flush.replace(_tmp, _ACCUM_NPZ)\n"
-        "        _os_flush.replace(_tmp_bin, _BINARY_NPZ)\n"
-        "        _flush_fsync_dir(_ckpt_dir)")
-    _kill2("M2 list-clear moved before the replaces",
+    # ── M2: move the list-clear BEFORE the write transaction ────────────────
+    # [D6.2] RE-ANCHORED. The two `os.replace` calls moved into
+    # `utils.checkpoint_d6_2.write_transaction`, which also validates the
+    # installed pair before returning; the clear is the step after it. Hoisting
+    # the clear above that call is the same injected defect — candidates dropped
+    # before the checkpoint is known to have landed — and G-CLEAR-AFTER must
+    # still red on it.
+    old_order = ("        # ── §8 steps 2-7: write, validate, replace A, "
+                 "replace B, validate ────\n"
+                 "        _txn = _write_checkpoint_transaction(")
+    new_order = ("        if _FLUSH_CLEAR_IN_MEMORY:\n"
+                 "            accumulator[\"bidirectional\"] = []\n"
+                 "        _txn = _write_checkpoint_transaction(")
+    old_order_present = old_order
+    _kill2("M2 list-clear moved before the write transaction",
            _patch(src, old_order, new_order, "M2"),
-           "accumulator[\"bidirectional\"] = []\n        _os_flush.replace",
+           "accumulator[\"bidirectional\"] = []\n        _txn =",
            g_clear_after, "G-CLEAR-AFTER")
 
     # ── M3: clear the list on a FAILED write ────────────────────────────────
-    old_fail = ("        print(f\"[S152-FLUSH] ERROR: snapshot write FAILED "
-                "(non-fatal to the \"")
+    old_fail = ("        print(f\"[S172-D6.2-CHECKPOINT] ERROR: checkpoint write "
+                "FAILED \"")
     new_fail = ("        accumulator[\"bidirectional\"] = []\n"
-                "        print(f\"[S152-FLUSH] ERROR: snapshot write FAILED "
-                "(non-fatal to the \"")
+                "        print(f\"[S172-D6.2-CHECKPOINT] ERROR: checkpoint write "
+                "FAILED \"")
     _kill2("M3 candidates cleared on a failed write",
            _patch(src, old_fail, new_fail, "M3"),
            "accumulator[\"bidirectional\"] = []\n        print",
@@ -1386,62 +1623,72 @@ def g_mutants():
     # ── M5: re-broaden the exception handler to swallow everything ──────────
     old_exc = "    except OSError as _fe:"
     new_exc = ("    except Exception as _fe:\n"
-               "        print(f\"[S152-FLUSH] Warning: incremental flush \"\n"
+               "        print(f\"[S172-D6.2-CHECKPOINT] Warning: checkpoint \"\n"
                "              f\"failed (non-fatal): {_fe}\")\n"
                "        return\n"
                "    except OSError as _fe:")
     _kill2("M5 exception handler swallows the failure again",
            _patch(src, old_exc, new_exc, "M5"),
-           "Warning: incremental flush ", g_visible_failure,
+           "Warning: checkpoint ", g_visible_failure,
            "G-VISIBLE-FAILURE")
 
-    # ── M6: drop the prior-checkpoint merge ─────────────────────────────────
-    _kill2("M6 prior-snapshot merge dropped",
-           _patch(src, "        if _pair[\"all\"] is not None:",
-                  "        if False and _pair[\"all\"] is not None:", "M6"),
-           "if False and _pair[\"all\"] is not None:", g_cumulative,
+    # ── M6: drop the CUMULATIVE state from the reconciliation ───────────────
+    # [D6.2] RE-ANCHORED. D6.1 carried seeds forward by re-reading member A from
+    # disk and merging it; D6.2 never does that (A is a MARKER STUB, never an
+    # accumulator backup) and carries them in the run context's cumulative
+    # state instead. Dropping that input is the same injected defect — earlier
+    # candidates silently disappearing from the checkpoint — and G-CUMULATIVE
+    # must still red on it.
+    _kill2("M6 cumulative state dropped from reconciliation",
+           _patch(src, "        _cumulative = _reconcile_candidates(_ctx.cumulative, _new_records)",
+                  "        _cumulative = _reconcile_candidates([], _new_records)",
+                  "M6"),
+           "_reconcile_candidates([], _new_records)", g_cumulative,
            "G-CUMULATIVE")
 
     # ── M7: point the checkpoint back at the finalizer-owned root names ─────
-    m7_src = _patch(src, "_CHECKPOINT_DIRNAME     = \".s172_checkpoint\"",
-                    "_CHECKPOINT_DIRNAME     = \".\"", "M7")
-    m7_src = _patch(m7_src,
-                    "_CHECKPOINT_ALL_NAME    = \"incremental_survivors_all.npz\"",
-                    "_CHECKPOINT_ALL_NAME    = \"bidirectional_survivors_all.npz\"",
-                    "M7b")
-    m7_src = _patch(m7_src,
-                    "_CHECKPOINT_BINARY_NAME = \"incremental_survivors_binary.npz\"",
-                    "_CHECKPOINT_BINARY_NAME = \"bidirectional_survivors_binary.npz\"",
-                    "M7c")
+    # [D6.2] RE-ANCHORED. The three names are IMPORTED from
+    # `utils/checkpoint_d6_2` rather than assigned here, so the mutant overrides
+    # them after the import instead of editing an assignment that no longer
+    # exists. The injected defect is identical: the checkpoint aimed at the two
+    # finalizer-owned root aliases, which `finalize_run` fails closed on.
+    m7_src = _patch(
+        src, "_CHECKPOINT_TMP_SUFFIX  = \".flush-{pid}.tmp\"",
+        "_CHECKPOINT_DIRNAME     = \".\"\n"
+        "_CHECKPOINT_ALL_NAME    = \"bidirectional_survivors_all.npz\"\n"
+        "_CHECKPOINT_BINARY_NAME = \"bidirectional_survivors_binary.npz\"\n"
+        "_CHECKPOINT_TMP_SUFFIX  = \".flush-{pid}.tmp\"", "M7")
     _kill2("M7 checkpoint writes the finalizer-owned root paths", m7_src,
            "_CHECKPOINT_ALL_NAME    = \"bidirectional_survivors_all.npz\"",
            g_no_alias_collision, "G-NO-ALIAS-COLLISION")
 
-    # ── M8: revert pair detection to a SEED-SET-ONLY comparison ─────────────
-    # The exact defect Beta's blocker names. Under this mutant the
-    # counterexample (same seed set, changed score, mixed pair) is reported as
-    # `consistent`.
-    old_detect = (
-        "    if _flush_identity_differs(_a[0], _b[0]):\n"
-        "        _res[\"status\"] = _PAIR_INTERRUPTED\n"
-        "        return _res\n"
-        "    if _a[0][\"four_field_content_digest\"] "
-        "!= _b[0][\"four_field_content_digest\"]:\n"
-        "        _res[\"status\"] = _PAIR_INCONSISTENT\n"
-        "        return _res\n"
-        "    _res[\"status\"] = _PAIR_CONSISTENT\n"
-        "    return _res")
-    new_detect = (
-        "    if sorted(int(_s) for _s in _a[1][\"seeds\"]) "
-        "!= sorted(int(_s) for _s in _b[1][\"seeds\"]):\n"
-        "        _res[\"status\"] = _PAIR_INTERRUPTED\n"
-        "        return _res\n"
-        "    _res[\"status\"] = _PAIR_CONSISTENT\n"
-        "    return _res")
-    _kill2("M8 pair detection reverted to seed-set-only comparison",
-           _patch(src, old_detect, new_detect, "M8"),
-           "sorted(int(_s) for _s in _a[1][\"seeds\"])",
-           g_transaction_identity, "G-TRANSACTION-IDENTITY")
+    # ── M8: the fail-closed run-context guard removed ───────────────────────
+    # [D6.2] REPLACED, and the reason is stated rather than the check quietly
+    # dropped. D6.1's M8 reverted `_flush_inspect_pair` to a SEED-SET-ONLY
+    # comparison — Beta's blocker. That function no longer exists: D6.2 moved
+    # pair classification into `utils.checkpoint_d6_2.recover_checkpoint`, which
+    # is a different module and therefore outside this suite's sliced unit. The
+    # blocker's property is still gated — G-TRANSACTION-IDENTITY above asserts
+    # it against the live matrix — and the MUTANT for it now lives in
+    # `tests/test_s172_d6_2_checkpoint_reconciliation.py` (M9 "recover the newer
+    # A instead of B", M18 "recovery row 5 deleted"), where the code it mutates
+    # actually is.
+    #
+    # What replaces it here is the defect this suite CAN still inject: removing
+    # the fail-closed guard that refuses to write or clear without a run
+    # context. An absent context is not a neutral "unknown" — it means nobody
+    # established the run identity, the declared seed interval or the
+    # `run_context_digest`, so the three walls cannot run and the checkpoint
+    # could never be verified on resume.
+    old_guard = ("    _ctx = _active_flush_run_context()\n"
+                 "    if _ctx is None:\n"
+                 "        # FAIL CLOSED, LOUDLY, AND CLEAR NOTHING.")
+    new_guard = ("    _ctx = _active_flush_run_context()\n"
+                 "    if False:  # M8 — the fail-closed guard is removed\n"
+                 "        # FAIL CLOSED, LOUDLY, AND CLEAR NOTHING.")
+    _kill2("M8 the fail-closed run-context guard removed",
+           _patch(src, old_guard, new_guard, "M8"),
+           "if False:  # M8", g_visible_failure, "G-VISIBLE-FAILURE")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1512,12 +1759,14 @@ def main():
             print(f"  FAILED: {name}\n          {err}")
     print(f"{passed}/{total} D6.1 gate checks green  ({len(_MUTANTS)} mutants killed)")
     if passed == total:
-        print("All D6.1 gate checks green — the NON-AUTHORITATIVE four-field "
-              "snapshot writes,\nreplaces atomically per file, detects an "
-              "interrupted replacement by transaction\nidentity, is loud on "
-              "failure, and is isolated from the finalizer.\n"
-              "NOT provided: accumulator resume, finalizer reconstruction, "
-              "S166 memory protection.")
+        print("All D6.1 gate checks green (ported to the D6.2 payload) — the "
+              "checkpoint writes,\nreplaces atomically per file, detects an "
+              "interrupted replacement by transaction\nidentity, cleans up its "
+              "temps on every path, is loud on failure, is isolated from\nthe "
+              "finalizer, and clears the in-memory list strictly last.\n"
+              "Payload correctness (24 fields, both digests, CSR sessions, "
+              "reconciliation,\nresume and the nine-row recovery matrix) is "
+              "gated by\ntests/test_s172_d6_2_checkpoint_reconciliation.py.")
     print("=" * 78)
     return 0 if passed == total else 1
 

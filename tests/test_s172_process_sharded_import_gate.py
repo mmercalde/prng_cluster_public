@@ -178,13 +178,9 @@ def _module_scope_imports(tree: ast.Module) -> List[str]:
     return found
 
 
-def _step1_constant(name: str) -> str:
-    """Read a module-scope string constant out of Step-1's SOURCE.
-
-    Deliberately AST, not import: importing Step-1's host module into THIS
-    process would pull a GPU library into the parent interpreter and break
-    G-RUNTIME-INJECTION's negative controls, which require a clean process."""
-    tree = ast.parse(_read(_STEP1_HOST_PATH), filename=_STEP1_HOST_PATH)
+def _module_string_constant(path: str, name: str):
+    """A module-scope `name = "..."` in `path`'s SOURCE, or None."""
+    tree = ast.parse(_read(path), filename=path)
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -194,9 +190,56 @@ def _step1_constant(name: str) -> str:
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id == name:
                 return node.value.value
+    return None
+
+
+def _module_import_alias(path: str, name: str):
+    """`(module, original_name)` if `path` binds `name` via `from … import`.
+
+    [S172 D6.2] Added because Step-1 no longer ASSIGNS the checkpoint path
+    constants — it IMPORTS them from `utils/checkpoint_d6_2`, which is now the
+    single authority for the checkpoint schema, so the flush side and the resume
+    side cannot drift apart about where a checkpoint lives. Following the alias
+    keeps this gate's "READ FROM Step-1's source, never restated" rule intact:
+    the value still comes from the live source, just one hop further along.
+    """
+    tree = ast.parse(_read(path), filename=path)
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        for alias in node.names:
+            if (alias.asname or alias.name) == name:
+                return node.module, alias.name
+    return None
+
+
+def _step1_constant(name: str) -> str:
+    """Read a module-scope string constant out of Step-1's SOURCE.
+
+    Deliberately AST, not import: importing Step-1's host module into THIS
+    process would pull a GPU library into the parent interpreter and break
+    G-RUNTIME-INJECTION's negative controls, which require a clean process."""
+    value = _module_string_constant(_STEP1_HOST_PATH, name)
+    if value is not None:
+        return value
+
+    alias = _module_import_alias(_STEP1_HOST_PATH, name)
+    if alias is not None:
+        module, original = alias
+        source_path = os.path.join(_ROOT, *module.split(".")) + ".py"
+        assert os.path.isfile(source_path), (
+            f"Step-1 imports {name} from {module!r}, but {source_path} does not "
+            f"exist — the constant cannot be derived from source")
+        value = _module_string_constant(source_path, original)
+        assert value is not None, (
+            f"Step-1 imports {name} from {module!r} as {original!r}, but that "
+            f"module does not define it as a module-scope string constant")
+        return value
+
     raise AssertionError(
-        f"Step-1's host module no longer defines {name} as a module-scope "
-        f"string constant — the contamination guard cannot be derived")
+        f"Step-1's host module neither defines nor imports {name} as a "
+        f"module-scope string constant — the contamination guard cannot be "
+        f"derived")
 
 
 # Where Step-1 would scatter checkpoint directories if a flush ever ran, and the

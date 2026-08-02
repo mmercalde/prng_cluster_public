@@ -448,6 +448,11 @@ class BayesianOptimization(SearchStrategy):
             # be copied onto the inner search object or getattr(self,...) finds None.
             if hasattr(self, '_survivor_accumulator'):
                 self.optuna_search._survivor_accumulator = self._survivor_accumulator
+            # [S172 D6.2 §4.4] Same seam, same reason: this class delegates
+            # immediately, so a value left on the outer strategy would never be
+            # seen by the study body that has to ENFORCE it.
+            if hasattr(self, '_resume_trial_floor'):
+                self.optuna_search._resume_trial_floor = self._resume_trial_floor
             # Use real Optuna implementation
             return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
                                              resume_study=resume_study, study_name=study_name,
@@ -692,6 +697,7 @@ def run_bayesian_optimization(
     miner_stripe_size: int = 67_108_864,    # [S172 Phase 1]
     miner_substripes: int = 8,              # [S172 Phase 1]
     miner_output_dir: str = None,           # [S172 Phase 1]
+    resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -808,6 +814,13 @@ def run_bayesian_optimization(
         warm_start_fwd_thresh=warm_start_fwd_thresh,
         warm_start_rev_thresh=warm_start_rev_thresh,
         warm_start_session_idx=warm_start_session_idx,  # [S166]
+        # [S172 Phase-5 D6.2] HOP 2 OF 3. Without this explicit kwarg the value
+        # never reaches the method, and adding the parameter to
+        # `optimize_window` alone would leave the resume path dead — the
+        # `Advisor -> strategy_recommendation.json -> WATCHER` dead-chain
+        # pattern. Hop 1 is the manifest's `default_params`; hop 3 is the
+        # `optimize_window` signature.
+        resume_checkpoint=resume_checkpoint,
     )
 
     # [S140] SEED COVERAGE WRITE-BACK — log this run's range to exhaustive_progress
@@ -1301,6 +1314,16 @@ def main():
                        help='Optuna study DB name to resume (e.g. window_opt_1772507547). '
                             'Empty string = auto-select most recent incomplete study. '
                             'Only used when --resume-study is set.')
+    parser.add_argument('--resume-checkpoint', type=str, default='',
+                       help='[S172 D6.2] Resume from a canonical 24-field '
+                            'accumulator checkpoint. THE VALUE IS A CHECKPOINT '
+                            'RUN ID, never a path: a single opaque component '
+                            'matching [A-Za-z0-9._-]+, resolved only beneath '
+                            '.s172_checkpoint/<run_id>/. Empty = no resume. '
+                            'Requires --resume-study: a checkpoint-only resume '
+                            'with a fresh study would restart trial numbering '
+                            'and manufacture a replay-key collision, so it is '
+                            'rejected before optimization.')
     parser.add_argument('--test-both-modes', action='store_true',
                        help='Test BOTH constant and variable skip patterns (NEW!)')
     # S115 R3: pruning + parallelism flags
@@ -1640,6 +1663,8 @@ def main():
             miner_stripe_size=getattr(args, 'miner_stripe_size', 67_108_864),
             miner_substripes=getattr(args, 'miner_substripes', 8),
             miner_output_dir=getattr(args, 'miner_output_dir', None),
+            # [S172 Phase-5 D6.2] the operator route's CLI end of hop 2.
+            resume_checkpoint=getattr(args, 'resume_checkpoint', ''),
         )
 
         print("\n✅ Bayesian optimization complete!")

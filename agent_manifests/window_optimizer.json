@@ -52,7 +52,8 @@
         "use-range-miner": "use_range_miner",
         "miner-stripe-size": "miner_stripe_size",
         "miner-substripes": "miner_substripes",
-        "miner-output-dir": "miner_output_dir"
+        "miner-output-dir": "miner_output_dir",
+        "resume-checkpoint": "resume_checkpoint"
       },
       "distributed": true,
       "timeout_minutes": 1440
@@ -206,14 +207,14 @@
       "default": false,
       "description": "[S172 Phase 1] Enable RANGE-MINER stripe backend. Mutually exclusive with use_persistent_workers and use_zmq_sqlite. Phase 1 is scaffolding-only: setting true will raise NotImplementedError until Phases 2-5 land. Do not enable in production until Phase 7 acceptance completes.",
       "optimized_by": "Manual",
-      "effect": "Replaces chunk-dispatch Step 1 with miner-style long-lived GPU daemons (v1.4.4 §3)."
+      "effect": "Replaces chunk-dispatch Step 1 with miner-style long-lived GPU daemons (v1.4.4 \u00a73)."
     },
     "miner_stripe_size": {
       "type": "int",
       "min": 1048576,
       "max": 1073741824,
       "default": 67108864,
-      "description": "[S172 §6.2] Seeds per stripe per GPU. Default 64M. Used only when use_range_miner=true.",
+      "description": "[S172 \u00a76.2] Seeds per stripe per GPU. Default 64M. Used only when use_range_miner=true.",
       "optimized_by": "Manual"
     },
     "miner_substripes": {
@@ -221,7 +222,7 @@
       "min": 1,
       "max": 64,
       "default": 8,
-      "description": "[S172 §6.2] Sub-stripe count per stripe. Default 8 (sized to fit lockup_timeout=30000). Used only when use_range_miner=true.",
+      "description": "[S172 \u00a76.2] Sub-stripe count per stripe. Default 8 (sized to fit lockup_timeout=30000). Used only when use_range_miner=true.",
       "optimized_by": "Manual"
     },
     "miner_output_dir": {
@@ -261,7 +262,8 @@
     "use_range_miner": false,
     "miner_stripe_size": 67108864,
     "miner_substripes": 8,
-    "miner_output_dir": null
+    "miner_output_dir": null,
+    "resume_checkpoint": ""
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
@@ -289,6 +291,12 @@
       "type": "bool",
       "default": false,
       "description": "S158D: Use ZMQ+SQLite coordinator instead of PWC. Eliminates persistent SSH pipes. Workers launched once per run, pull jobs via ZMQ TCP."
+    },
+    "resume_checkpoint": {
+      "type": "str",
+      "default": "",
+      "description": "[S172 D6.2] Canonical 24-field accumulator checkpoint to resume. THE VALUE IS A CHECKPOINT RUN ID, never a path: a single opaque component matching [A-Za-z0-9._-]+, resolved only beneath .s172_checkpoint/<run_id>/. Empty = no resume. Must be declared HERE or WATCHER's step-scoped filter (watcher_agent.py:1312) drops the key before the command is built. Requires resume_study=true.",
+      "optimized_by": "Manual"
     }
   }
 }

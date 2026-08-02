@@ -835,6 +835,44 @@ def _g_backend_default_impl(module):
 # ═════════════════════════════════════════════════════════════════════════════
 # G-FLUSH-CADENCE
 # ═════════════════════════════════════════════════════════════════════════════
+# ── [S172 Phase-5 D6.2] the flush now needs a run context and 24-field records
+def _canonical_cands(seeds, score=0.5, trial=1):
+    """Full canonical 24-field records — the flush validates every newly
+    observed record through D3's strict validator before writing or clearing."""
+    return [{
+        "seed": int(s), "forward_match_rate": 0.4, "reverse_match_rate": 0.6,
+        "score": score, "window_size": 8, "offset": 0, "skip_min": 0,
+        "skip_max": 16, "skip_range": 16, "sessions": ["midday"],
+        "trial_number": int(trial), "prng_base": PRNG_BASE,
+        "skip_mode": "constant", "prng_type": PRNG_BASE,
+        "forward_count": 10.0, "reverse_count": 12.0,
+        "bidirectional_count": 3.0, "intersection_count": 3.0,
+        "intersection_ratio": 0.25, "forward_only_count": 7.0,
+        "reverse_only_count": 9.0, "survivor_overlap_ratio": 0.3,
+        "bidirectional_selectivity": 10.0 / 12.0,
+        "intersection_weight": 3.0 / 22.0,
+    } for s in seeds]
+
+
+def _install_d6_2_context(root, run_id):
+    """Install a D6.2 run context, exactly as `optimize_window` does."""
+    import utils.checkpoint_d6_2 as _ck
+    components = _ck.run_context_components(
+        dataset_version_id="daily3-20260801T000000000000Z-abcdef123456",
+        dataset_filename="daily3-20260801T000000000000Z-abcdef123456.json",
+        dataset_sha256="ab" * 32, repository_commit="c" * 40,
+        prng_base=PRNG_BASE, skip_modes_executed=("constant",),
+        seed_start=0, seed_count=1_000_000, execution_set_id=None)
+    context = _ck.RunContext(
+        run_id=run_id,
+        checkpoint_dir=_ck.resolve_checkpoint_dir(root, run_id),
+        run_context_digest=_ck.build_run_context_digest(components),
+        prng_base=PRNG_BASE, skip_modes_executed=("constant",),
+        seed_start=0, seed_count=1_000_000, components=components)
+    WOI._install_flush_run_context(context)
+    return context
+
+
 def g_flush_cadence(integ_src=None):
     """The threshold-gated flush fires exactly as it did pre-D6: once per trial,
     after the append, with the same label — and the threshold gate itself is
@@ -933,14 +971,17 @@ def g_flush_cadence(integ_src=None):
     #     it, so the gate now pins SUCCESSFUL flush behaviour instead: the
     #     checkpoint files exist after the at-threshold call.
     #
-    #     The accumulator is STILL not cleared, but for a different and now
-    #     deliberate reason: `_FLUSH_CLEAR_IN_MEMORY` is False, because the
-    #     4-array checkpoint cannot reconstruct the 24 CANONICAL_RECORD_FIELDS
-    #     the D3.5 finalizer consumes from the in-memory list. Candidates
-    #     therefore still all reach the finalizer — by design now, not by a bug.
+    #     [S172 Phase-5 D6.2] The accumulator IS now cleared at the threshold:
+    #     `_FLUSH_CLEAR_IN_MEMORY` is True because the checkpoint carries all 24
+    #     CANONICAL_RECORD_FIELDS, so what is cleared is recoverable and the
+    #     finalizer is fed the reconstructed cumulative state via
+    #     `_checkpoint_finalizer_input`. This gate therefore pins the clear
+    #     rather than its absence — and D6's OWN property, one flush per trial
+    #     after the append with the pre-D6 label, is unchanged above.
     assert isinstance(WOI._FLUSH_EVERY, int) and WOI._FLUSH_EVERY > 0
     import contextlib as _ctx
     import io as _io
+    _TAG_D6_2 = "[S172-D6.2-CHECKPOINT]"
     with tempfile.TemporaryDirectory() as tmp:
         cwd = os.getcwd()
         # [S172 D6.1] The snapshot root is deliberately NOT the CWD any more
@@ -950,25 +991,30 @@ def g_flush_cadence(integ_src=None):
         _prev_run = os.environ.get("PRNG_CHECKPOINT_RUN_ID")
         os.environ["PRNG_CHECKPOINT_ROOT"] = tmp
         os.environ["PRNG_CHECKPOINT_RUN_ID"] = "d6-cadence"
+        _prev_ctx = WOI._active_flush_run_context()
         try:
             os.chdir(tmp)
             WOI._flush_last_count = 0
+            # [S172 D6.2] The flush FAILS CLOSED with no run context installed,
+            # so this gate installs one exactly as `optimize_window` does at run
+            # start. Without it nothing would be written and the gate would be
+            # observing the guard rather than the cadence.
+            _d6_2_ctx = _install_d6_2_context(tmp, "d6-cadence")
             acc = _fresh_accumulator()
-            acc["bidirectional"] = [{"seed": i, "score": 0.5}
-                                    for i in range(WOI._FLUSH_EVERY - 1)]
+            acc["bidirectional"] = _canonical_cands(range(WOI._FLUSH_EVERY - 1))
             buf = _io.StringIO()
             with _ctx.redirect_stdout(buf):
                 real(acc, label="below")
-            assert "[S152-FLUSH]" not in buf.getvalue(), (
+            assert _TAG_D6_2 not in buf.getvalue(), (
                 f"the flush fired below the threshold: {buf.getvalue()!r}")
             assert not os.listdir(tmp), f"the flush wrote below threshold: {os.listdir(tmp)}"
             assert len(acc["bidirectional"]) == WOI._FLUSH_EVERY - 1
 
-            acc["bidirectional"].append({"seed": 999, "score": 0.5})
+            acc["bidirectional"].extend(_canonical_cands([999]))
             buf = _io.StringIO()
             with _ctx.redirect_stdout(buf):
                 real(acc, label="at")
-            assert "[S152-FLUSH]" in buf.getvalue(), (
+            assert _TAG_D6_2 in buf.getvalue(), (
                 f"the flush did not fire at the threshold: {buf.getvalue()!r}")
             # [D6.1] the flush now SUCCEEDS — pin the landed snapshot, in its
             # run-isolated directory
@@ -983,13 +1029,28 @@ def g_flush_cadence(integ_src=None):
                 assert not os.path.lexists(os.path.join(tmp, _root_name)), (
                     f"the checkpoint wrote {_root_name} in the run root — that "
                     f"path is a finalizer-owned compatibility symlink")
-            # the clear stays disabled: candidates still reach the finalizer
-            assert len(acc["bidirectional"]) == WOI._FLUSH_EVERY, (
-                "the accumulator was cleared — candidates would stop reaching "
-                "the finalizer")
+            # [S172 D6.2] the clear runs — strictly after both replaces and
+            # after the installed pair validates — and the candidates are still
+            # reachable, now through the cumulative canonical state rather than
+            # through the in-memory list.
+            assert acc["bidirectional"] == [], (
+                "the accumulator was NOT cleared — D6.2 enables the S166 clear "
+                "because the checkpoint now carries all 24 canonical fields")
+            assert len(_d6_2_ctx.cumulative) == WOI._FLUSH_EVERY, (
+                f"the cumulative canonical state holds "
+                f"{len(_d6_2_ctx.cumulative)} records, expected "
+                f"{WOI._FLUSH_EVERY} — the cleared candidates must remain "
+                f"reachable for the finalizer")
+            assert len(WOI._checkpoint_finalizer_input(acc)) == WOI._FLUSH_EVERY, (
+                "the finalizer would receive the truncated stump rather than "
+                "the complete 24-field input")
         finally:
             os.chdir(cwd)
             WOI._flush_last_count = 0
+            if _prev_ctx is None:
+                WOI._clear_flush_run_context()
+            else:
+                WOI._install_flush_run_context(_prev_ctx)
             for _k, _v in (("PRNG_CHECKPOINT_ROOT", _prev_root),
                            ("PRNG_CHECKPOINT_RUN_ID", _prev_run)):
                 if _v is None:
