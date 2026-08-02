@@ -55,6 +55,37 @@ before the run, never earned by connecting.*
 
 ### 1.3 Two structural properties beyond the brief
 
+> **RETRACTION — 2026-08-01, admission-binding repair A.** The first paragraph below is left in
+> place because Beta has cited it and a withdrawn claim must not simply vanish (`G-COMMENT-TRUTH`).
+> **It was false as implemented.**
+>
+> **What Alpha claimed:** that `freeze_execution_set()` refusing a set that has already been read
+> made Beta's ordering requirement *"structurally impossible to violate rather than merely
+> documented."*
+>
+> **Why it was false:** Beta traced the counter's actual trigger condition.
+> `active_execution_set()` incremented `_READS` only inside `if _ACTIVE is not None`, so a consumer
+> could read `None`, take the legacy path, and the set could still be frozen afterwards — the exact
+> *"a consumer already decided without it"* sequence the claim called impossible. The empty read is
+> not the harmless case; it is the case that matters, because a consumer that read `None` went on
+> to behave as though no fleet authority existed. Alpha asserted the property without tracing the
+> condition under which the counter fires.
+>
+> **What was actually true, and remains true:** the live entrypoints
+> (`window_optimizer.main()` and `WatcherAgent.run_step`) were and are correctly ordered, so the
+> full-fleet evidence submitted at `63e627f` stands. What was wrong was the stronger structural
+> claim, not the run.
+>
+> **What holds now (repair A):** `active_execution_set()` increments `_READS` **unconditionally**
+> (`execution_set.py:837-839`), so an empty consumer read counts and a later freeze is refused.
+> The resolver owner — `WatcherAgent._ensure_execution_set`, which must ask "have I frozen one
+> yet?" on every step — uses the private non-consuming `_peek_execution_set()`
+> (`execution_set.py:783-801`) instead, so the code that performs the freeze does not trip the
+> guard it exists to arm. Idempotent re-freeze of an identical `set_id` returns from the
+> `_ACTIVE is not None` branch before the counter is consulted, so consumption cannot break
+> re-entrancy. Three gates: empty consumer read → later freeze refused; clean resolve/freeze before
+> any read → passes; identical re-freeze after consumption → still idempotent.
+
 **Freeze enforces ordering, not just immutability.** `freeze_execution_set()` refuses if the set
 has already been **read** — *"a consumer has already decided without it."* Beta's ordering
 requirement is therefore structurally impossible to violate rather than merely documented.
@@ -74,6 +105,18 @@ None of the six deleted · both profiles resolve and consumers follow them (`.12
 one-node set **still refuses when that node fails** · `distributed_config.json` addresses, the
 admission timeout, `serve_timeout`, `expected_workers`, `worker_pool_size` and the Blocker-3
 matrix **all unchanged, gate-asserted.**
+
+> **SUPERSEDED IN ONE RESPECT — 2026-08-01, admission-binding repair B (Beta: AUTHORIZED and
+> REQUIRED).** "`expected_workers` unchanged" was accurate at `63e627f` and is deliberately no
+> longer true. It was the defect Beta named next: the set recorded an admission count while
+> `_serve_clients()` derived `expected_workers` independently from `context["worker_pool_size"]`
+> — two frozen run facts free to disagree, so a local two-GPU set still waited for eight. On the
+> miner path `expected_workers` now comes from the frozen set's **effective** `admission_count`
+> (`min(requested, selected worker identities)`), with `requested_admission_count` and
+> `admission_count` both recorded and both in `set_id`. `worker_pool_size` keeps its meaning as
+> the REQUEST; what it stops being is a parallel authority. Unchanged and re-asserted by gate:
+> the **180s** admission timeout, `serve_timeout=None`, the Blocker-3 matrix, and
+> `distributed_config.json`'s addresses.
 
 ### 1.5 Non-regression
 

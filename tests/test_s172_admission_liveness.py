@@ -811,7 +811,24 @@ def g_forbidden_changes_absent():
             f"{fn} changed — the Blocker-3 matrix must be untouched")
 
     # 2. expected_workers is never reduced dynamically: it is bound exactly once,
-    #    from worker_pool_size, and that binding is unchanged.
+    #    in serve_trial's preamble, from the requested worker_pool_size.
+    #
+    #    AMENDED for the ADMISSION-BINDING repair (Beta: AUTHORIZED and REQUIRED,
+    #    docs/CLAUDE_CODE_INSTRUCTIONS_ADMISSION_BINDING_REPAIR.md §1). The
+    #    binding used to be compared BYTE-FOR-BYTE against HEAD, which is the
+    #    right check while the value's source is frozen and the wrong one once
+    #    Beta rules that source must change: the set recorded an admission count
+    #    while this line derived expected_workers independently from
+    #    context["worker_pool_size"] — two frozen run facts about one run, free
+    #    to disagree, so a local two-GPU set still waited for eight.
+    #
+    #    What this gate protects is UNCHANGED and is what §4.3 actually needs:
+    #    ONE binding, in the preamble (never inside a loop or a branch, i.e.
+    #    never reduced dynamically as workers come and go), derived from the
+    #    requested pool size. What it no longer asserts is that the requested
+    #    value is the FINAL authority — that is precisely what the repair moved
+    #    to the frozen execution set. `tests/test_s172_admission_binding.py`
+    #    gates where the number now comes from.
     def _binds(src):
         serve = [n for n in ast.walk(ast.parse(src))
                  if isinstance(n, ast.FunctionDef) and n.name == "serve_trial"][0]
@@ -823,12 +840,32 @@ def g_forbidden_changes_absent():
             elif isinstance(n, (ast.AugAssign, ast.AnnAssign)):
                 targets = [n.target]
             for tgt in targets:
-                if isinstance(tgt, ast.Name) and tgt.id == "expected_workers":
+                names = ([e for e in tgt.elts if isinstance(e, ast.Name)]
+                         if isinstance(tgt, ast.Tuple)
+                         else [tgt] if isinstance(tgt, ast.Name) else [])
+                if any(x.id == "expected_workers" for x in names):
                     out.append(ast.get_source_segment(src, n))
         return out
-    assert _binds(new) == _binds(old) and len(_binds(new)) == 1, (
-        f"expected_workers bindings changed: {_binds(old)} -> {_binds(new)}")
+    assert len(_binds(old)) == 1 and len(_binds(new)) == 1, (
+        f"expected_workers must be bound exactly once: {_binds(old)} -> "
+        f"{_binds(new)}")
     assert "worker_pool_size" in _binds(new)[0], _binds(new)[0]
+
+    #    …and it is still bound in the PREAMBLE, at statement level — a binding
+    #    that migrated inside the serve loop would be a dynamic reduction even
+    #    if it still mentioned worker_pool_size.
+    serve_new = [n for n in ast.walk(ast.parse(new))
+                 if isinstance(n, ast.FunctionDef) and n.name == "serve_trial"][0]
+    top_level_binds = [
+        s for s in serve_new.body
+        if isinstance(s, ast.Assign)
+        and any(any(e.id == "expected_workers"
+                    for e in (t.elts if isinstance(t, ast.Tuple) else [t])
+                    if isinstance(e, ast.Name))
+                for t in s.targets)]
+    assert len(top_level_binds) == 1, (
+        "expected_workers is no longer bound exactly once at serve_trial's top "
+        "level — a binding inside the loop is a dynamic reduction")
 
     # 3. worker_pool_size keeps its numerical interpretation (no unit change).
     #    Counted over CODE ONLY (string/identifier AST nodes), because this
@@ -857,8 +894,8 @@ def g_forbidden_changes_absent():
     #    the serve loop and the runner's context.
     assert '_timeout_raw = context.get("serve_timeout", None)' in new
     assert '"serve_timeout": kwargs.get("serve_timeout", None),' in new
-    return ("matrix byte-identical; expected_workers bound once from "
-            "worker_pool_size; serve_timeout default still None")
+    return ("matrix byte-identical; expected_workers bound once in the "
+            "preamble from worker_pool_size; serve_timeout default still None")
 
 
 # ===========================================================================

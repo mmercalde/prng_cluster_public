@@ -100,36 +100,59 @@ def _cli_set(**kw):
 # ===========================================================================
 
 def g_resolve_once_read_then_freeze():
-    """Freezing AFTER a consumer read is refused.
+    """Freezing AFTER a consumer read is refused — INCLUDING an empty read.
 
     This is the structural half of "resolved BEFORE dataset verification, GPU
     verification, coordinator construction and dispatch": a set that arrives
     after a consumer already decided did not govern that decision.
+
+    CORRECTED (admission-binding repair A). This gate previously asserted the
+    OPPOSITE of its second line — that "a read of an EMPTY set must not block a
+    later freeze" — and that exemption is exactly what made the submission's
+    freeze-after-read claim false. `active_execution_set()` counted reads only
+    when `_ACTIVE` was already non-None, so a consumer could read None, take the
+    legacy path, and the set could still be frozen afterwards. The gate encoded
+    the hole rather than catching it. It now requires the counted-None
+    behaviour, and no longer needs to forge `XS._READS` to reach the refusal:
+    a real empty read produces it.
     """
     clear_execution_set()
     try:
+        # 1. EMPTY CONSUMER READ -> a later freeze is REFUSED.
         assert active_execution_set() is None                 # the read
         try:
             freeze_execution_set(_cli_set())
-        except ExecutionSetError as e:
-            raise AssertionError(f"a read of an EMPTY set must not block a later "
-                                 f"freeze: {e}")
-        # now a real read, then a second freeze attempt of a DIFFERENT set
-        assert active_execution_set() is not None
-        clear_execution_set()
-        assert active_execution_set() is None
-        s = _cli_set()
-        freeze_execution_set(s)
-        active_execution_set()                                # consumed
-        clear_execution_set()
-        # simulate: consumer read happened, then someone tries to freeze
-        XS._READS = 1
-        try:
-            freeze_execution_set(s)
-            raise AssertionError("freeze after a consumer read must be refused")
+            raise AssertionError(
+                "freeze after an EMPTY consumer read must be refused: the "
+                "consumer read None and took the legacy path, which IS deciding "
+                "without the set")
         except ExecutionSetError as e:
             assert "already been read" in str(e), str(e)
-        return "freeze-after-read refused"
+
+        # 2. CLEAN CONTROL — resolve and freeze with NO read first: passes.
+        clear_execution_set()
+        s = _cli_set()
+        frozen = freeze_execution_set(s)
+        assert frozen.set_id() == s.set_id()
+
+        # 3. IDEMPOTENT RE-FREEZE AFTER CONSUMPTION — still permitted. Reads
+        #    are now counted, so this is the case that must NOT have regressed:
+        #    WATCHER and the CLI resolving identical inputs in one process is
+        #    not a failure, even after consumers have read.
+        assert active_execution_set() is not None             # consumed
+        assert active_execution_set() is not None             # twice
+        again = freeze_execution_set(_cli_set())
+        assert again.set_id() == s.set_id(), "identical re-freeze must be a no-op"
+
+        # 4. and a DIFFERENT set is still refused after consumption
+        try:
+            freeze_execution_set(_cli_set(declared_nodes=["localhost"],
+                                          admission_count=1))
+            raise AssertionError("a different set must not replace the frozen one")
+        except ExecutionSetError as e:
+            assert "FROZEN for this run" in str(e), str(e)
+        return ("empty read blocks a later freeze; clean freeze passes; "
+                "identical re-freeze after consumption still idempotent")
     finally:
         clear_execution_set()
 

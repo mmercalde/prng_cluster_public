@@ -1493,10 +1493,26 @@ def main():
         _xset_backend = 'zmq'
     else:
         _xset_backend = 'legacy'
-    # Recorded, never re-imposed: the miner's `expected_workers` and the PWC's
-    # `min_workers` keep their existing meanings and their existing values. The
-    # set carries the admission count so provenance shows what this run expected,
-    # not so that anything downstream is overridden by it.
+    # [ADMISSION BINDING — Beta, admission-binding brief §1] CORRECTION. This
+    # block previously read "Recorded, never re-imposed: ... not so that anything
+    # downstream is overridden by it." That is no longer true, and it was the
+    # defect: the set recorded one admission count while the miner's
+    # `_serve_clients()` derived `expected_workers` independently from
+    # `worker_pool_size`, so a local two-GPU set still waited for eight workers
+    # the set had already declared could not exist.
+    #
+    # What is passed here is the REQUEST. The resolver clamps it to the worker
+    # identities the set actually contains
+    #     effective = min(requested, selected worker identities)
+    # records BOTH (`requested_admission_count` and the effective
+    # `admission_count`), puts both in `set_id`, and logs the clamp visibly. On
+    # the miner path `expected_workers` now comes FROM that effective count
+    # (miner/range_miner_coordinator.py `_execution_set_expected_workers`), so
+    # `worker_pool_size` is the request and no longer a parallel authority.
+    #
+    # The PWC's `min_workers` is unchanged in behaviour — it is recorded in the
+    # set (and clamped for the record) but the PWC still reads its own value;
+    # binding it is not in this brief's scope.
     _xset_admission = (args.worker_pool_size if _xset_backend == 'miner'
                        else args.min_workers if _xset_backend == 'pwc'
                        else None)

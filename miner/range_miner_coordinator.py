@@ -175,6 +175,34 @@ def _execution_set_admission(worker_id):
     return is_admitted_worker(worker_id)
 
 
+def _execution_set_expected_workers(context_pool_size):
+    """`expected_workers` for THIS run — from the frozen set when there is one.
+
+    [ADMISSION BINDING — Beta, admission-binding brief §1] The set already
+    recorded an admission count, but `serve_trial` derived `expected_workers`
+    independently from `context["worker_pool_size"]`. Two frozen facts about the
+    same run, free to disagree, and they did: a local two-GPU set still waited
+    for the default eight workers — six of which the set itself declared could
+    never connect, because a worker outside the set is refused admission by
+    `_execution_set_admission` above. The trial then spent its whole bounded
+    admission window (180s, unchanged) failing to meet a threshold that was
+    unmeetable by construction.
+
+    The set is now the authority. `worker_pool_size` keeps its meaning and stays
+    the REQUEST the set was resolved from — it just stops being a second answer
+    to the same question. With no set frozen (harnesses, direct calls, every
+    pre-existing Phase-4 loopback gate) the context value is returned unchanged.
+
+    Returns `(expected_workers, source)`; `source` is recorded in the log so the
+    binding is readable off a run rather than assumed from this docstring.
+    """
+    try:
+        from execution_set import admission_expectation
+    except ImportError:
+        return int(context_pool_size), "context(execution_set unavailable)"
+    return admission_expectation(int(context_pool_size), consumer="miner")
+
+
 # ---------------------------------------------------------------------------
 # Coordinator configuration (L4 — injectable, NOT module constants)
 # ---------------------------------------------------------------------------
@@ -3649,7 +3677,23 @@ class RangeMinerCoordinator:
         window_size = trial_ctx["window_size"]
         sessions = trial_ctx["sessions"]
         offset = trial_ctx["offset"]
-        expected_workers = int(context.get("worker_pool_size", 1) or 1)
+        # [ADMISSION BINDING] Still ONE binding of expected_workers, still never
+        # reduced dynamically, still derived from the pool size the caller
+        # requested — but the frozen execution set, when one exists, is now the
+        # authority over that request instead of a second opinion beside it.
+        # See `_execution_set_expected_workers` for the defect this closes. The
+        # 180s admission window, serve_timeout=None and the Blocker-3 matrix are
+        # untouched: what changes is the NUMBER the window waits for, not the
+        # window, and not what happens when it expires.
+        # NOTE exactly ONE `context.get("worker_pool_size", ...)` read, here.
+        # The §4.3 liveness gate counts worker_pool_size CODE sites to prove its
+        # unit semantics did not change; a second read for logging would move
+        # that count. The requested value is echoed by
+        # `execution_set.admission_expectation`, which has it in hand anyway.
+        expected_workers, _admission_source = _execution_set_expected_workers(
+            int(context.get("worker_pool_size", 1) or 1))
+        logger.info("[ADMISSION] run %s: expected_workers=%d (source=%s)",
+                    run_id, expected_workers, _admission_source)
         node_allowlist = context.get("node_allowlist")
         poll = float(context.get("serve_poll", 0.1))
         # Production-timeout correction (Beta): the serve/trial timeout is UNBOUNDED

@@ -166,15 +166,36 @@ class ResolvedExecutionSet:
     targets. `set_id` is a digest over exactly the deciding content (never the
     timestamp or the invoker), so "WATCHER and the CLI produce the identical set
     for identical inputs" is a checkable claim rather than an assurance.
+
+    ADMISSION IS TWO NUMBERS, DELIBERATELY (Beta, admission-binding brief §1)
+    ------------------------------------------------------------------------
+    `requested_admission_count` is what the run ASKED for (`worker_pool_size`
+    for the miner, `min_workers` for the PWC). `admission_count` is what the
+    set IMPOSES:
+
+        admission_count = min(requested, count of selected worker identities)
+
+    Both are recorded because a clamp that overwrites the request is a clamp
+    nobody can audit. The defect this closes: the set recorded one count while
+    `_serve_clients()` derived `expected_workers` independently from
+    `context["worker_pool_size"]` — two frozen run facts about the same run that
+    could disagree, so a local two-GPU set still sat waiting for eight workers
+    that the set itself said would never exist.
     """
     backend: str
     rig_profile: str
     nodes: Tuple[ResolvedNode, ...]
     remote_execution: bool
-    admission_count: Optional[int]
+    admission_count: Optional[int]           # EFFECTIVE — what the miner imposes
     partial: bool
     declared_nodes: Optional[Tuple[str, ...]]
     invoked_by: str
+    # Defaulted, and therefore placed after the non-defaulted fields rather than
+    # beside `admission_count` where it belongs semantically: a frozen dataclass
+    # cannot order a defaulted field before a bare one, and every construction
+    # site (the resolver, the gates) is keyword-based, so position carries no
+    # meaning here. `None` = no admission count was requested for this backend.
+    requested_admission_count: Optional[int] = None
     resolver_version: int = RESOLVER_VERSION
     resolved_utc: str = field(default_factory=_utc_now_iso)
     resolved_on: str = field(default_factory=socket.gethostname)
@@ -211,6 +232,17 @@ class ResolvedExecutionSet:
         """
         return bool(worker_id) and worker_id in self.worker_ids()
 
+    def admission_clamped(self) -> bool:
+        """Did the set have to reduce what the run asked for?
+
+        True only when a request existed AND the set's worker identities could
+        not satisfy it. Read back from provenance rather than inferred from a
+        log line.
+        """
+        return (self.requested_admission_count is not None
+                and self.admission_count is not None
+                and self.admission_count < self.requested_admission_count)
+
     def contains_node(self, node_id_or_endpoint: str) -> bool:
         return (node_id_or_endpoint in self.node_ids()
                 or node_id_or_endpoint in self.endpoints()
@@ -242,6 +274,11 @@ class ResolvedExecutionSet:
             "backend": self.backend,
             "rig_profile": self.rig_profile,
             "remote_execution": self.remote_execution,
+            # BOTH are deciding content, so BOTH are in `set_id`: a run that
+            # asked for 8 and was clamped to 2 is not the same run as one that
+            # asked for 2, even though they admit the same number of workers.
+            # The clamp is therefore in the set's identity, not only in its log.
+            "requested_admission_count": self.requested_admission_count,
             "admission_count": self.admission_count,
             "partial": self.partial,
             "nodes": [
@@ -271,7 +308,10 @@ class ResolvedExecutionSet:
             "backend": self.backend,
             "rig_profile": self.rig_profile,
             "remote_execution": self.remote_execution,
+            "requested_admission_count": self.requested_admission_count,
             "admission_count": self.admission_count,
+            "admission_clamped": self.admission_clamped(),
+            "worker_identity_count": len(self.worker_ids()),
             "partial": self.partial,
             "declared_nodes": list(self.declared_nodes or ()),
             "invoked_by": self.invoked_by,
@@ -286,10 +326,23 @@ class ResolvedExecutionSet:
 
     def describe(self) -> str:
         scope = "PARTIAL" if self.partial else "full"
+        # The clamp is VISIBLE wherever the set is described — and the set is
+        # described at resolution, at freeze, by the CLI banner and by WATCHER's
+        # log line. A run bounded to fewer workers than it asked for must never
+        # have to be inferred from a worker count that quietly never arrives.
+        if self.admission_clamped():
+            adm = (f" admission={self.admission_count}"
+                   f" (CLAMPED from requested "
+                   f"{self.requested_admission_count}; "
+                   f"{len(self.worker_ids())} worker identities in the set)")
+        elif self.admission_count is not None:
+            adm = f" admission={self.admission_count}"
+        else:
+            adm = ""
         return (f"execution set {self.set_id()[:12]} "
                 f"backend={self.backend} profile={self.rig_profile} "
                 f"{scope} nodes={list(self.node_ids())} "
-                f"gpus={self.gpu_count()} remote={self.remote_execution}")
+                f"gpus={self.gpu_count()} remote={self.remote_execution}{adm}")
 
 
 # ===========================================================================
@@ -596,6 +649,60 @@ def resolve_execution_set(
     # possibility of declaring otherwise.
     remote_execution = any(not n.local for n in nodes)
 
+    # =======================================================================
+    # ADMISSION BINDING — the set decides how many workers this run waits for
+    # =======================================================================
+    # Beta (admission-binding brief §1): the set recorded one count while
+    # `_serve_clients()` derived `expected_workers` independently from
+    # `context["worker_pool_size"]`. Two frozen facts about one run, free to
+    # disagree — and they did: a local two-GPU set still waited for the default
+    # eight workers, i.e. for six workers the set itself said did not exist.
+    #
+    #     effective = min(requested pool size, selected worker identities)
+    #
+    # "selected worker identities" is exactly the membership the admission test
+    # uses (`contains_worker` -> `worker_ids()`), not a parallel capacity
+    # notion, so the count that gates admission and the identities that pass it
+    # are derived from the same tuple.
+    #
+    # FAIL DURING RESOLUTION, not at admission time, for zero / negative /
+    # zero-capacity: those are unsatisfiable before anything is allocated, and
+    # the 180s bounded-admission window (ee0db06) exists to bound a fleet that
+    # is LATE, not to discover a fleet that is arithmetically impossible.
+    requested_admission = (int(admission_count)
+                           if admission_count is not None else None)
+    identity_count = sum(n.gpu_count for n in nodes)
+    effective_admission = requested_admission
+    if requested_admission is not None:
+        if requested_admission <= 0:
+            raise ExecutionSetError(
+                f"admission count {requested_admission} is not positive. The "
+                f"admission precondition is `len(eligible) >= expected_workers`, "
+                f"so a non-positive count is satisfied by an EMPTY pool: the "
+                f"stage would be assigned with no workers at all "
+                f"(`assign_stripes` then raises 'requires at least one worker'), "
+                f"and the bounded admission window would never have a job to do. "
+                f"Refused at RESOLUTION, before that window is ever armed.")
+        if identity_count <= 0:
+            raise ExecutionSetError(
+                f"the resolved execution set contains NO worker identities "
+                f"(nodes={[n.node_id for n in nodes]}, gpu counts="
+                f"{[n.gpu_count for n in nodes]}), but this run requests an "
+                f"admission count of {requested_admission}. A set with zero "
+                f"capacity cannot admit anybody: every worker that connects is "
+                f"outside the set by construction. Refused at RESOLUTION.")
+        effective_admission = min(requested_admission, identity_count)
+        if effective_admission != requested_admission:
+            logger.warning(
+                "[EXEC-SET] ADMISSION CLAMPED: requested %d, but the resolved "
+                "set contains %d worker identit%s (%s) — this run admits %d. "
+                "The clamp is recorded in provenance "
+                "(requested_admission_count/admission_count) and in set_id.",
+                requested_admission, identity_count,
+                "y" if identity_count == 1 else "ies",
+                ", ".join(f"{n.node_id}:{n.gpu_count}" for n in nodes),
+                effective_admission)
+
     sources = [pmap.path, cfg_path]
     if provisioning is not None:
         sources.append(prov_path)
@@ -605,8 +712,8 @@ def resolve_execution_set(
         rig_profile=profile,
         nodes=tuple(nodes),
         remote_execution=remote_execution,
-        admission_count=(int(admission_count)
-                         if admission_count is not None else None),
+        admission_count=effective_admission,
+        requested_admission_count=requested_admission,
         partial=partial,
         declared_nodes=declared_t,
         invoked_by=str(invoked_by),
@@ -631,11 +738,16 @@ def freeze_execution_set(s: ResolvedExecutionSet) -> ResolvedExecutionSet:
 
     Two refusals, and they are the two gates:
 
-      * G-RESOLVE-ONCE — freezing AFTER a consumer has already read is refused.
-        A set that arrives after a decision was made did not govern that
-        decision, and pretending otherwise is how "resolved before dataset
-        verification, GPU verification, coordinator construction and dispatch"
-        becomes a comment instead of a property.
+      * G-RESOLVE-ONCE — freezing AFTER a consumer has already read is refused,
+        **including when what the consumer read was `None`.** A set that arrives
+        after a decision was made did not govern that decision, and pretending
+        otherwise is how "resolved before dataset verification, GPU verification,
+        coordinator construction and dispatch" becomes a comment instead of a
+        property. The empty read is the load-bearing case: a consumer that read
+        `None` took the legacy path, which IS a decision made without the set.
+        The enforcement is `_READS += 1` unconditionally in
+        `active_execution_set()` plus the `if _READS:` test below — not the
+        ordering the current entrypoints happen to use.
       * G-FROZEN — freezing a DIFFERENT set is refused. Re-freezing the
         identical set (same `set_id`) is idempotent and harmless: WATCHER and
         the CLI resolving the same inputs in the same process must not be a
@@ -669,19 +781,62 @@ def freeze_execution_set(s: ResolvedExecutionSet) -> ResolvedExecutionSet:
         return s
 
 
+def _peek_execution_set() -> Optional[ResolvedExecutionSet]:
+    """RESOLVER-OWNER ONLY: is a set already frozen? — WITHOUT counting a read.
+
+    Private (leading underscore) and deliberately not exported through any
+    consumer helper. The ONE legitimate caller is the code that OWNS the freeze
+    and needs an idempotency check before performing it —
+    `WatcherAgent._ensure_execution_set`, which is re-entered on every step and
+    must return the already-frozen set rather than resolve a second one.
+
+    That check is not a consumer decision. It decides *whether to freeze*, not
+    *how to run*, so counting it would make the resolver trip the very guard it
+    exists to arm: with `active_execution_set()` now counting `None` reads
+    (see below), the owner's own "is one frozen yet?" probe would register as
+    "a consumer already decided without the set" and refuse the freeze that was
+    about to happen. Anything that reads the set to DECIDE ANYTHING uses
+    `active_execution_set()` and is counted.
+    """
+    with _LOCK:
+        return _ACTIVE
+
+
 def active_execution_set() -> Optional[ResolvedExecutionSet]:
-    """The frozen set, or None.
+    """The frozen set, or None. **Every call counts as a consumer read.**
 
     None means no set was resolved in this process — a direct harness call, a
     unit test, a module imported standalone. Consumers treat None as "behave
     exactly as before this work existed", which is what keeps every pre-existing
     suite green. Both PRODUCTION entry points (the `window_optimizer.py` CLI and
     `WatcherAgent.run_step`) always freeze one, so None never occurs on a real run.
+
+    WHY THE COUNTER FIRES ON `None` — a RETRACTION (Beta, admission-binding brief §0)
+    ---------------------------------------------------------------------------
+    This function used to increment `_READS` only inside `if _ACTIVE is not None`,
+    and the submission claimed on that basis that freezing after a read was
+    structurally impossible. **That claim was false**, and Beta traced why: with
+    the counter behind the non-`None` test, a consumer could read `None`, take
+    the legacy path, and the set could still be frozen afterwards — precisely the
+    "a consumer already decided without it" sequence `freeze_execution_set`
+    refuses. The empty read is not the harmless case; it is THE case that matters,
+    because a consumer that read `None` did not merely fail to learn the fleet, it
+    went and behaved as though no fleet authority existed.
+
+    So the counter is now unconditional, and `G-RESOLVE-ONCE` is a property of
+    this line rather than of the order the live entrypoints happen to use:
+
+        _READS += 1          <- fires for a None read too
+        return _ACTIVE
+
+    The freeze path (`freeze_execution_set`, above) reads that counter BEFORE
+    installing anything, and the idempotent re-freeze of an identical set returns
+    earlier still — from the `_ACTIVE is not None` branch, which is not reached
+    via the counter at all — so consumption cannot break re-entrancy.
     """
     global _READS
     with _LOCK:
-        if _ACTIVE is not None:
-            _READS += 1
+        _READS += 1
         return _ACTIVE
 
 
@@ -793,6 +948,51 @@ def is_admitted_worker(worker_id: Optional[str]) -> Tuple[bool, Optional[str]]:
         f"{s.set_id()[:12]} (profile={s.rig_profile}, nodes={list(s.node_ids())}). "
         f"Registered but INELIGIBLE: membership is declared before the run, never "
         f"earned by connecting.")
+
+
+def admission_expectation(context_pool_size: int,
+                          *, consumer: str = "miner") -> Tuple[int, str]:
+    """How many workers must be admitted before a stage is assigned.
+
+    Returns `(expected_workers, source)`. THE SET IS THE AUTHORITY when one is
+    frozen — Beta's requirement, and the whole point of the repair: with a set
+    frozen, `context["worker_pool_size"]` must not remain a parallel authority
+    for the same quantity. It stays the REQUEST (the set was resolved from it,
+    which is why the two normally agree); what it stops being is a second answer.
+
+    With NO set frozen the context value is returned unchanged. That is not a
+    bypass — it is the pre-existing behaviour, and it is what every Phase-4
+    loopback gate and every direct-harness call runs on. Production cannot take
+    that branch: both entrypoints freeze a set before any coordinator exists.
+
+    A frozen set whose `admission_count` is None (a backend that declares no
+    admission semantics) also falls back, and says so in `source`, because
+    inventing a count the set never carried would be the same defect pointed the
+    other way.
+    """
+    ctx = int(context_pool_size)
+    s = active_execution_set()
+    if s is None:
+        return ctx, "context(no execution set frozen)"
+    if s.admission_count is None:
+        logger.info("[EXEC-SET] %s: the frozen set %s carries no admission "
+                    "count (backend=%s); expected_workers stays %d from context.",
+                    consumer, s.set_id()[:12], s.backend, ctx)
+        return ctx, f"context(set {s.set_id()[:12]} carries no admission count)"
+    if s.admission_count != ctx:
+        logger.warning(
+            "[EXEC-SET] %s: expected_workers BOUND TO THE FROZEN SET: %d "
+            "(requested %s via worker_pool_size=%d; set %s has %d worker "
+            "identities across %s). The context value is the REQUEST, not a "
+            "second authority — a run must not wait for workers its own frozen "
+            "fleet says do not exist.",
+            consumer, s.admission_count, s.requested_admission_count, ctx,
+            s.set_id()[:12], len(s.worker_ids()), list(s.node_ids()))
+    else:
+        logger.info("[EXEC-SET] %s: expected_workers=%d, bound to the frozen "
+                    "set %s (agrees with the requested pool size).",
+                    consumer, s.admission_count, s.set_id()[:12])
+    return int(s.admission_count), f"execution_set({s.set_id()[:12]})"
 
 
 def execution_set_provenance() -> Optional[Dict[str, Any]]:

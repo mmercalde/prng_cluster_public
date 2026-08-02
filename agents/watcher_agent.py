@@ -1322,10 +1322,19 @@ class WatcherAgent:
         it cannot identify.
         """
         from execution_set import (
-            active_execution_set, resolve_execution_set, freeze_execution_set,
+            _peek_execution_set, resolve_execution_set, freeze_execution_set,
             ExecutionSetError,
         )
-        existing = active_execution_set()
+        # RESOLVER OWNER, NOT A CONSUMER — so this is the private non-consuming
+        # peek, never `active_execution_set()`. `active_execution_set()` counts
+        # every call, including one that returns None, because a consumer that
+        # read None went on to behave as though no fleet authority existed
+        # (Beta's refutation of the freeze-after-read claim). This method is the
+        # code that DOES the freezing: it is asking "have I already frozen one
+        # this process?" on step 2..6, not deciding how to run. Counting it would
+        # make the resolver trip its own G-RESOLVE-ONCE guard on the first step,
+        # refusing the very freeze it exists to perform.
+        existing = _peek_execution_set()
         if existing is not None:
             return existing
 

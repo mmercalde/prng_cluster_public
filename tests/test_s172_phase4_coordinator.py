@@ -2272,6 +2272,52 @@ def gate22_coexistence():
         "coordinator.py",
         "preflight_check.py",
         "tests/test_s172_resolved_execution_set.py",
+        # ─────────────────────────────────────────────────────────────────────
+        # ADMISSION BINDING (Team Beta repairs A + B + C, withheld Phase-7
+        # closure at 63e627f). APPENDED to every block above; nothing earlier is
+        # rewritten and P0.5's strengthening of G-MINER-UNCHANGED is untouched.
+        #
+        # No NEW production path. Four already-registered files change:
+        #   * execution_set.py — (A) `active_execution_set()` now increments
+        #     `_READS` UNCONDITIONALLY. It previously counted only when a set was
+        #     already frozen, which is why the submission's "freezing after a read
+        #     is structurally impossible" claim was FALSE: a consumer could read
+        #     None, take the legacy path, and the set could still be frozen after.
+        #     A private `_peek_execution_set()` gives the resolver OWNER a
+        #     non-consuming idempotency check. (B) the resolver clamps
+        #     `effective = min(requested, selected worker identities)`, records
+        #     `requested_admission_count` alongside the effective
+        #     `admission_count`, puts both in `content()`/`set_id`, logs the clamp,
+        #     and refuses zero / negative / zero-capacity AT RESOLUTION. New
+        #     consumer helper `admission_expectation()`.
+        #   * miner/range_miner_coordinator.py — ONE behavioural line.
+        #     `expected_workers` is still bound EXACTLY ONCE in serve_trial's
+        #     preamble from the requested `worker_pool_size`, and is still never
+        #     reduced dynamically — but it now resolves through
+        #     `_execution_set_expected_workers`, so the frozen set is the
+        #     authority over that request instead of a second opinion beside it.
+        #     The 180s admission window, `serve_timeout=None` and the Blocker-3
+        #     matrix are UNCHANGED and re-asserted byte-identical by the new
+        #     harness. The registration note two blocks above said "expected_workers
+        #     is never reduced dynamically, worker_pool_size keeps its meaning" —
+        #     both still hold; what changed is where the NUMBER comes from, which
+        #     is the repair Beta authorized and required.
+        #   * agents/watcher_agent.py — `_ensure_execution_set` (the resolver
+        #     owner) switches its idempotency probe to the non-consuming peek.
+        #   * window_optimizer.py — comment-only correction: the block claiming
+        #     the admission count was "recorded, never re-imposed" was the defect
+        #     being closed (G-COMMENT-TRUTH).
+        #
+        # ONE NEW test path:
+        #   * tests/test_s172_admission_binding.py — repairs A (3 gates + the
+        #     None-exemption fault injection), B (4 clamp cases + provenance
+        #     read-back), C (the six-point miner-path gate over the REAL
+        #     serve_trial, serve_timeout=None, plus its own revert mutant). A NEW
+        #     harness for the same reason as the two before it: §6 pins this
+        #     file's tally at 63/63 and the execution-set file's at 34/34.
+        # No kernel, sampler, threshold, protocol, dataset-authority, PWC or ZMQ
+        # path is touched (flagged for review).
+        "tests/test_s172_admission_binding.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
