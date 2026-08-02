@@ -1518,6 +1518,32 @@ def g_no_gpu():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# G-IMPORT-GATE — Beta-REQUIRED hardening that EXTENDS G-NO-GPU
+# ═════════════════════════════════════════════════════════════════════════════
+def g_import_gate():
+    """The four arms above are necessary but not sufficient (Beta):
+
+      * arm 1 builds its answer from a HARDCODED pair at :1436 instead of
+        reading `assembly_shard_worker._FORBIDDEN_GPU_MODULES`, so widening
+        the production list would leave this probe silently checking two;
+      * arm 1 also only INSPECTS `sys.modules` — it never invokes the guard,
+        so deleting `assert_cpu_only` would not red it;
+      * the spawned child reaches the worker module but never the real Step-1
+        module surface, so the import-graph claim in the guard's own docstring
+        is untested end to end;
+      * arm 2 injects one of the two forbidden modules at runtime.
+
+    Those four gaps are closed in a separate file rather than here, because
+    closing the first requires asserting that NO GPU-module-name literal
+    appears anywhere in the new gate — an assertion the arms above would
+    themselves violate, and which the brief freezes them against. Run as a
+    subprocess so its own sentinel and mutation evidence stay intact.
+    """
+    _run_suite("tests/test_s172_process_sharded_import_gate.py",
+               "7/7 import-gate checks green")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # G-NO-PAYLOAD-IPC — the four §6.7.A prohibitions, each proven absent
 # ═════════════════════════════════════════════════════════════════════════════
 def g_no_payload_ipc():
@@ -2880,6 +2906,17 @@ def main():
            g_mutation_proof)
     _check("G-BENCH: 1/2/4/6/8-process sweep, high- and low-survivor",
            g_benchmark)
+    # MUST run after G-RSS / G-MUTANTS. `_RusageChildrenSampler` reads
+    # `RUSAGE_CHILDREN.ru_maxrss`, which is a PROCESS-LIFETIME high-water mark
+    # over all reaped children rather than a value scoped to its `with` block.
+    # This gate deliberately spawns children that import a GPU library (~384
+    # MiB RSS), so running it earlier would raise that mark above G-RSS's
+    # ~339 MiB two-child tree-sum and red `tree.peak_rss > rusage.peak_rss` —
+    # a real ordering coupling, not a flake. Semantically it belongs beside
+    # G-NO-GPU, which it extends; it is placed here for that reason alone.
+    _check("G-IMPORT-GATE [Beta hardening]: fresh-interpreter CPU-only import "
+           "gate over the real Step-1 module surface (7 gates + 3 mutants)",
+           g_import_gate)
     _check("NR: D1.1 18/18, D2 7/7, D3 10/10, D3.0 10/10, D3.25 13/13, "
            "D3.5 60/60, D4 8/8 (D1.1 nests Phase 4 63/63, Phase 3 17/17, D0, D1.0)",
            g_nonregression)
