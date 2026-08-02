@@ -206,9 +206,14 @@ from `distributed_config.json` (§4.1). Do not read `0.40` / `0.45` as the opera
 The published draw sequence is **not** an uninterrupted PRNG output stream. Per the
 *California State Lottery Daily & SuperLotto Plus Draw Procedures* (eff. 2021-06-09):
 
-- **Two pre-test draws run before every live draw** on the selected equipment (§V: Pre-Test
-  via `[Start Draw Session]`; *"Run Draw as Test"* is unchecked only afterwards). Pre-test
-  outputs are generated, verified and certified — and **never published**.
+- **One automatic pre-test session runs before an automatic Daily draw** on the selected
+  equipment (§V: Pre-Test via `[Start Draw Session]`). **Additional pre-test draws run only
+  when an anomaly requires them.** Pre-test outputs are generated, verified and certified —
+  and **never published**.
+  *(Corrected 2026-08-01. This previously read "two pre-test draws run before every live
+  draw" — an Alpha misreading; the "two test draws" language applies to **manual SuperLotto
+  Plus equipment**. Only the count was wrong. Citation `UNAVAILABLE` — the PDF is not in the
+  repo. See `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` §5.1.)*
 - **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
   Midday and evening are separate sessions with separate equipment selection.
 - The evening session draws **Daily 3, Daily 4, Fantasy 5 and Daily Derby together** — other

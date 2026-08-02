@@ -60,9 +60,14 @@ Optuna-tuned per direction, and why a threshold silently pinned to a constant is
 The published draw sequence is **not** an uninterrupted PRNG output stream. Per the
 *California State Lottery Daily & SuperLotto Plus Draw Procedures* (eff. 2021-06-09):
 
-- **Two pre-test draws run before every live draw** on the selected equipment (§V: Pre-Test
-  via `[Start Draw Session]`; *"Run Draw as Test"* is unchecked only afterwards). Pre-test
-  outputs are generated, verified, certified — and **never published.**
+- **One automatic pre-test session runs before an automatic Daily draw** on the selected
+  equipment (§V: Pre-Test via `[Start Draw Session]`). **Additional pre-test draws run only
+  when an anomaly requires them.** Pre-test outputs are generated, verified, certified — and
+  **never published.**
+  *(Corrected 2026-08-01: previously "two pre-test draws run before every live draw" — an
+  Alpha misreading. The "two test draws" language applies to **manual SuperLotto Plus
+  equipment**. Only the count was wrong; skip remains physically motivated. Citation
+  `UNAVAILABLE` — the PDF is not in the repo.)*
 - **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
   Midday and evening are separate sessions with separate equipment selection.
 - Evening draws **D3, D4, Fantasy 5 and Daily Derby together** — other games' outputs sit

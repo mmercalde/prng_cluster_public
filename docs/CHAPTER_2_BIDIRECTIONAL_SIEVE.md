@@ -95,13 +95,35 @@ non-parameterised kernels at `:3125-3126`).
 `[base_start, base_start + total_seeds)` (`miner/range_miner_coordinator.py`
 `partition_macro_stripes`) — not the whole domain.
 
-**One as-built detail with no consequence today.** The residue loader resolves each observed
-value as `entry.get("full_state", entry["draw"])`
-(`miner/range_miner_worker.py:650`). If a dataset ever carried a `full_state` field, the sieve
-would compare against full 32-bit outputs rather than 0–999 draws. **The live dataset carries
-no such field** — verified this session: 0 of 18068 records in `daily3.json`, whose keys are
-exactly `{date, session, draw}`. The branch is a forward-compatibility seam, currently inert.
-It would not change the match test either way (§6.3).
+**One as-built detail that is inert in production but has a known, deliberate purpose.** The
+residue loader resolves each observed value as `entry.get("full_state", entry["draw"])`
+(`miner/range_miner_worker.py:650`). **The live dataset carries no such field** — verified this
+session: 0 of 18068 records in `daily3.json`, whose keys are exactly `{date, session, draw}`.
+
+**`full_state` is not a "forward-compatibility seam."** It is the deliberate **synthetic
+known-answer / multi-modulo validation hook** identified in the **Wall C ruling**. Synthetic
+fixture generators plant the exact kernel output in that field precisely so a known-answer
+test can bind unambiguously:
+
+- `create_synthetic_full_state.py:27` writes `"full_state": int(state)`, its docstring stating
+  the dataset carries full 32-bit state values *"not just mod 1000"* so that **"the multi-modulo
+  sieve … work[s] correctly"** (`:3-4`). Also `variable_skip_dataset.py:92`,
+  `create_synthetic_first30.py:20`.
+- `tests/phase6/known_answer_reference.py:409-411`: *"Planting these as `full_state` guarantees
+  the seed matches at rate 1.0 at that skip."*
+- `tests/phase6/known_answer_gate.py:211-216`: *"`full_state` carries the exact 32-bit kernel
+  output so the plant matches unambiguously"* — and records that `draw` must still be written
+  because the canonical derivation evaluates `entry["draw"]` **eagerly** and raises `KeyError`
+  without it.
+
+**This is the second time the field has been mischaracterised in this chapter's lineage.** Its
+purpose is known and documented; **inert in the live dataset is not the same as unexplained.**
+
+**What it changes, stated precisely.** It changes the **residue source** — which value is fed
+in as the observed residue — **not the comparison width.** **The sieve does not compare full
+32-bit values.** The active predicate reduces both sides modulo **1000, 8 and 125** in every
+kernel (§6.2), so a `full_state` residue is reduced exactly as a `draw` residue is. The
+match test is unaffected either way (§6.3).
 
 ### 1.2 The collision space
 
@@ -354,19 +376,44 @@ emits both regardless.
 **The published draw sequence is not an uninterrupted PRNG output stream.**
 
 Per the *California State Lottery Daily & SuperLotto Plus Draw Procedures* (effective
-2021-06-09):
+2021-06-09) — **citation `UNAVAILABLE`**: the PDF is **not in the repo** and was **not read
+this session**. The statements below are corrected from Team Beta's ruling text and are **not
+verified at source.**
 
-1. **Two pre-test draws run before every live draw** on the selected equipment (§V: Pre-Test
-   via `[Start Draw Session]`; *"Run Draw as Test"* is unchecked only afterwards). Pre-test
-   outputs are generated, verified and certified — and **never published.**
+1. **One automatic pre-test session runs before an automatic Daily draw** on the selected
+   equipment (§V: Pre-Test via `[Start Draw Session]`). **Additional pre-test draws are run
+   only when an anomaly requires them.** Pre-test outputs are generated, verified and
+   certified — and **never published.**
 2. **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
    Midday and evening are separate sessions with separate equipment selection.
 3. **The evening session draws Daily 3, Daily 4, Fantasy 5 and Daily Derby together.** Other
    games' outputs sit between the Daily 3 values an observer can see.
 
-**Therefore the observable sequence contains real, structural gaps of unknown and varying
-size.** Skip models those gaps. **It is a physical property of the data source, not a tuning
-convenience.**
+> **Corrected 2026-08-01 — an error Alpha introduced and propagated.** This chapter previously
+> stated *"two pre-test draws run before every live draw."* That is **unsupported and appears
+> incorrect for automatic Daily draws.** The **"two test draws" language applies to manual
+> SuperLotto Plus equipment** — a different draw type — and Alpha misread the document. The
+> claim propagated into Chapter 1, the Chapter 2 source map, the project-facts skill and three
+> Beta submissions.
+>
+> **Only the count was wrong.** One unpublished pre-test session still produces unpublished
+> outputs; per-session equipment selection and co-drawn evening games are unaffected.
+> **Skip remains physically motivated.**
+
+**What these procedures do and do not establish.** They establish equipment selection, an
+unpublished pre-test, and co-drawn evening games — that is, outputs which are **consumed and
+not published** between the values an observer sees. They do **not** establish that every
+omitted output belongs to **one uninterrupted PRNG state stream.** The published values and
+the unpublished ones are nowhere shown to form a single continuous advance sequence from a
+single generator; midday and evening are independently selected equipment, so combined-container
+order carries no PRNG-advance meaning at all (skill §2.10b).
+
+**These are therefore physically motivated *candidate gaps* supporting skip as a detector —
+not proven state advances.** The observable sequence contains real structural discontinuities
+of unknown and varying size, and skip models them. **It is a physical property of the data
+source, not a tuning convenience.** This is the same epistemic standard §5.6 applies: variable
+skip is a **detector** looking for windows where coherent structure surfaces, not a
+reconstruction of generator state.
 
 #### 5.1.1 Why this paragraph is in this chapter
 
@@ -382,8 +429,12 @@ concludes "these parameters are unused, remove them" has re-derived a conclusion
 already been made and already been rejected. **The correct action on finding skip bounds unwired
 is to wire them in, not to remove them** (`docs/HYBRID_SKIP_BOUND_AUDIT.md` §7).
 
-*Open item: the source PDF is **not in the repo**. Its absence is the root cause of the
-near-removal and remains an open backlog item.*
+*Open item: the source PDF is **not in the repo** and could not be read this session. Its
+absence is the root cause of both the near-removal of `skip_min`/`skip_max` **and** the
+two-pre-test misreading corrected above — a claim that survived a chapter, a sibling chapter, a
+source map, a skill and three submissions because no reader could check it against the source.
+It remains an open backlog item, and it is the reason the citation above is marked
+`UNAVAILABLE`.*
 
 ### 5.2 Constant skip mode
 
@@ -460,6 +511,13 @@ also why §2.2's per-seed skip maximisation matters: the emitted `best_skips` co
 hypothesis half of the pair.
 
 ### 5.6 Design intent — the fingerprint framing
+
+> **What this section is.** It records **Michael's governing design intent as design doctrine**,
+> accepted by Team Beta, and gives it a permanent home. **It is not a historically discovered
+> repository statement** — no document in the repository ever asserted it. The corroboration
+> table below shows earlier artifacts that are **consistent with** the doctrine and were
+> produced under it; it does **not** show the doctrine being recovered from them. **Doctrine
+> being recorded, not evidence being reported** — the NOT-FOUND row stands, and stays.
 
 **The goal was never to reverse state. It is to extract a fingerprint.**
 
@@ -551,7 +609,8 @@ disagree once lane 1 agrees.** The three-lane test is exactly equivalent to
 `(output % 1000) == (residues[i] % 1000)` alone.
 
 Verified two ways this session: by the CRT argument above, which holds for all integers
-regardless of residue magnitude (so it is unaffected by the `full_state` seam of §1.1); and by
+regardless of residue magnitude (so it is unaffected by the `full_state` residue source of
+§1.1 — which changes the input value, never the modulus); and by
 exhaustive check over `x ∈ [0, 4000) × d ∈ [0, 1000)` — **0 cases in which the three-lane test
 and the mod-1000 test differ.**
 
@@ -656,9 +715,20 @@ should correspond to a `(skip+1)`-step pre-advance — **which is exactly the fo
 `parameter_registry.json` specifies and the kernel does not implement.** The kernel advances
 `offset` steps flat.
 
-This resolves the part of C-2 that Chapter 1 left open: `parameter_registry.json` is not merely
-an outlier description, it describes the alignment the other two definitions would need in
-order to be jointly coherent at non-zero skip.
+**What this settles, and what it does not.** It settles Chapter 1 audit **C-2 as an observed
+inconsistency**: `parameter_registry.json` is not merely an outlier description — it describes
+the alignment the other two definitions would need in order to be jointly coherent at non-zero
+skip. **It does not settle the repair, and must not be read as specifying one.**
+
+**`offset*(skip+1)` is not a general fix.** It is well defined only for **constant** skip.
+Under **variable** skip the per-record consumption varies by construction, so **no single
+`(skip+1)` multiplier exists** — the correct pre-advance for a window shift depends on the
+particular stride sequence, which is an *output* of the search, not an input to it (§5.3).
+
+**F-4 therefore belongs inside the future hybrid input-semantics design, not a standalone
+arithmetic patch.** Applying a flat `offset*(skip+1)` in isolation would harden constant-skip
+semantics into a path whose hybrid half still has no defined input-bound meaning (§5.4, §5.7).
+The two must be decided together.
 
 **Additionally, forward hybrid kernels take no `offset` at all** — the `java_lcg` forward hybrid
 signature ends `float threshold, unsigned long long a, unsigned long long c` with no offset
@@ -852,8 +922,26 @@ needs **no HSA/GFX overrides** (skill §6). But the branch is dead, and
 namely *add `rig-6600c`* — proposed a change in the **same wrong naming convention**, so
 applying it would not have made the guard fire either.
 
-Recorded as a finding (§12, F-5). **Not repaired here.** Note also that the audit entry rated
-Chapter 2's condition against the 743-line version, before anyone noticed §1–13 were gone.
+Recorded as a finding (§12, F-5). **Not repaired here**, and **not a Phase-7 blocker.**
+
+**Disposition for any future repair — recorded so the obvious fix is not applied by reflex:**
+
+1. **Do NOT rename the hosts to match the tuple.** Making the guard fire would **activate
+   obsolete ROCm environment overrides** (`HSA_OVERRIDE_GFX_VERSION`, `HSA_ENABLE_SDMA`) that
+   the current rigs **reportedly do not need** (skill §6: all three CTs run cupy 13.5.1 on
+   gfx1032 with **no HSA/GFX overrides**). The "one-line fix" is a behaviour change to a
+   working fleet, disguised as a typo correction.
+2. **First decide whether the prelude is still supported at all.** If it is **obsolete**,
+   remove it **with its historical explanation preserved** — the GCVM_L2 fault chase is why it
+   exists and that reasoning must not be deleted with the code (skill §0.4 standing rule).
+3. **If it is retained, key it from an explicit platform/profile property** — a declared
+   rig-profile or platform capability — **and test it.** **Never from another handwritten
+   hostname tuple.** A hostname tuple is what produced this dead branch, and the
+   `DOCUMENTATION_AUDIT_20260131.md` proposal would have reproduced the same failure mode in
+   the same wrong convention.
+
+Note also that the audit entry rated Chapter 2's condition against the 743-line version,
+before anyone noticed §1–13 were gone.
 
 ---
 
@@ -939,15 +1027,17 @@ and repairs are out of scope by the brief.
 | **F-1** | **§6.4's triple-validation claim is wrong by ~4 orders of magnitude.** The three-lane test is CRT-redundant with mod 1000; per-draw FP is 1/1000, not 1e-7, and it does not require a full 32-bit state match | `prng_registry.py:984-986`, `:1042-1044`, `:3146-3148`; corroborated `tests/phase6/known_answer_reference.py:66-70` | **corrected in §6.4.** Lanes **not** to be removed (§6.5) |
 | **F-2** | **§4.3's "survivors are NOT false positives" is false** in the loose-threshold regime the system requires, and contradicts whitepaper §7 | whitepaper `:116-131`; skill §0.3 | **corrected in §4.3** |
 | **F-3** | The lane redundancy may be the residue of an intended lane-parallel CRT architecture that was never built; not determinable from available surfaces | — | **open question**, §6.5 |
-| **F-4** | **`offset` drives a host data-slice and a device pre-advance from one scalar**; coherent only at `skip = 0`. `parameter_registry.json`'s `offset*(skip+1)` is the alignment the kernel does not implement | `miner/range_miner_worker.py:648-649`, `:694`, `:874`, `:196-197`; `prng_registry.py:974-976` | **settles the open half of Chapter 1 audit C-2**; described, §7 |
-| **F-5** | **The ROCm prelude hostname guard is dead on every live rig** — tuple says `rig-6600*`, live hostnames are `rrig6600*`. `DOCUMENTATION_AUDIT_20260131.md:93-99`'s proposed one-line fix used the same wrong convention | `sieve_filter.py:23-35`; live `hostname` from all three CT100s this session | **new**, §9.5. Harmless today (no overrides needed) |
+| **F-4** | **`offset` drives a host data-slice and a device pre-advance from one scalar**; coherent only at `skip = 0`. `parameter_registry.json`'s `offset*(skip+1)` is the alignment the kernel does not implement | `miner/range_miner_worker.py:648-649`, `:694`, `:874`, `:196-197`; `prng_registry.py:974-976` | **CONFIRMED.** Settles Chapter 1 audit C-2 as an **observed inconsistency — NOT the repair.** No single `offset*(skip+1)` multiplier exists under variable skip. **Belongs in the future hybrid input-semantics design, not a standalone arithmetic patch.** Described, §7.3 |
+| **F-5** | **The ROCm prelude hostname guard is dead on every live rig** — tuple says `rig-6600*`, live hostnames are `rrig6600*`. `DOCUMENTATION_AUDIT_20260131.md:93-99`'s proposed one-line fix used the same wrong convention | `sieve_filter.py:23-35`; live `hostname` from all three CT100s this session | **CONFIRMED dead legacy branch; NOT a Phase-7 blocker.** Harmless today (no overrides needed). **Do not rename the hosts** — that activates obsolete overrides. A later repair must first decide whether the prelude is supported, and if retained **key it from an explicit platform/profile property, never another hostname tuple.** §9.5 |
 | **F-6** | §1.1's "32-bit internal state" is wrong for `java_lcg` — the state is 48-bit; 32 bits is the extracted output | `prng_registry.py:969`, `:983` | **corrected in §1.1** |
 | **F-7** | Whitepaper §4's `G(s,−i)` assumes a backward step; the implementation is forward-against-reversed-residues, so forward and reverse generate identical sequences for one seed | whitepaper `:57-62`, `:79`; `prng_registry.py:3143`; `miner/range_miner_worker.py:888` | **named, not resolved**, §3.5 — Beta's side of the boundary |
-| **F-8** | Residues resolve as `entry.get("full_state", entry["draw"])`; no live record carries `full_state` (0 of 18068) | `miner/range_miner_worker.py:650`; `daily3.json` inspected this session | **inert seam**, recorded §1.1 |
+| **F-8** | Residues resolve as `entry.get("full_state", entry["draw"])`; no live record carries `full_state` (0 of 18068) | `miner/range_miner_worker.py:650`; `daily3.json` inspected this session; `create_synthetic_full_state.py:3-4`, `:27`; `tests/phase6/known_answer_gate.py:211-216`; `known_answer_reference.py:409-411` | **Inert in the live dataset, purpose known.** It is the **synthetic known-answer / multi-modulo validation hook** (Wall C ruling) — **not** a "forward-compatibility seam." It changes the **residue source, not the comparison width**: the predicate still reduces mod 1000/8/125. Recorded §1.1 |
 
 ### 12.1 Open items this chapter inherits but does not own
 
-- **The CA draw-procedures PDF is not in the repo** (§5.1) — the root cause of the near-removal
+- **The CA draw-procedures PDF is not in the repo** (§5.1) — now demonstrated to be load-bearing:
+  it is the root cause of **both** the two-pre-test misreading corrected in this pass **and** the
+  near-removal
   of `skip_min`/`skip_max`.
 - **No `TB_RULING_*` document exists for the 2026-07-30/31 session-stream rulings** (source map
   G-2); §11.3 cites a skill summary for a binding constraint. Every other adjudicated area has a
@@ -1040,8 +1130,12 @@ it is the one claim here that a repository-only reader could not have made.
 4. **The 40 non-java_lcg registry kernels were not read.** Only `java_lcg`, `java_lcg_reverse`,
    `java_lcg_hybrid`, `java_lcg_hybrid_reverse` were opened. The "39 lane-test occurrences"
    count (§6.2) is a grep count over the live registry, not 39 individually read kernels.
-5. **The CA draw-procedures PDF is not in the repo.** §5.1 is transcribed from the project's
-   own record of it (skill §0.4) and the brief, not from the primary source.
+5. **The CA draw-procedures PDF is not in the repo**, and was **not read in this pass either**.
+   §5.1's citation is marked **`UNAVAILABLE`**. It was originally transcribed from the project's
+   own record of it (skill §0.4) — **and that record was itself wrong about the pre-test count**,
+   which is precisely how the error propagated unchecked. §5.1 is now corrected from **Team
+   Beta's ruling text**, which is **not** the same as verification at source and is not
+   presented as such.
 6. **Team Beta's ruling texts** exist outside the repo except where transcribed.
 
 ---
@@ -1064,6 +1158,31 @@ own.
 ## Version History
 
 ```
+Version 4.1.0 — 2026-08-01  THREE FACTUAL CORRECTIONS (Beta closure conditions)
+- §5.1  CORRECTED: "two pre-test draws before every live draw" was WRONG and Alpha-introduced.
+        One automatic pre-test SESSION for automatic Daily draws; additional pre-test draws
+        only on anomalies. The "two test draws" language applies to MANUAL SuperLotto Plus
+        equipment. Only the count was wrong — skip remains physically motivated.
+        Citation marked UNAVAILABLE (PDF not in repo, not read).
+- §5.1  QUALIFIED: the procedures establish equipment selection, an unpublished pre-test and
+        co-drawn games — NOT that every omitted output belongs to one uninterrupted PRNG
+        state stream. Now stated as physically motivated CANDIDATE GAPS supporting skip as a
+        DETECTOR, not proven state advances — matching §5.6's epistemics.
+- §1.1  CORRECTED: full_state is NOT a "forward-compatibility seam" (2nd mischaracterisation).
+        It is the deliberate synthetic known-answer / multi-modulo validation hook of the
+        Wall C ruling. It changes the RESIDUE SOURCE, not the comparison width — the sieve
+        does NOT compare full 32-bit values; the predicate reduces mod 1000/8/125. §6 checked
+        and found consistent, not contradictory.
+- §5.6  REFRAMED as design doctrine corroborated by earlier artifacts, not a historically
+        discovered repository statement. NOT-FOUND table retained.
+- §7.3  F-4 disposition: settles Chapter 1 C-2 as an OBSERVED INCONSISTENCY, not the repair;
+        no single offset*(skip+1) exists under variable skip; belongs in the future hybrid
+        input-semantics design.
+- §9.5  F-5 disposition: confirmed dead legacy branch, not a Phase-7 blocker. DO NOT rename
+        hosts (activates obsolete ROCm overrides); a later repair keys from an explicit
+        platform/profile property, never another handwritten hostname tuple.
+- §12   F-4, F-5, F-8 dispositions updated. No repairs. No code, tests or config touched.
+
 Version 4.0.0 — 2026-08-01  RESTORE-AND-AUDIT
 - RECOVERED §1-14 from d14dcdd (743 lines), destroyed by stale-copy overwrite at 248e48c
 - §5.1  NEW: the physical model of why skip exists (pre-test draws, per-session equipment,

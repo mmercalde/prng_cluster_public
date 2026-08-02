@@ -359,8 +359,12 @@ scope only. Repair is the separately-briefed next deliverable; this audit propos
   1159`).
 - **Which reflects intent: the chapter.** Evidence:
   1. **Physical model.** Per the *California State Lottery Daily & SuperLotto Plus Draw
-     Procedures* (eff. 2021-06-09), two pre-test draws run before every live draw and are
-     never published (§V), equipment is re-selected per session (§II), and the evening
+     Procedures* (eff. 2021-06-09), one automatic pre-test session runs before an automatic
+     Daily draw — with additional pre-test draws only on anomalies — and its outputs are
+     never published (§V) [corrected 2026-08-01; previously "two pre-test draws … before
+     every live draw", an Alpha misreading of language that applies to manual SuperLotto Plus
+     equipment. Citation UNAVAILABLE: PDF not in repo]; equipment is re-selected per session
+     (§II), and the evening
      session draws D3/D4/Fantasy 5/Daily Derby together. The observable sequence therefore
      has **real structural gaps of varying size**. Variable skip models a property of the
      data source; a fixed `expected_skip = 5` asserts the gaps are constant, which the

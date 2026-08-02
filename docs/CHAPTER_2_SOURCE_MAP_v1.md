@@ -469,7 +469,10 @@ cites the retirement.
 *This is the section that tells the reconstruction what must be written from live code.*
 
 **G-1 — Why skip exists. No document. (affects Sources 3, 6)**
-The physical model — two unpublished pre-test draws before every live draw, per-session
+The physical model — one unpublished automatic pre-test session before an automatic Daily draw
+(additional pre-test draws only on anomalies; corrected 2026-08-01 — this previously read "two
+unpublished pre-test draws before every live draw", an Alpha misreading of language that
+applies to manual SuperLotto Plus equipment), per-session
 equipment selection by an auditor-verified RNG program, and evening co-drawing of D3/D4/
 Fantasy 5/Daily Derby so other games' outputs sit between observable Daily 3 values — exists
 in the project only as skill §0.4, which states outright that it is "the part nobody had
