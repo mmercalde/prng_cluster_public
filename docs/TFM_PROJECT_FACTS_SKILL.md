@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through bounded Phase 6 certification (`d98298c`, 2026-08-02).
+**Currency:** through admission binding (`eff6616`, 2026-08-02).
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -161,6 +161,19 @@ it.* That is an **interface** contract (the 22 arrays), not "match PWC's values.
   cleanup, concurrent-run namespace, restart consumers. *Three briefs in a row were defective
   for skipping this.*
 - **§0.4's standing rule** — cite the design document before proposing removal.
+- **Cited is not read.** A document named in an audit, brief or changelog has **not** been read
+  because its name appears. Open it. *(F6's specification sat in
+  `TRSE_INTEGRATION_PLAN_S121.md` — tracked at `643cc30`, cited repeatedly, unopened.)*
+- **Gitignored files are invisible to every repo-scoped search.** `.gitignore:41` is `*.json`;
+  `agent_manifests/trse.json` — the file **causing** TRSE F1 — had no git history at all. Check
+  `git check-ignore` and the filesystem before concluding a config or manifest is absent.
+- **The keyword you chose is not the code's vocabulary.** Search the *behaviour* as well as the
+  name you expect. The LLM parameter-application seam existed under different naming and was
+  reported absent.
+- **Before ANY absence claim, enumerate the surfaces:** tracked repo · gitignored files · git
+  history including deleted · host state (systemd, cron) · **pre-repository archives on ser8**.
+  Name which were searched and which were not. **The project predates its repository** — the
+  initial commit is 2025-11-29 and `prng_registry.py` is already in it.
 - **A keyword hit is not a finding until the surrounding text is read.** *Four* absence claims
   were falsified in one session. The last — "nobody documented skip semantics" — was made after
   a full-tree grep **that reached the exact line and did not read it**
@@ -211,7 +224,11 @@ A **policy-conditioned evaluation harness**, not a learning system.
 ### 2.6 Looks-like-a-bug, isn't
 Reverse = host-side residue reversal (§0.2). Loose thresholds required (§0.3).
 `intersection_count` duplicating `bidirectional_count` is deliberate.
-**`serve_timeout=None` is deliberate** — a billion-seed scan exceeds any wall clock; the
+**Step 0's silent failure is ARCHITECTED** — `trse.json` sets `skip_on_fail: true` with a
+stated reason, and `TRSE_INTEGRATION_PLAN_S121.md` §2C specifies a **PASSIVE** integration
+(*"Step 1 reads `trse_context.json` on its own if present… WATCHER doesn't need to parse or
+inject anything"*). Step 0 failing invisibly is the design, which is exactly why F1 went
+unnoticed for months. **`serve_timeout=None` is deliberate** — a billion-seed scan exceeds any wall clock; the
 bounded clock is on *admission* only (§2.12). **`distributed_config.json`'s bare-metal
 addresses are deliberate** — both topologies are retained as profiles (§2.11). **`run_optimization`'s `sampler` and `sampler_metadata` are
 REQUIRED and keyword-only with no default** — deliberately, so a caller cannot get TPE by
@@ -227,7 +244,8 @@ is a deliberate executable-interface boundary (§2.13).
 | 2 | Optuna thresholds dropped above `run_bidirectional_test`; every trial ran `0.30/0.30` | **FIXED** `8a55a68`. Was a **regression**: fixed `3fdf434` (04-30), silently reverted `2389b61` (07-07) by a stale-copy overwrite whose message never mentions thresholds. Both routes now use `resolve_directional_threshold()`, `is None` not truthiness (**0.0 is legitimate**) |
 | 3 | PWC hybrid filtered at `0.50` | **QUARANTINED** — `PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED`; PWC non-certifying, so the defect is made loud rather than repaired |
 | 4 | **hybrid kernels ignore sampled `skip_min`/`skip_max`; `expected_skip = 5` hardcoded** | **OPEN.** 22/22 constant kernels declare skip bounds; 0/22 hybrid do. Values survive eight hops and **die at `_hybrid_prefix`** (`range_miner_worker.py:177-193`). Anchors `prng_registry.py:1027, :805, :885, :1159`. **Semantics ARE documented (§0.4)** — the "unspecified semantics" premise of `HYBRID_SKIP_BOUND_AUDIT.md:318` is **FALSE**. Decision open; **the output-statistic reading needs no kernel change at all** |
-| 5 | forward hybrids ignore `offset` (sampled `window_optimizer_bayesian.py:423`) | **OPEN** |
+| 5 | forward hybrids ignore `offset` (sampled `window_optimizer_bayesian.py:423`) | **OPEN.** Chapter 2 F-4: `offset` drives **both** the host residue slice **and** the device pre-advance from one payload scalar — coherent only at `skip=0`. Settles Chapter 1 C-2 as an **observed inconsistency, not a repair**; belongs in the future hybrid input-semantics design, **not** a standalone arithmetic patch (TB) |
+| 5b | **`recommended_window_size` → Rule A** — the manifest declares `8`, the code reads it into `_rec_ws` (`window_optimizer_bayesian.py:500`) and **never references it**; Rule A uses a hardcoded `32` | **ROOT CAUSE FOUND.** `TRSE_INTEGRATION_PLAN_S121.md` §2C specifies `min(rec_ws * 4, …)` — and `8 × 4 = 32`. **The value is correct; the wiring is missing.** Not "a field of unclear purpose" — a **configurable input frozen at its default by a literal** |
 | 6 | **`skip_learning_rate`** configured 0.2–0.7; kernel **hard-adapts at 1.0** | **OPEN**, newly catalogued |
 
 Fix pattern: **one canonical path** — resolve once in the parent, never reinterpret
@@ -281,6 +299,13 @@ carries all 24 `CANONICAL_RECORD_FIELDS` (carries 4). **D6.2, Phase-7 blocker.**
 `run_daily3scraper.py` **never existed**; ENOENT loop every boot. **Now `disable --now`, unit
 retained.** Stays disabled until Phase 6-P2 is certified.
 **PWC/ZMQ** retired from certifying authority; PWC hybrid additionally quarantined.
+**TRSE F1 is manifest drift, not a design error.** `TRSE_INTEGRATION_PLAN_S121.md` §2B shows
+**six** `default_params`; the live `agent_manifests/trse.json` has **seven** — `trse_context`
+was added later, and the plan's own §5 places it in **`window_optimizer.json`**, not
+`trse.json`. `window_size`/`stride`/`k_clusters` were in the plan from S121, so that half of
+the CLI mismatch was baked in at design time. **`agent_manifests/trse.json` is the ONLY
+manifest gitignored** (`.gitignore:41`) — the other six are tracked, so the file causing F1 has
+no git history and no repo-scoped audit can see it.
 **`dataset_provenance/*.json` never pruned** — same class as D6.3, newly found.
 **Sampler provenance is unverified** — `run_optimization()` trusts caller-supplied
 `sampler_class` / `sampler_module` / `optuna_version` and does not check them against the actual
@@ -410,6 +435,37 @@ bounded clock is on *admission only*. `expected_workers` is **not** reduced dyna
 `worker_pool_size` semantics and the Blocker-3 matrix are **unchanged** — the matrix is now
 *reachable*, not rewritten.
 
+### 2.12b Admission binding and the freeze retraction (`eff6616`)
+
+**`expected_workers` now comes from the frozen set.** `miner/range_miner_coordinator.py:3693`
+→ `_execution_set_expected_workers` → `execution_set.admission_expectation`, returning the
+frozen set's **effective** `admission_count`. `context["worker_pool_size"]` keeps its meaning
+and is now **the REQUEST**, not a second answer. With no set frozen the context value is
+returned unchanged, which is why every pre-existing loopback gate stayed green.
+
+```
+admission_count = min( requested worker pool size, count of selected worker identities )
+```
+
+**Both counts are recorded and both are in `set_id`**, so a run that asked 8 and was clamped to
+2 has a different identity from one that asked 2. *A clamp that overwrites the request is a
+clamp nobody can audit.* Cases: 26-GPU/8→8 · local/8→**2** · local/explicit 1→1 · zero,
+negative or zero-capacity → **fail at resolution**.
+
+**The defect it closed:** a local two-GPU set waited for the default eight — **six of which the
+set itself declared could never connect**, because a worker outside the set is refused
+admission. The trial spent its whole 180 s window failing to meet a threshold that was
+**unmeetable by construction.**
+
+**RETRACTION — the freeze-after-read property was FALSE as first implemented.** Alpha claimed
+the ordering requirement could not be violated. Beta traced it: `active_execution_set()`
+incremented `_READS` **only inside `if _ACTIVE is not None`**, so a consumer could read `None`,
+take the legacy path, and a freeze could still follow — *the exact sequence claimed impossible*.
+**The counter is now unconditional.** *The empty read is not the harmless case; it is THE case
+that matters, because a consumer that read `None` behaved as though no fleet authority
+existed.* A private `_peek_execution_set()` serves the **resolver owner only** (AST-asserted),
+because counting the owner's own check would make it trip the guard it exists to enforce.
+
 ### 2.13 Control chains, end to end
 *Which knobs actually reach execution. This table exists so a wiring gap is found now, not at
 Chapter 13.*
@@ -418,7 +474,7 @@ Chapter 13.*
 |---|---|---|
 | per-direction thresholds → kernel | ✅ ✅ ✅ ✅ | **WORKS** (D6 + `8a55a68`) |
 | dataset identity → all nodes | ✅ ✅ ✅ ✅ | **WORKS** (P0.5 + Q2 closure) |
-| fleet definition → the run | ✗ — — — | **six mechanisms, no authority** (§2.11) — Resolved Execution Set is the approved fix, unbuilt |
+| fleet definition → the run | ✅ ✅ ✅ ✅ | **WORKS** — Resolved Execution Set, 34/34 (`63e627f`); admission bound `eff6616` |
 | worker loss → failure matrix | ✅ ✅ ✅ ✅ | **WORKS** (`ee0db06`) — was an unbounded hang |
 | Advisor → selfplay `max_episodes`, `min_fitness_threshold` | ✅ ✅ ✅ ✅ | **WORKS** |
 | Optuna `skip_min`/`skip_max` → hybrid kernel | ✅ ✅ ✅ ✗ | dies at `_hybrid_prefix`. **The approved skip-OUTPUT work does NOT fix this** — see §8 |
@@ -527,11 +583,14 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 ```
 D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
 6-P0 ✅ · 6-P0.5 ✅ · Q2 closure ✅ · §4.3 liveness ✅ · Wall C struck ✅
-bounded Phase 6 ✅ CERTIFIED and CLOSED d98298c
-next   Resolved Execution Set + profile-aware fleet consumers (§2.11)
-       process_sharded import gate (TB-required, §2.9)
-       skip-OUTPUT work · D6.2 · D6.3 · 6-P2 scraper
-Phase 7  BLOCKED by the Resolved Execution Set, D6.2, and the other pre-Phase-7 obligations
+bounded Phase 6 ✅ CERTIFIED d98298c
+Resolved Execution Set ✅ 63e627f · admission binding + freeze retraction ✅ eff6616
+Chapter 2 restored ✅ e1225a7 and corrected ✅
+next   process_sharded import gate (TB-REQUIRED, §2.9)
+       D6.2 · D6.3 · 6-P2 scraper
+       skip-OUTPUT work · sampler provenance guard
+       java_lcg_cpu non-zero-skip reachability audit (TB: before Phase 7, NO fix authorized)
+Phase 7  26-GPU saturation + WATCHER soak
 ```
 
 **⚠ Sampler-comparison sequencing — a correction TB issued against Alpha.** The certifying
