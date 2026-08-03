@@ -1,4 +1,4 @@
-# PHASE6_PREREQS.md — REV4
+# PHASE6_PREREQS.md — REV5
 
 **S172 RANGE-MINER — operational prerequisites for real-silicon testing.**
 
@@ -407,11 +407,35 @@ address or a stable hostname.
 - **Phase 7 full-fleet soak** (50 trials, ≥5 high + ≥5 low survivor, mixed
   const/hybrid, **25-GPU saturation — owner-mandated**, `n_parallel=1` binding
   per D6.2 certification): items 2, 3, 5, 6, 7 required; **item 1 is explicitly
-  waived by the owner**; item 4 required. **ALL OPERATIONAL PREREQUISITES ARE NOW
-  CLOSED** — items 2, 3, 4, 5, 6, 7 ☑ on live measurement; item 1 waived.
+  waived by the owner**; item 4 required. **The seven checklist items are CLOSED
+  OR OWNER-WAIVED** — items 2, 3, 4, 5, 6, 7 ☑ on live measurement; item 1
+  waived.
+
+  **⚠ This is NOT the same as "all operational prerequisites are closed."**
+  **Host kernel-log observability remains an explicitly accepted EXCEPTION**, not
+  a closed item. CT100 is an unprivileged LXC, so GPU kernel messages are visible
+  only from the Proxmox hosts `.121`/`.155`/`.163`, and VM101 has no root key
+  auth to them. It was never one of the seven, which is precisely why a
+  seven-item sweep can read as complete while a real observability gap stands.
+
+  **Consequence, owner-authorized and Beta-acknowledged:** the
+  *"no `GCVM_L2_PROTECTION_FAULT` / no GPU reset"* criterion reports
+  **`UNAVAILABLE`, never `PASS`.** The 60-second substitute telemetry
+  (`rocm-smi` device count and state · worker liveness · lease expiries) can
+  prove device and worker **continuity**; it **cannot** prove the unavailable
+  kernel-log criterion.
+
+  **Binding report language (TB, verbatim):**
+
+  > Phase 7 executed under an owner-authorized host-log observability exception.
+  > Absence of `GCVM_L2_PROTECTION_FAULT` or GPU-reset events was not
+  > independently established from the Proxmox host logs.
 - **D3.0-B** — see the header. **Never completed; Phase 6 certified regardless.**
   Awaiting Beta's disposition.
 
+_REV5 — 2026-08-02, post-launch-acknowledgment (`23b5055`). REV4's "all
+prerequisites closed" corrected per TB: seven items closed or waived, host-log
+observability an accepted exception.
 _REV4 — 2026-08-02, post-D6.2-certification (`3561cda`). Statuses measured live,
 not carried forward; see `docs/S172_PHASE_7_PREREQ_REPORT.md`. Update as items
 land._
