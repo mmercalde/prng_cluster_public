@@ -1,28 +1,61 @@
-# PHASE6_PREREQS.md — REV3
+# PHASE6_PREREQS.md — REV4
 
 **S172 RANGE-MINER — operational prerequisites for real-silicon testing.**
 
-REV3 absorbs the second and third Team Beta reviews (transport gates Phase 7; disposable same-filesystem preflight; single-GPU baseline made explicit; D3.0-B surfaced; per-item dirty-tree disposition; preflight directory moved outside the worktree). REV2 absorbed the first: stale phase status corrected, item 2
+**REV4 (2026-08-02)** corrects statuses from live measurement
+(`docs/S172_PHASE_7_PREREQ_REPORT.md`) and repairs a code-status block that had
+gone three months stale. **Five of seven statuses changed.** REV4 also records
+that **D3.0-B, stated here as mandatory before Phase 6 certification, was never
+completed — and Phase 6 certified anyway** (§D3.0-B below).
+
+REV3 absorbed the second and third Team Beta reviews (transport gates Phase 7; disposable same-filesystem preflight; single-GPU baseline made explicit; D3.0-B surfaced; per-item dirty-tree disposition; preflight directory moved outside the worktree). REV2 absorbed the first: stale phase status corrected, item 2
 relabelled, and three prerequisites added that D3.5 made load-bearing
 (publication preflight, code/clock parity, transport reachability).
 
 ## Current code status
 
 ```text
-Closed:                     D0 · D1.0 · D1.1 · D2 · D3.0 · D3 · D3.25 · D3.5
-Remaining deliverables:     D4 · D5 · D6
-Certification prerequisite: D3.0-B before Phase 6 certification
-HEAD:                       46a3828
+Closed:      D0 · D1.0 · D1.1 · D2 · D3.0 · D3 · D3.25 · D3.5 · D4 · D5
+             D6 · D6.1 · D6.2
+Phase 6:     CERTIFIED d98298c (bounded, TB 2026-08-02)
+D6.2:        CERTIFIED 18a2419 — n_parallel == 1 ONLY (TB scope)
+Open:        D6.3 (checkpoint retention) · 6-P2 (scraper) — neither blocks Phase 7
+HEAD:        3561cda
 ```
 
-**D3.0-B** does not block D4-D6 implementation or the D6 smoke unless its
-affected legacy writer is exercised, but it is mandatory before Phase 6
-certification.
+**REV3's block was three months stale** — it listed D4/D5/D6 as remaining and
+named HEAD `46a3828`. Corrected from measurement, not from recall.
+
+### ⚠ D3.0-B — stated mandatory, never completed, Phase 6 certified regardless
+
+REV3 recorded D3.0-B as *"mandatory before Phase 6 certification."* **No commit
+completing it exists** (`git log --all --grep` over the label returns nothing but
+the doc that raised it), and **the defect it targets is live at HEAD**:
+
+```python
+# convert_survivors_to_binary.py:184
+encode_prng_type(s.get('prng_type', s.get('prng_base', 'java_lcg')))
+```
+
+A record carrying **neither** `prng_type` **nor** `prng_base` still silently
+becomes `'java_lcg'` rather than failing closed — the exact residual default
+D3.0-B exists to purge (`docs/TEAM_ALPHA_REVIEW_S172_PHASE5_D3_0.md` §5.4).
+
+**Phase 6 certified at `d98298c` without it.** Whether Beta waived D3.0-B,
+superseded it, or it was simply never raised at certification is **[UNVERIFIED]**
+— the repository does not say. It is plausible Wall A/B never exercised the
+legacy writer, which would make the omission harmless in fact while leaving a
+stated prerequisite unmet on paper.
+
+**This is flagged for Beta's disposition, not silently dropped.** A checklist
+that quietly loses a prerequisite is worse than one that never had it.
 
 These items are hardware/environment tasks that do **not** block the remaining
 code deliverables (D4/D5/D6) but **do** gate real-silicon testing. They can be
 worked in parallel with the code work, on the Proxmox lane. Owner: Michael.
-Claude Code is not involved in any of them.
+**Claude Code performs the MEASUREMENT of these items** (REV4's statuses come
+from `docs/S172_PHASE_7_PREREQ_REPORT.md`); the hardware and network changes
+themselves remain Michael's.
 
 **Important:** among the open infrastructure items in this document, the D6
 Zeus-only smoke is blocked **only by item 5**. This assumes VM101's existing
@@ -32,15 +65,66 @@ the assumption is explicit and is checked in item 5.
 
 Status legend: ☐ open · ◐ in progress · ☑ done
 
-| # | Item | Gates | Status |
-|---|------|-------|--------|
-| 1 | Second 3080Ti passthrough into VM101 (`hostpci1`) | Phase 6 verify, Phase 7 soak | ☐ |
-| 2 | `michael → CT100` passwordless SSH (all migrated rigs) | Phase 6 verify, Phase 7 soak | ☐ |
-| 3 | `rrig6600` Proxmox migration (still bare-metal at .120) | Phase 7 soak | ☐ |
-| 4 | VM101 stable address (currently DHCP at 192.168.3.177) | Phase 6 verify, Phase 7 soak | ☐ |
-| 5 | **D3.5 publication filesystem + clean-tree preflight** | **D6 smoke**, Phase 6, Phase 7 | ☐ |
-| 6 | Code/environment parity + clock synchronization | Phase 6 verify, Phase 7 soak | ☐ |
-| 7 | PWC/ZMQ transport reachability + firewall verification | Phase 6 verify, Phase 7 soak | ☐ |
+| # | Item | Gates | Status | evidence (2026-08-02) |
+|---|------|-------|--------|---|
+| 1 | Second 3080Ti passthrough into VM101 (`hostpci1`) | Phase 6 verify, Phase 7 soak | **☐ OPEN** | one RTX 3080 Ti; second still on VM100. **Not a Phase-7 blocker — 25 GPUs is owner-mandated** |
+| 2 | `michael → CT100` passwordless SSH | Phase 6 verify, Phase 7 soak | **☑ DONE** | `.122`/`.156`/`.164` answer under `BatchMode=yes`, no prompt |
+| 3 | `rrig6600` Proxmox migration | Phase 7 soak | **☑ DONE** | `.120`/`.154`/`.162` DOWN; `.122`/`.156`/`.164` UP |
+| 4 | VM101 stable address | Phase 6 verify, Phase 7 soak | **☐ OPEN** | `inet 192.168.3.177/24 … dynamic` — **still DHCP. Phase-7 blocker** |
+| 5 | **D3.5 publication filesystem + clean-tree preflight** | **D6 smoke**, Phase 6, Phase 7 | **☑ DONE** | 25/25, 0 failures, incl. a `repository_tree_clean=False` fault-injection control |
+| 6 | Code/environment parity + clock synchronization | Phase 6 verify, Phase 7 soak | **◐ PARTIAL** | clock ✅ NTP active; **code parity ✗ — Phase-7 blocker**, see below |
+| 7 | Transport reachability + firewall verification | Phase 6 verify, Phase 7 soak | **☑ DONE** | four miner flows on **5700** accepted; no enforcing firewall (`ENABLED=no`) |
+
+**Five statuses changed.** Evidence per item: `docs/S172_PHASE_7_PREREQ_REPORT.md`
+§1-§5.
+
+**Item 6 is the trap.** The clock half is satisfied and was previously the only
+half measured. **The code half is not:** every `.py` under `miner/` and `utils/`
+compared by sha256, VM101 against each CT100 — **17 files here, 16 there; 14
+identical, 2 differing, 1 absent**, identically on all three rigs.
+
+| file | rig state | vintage |
+|---|---|---|
+| `miner/range_miner_coordinator.py` | differs | matches `ee0db06` |
+| `miner/dataset_authority.py` | differs | matches `8600e75` |
+| `utils/checkpoint_d6_2.py` | **absent** | post-dates the deployed bundle |
+
+**Both stale modules are inside the worker's executing import closure** —
+`miner/__init__.py:19` imports the coordinator, which pulls in
+`dataset_authority`; confirmed on each rig by reading `sys.modules` after
+importing `miner.range_miner_worker`. The rig copies pre-date `eff6616`,
+`f7583bc` **and `18a2419` — the D6.2 repair this soak exists to exercise.**
+
+VM101's coordinator drives the run, so the rig copies are *loaded but not
+driven*, and the soak would probably still work. **That is not the acceptance
+criterion.** A soak whose headline question is *"does the S166 clear hold?"* must
+not run from a fleet carrying pre-D6.2 modules in its import path. **Redeploy
+`miner/` and `utils/` to all three CT100s and re-verify by digest**, then item 6
+flips to ☑.
+
+*(The rigs are deployment targets, not working copies: `rrig6600` carries a
+worktree at `8e2f5bf` with 84 dirty entries; `rrig6600b` and `rrig6600c` have no
+git repository at all. **Digest comparison, never `git rev-parse`, is the parity
+evidence.**)*
+
+### ⚠ `localhost.gpu_count` — the frozen set carries 26 identities, not 25
+
+`distributed_config.json` declares `gpu_count: 2` for `localhost`, written for the
+two-3080Ti configuration. So `identity_count = 2+8+8+8 = 26`, `min(25, 26) = 25`,
+and **no clamp is recorded** — `admission_count` is 25 by construction, which is
+correct.
+
+**But provenance records 26 identities admitting 25**, which reads exactly like
+the 26-set-that-came-up-short that `eff6616` closed. **It is not that failure:**
+the threshold is 25, 25 real workers exist, the 180 s window is meetable, and no
+production path spawns workers by iterating `gpu_count` (they launch explicitly
+with `--gpu-id N`). **The cost is auditability, not execution.**
+
+**Recommended:** set `localhost.gpu_count: 1` to match measured hardware — then
+`identity_count = requested = admission = 25`. **Three caveats:** it changes
+`set_id`; it must be **committed before launch** because item 5's clean-tree wall
+rejects a dirty tree at finalization; and it is a **distinct field from the
+bare-metal addresses in that file, which stay untouched** (CLAUDE.md §3).
 
 ### Gate matrix
 
@@ -56,7 +140,9 @@ Status legend: ☐ open · ◐ in progress · ☑ done
 
 ---
 
-## 5. D3.5 publication filesystem + clean-tree preflight — **the only D6 blocker**
+## 5. D3.5 publication filesystem + clean-tree preflight — **☑ DONE (25/25)**
+
+*(REV3 titled this "the only D6 blocker". D6 closed long ago; retained for the mechanics below, which remain the acceptance procedure.)*
 
 D3.5 (`46a3828`) publishes through an immutable generation directory committed
 by a single atomic `current`-pointer swap. That guarantee **depends on
@@ -294,12 +380,13 @@ address or a stable hostname.
   (verified within item 5). Earliest real-silicon checkpoint; produces the
   **first certified accumulator generation**.
 - **Phase 6 four-path verify + throughput bar:** items 1, 2, 4, 5, 6, 7.
-- **Phase 7 full-fleet soak** (≥5 high + ≥5 low survivor, mixed const/hybrid,
-  26-GPU saturation): items 1, 2, 3, 4, 5, 6, **7**. Transport verified during
-  Phase 6 does not stop being a Phase 7 prerequisite — Phase 7 inherits it as
-  already-satisfied.
-- **D3.0-B** (legacy writer corrections) must also complete before Phase 6
-  certification — tracked with the code deliverables, not here.
+- **Phase 7 full-fleet soak** (50 trials, ≥5 high + ≥5 low survivor, mixed
+  const/hybrid, **25-GPU saturation — owner-mandated**, `n_parallel=1` binding
+  per D6.2 certification): items 2, 3, 5, 6, 7 required; **item 1 is explicitly
+  waived by the owner**; item 4 required. **Remaining blockers: 4 and 6.**
+- **D3.0-B** — see the header. **Never completed; Phase 6 certified regardless.**
+  Awaiting Beta's disposition.
 
-_REV3 — last updated 2026-07-25, post-D3.5 (`46a3828`). Update the status
-column as items land._
+_REV4 — 2026-08-02, post-D6.2-certification (`3561cda`). Statuses measured live,
+not carried forward; see `docs/S172_PHASE_7_PREREQ_REPORT.md`. Update as items
+land._
