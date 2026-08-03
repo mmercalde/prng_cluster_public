@@ -1,4 +1,4 @@
-# CLAUDE_CODE_INSTRUCTIONS_PROJECT_CATALOG_REGENERATION.md — REV1
+# CLAUDE_CODE_INSTRUCTIONS_PROJECT_CATALOG_REGENERATION.md — REV2
 
 **Regenerate `docs/PROJECT_FILE_CATALOG.md`. Read-only except for that one file.**
 
@@ -92,6 +92,45 @@ validators).
 
 Anything a future reader could mistake for current. **The v1 catalog's own "Runtime Data" table is a
 candidate** — verify its figures before carrying them forward.
+
+### 1.7 THE STEP MAP — structural facts only
+
+For **each WATCHER step 0–6**, one row:
+
+| step | `STEP_MANIFESTS` entry | `STEP_SCRIPTS` entry | `default_params` count | documenting chapter |
+|---|---|---|---|---|
+
+Sources: `agents/watcher_agent.py` — `STEP_MANIFESTS` (~`:398`) and `STEP_SCRIPTS` (~`:387`);
+the manifests themselves under `agent_manifests/`.
+
+**Report any divergence between the two maps**, and any step whose documenting chapter is
+missing, unaudited, or numbered differently from the step.
+
+**Two known facts to verify rather than assume:**
+- `STEP_MANIFESTS[2] = "scorer_meta.json"` while `STEP_SCRIPTS[2] = "run_scorer_meta_optimizer.sh"`
+  — **the two maps name different things for the same step**, and the manifest's actions invoke
+  `generate_scorer_jobs.py` / `scorer_trial_worker.py`, not the shell script. That divergence is
+  how a soak hazard reached launch day.
+- **Chapter numbers are not step numbers.** Chapter 3 documents **Step 2.5 / WATCHER step 2**, and
+  the bidirectional sieve runs inside **Step 1**.
+
+> **⚠ SCOPE LIMIT — this section is a STRUCTURAL INVENTORY, not an audit.**
+> Record what each map **declares** and how many parameters each manifest **lists**.
+>
+> **Do NOT trace parameter reachability. Do NOT determine whether a declared parameter is
+> consumed, ignored, or dead. Do NOT call anything unused.**
+>
+> That work is a separate brief, and it must be done **with the governance trail in hand** — a
+> parameter that looks dead is very often a known, escalated, mid-remediation item. *(Chapter 3's
+> audit reported the Step-2 objective as blind to 7 of 11 sampled dimensions; the condition was
+> already diagnosed with live Zeus stats in `docs/TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md` and is
+> the subject of an approved v4.1→v4.2→v4.3 remediation. Reported as a discovery, it would have
+> told Beta about its own ruling.)*
+>
+> **A count and a filename are facts. "Nothing reads this" is a claim, and it is out of scope
+> here.**
+
+---
 
 ### 1.6 KNOWN GAPS
 
