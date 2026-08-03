@@ -4,7 +4,7 @@
 written down so it is not rediscovered as a surprise finding in a later session, and so nobody
 re-derives it from scratch at cost.
 
-**Currency:** HEAD `09bbfbf` (2026-08-02). Every anchor in this file was re-read at source when
+**Currency:** HEAD `6892661` (2026-08-02), Phase 7 authorized. Every anchor in this file was re-read at source when
 the file was written. An anchor is a claim with an expiry date — re-verify before acting.
 
 **What is NOT here.** The hard Phase-7 prerequisites live in the skill's §8 approved sequence:
@@ -209,6 +209,54 @@ not introduce it.
 - **Chapter 1 §17.3 has 14 open items; Chapter 2 §14.3 has ten.** Enumerated in the chapters
   themselves; both chapters are closed as *verified and bounded*, which is not the same as
   *finished*.
+
+---
+
+## 11. `_RusageChildrenSampler` measures the wrong thing — G-RSS passes by luck
+
+`tests/test_s172_phase5_d5_process_sharded.py:2107-2119` reads
+`resource.getrusage(RUSAGE_CHILDREN).ru_maxrss`, whose docstring calls it *"the maximum of any
+SINGLE reaped child."* It is a **process-lifetime high-water mark over every child the process has
+ever reaped — not scoped to its `with` block.**
+
+Measured on VM101: `0 MiB` → trivial child `10 MiB` → **one torch-importing child `378 MiB`** →
+another trivial child **still `378 MiB`.** The mark persists.
+
+So `G-RSS` silently depends on **no earlier child in the whole D5 run exceeding its own ~339 MiB
+tree-sum.** When the import gate first sat beside `G-NO-GPU`, G-RSS red and **mutant M8 survived** —
+deterministically, not flakily. Contained by moving the gate after `G-MUTANTS`.
+
+**Any future D5 arm that reaps a large child reds it the same way.** Scope-correct fix: record
+`ru_maxrss` on `__enter__` and compare the delta. **Flagged, not actioned** — it edits an existing
+D4/D5 arm.
+
+---
+
+## 12. D3.0-B — awaiting Beta's disposition
+
+A stated Phase-6 certification prerequisite that was never completed; Phase 6 certified anyway.
+Defect live at `convert_survivors_to_binary.py:184`. Full statement in
+`docs/TEAM_ALPHA_D3_0_B_AND_ITEM1_NOTICE.md` and skill §2.18. **Alpha has not proposed a fix** —
+it touches the legacy writer and, if it genuinely should have blocked certification, closing it
+quietly is the wrong move.
+
+---
+
+## 13. NP2 checkpoint transaction design — NEW, separate work
+
+D6.2 is certified for **`n_parallel == 1` only.** Concurrent partition writers cannot safely share
+the present two-member checkpoint pair. **`resume_checkpoint` + `n_parallel > 1` is refused as the
+first executable statement of `optimize_window`**, and **Phase 7 pins `n_parallel=1`** until this
+lands. Not scoped.
+
+---
+
+## 14. `2019-01-25` is evening-only
+
+A single-session date in the modern era. Of 1,040 single-session dates in the dataset, **1,038 are
+2000-2002** — the era before CA Daily 3 had a midday draw — leaving 2019 with one and 2026 with one.
+The 2026 case is the scrape's truncation point. **`2019-01-25` is a genuine anomaly**: a real
+cancellation, a source gap, or a scrape defect. One record in 18,068. **Not 6-P2's work.**
 
 ---
 
