@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through D6.2 CERTIFIED (`18a2419`, 2026-08-02).
+**Currency:** through Phase-7 authorization (`6892661`, 2026-08-02). **D6.2 CERTIFIED `18a2419`.**
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -291,11 +291,35 @@ The scratch generations are **not** release-grade — future publication still u
 `--release-grade`.
 
 ### 2.9 Known-disabled / deliberately off
-**S166 in-memory clear — NOW ENABLED** (`f7583bc`). `_FLUSH_CLEAR_IN_MEMORY = True`; the
-checkpoint carries the complete 24-field canonical state and the finalizer is fed the
-reconstructed cumulative state, not the truncated stump. **The OOM protection is real for the
-first time.** D6.2: 29/29 gates, 377 assertions, 23/23 mutants.
-**`.s172_checkpoint/<run_id>/` never pruned** — **D6.3, Phase-7 blocker.**
+**S166 in-memory clear — ENABLED** (`f7583bc`, repaired `18a2419`). `_FLUSH_CLEAR_IN_MEMORY = True`;
+the checkpoint carries the complete 24-field canonical state and the finalizer is fed the
+reconstructed cumulative state, not the truncated stump. **The OOM protection is real for the first
+time — and has NEVER RUN AT SCALE. The Phase-7 soak is its first real exercise; RAM across 50
+trials is the headline result, not throughput.**
+
+**D6.2 CERTIFIED `18a2419` — `n_parallel == 1` ONLY.** 31/31 gates, 377 assertions, 25/25 mutants.
+**Checkpoint recovery and the S166 clear are certified for the single-Optuna-trial path only** —
+that path still distributes each sieve trial across the whole fleet; the limit is on Optuna
+parallelism, not cluster use. **No claim for `n_parallel > 1`:** not resume, not clearing.
+Concurrent partition writers cannot share the member pair; that needs a separate transaction
+design. **`resume_checkpoint` + `n_parallel > 1` is refused as the first executable statement of
+`optimize_window` (`:1979`)** — above the NP2 block, study creation, the `[NP2-KILL]` SSH and the
+fork. **The soak must pin `n_parallel=1`.**
+
+**⚠ Two defects Beta caught at `f7583bc` that the 29 gates did not reach.** Both were execution-path
+only, and both are instructive:
+1. **The retained Optuna guard compared `int(trial.number) <= int(floor)`** — a **0-based** study
+   number against a **1-based record-ordinal** floor. With `k` completed trials the floor is `k`
+   and the next legitimate number is `k`, so **every normal resume was rejected.** The gate missed
+   it because it used **fabricated values (trial 6 vs floor 5)** instead of the real relationship —
+   the VIR-2 vacuous class. *The false name `_resume_trial_floor` is what made the comparison look
+   reasonable; it is now `resume_record_ordinal_floor` and seeds the record counter only.*
+2. **NP2 ran ~600 lines before the D6.2 context existed**, so a checkpoint resume could drive SSH
+   and the whole optimization before being rejected.
+**`.s172_checkpoint/<run_id>/` never pruned** — D6.3. **NOT a Phase-7 blocker on measurement:**
+census 2026-08-02 shows **25 run directories, 50 files, 266,835 bytes** accumulated over ~2 days —
+**~10.7 KB per run.** Directories are per-**run**, not per-trial. *(A brief queued as a read-only
+investigation; the growth question it exists to answer is largely answered by this figure.)*
 **`process_sharded`** selectable, unpromoted.
 **`daily3scraper.service`** — enabled since Sep 2025 with `Restart=always`, target
 `run_daily3scraper.py` **never existed**; ENOENT loop every boot. **Now `disable --now`, unit
@@ -578,6 +602,57 @@ is what actually closes it.)* `study.enqueue_trial` (`window_optimizer_bayesian.
 S166 warm-start path, so a resumed study really can carry trials numbered below a recovered
 maximum.
 
+### 2.17 Fleet state as launched — Phase 7, measured 2026-08-02
+
+**All operational prerequisites are CLOSED on measurement** (`docs/PHASE6_PREREQS.md` REV4,
+`docs/S172_PHASE_7_PREREQ_REPORT.md`). REV3's status column had **five of seven wrong**, and its
+code-status block was three months stale — it listed D4/D5/D6 as remaining.
+
+| item | state |
+|---|---|
+| 1 second 3080Ti | **☐ WAIVED BY OWNER** — one card; the second stays on VM100. **25-GPU run is owner-mandated** |
+| 2 CT100 SSH | ☑ all three answer under `BatchMode=yes` |
+| 3 rrig6600 Proxmox | ☑ `.120/.154/.162` DOWN, `.122/.156/.164` UP |
+| 4 VM101 address | ☑ router DHCP reservation `bc:24:11:19:4f:24` → `.177`, **confirmed by reboot survival** |
+| 5 publication preflight | ☑ 25/25 |
+| 6 code/env parity | ☑ **17/17 exact on all three rigs** after redeploy |
+| 7 transport + firewall | ☑ four miner flows on **5700**; no enforcing firewall |
+
+**The frozen execution set:**
+```
+set_id                    = bea580e764905a0d9485d2688be5841cc95f16e16837c23aced1f634d97f67a8
+worker_identity_count     = 25   requested = 25   admission = 25   clamped = False
+```
+**25 by construction, not by clamp.** `localhost.gpu_count` was corrected **2 → 1** (`f255912`) —
+it declared two cards from the old configuration, so the set carried **26 identities admitting 25**,
+which *read* like a shortfall. **No execution consequence** (workers launch with explicit
+`--gpu-id N`; nothing iterates `gpu_count`) — the cost was auditability. **The bare-metal addresses
+in that file remain untouched** (CLAUDE.md §3).
+
+**⚠ Item 6 is the trap, and the clock is only half of it.** Code parity was never measured until
+2026-08-02, and it **failed**: all three rigs carried `range_miner_coordinator.py` at `ee0db06` and
+`dataset_authority.py` at `8600e75`, with `checkpoint_d6_2.py` **absent** — and **both stale modules
+sit inside the worker's executing import closure** (`miner/__init__.py:19`, confirmed via
+`sys.modules` on each rig). **Deployment is `git clone` once, then targeted `scp` from VM101**
+(`REMOTE_NODE_SETUP_CHECKLIST.md:127,133,139`). The rigs are **deployment targets, not working
+copies** — `rrig6600` has a worktree at `8e2f5bf` with 84 dirty entries; the other two have no git
+at all. **Digest comparison, never `git rev-parse`, is the parity evidence.**
+
+### 2.18 D3.0-B — a stated certification prerequisite that was never met
+
+`PHASE6_PREREQS.md` REV3 stated D3.0-B *"must complete before Phase 6 certification."* **No commit
+completes it, and the defect is live at HEAD:**
+
+```python
+convert_survivors_to_binary.py:184
+encode_prng_type(s.get('prng_type', s.get('prng_base', 'java_lcg')))
+```
+
+A record with **neither** `prng_type` **nor** `prng_base` still silently becomes `'java_lcg'`
+instead of failing closed. **Phase 6 certified at `d98298c` regardless.** Whether Beta waived it,
+superseded it, or nobody raised it is **[UNVERIFIED]** — the repo does not say. **Awaiting Beta's
+disposition; Alpha has not proposed a fix.**
+
 ## 3. SUPERSEDED — in repo, NOT current
 R² as objective · `holdout_hits` as ML target · `feature_importance.py` 60-name list (stale by
 31) · "~62 features" · `bidirectional_survivors.json` as survivor data ·
@@ -692,15 +767,18 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 ```
 D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
 6-P0 ✅ · 6-P0.5 ✅ · Q2 closure ✅ · §4.3 liveness ✅ · Wall C struck ✅
-bounded Phase 6 ✅ CERTIFIED d98298c
+bounded Phase 6 ✅ CERTIFIED d98298c · Chapters 1 and 2 ✅ ef4b1c6 + gate 09bbfbf
 Resolved Execution Set ✅ 63e627f · admission binding ✅ eff6616
-Chapters 1 and 2 closed ✅ ef4b1c6 + content gate 09bbfbf
-process_sharded import gate ✅ CLOSED e0513ba — D5 now 25/25
-D6.2 ✅ IMPLEMENTED f7583bc — 29/29, 377 assertions, 23/23 mutants; awaiting Beta certification
-next   D6.3  — retention; investigation brief written, sequenced AFTER D6.2 (25 dirs on disk)
-       6-P2  — REV4 with Beta; option (a) BINDING (fail-closed halt, no autonomous L002)
-Phase 7  26-GPU saturation + WATCHER soak — blocked ONLY by D6.2 certification.
-         Beta: the multi-stripe protocol item does NOT block it.
+process_sharded import gate ✅ e0513ba — D5 25/25
+D6.2 ✅ CERTIFIED 18a2419 — n_parallel == 1 ONLY
+Phase 7 prerequisites ✅ all closed on measurement (item 1 waived by owner)
+now    Phase 7 SOAK — AUTHORIZED. 50 trials, ≥5 high + ≥5 low survivor,
+       mixed const/hybrid, 25 GPUs, n_parallel=1 BINDING, serial_reference.
+       First execution ever with the S166 clear enabled.
+next   D6.3 (retention — non-blocking, ~10.7 KB/run measured)
+       6-P2 (scraper — REV4 with Beta; option (a) BINDING)
+       NP2 checkpoint transaction design (NEW, separate)
+       D3.0-B disposition (§2.18, awaiting Beta)
 ```
 
 **⚠ Sampler-comparison sequencing — a correction TB issued against Alpha.** The certifying
