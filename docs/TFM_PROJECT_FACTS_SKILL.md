@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through the Phase-7 launch ruling (`f839391`, 2026-08-02). **D6.2 CERTIFIED `18a2419`.**
+**Currency:** through the Phase-7 launch ruling (`727362b`, 2026-08-02). **D6.2 CERTIFIED `18a2419`.**
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -843,12 +843,11 @@ the dead-dimension caveat.**
 datapoint and useful directional evidence, **not** a certification of superiority and **not**
 authority for autonomous sampler selection.
 
-**Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
-three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
-**session-separated dataset authority** · `.gitignore:42` dead negation · the CA
-draw-procedures PDF is not in the repo · the `java_lcg_cpu` non-zero-skip mismatch at
-`survivor_scorer.py:124` / `full_scoring_worker.py:305` (TB: separate bounded audit before
-Phase 7, **no fix authorized**).
+**Open backlog → `docs/BACKLOG.md` is the register.** It is maintained; this paragraph is not.
+*(Chapter 2 restore-and-audit is CLOSED — `ef4b1c6` + content gate `09bbfbf`. The unaudited
+chapters are **3, 5, 6, 8, 13**, not "3–7".)* The `java_lcg_cpu` non-zero-skip mismatch
+(`survivor_scorer.py:124` / `full_scoring_worker.py:305`) remains a **separate bounded audit, no
+fix authorized** — see the Wall C caution below.
 **Wall C caution:** `java_lcg_cpu` (`prng_registry.py:170-183`) applies skip **once before
 generating**; the kernel applies it **between every draw** (`:987-989`). They agree only at
 `skip=0`. **Building the known-answer reference on it would validate the wrong semantics** in
@@ -856,15 +855,10 @@ the deliverable meant to catch semantic error. *(Michael reports all 44 PRNGs we
 through the sieves during pipeline development — constant forward/reverse and hybrid
 variable-skip. An inventory is establishing what exists before anything is scoped as new.)*
 
-**Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
-three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
-**session-separated dataset authority** · `.gitignore:42` dead negation · the CA
-draw-procedures PDF is not in the repo.
-**Open backlog:** Chapter 2 restore-and-audit (recoverable at `d14dcdd`) · Chapters 3–7 audits ·
-three `[WATCHER][RETRY]` log lines with the Chain C defect · two doc-generator defects ·
-**session-separated dataset authority** · `.gitignore:42` dead negation · the CA
-draw-procedures PDF is not in the repo.
-**Hard Phase-7 prerequisites:** 6-P0, 6-P1, D6.2, D6.3, 6-P2.
+**Hard Phase-7 prerequisites — SATISFIED.** 6-P0 ✅ · 6-P0.5 ✅ · D6.2 ✅ CERTIFIED `18a2419`.
+**D6.3 and 6-P2 are NOT Phase-7 blockers** (TB): D6.3's growth is ~10.7 KB/run measured, and the
+miner-backed soak does not invoke the scraper. **D3.0-B is OPEN but blocks only legacy-writer use**
+(§2.18). **The soak is authorized and launching.**
 **Optuna:** constant-skip **may resume**; hybrid exploration **non-certifying only**; hybrid
 certification **blocked** until skip bounds are live; authoritative studies need provenance
 binding.
