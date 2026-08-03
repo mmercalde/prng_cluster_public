@@ -5,7 +5,8 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through the Phase-7 launch ruling (`727362b`, 2026-08-02). **D6.2 CERTIFIED `18a2419`.**
+**Currency:** through the Chapter-3 audit and the documentation-blindness correction (`c752622`,
+2026-08-02). **D6.2 CERTIFIED `18a2419`.**
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -179,6 +180,59 @@ it.* That is an **interface** contract (the 22 arrays), not "match PWC's values.
   a full-tree grep **that reached the exact line and did not read it**
   (`HYBRID_SKIP_BOUND_AUDIT.md:318` vs `instructions.txt:1182`). Widening the search surface
   does not fix this; only reading the hits does.
+
+### 1.1 SEARCH ORDER — governance trail, then chapter, then code
+
+**Inverted from what comes naturally, and that is the point.** Code-first finds what the code
+does and never finds what was decided.
+
+```
+1. GOVERNANCE TRAIL  docs/TB_RULING_* · TB_RULING_REQUEST_* · PROPOSAL_* · TEAM_ALPHA_*
+2. CHAPTERS          docs/CHAPTER_*  — the knowledge layer, by design
+3. CODE              the implementation
+```
+
+**The documentation taxonomy** — so neither Alpha nor Claude Code discovers a category by accident
+mid-task:
+
+| pattern | answers |
+|---|---|
+| `TB_RULING_*` · `TB_RULING_REQUEST_*` | **what was decided, and what is still open** |
+| `PROPOSAL_*` | what was designed and why |
+| `CHAPTER_*` | how a stage works and why it exists |
+| `TEAM_ALPHA_*` | what was submitted, and what it was answered with |
+| `CLAUDE_CODE_INSTRUCTIONS_*` | what was asked for, and its constraints |
+| `SESSION_CHANGELOG_*` | what happened when |
+| `PROJECT_FILE_CATALOG.md` | **the index — read it FIRST** |
+| `docs/BACKLOG.md` | the tracked non-blocking register |
+
+**A defect that is known, escalated and mid-remediation is NOT a finding — it is a status.**
+Reporting it as new tells the reviewer about its own ruling. *(Alpha nearly submitted the Step-2
+objective's dead-signal problem to Beta as a discovery. `TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`
+had already diagnosed it with live Zeus stats — `bidirectional_selectivity` 98.8% at floor across
+6,739 survivors — and the v4.1→v4.2→v4.3 evolution is that ruling process running.)*
+
+**Corollary — EVERY LINE OF THIS CODEBASE HAS BEEN DOCUMENTED.** Michael's statement, and it has
+survived every test put to it. **A component with no obvious explanation means the explanation has
+not been found yet.** §0.4's standing rule is not advice; it is a description of how this repository
+actually is.
+
+### 1.2 A REPORT IS A SNAPSHOT, AND ITS FINDINGS EXPIRE
+
+**Relaying a finding from a dated artifact is MAKING THAT CLAIM YOURSELF**, and it needs a fresh
+anchor like any other claim.
+
+**The documents most likely to mislead are the ones that were RIGHT.** A submission arguing for a
+fix is accurate about the moment before the fix — and is therefore **the least reliable source on
+whether the fix happened.**
+
+*(Alpha read `TEAM_ALPHA_CHAPTER_2_RECOVERY_SUBMISSION.md` — correct when written — and reported
+its pre-restore finding as current state, having told Michael hours earlier in the same session
+that Chapter 2 was restored and closed. The contradiction was internal and went unnoticed.)*
+
+**An audit performed without the governance trail produces false findings at a high rate.** Before
+relaying ANY audit's findings, **re-derive each against the trail.** The audit's anchors prove the
+code says what it says; they do **not** prove nobody knew.
 
 ---
 
@@ -662,6 +716,31 @@ set as an *auditability* problem. **It was not.** Naming 26 eligible identities 
 answering population determine which 25 satisfy the threshold **is not an explicit 25-worker set**,
 even when the threshold is meetable. *"No execution consequence"* sidestepped the contract.
 
+### 2.17b Chapter status, and the three-lane CRT result
+
+| chapter | state |
+|---|---|
+| **1** Window Optimizer | audited — **9 of 41 claims accurate** |
+| **2** Bidirectional Sieve | **destroyed** at `248e48c` (a 34-line fragment over 709 lines), restored from `d14dcdd`, audited, **extended to 1,463 lines**, closed `ef4b1c6` + content gate `09bbfbf`. **Now the strongest of the three.** |
+| **3** Scorer Meta-Optimizer (**Step 2.5, NOT Step 3**) | audited `docs/CHAPTER_3_ALIGNMENT_AUDIT.md` — **55 claims: 17 accurate · 9 stale · 24 false · 5 unverifiable**; §8/§9/§14.2 describe code **deleted at v4.0** |
+| **5, 6, 8, 13** | **UNAUDITED** |
+
+**⚠ Chapter numbers are not step numbers.** `STEP_MANIFESTS[2] = "scorer_meta.json"`
+(`agents/watcher_agent.py:401`) — WATCHER's **step 2 is the scorer meta-optimizer**, step 3 is
+full scoring, and **the bidirectional sieve runs inside Step 1** (`run_bidirectional_test` in
+`window_optimizer_integration_final.py`). The conceptual scheme where sieve = 2 and scorer = 2.5
+also exists. **Both are in use and they conflict.**
+
+**The three-lane CRT test is DOCUMENTED — `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` §6.** It is live
+in every kernel (`prng_registry.py:984-986`, `:1042-1044`, `:3146-3148`) as
+`(output % 1000) && (output % 8) && (output % 125)`.
+
+**And §6 proves it is EXACTLY EQUIVALENT to `% 1000`.** Because 1000 = 8 × 125 with
+gcd(8, 125) = 1, CRT gives agreement mod 1000 ⟺ agreement mod 8 **and** mod 125. Verified two ways:
+the CRT argument, and an **exhaustive check over x ∈ [0, 4000) × d ∈ [0, 1000) — zero divergent
+cases.** **It is not extra filtering power**, and §6 says the original emphasis was misleading.
+`prng_registry.py:773` is the one kernel that does not run it.
+
 ### 2.18 D3.0-B — OPEN, and it NARROWS what Phase 6 certified (TB ruling 2026-08-02)
 
 `PHASE6_PREREQS.md` REV3 stated D3.0-B *"must complete before Phase 6 certification."* **No commit
@@ -742,6 +821,23 @@ interchangeable terms*). **VIR-3** terminate in `PASS | FAIL | UNAVAILABLE | INC
 clean. **VIR-6** audit scope must match the claim; declare searched **and** unavailable
 surfaces.
 
+> **⚠ VIR-6 ADDENDUM — `docs/` IS A MANDATORY SEARCHED SURFACE.**
+> For **any** claim about intent, design rationale, absence, "why does this exist", or whether
+> something is known — **`docs/` and the governance trail must appear in the declared searched
+> surfaces.** A declaration listing only code surfaces is **INCOMPLETE ON ITS FACE**, and a
+> reviewer must reject it on sight.
+>
+> *This exists because of a specific failure.* Chapter 3's audit declared six searched surfaces —
+> gitignored files, `git log`/`git show`/`git log -S`, `git check-ignore`, the live VM101
+> filesystem, live Python imports, live execution of `run_trial`. **`docs/` was not among them.**
+> The declaration read as rigorous and Alpha approved it. In the same session Alpha claimed the
+> three-lane CRT test was undocumented **while `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` §6 sat
+> committed**, and nearly submitted to Beta a "finding" **Beta had already ruled on** in
+> `docs/TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`.
+>
+> **The convention treated code as the world and documentation as commentary. It is the reverse
+> that is true: the code says what it does; the documents say what was decided.**
+
 Gates should extract and execute the **live source** of the call site (AST), not match text —
 `2389b61` reverted a fix by whole-block replacement; a text anchor would have gone green.
 
@@ -751,6 +847,7 @@ Verification-integrity controls (VIR-1…6):
 - execution proof:      - clean control:      - fault-injection control:
 - completion sentinel:  - unavailable-observer behavior:
 - audit claim scope:    - searched surfaces:  - unavailable surfaces:
+- governance trail searched (TB_RULING*, PROPOSAL*, TEAM_ALPHA*):  - chapters searched:
 ```
 
 ## 6. TOPOLOGY (verified 2026-08-01)
@@ -823,6 +920,15 @@ now    Phase 7 SOAK — LAUNCHING by owner order. 50 trials, ≥5 high + ≥5 lo
        n_parallel=1 BINDING, serial_reference. FIRST execution ever with the
        S166 clear enabled — the RAM series across 50 trials IS the result.
        GCVM_L2 criterion reports UNAVAILABLE (§2.17).
+       ⚠ --start-step 1 --end-step 1 MANDATORY: --end-step DEFAULTS TO 6, and
+       STEP_SCRIPTS[2] reaches run_scorer_meta_optimizer.sh, which invokes the
+       TB-prohibited converter and mv's a REGULAR FILE onto the D3.5
+       finalizer-owned symlink -> PublicationError, hours in, at publication.
+       Launch needs `> log 2>&1` (no FileHandler; confirmations go to stderr).
+       Abort signal is "STEP 2: Scorer Meta-Optimizer (run #N)" — NOT
+       "Triggering Step 2", which is benign and expected on a clean run.
+       No Chapter-13 retrain approval during the soak (chapter_13_triggers.py:630
+       carries its own STEP_SCRIPTS, unbounded by --end-step).
 next   D3.0-B — OPEN, TB requires completion; blocks legacy-writer use only
        6-P2 (scraper — REV4 with Beta; option (a) BINDING)
        D6.3 (retention — non-blocking, ~10.7 KB/run measured)
@@ -876,6 +982,10 @@ binding.
 7. System-scoped claim on repo-scoped evidence? (VIR-6)
 8. **Named the host for every command? Included the venv activation?**
 9. Long thread? Verification discipline degrades — suggest a fresh session.
+9b. **Did I search `docs/` and the governance trail — or only the code?** (§1.1, VIR-6 addendum)
+9c. **Am I relaying a dated document's finding as current state?** (§1.2)
+9d. **Does this contradict something I said earlier in THIS session?** *(Alpha stated Chapter 2 was
+    closed and restored, then hours later reported its content as lost.)*
 10. **Writing a rule? Enumerate every case in its input space and state the behaviour for each
     BEFORE submitting.** A rule validated only against the case that motivated it is untested.
     *(6-P2 REV3's terminal-day predicate was written for `{midday}` and never tried against
