@@ -425,3 +425,247 @@ report.
 no `watcher_agent.py --run-pipeline`. **The only file written is this report.**
 `docs/PHASE6_PREREQS.md` is untouched at HEAD, for Team Alpha's REV4 — the §1
 table above is the fold-in source.
+
+---
+
+# ADDENDUM — item 6 remediation: rigs brought to `18a2419` for `miner/` + `utils/`
+
+**Task:** determine the established rig deploy mechanism, use it to bring all
+three CT100s to `18a2419` for `miner/` and `utils/`, and prove it by module
+provenance. **No commit, no push, no soak, no `watcher_agent.py --run-pipeline`.**
+
+**Session context:** performed on VM101 as `michael`, venv `~/venvs/torch`.
+Repository HEAD moved during this pass — Team Alpha landed `PHASE6_PREREQS` REV4
+and committed this report, so HEAD is now `29f78d3`. That does not affect what
+was deployed: `git diff 18a2419 HEAD -- miner utils` is **empty**, so the
+`18a2419` content for these two paths is also `29f78d3`'s content. `18a2419`
+remains an ancestor of HEAD. The VM101 worktree was clean before and after.
+
+## A1. The established deploy mechanism — read from the hosts, not assumed
+
+**There is one, it is documented, and it has two halves.** Nothing was invented.
+
+**Half 1 — initial bring-up by `git clone` from the PUBLIC remote.** `.122`'s own
+reflog is unambiguous:
+
+```
+8e2f5bf HEAD@{2026-07-30 19:18:08 +0000}: clone: from https://github.com/mmercalde/prng_cluster_public.git
+```
+
+`git remote -v` on `.122` → `origin  https://github.com/mmercalde/prng_cluster_public.git`.
+Corroborated in the repository:
+`docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:19-20` — *"the required dataset is
+Git-ignored, so `git clone` alone is not a complete rig deployment. Phase 6.0
+discovered this on CT100: **the clone brought the code** but not `daily3.json`."*
+CLAUDE.md §5 names the same mechanism for the code layer: *"code (self-healing
+via git — one `git pull` from current no matter how far 101 pivots)"*.
+
+**Half 2 — updates by targeted `scp` from VM101 on top of that clone.**
+Documented in `docs/REMOTE_NODE_SETUP_CHECKLIST.md:127,133,139,179`
+(`scp -r utils/ <rig>:~/distributed_prng_analysis/`), in CLAUDE.md §2's deploy
+rule (*"`mkdir -p` any new remote dir BEFORE the scp that fills it"* — a rule
+that exists because `scp` is the deploy path), in
+`docs/SESSION_CHANGELOG_20260123.md:146-147` (`scp utils/survivor_loader.py …`),
+and in the legacy `deploy_to_rigs.sh` / `deploy_to_remotes.sh`.
+
+**The evidence that half 2 is what actually maintains the rigs:** `.122`'s git
+status before this pass listed `miner/range_miner_worker.py`,
+`miner/__init__.py` and `miner/range_miner_coordinator.py` as ` M ` — tracked
+files **modified in place** relative to its own clone at `8e2f5bf`. That is the
+fingerprint of files `scp`'d over a clone, and it is the direct cause of the
+drift reported in §3: the worker was refreshed by `scp`, the coordinator module
+was not.
+
+**Rig-by-rig starting shape.**
+
+| rig | `.git` | tree | notes |
+|---|---|---|---|
+| `.122` rrig6600 | **YES**, clone at `8e2f5bf` | 841 top-level entries | tracked miner files modified in place |
+| `.156` rrig6600b | **NO** | 841 entries, 737 `.py` | full de-gitted copy of the same tree |
+| `.164` rrig6600c | **NO** | 841 entries, 737 `.py` | full de-gitted copy of the same tree |
+
+`.156`/`.164` are not partial deploys — they carry the whole tree, including
+files that exist only as `.122`'s *modified* copies, so that copy came from a
+working tree rather than from GitHub. Rig-side `~/.bash_history` is empty on all
+three (the 2026-08-01 home-directory sweep), so the rigs hold no command record
+of their own; the clone reflog and the repository documentation are the evidence.
+
+**Mechanism selected: `scp` from VM101 (half 2), applied uniformly to all three.**
+Reasons, stated so the choice is auditable rather than incidental:
+
+1. It is the documented **update** path, and CLAUDE.md §2's deploy rule is
+   written for it.
+2. It works identically on all three rigs. `git pull` is available only on
+   `.122`; using it there and `scp` on the other two would introduce a second,
+   divergent method for one third of the fleet — the opposite of what this task
+   is fixing.
+3. It does not add an internet dependency at soak time. *(All three rigs can
+   reach GitHub — each resolves `prng_cluster_public` HEAD as `3561cda` — but a
+   deploy path should not acquire a dependency it does not need.)*
+4. The bytes are staged from `git archive 18a2419 miner utils`, a pristine
+   export, so provenance is tied to the commit rather than to a working tree.
+
+**Not invented, not extended:** no new script, no systemd unit, no launcher,
+no rig reconfiguration. The only rig-side mutations were the 17 `.py` files and
+the removal of `miner/__pycache__` and `utils/__pycache__` (regenerable bytecode,
+cleared so the post-deploy import unambiguously reads fresh source).
+
+## A2. What was deployed
+
+`git archive 18a2419 miner utils` → 17 `.py` files, staged on VM101 and digested
+before transfer; the export was confirmed byte-identical to VM101's clean working
+tree for those paths. Per rig:
+
+```
+ssh michael@<ip> mkdir -p /home/michael/distributed_prng_analysis/{miner,utils}   # §2 rule
+scp -p <export>/miner/*.py michael@<ip>:/home/michael/distributed_prng_analysis/miner/
+scp -p <export>/utils/*.py michael@<ip>:/home/michael/distributed_prng_analysis/utils/
+ssh michael@<ip> rm -rf .../miner/__pycache__ .../utils/__pycache__
+```
+
+Absolute paths throughout, `mkdir -p` before each `scp`.
+
+## A3. Before / after, per rig
+
+All three rigs were reachable at both measurements. **No rig is UNAVAILABLE and
+no rig was assumed current.**
+
+The comparison is an **order-independent set** comparison of `path → sha256` over
+every `.py` under `miner/` and `utils/`, against the 17-file `18a2419` export.
+*(A naive `diff` of two `sort`ed digest listings shows a spurious delta: the rigs'
+locale collates `miner/__init__.py` differently from VM101's. Same digests, same
+paths — the set comparison below is the one that means anything.)*
+
+### `192.168.3.122` — rrig6600
+
+| | identical | differing | missing | extra |
+|---|---|---|---|---|
+| **before** | 14/17 | 2 | 1 | 0 |
+| **after** | **17/17** | **0** | **0** | **0** |
+
+Before: `miner/dataset_authority.py` differed, `miner/range_miner_coordinator.py`
+differed, `utils/checkpoint_d6_2.py` missing. **After: exact match to `18a2419`.**
+
+### `192.168.3.156` — rrig6600b
+
+| | identical | differing | missing | extra |
+|---|---|---|---|---|
+| **before** | 14/17 | 2 | 1 | 0 |
+| **after** | **17/17** | **0** | **0** | **0** |
+
+Same three defects before; **exact match to `18a2419` after.**
+
+### `192.168.3.164` — rrig6600c
+
+| | identical | differing | missing | extra |
+|---|---|---|---|---|
+| **before** | 14/17 | 2 | 1 | 0 |
+| **after** | **17/17** | **0** | **0** | **0** |
+
+Same three defects before; **exact match to `18a2419` after.**
+
+## A4. Proof by module provenance — the same method that detected the failure
+
+Not a timestamp, not a clock, not a file listing. On each rig, in a **fresh
+interpreter** under `~/rocm_env`: import `miner.range_miner_worker` — the same
+import that exposed the drift — then read `sys.modules` and, for each module,
+report the **resolved `__file__`** and the **sha256 of that exact file**.
+
+**`18a2419` reference digests:**
+
+```
+0b9a7b86b0cf28858118b9b7c0b4646413e015431c94680520f1d563dc0cc55c  miner/range_miner_worker.py
+70f8fbaa371cf59759fe9deb578cc997e91dc71338c9d1ce88cbb11f98d37a18  miner/range_miner_coordinator.py
+365c8e3ee9abf80a532900b07e53740af08cd1f71bf7d908dd4db685bccf496d  miner/dataset_authority.py
+c3faecaaa690800a1742bbb9178a9e595fcf94777fe526e27fc4a2360b180286  utils/checkpoint_d6_2.py
+```
+
+**Worker import closure, unchanged on all three rigs before and after:**
+`['miner', 'miner.dataset_authority', 'miner.range_miner_coordinator',
+'miner.range_miner_protocol', 'miner.range_miner_worker']` — importing the worker
+still pulls in the coordinator module via `miner/__init__.py:19`. That structural
+fact was never the defect; the *vintage* of what it pulled in was.
+
+| module (as loaded) | before — all three rigs | after — all three rigs |
+|---|---|---|
+| `miner.range_miner_worker` | `0b9a7b86b0cf2885` ✅ | `0b9a7b86b0cf2885` ✅ |
+| `miner.range_miner_coordinator` | `2b1527bf56271521` ❌ (`ee0db06`) | **`70f8fbaa371cf597` ✅** |
+| `miner.dataset_authority` | `aa3d17923e7739b5` ❌ (`8600e75`) | **`365c8e3ee9abf80a` ✅** |
+| `miner` (`__init__.py`) | `699e930e379d07a7` ✅ | `699e930e379d07a7` ✅ |
+| `utils.checkpoint_d6_2` | **`ModuleNotFoundError`** ❌ | **`c3faecaaa690800a` ✅** |
+
+Every resolved `__file__` is `/home/michael/distributed_prng_analysis/<path>` on
+every rig — no shadowing copy elsewhere on `sys.path`. `rrig6600` / `rrig6600b` /
+`rrig6600c` each identified themselves by `socket.gethostname()` in the probe
+output and each ran `/home/michael/rocm_env/bin/python3`, so these are three
+distinct machines, not one measured three times.
+
+**The check that failed now passes by the same method.**
+
+## A5. Post-deploy sanity
+
+- VM101 worktree: **clean** (`git status --porcelain` empty) — the deploy only
+  read from the repository.
+- `cupy.cuda.runtime.getDeviceCount()` → **8** on each rig after the deploy. The
+  ROCm environment is untouched: no userspace, driver or modparam change, so the
+  frozen-rig rule holds.
+- `.122`'s git clone now reports ` M miner/__init__.py`,
+  ` M miner/range_miner_coordinator.py`, ` M miner/range_miner_worker.py`,
+  `?? miner/dataset_authority.py`, `?? utils/checkpoint_d6_2.py` **relative to
+  its own stale HEAD `8e2f5bf`** — expected, since two of those files did not
+  exist at that commit. That clone is a deployment artifact, not an execution
+  authority and not a certification surface; the digest and module-provenance
+  evidence above is what governs. It is **not** the repository the finalizer's
+  `repository_tree_clean` wall reads — that is VM101's, and it is clean.
+
+## A6. Status change
+
+**Item 6 code parity: OPEN → SATISFIED.** All three CT100s now load `18a2419`
+bytes for every module in `miner/` and `utils/`, proven by module provenance in a
+fresh interpreter. Combined with the clock half (already satisfied — NTP synced,
+skew < 0.1 s), **item 6 should move from ◐ to ☑ in REV4**, on the strength of
+§A3–A4; this addendum is the evidence.
+
+Remaining Phase-7 prerequisite gap: **item 4** (VM101 still on DHCP) — unchanged
+by this pass and still requiring a router-side reservation before a multi-hour
+soak.
+
+## Verification-integrity controls (VIR-1…6) — addendum scope
+
+- **execution proof:** each rig's probe printed its own `socket.gethostname()`,
+  its interpreter path, the full `sys.modules` closure and a per-module
+  `__file__` + sha256, terminating in an explicit `PROBE_COMPLETE` sentinel. A
+  truncated or silent probe is not a pass.
+- **clean control:** the before-state was captured by the identical probe and the
+  identical set comparison, on the same three hosts, minutes earlier — the two
+  measurements differ only by the deploy between them.
+- **fault-injection control:** `NOT_APPLICABLE` — this is a remediation and its
+  verification, not a detector under validation. **Not written as `PASS`.** The
+  before-state is the natural negative case: the same probe returned
+  `ModuleNotFoundError` and two wrong digests on all three rigs.
+- **completion sentinel:** `PASS` for all three rigs — `.122`, `.156`, `.164`
+  each at 17/17. No rig was `UNAVAILABLE`; had one been, it would be recorded as
+  such and **not** counted as current.
+- **unavailable-observer behavior:** the deploy loop tests reachability before
+  acting and prints `UNAVAILABLE — skipped, NOT deployed` rather than proceeding.
+  It was not triggered.
+- **audit claim scope:** `miner/` and `utils/` only, on the three CT100 workers,
+  against `18a2419`. **No claim is made about any other path on the rigs** — the
+  remaining ~720 `.py` files in those trees were not compared and may hold drift
+  of their own.
+- **searched surfaces:** `.122` git reflog / remote / status; rig-side
+  `~/.bash_history` on all three (empty); VM101 `~/.bash_history` (2000 lines);
+  repository `*.sh` deploy scripts; `docs/` deployment documentation;
+  `docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md`; CLAUDE.md §2 and §5; live
+  filesystem digests and live `sys.modules` on all three rigs.
+- **unavailable surfaces:** rig shell history (wiped 2026-08-01, so the exact
+  historical command that copied the tree to `.156`/`.164` is unrecoverable — the
+  mechanism is established from the clone reflog, the in-place file
+  modifications and the documentation, not from a recorded command); the Proxmox
+  hosts `.121`/`.155`/`.163` (no root key auth from VM101); paths outside
+  `miner/` and `utils/` on the rigs.
+
+---
+
+**STOP.** Nothing was committed or pushed; the soak was not launched. The only
+repository change is this addendum.
