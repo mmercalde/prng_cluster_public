@@ -70,9 +70,9 @@ Status legend: ☐ open · ◐ in progress · ☑ done
 | 1 | Second 3080Ti passthrough into VM101 (`hostpci1`) | Phase 6 verify, Phase 7 soak | **☐ OPEN** | one RTX 3080 Ti; second still on VM100. **Not a Phase-7 blocker — 25 GPUs is owner-mandated** |
 | 2 | `michael → CT100` passwordless SSH | Phase 6 verify, Phase 7 soak | **☑ DONE** | `.122`/`.156`/`.164` answer under `BatchMode=yes`, no prompt |
 | 3 | `rrig6600` Proxmox migration | Phase 7 soak | **☑ DONE** | `.120`/`.154`/`.162` DOWN; `.122`/`.156`/`.164` UP |
-| 4 | VM101 stable address | Phase 6 verify, Phase 7 soak | **☐ OPEN** | `inet 192.168.3.177/24 … dynamic` — **still DHCP. Phase-7 blocker** |
+| 4 | VM101 stable address | Phase 6 verify, Phase 7 soak | **☑ DONE** | router-side DHCP reservation, `bc:24:11:19:4f:24` → `192.168.3.177`. The lease cannot move mid-soak |
 | 5 | **D3.5 publication filesystem + clean-tree preflight** | **D6 smoke**, Phase 6, Phase 7 | **☑ DONE** | 25/25, 0 failures, incl. a `repository_tree_clean=False` fault-injection control |
-| 6 | Code/environment parity + clock synchronization | Phase 6 verify, Phase 7 soak | **◐ PARTIAL** | clock ✅ NTP active; **code parity ✗ — Phase-7 blocker**, see below |
+| 6 | Code/environment parity + clock synchronization | Phase 6 verify, Phase 7 soak | **☑ DONE** | clock ✅ NTP active; code parity ✅ **17/17 exact on all three rigs** after redeploy, provenance re-verified |
 | 7 | Transport reachability + firewall verification | Phase 6 verify, Phase 7 soak | **☑ DONE** | four miner flows on **5700** accepted; no enforcing firewall (`ENABLED=no`) |
 
 **Five statuses changed.** Evidence per item: `docs/S172_PHASE_7_PREREQ_REPORT.md`
@@ -95,12 +95,36 @@ identical, 2 differing, 1 absent**, identically on all three rigs.
 importing `miner.range_miner_worker`. The rig copies pre-date `eff6616`,
 `f7583bc` **and `18a2419` — the D6.2 repair this soak exists to exercise.**
 
-VM101's coordinator drives the run, so the rig copies are *loaded but not
-driven*, and the soak would probably still work. **That is not the acceptance
-criterion.** A soak whose headline question is *"does the S166 clear hold?"* must
-not run from a fleet carrying pre-D6.2 modules in its import path. **Redeploy
-`miner/` and `utils/` to all three CT100s and re-verify by digest**, then item 6
-flips to ☑.
+VM101's coordinator drives the run, so the rig copies were *loaded but not
+driven*, and the soak would probably still have worked. **That is not the
+acceptance criterion.** A soak whose headline question is *"does the S166 clear
+hold?"* must not run from a fleet carrying pre-D6.2 modules in its import path.
+
+**RESOLVED 2026-08-02 — item 6 is ☑.** `miner/` and `utils/` redeployed to all
+three CT100s and re-verified:
+
+| rig | before | after |
+|---|---|---|
+| `.122` rrig6600 | 14/17, 2 differing, 1 missing | **17/17 exact** |
+| `.156` rrig6600b | 14/17, 2 differing, 1 missing | **17/17 exact** |
+| `.164` rrig6600c | 14/17, 2 differing, 1 missing | **17/17 exact** |
+
+Module provenance re-checked **by the same method that found the drift** — fresh
+interpreter under `~/rocm_env`, same import:
+`miner.range_miner_coordinator` `2b1527bf…(ee0db06)` → `70f8fbaa…` ·
+`miner.dataset_authority` `aa3d1792…(8600e75)` → `365c8e3e…` ·
+`utils.checkpoint_d6_2` `ModuleNotFoundError` → `c3faecaa…`. Every `__file__`
+resolves under `/home/michael/distributed_prng_analysis/` with no shadowing copy
+on `sys.path`, and each probe printed its own `socket.gethostname()` — three
+distinct machines, not one answered three times.
+
+**The deploy mechanism was established from the host, not invented:** initial
+`git clone` from the public remote (`.122`'s reflog), then targeted `scp` from
+VM101 on top (`REMOTE_NODE_SETUP_CHECKLIST.md:127,133,139`, `CLAUDE.md §2`).
+**`scp` was used uniformly** rather than `git pull` on `.122` plus `scp`
+elsewhere — a per-rig split would have created the second deploy method this task
+exists to eliminate. **Bytes staged from `git archive 18a2419`**, not from the
+working tree, so provenance ties to the commit.
 
 *(The rigs are deployment targets, not working copies: `rrig6600` carries a
 worktree at `8e2f5bf` with 84 dirty entries; `rrig6600b` and `rrig6600c` have no
@@ -383,7 +407,8 @@ address or a stable hostname.
 - **Phase 7 full-fleet soak** (50 trials, ≥5 high + ≥5 low survivor, mixed
   const/hybrid, **25-GPU saturation — owner-mandated**, `n_parallel=1` binding
   per D6.2 certification): items 2, 3, 5, 6, 7 required; **item 1 is explicitly
-  waived by the owner**; item 4 required. **Remaining blockers: 4 and 6.**
+  waived by the owner**; item 4 required. **ALL OPERATIONAL PREREQUISITES ARE NOW
+  CLOSED** — items 2, 3, 4, 5, 6, 7 ☑ on live measurement; item 1 waived.
 - **D3.0-B** — see the header. **Never completed; Phase 6 certified regardless.**
   Awaiting Beta's disposition.
 
