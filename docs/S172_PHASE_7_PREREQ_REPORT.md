@@ -669,3 +669,158 @@ soak.
 
 **STOP.** Nothing was committed or pushed; the soak was not launched. The only
 repository change is this addendum.
+
+---
+
+# ADDENDUM 2 — execution set RE-FROZEN after `localhost.gpu_count 2 → 1`
+
+**Trigger:** two changes landed after the previous addendum — `distributed_config.json`
+`localhost.gpu_count` corrected **2 → 1** (`f255912`), and REV4 closed items 4 and 6
+(`ec11b9f`). The frozen set is a pure function of those declared inputs, so it had to be
+re-resolved. Measured on VM101 at HEAD **`f255912`**, venv `~/venvs/torch`.
+
+> **The previously reported `set_id adcc2ae5714c…` is SUPERSEDED and must not be cited.**
+> It described a fleet declaring 26 worker identities. That fleet no longer exists as a
+> declaration, so its identity is void — not merely stale.
+
+## B1. The new frozen set
+
+```
+set_id                    = bea580e764905a0d9485d2688be5841cc95f16e16837c23aced1f634d97f67a8
+worker_identity_count     = 25
+requested_admission_count = 25
+admission_count           = 25
+admission_clamped()       = False
+```
+
+All four are as required. **`worker_identity_count` is now 25, not 26** — the set is a
+25-worker set *by construction*, not a larger set with a satisfiable threshold. Supporting
+fields: `partial=False`, `rig_profile=proxmox`, `remote_execution=True` (derived from the
+set, not declared), and `freeze_execution_set()` round-tripped — `active_execution_set()`
+returns the identical `set_id`.
+
+`describe()`:
+
+```
+execution set bea580e76490 backend=miner profile=proxmox full
+nodes=['localhost', 'rrig6600', 'rrig6600b', 'rrig6600c'] gpus=25 remote=True admission=25
+```
+
+| node | endpoint | gpu_count | type |
+|---|---|---|---|
+| localhost | `localhost` | **1** | RTX 3080 Ti |
+| rrig6600 | `192.168.3.122` | 8 | RX 6600 XT |
+| rrig6600b | `192.168.3.156` | 8 | RX 6600 XT |
+| rrig6600c | `192.168.3.164` | 8 | RX 6600 XT |
+
+## B2. The unbacked identity is gone
+
+The 25 worker identities are `zeus-ubuntu-vm:gpu0` plus `rrig6600{,b,c}:gpu0…gpu7`.
+
+```
+'zeus-ubuntu-vm:gpu1' in worker_ids()  ->  False
+local identities                       ->  ['zeus-ubuntu-vm:gpu0']
+```
+
+That was the whole qualification raised in §5 of this report: the set previously declared a
+GPU that `nvidia-smi -L` says does not exist, so provenance read *"26 identities admitting
+25"* — indistinguishable, to a later auditor, from a 26-GPU run that came up short. The
+declaration now matches the measured hardware (one RTX 3080 Ti on VM101, 8 per rig by
+`cupy.cuda.runtime.getDeviceCount()`), and `admission_clamped()` is `False` because
+`min(25, 25) = 25` — no clamp, and nothing left to explain away.
+
+## B3. The binding still reaches the coordinator
+
+`miner/range_miner_coordinator._execution_set_expected_workers`:
+
+```
+context worker_pool_size= 25 -> (25, 'execution_set(bea580e76490)')
+context worker_pool_size=  8 -> (25, 'execution_set(bea580e76490)')
+```
+
+The frozen set is the authority and the context value remains the request. Its log line now
+reads *"set bea580e76490 has 25 worker identities"* — the sentence a soak reader will see,
+and it no longer contains a number that needs a footnote.
+
+**Launch recipe unchanged:** pass `worker_pool_size = 25` explicitly (the CLI default is 8),
+`rig_profile` needs no override. That yields exactly `bea580e76490…`.
+
+## B4. Item 4 — what VM101 can and cannot prove
+
+Reported here because a soak-time address change is an abort-class event, and the guest-side
+reading is easy to misread as a failure.
+
+```
+inet 192.168.3.177/24 brd 192.168.3.255 scope global dynamic noprefixroute enp6s18
+dhcp_server_identifier = 192.168.3.10   dhcp_lease_time = 86400   ip_address = 192.168.3.177
+```
+
+The interface still reads **`dynamic`**, and that is **expected and correct** for the fix that
+was applied: a router-side reservation pins which address the server hands out; it does not
+convert the guest to a static configuration. The guest-side evidence is consistent with the
+reservation — right address, 24 h lease, served by the gateway `192.168.3.10`.
+
+**It is not proof.** The reservation lives on the router, a surface VM101 cannot read, so this
+report records item 4 as **closed on owner attestation plus consistent guest-side evidence**,
+not as independently verified here. The brief's own confirmation step — *"confirm the address
+survives a reboot before the soak starts"* — remains the decisive check and is the owner's.
+
+## B5. Worktree note — clean-tree gate
+
+`git status --porcelain` at the time of this measurement is **not empty**:
+
+```
+?? 1
+?? 25
+```
+
+Both are **zero-byte** files in the repository root, created 2026-08-02 17:22, inspected and
+confirmed empty — consistent with a shell redirection typo (e.g. `… >25`). They are not
+`.py`, so the Phase-4 untracked-`.py` gate is unaffected, **but they do make the tree dirty,
+and `finalize_run` refuses `repository_tree_clean=False`** (§2, the fault-injection control
+that proved that wall enforces). A soak that reaches publication with these present fails at
+the finalizer.
+
+**Nothing was deleted** — they are the owner's to dispose of. Recommended: `rm ./1 ./25`,
+then re-check `git status --porcelain` is empty before launch.
+
+## B6. Prerequisite state after these changes
+
+| item | state |
+|---|---|
+| 1 second 3080Ti | ☐ open, **owner-waived** — 25-GPU configuration is the mandate, and the set now declares exactly 25 |
+| 2 CT100 SSH | ☑ |
+| 3 rrig6600 migration | ☑ |
+| 4 VM101 stable address | ☑ on attestation — see §B4; reboot confirmation outstanding |
+| 5 publication preflight | ☑ — **but see §B5**, the tree is dirty right now |
+| 6 code/clock parity | ☑ — clock, plus the redeploy proven at 17/17 by module provenance (Addendum 1) |
+| 7 transport | ☑ |
+
+## Verification-integrity controls (VIR-1…6) — Addendum 2 scope
+
+- **execution proof:** the set was resolved **and** frozen in a fresh interpreter; every
+  number above is read back off `active_execution_set()` after the freeze, not off the
+  pre-freeze object, and the coordinator's own binding function was called and its return
+  value recorded.
+- **clean control:** the superseded `adcc2ae5714c…` set, resolved by the identical call
+  against the identical files one commit earlier, is the baseline — the only input that
+  changed is `localhost.gpu_count`, and `set_id` changed with it.
+- **fault-injection control:** `NOT_APPLICABLE` — a re-resolution, not a detector under
+  validation. **Not written as `PASS`.**
+- **completion sentinel:** `PASS` — 25 / 25 / 25 / `False`, with `worker_identity_count = 25`.
+- **unavailable-observer behavior:** the resolver probes nothing by design, so no host was
+  contacted to produce this set; the GPU counts it consumes were measured earlier in this
+  report and are cited, not re-declared.
+- **audit claim scope:** the frozen execution set and the local address reading, on VM101 at
+  `f255912`. Rig-side parity is Addendum 1's claim and was not re-measured here.
+- **searched surfaces:** `distributed_config.json`, `rig_profiles_config.json`,
+  `dataset_provisioning.json` (all three are the resolver's declared sources and are listed
+  in the set's provenance); `nvidia-smi -L`; `ip addr` / `nmcli` on VM101; the repository at
+  `f255912`.
+- **unavailable surfaces:** the router's DHCP reservation table (§B4); the second 3080Ti
+  (on VM100); the Proxmox hosts `.121`/`.155`/`.163` (no root key auth from VM101).
+
+---
+
+**STOP.** Nothing was committed or pushed; the soak was not launched. The only repository
+change is this addendum.
