@@ -5,8 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through the Chapter-3 audit and the documentation-blindness correction (`c752622`,
-2026-08-02). **D6.2 CERTIFIED `18a2419`.**
+**Currency:** through the regenerated catalog (`1fc05bb`, 2026-08-03). **D6.2 CERTIFIED `18a2419`.**
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -203,7 +202,7 @@ mid-task:
 | `TEAM_ALPHA_*` | what was submitted, and what it was answered with |
 | `CLAUDE_CODE_INSTRUCTIONS_*` | what was asked for, and its constraints |
 | `SESSION_CHANGELOG_*` | what happened when |
-| `PROJECT_FILE_CATALOG.md` | **the index — read it FIRST** |
+| `PROJECT_FILE_CATALOG.md` | **THE INDEX — READ IT FIRST.** Regenerated `1fc05bb` 2026-08-03: 803 lines, **intent-indexed** (what question each document answers, not what it is called), 562 files accounted for. **§1.1 is the governance trail** with each ruling request paired to its ruling and implementation commit. It carries ★ markers on documents previously misreported — e.g. `TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`: *"read this before reporting any Step-2 objective blindness."* |
 | `docs/BACKLOG.md` | the tracked non-blocking register |
 
 **A defect that is known, escalated and mid-remediation is NOT a finding — it is a status.**
@@ -406,9 +405,15 @@ same way.** Scope-correct fix (delta from `__enter__`) flagged, not actioned —
 **six** `default_params`; the live `agent_manifests/trse.json` has **seven** — `trse_context`
 was added later, and the plan's own §5 places it in **`window_optimizer.json`**, not
 `trse.json`. `window_size`/`stride`/`k_clusters` were in the plan from S121, so that half of
-the CLI mismatch was baked in at design time. **`agent_manifests/trse.json` is the ONLY
-manifest gitignored** (`.gitignore:41`) — the other six are tracked, so the file causing F1 has
-no git history and no repo-scoped audit can see it.
+the CLI mismatch was baked in at design time.
+**⚠ CORRECTED 2026-08-03 (catalog §5.3).** The earlier claim — *"trse.json is the only gitignored
+manifest and has no git history"* — is **false as of `93918f5`**. Live: **all 9 files in
+`agent_manifests/` match `.gitignore:41` (`*.json`)**; the **7 step manifests are force-added and
+tracked**; `trse.json` was force-added at **`93918f5` (2026-08-01)** and has **exactly one commit**.
+**`definitions.json` is now the only untracked, ignored manifest** — it carries `schema_version`,
+`pipeline_steps`, `sidecar_schema`, `watcher_protocol`, `description`, `updated_at`, and **no
+`default_params`. A FRESH CLONE DOES NOT HAVE IT**, so no clone-based reasoning can see the file
+that declares the pipeline's own step structure.
 **`dataset_provenance/*.json` never pruned** — same class as D6.3, newly found.
 **Sampler provenance is unverified** — `run_optimization()` trusts caller-supplied
 `sampler_class` / `sampler_module` / `optuna_version` and does not check them against the actual
@@ -740,6 +745,51 @@ gcd(8, 125) = 1, CRT gives agreement mod 1000 ⟺ agreement mod 8 **and** mod 12
 the CRT argument, and an **exhaustive check over x ∈ [0, 4000) × d ∈ [0, 1000) — zero divergent
 cases.** **It is not extra filtering power**, and §6 says the original emphasis was misleading.
 `prng_registry.py:773` is the one kernel that does not run it.
+
+### 2.17c Catalog findings — corrections and threads neither party was tracking
+
+From `docs/PROJECT_FILE_CATALOG.md` (`1fc05bb`), which indexed 562 files in one pass.
+
+**⚠ "PHASE 7" IS OVERLOADED — two unrelated milestones share the name.**
+
+| | |
+|---|---|
+| **Phase 7 (WATCHER)** | dispatch integration, **Feb 2026**, marked **COMPLETE** in Chapters 10, 12, 13 and `TODO_PHASE7_WATCHER_INTEGRATION_REVISED_v3.md` |
+| **S172 Phase 7** | the **25-GPU saturation + WATCHER soak** — this project's current milestone |
+
+`SOAK_TEST_PLAN_PHASE7_v1_0.md` (2026-02-03) belongs to the **first**. Its prerequisite is
+*"Phase 7 D5 End-to-End (PASSED Session 59)"* and its tests are daemon endurance, queue integrity
+and the autonomous loop. **It is NOT the S172 soak plan, and there is no S172-scoped soak plan
+other than the brief written for it.**
+
+**Step 3 repeats Step 2's map divergence.** `STEP_SCRIPTS[3] = run_step3_full_scoring.sh`, while
+`full_scoring.json`'s actions name `generate_full_scoring_jobs.py`, `full_scoring_worker.py` and
+`aggregate_scoring_results.py` — **none is the shell script.** Same shape as the Step-2 divergence
+that produced the soak hazard. **`run_step3_full_scoring.sh` has NOT been examined.** Structural
+fact only; not diagnosed.
+
+**Steps 0 and 5 declare no `actions`**, so the two maps cannot be compared for them. `trse.json`
+carries `skip_on_fail: true` with a stated reason — **that silent-failure behaviour is ARCHITECTED**
+(`TRSE_INTEGRATION_PLAN_S121.md` §2C), not a defect.
+
+**The KPI governance chain S176 → S177 → S178 → S179 exists and neither Alpha nor Michael was
+tracking it.** S177 conditional-approved with 8 blockers → S178 approved-in-principle with 4
+mandatory amendments → **`TB_RULING_S179_IMPLEMENTATION_AUTH.md` is the LIVE AUTHORITY**, approved
+with **three binding code-level conditions**. **Whether the implementation landed was NOT
+established.** Same shape as D3.0-B: a governed requirement whose completion nobody has checked.
+Does not touch a step-1-confined soak.
+
+**The v4.0 objective was a tautology.** `TB_RULING_REQUEST_STEP2_v4_1_OBJECTIVE.md`: the smoke test
+returned **WSI = 0.9997 on trial 1** because the formula's dominant term (w3 ≈ 0.82) was
+`quality = fwd*rev` — **the objective measured itself.** Fixed at v4.1; v4.1 then could not
+optimise either (`sel_score = 0.0000` on every passing trial, `bidirectional_selectivity` at floor
+98.8%), which is the v4.2 ruling. **Lineage: v4.0 → v4.1 → v4.2 → v4.3 → v4.4, all governed.**
+
+**The v1 catalog's Runtime Data table does not survive verification.** `bidirectional_survivors.json`
+is **2 bytes** (claimed 258 MB); `survivors_with_scores.json` is **621 KB** (claimed 500+ MB); the
+two root NPZ paths are **D3.5 finalizer-owned symlinks, not standing files**; Optuna DBs are
+**112 KB**, not 10–50 MB. **A confidently-stated table in an authoritative-looking document was
+wrong in every row.**
 
 ### 2.18 D3.0-B — OPEN, and it NARROWS what Phase 6 certified (TB ruling 2026-08-02)
 
