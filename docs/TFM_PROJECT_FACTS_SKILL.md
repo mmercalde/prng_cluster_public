@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through Phase-7 authorization (`6892661`, 2026-08-02). **D6.2 CERTIFIED `18a2419`.**
+**Currency:** through the Phase-7 launch ruling (`f839391`, 2026-08-02). **D6.2 CERTIFIED `18a2419`.**
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -638,20 +638,65 @@ sit inside the worker's executing import closure** (`miner/__init__.py:19`, conf
 copies** — `rrig6600` has a worktree at `8e2f5bf` with 84 dirty entries; the other two have no git
 at all. **Digest comparison, never `git rev-parse`, is the parity evidence.**
 
-### 2.18 D3.0-B — a stated certification prerequisite that was never met
+**⚠ Kernel-log observability is NOT established, and the soak launches without it.** CT100 is an
+unprivileged LXC — **GPU kernel messages are only visible from the Proxmox hosts** `.121`/`.155`/
+`.163`, and **VM101 has no root key auth to them.** Consequence, ruled by the owner and recorded:
+
+> **The "no `GCVM_L2_PROTECTION_FAULT` / no GPU reset" criterion reports `UNAVAILABLE`, NEVER
+> `PASS`.** It was not checked. **An inaccessible surface is not a clean one** (VIR-1).
+
+**Substitute detection**, polled and logged as a series: `rocm-smi` device count and per-GPU state
+per rig · worker process liveness · repeated lease expiries per identity. These detect **that** a
+GPU or worker died on a named rig; they **cannot classify** the fault. Classification comes
+afterwards from the Proxmox console, which retains the logs.
+
+**Why the risk is judged low:** `GCVM_L2_PROTECTION_FAULT` was a **PWC launch-storm defect**
+(~17K kernel launches/trial) that followed the workload across every transport, a code revert and a
+package rollback. **RANGE-MINER's persistent per-GPU daemons remove that workload**, and Phase 6.0
+produced no reset and no fault on CUDA or ROCm. **The one qualification: PWC was also stable below
+saturation and failed ONLY at full-fleet saturation — which is the condition this soak is the first
+to meet.**
+
+**Beta's correction to Alpha on the execution set, worth carrying:** Alpha framed the 26-identity
+set as an *auditability* problem. **It was not.** Naming 26 eligible identities and letting the
+answering population determine which 25 satisfy the threshold **is not an explicit 25-worker set**,
+even when the threshold is meetable. *"No execution consequence"* sidestepped the contract.
+
+### 2.18 D3.0-B — OPEN, and it NARROWS what Phase 6 certified (TB ruling 2026-08-02)
 
 `PHASE6_PREREQS.md` REV3 stated D3.0-B *"must complete before Phase 6 certification."* **No commit
-completes it, and the defect is live at HEAD:**
+completes it, and the defect is live:**
 
 ```python
 convert_survivors_to_binary.py:184
 encode_prng_type(s.get('prng_type', s.get('prng_base', 'java_lcg')))
 ```
 
-A record with **neither** `prng_type` **nor** `prng_base` still silently becomes `'java_lcg'`
-instead of failing closed. **Phase 6 certified at `d98298c` regardless.** Whether Beta waived it,
-superseded it, or nobody raised it is **[UNVERIFIED]** — the repo does not say. **Awaiting Beta's
-disposition; Alpha has not proposed a fix.**
+A record with **neither** `prng_type` **nor** `prng_base` is **fabricated as `'java_lcg'`** instead
+of failing closed — **while the canonical resolver already provides the fail-closed behaviour.**
+
+**Beta's ruling: OPEN and REQUIRES COMPLETION.** *Waived* and *superseded* were **rejected** —
+REV3 made it mandatory, the defect remains executable, divergent encoding tables persist in
+dormant-but-executable writers **and patch scripts**, and no ruling ever removed the prerequisite.
+**Beta recorded its own Phase-6 certification as a governance error for omitting it.**
+
+**⚠ THE CERTIFICATION SCOPE IS NARROWER THAN "PHASE 6 IS CERTIFIED":**
+
+> **Phase 6 is certified for the demonstrated miner/finalizer path.** Wall A used the miner
+> coordinator, Phase-5 assembly, the D3.5 finalizer, direct 22-array validation and Step-2/Step-3
+> consumption — **it never invoked `convert_survivors_to_binary.py`.**
+> **Legacy conversion and dormant legacy-writer surfaces are UNCERTIFIED.**
+
+**DO NOT INVOKE THE LEGACY CONVERTER UNTIL D3.0-B CLOSES.** No Wall A/B rerun is required.
+
+**Bounded scope when it is done:** canonical fail-closed resolver replacing missing-identity
+defaults · preserve valid `prng_type` precedence and valid `prng_base` fallback · reject records
+carrying neither · **remove or hard-retire divergent executable encoding tables, including
+rerunnable patch scripts that could reinstall them** · behavioural gates and mutants for missing
+identity, unknown identity, and reintroduced `java_lcg` defaulting.
+
+**Does NOT block the miner-backed Phase-7 soak** (the soak does not invoke the legacy writer), and
+6-P2 remains independent.
 
 ## 3. SUPERSEDED — in repo, NOT current
 R² as objective · `holdout_hits` as ML target · `feature_importance.py` 60-name list (stale by
@@ -767,18 +812,21 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 ```
 D6.1 ✅ · Phase 6.0 ✅ · threshold repair ✅ · Ch1 P0+P1/P2 ✅ · Chain C ✅
 6-P0 ✅ · 6-P0.5 ✅ · Q2 closure ✅ · §4.3 liveness ✅ · Wall C struck ✅
-bounded Phase 6 ✅ CERTIFIED d98298c · Chapters 1 and 2 ✅ ef4b1c6 + gate 09bbfbf
+bounded Phase 6 ✅ CERTIFIED d98298c — **miner/finalizer path ONLY, see §2.18**
+Chapters 1 and 2 ✅ ef4b1c6 + content gate 09bbfbf
 Resolved Execution Set ✅ 63e627f · admission binding ✅ eff6616
 process_sharded import gate ✅ e0513ba — D5 25/25
 D6.2 ✅ CERTIFIED 18a2419 — n_parallel == 1 ONLY
-Phase 7 prerequisites ✅ all closed on measurement (item 1 waived by owner)
-now    Phase 7 SOAK — AUTHORIZED. 50 trials, ≥5 high + ≥5 low survivor,
-       mixed const/hybrid, 25 GPUs, n_parallel=1 BINDING, serial_reference.
-       First execution ever with the S166 clear enabled.
-next   D6.3 (retention — non-blocking, ~10.7 KB/run measured)
+Phase 7 prerequisites ✅ closed on measurement; item 1 WAIVED by owner (25 GPUs)
+now    Phase 7 SOAK — LAUNCHING by owner order. 50 trials, ≥5 high + ≥5 low
+       survivor, mixed const/hybrid, 25 frozen identities (bea580e76490),
+       n_parallel=1 BINDING, serial_reference. FIRST execution ever with the
+       S166 clear enabled — the RAM series across 50 trials IS the result.
+       GCVM_L2 criterion reports UNAVAILABLE (§2.17).
+next   D3.0-B — OPEN, TB requires completion; blocks legacy-writer use only
        6-P2 (scraper — REV4 with Beta; option (a) BINDING)
+       D6.3 (retention — non-blocking, ~10.7 KB/run measured)
        NP2 checkpoint transaction design (NEW, separate)
-       D3.0-B disposition (§2.18, awaiting Beta)
 ```
 
 **⚠ Sampler-comparison sequencing — a correction TB issued against Alpha.** The certifying
