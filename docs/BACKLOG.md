@@ -4,7 +4,7 @@
 written down so it is not rediscovered as a surprise finding in a later session, and so nobody
 re-derives it from scratch at cost.
 
-**Currency:** HEAD `6892661` (2026-08-02), Phase 7 authorized. Every anchor in this file was re-read at source when
+**Currency:** 2026-08-03, Phase 7 authorized. Every anchor in this file was re-read at source when
 the file was written. An anchor is a claim with an expiry date — re-verify before acting.
 
 **What is NOT here.** The hard Phase-7 prerequisites live in the skill's §8 approved sequence:
@@ -212,6 +212,21 @@ not introduce it.
 
 ---
 
+## 10. Standing reminders that keep costing us
+
+- **The repository is not the system (VIR-6).** systemd units, cron, host config and deployed
+  uncommitted files are invisible to every repo-scoped gate. Alpha once reported "no scraper
+  invoker exists" from a clone while an enabled boot-triggered unit sat on the host.
+- **Gitignored files are invisible to every repo-scoped search.** `agent_manifests/trse.json` —
+  the file *causing* TRSE F1 — had no git history at all until `93918f5`.
+- **A keyword hit is not a finding until the surrounding text is read.** Four absence claims were
+  falsified in one session; the last was made after a grep that **reached the exact line and did
+  not read it.**
+- **Cited is not read.** F6's specification sat in `TRSE_INTEGRATION_PLAN_S121.md`, tracked, cited
+  repeatedly, unopened.
+
+---
+
 ## 11. `_RusageChildrenSampler` measures the wrong thing — G-RSS passes by luck
 
 `tests/test_s172_phase5_d5_process_sharded.py:2107-2119` reads
@@ -232,13 +247,49 @@ D4/D5 arm.
 
 ---
 
-## 12. D3.0-B — awaiting Beta's disposition
+## 12. D3.0-B — OPEN and requiring completion; it NARROWS what Phase 6 certified
 
 A stated Phase-6 certification prerequisite that was never completed; Phase 6 certified anyway.
-Defect live at `convert_survivors_to_binary.py:184`. Full statement in
-`docs/TEAM_ALPHA_D3_0_B_AND_ITEM1_NOTICE.md` and skill §2.18. **Alpha has not proposed a fix** —
-it touches the legacy writer and, if it genuinely should have blocked certification, closing it
-quietly is the wrong move.
+The defect is still live, re-read at source — `convert_survivors_to_binary.py:184`:
+
+```python
+encode_prng_type(s.get('prng_type', s.get('prng_base', 'java_lcg')))
+```
+
+A record carrying **neither** `prng_type` **nor** `prng_base` is **fabricated as `'java_lcg'`**
+instead of failing closed — while the canonical resolver already provides the fail-closed
+behaviour.
+
+**Beta ruled 2026-08-02: OPEN and REQUIRES COMPLETION.** *Waived* and *superseded* were both
+**rejected** — REV3 made it mandatory, the defect remains executable, divergent encoding tables
+persist in dormant-but-executable writers **and patch scripts**, and no ruling ever removed the
+prerequisite. **Beta recorded its own Phase-6 certification as a governance error** for omitting
+it, and disclosed that unprompted.
+
+**The certification scope is narrower than "Phase 6 is certified."** Phase 6 is certified for the
+demonstrated **miner/finalizer path** — Wall A used the miner coordinator, Phase-5 assembly, the
+D3.5 finalizer, direct 22-array validation and Step-2/Step-3 consumption, and **never invoked
+`convert_survivors_to_binary.py`.** **Legacy conversion and dormant legacy-writer surfaces are
+UNCERTIFIED.** No Wall A/B rerun is required.
+
+**Do not invoke the legacy converter until D3.0-B closes.**
+
+**Bounded scope when it is done:** canonical fail-closed resolver replacing missing-identity
+defaults · preserve valid `prng_type` precedence and valid `prng_base` fallback · reject records
+carrying neither · **remove or hard-retire divergent executable encoding tables, including
+rerunnable patch scripts that could reinstall them** · behavioural gates and mutants for missing
+identity, unknown identity, and reintroduced `java_lcg` defaulting.
+
+**Does NOT block the miner-backed Phase-7 soak** — the soak does not invoke the legacy writer —
+and 6-P2 remains independent. **Not scoped for implementation.**
+
+Alpha's original position stands and the ruling vindicated it: **Alpha did not propose a fix**,
+because it touches the legacy writer and, if it genuinely should have blocked certification,
+closing it quietly is the wrong move. That was the right call — Beta's answer was neither of the
+two exits Alpha's notice offered.
+
+Sources, all re-read: `docs/TEAM_ALPHA_D3_0_B_AND_ITEM1_NOTICE.md` (the ruling request),
+`docs/TEAM_ALPHA_PHASE7_LAUNCH_NOTICE.md` §1 (Beta's disposition, accepted in full), skill §2.18.
 
 ---
 
@@ -260,15 +311,107 @@ cancellation, a source gap, or a scrape defect. One record in 18,068. **Not 6-P2
 
 ---
 
-## 10. Standing reminders that keep costing us
+## 15. Step 3's output validation floor is three contracts stale
 
-- **The repository is not the system (VIR-6).** systemd units, cron, host config and deployed
-  uncommitted files are invisible to every repo-scoped gate. Alpha once reported "no scraper
-  invoker exists" from a clone while an enabled boot-triggered unit sat on the host.
-- **Gitignored files are invisible to every repo-scoped search.** `agent_manifests/trse.json` —
-  the file *causing* TRSE F1 — had no git history at all until `93918f5`.
-- **A keyword hit is not a finding until the surrounding text is read.** Four absence claims were
-  falsified in one session; the last was made after a grep that **reached the exact line and did
-  not read it.**
-- **Cited is not read.** F6's specification sat in `TRSE_INTEGRATION_PLAN_S121.md`, tracked, cited
-  repeatedly, unopened.
+`run_step3_full_scoring.sh:475-478`, the "Phase 6: Validate Output" block — re-read at source:
+
+```
+    # Check feature count (should be 50)
+    feature_count = len(sample.get('features', {}))
+    if feature_count < 46:
+        print(f"❌ VALIDATION FAILED: Only {feature_count} features found (expected 46+)")
+```
+
+**The live contract is 91 extracted / 89 trained.** A run emitting **46** features passes this
+wall and prints `✅ VALIDATION PASSED`. The comment guarding the test names a *third* figure —
+**50** — that matches neither the test below it nor the contract. **The wall is set three
+contracts behind the code it guards**, and a silent 45-feature collapse to 46 is the only failure
+it can still catch.
+
+The information needed to set the floor correctly is already in hand one phase earlier in the same
+script: `:426-431` splits `global_*` from per-seed features and prints per-seed, global and total
+counts. The aggregation phase knows the shape; the validation phase does not use it.
+
+Not blocking; not fixed. Source: the Step-3 script read, 2026-08-03; line numbers re-verified at
+HEAD `d99923b`.
+
+---
+
+## 16. `full_scoring.json` declares 26 GPUs; the frozen Phase-7 set is 25
+
+`agent_manifests/full_scoring.json:102-110` declares `parallel_workers` with `"max": 26`,
+`"default": 26`, and the note *"Use full cluster (26 GPUs) for maximum throughput."*
+
+The frozen Phase-7 execution set is **25** — `set_id bea580e764905a0d9485d2688be5841cc95f16e161…`
+(`bea580e76490`), 25 identities requested and 25 admitted, `clamped = False`, **25 by construction
+and not by clamp**. Owner-ruled, Beta-ratified.
+
+**No execution consequence, and the wiring evidence is stronger than the manifest's own note.**
+`parallel_workers` lives in `parameter_bounds`, **not** in `default_params` — so WATCHER's
+step-scoped filter (`agents/watcher_agent.py:1290-1314`, `if key in declared`) could not pass it
+even if something wanted it. No `args_map` in any of the manifest's three actions references it,
+and `run_step3_full_scoring.sh` never mentions the string at all (grep: no hits). **This is
+documentation drift, not a dead wiring path** — there is no path.
+
+*(Note for whoever fixes it: the manifest's `_note_default_params` at `:141` lists `prng_type`,
+`mod`, `batch_size`, `jobs_file`, `output_file` as documentation-only. It does **not** cover
+`parallel_workers`, which is a different field in a different block. Do not cite it as the
+authority here.)*
+
+**Fourth place carrying a stale 25-vs-26 figure**, and the enumeration matters because the fourth
+looked like the last two: `PROJECT_FILE_CATALOG.md` and `PIPELINE_BEHAVIOUR_MODEL.md` were both
+corrected (`f8cb1c5`, `c4917a8`); `distributed_config.json` now totals **25** (`localhost.gpu_count`
+2 → 1, `f255912`); and **`ml_coordinator_config.json` totals a live 26 and correctly stays** — it
+declares hardware, not the execution set. The divergence between those two config files is recorded
+as **D17** in `PIPELINE_BEHAVIOUR_MODEL.md:1193`. Not blocking; not fixed.
+
+---
+
+## 17. A skill revision lives in three places, and committing updates one
+
+| copy | who loads it | how it updates |
+|---|---|---|
+| `docs/TFM_PROJECT_FACTS_SKILL.md` | nobody at runtime — the tracked source | commit + dual-push |
+| `~/.claude/skills/tfm-project-facts/SKILL.md` | **Claude Code**, on invocation | **manual `cp`** |
+| the Settings upload | **new chat sessions**, at session start | **manual re-upload** |
+
+**Nothing warns you when they diverge, and they diverge silently.**
+
+On **2026-08-03** the tracked copy reached **v13** while the installed copy still held **v6** — last
+touched 00:22 that day, **before the entire day's work** — and Settings held **v11**. **Thirteen
+revisions, and not one had reached a runtime copy.** Every correction made that day protected
+nothing until the copies were fixed by hand.
+
+**A running chat session cannot be updated at all** — its copy is fixed at session start. After any
+revision that matters, start a fresh session.
+
+The four-step completion rule (commit + dual-push · back up then `cp` the installed copy · re-upload
+to Settings · verify in a fresh session by printing the Currency line and the §0.6 heading verbatim)
+lives in the skill's §7 working agreements. **The currency line exists to make this drift visible;
+it is the only signal there is.**
+
+**This entry exists so the failure is findable from the backlog too** — a reader who has the stale
+skill loaded is exactly the reader who cannot find the warning inside it.
+
+---
+
+## 18. `chapter_13_triggers.py` reaches Step 3 outside `--end-step`
+
+The soak's `--end-step 1` bounds WATCHER's pipeline. It does **not** bound Chapter 13, which has two
+routes to Step 3 — **both requiring a human action**, so neither is a live risk:
+
+- **Standalone.** `execute_standalone` (`:630`) carries **its own** `STEP_SCRIPTS` dict (`:644`),
+  where `3: "run_step3_full_scoring.sh"` (`:647`), invoked via `subprocess.run` (`:672`). Sole
+  caller is the CLI `--execute` flag at `:932` (`--steps` defaults to `[3, 5, 6]`, `:885`).
+- **Learning loop.** `execute_learning_loop` (`:579`) defaults to `steps = [3, 5, 6]` (`:597`) and
+  calls `self.watcher_agent.run_pipeline(start_step, end_step, params)` at `:616` with
+  `start=min(steps)`, `end=max(steps)` — **a fresh `run_pipeline` with its own bounds. A soak's
+  `--end-step 1` does not constrain it.**
+
+Note the standalone dict's step 2 is `run_scorer_meta_optimizer.sh` — the script that invokes the
+TB-prohibited converter and `mv`s a regular file onto the D3.5 finalizer-owned symlink. A
+`--steps 2 …` standalone invocation reaches it directly, with no `--end-step` anywhere in the path.
+
+**Standing operational rule: no Chapter-13 retrain approval and no learning-loop invocation while a
+soak is running.** Not a code defect and nothing to fix — an operational constraint that has to be
+written down somewhere a soak operator will look. Line numbers re-verified at HEAD `d99923b`.
