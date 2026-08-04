@@ -5,7 +5,10 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v13, HEAD **`1131bb1`** (2026-08-03), clean tree. **D6.2 CERTIFIED `18a2419`.**
+**Currency:** v14, 2026-08-03. **D6.2 CERTIFIED `18a2419`.**
+*(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
+noise on the first line a session sees. Commit hashes belong where they anchor a certified
+artifact.)*
 
 **Three documents carry the facts this skill only points at. Read them; do not paraphrase them:**
 
@@ -1013,6 +1016,29 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
   commit and push, then the reader clones — that path has never failed.
 - Session changelog to `docs/`; dual-push `origin` (private) + `public` (mirror) —
   **everything pushed is effectively public.**
+- **⚠ A SKILL REVISION LIVES IN THREE PLACES. Committing it updates ONE.**
+
+  | copy | who loads it | how it updates |
+  |---|---|---|
+  | `docs/TFM_PROJECT_FACTS_SKILL.md` | nobody at runtime — the tracked source | commit + dual-push |
+  | `~/.claude/skills/tfm-project-facts/SKILL.md` | **Claude Code**, on invocation | **manual `cp`** |
+  | the Settings upload | **new chat sessions**, at session start | **manual re-upload** |
+
+  **Nothing warns you when they diverge, and they diverge silently.** On 2026-08-03 the tracked
+  copy reached **v13** while `~/.claude/skills/` still held **v6** (last touched 00:22 that day,
+  before the entire day's work) and Settings held **v11**. **Thirteen revisions, and not one had
+  reached a runtime copy.** Every correction made that day protected nothing until the copies were
+  fixed by hand.
+
+  **A revision is NOT done at the dual-push. It is done when all three are current:**
+  1. commit + dual-push the tracked copy;
+  2. **back up** the installed copy (`SKILL.md.bak-vN`), then `cp` the tracked copy over it;
+  3. **re-upload to Settings**;
+  4. **verify in a FRESH session** — *"print the Currency line and the §0.6 heading verbatim"*.
+     **The currency line exists to make this drift visible. It is the only signal there is.**
+
+  **A running chat session cannot be updated at all** — its copy is fixed at session start. **Start
+  a fresh session after any revision that matters.**
 - Prefer **Claude Code on VM101** for as-built questions — live source **and** live host. A
   clone is repo-only (VIR-6); chat-side reasoning is provisional.
 - Briefs: one falsifiable question, a defined deliverable, "write the report to
