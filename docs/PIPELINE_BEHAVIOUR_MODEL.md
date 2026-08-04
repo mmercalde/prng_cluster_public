@@ -1213,6 +1213,221 @@ session.
 
 ---
 
+# 17.1 FOLLOWING THE §17 POINTERS — FOUR ITEMS, TRACKED SOURCES ONLY
+
+**Added 2026-08-03.** Each of I-2, I-3, I-5 and I-6 carries a "where to look next" naming a
+tracked file at HEAD. Each named source was opened and read. **No ser8 access, no new access
+surface, nothing fixed.**
+
+**Two verdicts are used, and the distinction is the point:**
+
+- **FOUND** — the named source contains the WHY.
+- **NOT-IN-NAMED-SOURCE** — the named source does **not** contain it. **This is never a claim
+  that the behaviour is undocumented** (§17 preamble, and the skill's standing rule). Where the
+  WHY was located in another *tracked* file during the same pass, it is given under
+  **WHY-FOUND-ELSEWHERE** and attributed precisely.
+
+| # | named source | verdict | WHY located? |
+|---|---|---|---|
+| I-2 | `CHAPTER_7_PREDICTION_GENERATOR.md` §7–§12 · `NOTE_Step7_Not_Required_for_Autonomy.md` | **FOUND** | yes — in the named source |
+| I-3 | `CHAPTER_7_PREDICTION_GENERATOR.md` §8 | **NOT-IN-NAMED-SOURCE** | yes — elsewhere, at lower authority |
+| I-5 | `FLEET_STATE_REQUIREMENTS_v1.md` | **NOT-IN-NAMED-SOURCE** | yes — elsewhere |
+| I-6 | `CHAPTER_13_LIVE_FEEDBACK_LOOP_v1_1.md` §14, §18 | **NOT-IN-NAMED-SOURCE** | yes — elsewhere, decisively |
+
+---
+
+## I-2 — how the 20/100/300 pools are produced in production · **FOUND**
+
+**`CHAPTER_7_PREDICTION_GENERATOR.md` §6.2**, corroborated at **§9.1**, **§10.1** and **§12.3**.
+
+**Answer in one line:** the pools are built **inside Step 6 itself** — `prediction_generator.py`
+slices the ranked survivor list at 20 / 100 / 300 into `tight` / `balanced` / `wide`
+(`build_prediction_pools()`, §6.2), aggregates weighted votes per pool, and writes
+`prediction_pools.json`; `--pool-sizes` defaults to `20,100,300` (§9.1) and the Step-6 agent
+manifest declares that file as an output (§10.1).
+
+**This also answers the second half of I-2.** `build_pools.py` / `evaluate_pools.py` are a
+**separate backtest lineage**, not the production path — which is exactly why `backtest_pools.py`
+is their only in-repo caller. Nothing in the production chain was ever meant to call them.
+
+`NOTE_Step7_Not_Required_for_Autonomy.md` was read in full and does **not** bear on pool
+production; it rules that Step 7 (post-pipeline export) is off the critical path because
+Chapter 13 keeps its own rolling baseline. Read for completeness, not needed for the answer.
+
+**DIVERGENT (recorded, not adjudicated).** The live module does not implement the three-pool
+design. `prediction_generator.py:89` declares a **single** `pool_size: int = 20`; the builder is
+`_build_prediction_pool` (**singular**, `:752`) feeding a Top-K selection; there is no
+`build_prediction_pools`, no `prediction_pools.json`, no `ranked_predictions.json` and no
+`--pool-sizes` anywhere in the module. `agent_manifests/prediction.json` (v1.6.0) **agrees with
+the code**, not the chapter — one output, `predictions/next_draw_prediction.json`, with
+`pool_size: 20, k: 20`. This is the same divergence already recorded at §18 observation 2 and
+governed as system-map **Blocker 1**. Chapter 7 is dated Dec-2025 and predates the v6.0 module.
+
+**Worth flagging for whoever adjudicates:** the S140b pipeline objective is
+`0.50·hit@20 + 0.30·hit@100 + 0.15·hit@300 + 0.05·pool_coverage` — it still weights **three**
+pool sizes, while the live generator emits **one**. **Not adjudicated here.**
+
+---
+
+## I-3 — `prediction_generator.py`'s second history copy · **NOT-IN-NAMED-SOURCE**
+
+**What was read:** `CHAPTER_7_PREDICTION_GENERATOR.md` §8 in full — §8.1 (File Outputs), §8.2
+(`ranked_predictions.json`), §8.3 (`prediction_pools.json`).
+
+§8.1 tables **exactly three** outputs — `ranked_predictions.json`, `prediction_pools.json`,
+`next_draw_prediction.json`. **There is no history copy, no `history/` directory and no archival
+concept anywhere in §8.** As with I-2, §8 describes an output shape the live module does not
+produce, so it could not explain a behaviour of the current code even in principle.
+
+**WHY-FOUND-ELSEWHERE — and the authority is lower, which matters.** The rationale is asserted
+by **the code's own comments**, not by a governing document:
+
+```
+prediction_generator.py:944   # Save canonical (WATCHER validates this)
+prediction_generator.py:949   # Save to history archive (non-contractual)
+```
+
+with `history_path = canonical_dir / "history" / f"predictions_{timestamp}.json"` (`:911-913`).
+So the second copy is a **timestamped audit archive deliberately placed outside the validated
+contract** — the canonical file is what WATCHER validates, and the archive is explicitly
+`non-contractual` so accumulating copies can never widen the contract.
+
+**Under this document's two-anchor rule that is a WHAT-surface carrying an authorial WHY, not a
+WHY-surface.** It is the author's stated intent, not a governed decision.
+
+**Corroborating pattern in tracked docs, for a sibling module — not for this one.**
+`NOTE_Step7_Not_Required_for_Autonomy.md` Finding 4 documents the identical arrangement for
+`chapter_13_diagnostics.py` (`diagnostics_history/`, archived by timestamp "for audit trail and
+historical analysis", `:851-878`), and Chapter 13 §14.1 assigns `diagnostics_history/` a **1-year
+retention**. Same pattern, two modules — **but neither document names `prediction_generator.py`**,
+so this is corroboration of a convention, not a citation for this behaviour.
+
+**Try next:** the S1xx session changelog that introduced `prediction_generator.py` **v6.0** (the
+module's own docstring carries the version, and §8's shape belongs to the pre-v6.0 design);
+`docs/PROJECT_FILE_CATALOG.md` §4.8 for the patch that added the archive.
+
+---
+
+## I-5 — `ml_coordinator_config.json`'s 26-GPU fleet · **NOT-IN-NAMED-SOURCE**
+
+**What was read:** `FLEET_STATE_REQUIREMENTS_v1.md` §0 (the falsifiable question and the
+five-plus-one table), §5.1 (agreement/divergence matrix), §5.4 (failure modes covered by NO
+mechanism), §8 (what was NOT done), plus a `/bin/grep` of the whole file.
+
+**`ml_coordinator_config` appears zero times in the document.** §5.1 names each mechanism's
+source of truth — `dataset_provisioning.json`, `distributed_config.json` (three times),
+`/etc/cluster-boot-notify.conf`, `--worker-pool-size`. `ml_coordinator_config.json` is **not among
+them**. §5.4 enumerates failure modes no mechanism covers and does not raise it; §8 records the
+pass's scope limits and does not defer it. **This confirms §17's own prediction** rather than
+overturning it.
+
+**WHY-FOUND-ELSEWHERE — it is absent because it is not a fleet mechanism.** §0 scopes the
+document to one question: *"what is the required fleet state for a run to proceed"* — i.e. **gates
+a run passes through**. `ml_coordinator_config.json` is not a gate; it is the **node/GPU
+allocation table for `MultiGPUCoordinator`**, consumed by the ML and scoring steps:
+
+| anchor | what it shows |
+|---|---|
+| `REMOTE_NODE_SETUP_CHECKLIST.md:92` | *"`ml_coordinator_config.json` \| ML coordinator settings \| **Steps 2.5, 3, 5**"* |
+| `steps/step2_execution_manager.py:64` | `def __init__(self, coordinator_config="ml_coordinator_config.json", max_concurrent=26)` |
+| `run_full_scoring.sh:80`, `run_anti_overfit_optimizer.sh:115` | `MultiGPUCoordinator('ml_coordinator_config.json')` |
+
+All six mechanisms in the matrix are **Step-1 / sieve / miner-side**. This file serves a
+different subsystem, so its absence from the matrix is **scope, not omission** — and that is the
+answer to "why does no fleet mechanism reference it."
+
+**Live parse (this session):** 26 = localhost `2` + `.120` `8` + `.154` `8` + `.162` `8`,
+bare-metal addresses, file **tracked**. **Caveat against over-reading the above:** its top-level
+keys are `nodes`, `sieve_defaults`, `reverse_sieve_defaults` — it also carries *sieve* defaults,
+so "purely an ML-steps config" is **not a clean reading**, and the boundary is **not adjudicated
+here**.
+
+**Try next:** **Chapter 4 is unaudited** and is where Step-3 coordinator construction is
+documented; `CHAPTER_3_ALIGNMENT_AUDIT.md` F9 has already repo-verified the count. See also
+**D17**, which records the 25-vs-26 split against `distributed_config.json`.
+
+---
+
+## I-6 — `chapter_13_orchestrator.py`'s `run_id` convention · **NOT-IN-NAMED-SOURCE**
+
+**What was read:** `CHAPTER_13_LIVE_FEEDBACK_LOOP_v1_1.md` §14 (§14.1 Diagnostic Outputs, §14.2
+Decision Outputs, §14.3 Audit Trail) and §18 (§18.1–§18.8, the configurable-parameter reference),
+plus a `/bin/grep` of the whole file.
+
+§14 names output **files** and the audit fields logged per decision; it never states a run
+identity convention. §18 is a parameter reference and contains no `run_id`. **The entire document
+contains exactly one `run_id` — `:351`, inside §8.2's diagnostics schema — and it is a *different
+shape*: `"chapter13_20260111_172000"`.** So Chapter 13 documents its own Chapter-13-scoped
+identity and is silent on the Step-1-scoped one the orchestrator builds.
+
+**WHY-FOUND-ELSEWHERE — decisively, in the tracked one-shot patch corpus.**
+`step1_{prng}_{seed_start}` is the **canonical row identity of the `step1_trial_history` database
+table**, under a `UNIQUE(run_id, trial_number)` constraint:
+
+- **`apply_s142_partition_runid.py:5-24`** — root cause, TB-confirmed: both NP2 partition workers
+  wrote the *same* `run_id`, so `INSERT OR IGNORE` silently discarded whichever lost the race —
+  *"~50% of COMPLETE trial rows missing, no exception, no print."* The fix appended
+  `_p{partition_idx}`.
+- **`apply_s142c_remove_worker_writes.py:6-22`** — TB Option A **superseded** that fix:
+  `_worker_obj` is an incomplete execution path and must not write to the canonical table at all;
+  backfill from the shared Optuna study becomes the only writer; and the `_backfill` suffix is
+  **dropped** so the canonical `run_id` is exactly `step1_{prng}_{seed_start}`. Post-patch cleanup
+  deletes every `_p0` / `_p1` / `_backfill` row.
+
+**Answer in one line:** the orchestrator reconstructs that exact string from
+`optimal_window_config.json` (`chapter_13_orchestrator.py:296-303`) because the downstream-score
+write-back is an **annotation onto the Step-1 row that already exists** — the `run_id` is a
+**join key, not a label**, which is precisely why it must match byte-for-byte and carry no suffix.
+The code's own `# [S140b] DOWNSTREAM SCORE WRITE-BACK — annotation only` (`:292`) says as much.
+
+**Corroboration that the shape is a shared contract, not local to Chapter 13:**
+`tests/phase6/wall_ab_gate.py:393` and `tests/test_s172_phase5_d3_5_finalizer.py:248` build the
+same string, and the authoritative generation is named `gen-…-step1_java_lcg_0`.
+
+**Try next:** the **S140b / S142 session changelogs** for the TB ruling text itself — the patch
+docstrings quote the ruling but are not the ruling.
+
+---
+
+## What this pass changes about where to look
+
+**The tracked `apply_s*.py` one-shot patch corpus is a WHY surface, and §17 did not list it.**
+§17's preamble named the changelog corpus, the unaudited chapters, the two large `.txt` files, the
+binaries and ser8. **I-6's answer came from patch docstrings** that carry TB root-cause diagnoses
+and rulings verbatim. `PROJECT_FILE_CATALOG.md` §4.8 indexes that corpus.
+
+**Two of these four answers were not in the named source, and both were still in the repository.**
+Neither required ser8. Per `SER8_ARCHIVE_INVENTORY.md`, ser8 was unreachable for credential
+reasons in any case — **and was not needed.**
+
+## Verification-integrity controls (VIR-1…6)
+
+- **execution proof:** four named sources opened on VM101 at HEAD `cfb9f9c`, clean tree —
+  `CHAPTER_7_PREDICTION_GENERATOR.md` (§6–§13 read, lines 386–933, plus a full heading map of all
+  933) · `NOTE_Step7_Not_Required_for_Autonomy.md` (**full**) · `FLEET_STATE_REQUIREMENTS_v1.md`
+  (§0, §5.1, §5.4, §8 read; full heading map; whole-file `/bin/grep`) ·
+  `CHAPTER_13_LIVE_FEEDBACK_LOOP_v1_1.md` (§14 and §18 read; full heading map; whole-file
+  `/bin/grep`). Source read for WHAT-anchors: `prediction_generator.py` (`:86-95`, `:900-980`,
+  symbol map) · `chapter_13_orchestrator.py:288-315` · `apply_s142_partition_runid.py:1-30` ·
+  `apply_s142c_remove_worker_writes.py:1-30`. Parsed live: `ml_coordinator_config.json` (26 GPUs)
+  and `agent_manifests/prediction.json`.
+- **clean control / fault-injection control:** `NOT_APPLICABLE` — this section resolves pointers;
+  it is not a detector.
+- **completion sentinel:** `PASS` for all four — each named source was read and returned a
+  determinate verdict. **`PASS` means the pointer was followed, not that the behaviour is
+  correct.** Nothing here was adjudicated and nothing was fixed.
+- **unavailable-observer behaviour:** none — all four sources were tracked and readable. **No
+  absence claim is made about any surface not opened.** Every NOT-IN-NAMED-SOURCE verdict is
+  scoped to the named file alone.
+- **audit claim scope:** the four §17 pointers only. **I-1 and I-4 were not investigated** — both
+  point at the 168-file changelog corpus, outside this pass.
+- **searched surfaces:** the four named tracked documents; the live source anchors above; the
+  tracked `apply_s*.py` corpus by `/bin/grep`.
+- **unavailable surfaces:** ser8 (no credential — see `SER8_ARCHIVE_INVENTORY.md`); the changelog
+  corpus, `instructions.txt` and `Cluster_operating_manual.txt` (**not opened this pass**).
+
+---
+
 # 18. OBSERVATIONS
 
 Short, labelled observations — **not findings**, and nothing was verified beyond the search named.
