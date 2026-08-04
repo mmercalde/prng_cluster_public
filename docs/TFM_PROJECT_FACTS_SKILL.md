@@ -5,7 +5,18 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** through the regenerated catalog (`1fc05bb`, 2026-08-03). **D6.2 CERTIFIED `18a2419`.**
+**Currency:** v13, HEAD **`1131bb1`** (2026-08-03), clean tree. **D6.2 CERTIFIED `18a2419`.**
+
+**Three documents carry the facts this skill only points at. Read them; do not paraphrase them:**
+
+| document | authority on |
+|---|---|
+| `docs/PROJECT_FILE_CATALOG.md` (`1fc05bb`, 803L) | **what documents exist and what question each answers** — the index |
+| `docs/PIPELINE_BEHAVIOUR_MODEL.md` (1,603L) | **how the pipeline works and why** — every claim carries a WHY anchor and a WHAT anchor |
+| `docs/PHASE6_PREREQS.md` REV5 | **operational fleet state as launched** — measured, and it expires |
+
+**This skill is judgement, rules and pointers.** Where it still states a fact in full, that is
+because the target was checked and found weaker, vaguer, or silent on it.
 
 **§0 exists because of a specific failure.** In one session Team Alpha, Team Beta and Claude
 Code *independently* recommended removing `skip_min`/`skip_max` from variable-skip search — a
@@ -91,8 +102,8 @@ state; it is to extract a fingerprint.**
 
 | stage | reading | source |
 |---|---|---|
-| **input** (Step 1 → 2) | *"Minimum/Maximum skip value **in pattern**"* — an **element-wise bound** on the discovered sequence. Documented hybrid default `[0,16]` | `docs/instructions.txt:1182-1183`; verbatim in `Cluster_operating_manual.txt:948-949`; present in an older revision, so it predates the current file |
-| **output** (Step 2 → 3) | *"Minimum/Maximum gap that **worked**"* — an ML feature describing what the sieve found. *"Tight skip range = stronger hypothesis"* | `PROPOSAL_ML_Architecture_Remediation_v2_0.md:150-158`; `config_manifests/feature_registry.json:336,345` |
+| **input** (*into* the sieve's search) | *"Minimum/Maximum skip value **in pattern**"* — an **element-wise bound** on the discovered sequence. Documented hybrid default `[0,16]` | `docs/instructions.txt:1182-1183`; verbatim in `Cluster_operating_manual.txt:948-949`; present in an older revision, so it predates the current file |
+| **output** (sieve → Step-3 scoring) | *"Minimum/Maximum gap that **worked**"* — an ML feature describing what the sieve found. *"Tight skip range = stronger hypothesis"* | `PROPOSAL_ML_Architecture_Remediation_v2_0.md:150-158`; `config_manifests/feature_registry.json:336,345` |
 
 **Two registries currently disagree** — `feature_registry.json` says *"found during"* (output),
 `parameter_registry.json:160,166` says *"for sieve search"* (input). One is wrong; correct it in
@@ -121,20 +132,38 @@ must be observable. A parameter the optimizer tunes but the kernel ignores is a 
 dimension** — the sampler steers a knob connected to nothing and an autonomous agent would
 "learn" into a void. This has now happened four times (§2.7).
 
-### 0.6 The pipeline
-```
-Step 1  Window Optimizer (Optuna TPE)   → best window(s)
-Step 2  Bidirectional Sieve             → survivors   [RANGE-MINER (S172) replaces this engine]
-Step 3  Full Scoring (26 GPUs)          → scored survivors + 91-feature vector
-Step 5  Model Training (4 families)     → best model (89 features) + diagnostics
-Step 6  Prediction Generation           → pools (20/100/300)
-Feedback  Chapter 13 daemon             → ingest draw → grade → (attribute) → decide → relearn
-```
-Carriers: the **22-array NPZ survivor contract** and the **prediction pool + coverage/lift
-score**. Detail: `docs/TFM_SYSTEM_MAP_AND_LEARNING_ARCHITECTURE_v1_2.md` (binding).
+### 0.6 The pipeline — TWO NUMBERING SCHEMES, and which one this skill uses
+
+> **⚠ Bare "Step N" anywhere in this skill means the EXECUTABLE scheme** — the one WATCHER runs.
+> Confusing the two schemes is *"the single most common error a new session makes"*
+> (`docs/PIPELINE_BEHAVIOUR_MODEL.md` §1.1). **They agree at 1, 3, 5 and 6 and differ only at 2** —
+> which is exactly what makes the mistake so easy, and why v12's unlabelled diagram was a hazard.
+
+| **EXECUTABLE** — `STEP_SCRIPTS`/`STEP_MANIFESTS`, all 7 `agent_manifests/*.json`, `preflight_check.py`, `README.md` | **CONCEPTUAL** — whitepaper, system map §1, chapter titles |
+|---|---|
+| **0** Regime Segmentation (TRSE) · `trse_step0.py` → `trse_context.json` *(passively read by Step 1)* | — *(no conceptual number)* |
+| **1** Window Optimizer (Optuna TPE) · `window_optimizer.py` → `optimal_window_config.json` **+ the certified 22-array NPZ generation**. **The bidirectional sieve runs INSIDE this step** — per trial, `run_bidirectional_test()` → backend cascade → forward ∩ reverse. **[RANGE-MINER (S172) is that engine]** | **1** Window Optimizer (Ch 1)<br>**2** Bidirectional Sieve (Ch 2) |
+| **2** Scorer Meta-Optimizer · `run_scorer_meta_optimizer.sh` → `optimal_scorer_config.json` | **2.5** Scorer Meta-Optimizer (Ch 3) |
+| **3** Full Scoring (**25 GPUs** — see §2.17) · `run_step3_full_scoring.sh` → `survivors_with_scores.json`, **91-feature vector** per seed | **3** Full Scoring (Ch 4) |
+| **4** ML Meta-Optimizer · `adaptive_meta_optimizer.py` → `reinforcement_engine_config.json` (capacity only) | **4** Adaptive Meta-Optimizer (Ch 5) |
+| **5** Anti-Overfit Training (**4 model families**) · `meta_prediction_optimizer_anti_overfit.py` → `best_model.*` + `best_model.meta.json` (**89 trained features**) + diagnostics | **5** Anti-Overfit Training (Ch 6) |
+| **6** Prediction Generation · `prediction_generator.py` → `next_draw_prediction.json` + **pools 20/100/300** | **6** Prediction Generator (Ch 7) |
+| **fb** Live Feedback · `chapter_13_orchestrator.py` — **not a WATCHER step** → ingest draw → grade → (attribute) → decide → relearn (3→5→6) | Chapter 13 |
+
+**There is no executable step whose script is the sieve** (`agents/watcher_agent.py:386-416`).
+**The mapping between the two schemes is written down nowhere** — `CHAPTER_3_ALIGNMENT_AUDIT.md` §2
+searched for it and reports it as *folklore* (behaviour model §16, **DIVERGENT D1**).
+
+Carriers: the **22-array NPZ survivor contract** (Step 1 → 2 → 3) and the **prediction pool +
+coverage/lift score** (Step 6 → Ch 13).
+
+**Full map — manifests, versions, primary outputs and the data-flow diagram:**
+`docs/PIPELINE_BEHAVIOUR_MODEL.md` **§1.1** (the two schemes) and **§1.3**, parsed live from
+`agents/watcher_agent.py:386-416` and all seven manifests. **Do not retype it from memory.**
+Conceptual detail: `docs/TFM_SYSTEM_MAP_AND_LEARNING_ARCHITECTURE_v1_2.md` (binding).
 
 ### 0.7 Why RANGE-MINER exists
-PWC suffered silent hard resets / `GCVM_L2_PROTECTION_FAULT` on the RX 6600 rigs at full-fleet
+PWC suffered silent hard resets / `GCVM_L2_PROTECTION_FAULT` on the RX 6600 **XT** rigs at full-fleet
 saturation, traced to launch-storm behaviour. After weeks of failed debugging the project
 pivoted to RANGE-MINER: **persistent per-GPU daemons**, standalone, producing **all** data the
 remaining steps require — *the remaining steps must not be able to tell which engine produced
@@ -203,7 +232,17 @@ mid-task:
 | `CLAUDE_CODE_INSTRUCTIONS_*` | what was asked for, and its constraints |
 | `SESSION_CHANGELOG_*` | what happened when |
 | `PROJECT_FILE_CATALOG.md` | **THE INDEX — READ IT FIRST.** Regenerated `1fc05bb` 2026-08-03: 803 lines, **intent-indexed** (what question each document answers, not what it is called), 562 files accounted for. **§1.1 is the governance trail** with each ruling request paired to its ruling and implementation commit. It carries ★ markers on documents previously misreported — e.g. `TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`: *"read this before reporting any Step-2 objective blindness."* |
+| `PIPELINE_BEHAVIOUR_MODEL.md` | **HOW THE PIPELINE WORKS AND WHY — the second mandatory first read.** 1,603 lines. **Every claim carries two anchors: a WHY** (chapter / whitepaper / proposal / TB ruling, cited `file:§`) **and a WHAT** (`file:line`, read live). Three markers are load-bearing: **`INCOMPLETE`** (only a code anchor was found — *a statement about that search, never about the repository*), **`DIVERGENT`** (doc and code disagree; **both recorded, neither adjudicated** — §16 is the register), **`GOVERNED`** (already diagnosed or ruled on — **re-reporting one as a new finding is a governance error**). |
+| **`apply_s*.py` / `verify_s*.py` (repo root)** | **THE ONE-SHOT PATCH CORPUS — governance lives in code here.** 123 `apply_s*.py` + 4 `verify_s*.py` at HEAD, session-scoped and already applied. **Their docstrings quote TB rulings verbatim.** `apply_s142_partition_runid.py:5-24` records the TB-confirmed root cause of the partition `run_id` collision (*"~50% of COMPLETE trial rows missing, no exception, no print"*); `apply_s142c_remove_worker_writes.py:6-22` records **TB Option A superseding it**. Indexed at catalog §4.8. **Forensic only — never re-execute them.** |
 | `docs/BACKLOG.md` | the tracked non-blocking register |
+
+**⚠ The patch corpus is the lesson, not the row.** `PIPELINE_BEHAVIOUR_MODEL.md` §17's own
+*"where to look next"* preamble enumerated the surfaces most likely to hold a missing WHY — the
+changelog corpus, the unaudited chapters, `instructions.txt`, `Cluster_operating_manual.txt`, the
+binaries, and ser8 — **and did not list the patch corpus. I-6's answer was in it anyway**
+(behaviour model §17.1, *"What this pass changes about where to look"*). **No taxonomy in this
+project named that surface until 2026-08-03.** An enumeration of surfaces is itself a claim that
+can be incomplete, and this one was.
 
 **A defect that is known, escalated and mid-remediation is NOT a finding — it is a status.**
 Reporting it as new tells the reviewer about its own ruling. *(Alpha nearly submitted the Step-2
@@ -252,8 +291,9 @@ folds leak run identity); **5 dead placeholders** with no producer (`skip_mean`,
 `skip_entropy`, `survivor_velocity`, `velocity_acceleration`).
 
 **Three of those five are skip-shape statistics whose producer EXISTS on the GPU.** They are
-dead because `extract_survivor_records` (`window_optimizer_integration_final.py:147`) discards
-`skip_sequences`. The Oct-2025 output spec (`instructions.txt:1230-1245`) declares
+dead because `extract_survivor_records` (`window_optimizer_integration_final.py:125`) builds each
+record as **`{seed, match_rate}` only** — verified live 2026-08-03 — discarding `skip_sequences`.
+*(v12 anchored this at `:147`, which is now inside the function body. Cite the symbol.)* The Oct-2025 output spec (`instructions.txt:1230-1245`) declares
 `skip_pattern` and `pattern_stats: {mean_skip, variance, std_dev}` per survivor — the literal
 ancestor of the three. **Reviving them requires no kernel change**, only that the host stop
 discarding the sequence.
@@ -305,6 +345,14 @@ Fix pattern: **one canonical path** — resolve once in the parent, never reinte
 downstream, record requested/payload/effective.
 
 ### 2.8 RANGE-MINER Phase 5 as-built (committed, dual-pushed)
+
+> **Companion, not a replacement:** `PIPELINE_BEHAVIOUR_MODEL.md` §3.7 carries what this section
+> does **not** — the **per-module role table** (`miner/` × 7), the seed-domain partitioning proof
+> obligations, the shared residue-window authority, and **the four `process_sharded` promotion
+> criteria** (≥20% median end-to-end gain · identical final arrays · ≤50% host-RAM peak RSS · no
+> swap — `PROPOSAL_S172_RANGE_MINER_v1_4_5.md` §17). **It does not carry the D6.1 checkpoint
+> mechanics, the authoritative artifact identity, or the P0/P0.5/Q2/§4.3 commits below** — those
+> live only here.
 **D3.5** shared run finalizer, immutable chain-authenticated generations; owns the root
 compatibility **symlinks** and **fails closed if a regular file appears there**.
 **D4** `serial_reference` behind a frozen two-backend interface that fails closed.
@@ -468,8 +516,10 @@ here (7.649 × 10¹⁰ grid points ≈ 7.2 TiB at construction).
   *"We needed it and could not get it" is not "we did not need it."* An **unknown**
   `remote_execution` keeps the over-constrained reading (`UNAVAILABLE`), never the clean one.
 - **`remote_execution=False` is a topology statement, NOT a bypass.** It must never become
-  Beta's Q1 refinement by the back door: a local run that still drives the 26-GPU coordinator
-  **performs remote execution** and must not declare otherwise.
+  Beta's Q1 refinement by the back door: a local run that still drives the **full-fleet**
+  coordinator **performs remote execution** and must not declare otherwise. *(v12 wrote "26-GPU"
+  here; the fleet is **25** — §2.17. The count was never the point, so it is now stated as a
+  property, not a number.)*
 
 ### 2.10b Dataset lifecycle (TB rulings 2026-07-30/31)
 - Midday and evening use **independently selected equipment** — **no evidentiary basis for
@@ -495,20 +545,21 @@ here (7.649 × 10¹⁰ grid points ≈ 7.2 TiB at construction).
 
 **There is no single required fleet state today.** Six checks at three granularities on two
 address sets; which apply depends on the backend flag and whether the run came via WATCHER or
-the CLI.
-
-| mechanism | granularity | addresses |
-|---|---|---|
-| P0.5 dataset preflight | node | **`.122/.156/.164`** (CT100) |
-| legacy `test_connectivity` (`coordinator.py:502`) | node | `.120/.154/.162` |
-| PWC ready gate (`persistent_worker_coordinator.py:864`) | **GPU** | `.120/.154/.162` |
-| WATCHER GPU health (`preflight_check.py:293`) | GPU | `.120/.154/.162` — **non-blocking by design**, WATCHER-only |
-| boot notify | GPU | host-local, **Telegram-only, `exit 0`** |
-| miner `expected_workers` | worker daemon | **whoever connects** |
-
-**Three** point at bare metal; P0.5 points at the CT100s; two name no fixed set. The rigs are
-booted into Proxmox, so **P0.5 passes and the three bare-metal checks structurally cannot** —
+the CLI. **Three** point at bare metal; P0.5 points at the CT100s; two name no fixed set. The rigs
+are booted into Proxmox, so **P0.5 passes and the three bare-metal checks structurally cannot** —
 P0.5 is the only mechanism updated for the migration.
+
+> **The six mechanisms in full → `docs/FLEET_STATE_REQUIREMENTS_v1.md` §0 and §5.1.** That table is
+> **stronger than the one v12 carried here**: it adds a **blocks?** column and a `file:line` anchor
+> per mechanism (`dataset_authority.py:904` · `coordinator.py:502` ·
+> `persistent_worker_coordinator.py:864` · `preflight_check.py:293` · `cluster_boot_notify.sh:9-14` ·
+> `range_miner_coordinator.py:3715`), plus source-of-truth, trigger and applies-to-which-backend
+> rows. **§5.3 and §5.4** carry the divergence analysis and the failure modes **no** mechanism
+> covers — including **a dead GPU on a miner run**, which nothing catches.
+>
+> ⚠ **That document predates the ruling below and does not contain it.** It is the analysis Beta
+> ruled *on*. Everything from here down is the ruling and is carried here because the target is
+> silent on it.
 
 **Beta's ruling: none of the six defines the fleet.** The future sole authority is a **frozen,
 run-scoped Resolved Execution Set**, created after backend and rig-profile selection but
@@ -586,7 +637,12 @@ because counting the owner's own check would make it trip the guard it exists to
 
 ### 2.13 Control chains, end to end
 *Which knobs actually reach execution. This table exists so a wiring gap is found now, not at
-Chapter 13.*
+Chapter 13.* **Every row is governed** — none is a new finding.
+
+> **Kept in full deliberately.** `PIPELINE_BEHAVIOUR_MODEL.md` §13.2 lists the same chains but
+> **collapses emit→validate→apply→execute into a single state column**, and **omits two rows** —
+> *miner kernels → independent reference* and *Advisor → `search_strategy`*. The per-stage marks are
+> the point: they say **where** a chain dies. §13.2 is the WHY companion; this is the wiring map.
 
 | chain | emit → validate → apply → execute | state |
 |---|---|---|
@@ -603,7 +659,7 @@ Chapter 13.*
 | Advisor → `strategy_recommendation.json` → WATCHER | ✅ ✅ ✗ — | **no code reads the file**; the working path is in-memory |
 | diagnostics → Step-5 retry params | ✅ ✅ ✅ ✗ | filtered at the step boundary — **deliberate**; reporting fixed `f8b751c` |
 | Ch13 proposal → acceptance | ✅ ✅ ✗ — | `pending_approval` is a **valid authority boundary** |
-| GPU `skip_sequences` → ML features | ✅ — ✗ — | discarded at `…final.py:147`; kills 3 features |
+| GPU `skip_sequences` → ML features | ✅ — ✗ — | discarded in `extract_survivor_records` (`…final.py:125`); kills 3 features |
 
 **Reserved authority (human only):** feature engineering · survivor thresholds · sieve
 strategy/mathematics · window-optimizer logic · PRNG-family authority · scoring logic ·
@@ -661,23 +717,20 @@ is what actually closes it.)* `study.enqueue_trial` (`window_optimizer_bayesian.
 S166 warm-start path, so a resumed study really can carry trials numbered below a recovered
 maximum.
 
-### 2.17 Fleet state as launched — Phase 7, measured 2026-08-02
+### 2.17 Fleet state as launched — Phase 7
 
-**All operational prerequisites are CLOSED on measurement** (`docs/PHASE6_PREREQS.md` REV4,
-`docs/S172_PHASE_7_PREREQ_REPORT.md`). REV3's status column had **five of seven wrong**, and its
-code-status block was three months stale — it listed D4/D5/D6 as remaining.
+> **⚠ OPERATIONAL STATE LIVES IN `docs/PHASE6_PREREQS.md` REV5, NOT HERE.** The seven-item
+> checklist, its per-item evidence, the gate matrix and the redeploy measurements are all there
+> (REV5 items 1–7; §"Code/environment parity"; §"Where these surface"). **It is dated and it
+> expires.** What stays below is the part REV5 does **not** carry, plus the durable lessons.
 
-| item | state |
-|---|---|
-| 1 second 3080Ti | **☐ WAIVED BY OWNER** — one card; the second stays on VM100. **25-GPU run is owner-mandated** |
-| 2 CT100 SSH | ☑ all three answer under `BatchMode=yes` |
-| 3 rrig6600 Proxmox | ☑ `.120/.154/.162` DOWN, `.122/.156/.164` UP |
-| 4 VM101 address | ☑ router DHCP reservation `bc:24:11:19:4f:24` → `.177`, **confirmed by reboot survival** |
-| 5 publication preflight | ☑ 25/25 |
-| 6 code/env parity | ☑ **17/17 exact on all three rigs** after redeploy |
-| 7 transport + firewall | ☑ four miner flows on **5700**; no enforcing firewall |
+**⚠ CORRECTED — "all operational prerequisites are closed" is WRONG, and v12 said it.** REV5
+retracts REV4's phrasing per TB: **the seven checklist items are CLOSED OR OWNER-WAIVED**, which is
+*not* the same claim. **Host kernel-log observability was never one of the seven** — which is
+precisely how a seven-item sweep reads as complete while a real observability gap stands.
+*(Item 1, the second 3080Ti, is **waived by the owner**, not closed: 25 GPUs is owner-mandated.)*
 
-**The frozen execution set:**
+**The frozen execution set — NOT in REV5, which predates the fix and still recommends it:**
 ```
 set_id                    = bea580e764905a0d9485d2688be5841cc95f16e16837c23aced1f634d97f67a8
 worker_identity_count     = 25   requested = 25   admission = 25   clamped = False
@@ -685,21 +738,25 @@ worker_identity_count     = 25   requested = 25   admission = 25   clamped = Fal
 **25 by construction, not by clamp.** `localhost.gpu_count` was corrected **2 → 1** (`f255912`) —
 it declared two cards from the old configuration, so the set carried **26 identities admitting 25**,
 which *read* like a shortfall. **No execution consequence** (workers launch with explicit
-`--gpu-id N`; nothing iterates `gpu_count`) — the cost was auditability. **The bare-metal addresses
-in that file remain untouched** (CLAUDE.md §3).
+`--gpu-id N`; nothing iterates `gpu_count`). **The bare-metal addresses in that file remain
+untouched** (CLAUDE.md §3).
+**⚠ Do not stop at "no execution consequence" — REV5 still states it as "the cost is auditability,
+not execution", and Beta rejected exactly that framing.** See the closing paragraph of this section.
 
-**⚠ Item 6 is the trap, and the clock is only half of it.** Code parity was never measured until
-2026-08-02, and it **failed**: all three rigs carried `range_miner_coordinator.py` at `ee0db06` and
-`dataset_authority.py` at `8600e75`, with `checkpoint_d6_2.py` **absent** — and **both stale modules
-sit inside the worker's executing import closure** (`miner/__init__.py:19`, confirmed via
-`sys.modules` on each rig). **Deployment is `git clone` once, then targeted `scp` from VM101**
-(`REMOTE_NODE_SETUP_CHECKLIST.md:127,133,139`). The rigs are **deployment targets, not working
-copies** — `rrig6600` has a worktree at `8e2f5bf` with 84 dirty entries; the other two have no git
-at all. **Digest comparison, never `git rev-parse`, is the parity evidence.**
+**⚠ Item 6 is the trap, and the clock is only half of it — the DURABLE part.** Code parity was
+never measured until 2026-08-02, and it **failed**. The measurement is in REV5; the lesson is here:
+**the rigs are deployment targets, not working copies.** Deployment is `git clone` once, then
+targeted `scp` from VM101 (`REMOTE_NODE_SETUP_CHECKLIST.md:127,133,139`) — `rrig6600` carries a
+worktree at `8e2f5bf` with 84 dirty entries, and the other two **have no git repository at all.**
+**Digest comparison, never `git rev-parse`, is the parity evidence.** Stale modules sat inside the
+worker's **executing import closure** (`miner/__init__.py:19`), so *"loaded but not driven"* is not
+an acceptance criterion — verify by importing on the target and reading `sys.modules`, and have each
+probe print its own `socket.gethostname()` so three machines cannot be one machine answering thrice.
 
-**⚠ Kernel-log observability is NOT established, and the soak launches without it.** CT100 is an
+**⚠ Kernel-log observability is NOT established, and the soak launched without it.** CT100 is an
 unprivileged LXC — **GPU kernel messages are only visible from the Proxmox hosts** `.121`/`.155`/
-`.163`, and **VM101 has no root key auth to them.** Consequence, ruled by the owner and recorded:
+`.163`, and **VM101 has no root key auth to them.** Consequence, owner-authorized and
+Beta-acknowledged:
 
 > **The "no `GCVM_L2_PROTECTION_FAULT` / no GPU reset" criterion reports `UNAVAILABLE`, NEVER
 > `PASS`.** It was not checked. **An inaccessible surface is not a clean one** (VIR-1).
@@ -708,6 +765,8 @@ unprivileged LXC — **GPU kernel messages are only visible from the Proxmox hos
 per rig · worker process liveness · repeated lease expiries per identity. These detect **that** a
 GPU or worker died on a named rig; they **cannot classify** the fault. Classification comes
 afterwards from the Proxmox console, which retains the logs.
+*(The binding verbatim TB report language for this exception is in REV5 §"Where these surface" —
+use it word for word; do not paraphrase a governance sentence.)*
 
 **Why the risk is judged low:** `GCVM_L2_PROTECTION_FAULT` was a **PWC launch-storm defect**
 (~17K kernel launches/trial) that followed the workload across every transport, a code revert and a
@@ -762,22 +821,21 @@ From `docs/PROJECT_FILE_CATALOG.md` (`1fc05bb`), which indexed 562 files in one 
 and the autonomous loop. **It is NOT the S172 soak plan, and there is no S172-scoped soak plan
 other than the brief written for it.**
 
-**Step 3 repeats Step 2's map divergence.** `STEP_SCRIPTS[3] = run_step3_full_scoring.sh`, while
-`full_scoring.json`'s actions name `generate_full_scoring_jobs.py`, `full_scoring_worker.py` and
-`aggregate_scoring_results.py` — **none is the shell script.** Same shape as the Step-2 divergence
-that produced the soak hazard. **`run_step3_full_scoring.sh` has NOT been examined.** Structural
-fact only; not diagnosed.
-
-**Steps 0 and 5 declare no `actions`**, so the two maps cannot be compared for them. `trse.json`
-carries `skip_on_fail: true` with a stated reason — **that silent-failure behaviour is ARCHITECTED**
-(`TRSE_INTEGRATION_PLAN_S121.md` §2C), not a defect.
+**Step-map divergences → `PROJECT_FILE_CATALOG.md` §5.1**, which carries all three numbered and with
+its own scope caveat: **Step 2**'s manifest-vs-script divergence (*"how a soak hazard reached launch
+day"*), **Step 3**'s identical shape (`STEP_SCRIPTS[3] = run_step3_full_scoring.sh` vs three manifest
+actions naming none of it), and **Steps 0 and 5 declaring no `actions` at all**, so the two maps
+cannot be compared for them. **Retained here because §5.1 does not say it:
+`run_step3_full_scoring.sh` has NOT been examined** — structural fact only, not diagnosed.
+`trse.json`'s `skip_on_fail: true` carries a stated reason — **that silent-failure behaviour is
+ARCHITECTED** (`TRSE_INTEGRATION_PLAN_S121.md` §2C), not a defect.
 
 **The KPI governance chain S176 → S177 → S178 → S179 exists and neither Alpha nor Michael was
-tracking it.** S177 conditional-approved with 8 blockers → S178 approved-in-principle with 4
-mandatory amendments → **`TB_RULING_S179_IMPLEMENTATION_AUTH.md` is the LIVE AUTHORITY**, approved
-with **three binding code-level conditions**. **Whether the implementation landed was NOT
-established.** Same shape as D3.0-B: a governed requirement whose completion nobody has checked.
-Does not touch a step-1-confined soak.
+tracking it.** **`TB_RULING_S179_IMPLEMENTATION_AUTH.md` is the LIVE AUTHORITY.** Full chain with
+line counts, verdicts and the follow-up brief per ruling → **catalog §1.1** (rows `TB_RULING_S176`…
+`S179`); **whether the implementation landed → catalog §7 gap 8**, which states it correctly:
+*"This is not a claim that it did not land."* Same shape as D3.0-B — a governed requirement whose
+completion nobody has checked. **Does not touch a step-1-confined soak.**
 
 **The v4.0 objective was a tautology.** `TB_RULING_REQUEST_STEP2_v4_1_OBJECTIVE.md`: the smoke test
 returned **WSI = 0.9997 on trial 1** because the formula's dominant term (w3 ≈ 0.82) was
@@ -785,11 +843,11 @@ returned **WSI = 0.9997 on trial 1** because the formula's dominant term (w3 ≈
 optimise either (`sel_score = 0.0000` on every passing trial, `bidirectional_selectivity` at floor
 98.8%), which is the v4.2 ruling. **Lineage: v4.0 → v4.1 → v4.2 → v4.3 → v4.4, all governed.**
 
-**The v1 catalog's Runtime Data table does not survive verification.** `bidirectional_survivors.json`
-is **2 bytes** (claimed 258 MB); `survivors_with_scores.json` is **621 KB** (claimed 500+ MB); the
-two root NPZ paths are **D3.5 finalizer-owned symlinks, not standing files**; Optuna DBs are
-**112 KB**, not 10–50 MB. **A confidently-stated table in an authoritative-looking document was
-wrong in every row.**
+**⚠ The v1 catalog's Runtime Data table was wrong in EVERY ROW** — the durable lesson, and the
+reason it is still named here. Measurements → **catalog §6.2**, marked ★ **DO-NOT-CARRY-FORWARD**,
+which carries all four rows this section listed plus a fifth (manifest count) and the general rule:
+**runtime-artifact sizes are not catalogue facts.** *A confidently-stated table in an
+authoritative-looking document survived from February to August because nobody measured it.*
 
 ### 2.18 D3.0-B — OPEN, and it NARROWS what Phase 6 certified (TB ruling 2026-08-02)
 
@@ -828,13 +886,31 @@ identity, unknown identity, and reintroduced `java_lcg` defaulting.
 6-P2 remains independent.
 
 ## 3. SUPERSEDED — in repo, NOT current
-R² as objective · `holdout_hits` as ML target · `feature_importance.py` 60-name list (stale by
-31) · "~62 features" · `bidirectional_survivors.json` as survivor data ·
-`docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` (fragment) · `run_full_scoring.sh` · **PWC/ZMQ as
-certifying comparators** · `full_scoring_worker.py` "50 features" · `window_optimizer.py:450`
-docstring · `RUNTIME_DATASET_PROVISIONING_CONTRACT.md` `expected_sha256` as static config ·
-scraper `--rewrite` mode · "RX 6600" on rrig6600 (they are **6600 XT**, 32 CUs — inventory per
-node) · "the writer is unconditionally frozen" (D6 added one approved `backend=None` seam).
+
+> **The full register is `docs/PROJECT_FILE_CATALOG.md` §6.** §6.1 superseded facts and targets —
+> **with a *cite-instead* column and a source per row, which v12's bare list here did not have**;
+> §6.2 the v1 catalog's Runtime Data table (**wrong in every row**); §6.3 superseded document
+> **versions** — 17 lineages, *read the last one only*; §6.4 whole-document staleness warnings.
+> **Verified this session: §6.1 carries 11 of v12's 14 entries with equal or better anchoring, and
+> four more v12 never had.**
+
+**Retained here — catalog §6 does NOT carry these three:**
+`window_optimizer.py:450` **docstring** · **"the writer is unconditionally frozen"** (D6 added one
+approved `backend=None` seam) · `feature_importance.py`'s 60-name list being **stale by 31**
+(§6.1 names the list; the arithmetic against 91/89 is only here).
+
+**⚠ CORRECTED — v12 listed `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` as a superseded "fragment".
+It is NOT, and that entry was actively harmful.** The 34-line fragment at `248e48c` was
+destroyed-and-restored; the live file is **1,463 lines, audited, CLOSED at `ef4b1c6`** with content
+gate `09bbfbf`, and is **the strongest of the three audited chapters** (§2.17b). **Its §6 carries
+the three-lane CRT proof** — the very thing Alpha once claimed was undocumented. Read as written,
+v12's line steered a session away from the chapter that answers the question.
+
+**⚠ And do not take the catalog's commit here — `PROJECT_FILE_CATALOG.md` §2 gives Chapter 2's
+closure as `81ef3f1`. It is wrong.** Verified this session: `ef4b1c6` is the commit that edits
+`docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` (+269) and `CHAPTER_1_WINDOW_OPTIMIZER.md` (+698);
+`81ef3f1` adds only the **closure brief** that commissioned the work and touches neither chapter.
+*The index is authoritative on what exists, not on every commit it cites — §1.2 applies to it too.*
 
 ## 4. FROZEN — reuse, never reimplement
 - **`canonical_map_hash()`** (`utils/run_finalizer.py:486`, **exported**) — SHA-256 over canonical
@@ -1024,24 +1100,26 @@ binding.
 2. **Proposing to remove, demote or simplify anything? → did I cite the doc explaining why it
    exists (§0.4)?**
 3. **Did I READ the grep hits, or only count them?** (§1, fifth corollary)
-3. Cited a metric or target? → check §3.
-4. Proposing something that already exists? (coverage metric, downstream_score, attribution
+4. Cited a metric or target? → check §3 **and catalog §6**.
+5. Proposing something that already exists? (coverage metric, downstream_score, attribution
    engine).
-5. Classified a capability from one module without tracing producer → artifact → consumer?
-6. Changing a shared buffer, path or format? → enumerated every consumer?
-7. System-scoped claim on repo-scoped evidence? (VIR-6)
-8. **Named the host for every command? Included the venv activation?**
-9. Long thread? Verification discipline degrades — suggest a fresh session.
-9b. **Did I search `docs/` and the governance trail — or only the code?** (§1.1, VIR-6 addendum)
-9c. **Am I relaying a dated document's finding as current state?** (§1.2)
-9d. **Does this contradict something I said earlier in THIS session?** *(Alpha stated Chapter 2 was
+6. Classified a capability from one module without tracing producer → artifact → consumer?
+7. Changing a shared buffer, path or format? → enumerated every consumer?
+8. System-scoped claim on repo-scoped evidence? (VIR-6)
+9. **Named the host for every command? Included the venv activation?**
+10. **Did I write "Step N" without saying which scheme — or read someone else's "Step N" as
+    mine?** (§0.6) *The two schemes agree at 1, 3, 5, 6 and differ only at 2.*
+11. **Did I search `docs/` and the governance trail — or only the code?** (§1.1, VIR-6 addendum)
+12. **Am I relaying a dated document's finding as current state?** (§1.2)
+13. **Does this contradict something I said earlier in THIS session?** *(Alpha stated Chapter 2 was
     closed and restored, then hours later reported its content as lost.)*
-10. **Writing a rule? Enumerate every case in its input space and state the behaviour for each
+14. **Writing a rule? Enumerate every case in its input space and state the behaviour for each
     BEFORE submitting.** A rule validated only against the case that motivated it is untested.
     *(6-P2 REV3's terminal-day predicate was written for `{midday}` and never tried against
     `{evening, midday}`, where it defers forever.)*
-11. **A ruling that says "decide X" is decided in THAT revision, not the next one.** *(Twice in
+15. **A ruling that says "decide X" is decided in THAT revision, not the next one.** *(Twice in
     D6.2.)*
-12. **Target: any brief closes in ≤3 review rounds.** D6.2 took five, 6-P2 took four, and **every
+16. Long thread? Verification discipline degrades — suggest a fresh session.
+17. **Target: any brief closes in ≤3 review rounds.** D6.2 took five, 6-P2 took four, and **every
     round was an Alpha defect, not reviewer padding.** The import gate closed in one — because the
     existing gate was read in full before the brief was written. **Read first, then draft.**
