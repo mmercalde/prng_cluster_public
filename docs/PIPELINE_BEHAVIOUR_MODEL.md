@@ -1201,7 +1201,17 @@ feeds the ML ensemble."*
 the explanation very likely exists in a surface not opened here — the changelog corpus (168 files,
 read as a group only), the eleven unaudited chapters, `instructions.txt` (152K, opened only at the
 two skip anchors), `Cluster_operating_manual.txt` (96K, not opened), the two PDFs and the `.docx`
-(binary, unread), or the pre-repository archives on ser8.
+(binary, unread), the **`apply_s*.py` patch corpus**, or the pre-repository archives on ser8.
+
+**The patch corpus — 123 `apply_s*.py` + 4 `verify_s*.py` at repo root, all tracked** (counted live
+this session; indexed at `PROJECT_FILE_CATALOG.md` §4.8). **Their docstrings quote TB rulings
+verbatim**, which makes them a WHY surface, not just an edit log. **Forensic only — never
+re-execute them.**
+
+**⚠ This surface was missing from the list above until now — and it is where I-6's answer was
+found** (§17.1). The lesson is the one worth carrying: **the enumeration of surfaces is itself
+fallible.** An `INCOMPLETE` here means "not found in the surfaces I listed," and the list can be
+short. Widen it before concluding anything is undocumented.
 
 | # | behaviour with a code anchor and no WHY found here | anchor | where to look next |
 |---|---|---|---|
