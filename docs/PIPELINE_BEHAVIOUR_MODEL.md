@@ -62,8 +62,12 @@ error a new session makes.
 Two further name hazards, both already recorded:
 
 - **"Phase 7" names two unrelated milestones.** The Phase 7 marked COMPLETE in Chapters 10, 12 and 13
-  is **WATCHER dispatch integration (Feb 2026)**. **S172 Phase 7 is the 26-GPU saturation + WATCHER
-  soak.** (`PROJECT_FILE_CATALOG.md` §5.2.)
+  is **WATCHER dispatch integration (Feb 2026)**. **S172 Phase 7 is the 25-GPU saturation + WATCHER
+  soak** — **24 AMD RX 6600 XT + one VM101 RTX 3080 Ti** (the second 3080 Ti stays on VM100);
+  owner-ruled, **Team Beta ratified the waiver**, frozen execution set `bea580e7…f67a8` (25
+  identities, 25 requested, 25 admitted, unclamped, non-partial). (`PROJECT_FILE_CATALOG.md` §5.2.)
+  **Older "26-GPU" wording predates this ruling** — but see §16 D17 and §17 I-5: the 26 in
+  `ml_coordinator_config.json` is a live fact about a tracked file and is **not** a stale soak figure.
 - **`PROPOSAL_S172_RANGE_MINER_v1_4_4.md` scopes RANGE-MINER as a "Step 1 replacement"** — it is
   written in the *executable* scheme, and is talking about the same engine the system map calls
   Step 2. Both are correct in their own scheme.

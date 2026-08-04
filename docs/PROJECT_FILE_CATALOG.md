@@ -172,8 +172,8 @@ bidirectional sieve runs inside **Step 1**. See §5.2.
 
 | chapter | file | lines | audited? | currency | known-stale sections |
 |---|---|---|---|---|---|
-| 1 — Window Optimizer (Step 1) | `CHAPTER_1_WINDOW_OPTIMIZER.md` | 2,303 | ✅ **YES** — `CHAPTER_1_AUDIT_v1.md`, **9 of 41 claims accurate** | **CLOSED at `81ef3f1`, 2026-08-02** — "verified-and-bounded, not finished". §17 carries the closure statement. Remediation: P0 `ddd2ac8`, then P1/P2, closure `ef4b1c6` | Chapter revision "3.1" is **a documentation-only number with no source counterpart** — the module docstring says `Version: 2.0`, and `3.1` appears in no source file. Do not read it as a code version. |
-| 2 — Bidirectional Sieve (Step 2) | `CHAPTER_2_BIDIRECTIONAL_SIEVE.md` | **1,463** | ✅ **YES** | **CLOSED at `81ef3f1`, 2026-08-02.** Destroyed at `248e48c` (709 lines removed), restored from `d14dcdd` (743L) at `e1225a7` → 1,089L, corrected `e50e35f`, closed `81ef3f1`, content gate `09bbfbf` (6 gates + 6 mutants, 12/12, all proven red against the actual 34-line fragment). §14 carries the closure statement. | ★ **§6 contains the three-lane CRT proof** — the thing Alpha claimed was undocumented. |
+| 1 — Window Optimizer (Step 1) | `CHAPTER_1_WINDOW_OPTIMIZER.md` | 2,303 | ✅ **YES** — `CHAPTER_1_AUDIT_v1.md`, **9 of 41 claims accurate** | **CLOSED at `ef4b1c6`, 2026-08-02** — "verified-and-bounded, not finished". §17 carries the closure statement. Remediation: P0 `ddd2ac8`, then P1/P2, then closure. **`81ef3f1` only commissioned the closure brief and edits neither chapter file** — do not cite it as the closure. | Chapter revision "3.1" is **a documentation-only number with no source counterpart** — the module docstring says `Version: 2.0`, and `3.1` appears in no source file. Do not read it as a code version. |
+| 2 — Bidirectional Sieve (Step 2) | `CHAPTER_2_BIDIRECTIONAL_SIEVE.md` | **1,463** | ✅ **YES** | **CLOSED at `ef4b1c6`, 2026-08-02.** Destroyed at `248e48c` (709 lines removed), restored from `d14dcdd` (743L) at `e1225a7` → 1,089L, corrected `e50e35f`, closed `ef4b1c6` (`81ef3f1` commissioned the closure brief only), content gate `09bbfbf` (6 gates + 6 mutants, 12/12, all proven red against the actual 34-line fragment). §14 carries the closure statement. | ★ **§6 contains the three-lane CRT proof** — the thing Alpha claimed was undocumented. |
 | 3 — Scorer Meta-Optimizer (**Step 2.5 / WATCHER step 2**) | `CHAPTER_3_SCORER_META_OPTIMIZER.md` | 958 | ✅ **YES** — `CHAPTER_3_ALIGNMENT_AUDIT.md`, **55 claims: 17 accurate / 9 stale / 24 false / 5 unverifiable** | **NOT corrected.** The audit was read-only and **no fix was authorised.** v4.2, last touched `05b0e6b`. | **§8, §9 and §14.2 describe GPU scoring deleted at v4.0.** §9 confines the soak to `--start-step 1 --end-step 1`. |
 | 4 — Full Scoring (Step 3) | `CHAPTER_4_FULL_SCORING.md` | 1,037 | ❌ **NO** | v2.0.0 (Holdout Integration); claims "~550 lines" across two files | unknown — unaudited |
 | 5 — Adaptive Meta-Optimizer (Step 4) | `CHAPTER_5_ML_ARCHITECTURE_OPTIMIZER_v2.md` | 423 | ❌ **NO** | v2.0.0 "(Corrected)" | unknown — unaudited |
@@ -652,7 +652,10 @@ Every manifest's `pipeline_step` field matches its `STEP_MANIFESTS` key — **no
   bidirectional sieve documented in **Chapter 2** runs inside **Step 1**, not WATCHER step 2.
 - **"Phase 7" is overloaded.** The Phase 7 marked COMPLETE in Chapters 10, 12 and 13 and in
   `TODO_PHASE7_WATCHER_INTEGRATION_REVISED_v3.md` is **WATCHER dispatch integration (Feb 2026)**.
-  **S172 Phase 7 is the 26-GPU saturation + WATCHER soak** and is a different thing entirely.
+  **S172 Phase 7 is the 25-GPU saturation + WATCHER soak** and is a different thing entirely.
+  (**25 = 24 AMD RX 6600 XT + one VM101 RTX 3080 Ti**; the second 3080 Ti stays on VM100. Owner-ruled,
+  **Team Beta ratified the waiver**. Frozen execution set `bea580e7…f67a8` — 25 identities, 25
+  requested, 25 admitted, unclamped, non-partial. Older "26-GPU" wording predates the ruling.)
 - **Step 0 has no documenting chapter** (§7 gap 1).
 
 ## 5.3 Manifest inventory notes
