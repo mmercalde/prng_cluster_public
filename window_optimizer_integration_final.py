@@ -1937,6 +1937,13 @@ def add_window_optimizer_to_coordinator():
                         n_parallel: int = 1,
                         enable_pruning: bool = False,
                         trse_context_file: str = 'trse_context.json',  # S123 TRSE thread
+                        warm_start_window: int = None,    # [S166] explicit warm-start
+                        warm_start_offset: int = None,
+                        warm_start_skip_min: int = None,
+                        warm_start_skip_max: int = None,
+                        warm_start_fwd_thresh: float = None,
+                        warm_start_rev_thresh: float = None,
+                        warm_start_session_idx: int = None,
                         resume_checkpoint: str = ''):  # [S172 D6.2] hop 3 of 3
         # ── [S172 Phase-5 D6.2 §4.1] THE SELECTOR IS A RUN ID. ONE API. ──────
         # `resume_checkpoint` is a CHECKPOINT RUN ID, never a path and never a
@@ -2788,28 +2795,15 @@ def add_window_optimizer_to_coordinator():
             'seed_start':   seed_start,
             'seed_end':     seed_start + seed_count,
             'n_parallel_gt1': n_parallel > 1,  # [S142] guard: NP2 owns writes
+            # [S166] explicit warm-start params — override DB lookup
+            'warm_start_window':     warm_start_window,
+            'warm_start_offset':     warm_start_offset,
+            'warm_start_skip_min':   warm_start_skip_min,
+            'warm_start_skip_max':   warm_start_skip_max,
+            'warm_start_fwd_thresh': warm_start_fwd_thresh,
+            'warm_start_rev_thresh': warm_start_rev_thresh,
+            'warm_start_session_idx': warm_start_session_idx,  # [S166] required by Optuna
         }
-
-        # [S166] Add warm_start fields from DB lookup — feeds Optuna enqueue
-        # This mirrors the n_parallel DB lookup path above.
-        try:
-            from database_system import DistributedPRNGDatabase as _DBW
-            _db_ws = _DBW()
-            _best_ws = _db_ws.get_best_step1_params(prng_base, limit=1)
-            if _best_ws:
-                _bws = _best_ws[0]
-                _trial_history_ctx['warm_start_window']     = _bws.get('window_size')
-                _trial_history_ctx['warm_start_offset']     = _bws.get('offset')
-                _trial_history_ctx['warm_start_skip_min']   = _bws.get('skip_min')
-                _trial_history_ctx['warm_start_skip_max']   = _bws.get('skip_max')
-                _trial_history_ctx['warm_start_session']    = _bws.get('session')
-                _trial_history_ctx['warm_start_fwd_thresh'] = _bws.get('forward_threshold')
-                _trial_history_ctx['warm_start_rev_thresh'] = _bws.get('reverse_threshold')
-                print(f"   [WARM_START] loaded W{_bws.get('window_size')}_O{_bws.get('offset')} from step1_trial_history")
-            else:
-                print(f"   [WARM_START] no prior history for {prng_base}")
-        except Exception as _ews:
-            print(f"   [WARM_START] DB lookup failed (non-fatal): {_ews}")
 
         if not _np2_complete:  # [S142-B] skip single-process search for NP2
             results = optimizer.optimize(

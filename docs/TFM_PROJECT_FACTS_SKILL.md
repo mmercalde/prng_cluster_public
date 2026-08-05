@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v14, 2026-08-03. **D6.2 CERTIFIED `18a2419`.**
+**Currency:** v15, 2026-08-04. **D6.2 CERTIFIED `18a2419`.**
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -337,7 +337,7 @@ is a deliberate executable-interface boundary (§2.13).
 | # | instance | status |
 |---|---|---|
 | 1 | miner filtered at hardcoded `0.25` | **FIXED** `2be51d5` — single canonical path, per-direction resolution in the parent, effective value read off the executor, parent-side fail-closed provenance |
-| 2 | Optuna thresholds dropped above `run_bidirectional_test`; every trial ran `0.30/0.30` | **FIXED** `8a55a68`. Was a **regression**: fixed `3fdf434` (04-30), silently reverted `2389b61` (07-07) by a stale-copy overwrite whose message never mentions thresholds. Both routes now use `resolve_directional_threshold()`, `is None` not truthiness (**0.0 is legitimate**) |
+| 2 | Optuna thresholds dropped above `run_bidirectional_test`; every trial ran `0.30/0.30` | **FIXED** `8a55a68`. Was a **regression**: fixed `3fdf434` (04-30), silently reverted `2389b61` (07-07) by an **out-of-tree working-file overwrite** (§2.7b — *not* "a pre-fix copy", which is what earlier revisions of this skill said) whose message never mentions thresholds. Both routes now use `resolve_directional_threshold()`, `is None` not truthiness (**0.0 is legitimate**). **`3fdf434`'s companion defensive fix — the `run_bidirectional_test` signature defaults `0.01 → 0.50` — was reverted by the same commit and is STILL REVERTED at HEAD**; governed as F3 in `THRESHOLD_PATH_AUDIT_WINDOW_OPTIMIZER.md:32`, dead path in production (both production callers pass thresholds explicitly) |
 | 3 | PWC hybrid filtered at `0.50` | **QUARANTINED** — `PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED`; PWC non-certifying, so the defect is made loud rather than repaired |
 | 4 | **hybrid kernels ignore sampled `skip_min`/`skip_max`; `expected_skip = 5` hardcoded** | **OPEN.** 22/22 constant kernels declare skip bounds; 0/22 hybrid do. Values survive eight hops and **die at `_hybrid_prefix`** (`range_miner_worker.py:177-193`). Anchors `prng_registry.py:1027, :805, :885, :1159`. **Semantics ARE documented (§0.4)** — the "unspecified semantics" premise of `HYBRID_SKIP_BOUND_AUDIT.md:318` is **FALSE**. Decision open; **the output-statistic reading needs no kernel change at all** |
 | 5 | forward hybrids ignore `offset` (sampled `window_optimizer_bayesian.py:423`) | **OPEN.** Chapter 2 F-4: `offset` drives **both** the host residue slice **and** the device pre-advance from one payload scalar — coherent only at `skip=0`. Settles Chapter 1 C-2 as an **observed inconsistency, not a repair**; belongs in the future hybrid input-semantics design, **not** a standalone arithmetic patch (TB) |
@@ -346,6 +346,49 @@ is a deliberate executable-interface boundary (§2.13).
 
 Fix pattern: **one canonical path** — resolve once in the parent, never reinterpret
 downstream, record requested/payload/effective.
+
+### 2.7b `2389b61` — THREE out-of-scope reverts, and dates cannot bound the damage
+
+**⚠ CORRECTED 2026-08-04. Earlier revisions recorded this commit as *"rewritten from a pre-fix
+copy."* That is NOT what happened, and the wrong model produces wrong predictions.**
+
+`2389b61` (2026-07-07, *"feat(s172): Phase 0 — shared PRNG_TYPE_ENCODING v3.2"*) was diffed in
+full for the first time on **2026-08-04**. Four files, +458/−47. **Two files have zero deletions**
+(`tests/test_prng_encoding.py`, `utils/prng_encoding.py`) — no revert can live in them, so every
+deletion is in the other two. `utils/survivor_loader.py`'s two hunks are in scope.
+**`window_optimizer_integration_final.py`'s six hunks are ALL out of scope** — not one of them
+touches `prng_encoding`. That file was overwritten for **no in-scope reason at all**; the encoding
+changes the message claims for it (*"inline writer"*) and for `convert_survivors_to_binary.py`
+did not land until `66f0425` / `46a3828`, 17–18 days later.
+
+| hunk | out-of-scope revert | added by | at HEAD |
+|---|---|---|---|
+| H2 | `run_bidirectional_test` defaults `0.50 → 0.01` | `3fdf434` (04-30) | **still reverted** — governed as F3, dead path |
+| H3 | `min_workers = getattr(coordinator, 'pwc_min_workers', 1)  # [S174]` | **`ca06f8c` (05-08)** | **still reverted — see §2.11** |
+| H4/H6 | the 7 `warm_start_*` params (signature + `_trial_history_ctx`) | `8cb2ada` (04-21) ×6, `a6bc546` (04-22) ×1 | **RESTORED 2026-08-04** |
+| H5 | `test_config` call-time threshold resolution | `3fdf434` (04-30) | restored `8a55a68` |
+| H1 | S166 clear repositioned, one comment line lost | — | not a revert; region rewritten by D6.2 |
+
+**THE MECHANISM — and why it matters.** The overwrite source was **not any committed revision**.
+Every ancestor touching the file (`e8a69f5`, `a6bc546`, `3fdf434`, `ca06f8c`) places the S166 clear
+**after** the flush print with three comment lines; `2389b61` writes it **before**, with two. No
+ancestor and no `apply_s*.py` produces that arrangement, and the `_trial_history_ctx` DB-lookup
+block it introduced **has no git history before it**. `docs/window_optimizer_integration_final.py`
+— a stale duplicate last touched `7313a43` (05-03) — is close but still carries the warm-start
+params.
+
+> **The pasted copy was an OUT-OF-TREE WORKING FILE that had absorbed some later fixes and not
+> others.** That is why the damage is **NON-CONTIGUOUS**, scattered across April and May instead of
+> truncating cleanly at one date.
+
+**⚠ CONSEQUENCE — DATE-BASED REASONING ABOUT THIS COMMIT DOES NOT WORK.** You cannot bound its
+blast radius by "everything after date X". **Three reverts are known: two were found only by
+targeted audit (the threshold fix, four months late; `min_workers`, thirteen months of PWC runs
+later) and one by a launch failure** — Step 1 died at `TypeError` three seconds into a 50-trial
+soak on 2026-08-04 because `window_optimizer.py:802` passed seven kwargs the signature no longer
+accepted. **Nothing establishes that three is the total.** The only surface ever fully checked is
+`window_optimizer_integration_final.py`, and it was checked by reading every deleted line, not by
+reasoning about dates.
 
 ### 2.8 RANGE-MINER Phase 5 as-built (committed, dual-pushed)
 
@@ -563,6 +606,27 @@ P0.5 is the only mechanism updated for the migration.
 > ⚠ **That document predates the ruling below and does not contain it.** It is the analysis Beta
 > ruled *on*. Everything from here down is the ruling and is carried here because the target is
 > silent on it.
+
+**⚠ MECHANISM 3 — CORRECTED 2026-08-04. The PWC ready gate does NOT hold at 24, and has not since
+2026-07-07.** Both that document's §2.2 and earlier revisions of this section asserted
+*"`23 < 24` → `RuntimeError`, run refused."* **That is false at HEAD.** The chain reaches
+`coordinator.pwc_min_workers = 24` (`window_optimizer.py:774`) and then **stops**: the line
+carrying it into `run_trial_persistent` — `min_workers = getattr(coordinator, 'pwc_min_workers', 1)`,
+added by `ca06f8c` (05-08, *"S174: hard ready-gate (TB-approved)"*) — **was deleted by `2389b61`**
+(§2.7b) and never restored. `run_trial_persistent` falls back to its own default `min_workers: int = 1`
+(`persistent_worker_coordinator.py:1649` → `:1685` → `:268`), so the gate passes at **one** ready
+worker and logs `READY GATE PASSED`. **The coordinator-side S174 gate is fully intact; only the
+threshold reaching it is wrong.** `docs/FLEET_STATE_REQUIREMENTS_v1.md` §2.2 now carries the
+correction in full, with the original analysis retained and marked superseded.
+
+**⚠ It is NOT being restored — owner ruling, 2026-08-04.** The guard existed to confirm **the whole
+cluster was being utilised**, in the PWC SSH/TCP era when a crashed worker's share was **picked up
+by the remaining workers**, so a run could proceed short-handed and merely take longer. **It was a
+UTILISATION check, not a correctness gate.** **RANGE-MINER does not have that shape** — stripes are
+claimed per worker against a ledger, not redistributed by slack-picking — so the failure mode the
+guard was written against **does not exist on the certifying path**, and PWC is retired from
+certifying authority (§0.7). **Not a defect, not restored, not a Phase-7 blocker.** *Do not
+re-propose restoring it; do not cite the `24` as an effective threshold.*
 
 **Beta's ruling: none of the six defines the fleet.** The future sole authority is a **frozen,
 run-scoped Resolved Execution Set**, created after backend and rig-profile selection but
