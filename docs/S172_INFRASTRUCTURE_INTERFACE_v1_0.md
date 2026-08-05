@@ -108,9 +108,55 @@ satisfies §11.K.
 
 ## 5. Configurable output path — LXC/VM/bare-metal all supported
 
+> ### ⚠ CLARIFIED 2026-08-04 (S172 Staging Part B, Beta binding ruling) — READ FIRST
+>
+> **The original §5 text below is RETAINED and remains CORRECT — but only for its
+> actual subject: WORKER-LOCAL OUTPUT.** As written it reads as though it covers
+> every miner path. It does not, and that ambiguity is the documentary half of a
+> defect that killed *every* miner-backed WATCHER run at the first sub-stripe result.
+>
+> **There are TWO directories, not one. They are different things.**
+>
+> | | **Worker-local output** | **Coordinator staging** |
+> |---|---|---|
+> | what it is | where a worker writes its own NPZ/spool payloads | where the **coordinator** (Zeus/VM101) stages payloads pulled from **every** worker |
+> | lives on | each rig / CT100 | the single coordinator box |
+> | config key | `miner_output_dir` (CLI `--miner-output-dir`) | **`staging_dir`** (CLI `--staging-dir`) — **canonical** |
+> | `null` means | **auto-detect** → `/dev/shm/prng/miner` → `~/miner_output` — **unchanged, still correct** | **INVALID — fails closed before dispatch** |
+> | auto-detect | yes, `resolve_miner_output_dir()` | **PROHIBITED** (Part B §1.1 rule 5) |
+> | capacity | per-rig, bounded, one worker's share | receives **all 25 workers'** payloads |
+>
+> **Why coordinator staging may not auto-detect to `/dev/shm`.** Measured on VM101,
+> 2026-08-04: `/dev/shm` is **tmpfs, 7.78 GiB total**; total RAM is **15.9 GiB with
+> swap 0**; `staging_high_water_bytes` defaults to **16 GiB**. The default high-water
+> therefore **exceeds the tmpfs by 8.22 GiB** and approaches total machine memory —
+> so the admission control that exists to prevent an OOM **could not bind before the
+> OOM occurred**, and VM101 OOM is a listed Phase-7 abort trigger. On tmpfs, staged
+> bytes are RAM.
+>
+> **Coordinator staging is therefore explicit, absolute and disk-backed.**
+> Resolution precedence (`resolve_coordinator_staging_dir`, five rules): only
+> `staging_dir` → use it · only an explicit `miner_output_dir` → populate
+> `staging_dir` **with a deprecation warning** · both set and differing → **fail
+> closed** · neither → **fail closed** · any implicit `/dev/shm` fallback →
+> **prohibited**. Startup validation (`validate_coordinator_staging_dir`) proves
+> absolute · creatable · writable · **temp-write + atomic rename (proven, not
+> inferred)** · disk-backed · capacity ≥ high-water + headroom · high-water not
+> larger than usable capacity — all **before dispatch or reservation accounting**.
+>
+> `miner_output_dir` survives as a **temporary backward-compatible alias** for
+> coordinator staging. **The production manifest populates canonical `staging_dir`
+> and must not depend on the alias.**
+>
+> **Nothing in the Proxmox team's contract changes.** The rig-side ramdisk bind and
+> the worker auto-detect below are untouched.
+
 The miner's `--miner-output-dir` CLI flag (Phase 1) and the manifest key
 `miner_output_dir` (WATCHER v1.8.0) accept an explicit path or `null` /
 `None` for auto-detect.
+
+*(Clarified above: this paragraph and the resolver below govern **worker-local
+output**. Coordinator staging uses `staging_dir` and has no auto-detect.)*
 
 Auto-detect logic (Phase 5, to be implemented in `range_miner_npz_writer.py`):
 

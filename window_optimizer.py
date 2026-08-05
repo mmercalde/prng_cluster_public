@@ -702,7 +702,8 @@ def run_bayesian_optimization(
     use_range_miner: bool = False,          # [S172 Phase 1]
     miner_stripe_size: int = 67_108_864,    # [S172 Phase 1]
     miner_substripes: int = 8,              # [S172 Phase 1]
-    miner_output_dir: str = None,           # [S172 Phase 1]
+    miner_output_dir: str = None,           # [S172 Phase 1] DEPRECATED alias (Part B §1.1)
+    staging_dir: str = None,                # [S172 Staging Part B] CANONICAL, hop 2 of 3
     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
 ) -> Dict[str, Any]:
     """
@@ -787,11 +788,23 @@ def run_bayesian_optimization(
     coordinator.miner_stripe_size = miner_stripe_size
     coordinator.miner_substripes  = miner_substripes
     coordinator.miner_output_dir  = miner_output_dir
+    # [S172 Staging Part B §1.1] hop 2 of the three-hop route (§2.15): the CANONICAL
+    # coordinator staging path. Previously `getattr(coordinator, 'staging_dir', None)`
+    # at window_optimizer_integration_final.py:1466 was a DEAD READ — nothing in the
+    # tree ever assigned this attribute outside tests/, so every miner-backed WATCHER
+    # run resolved staging to None and died at the first sub-stripe result.
+    coordinator.staging_dir       = staging_dir
     if use_range_miner:
         print(f"   [S172 Phase 1] RANGE-MINER backend ENABLED "
               f"(stripe={miner_stripe_size}, substripes={miner_substripes})")
-        print(f"   [S172 Phase 1] Miner output dir: "
+        # Part B §1.1: worker-local OUTPUT keeps its documented auto-detect;
+        # COORDINATOR STAGING has no implicit fallback and is reported separately.
+        # The old single line printed "auto (/dev/shm/...)" on a run whose staging
+        # was unset, which made a broken configuration read as an auto-detected one.
+        print(f"   [S172 Phase 1] Worker output dir (auto-detect allowed): "
               f"{miner_output_dir or 'auto (/dev/shm/prng/miner/ if writable, else ~/miner_output/)'}")
+        print(f"   [S172 Part B] Coordinator staging_dir (canonical, NO auto-detect): "
+              f"{staging_dir or 'NOT SET — run will fail closed before dispatch'}")
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -1412,6 +1425,22 @@ def main():
     parser.add_argument('--miner-output-dir', type=str, default=None,
                         help='[S172] Miner NPZ output directory (default: /dev/shm/prng/miner/ '
                              'if writable, else ~/miner_output/)')
+    # [S172 Staging Part B §1.1] CANONICAL coordinator staging directory.
+    #
+    # ⚠ OPTIONAL BY DESIGN — `--use-range-miner` alone stays sufficient. The path is
+    # DECLARED IN THE MANIFEST (agent_manifests/window_optimizer.json default_params),
+    # not supplied per run; WATCHER emits this flag from the manifest via args_map.
+    # This is hop 2 of the three-hop route (§2.15): adding only the signature would
+    # give a parameter that exists, accepts a value, and never receives one from
+    # production.
+    #
+    # Coordinator staging is NOT worker output: different ownership, lifetime and
+    # capacity. There is NO implicit /dev/shm auto-detect here (Part B §1.1 rule 5,
+    # PROHIBITED) — an unset value fails closed BEFORE dispatch.
+    parser.add_argument('--staging-dir', type=str, default=None,
+                        help='[S172 Part B] Coordinator staging directory (canonical, '
+                             'absolute, disk-backed). No auto-detect: unset fails closed '
+                             'before dispatch. Normally supplied by the manifest.')
 
     args = parser.parse_args()
 
@@ -1669,6 +1698,8 @@ def main():
             miner_stripe_size=getattr(args, 'miner_stripe_size', 67_108_864),
             miner_substripes=getattr(args, 'miner_substripes', 8),
             miner_output_dir=getattr(args, 'miner_output_dir', None),
+            # [S172 Staging Part B] hop 2 of 3 — CLI end of the canonical route.
+            staging_dir=getattr(args, 'staging_dir', None),
             # [S172 Phase-5 D6.2] the operator route's CLI end of hop 2.
             resume_checkpoint=getattr(args, 'resume_checkpoint', ''),
         )

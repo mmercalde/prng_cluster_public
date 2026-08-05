@@ -1405,6 +1405,24 @@ class StagingError(Exception):
     unknown stripe, escaped spool path)."""
 
 
+class StagingConfigurationError(StagingError):
+    """[S172 Staging Part B, Beta binding ruling §2] The coordinator's staging
+    CONFIGURATION is invalid: missing, conflicting, non-absolute, unwritable or
+    capacity-invalid.
+
+    NON-RETRYABLE, and deliberately NARROW. A configuration defect is permanent —
+    retrying it burns a Q3 retry budget and surfaces downstream as a misleading
+    `MinerIngressError` naming thresholds, which is what made the 2026-08-04
+    diagnosis take an hour.
+
+    ⚠ This subtype exists so the classification change can be bounded to exactly
+    these conditions. `StagingError` itself, and every transient transfer,
+    filesystem and capacity-PRESSURE condition (StagingBackPressure,
+    StagingHashMismatch, StagingTimeout), KEEP their existing retryable
+    classification and their existing Blocker-3 matrix rows.
+    """
+
+
 class TrialAborted(Exception):
     """A lifecycle action was attempted on a terminally-aborted trial
     (e.g. TrialCommit after TrialAbort)."""
@@ -2107,7 +2125,20 @@ class RangeMinerCoordinator:
         therefore only ever remove a path uniquely owned by its own task key."""
         staging_dir = self.config.staging_dir
         if not staging_dir:
-            raise StagingError("config.staging_dir is not set")
+            # [Part B §2] NON-RETRYABLE: a missing staging path is a permanent
+            # CONFIGURATION defect, not a transient staging condition. Retrying it
+            # burned a Q3 retry and surfaced downstream as MinerIngressError naming
+            # thresholds — the wrong subsystem entirely.
+            #
+            # In production this is now unreachable: run_trial_miner resolves and
+            # validates staging BEFORE build_coordinator. It remains as a
+            # defence-in-depth backstop for callers that construct a coordinator
+            # directly (harnesses via build_coordinator), which is exactly the
+            # surface every previously-certified miner run used.
+            raise StagingConfigurationError(
+                "config.staging_dir is not set (coordinator staging is unconfigured; "
+                "see Part B §1.1 — staging_dir is canonical and has no implicit "
+                "/dev/shm fallback)")
         os.makedirs(staging_dir, exist_ok=True)
         safe_run = re.sub(r"[^A-Za-z0-9._-]", "_", str(run_id))
         name = (f"{safe_run}__{stripe_id}_a{attempt}_s{sub_index}"
@@ -2814,6 +2845,24 @@ class RangeMinerCoordinator:
             except StagingTimeout:
                 self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
                                         "staging timeout")
+                return None
+            except StagingConfigurationError as e:
+                # [Part B §2] Caught BEFORE the generic handler below. A staging
+                # CONFIGURATION defect (missing / conflicting / non-absolute /
+                # unwritable / capacity-invalid) is PERMANENT -> retryable=False,
+                # which routes to the matrix's existing non-retryable row and does
+                # NOT consume a Q3 retry.
+                #
+                # ⚠ NARROW BY CONSTRUCTION: only this subtype is reclassified.
+                # StagingError itself, StagingBackPressure, StagingHashMismatch and
+                # StagingTimeout keep their existing classifications above, and the
+                # generic transient handler below is unchanged.
+                #
+                # The reason string leads with the ROOT CAUSE so the terminal report
+                # names staging configuration, not a downstream MinerIngressError.
+                self._on_staging_failed(
+                    run_id, stripe_id, False, eligible_provider,
+                    f"staging configuration error (non-retryable): {e}")
                 return None
             except Exception as e:  # noqa: BLE001 — transient fetch/IO -> retryable
                 self._on_staging_failed(run_id, stripe_id, True, eligible_provider, str(e))
@@ -4373,6 +4422,263 @@ def workflow_stages_for(prng_base: str, test_both_modes: bool):
             (f"{prng_base}_reverse", 2)]
 
 
+# ---------------------------------------------------------------------------
+# [S172 Staging Part B] Coordinator staging resolution + startup validation
+#
+# Beta's binding ruling: the production coordinator must NOT auto-detect
+# /dev/shm/prng/miner. Worker-local OUTPUT keeps its documented
+# `null -> /dev/shm/prng/miner` auto-detect (resolve_miner_output_dir(),
+# range_miner_worker.py) — coordinator STAGING is a different thing, with
+# different ownership, lifetime and capacity, and `null` is INVALID at the
+# production boundary.
+#
+# Why: coordinator staging is local to the Zeus/VM101 box and receives payloads
+# pulled from EVERY worker's spool. On tmpfs those bytes are RAM. The default
+# staging_high_water_bytes (16 GiB) exceeds both /dev/shm (7.78 GiB) and total
+# RAM (15.9 GiB, swap 0) on VM101 — so the admission control that exists to
+# prevent an OOM could not bind before the OOM occurred.
+# ---------------------------------------------------------------------------
+
+#: Filesystem types that are RAM-backed, not disk-backed. Coordinator staging on
+#: any of these is refused for the approved Phase-7 configuration.
+_RAM_BACKED_FSTYPES = frozenset({"tmpfs", "ramfs", "devtmpfs"})
+
+#: Operational headroom demanded ON TOP OF the configured high-water mark:
+#: 10% of the high-water, never less than 1 GiB. Staging is not the only writer
+#: to the filesystem (ledger DB, provenance records, the run's own artifacts), so
+#: a filesystem sized to EXACTLY the high-water is not a safe configuration.
+_STAGING_HEADROOM_FLOOR_BYTES = 1024 ** 3
+
+
+def _staging_headroom_bytes(high_water_bytes: int) -> int:
+    """Operational headroom required above the configured high-water mark."""
+    return max(_STAGING_HEADROOM_FLOOR_BYTES, int(high_water_bytes) // 10)
+
+
+def _filesystem_type_for(path: str) -> Optional[str]:
+    """Filesystem type backing `path`, via the longest matching /proc/mounts
+    mount point. Returns None if it cannot be determined — an UNDETERMINED
+    filesystem is never reported as disk-backed (VIR-5: unobservable is not
+    clean)."""
+    try:
+        with open("/proc/mounts", "r") as fh:
+            entries = []
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 3:
+                    # /proc/mounts octal-escapes spaces etc. in the mount point.
+                    mount_point = parts[1].encode().decode("unicode_escape")
+                    entries.append((mount_point, parts[2]))
+    except OSError:
+        return None
+    real = os.path.realpath(path)
+    best_mp, best_type = None, None
+    for mount_point, fstype in entries:
+        if real == mount_point or real.startswith(
+                mount_point.rstrip("/") + "/") or mount_point == "/":
+            if best_mp is None or len(mount_point) > len(best_mp):
+                best_mp, best_type = mount_point, fstype
+    return best_type
+
+
+def resolve_coordinator_staging_dir(
+    staging_dir: Optional[str],
+    miner_output_dir: Optional[str],
+    *,
+    warn: bool = True,
+) -> str:
+    """[Part B §1.1] Resolve the CANONICAL coordinator staging directory.
+
+    `staging_dir` is canonical. `miner_output_dir` is a TEMPORARY
+    backward-compatible alias. The five rules, implemented exactly:
+
+      1. only `staging_dir` set                  -> use it
+      2. only an explicit `miner_output_dir` set -> populate `staging_dir`,
+                                                    with a deprecation warning
+      3. both set and they DIFFER                -> FAIL CLOSED
+      4. neither set                             -> FAIL CLOSED
+      5. any implicit /dev/shm fallback           -> PROHIBITED (never reached:
+                                                    rule 4 fails first, and no
+                                                    auto-detect is called here)
+
+    Rule 5 is enforced by CONSTRUCTION, not by a check: this function contains no
+    fallback candidate at all. `resolve_miner_output_dir()` is deliberately NOT
+    called — that resolver remains correct for its own subject (worker-local
+    output) and is left untouched.
+
+    Raises StagingConfigurationError (non-retryable) for rules 3 and 4.
+    """
+    canonical = (staging_dir or "").strip() or None
+    alias = (miner_output_dir or "").strip() or None
+
+    if canonical and alias:
+        if os.path.abspath(canonical) != os.path.abspath(alias):
+            raise StagingConfigurationError(
+                "[Part B §1.1 rule 3] conflicting coordinator staging configuration: "
+                f"staging_dir={canonical!r} and miner_output_dir={alias!r} differ. "
+                "staging_dir is canonical; remove the deprecated miner_output_dir "
+                "alias or set both to the same path.")
+        return canonical                                    # rule 1 (identical)
+
+    if canonical:
+        return canonical                                    # rule 1
+
+    if alias:                                               # rule 2
+        if warn:
+            logger.warning(
+                "[Part B §1.1 rule 2] DEPRECATED: coordinator staging resolved from "
+                "miner_output_dir=%r. `staging_dir` is the canonical field; "
+                "miner_output_dir is a temporary backward-compatible alias and the "
+                "production manifest must populate staging_dir.", alias)
+        return alias
+
+    # rule 4 — and, by construction, rule 5.
+    raise StagingConfigurationError(
+        "[Part B §1.1 rule 4] coordinator staging is not configured: neither "
+        "`staging_dir` (canonical) nor `miner_output_dir` (deprecated alias) is "
+        "set. There is NO implicit /dev/shm fallback for coordinator staging "
+        "(rule 5, PROHIBITED) — worker-local output auto-detect is a different "
+        "subject and is unaffected. Declare `staging_dir` in "
+        "agent_manifests/window_optimizer.json default_params.")
+
+
+def validate_coordinator_staging_dir(
+    path: str,
+    high_water_bytes: int,
+    *,
+    require_disk_backed: bool = True,
+) -> Dict[str, Any]:
+    """[Part B §1.3] Validate the resolved coordinator staging location BEFORE
+    any dispatch or reservation accounting. Returns a dict of measured evidence.
+
+    Checks, in order — each raising StagingConfigurationError (non-retryable):
+      - absolute
+      - creatable and writable
+      - supports temp-write and ATOMIC RENAME (PROVEN by writing and renaming,
+        never inferred from the filesystem type)
+      - disk-backed (refused on tmpfs/ramfs/devtmpfs)
+      - does not advertise a high-water LARGER than usable capacity
+      - has capacity for the configured high-water PLUS operational headroom
+
+    Beta: "Admission control cannot be represented as an OOM safeguard when the
+    configured mark exceeds the filesystem that must hold the staged data."
+
+    ⚠ KNOWN LIMITATION — THIN PROVISIONING IS INVISIBLE FROM INSIDE THE GUEST.
+    os.statvfs() reports the GUEST filesystem's view. On VM101 the backing store
+    is a THIN-PROVISIONED Proxmox local-lvm pool that is OVERSUBSCRIBED
+    (measured 2026-08-04: pool 816.21 GiB total, 67.80% used, ~263 GiB actually
+    free; vm-101-disk-1 alone is 932 GiB provisioned at 52.20% consumed; total
+    provisioned across VMs is 1,188 GiB against an 816 GiB pool). VM101's
+    guest-visible ~427 GiB free therefore OVERSTATES the real backing by roughly
+    164 GiB.
+
+    This check cannot see that, and must not be read as proving the bytes are
+    physically available. Host thin-pool exhaustion would present here as a WRITE
+    FAILURE on a filesystem the guest believes has space — not as a capacity
+    rejection at startup. The 16 GiB high-water is comfortable against the ~263
+    GiB really free, which is why it stands; the limitation is recorded because
+    the guarantee is narrower than the number suggests.
+    """
+    if not path or not os.path.isabs(path):
+        raise StagingConfigurationError(
+            f"[Part B §1.3] coordinator staging_dir must be ABSOLUTE, got {path!r}")
+
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise StagingConfigurationError(
+            f"[Part B §1.3] coordinator staging_dir {path!r} is not creatable: {e}") from e
+    if not os.path.isdir(path):
+        raise StagingConfigurationError(
+            f"[Part B §1.3] coordinator staging_dir {path!r} is not a directory")
+    if not os.access(path, os.W_OK | os.X_OK):
+        raise StagingConfigurationError(
+            f"[Part B §1.3] coordinator staging_dir {path!r} is not writable")
+
+    # --- atomic-rename PROOF: write, fsync, rename, verify, unlink ----------
+    probe_tmp = os.path.join(path, f".s172_staging_probe_{os.getpid()}_{uuid.uuid4().hex[:8]}.tmp")
+    probe_dst = probe_tmp[:-4] + ".committed"
+    payload = b"s172-staging-part-b-atomic-rename-probe"
+    try:
+        with open(probe_tmp, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.rename(probe_tmp, probe_dst)          # same-directory atomic rename
+        with open(probe_dst, "rb") as fh:
+            if fh.read() != payload:
+                raise StagingConfigurationError(
+                    f"[Part B §1.3] atomic-rename probe on {path!r} produced wrong bytes")
+    except StagingConfigurationError:
+        raise
+    except OSError as e:
+        raise StagingConfigurationError(
+            f"[Part B §1.3] coordinator staging_dir {path!r} does not support "
+            f"temp-write + atomic rename: {e}") from e
+    finally:
+        for p in (probe_tmp, probe_dst):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    # --- disk-backed --------------------------------------------------------
+    fstype = _filesystem_type_for(path)
+    if require_disk_backed:
+        if fstype is None:
+            raise StagingConfigurationError(
+                f"[Part B §1.3] cannot determine the filesystem backing {path!r}; "
+                "an UNDETERMINED filesystem is not reported as disk-backed (VIR-5)")
+        if fstype in _RAM_BACKED_FSTYPES:
+            raise StagingConfigurationError(
+                f"[Part B §1.3] coordinator staging_dir {path!r} is on {fstype!r}, "
+                "which is RAM-backed. Coordinator staging must be DISK-BACKED for "
+                "the approved Phase-7 configuration: it receives payloads pulled "
+                "from every worker's spool, so RAM-backed staging converts a "
+                "staging high-water into host memory pressure.")
+
+    # --- capacity -----------------------------------------------------------
+    st = os.statvfs(path)
+    total_bytes = st.f_blocks * st.f_frsize
+    avail_bytes = st.f_bavail * st.f_frsize
+    high_water_bytes = int(high_water_bytes)
+    headroom = _staging_headroom_bytes(high_water_bytes)
+
+    if high_water_bytes > avail_bytes:
+        raise StagingConfigurationError(
+            f"[Part B §1.3] capacity-invalid configuration: "
+            f"staging_high_water_bytes={high_water_bytes} "
+            f"({high_water_bytes / 1024**3:.2f} GiB) EXCEEDS the usable capacity of "
+            f"{path!r} ({avail_bytes} B = {avail_bytes / 1024**3:.2f} GiB available, "
+            f"fstype={fstype}). Admission control cannot be represented as an OOM "
+            f"safeguard when the configured mark exceeds the filesystem that must "
+            f"hold the staged data. Lower staging_high_water_bytes or stage elsewhere.")
+
+    if high_water_bytes + headroom > avail_bytes:
+        raise StagingConfigurationError(
+            f"[Part B §1.3] insufficient operational headroom on {path!r}: "
+            f"high_water={high_water_bytes / 1024**3:.2f} GiB + "
+            f"headroom={headroom / 1024**3:.2f} GiB exceeds "
+            f"{avail_bytes / 1024**3:.2f} GiB available (fstype={fstype})")
+
+    evidence = {
+        "staging_dir": path,
+        "fstype": fstype,
+        "disk_backed": fstype not in _RAM_BACKED_FSTYPES if fstype else False,
+        "total_bytes": total_bytes,
+        "available_bytes": avail_bytes,
+        "high_water_bytes": high_water_bytes,
+        "headroom_bytes": headroom,
+        "atomic_rename_proven": True,
+    }
+    logger.info(
+        "[S172 Part B] coordinator staging VALIDATED: %s (fstype=%s, disk-backed, "
+        "avail=%.2f GiB, high_water=%.2f GiB, headroom=%.2f GiB, atomic-rename proven)",
+        path, fstype, avail_bytes / 1024**3, high_water_bytes / 1024**3,
+        headroom / 1024**3)
+    return evidence
+
+
 def build_coordinator(
     *,
     staging_dir: Optional[str] = None,
@@ -4492,10 +4798,23 @@ def run_trial_miner(
     for tests. Only the real worker FLEET / CT100 keys remain Phase-6/7; a
     coordinator server binding to loopback workers is in scope and default.
     """
-    # Defect 6: staging_dir defaults from miner_output_dir when not given, so a
-    # production caller that only sets --miner-output-dir still stages locally.
-    staging_dir_resolved = staging_dir or miner_output_dir
-    base_dir = staging_dir_resolved or "."
+    # [S172 Staging Part B §1.1/§1.3, Beta binding ruling] Resolve the canonical
+    # coordinator staging directory and VALIDATE it HERE — before build_coordinator,
+    # before the ledger exists, before the trial is created, and therefore before
+    # any worker dispatch or reservation accounting.
+    #
+    # This replaces `staging_dir or miner_output_dir` (Defect 6's half-fix, which
+    # was written for the case where miner_output_dir is SET; production supplies
+    # null, so it resolved to None and every miner-backed run died at the first
+    # sub-stripe with `config.staging_dir is not set`).
+    #
+    # P0.5's dataset authority is the precedent: FAIL BEFORE FIRST WORKER DISPATCH,
+    # naming the resolved path and the reason. A misconfiguration that only surfaces
+    # after 25 workers registered and 16 stripes computed is the defect twice over.
+    staging_dir_resolved = resolve_coordinator_staging_dir(staging_dir, miner_output_dir)
+    staging_evidence = validate_coordinator_staging_dir(
+        staging_dir_resolved, staging_high_water_bytes)
+    base_dir = staging_dir_resolved
     coordinator = build_coordinator(
         staging_dir=staging_dir_resolved,
         seed_cap_nvidia=seed_cap_nvidia,
@@ -4511,7 +4830,9 @@ def run_trial_miner(
         miner_port=miner_port,
         transfer=transfer,
         phase5_sink=phase5_sink,
-        db_path=os.path.join(base_dir, "miner_ledger.db") if base_dir != "." else None,
+        # base_dir is now the VALIDATED absolute staging path (never "."), so the
+        # ledger can no longer land in an arbitrary CWD.
+        db_path=os.path.join(base_dir, "miner_ledger.db"),
     )
     # Defect 6: a UNIQUE run_id per trial — NEVER the raw config filename (which
     # would repeat stripe IDs across trials and collide on the PK at trial 2).
@@ -4551,6 +4872,10 @@ def run_trial_miner(
         "sessions": kwargs.get("sessions"),  # intentionally optional (None -> [])
         "offset": offset,                    # REV4: fail-closed passthrough (no `or 0`)
         "staging_dir": staging_dir_resolved,
+        # [Part B §1.3] Measured startup-validation evidence, carried on the
+        # context so the resolved path, filesystem type, capacity and the
+        # atomic-rename proof are OBSERVABLE on the run rather than only logged.
+        "staging_validation": staging_evidence,
         "miner_host": miner_host,
         "miner_port": miner_port,
         "listen_sock": listen_sock,

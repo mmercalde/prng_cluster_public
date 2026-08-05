@@ -53,6 +53,7 @@
         "miner-stripe-size": "miner_stripe_size",
         "miner-substripes": "miner_substripes",
         "miner-output-dir": "miner_output_dir",
+        "staging-dir": "staging_dir",
         "resume-checkpoint": "resume_checkpoint"
       },
       "distributed": true,
@@ -263,6 +264,7 @@
     "miner_stripe_size": 67108864,
     "miner_substripes": 8,
     "miner_output_dir": null,
+    "staging_dir": "/home/michael/miner_staging",
     "resume_checkpoint": ""
   },
   "evaluation_params": {
