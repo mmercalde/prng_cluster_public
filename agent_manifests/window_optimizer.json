@@ -54,6 +54,10 @@
         "miner-substripes": "miner_substripes",
         "miner-output-dir": "miner_output_dir",
         "staging-dir": "staging_dir",
+        "staging-workers": "staging_workers",
+        "staging-queue-depth": "staging_queue_depth",
+        "staging-deferred-max": "staging_deferred_max",
+        "staging-capacity-timeout": "staging_capacity_timeout",
         "resume-checkpoint": "resume_checkpoint"
       },
       "distributed": true,
@@ -265,6 +269,10 @@
     "miner_substripes": 8,
     "miner_output_dir": null,
     "staging_dir": "/home/michael/miner_staging",
+    "staging_workers": 4,
+    "staging_queue_depth": 2,
+    "staging_deferred_max": null,
+    "staging_capacity_timeout": 600.0,
     "resume_checkpoint": ""
   },
   "evaluation_params": {
@@ -293,6 +301,30 @@
       "type": "bool",
       "default": false,
       "description": "S158D: Use ZMQ+SQLite coordinator instead of PWC. Eliminates persistent SSH pipes. Workers launched once per run, pull jobs via ZMQ TCP."
+    },
+    "staging_workers": {
+      "type": "int",
+      "default": 4,
+      "description": "[S172-BP] Bounded staging-executor size. Beta did NOT rule a new number — 'tune after measurement'; this is today's value made REACHABLE, not a retune.",
+      "optimized_by": "Manual"
+    },
+    "staging_queue_depth": {
+      "type": "int",
+      "default": 2,
+      "description": "[S172-BP] Extra staging admission slots beyond the executor size. The staging admission bound is (staging_workers + staging_queue_depth) — 6 today.",
+      "optimized_by": "Manual"
+    },
+    "staging_deferred_max": {
+      "type": "int",
+      "default": null,
+      "description": "[S172-BP] OPERATOR OVERRIDE of the DERIVED deferred-queue bound (conservative burst + resume margin, sized from the resolved execution set, stripe geometry, phase and per-worker VRAM seed caps). null = derived, which is the production shape and the reason the old constant 64 was deleted. A value BELOW the derived bound logs a WARNING naming both numbers. NOTE: WATCHER skips null-valued params when building the command, so null emits no flag — which is exactly the intended 'use the derivation' behaviour.",
+      "optimized_by": "Manual"
+    },
+    "staging_capacity_timeout": {
+      "type": "float",
+      "default": 600.0,
+      "description": "[S172-BP §1.5] Bounded wait in seconds, measured from the OLDEST paused connection's pause-entry time, after which the trial terminates with a coordinator_staging_capacity_timeout reason via a DIRECT fail_trial — never the phase-specific worker retry matrix. Same class as staging_timeout; the default is FLAGGED FOR BETA.",
+      "optimized_by": "Manual"
     },
     "resume_checkpoint": {
       "type": "str",

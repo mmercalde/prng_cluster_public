@@ -704,6 +704,11 @@ def run_bayesian_optimization(
     miner_substripes: int = 8,              # [S172 Phase 1]
     miner_output_dir: str = None,           # [S172 Phase 1] DEPRECATED alias (Part B §1.1)
     staging_dir: str = None,                # [S172 Staging Part B] CANONICAL, hop 2 of 3
+    # [S172-BP §3, Beta C] the four staging-capacity controls, hop 2 of 3.
+    staging_workers: int = 4,
+    staging_queue_depth: int = 2,
+    staging_deferred_max: int = None,       # None => the DERIVED bound (§2)
+    staging_capacity_timeout: float = 600.0,
     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
 ) -> Dict[str, Any]:
     """
@@ -794,6 +799,16 @@ def run_bayesian_optimization(
     # tree ever assigned this attribute outside tests/, so every miner-backed WATCHER
     # run resolved staging to None and died at the first sub-stripe result.
     coordinator.staging_dir       = staging_dir
+    # [S172-BP §3, Beta C] hop 2 of the route for the four staging-capacity
+    # controls. window_optimizer_integration_final.py reads each of these off the
+    # coordinator (`getattr(coordinator, 'staging_workers', 4)` etc.); without the
+    # assignment here every one of those is a DEAD READ — the identical defect
+    # shape Part B closed for staging_dir, and the reason the 64-deep deferred
+    # queue could only ever be changed by editing source.
+    coordinator.staging_workers          = staging_workers
+    coordinator.staging_queue_depth      = staging_queue_depth
+    coordinator.staging_deferred_max     = staging_deferred_max
+    coordinator.staging_capacity_timeout = staging_capacity_timeout
     if use_range_miner:
         print(f"   [S172 Phase 1] RANGE-MINER backend ENABLED "
               f"(stripe={miner_stripe_size}, substripes={miner_substripes})")
@@ -805,6 +820,11 @@ def run_bayesian_optimization(
               f"{miner_output_dir or 'auto (/dev/shm/prng/miner/ if writable, else ~/miner_output/)'}")
         print(f"   [S172 Part B] Coordinator staging_dir (canonical, NO auto-detect): "
               f"{staging_dir or 'NOT SET — run will fail closed before dispatch'}")
+        print(f"   [S172-BP] Staging capacity: workers={staging_workers} "
+              f"queue_depth={staging_queue_depth} "
+              f"deferred_max="
+              f"{staging_deferred_max if staging_deferred_max is not None else 'DERIVED'} "
+              f"capacity_timeout={staging_capacity_timeout}s")
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -1441,6 +1461,28 @@ def main():
                         help='[S172 Part B] Coordinator staging directory (canonical, '
                              'absolute, disk-backed). No auto-detect: unset fails closed '
                              'before dispatch. Normally supplied by the manifest.')
+    # [S172-BP §3, Beta C] The four staging-capacity controls. All OPTIONAL and all
+    # DECLARED IN THE MANIFEST (default_params + args_map), because WATCHER's
+    # step-scoped filter drops any key the manifest does not declare
+    # (agents/watcher_agent.py:1290-1314) — adding only the signature would give
+    # parameters that exist, accept values and never receive one from production.
+    # Values stay at today's defaults: Beta explicitly did NOT rule new numbers.
+    parser.add_argument('--staging-workers', type=int, default=4,
+                        help='[S172-BP] Bounded staging-executor size (default 4).')
+    parser.add_argument('--staging-queue-depth', type=int, default=2,
+                        help='[S172-BP] Extra staging admission slots beyond the '
+                             'executor size; the admission bound is '
+                             '(staging_workers + staging_queue_depth) (default 2).')
+    parser.add_argument('--staging-deferred-max', type=int, default=None,
+                        help='[S172-BP] OPERATOR OVERRIDE of the DERIVED deferred-queue '
+                             'bound (conservative burst + resume margin). Unset = '
+                             'derived, which is the production shape. A value below '
+                             'the derived bound logs a WARNING naming both.')
+    parser.add_argument('--staging-capacity-timeout', type=float, default=600.0,
+                        help='[S172-BP] Bounded wait, in seconds, measured from the '
+                             'OLDEST paused connection, after which the trial is '
+                             'terminated with a coordinator_staging_capacity_timeout '
+                             'reason (never the worker retry matrix). Default 600.')
 
     args = parser.parse_args()
 
@@ -1700,6 +1742,11 @@ def main():
             miner_output_dir=getattr(args, 'miner_output_dir', None),
             # [S172 Staging Part B] hop 2 of 3 — CLI end of the canonical route.
             staging_dir=getattr(args, 'staging_dir', None),
+            # [S172-BP §3] hop 2 of 3 — CLI end of the capacity-control route.
+            staging_workers=getattr(args, 'staging_workers', 4),
+            staging_queue_depth=getattr(args, 'staging_queue_depth', 2),
+            staging_deferred_max=getattr(args, 'staging_deferred_max', None),
+            staging_capacity_timeout=getattr(args, 'staging_capacity_timeout', 600.0),
             # [S172 Phase-5 D6.2] the operator route's CLI end of hop 2.
             resume_checkpoint=getattr(args, 'resume_checkpoint', ''),
         )

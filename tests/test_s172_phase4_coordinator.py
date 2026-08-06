@@ -3474,11 +3474,23 @@ def gate55_oversized_attempt_fails_fast():
 
 
 def gate56_bounded_deferred_queue():
-    """Defect 1c (C4): the deferred queue is bounded by COUNT (staging_deferred_max)
-    and retained BYTES (staging_high_water_bytes). Beyond the bound, dispatch
-    back-pressures via the matrix instead of retaining more payloads. (OLD:
-    `_deferred` was a plain unbounded list — 100 un-admittable attempts sat with
-    `deferred_len=100` against a bound of 2, each retaining its inline payload.)"""
+    """Defect 1c (C4): the deferred queue is bounded by COUNT and retained BYTES
+    (staging_high_water_bytes). (OLD: `_deferred` was a plain unbounded list — 100
+    un-admittable attempts sat with `deferred_len=100` against a bound of 2, each
+    retaining its inline payload.)
+
+    ⚠ UPDATED BY [S172-BP §0/§1.6] — the BOUND is unchanged and still proven here;
+    what changed is the DISPOSITION OF AN OVERFLOW. This gate used to assert
+    *"excess was back-pressured via the matrix (hybrid reassign) — trial runs on"*,
+    which is precisely the classification Beta D removed: a coordinator-side
+    transient capacity condition must not enter the phase-specific worker retry
+    matrix. Overflow is now a SIZING INVARIANT violation terminated by a DIRECT
+    fail_trial with a `coordinator_staging_capacity_invariant:` reason.
+
+    Note this gate reaches the invariant only because it sets an explicit operator
+    OVERRIDE (`staging_deferred_max=2`) far below the derived bound — which is
+    exactly the case §2 says must WARN and then be honoured. In the production
+    shape (`staging_deferred_max=None` => derived) this branch is unreachable."""
     with tempfile.TemporaryDirectory() as tmp:
         gate = threading.Event()
         sink = _StubSink()
@@ -3525,8 +3537,19 @@ def gate56_bounded_deferred_queue():
         # D1c: the deferred queue NEVER exceeds its configured count/byte bounds.
         assert len(coord._deferred) <= 2, f"deferred_len={len(coord._deferred)} > bound 2"
         assert coord._deferred_retained_bytes() <= coord.config.staging_high_water_bytes
-        # excess was back-pressured via the matrix (hybrid reassign) — trial runs on.
-        assert coord.ledger.get_trial("run")["state"] == "running"
+        # [S172-BP §1.6] Excess is now an INFRASTRUCTURE termination, never a matrix
+        # event: the trial is aborted with a reason naming the capacity invariant
+        # and the full sizing arithmetic — and NO stripe was reassigned (which is
+        # what "did not enter the matrix" looks like from the ledger).
+        assert coord.ledger.get_trial("run")["state"] == "aborted"
+        assert coord._bp["capacity_invariant_terminations"] >= 1
+        for k in range(N):
+            st = coord.ledger.get_stripe("run", f"run_sD{k}")
+            assert st["current_attempt"] == 0, (
+                f"run_sD{k} consumed a retry — the capacity condition reached the "
+                f"matrix")
+            assert not st["phase_degraded"], (
+                f"run_sD{k} was marked phase_degraded by a capacity wait")
         gate.set()
         _drain_staging(coord)
 

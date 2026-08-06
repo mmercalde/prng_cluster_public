@@ -40,6 +40,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -240,9 +241,30 @@ class CoordinatorConfig:
     staging_queue_depth: int = 2
     # Defect 1c (C4): the deferred queue (sub-stripes waiting on capacity/slots) is
     # bounded by COUNT and by retained BYTES (the byte bound reuses
-    # staging_high_water_bytes). Beyond the bound, dispatch back-pressures via the
-    # retry matrix instead of retaining more payloads.
-    staging_deferred_max: int = 64
+    # staging_high_water_bytes).
+    #
+    # [S172-BP §2, Beta A — binding] THE CONSTANT 64 IS DELETED. Its meaning was
+    # never a statement about memory: 64 inline entries retain ~10 KB against a
+    # 16 GiB byte cap, so the count cap fired while the byte cap could not (Alpha's
+    # deferred-queue note §2.3). The runtime bound is now DERIVED from the resolved
+    # execution set, stripe geometry, phase and per-worker VRAM caps
+    # (`staging_burst_bound_conservative` + the resume margin) — never a
+    # hand-maintained constant.
+    #
+    # This field survives ONLY as an OPTIONAL OPERATOR OVERRIDE:
+    #   None  -> use the derived bound (the production shape)
+    #   int   -> force that bound; if it is BELOW the derived bound a WARNING names
+    #            both numbers, because the operator is re-arming the condition the
+    #            derivation exists to remove.
+    staging_deferred_max: Optional[int] = None
+    # [S172-BP §1.5, Beta §1 + gate 11] The ONE permitted trial-terminal path for a
+    # coordinator capacity WAIT. Measured from the OLDEST currently-paused
+    # connection's pause-entry time; on expiry the coordinator calls fail_trial
+    # DIRECTLY with a `coordinator_staging_capacity_timeout:` reason. The event
+    # never enters the phase-specific worker retry matrix — a capacity wait is a
+    # coordinator/infrastructure condition, not a stripe failure state (§0).
+    # Default 600.0 = the same class as staging_timeout; FLAGGED FOR BETA (§1.5).
+    staging_capacity_timeout: float = 600.0
     # Defect 4 (C4): a hung fetch whose thread never returns is tracked here; the
     # registry is bounded and, when the cap is exceeded, surfaces a capacity error
     # rather than silently accumulating daemon threads across a soak.
@@ -369,6 +391,175 @@ def expected_substripes_for(seed_count: int, effective_cap: int) -> int:
     if seed_count <= 0:
         return 0
     return math.ceil(seed_count / effective_cap)
+
+
+# ---------------------------------------------------------------------------
+# [S172-BP §2 — Beta A, binding] THE DERIVED STAGING BURST BOUND
+#
+# Two PURE functions (no I/O, no coordinator state) so both are unit-testable in
+# isolation and neither can drift from the cap logic the worker actually
+# partitions with: both resolve caps through `advertised_effective_cap`, which is
+# the coordinator's existing single cap path (it wraps the worker's own
+# `select_seed_cap`, range_miner_worker.py:472-479), NOT a second phase->cap table.
+#
+# ⚠ 116 vs 136 — BETA SINGLED THIS DISTINCTION OUT; PRESERVE IT.
+#   116 = the EXACT count for the recorded heterogeneous 2026-08-05 assignment
+#         (34 + 14 + 34 + 34): three ROCm stripes at cap 2,000,000 and one CUDA
+#         stripe at cap 5,000,000, each over stripe_span 67,108,864.
+#   136 = the CONSERVATIVE PRE-ASSIGNMENT bound for the same geometry: four
+#         simultaneously admitted stripe slots, each sized by the WORST (tightest
+#         cap => largest sub-stripe count) worker eligible for that slot, i.e.
+#         4 x 34 = 136 when any AMD worker is eligible.
+# They are different quantities answering different questions. The RUNTIME uses
+# the conservative one, because the assignment is not yet known when capacity must
+# already be sized. The exact one is the audit/forensic quantity.
+# ---------------------------------------------------------------------------
+
+# Workflow phases 3 and 4 are the hybrid (variable-skip) phases; 1 and 2 are
+# constant. Hybrid takes the TIGHTER seed cap (an extra skip_sequences_gpu
+# allocation), so it produces MORE sub-stripes per stripe — which is why the
+# phase, not just the backend, drives the bound.
+_HYBRID_WORKFLOW_PHASES = (3, 4)
+
+
+def phase_family_probe(phase: int, family_name: Optional[str] = None) -> str:
+    """The concrete variant NAME whose hybrid-ness matches `phase`.
+
+    Cap resolution must go through `advertised_effective_cap` (one path, shared
+    with the worker). That function keys on a family NAME, not on a phase, so a
+    phase-driven caller needs a name whose `is_hybrid_family()` answer matches the
+    phase. An explicit `family_name` always wins — a real assignment knows its own
+    variant and must not be re-derived from the phase.
+    """
+    if family_name:
+        return family_name
+    return "_probe_hybrid" if int(phase) in _HYBRID_WORKFLOW_PHASES else "_probe"
+
+
+def applicable_seed_cap(
+    backend: str, seed_caps: Dict[str, int], phase: int,
+    family_name: Optional[str] = None,
+) -> int:
+    """The seed cap a worker with `seed_caps` will partition with in `phase`.
+
+    Delegates to `advertised_effective_cap` so the bound and the coordinator's own
+    `expected_substripes_for` sizing (:364, used by assign_stripes) can never
+    diverge — the defect class Beta named in §2.
+    """
+    return advertised_effective_cap(
+        backend, phase_family_probe(phase, family_name), seed_caps)
+
+
+def _coerce_worker_cap_record(worker: Any, caps: Optional[Dict[str, int]]) -> Tuple[str, Dict[str, int]]:
+    """(backend, seed_caps) for one worker record, tolerating the three shapes the
+    coordinator actually holds: a WorkerConnection / WorkerRecord (attributes), a
+    plain mapping, or a (backend, seed_caps) pair. A worker that advertises no caps
+    falls back to the CENTRALLY-resolved `caps` — never to a literal."""
+    if isinstance(worker, (tuple, list)) and len(worker) == 2:
+        backend, wcaps = worker[0], worker[1]
+    elif isinstance(worker, dict):
+        backend, wcaps = worker.get("backend"), worker.get("seed_caps")
+    else:
+        backend = getattr(worker, "backend", None)
+        wcaps = getattr(worker, "seed_caps", None)
+    if not backend:
+        raise ValueError(f"worker record carries no backend: {worker!r}")
+    resolved = dict(wcaps) if wcaps else dict(caps or {})
+    if not resolved:
+        raise ValueError(
+            f"worker {backend!r} advertises no seed_caps and no central caps were "
+            f"supplied — the bound cannot be derived from nothing")
+    return str(backend), resolved
+
+
+def staging_burst_bound_exact(assignments: Any) -> int:
+    """EXACT staging-request burst for a KNOWN assignment (§2, the 116 quantity).
+
+        sum over actual (stripe_span, worker) assignments of
+            ceil(stripe_span / applicable_seed_cap(worker, phase))
+
+    `assignments` is an iterable of mappings, each describing ONE assigned stripe:
+        stripe_span / seed_count   — the stripe's seed span            (required)
+        effective_cap              — the already-resolved cap          (optional)
+        backend + seed_caps        — resolve the cap from the worker   (optional)
+        phase / workflow_phase     — the workflow phase                (optional)
+        family_name                — the concrete variant              (optional)
+    `effective_cap`, when present, is used verbatim: `assign_stripes` already
+    records it per assignment (:2007) from the very same `advertised_effective_cap`
+    call, so consuming it is reuse, not a second derivation.
+
+    Recorded 2026-08-05 assignment => 34 + 14 + 34 + 34 = 116.
+    """
+    total = 0
+    for row in assignments:
+        if isinstance(row, dict):
+            span = row.get("stripe_span", row.get("seed_count"))
+            cap = row.get("effective_cap")
+            if cap is None:
+                backend, wcaps = _coerce_worker_cap_record(row, row.get("seed_caps"))
+                cap = applicable_seed_cap(
+                    backend, wcaps,
+                    row.get("phase", row.get("workflow_phase", 1)),
+                    row.get("family_name"))
+        else:
+            raise TypeError(
+                f"staging_burst_bound_exact expects mappings per assignment, "
+                f"got {type(row).__name__}")
+        if span is None:
+            raise ValueError(f"assignment carries no stripe_span/seed_count: {row!r}")
+        total += expected_substripes_for(int(span), int(cap))
+    return total
+
+
+def staging_burst_bound_conservative(
+    slots: Any, eligible_workers: Any, phase: int,
+    caps: Optional[Dict[str, int]] = None,
+    family_name: Optional[str] = None,
+) -> int:
+    """CONSERVATIVE pre-assignment burst bound (§2, the 136 quantity).
+
+        sum over simultaneously admitted stripe slots of
+            max over workers eligible for that slot of
+                ceil(stripe_span / applicable_seed_cap(worker, phase))
+
+    This is the bound the RUNTIME uses, because capacity must be sized BEFORE the
+    round-robin decides which worker gets which stripe. Taking the max per slot is
+    what makes it safe for every assignment the scheduler could still choose.
+
+    `slots` is either
+      * a sequence of per-slot stripe SPANS — the honest shape, because the last
+        macro-stripe from `partition_macro_stripes` may be shorter than
+        `miner_stripe_size`; or
+      * an int slot COUNT, which then REQUIRES a uniform span supplied as the
+        single-element sequence `[span] * n` by the caller. An int with no spans is
+        refused rather than paired with an invented stripe size.
+    `eligible_workers` are worker records (WorkerConnection / WorkerRecord / dict /
+    (backend, seed_caps) pair). `caps` is the centrally-resolved cap mapping used
+    only for a worker that advertises none.
+
+    Four slots of 67,108,864 with any AMD worker (cap 2,000,000) eligible
+    => 4 x ceil(67,108,864 / 2,000,000) = 4 x 34 = 136.
+    """
+    if isinstance(slots, int) and not isinstance(slots, bool):
+        raise TypeError(
+            "staging_burst_bound_conservative(slots=...) needs the per-slot stripe "
+            "SPANS, not a bare count — pass [stripe_span] * n so the bound is "
+            "derived from real geometry rather than an assumed stripe size")
+    spans = [int(s) for s in slots]
+    workers = list(eligible_workers)
+    if not workers:
+        raise ValueError(
+            "staging_burst_bound_conservative requires at least one eligible worker")
+    per_worker_caps = [
+        applicable_seed_cap(b, c, phase, family_name)
+        for b, c in (_coerce_worker_cap_record(w, caps) for w in workers)
+    ]
+    total = 0
+    for span in spans:
+        # max over eligible workers == the TIGHTEST cap, which yields the LARGEST
+        # sub-stripe count for that slot.
+        total += max(expected_substripes_for(span, cap) for cap in per_worker_caps)
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -1783,6 +1974,45 @@ class RangeMinerCoordinator:
         self._admission_lock = threading.Lock()
         self._admitted: Dict[Tuple[str, str, int], Dict[str, int]] = {}
         self._deferred: List[tuple] = []
+        # [S172-BP §1.2] PER-CONNECTION PAUSE STATE. `_paused_connections` maps a
+        # connection key (the raw socket) to its pause record; insertion order IS
+        # the FIFO resume order (Beta B.3 fairness). A paused connection holds AT
+        # MOST ONE already-decoded envelope, in the reader thread — never here.
+        #
+        # This is deliberately PER CONNECTION and never global: pausing one reader
+        # must not touch another connection's reader, the accept loop, or the serve
+        # loop. The serve loop stays single-threaded and reads this state only for
+        # the §1.4 lease exemption and the §1.5 capacity timeout.
+        self._pause_lock = threading.Lock()
+        self._paused_connections: "OrderedDict[Any, Dict[str, Any]]" = OrderedDict()
+        # Latched once the §1.5 bounded capacity timeout is observed, so the reader
+        # threads and the serve loop cannot disagree about whether it fired.
+        self._capacity_timeout_latched_at: Optional[float] = None
+        # [S172-BP §2] The DERIVED deferred bound for the current stage, set by
+        # `derive_staging_deferred_bound` at stage setup. None => nothing derived
+        # yet (a bare-API/gate call), in which case the accessor derives on demand
+        # from live config + registered workers rather than falling back to a
+        # constant.
+        self._derived_deferred_bound: Optional[int] = None
+        self._derived_bound_detail: Dict[str, Any] = {}
+        self._fallback_bound_cache: Dict[Tuple[int, int], int] = {}
+        # [S172-BP §4] Structured, grep-stable metrics. Every emission carries the
+        # `[S172-BP]` prefix so gate_s172_prod_shape.py and operators can extract
+        # the series from a raw run log.
+        self._bp_lock = threading.Lock()
+        self._bp: Dict[str, Any] = {
+            "inbound_qsize_high_water": 0,
+            "deferred_high_water": 0,
+            "paused_now": 0,
+            "paused_high_water": 0,
+            "pause_events": 0,
+            "pause_seconds_total": 0.0,
+            "pause_seconds_max": 0.0,
+            "staging_jobs_completed": 0,
+            "capacity_timeout_terminations": 0,
+            "capacity_invariant_terminations": 0,
+            "trial_started_at": None,
+        }
         # Defect 4 (C4): tracked registry of timed-out ('abandoned') fetch daemon
         # threads whose TransferAdapter did not honor cancellation, so permanent
         # network hangs cannot accumulate untracked threads across a 50-trial soak.
@@ -2639,13 +2869,334 @@ class RangeMinerCoordinator:
     def _deferred_retained_bytes(self) -> int:
         return sum(self._entry_bytes(e) for e in self._deferred)
 
+    # ==================================================================
+    # [S172-BP] Coordinator staging back-pressure: derived bound (§2),
+    # per-connection pause/resume (§1), bounded capacity timeout (§1.5),
+    # metrics (§4).
+    #
+    # THE CLASSIFICATION LAW (§0, Beta D — binding):
+    #   Coordinator staging back-pressure is a WAITING STATE, not a stripe
+    #   failure state. No capacity-wait event may enter the phase-specific
+    #   worker retry matrix. The ONE permitted trial-terminal path for
+    #   capacity is the bounded timeout of §1.5, which calls fail_trial
+    #   DIRECTLY — never handle_stripe_failure.
+    # ==================================================================
+
+    def _resume_margin(self) -> int:
+        """The documented bounded margin covering the transition window and
+        ALREADY-DECODED messages (Beta: *"a documented bounded margin for
+        transition and already-decoded messages"*).
+
+        DEFAULT = the live connection count, because that is exactly how many
+        envelopes can be in flight past the capacity check at once: each reader
+        holds at most one decoded envelope (§1.2), so N connections can contribute
+        at most N entries between the check and the enqueue. It doubles as the
+        HYSTERESIS gap — pause at the bound, resume at `bound - margin` — which is
+        what stops pause/resume thrash from a queue hovering at its limit.
+        """
+        return max(1, len(self.connections))
+
+    def _derive_bound_from_current_state(self) -> int:
+        """Best-effort derivation for a caller that never went through stage
+        setup (a bare-API or gate call). Still DERIVED from live config and the
+        currently-registered workers — never a constant. One slot of the
+        configured macro-stripe size, phase 1.
+
+        Memoized on (connection count, macro-stripe size) because a PAUSED reader
+        re-reads the bound every 50 ms; the inputs only change when the fleet or
+        the geometry does, and both are in the key."""
+        key = (len(self.connections), int(self.config.miner_stripe_size))
+        cached = self._fallback_bound_cache.get(key)
+        if cached is not None:
+            return cached
+        workers = [w for w in self.connections.values()
+                   if not getattr(w, "quarantined", False)] or \
+                  list(self.connections.values())
+        if not workers:
+            # Nothing registered: the tightest CENTRALLY-CONFIGURED cap is still a
+            # real derivation of "how many sub-stripes one stripe can produce".
+            caps = self._central_caps()
+            tightest = min(v for v in caps.values() if v > 0)
+            burst = expected_substripes_for(
+                int(self.config.miner_stripe_size), int(tightest))
+        else:
+            burst = staging_burst_bound_conservative(
+                [int(self.config.miner_stripe_size)], workers, 1,
+                caps=self._central_caps())
+        bound = burst + self._resume_margin()
+        self._fallback_bound_cache[key] = bound
+        return bound
+
+    def derive_staging_deferred_bound(
+        self, stripe_spans, eligible_workers, phase: int,
+        family_name: Optional[str] = None,
+    ) -> int:
+        """[§2] Compute and INSTALL the stage's derived deferred bound from the
+        RESOLVED execution set, stripe geometry, phase and per-worker caps:
+
+            staging_deferred_bound = burst_bound_conservative + resume_margin
+
+        Called at stage setup (immediately after assign_stripes), so capacity is
+        sized against what the stage will actually produce rather than against a
+        number somebody typed."""
+        margin = self._resume_margin()
+        burst = staging_burst_bound_conservative(
+            stripe_spans, eligible_workers, phase, caps=self._central_caps(),
+            family_name=family_name)
+        bound = burst + margin
+        self._derived_deferred_bound = bound
+        self._derived_bound_detail = {
+            "burst_bound_conservative": burst,
+            "resume_margin": margin,
+            "bound": bound,
+            "slots": len(list(stripe_spans)),
+            "phase": int(phase),
+            "family_name": family_name,
+            "eligible_workers": len(list(eligible_workers)),
+        }
+        logger.info(
+            "[S172-BP] derived_bound stage phase=%s family=%s slots=%d "
+            "eligible_workers=%d burst_conservative=%d resume_margin=%d bound=%d",
+            phase, family_name, self._derived_bound_detail["slots"],
+            self._derived_bound_detail["eligible_workers"], burst, margin, bound)
+        return bound
+
+    def staging_deferred_bound(self) -> int:
+        """The bound in force RIGHT NOW.
+
+        `config.staging_deferred_max` is an OPTIONAL OPERATOR OVERRIDE of the
+        derived value (None => derived). An override BELOW the derived bound logs a
+        WARNING naming both numbers — it re-arms the very condition the derivation
+        removes, so it must never be silent."""
+        derived = self._derived_deferred_bound
+        if derived is None:
+            derived = self._derive_bound_from_current_state()
+        override = getattr(self.config, "staging_deferred_max", None)
+        if override is None:
+            return max(1, int(derived))
+        override = max(1, int(override))
+        if override < derived:
+            logger.warning(
+                "[S172-BP] operator override staging_deferred_max=%d is BELOW the "
+                "derived bound %d (burst_conservative + resume_margin) — the "
+                "deferred queue can now saturate before back-pressure has absorbed "
+                "the burst; detail=%s",
+                override, derived, self._derived_bound_detail)
+        return override
+
+    # ----- §1.2 the capacity gate the reader consults ----------------------
+    def staging_can_accept(self) -> bool:
+        """True iff a staging slot is free OR the deferred queue is below
+        `bound - resume_margin` (the hysteresis low-water).
+
+        Read WITHOUT `_admission_lock` on purpose: Beta permits an approximate
+        lock-free read here precisely because §2's bound carries an explicit
+        per-connection margin covering the decode race this read can lose. The
+        semaphore probe is acquire-then-immediately-release, so it never holds a
+        slot away from a real staging submission for more than the probe itself."""
+        sem = self._staging_slots()
+        if sem.acquire(blocking=False):
+            sem.release()
+            return True
+        bound = self.staging_deferred_bound()
+        return len(self._deferred) < max(0, bound - self._resume_margin())
+
+    # ----- §1.2 pause registry (per connection, FIFO) ----------------------
+    def register_paused_connection(
+        self, conn_key: Any, worker_id: Optional[str], now: Optional[float] = None,
+    ) -> threading.Event:
+        """Register `conn_key` as COORDINATOR-INITIATED PAUSED and hand back the
+        event its reader waits on. Idempotent: a re-register returns the existing
+        event and keeps the ORIGINAL pause-entry time, so §1.5's oldest-pause clock
+        cannot be reset by a retry."""
+        now = time.time() if now is None else now
+        with self._pause_lock:
+            rec = self._paused_connections.get(conn_key)
+            if rec is None:
+                rec = {"event": threading.Event(), "since": now,
+                       "worker_id": worker_id}
+                self._paused_connections[conn_key] = rec
+                paused_now = len(self._paused_connections)
+                ids = [r["worker_id"] for r in self._paused_connections.values()]
+            else:
+                rec["event"].clear()
+                paused_now = len(self._paused_connections)
+                ids = [r["worker_id"] for r in self._paused_connections.values()]
+        with self._bp_lock:
+            self._bp["pause_events"] += 1
+            self._bp["paused_now"] = paused_now
+            self._bp["paused_high_water"] = max(
+                self._bp["paused_high_water"], paused_now)
+        logger.info(
+            "[S172-BP] pause worker=%s deferred=%d bound=%d paused_now=%d "
+            "paused_ids=%s", worker_id, len(self._deferred),
+            self.staging_deferred_bound(), paused_now, ids)
+        return rec["event"]
+
+    def deregister_paused_connection(
+        self, conn_key: Any, now: Optional[float] = None, reason: str = "resume",
+    ) -> Optional[float]:
+        """Leave the paused set; returns this pause's duration in seconds."""
+        now = time.time() if now is None else now
+        with self._pause_lock:
+            rec = self._paused_connections.pop(conn_key, None)
+            paused_now = len(self._paused_connections)
+        if rec is None:
+            return None
+        held = max(0.0, now - rec["since"])
+        with self._bp_lock:
+            self._bp["paused_now"] = paused_now
+            self._bp["pause_seconds_total"] += held
+            self._bp["pause_seconds_max"] = max(
+                self._bp["pause_seconds_max"], held)
+        logger.info(
+            "[S172-BP] %s worker=%s pause_seconds=%.3f deferred=%d bound=%d "
+            "paused_now=%d", reason, rec.get("worker_id"), held,
+            len(self._deferred), self.staging_deferred_bound(), paused_now)
+        return held
+
+    def paused_worker_ids(self) -> frozenset:
+        """Worker identities whose connection is in COORDINATOR-INITIATED pause.
+        Consumed by the §1.4 lease exemption."""
+        with self._pause_lock:
+            return frozenset(
+                r["worker_id"] for r in self._paused_connections.values()
+                if r["worker_id"] is not None)
+
+    def paused_connection_count(self) -> int:
+        with self._pause_lock:
+            return len(self._paused_connections)
+
+    def _resume_paused_connections(self) -> None:
+        """[§1.2 resume trigger] Wake paused readers in PAUSE-ENTRY ORDER (FIFO)
+        while capacity holds. Called AFTER `_pump_deferred` at every
+        capacity-release point, so the deferred queue gets first claim on a freed
+        slot and a resumed reader does not immediately re-pause."""
+        while True:
+            if not self.staging_can_accept():
+                return
+            with self._pause_lock:
+                target = None
+                for key, rec in self._paused_connections.items():
+                    if not rec["event"].is_set():
+                        target = rec
+                        break
+                if target is None:
+                    return
+                target["event"].set()
+                worker_id = target["worker_id"]
+            logger.info("[S172-BP] resume_signal worker=%s deferred=%d bound=%d",
+                        worker_id, len(self._deferred),
+                        self.staging_deferred_bound())
+            # Only ONE reader is released per confirmed capacity observation; the
+            # loop re-checks `staging_can_accept()` before releasing the next, so a
+            # single freed slot cannot wake the whole fleet at once.
+            if not self.staging_can_accept():
+                return
+
+    def _release_capacity(self) -> None:
+        """The named capacity-release sequence: pump the deferred queue, which then
+        resumes paused readers in its `finally` (§1.2 ordering).
+
+        Deliberately a THIN ALIAS for `_pump_deferred` rather than a second
+        release path: putting the resume inside the pump is what let every
+        pre-existing capacity-release caller — `_release_admission`,
+        `_on_staging_failed`, `_submit_with_slot`'s completion callback, the
+        staging-job success tail — become a resume point WITHOUT any out-of-scope
+        method being edited (§0)."""
+        self._pump_deferred()
+
+    # ----- §1.5 the bounded capacity timeout -------------------------------
+    def staging_capacity_timeout_expired(self, now: Optional[float] = None) -> bool:
+        """True once the OLDEST currently-paused connection has been paused longer
+        than `staging_capacity_timeout`. LATCHED: once observed it stays true, so a
+        reader thread and the serve loop can never disagree about whether the
+        bounded wait was exceeded."""
+        if self._capacity_timeout_latched_at is not None:
+            return True
+        limit = float(getattr(self.config, "staging_capacity_timeout", 600.0) or 0.0)
+        if limit <= 0:
+            return False
+        now = time.time() if now is None else now
+        with self._pause_lock:
+            oldest = min((r["since"] for r in self._paused_connections.values()),
+                         default=None)
+        if oldest is None or (now - oldest) <= limit:
+            return False
+        self._capacity_timeout_latched_at = now
+        return True
+
+    def staging_capacity_timeout_reason(self, now: Optional[float] = None) -> str:
+        """The §1.5 terminal reason string. Leads with the ROOT CAUSE (the Part B
+        convention) and is explicitly a COORDINATOR/INFRASTRUCTURE condition, so a
+        reader of the terminal report is never pointed at a worker."""
+        now = time.time() if now is None else now
+        limit = float(getattr(self.config, "staging_capacity_timeout", 600.0) or 0.0)
+        with self._pause_lock:
+            n = len(self._paused_connections)
+            ids = sorted(str(r["worker_id"]) for r in
+                         self._paused_connections.values())
+        return (f"coordinator_staging_capacity_timeout: staging did not release "
+                f"capacity within {limit:.1f}s; {n} connections paused "
+                f"({', '.join(ids) if ids else 'none'})")
+
+    # ----- §4 metrics ------------------------------------------------------
+    def note_inbound_occupancy(self, qsize: int) -> None:
+        with self._bp_lock:
+            self._bp["inbound_qsize_high_water"] = max(
+                self._bp["inbound_qsize_high_water"], int(qsize))
+
+    def staging_backpressure_metrics(self, now: Optional[float] = None) -> Dict[str, Any]:
+        now = time.time() if now is None else now
+        with self._bp_lock:
+            out = dict(self._bp)
+        started = out.pop("trial_started_at", None)
+        elapsed = max(1e-9, now - started) if started else None
+        out["elapsed_seconds"] = elapsed
+        out["staging_jobs_per_sec"] = (
+            out["staging_jobs_completed"] / elapsed if elapsed else None)
+        out["derived_bound"] = self._derived_deferred_bound
+        out["bound_in_force"] = self.staging_deferred_bound()
+        out["derived_bound_detail"] = dict(self._derived_bound_detail)
+        out["deferred_now"] = len(self._deferred)
+        out["paused_now"] = self.paused_connection_count()
+        return out
+
+    def log_staging_backpressure_summary(
+        self, run_id: str, now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """The trial-terminal summary line (§4). One structured, grep-stable
+        `[S172-BP] summary` record carrying every required series."""
+        m = self.staging_backpressure_metrics(now)
+        logger.info(
+            "[S172-BP] summary run=%s inbound_qsize_high_water=%d "
+            "deferred_high_water=%d derived_bound=%s bound_in_force=%d "
+            "paused_high_water=%d pause_events=%d pause_seconds_total=%.3f "
+            "pause_seconds_max=%.3f staging_jobs_completed=%d "
+            "staging_jobs_per_sec=%s capacity_timeout_terminations=%d "
+            "capacity_invariant_terminations=%d",
+            run_id, m["inbound_qsize_high_water"], m["deferred_high_water"],
+            m["derived_bound"], m["bound_in_force"], m["paused_high_water"],
+            m["pause_events"], m["pause_seconds_total"], m["pause_seconds_max"],
+            m["staging_jobs_completed"],
+            ("%.3f" % m["staging_jobs_per_sec"]) if m["staging_jobs_per_sec"]
+            is not None else "n/a",
+            m["capacity_timeout_terminations"],
+            m["capacity_invariant_terminations"])
+        return m
+
     def _defer_locked(self, entry) -> bool:
-        """Defect 1c (C4): bounded add to `_deferred` — both a COUNT cap
-        (staging_deferred_max) and a retained-BYTES cap (staging_high_water_bytes).
-        Returns False if adding would exceed either bound; the caller then applies
-        dispatch-level back-pressure (matrix) instead of retaining the payload.
+        """Defect 1c (C4): bounded add to `_deferred` — both a COUNT cap and a
+        retained-BYTES cap (staging_high_water_bytes). Returns False if adding
+        would exceed either bound.
+
+        [S172-BP §2] The COUNT cap is now the DERIVED bound
+        (`staging_deferred_bound()`), not the deleted constant 64. With a bound of
+        (conservative burst + margin) and the §1 reader pause holding traffic on
+        the wire, a False return is MATHEMATICALLY UNREACHABLE — §1.6 treats it as
+        a sizing INVARIANT violation, never as a matrix event.
         Caller MUST hold _admission_lock."""
-        max_count = max(1, int(getattr(self.config, "staging_deferred_max", 64)))
+        max_count = self.staging_deferred_bound()
         max_bytes = int(self.config.staging_high_water_bytes)
         add_bytes = self._entry_bytes(entry)
         if len(self._deferred) + 1 > max_count:
@@ -2653,11 +3204,16 @@ class RangeMinerCoordinator:
         if self._deferred_retained_bytes() + add_bytes > max_bytes:
             return False
         self._deferred.append(entry)
+        with self._bp_lock:
+            self._bp["deferred_high_water"] = max(
+                self._bp["deferred_high_water"], len(self._deferred))
         return True
 
     def _release_admission(self, run_id, stripe_id, attempt) -> None:
         """De-commit one attempt's admission budget (attempt failed/cleaned/
-        superseded) and pump any deferred sub-stripes now that capacity may fit."""
+        superseded) and pump any deferred sub-stripes now that capacity may fit.
+        [S172-BP §1.2] `_pump_deferred` is now the capacity-release point, so this
+        resumes paused readers too — with this method left byte-identical."""
         with self._admission_lock:
             self._admitted.pop((run_id, stripe_id, attempt), None)
         self._pump_deferred()
@@ -2723,11 +3279,55 @@ class RangeMinerCoordinator:
             if not fut.done():
                 fut.set_result(None)
             return fut
-        # D1c: the deferred queue is full — reject via the retry matrix (retryable)
-        # rather than retain another payload. The matrix reassigns (hybrid) or fails
-        # closed (constant); either way the payload is not held in coordinator RAM.
-        self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
-                                "staging deferred queue full — dispatch back-pressure")
+        # [S172-BP §0 + §1.6] THE ONE REMOVED CALL SITE.
+        #
+        # This branch used to be
+        #     self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
+        #                             "staging deferred queue full — dispatch back-pressure")
+        # which charged a COORDINATOR-SIDE TRANSIENT CAPACITY CONDITION to a
+        # worker's stripe as a fault, through the phase-specific retry matrix. On a
+        # constant phase (every TFM run) the matrix's very next test is
+        # `if phase in (1, 2): fail_trial(...)` (:3059-3066), so `retryable=True`
+        # was inert and the trial died — which is exactly what killed the first
+        # production-shape run past staging on 2026-08-05.
+        #
+        # Beta D, binding: coordinator staging back-pressure is a WAITING STATE,
+        # not a stripe failure state. The wait now happens at the reader
+        # (`_conn_reader_loop`, §1), keeping the payload on the wire / at the
+        # worker, and NO capacity-wait event enters the matrix.
+        #
+        # Reaching HERE after §2's derived bound (>= conservative burst + margin)
+        # means the SIZING was wrong, not that a worker failed. Log the full
+        # arithmetic and terminate via a DIRECT fail_trial with an infrastructure
+        # reason — never `handle_stripe_failure`, never the matrix.
+        # ⚠ FLAGGED FOR BETA (§1.6): this disposition is Alpha's reading of "an
+        # invariant, not a matrix event"; Beta may amend it.
+        detail = self._derived_bound_detail or {}
+        arithmetic = (
+            f"deferred={len(self._deferred)} bound_in_force="
+            f"{self.staging_deferred_bound()} derived_bound="
+            f"{self._derived_deferred_bound!r} override="
+            f"{getattr(self.config, 'staging_deferred_max', None)!r} "
+            f"resume_margin={self._resume_margin()} "
+            f"burst_conservative={detail.get('burst_bound_conservative')!r} "
+            f"slots={detail.get('slots')!r} phase={detail.get('phase')!r} "
+            f"eligible_workers={detail.get('eligible_workers')!r} "
+            f"retained_bytes={self._deferred_retained_bytes()} "
+            f"byte_high_water={int(self.config.staging_high_water_bytes)} "
+            f"staging_workers={getattr(self.config, 'staging_workers', None)!r} "
+            f"staging_queue_depth="
+            f"{getattr(self.config, 'staging_queue_depth', None)!r}")
+        logger.error(
+            "[S172-BP] CAPACITY INVARIANT VIOLATED at %s/%s — the deferred queue "
+            "overflowed although the reader pause should have made that "
+            "unreachable. This is a SIZING defect, not a worker fault: %s",
+            run_id, stripe_id, arithmetic)
+        with self._bp_lock:
+            self._bp["capacity_invariant_terminations"] += 1
+        self.fail_trial(
+            run_id,
+            reason=(f"coordinator_staging_capacity_invariant: deferred staging "
+                    f"queue overflowed at {stripe_id}; {arithmetic}"))
         if not fut.done():
             fut.set_result(None)
         return fut
@@ -2747,7 +3347,11 @@ class RangeMinerCoordinator:
 
         def _on_done(_f):
             self._staging_slots().release()
-            self._pump_deferred()   # a slot just freed — resume deferred work
+            with self._bp_lock:
+                self._bp["staging_jobs_completed"] += 1
+            # a slot just freed — resume deferred work, and (inside the pump, §1.2)
+            # any paused reader, in that order.
+            self._pump_deferred()
         fut.add_done_callback(_on_done)
         return fut
 
@@ -2755,35 +3359,47 @@ class RangeMinerCoordinator:
         """Resume deferred sub-stripes whose attempt can now be admitted AND a slot
         is free. Runs OFF the dispatch thread (staging-completion callback / matrix /
         ack). Dead attempts (terminal/superseded) are dropped. The slot is acquired
-        NONBLOCKING under the admission lock; the submit happens outside it."""
-        ready: List[tuple] = []
-        with self._admission_lock:
-            self._prune_admitted_locked()
-            if not self._deferred:
-                return
-            still: List[tuple] = []
-            for entry in self._deferred:
-                (_k, _w, run_id, stripe_id, attempt, _s, _m, _e, fut) = entry
-                if not self._attempt_live_locked(run_id, stripe_id, attempt):
+        NONBLOCKING under the admission lock; the submit happens outside it.
+
+        [S172-BP §1.2 resume trigger] This IS the capacity-release point. Every
+        caller that already pumped (`_release_admission`, `_submit_with_slot`'s
+        completion callback, `_on_staging_failed`, the staging-job success tail)
+        therefore also resumes paused readers — WITHOUT any of those out-of-scope
+        methods being edited. Ordering is what Beta asked for: already-retained
+        deferred payloads claim a freed slot FIRST, and only then is a paused
+        reader allowed to add another."""
+        try:
+            ready: List[tuple] = []
+            with self._admission_lock:
+                self._prune_admitted_locked()
+                if not self._deferred:
+                    return
+                still: List[tuple] = []
+                for entry in self._deferred:
+                    (_k, _w, run_id, stripe_id, attempt, _s, _m, _e, fut) = entry
+                    if not self._attempt_live_locked(run_id, stripe_id, attempt):
+                        if not fut.done():
+                            fut.set_result(None)
+                        continue
+                    if (self._try_admit_locked(run_id, stripe_id, attempt)
+                            and self._staging_slots().acquire(blocking=False)):
+                        ready.append(entry)   # slot held for this entry
+                    else:
+                        still.append(entry)
+                self._deferred = still
+            for entry in ready:
+                (kind, wconn, run_id, stripe_id, attempt, sub_index, msg, elig,
+                 fut) = entry
+                try:
+                    real = self._submit_with_slot(kind, wconn, run_id, stripe_id,
+                                                  attempt, sub_index, msg, elig)
+                except BaseException as e:  # noqa: BLE001
                     if not fut.done():
-                        fut.set_result(None)
+                        fut.set_exception(e)
                     continue
-                if (self._try_admit_locked(run_id, stripe_id, attempt)
-                        and self._staging_slots().acquire(blocking=False)):
-                    ready.append(entry)   # slot held for this entry
-                else:
-                    still.append(entry)
-            self._deferred = still
-        for entry in ready:
-            (kind, wconn, run_id, stripe_id, attempt, sub_index, msg, elig, fut) = entry
-            try:
-                real = self._submit_with_slot(kind, wconn, run_id, stripe_id, attempt,
-                                              sub_index, msg, elig)
-            except BaseException as e:  # noqa: BLE001
-                if not fut.done():
-                    fut.set_exception(e)
-                continue
-            self._chain_future(real, fut)
+                self._chain_future(real, fut)
+        finally:
+            self._resume_paused_connections()
 
     @staticmethod
     def _chain_future(src: "concurrent.futures.Future",
@@ -3100,10 +3716,43 @@ class RangeMinerCoordinator:
         self, run_id: str, eligible_workers: List[Any], now: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Apply the phase-specific matrix to every expired COMPUTE lease
-        (state='claimed'). staging leases are never here (Blocker 5)."""
+        (state='claimed'). staging leases are never here (Blocker 5).
+
+        [S172-BP §1.4 — LEASE EXEMPTION, REQUIRED BY BETA'S OWN GATES 1-2 AND
+        FLAGGED FOR RATIFICATION]
+        The back-pressure ruling is SILENT on leases; its gates are not satisfiable
+        without this. Heartbeats are the ONLY compute-lease renewal path
+        (`_serve_dispatch` :4275-4282, `compute_lease_timeout = 300.0` at :225) and
+        they ride the SAME ordered TCP stream as results. A connection paused by
+        the coordinator therefore stops delivering renewals, and this scan would
+        route the resulting expiry into the matrix with `lease_expiry=True` — which
+        SKIPS the non-retryable branch and lands squarely on the constant-phase
+        `fail_trial` (:3059-3066). Any pause longer than 300s would red Beta gates
+        1-2 through that door.
+
+        So a stripe whose claiming worker's connection is in COORDINATOR-INITIATED
+        pause is SKIPPED: the coordinator caused the silence and knows it. The
+        exemption is narrow by construction —
+          * membership in `_paused_connections` is the only qualifier, and only the
+            coordinator ever writes it;
+          * the pause is itself bounded by §1.5, so no stripe can be exempt
+            forever;
+          * an UNPAUSED worker's genuine silence still expires normally.
+        On resume, the queued heartbeats process and renewal restarts.
+        """
         now = time.time() if now is None else now
+        paused = self.paused_worker_ids()
         out = []
         for st in self.ledger.expired_claimed_stripes(run_id, now):
+            if st["claimed_by"] in paused:
+                logger.info(
+                    "[S172-BP] lease_exempt stripe=%s worker=%s — expiry SKIPPED: "
+                    "the coordinator paused this connection for staging capacity, "
+                    "so the missing heartbeat is coordinator-caused (bounded by "
+                    "staging_capacity_timeout=%.1fs)",
+                    st["stripe_id"], st["claimed_by"],
+                    float(getattr(self.config, "staging_capacity_timeout", 600.0)))
+                continue
             out.append(self.handle_stripe_failure(
                 run_id, st["stripe_id"], retryable=True,
                 eligible_workers=eligible_workers, now=now, lease_expiry=True))
@@ -3802,6 +4451,10 @@ class RangeMinerCoordinator:
         # and downstream refuses it. Absence is never neutral.
         provenance_validated = False
         start = time.time()
+        # [S172-BP §4] the trial clock the staging-throughput series is measured
+        # against (jobs completed / elapsed).
+        with self._bp_lock:
+            self._bp["trial_started_at"] = start
 
         def _eligible():
             return [w for w in wconn_by_worker.values() if not w.quarantined]
@@ -3821,6 +4474,21 @@ class RangeMinerCoordinator:
                     self.fail_trial(run_id, reason="serve_trial timeout")
                     continue
 
+                # [S172-BP §1.5] THE BOUNDED CAPACITY TIMEOUT — the ONE permitted
+                # trial-terminal path for a capacity wait. Called DIRECTLY, never
+                # through handle_stripe_failure / the matrix, because the terminal
+                # reason must be a coordinator/infrastructure condition (Beta §1).
+                # Measured from the OLDEST currently-paused connection's entry
+                # time, so a long queue of short pauses cannot trip it.
+                if self.staging_capacity_timeout_expired(now):
+                    _reason = self.staging_capacity_timeout_reason(now)
+                    logger.error("[S172-BP] capacity_timeout run=%s %s",
+                                 run_id, _reason)
+                    with self._bp_lock:
+                        self._bp["capacity_timeout_terminations"] += 1
+                    self.fail_trial(run_id, reason=_reason, now=now)
+                    continue
+
                 # --- accept new connections (no blocking read on the loop) ---
                 try:
                     readable, _, _ = select.select([listen_sock], [], [], poll)
@@ -3837,12 +4505,18 @@ class RangeMinerCoordinator:
                         conn_meta[csock] = {"connect": now, "registered": False}
                         th = threading.Thread(
                             target=self._conn_reader_loop,
-                            args=(cfs, csock, inbound, reader_stop),
+                            # [S172-BP §1.2] worker_by_sock lets the reader name
+                            # the identity it is pausing, which is what the §1.4
+                            # lease exemption keys on. Read-only from the reader.
+                            args=(cfs, csock, inbound, reader_stop, worker_by_sock),
                             name="miner-conn-reader", daemon=True)
                         reader_threads[csock] = th
                         th.start()
 
                 # --- drain complete frames from the bounded inbound queue ---
+                # [S172-BP §4] inbound-queue occupancy high-water, sampled at the
+                # moment of maximum backlog (before the drain).
+                self.note_inbound_occupancy(inbound.qsize())
                 drained = 0
                 while drained < 256:
                     try:
@@ -3976,9 +4650,44 @@ class RangeMinerCoordinator:
                                 run_id,
                                 reason=f"no eligible worker supports variant {fam!r}")
                             continue
-                        self.assign_stripes(
+                        _stage_assignments = self.assign_stripes(
                             run_id, fam, ph, total_seeds, eligible,
                             stripe_prefix=_stage_prefix(stage_idx))
+                        # [S172-BP §2] SIZE THE DEFERRED BOUND FROM THE RESOLVED
+                        # EXECUTION SET — at stage setup, from real geometry, phase
+                        # and per-worker caps. Never a hand-maintained constant.
+                        # The CONSERVATIVE bound is used because capacity has to be
+                        # sized for any assignment the round-robin could still
+                        # produce; the spans come from the assignments themselves,
+                        # so a short final macro-stripe is not rounded up to
+                        # miner_stripe_size.
+                        try:
+                            self.derive_staging_deferred_bound(
+                                [int(a["seed_count"]) for a in _stage_assignments],
+                                eligible, ph, family_name=fam)
+                            # The EXACT bound for the assignment that was actually
+                            # made — logged beside the conservative one so the
+                            # 116-vs-136 distinction is visible in every run log,
+                            # not only in the tests.
+                            logger.info(
+                                "[S172-BP] burst_exact stage=%d family=%s phase=%s "
+                                "exact=%d conservative=%d",
+                                stage_idx, fam, ph,
+                                staging_burst_bound_exact([
+                                    {"stripe_span": a["seed_count"],
+                                     "effective_cap": a["effective_cap"],
+                                     "phase": ph, "family_name": fam}
+                                    for a in _stage_assignments
+                                    if a.get("effective_cap")]),
+                                self._derived_bound_detail.get(
+                                    "burst_bound_conservative"))
+                        except (ValueError, TypeError):
+                            # Sizing must never be the thing that kills a trial;
+                            # the accessor's on-demand derivation still applies.
+                            logger.exception(
+                                "[S172-BP] could not derive the staging deferred "
+                                "bound for stage %d — falling back to the "
+                                "on-demand derivation", stage_idx)
                         stage_assigned = True
                     # ---- MAINTENANCE (unbounded, threshold-free) ---------------
                     # Everything below runs for an ASSIGNED stage regardless of the
@@ -4106,6 +4815,10 @@ class RangeMinerCoordinator:
         provenance = self.threshold_provenance(
             run_id, trial_ctx, validated=provenance_validated)
         self._write_threshold_provenance(provenance)
+        # [S172-BP §4] the trial-terminal metrics summary — emitted for EVERY
+        # terminal state (committed or aborted), and returned on the result so it
+        # is observable on the run rather than only in the log.
+        bp_metrics = self.log_staging_backpressure_summary(run_id)
         return {
             "run_id": run_id,
             "state": trial["state"] if trial else "unknown",
@@ -4115,6 +4828,7 @@ class RangeMinerCoordinator:
             "manifests": list(self.enqueued),
             "bound_addr": self.bound_addr,
             "threshold_provenance": provenance,
+            "staging_backpressure": bp_metrics,
         }
 
     def _write_threshold_provenance(self, provenance: Dict[str, Any]) -> Optional[str]:
@@ -4134,7 +4848,8 @@ class RangeMinerCoordinator:
             logger.warning("could not write threshold provenance to %s: %s", path, e)
             return None
 
-    def _conn_reader_loop(self, cfs, rawsock, inbound, reader_stop) -> None:
+    def _conn_reader_loop(self, cfs, rawsock, inbound, reader_stop,
+                          worker_by_sock=None) -> None:
         """Defect 6 (C3): per-connection reader. Does BLOCKING full-frame reads (so
         a legitimately slow but complete frame is never corrupted) and feeds each
         complete message to the bounded coordinator queue. It touches NO ledger
@@ -4142,19 +4857,97 @@ class RangeMinerCoordinator:
         malformed or oversized frame / socket error (including the serve loop
         closing the socket at shutdown or on the read deadline), it enqueues one
         'eof' and exits. A full queue (coordinator overloaded) also drops the
-        connection rather than growing memory without bound."""
+        connection rather than growing memory without bound.
+
+        [S172-BP §1.1 — WHERE THE PAUSE LIVES, AND WHY]
+        The capacity gate is HERE, per connection, and not in `enqueue_staging`.
+        By the time `enqueue_staging` discovers saturation the payload has ALREADY
+        been decoded into coordinator RAM, so the only remaining choices are
+        "retain it" or "throw it away" — which is how a coordinator capacity wait
+        ended up charged to a worker's stripe as a fault. Gating at the reader
+        keeps every SUBSEQUENT payload on the wire / at the worker, which is the
+        property C4 §1c named correct: the worker's `_sendall`
+        (range_miner_worker.py:1120-1126) is a blocking loop with NO socket
+        timeout, so a full TCP buffer simply parks that worker's mining thread
+        mid-`_send`, harmlessly, until the coordinator reads again.
+
+        ONLY `sub_stripe_result` is gated. `register` / `heartbeat` /
+        `stripe_complete` / `stripe_error` pass through when THEY are the decoded
+        frame. TCP is ordered, so frames queued BEHIND a held result stay on the
+        wire — that is the point of the design, and it is precisely why the §1.4
+        lease exemption has to exist.
+
+        At most ONE already-decoded envelope is held per connection (Beta:
+        *"retaining at most one bounded pending envelope per connection is
+        acceptable"*), and it is held in this thread's local — never in
+        `_deferred`, never in a second queue.
+        """
         import queue as _queue
-        while not reader_stop.is_set():
-            try:
-                msg = cfs.recv_msg()
-            except (ConnectionError, ValueError, OSError):
-                break
-            except Exception:  # noqa: BLE001 — any decode error drops the connection
-                break
-            try:
-                inbound.put(("msg", rawsock, msg), timeout=1.0)
-            except _queue.Full:
-                break
+        pending_envelope = None
+        try:
+            while not reader_stop.is_set():
+                try:
+                    msg = cfs.recv_msg()
+                except (ConnectionError, ValueError, OSError):
+                    break
+                except Exception:  # noqa: BLE001 — any decode error drops the conn
+                    break
+
+                if (getattr(msg, "message_type", None) == "sub_stripe_result"
+                        and not self.staging_can_accept()):
+                    # ---- PAUSE (per connection, never global) ----------------
+                    pending_envelope = msg
+                    worker_id = None
+                    if worker_by_sock is not None:
+                        worker_id = worker_by_sock.get(rawsock)
+                    resume_event = self.register_paused_connection(
+                        rawsock, worker_id)
+                    released = False
+                    while not reader_stop.is_set():
+                        if resume_event.wait(0.05):
+                            released = True
+                            break
+                        if self.staging_capacity_timeout_expired():
+                            # §1.5: the trial is (being) terminated by the serve
+                            # loop with a coordinator/infrastructure reason. This
+                            # reader observes it, DISCARDS the held envelope and
+                            # exits — it never routes anything to the matrix.
+                            break
+                        # Defensive re-check: a capacity release that happened
+                        # between our gate read and the registration would
+                        # otherwise leave this reader waiting for an event nobody
+                        # will set again. This is the decode race the documented
+                        # resume margin (§1.2) covers; observing it directly costs
+                        # one cheap read per 50 ms.
+                        if self.staging_can_accept():
+                            released = True
+                            break
+                    self.deregister_paused_connection(
+                        rawsock,
+                        reason="resume" if released else "pause_aborted")
+                    if not released:
+                        pending_envelope = None
+                        break
+                    # ---- RESUME: deliver the held envelope, exactly once ------
+                    # It was NEVER dispatched while paused: record_substripe_result
+                    # runs only when the serve loop processes it AFTER resume, so
+                    # the existing dedup insert and the existing L1
+                    # accept_stripe_message fence govern it unchanged. No second
+                    # dedup layer is added (§1.3). If the attempt was superseded or
+                    # cancelled while paused (staging_generation moved), that fence
+                    # drops it here — which is correct, and is Beta gate 7.
+                    msg = pending_envelope
+                    pending_envelope = None
+
+                try:
+                    inbound.put(("msg", rawsock, msg), timeout=1.0)
+                except _queue.Full:
+                    break
+        finally:
+            # A held envelope belongs to a trial that is terminal or a connection
+            # that is going away; dropping it is the documented disposition (§1.5).
+            pending_envelope = None
+            self.deregister_paused_connection(rawsock, reason="reader_exit")
         if not reader_stop.is_set():
             try:
                 inbound.put(("eof", rawsock, None), timeout=0.5)
@@ -4691,6 +5484,15 @@ def build_coordinator(
     staging_high_water_files: int = 512,
     compute_lease_timeout: float = 300.0,
     staging_timeout: float = 600.0,
+    # [S172-BP §3, Beta C] The four staging-capacity controls, wired end to end.
+    # Before this work they existed ONLY in the dataclass — the identical shape to
+    # the `staging_dir` dead read Part B closed, and the reason a badly-sized
+    # deferred queue could be changed only by an in-source edit. Values stay at
+    # today's defaults: Beta did NOT rule a new number ("tune after measurement").
+    staging_workers: int = 4,
+    staging_queue_depth: int = 2,
+    staging_deferred_max: Optional[int] = None,
+    staging_capacity_timeout: float = 600.0,
     miner_host: str = "127.0.0.1",
     miner_port: int = DEFAULT_MINER_PORT,
     db_path: Optional[str] = None,
@@ -4710,6 +5512,10 @@ def build_coordinator(
         staging_dir=staging_dir,
         compute_lease_timeout=compute_lease_timeout,
         staging_timeout=staging_timeout,
+        staging_workers=staging_workers,
+        staging_queue_depth=staging_queue_depth,
+        staging_deferred_max=staging_deferred_max,
+        staging_capacity_timeout=staging_capacity_timeout,
         miner_host=miner_host,
         miner_port=miner_port,
     )
@@ -4768,6 +5574,13 @@ def run_trial_miner(
     staging_dir: str = None,
     compute_lease_timeout: float = 300.0,
     staging_timeout: float = 600.0,
+    # [S172-BP §3, Beta C] hop 3 of the configuration route for the four staging
+    # capacity controls. `staging_deferred_max=None` means USE THE DERIVED BOUND
+    # (§2) — it is an operator OVERRIDE, not a value production is expected to set.
+    staging_workers: int = 4,
+    staging_queue_depth: int = 2,
+    staging_deferred_max: Optional[int] = None,
+    staging_capacity_timeout: float = 600.0,
     miner_host: str = "127.0.0.1",
     miner_port: int = DEFAULT_MINER_PORT,
     node_allowlist=None,
@@ -4826,6 +5639,11 @@ def run_trial_miner(
         staging_high_water_files=staging_high_water_files,
         compute_lease_timeout=compute_lease_timeout,
         staging_timeout=staging_timeout,
+        # [S172-BP §3] the four capacity controls reach CoordinatorConfig here.
+        staging_workers=staging_workers,
+        staging_queue_depth=staging_queue_depth,
+        staging_deferred_max=staging_deferred_max,
+        staging_capacity_timeout=staging_capacity_timeout,
         miner_host=miner_host,
         miner_port=miner_port,
         transfer=transfer,

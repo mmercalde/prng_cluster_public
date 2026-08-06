@@ -1468,6 +1468,18 @@ def run_bidirectional_test(coordinator,
             staging_high_water_files = getattr(coordinator, 'staging_high_water_files', 512),
             compute_lease_timeout  = getattr(coordinator, 'compute_lease_timeout', 300.0),
             staging_timeout        = getattr(coordinator, 'staging_timeout', 600.0),
+            # [S172-BP §3, Beta C] The four staging-capacity controls, read off the
+            # coordinator exactly like every other knob on this call. Before this
+            # they lived ONLY in CoordinatorConfig, so an operator could not change
+            # the deferred bound, staging concurrency or the capacity timeout
+            # without editing source — the same three-hop gap (§2.15) the
+            # staging_dir dead read had. Defaults here MATCH CoordinatorConfig's,
+            # so nothing changes for a run that sets nothing:
+            #   staging_deferred_max=None => the DERIVED bound (§2), not a constant.
+            staging_workers          = getattr(coordinator, 'staging_workers', 4),
+            staging_queue_depth      = getattr(coordinator, 'staging_queue_depth', 2),
+            staging_deferred_max     = getattr(coordinator, 'staging_deferred_max', None),
+            staging_capacity_timeout = getattr(coordinator, 'staging_capacity_timeout', 600.0),
             # Production bind must be reachable by REMOTE rigs (0.0.0.0), not
             # loopback. Tests inject 127.0.0.1 / a pre-bound listen_sock.
             miner_host             = getattr(coordinator, 'miner_host', '0.0.0.0'),
