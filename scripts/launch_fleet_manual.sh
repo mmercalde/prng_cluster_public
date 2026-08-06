@@ -118,7 +118,33 @@ echo
 # Local first (it is the coordinator's own box), then the rigs. Every remote
 # dispatch is backgrounded so the rigs come up in parallel; the stagger paces
 # registration, not the ssh calls.
-while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND; do
+#
+# TWO STDIN DEFENCES, both required — this loop truncated itself on 2026-08-05
+# and dispatched 9 of 25 (see below):
+#
+#   `ssh -n`   ssh reads its own stdin and forwards it to the remote command.
+#              A BACKGROUNDED ssh here inherited THIS LOOP'S stdin — the fleet
+#              here-string — and drained the rrig6600b and rrig6600c records
+#              into the first rrig6600 worker's remote shell. `read` then hit
+#              EOF and the loop ended after one rig. -n binds ssh's stdin to
+#              /dev/null. (Measured: the remote end received exactly
+#              "C\t192.168.3.156..." and "D\t192.168.3.164..." on stdin.)
+#              This is a RACE, not a certainty — an ssh whose remote command
+#              exits immediately can finish before it drains anything, which is
+#              why a short-lived probe command does NOT reproduce it. The real
+#              remote command lives long enough. Never rely on ssh losing.
+#
+#   fd 3       The record stream is read from a dedicated descriptor, so no
+#              child of this loop can consume it even if one is added later
+#              without -n. Defence in depth: -n fixes today's bug, fd 3 fixes
+#              the class.
+#
+# The dry-run that "verified 25 workers" stubbed ssh out with echo — and echo
+# does not read stdin, so the stub deleted the exact behaviour that fails.
+# Hence the DISPATCHED counter below: it counts real dispatches, so a truncated
+# run is LOUD instead of printing a confident total it never reached.
+DISPATCHED=0
+while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
     [ -n "${WHOST:-}" ] || continue
     N=0
     while [ "$N" -lt "$NGPU" ]; do
@@ -130,11 +156,11 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND; do
             nohup "$PYBIN" "$SCRIPTPATH/miner/range_miner_worker.py" \
                 --host "$COORD_HOST" --port "$PORT" \
                 --gpu-id "$N" --device-index 0 \
-                > "$LOGDIR/${WHOST}_gpu$N.log" 2>&1 &
+                > "$LOGDIR/${WHOST}_gpu$N.log" 2>&1 < /dev/null &
             echo "[launch]   pid=$!"
         else
             echo "[launch] $WHOST ($ENDPOINT) gpu$N"
-            ssh -o BatchMode=yes -o ConnectTimeout=10 "michael@$ENDPOINT" \
+            ssh -n -o BatchMode=yes -o ConnectTimeout=10 "michael@$ENDPOINT" \
                 "mkdir -p /tmp/minerlogs /tmp/cupy_cache_gpu$N && \
                  cd $SCRIPTPATH && \
                  ROCR_VISIBLE_DEVICES=$N \
@@ -146,14 +172,22 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND; do
                    > /tmp/minerlogs/gpu$N.log 2>&1 & \
                  echo started" >/dev/null 2>&1 &
         fi
+        DISPATCHED=$((DISPATCHED + 1))
         N=$((N + 1))
         sleep "$STAGGER"
     done
-done <<< "$FLEET"
+done 3<<< "$FLEET"
 
 wait
 echo
-echo "[launch] all $TOTAL daemons dispatched"
+if [ "$DISPATCHED" -ne "$TOTAL" ]; then
+    echo "[launch] *** TRUNCATED DISPATCH: $DISPATCHED of $TOTAL ***" >&2
+    echo "[launch] The fleet is INCOMPLETE. Admission will fall short and the run" >&2
+    echo "[launch] will fail at the worker_admission_timeout. Do not treat a" >&2
+    echo "[launch] partial fleet as a production-shape trial." >&2
+    exit 1
+fi
+echo "[launch] all $DISPATCHED of $TOTAL daemons dispatched"
 echo "[launch] local worker logs : $LOGDIR"
 echo "[launch] rig worker logs   : /tmp/minerlogs/gpu<N>.log on each rig"
 echo "[launch] verify admission in the coordinator log before trusting this line —"
