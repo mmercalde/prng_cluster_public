@@ -1985,9 +1985,72 @@ class RangeMinerCoordinator:
         # the §1.4 lease exemption and the §1.5 capacity timeout.
         self._pause_lock = threading.Lock()
         self._paused_connections: "OrderedDict[Any, Dict[str, Any]]" = OrderedDict()
+        # [S172-BP AMENDMENT F1] INGRESS RESUME CREDIT. A wake must CONSUME the
+        # capacity observation that produced it, or one freed slot satisfies the
+        # check repeatedly and wakes the whole paused fleet. At most ONE credit is
+        # outstanding at a time; it is granted either by a capacity-release event
+        # (`_grant_resume_credit`) or taken by the FIFO-head reader's own defensive
+        # poll (`_try_self_resume`). `_resume_credit_holder` is the connection key
+        # that owns the outstanding credit, so clearing is attributable and
+        # idempotent.
+        #
+        # [S172-BP AMENDMENT F1-R — WHERE THE RESERVATION ENDS]
+        # Round 1 cleared the credit at `inbound.put`. That is INGRESS, not
+        # consumption: the freed staging slot is consumed only when the serve loop
+        # later dispatches that envelope into `enqueue_staging`, and in the gap the
+        # envelope is in `inbound` while the slot is still physically free — so the
+        # next FIFO-head reader finds credits == 0 and `staging_can_accept()` true
+        # ON THE SAME SLOT. Two wakes, one slot. The credit therefore now rides
+        # WITH the envelope and is released at DISPOSITION by the single-threaded
+        # serve path (Beta F1-R §4 i-iv): admission acquired, retained in the
+        # bounded deferred queue, rejected by the existing identity/attempt/dedup/
+        # terminal fence, or connection/trial terminated with the envelope
+        # discarded. `_resume_credit_worker` / `_resume_credit_since` exist only so
+        # the §4 metrics can report WHO holds an outstanding reservation and for
+        # how long — they are never read by the credit arithmetic itself.
+        #
+        # [S172-BP AMENDMENT F1-R2a — THE CREDIT IS A TOKEN, NOT A SOCKET]
+        # Round 2 released the reservation on `rawsock is holder` alone. That
+        # identity admits the WRONG envelope: an OLDER, UNCREDITED result from the
+        # credit-holder's own connection — one that was already sitting in
+        # `inbound` before the pause ever happened — dispatches FIRST, is rejected
+        # by the existing fence (so it consumes no capacity at all), and its
+        # `finally` clears the credit. The credited envelope is still queued, the
+        # slot is still physically free, and the next FIFO head wakes on it: F1's
+        # two-wakes-one-slot defect, re-entered through an earlier arrival rather
+        # than a later one. "The first result after resume" was never the right
+        # identity — it excludes LATER traffic, not EARLIER traffic.
+        # `_resume_credit_id` is therefore a monotonically increasing token minted
+        # at GRANT, carried ON the envelope through `inbound`, and matched EXACTLY
+        # at disposition. `_resume_credit_seq` only ever increases, so a token is
+        # unique for the lifetime of the coordinator and can never be confused
+        # with a later grant to the same socket.
+        self._resume_credits_outstanding: int = 0
+        self._resume_credit_holder: Any = None
+        self._resume_credit_worker: Optional[str] = None
+        self._resume_credit_since: Optional[float] = None
+        self._resume_credit_id: Optional[int] = None
+        self._resume_credit_seq: int = 0
+        # [S172-BP AMENDMENT F2] LEASE-EXEMPTION RESUME GRACE. worker_id -> the
+        # absolute time until which `process_lease_expiry` still skips that
+        # worker's stripes AFTER its connection has left `_paused_connections`.
+        # The window exists because a resumed reader DEREGISTERS FIRST, delivers
+        # its held envelope, and only later delivers the heartbeat that was queued
+        # behind it: without the grace, a pause of up to
+        # `staging_capacity_timeout` (600 s) against a `compute_lease_timeout` of
+        # 300 s leaves the stripe expirable in exactly that window. Written by the
+        # reader thread under `_pause_lock` — a coordinator dict, NEVER the ledger,
+        # so the reader rule ("touches NO ledger state") is preserved.
+        self._capacity_resume_grace: Dict[str, float] = {}
         # Latched once the §1.5 bounded capacity timeout is observed, so the reader
         # threads and the serve loop cannot disagree about whether it fired.
         self._capacity_timeout_latched_at: Optional[float] = None
+        # [S172-BP AMENDMENT F3] The TRIGGERING evidence, captured in the same
+        # critical section that sets the latch. A reader can observe the latch,
+        # deregister and exit before the serve loop builds the terminal reason, so
+        # reading the LIVE registry then can truthfully report "0 connections
+        # paused (none)" about a timeout that paused workers caused.
+        self._capacity_timeout_snapshot: Optional[Dict[str, Any]] = None
         # [S172-BP §2] The DERIVED deferred bound for the current stage, set by
         # `derive_staging_deferred_bound` at stage setup. None => nothing derived
         # yet (a bare-API/gate call), in which case the accessor derives on demand
@@ -1996,6 +2059,11 @@ class RangeMinerCoordinator:
         self._derived_deferred_bound: Optional[int] = None
         self._derived_bound_detail: Dict[str, Any] = {}
         self._fallback_bound_cache: Dict[Tuple[int, int], int] = {}
+        # [S172-BP AMENDMENT F5] which of the three bounds a `_defer_locked`
+        # refusal tripped: derived count / operator-override count / retained-bytes
+        # high-water. The §1.6 invariant reason must name it — the three are
+        # different defects with different owners.
+        self._last_defer_refusal: Optional[str] = None
         # [S172-BP §4] Structured, grep-stable metrics. Every emission carries the
         # `[S172-BP]` prefix so gate_s172_prod_shape.py and operators can extract
         # the series from a raw run log.
@@ -2902,6 +2970,16 @@ class RangeMinerCoordinator:
         currently-registered workers — never a constant. One slot of the
         configured macro-stripe size, phase 1.
 
+        ⚠ [S172-BP AMENDMENT F5] THIS IS NOT A PRODUCTION FALLBACK. It survives
+        ONLY for bare-API / gate contexts where no stage derivation was ever
+        attempted. It answers a DIFFERENT question — one macro-stripe, phase 1 —
+        and can therefore be MATERIALLY SMALLER than the stage derivation it used
+        to catch (multi-stripe stages, hybrid caps), which is precisely how a
+        sizing failure silently re-armed the undersized-queue condition. EVERY
+        production stage now installs its bound at setup or FAILS CLOSED via
+        `fail_trial(coordinator_staging_sizing: ...)` (serve_trial's stage-setup
+        block); no production path reaches this method after a failed derivation.
+
         Memoized on (connection count, macro-stripe size) because a PAUSED reader
         re-reads the bound every 50 ms; the inputs only change when the fleet or
         the geometry does, and both are in the key."""
@@ -3036,13 +3114,40 @@ class RangeMinerCoordinator:
     def deregister_paused_connection(
         self, conn_key: Any, now: Optional[float] = None, reason: str = "resume",
     ) -> Optional[float]:
-        """Leave the paused set; returns this pause's duration in seconds."""
+        """Leave the paused set; returns this pause's duration in seconds.
+
+        [S172-BP AMENDMENT F2] On a `reason == "resume"` exit the worker is given a
+        RESUME GRACE of `compute_lease_timeout` seconds. The exemption of §1.4 only
+        covered LIVE membership in `_paused_connections`, and a resuming reader
+        deregisters BEFORE it delivers the held envelope and long before it reaches
+        the heartbeat queued behind that envelope — so between deregistration and
+        the first processed heartbeat the stripe's compute lease (300 s) is
+        expirable although the coordinator itself caused every second of the
+        silence (a pause may legitimately run to `staging_capacity_timeout`, 600 s).
+        The grace is a COORDINATOR DICT written under `_pause_lock`; NO LEDGER
+        MUTATION happens on the reader thread, so the reader rule stands. It is
+        cleared the moment a real `renew_lease` succeeds (the bridge is no longer
+        needed), on connection drop, and at trial-terminal cleanup; if it simply
+        expires with no heartbeat, normal expiry handling resumes because the skip
+        stops matching — which is what keeps it bounded and narrow."""
         now = time.time() if now is None else now
+        grace_until = None
         with self._pause_lock:
             rec = self._paused_connections.pop(conn_key, None)
             paused_now = len(self._paused_connections)
+            if (rec is not None and reason == "resume"
+                    and rec.get("worker_id") is not None):
+                grace_until = now + float(self.config.compute_lease_timeout)
+                self._capacity_resume_grace[rec["worker_id"]] = grace_until
         if rec is None:
             return None
+        if grace_until is not None:
+            logger.info(
+                "[S172-BP] resume_grace worker=%s until=%.3f "
+                "(compute_lease_timeout=%.1fs) — the heartbeat that renews this "
+                "worker's lease is still queued behind the envelope it just "
+                "delivered", rec.get("worker_id"), grace_until,
+                float(self.config.compute_lease_timeout))
         held = max(0.0, now - rec["since"])
         with self._bp_lock:
             self._bp["paused_now"] = paused_now
@@ -3067,32 +3172,326 @@ class RangeMinerCoordinator:
         with self._pause_lock:
             return len(self._paused_connections)
 
+    # ----- F1 the ingress resume credit ------------------------------------
+    def _grant_resume_credit(self) -> Optional[Any]:
+        """[S172-BP AMENDMENT F1] Grant AT MOST ONE wake per invocation, and make
+        that wake CONSUME the capacity observation it was granted on.
+
+        The pre-amendment `_resume_paused_connections` set one event, re-checked
+        `staging_can_accept()` and looped — but a wake consumed nothing, so ONE
+        freed slot satisfied the check on every iteration and released the whole
+        paused fleet. Here the grant reserves the observation: while a credit is
+        outstanding no further grant is issued, by this method or by a reader's own
+        defensive poll (`_try_self_resume`).
+
+        Returns the conn_key that was credited, or None. `_resume_paused_connections`
+        is exactly one call to this — the while-loop is DELETED. Liveness is
+        PER-EVENT, not per-loop: every capacity-release event (`_on_done` ->
+        `_pump_deferred` -> `finally`) grants at most one, and the FIFO head's 50 ms
+        self-grant covers the case where no further release event arrives.
+
+        The documented resume margin (§1.2) is UNCHANGED and remains the final
+        backstop for the decode race — nothing here is resized.
+        """
+        with self._pause_lock:
+            if self._resume_credits_outstanding != 0:
+                return None
+            target_key = None
+            target = None
+            for key, rec in self._paused_connections.items():
+                if not rec["event"].is_set():
+                    target_key, target = key, rec
+                    break
+            if target is None:
+                return None
+            # Checked INSIDE `_pause_lock` so the observation and the credit are
+            # taken together. Safe: `staging_can_accept()` never takes this lock,
+            # and its semaphore probe is acquire-then-immediately-release.
+            if not self.staging_can_accept():
+                return None
+            self._resume_credits_outstanding += 1
+            self._resume_credit_holder = target_key
+            worker_id = target["worker_id"]
+            self._resume_credit_worker = worker_id
+            self._resume_credit_since = time.time()
+            # [S172-BP AMENDMENT F1-R2a] MINT THE TOKEN BEFORE THE WAKE. The woken
+            # reader reads it back (`resume_credit_id_for`) and attaches it to the
+            # envelope it delivers, so minting has to be complete — and recorded in
+            # the pause record the reader owns — before `event.set()` releases it.
+            self._resume_credit_seq += 1
+            cid = self._resume_credit_seq
+            self._resume_credit_id = cid
+            target["credit_id"] = cid
+            target["event"].set()
+        logger.info(
+            "[S172-BP] resume_signal worker=%s deferred=%d bound=%d "
+            "credits_outstanding=1 credit_id=%d", worker_id, len(self._deferred),
+            self.staging_deferred_bound(), cid)
+        return target_key
+
+    def _try_self_resume(self, conn_key: Any) -> bool:
+        """[S172-BP AMENDMENT F1] The paused reader's 50 ms defensive poll, as a
+        HEAD-ONLY SELF-GRANT.
+
+        The bare `if self.staging_can_accept()` escape it replaces was a second
+        thundering-herd door: EVERY paused reader could self-release on the same
+        observation, with no grant involved at all. This preserves the lost-wakeup
+        protection the poll exists for — the FIFO-oldest paused connection can
+        always escape when capacity truly exists and no grant is in flight — while
+        making it impossible for a non-head reader to ride someone else's
+        observation. On success this connection TAKES the credit itself, so it is
+        indistinguishable downstream from a granted wake.
+
+        The event-wait remains the primary path; the poll cadence is unchanged.
+        """
+        with self._pause_lock:
+            if self._resume_credits_outstanding != 0:
+                return False
+            head = next(iter(self._paused_connections), None)
+            if head is None or head is not conn_key:
+                return False
+            if not self.staging_can_accept():
+                return False
+            self._resume_credits_outstanding += 1
+            self._resume_credit_holder = conn_key
+            rec = self._paused_connections[conn_key]
+            worker_id = rec["worker_id"]
+            self._resume_credit_worker = worker_id
+            self._resume_credit_since = time.time()
+            # [S172-BP AMENDMENT F1-R2a] Same mint, same order as the granted path
+            # — a self-granted credit is indistinguishable downstream, and that
+            # includes carrying a token.
+            self._resume_credit_seq += 1
+            cid = self._resume_credit_seq
+            self._resume_credit_id = cid
+            rec["credit_id"] = cid
+            rec["event"].set()
+        logger.info(
+            "[S172-BP] self_resume worker=%s deferred=%d bound=%d "
+            "credits_outstanding=1 credit_id=%d — FIFO head took the credit on "
+            "its own capacity observation", worker_id, len(self._deferred),
+            self.staging_deferred_bound(), cid)
+        return True
+
+    def _release_resume_credit(self, conn_key: Any, delivered: bool,
+                               disposition: str = "dispatch") -> bool:
+        """[S172-BP AMENDMENT F1/F1-R] Clear the outstanding credit held by
+        `conn_key`.
+
+        THE RESERVATION ENDS AT DISPOSITION (Beta F1-R §4 i-iv), NEVER AT INGRESS
+        — `inbound.put` MOVES the envelope, it does not CONSUME the slot. The four
+        dispositions, and the one caller of each:
+
+          (i)   `enqueue_staging` acquired admission          }  the serve loop's
+          (ii)  the envelope was retained in `_deferred`       }  post-dispatch
+          (iii) the identity/attempt/dedup/terminal fence      }  `finally`
+                rejected it                                    }
+          (iv)  the connection or the trial terminated and the envelope was
+                discarded — the serve loop's `eof` handling, the already-dropped
+                socket skip, and the trial-terminal cleanup.
+
+        The reader's own exit clear survives for ONE case only: a wake that
+        delivered NOTHING (see `_conn_reader_loop`'s `finally`). A wake that DID
+        deliver hands the clear to the serve loop; clearing it at reader exit is
+        precisely the round-1 defect, one thread further along.
+
+        Idempotent, and only the holder can clear it. `disposition` is LOG-ONLY —
+        it names which of the four ended the reservation and is read by nothing.
+
+        [S172-BP AMENDMENT F1-R2a] THIS IS NOW THE FORCE-CLEAR PATH ONLY, keyed on
+        HOLDER STATE. It is correct for the dispositions where no future
+        disposition can exist — eof before the envelope was disposed of, the
+        reaped-socket discard (holder identity still decides, per Beta 6.1's
+        rider), reader-exit-undelivered — because there the credited envelope will
+        never be dispatched by anyone, so the slot it reserves is genuinely free
+        again. The DISPATCH disposition does NOT come through here: an ordinary
+        dispatch of an UNCREDITED envelope from the holder's socket must not clear
+        anything (F1-R2a), which is what `_release_resume_credit_exact` enforces."""
+        with self._pause_lock:
+            if self._resume_credit_holder is not conn_key:
+                return False
+            cleared_id = self._resume_credit_id
+            self._resume_credit_holder = None
+            self._resume_credit_worker = None
+            self._resume_credit_since = None
+            self._resume_credit_id = None
+            self._resume_credits_outstanding = max(
+                0, self._resume_credits_outstanding - 1)
+        logger.info("[S172-BP] resume_credit_cleared delivered=%s disposition=%s "
+                    "credit_id=%s credits_outstanding=%d", delivered, disposition,
+                    cleared_id, self._resume_credits_outstanding)
+        return True
+
+    def _release_resume_credit_exact(self, conn_key: Any, credit_id: Optional[int],
+                                     delivered: bool,
+                                     disposition: str = "dispatch") -> bool:
+        """[S172-BP AMENDMENT F1-R2a] Clear at disposition ONLY for the EXACT
+        envelope the credit was granted for.
+
+        Both halves of the identity are required and neither is sufficient:
+
+          * `credit_id is not None` — an envelope that carries NO token was never
+            credited. An older, uncredited result of the holder's, queued in
+            `inbound` before the pause even began, dispatches first and is fence-
+            rejected without consuming any capacity; under round 2's socket-only
+            test its `finally` cleared the credit while the credited envelope was
+            still queued and the slot still free, and the next FIFO head woke on
+            that same slot. It NEVER clears now.
+          * `credit_id == self._resume_credit_id` — tokens are minted from a
+            monotonic sequence, so a stale token from an earlier grant to the same
+            socket cannot release a later one.
+          * `conn_key is self._resume_credit_holder` — kept, so a token can only
+            ever be redeemed against the connection it was granted to.
+
+        Returns True only when the reservation was actually ended by THIS call."""
+        with self._pause_lock:
+            if credit_id is None:
+                return False
+            if credit_id != self._resume_credit_id:
+                return False
+            if self._resume_credit_holder is not conn_key:
+                return False
+            self._resume_credit_holder = None
+            self._resume_credit_worker = None
+            self._resume_credit_since = None
+            self._resume_credit_id = None
+            self._resume_credits_outstanding = max(
+                0, self._resume_credits_outstanding - 1)
+        logger.info("[S172-BP] resume_credit_cleared delivered=%s disposition=%s "
+                    "credit_id=%s credits_outstanding=%d", delivered, disposition,
+                    credit_id, self._resume_credits_outstanding)
+        return True
+
+    def clear_any_resume_credit(self, disposition: str = "trial_terminal") -> bool:
+        """[S172-BP AMENDMENT F1-R] Disposition (iv), trial-terminal arm: drop ANY
+        outstanding reservation regardless of who holds it.
+
+        Unconditional by design — at trial-terminal there is no envelope left to
+        dispose of and no reader that could ever clear it, so an outstanding credit
+        would only be a leak into the next trial's accounting."""
+        with self._pause_lock:
+            if self._resume_credit_holder is None and \
+                    self._resume_credits_outstanding == 0:
+                return False
+            worker = self._resume_credit_worker
+            cleared_id = self._resume_credit_id
+            self._resume_credit_holder = None
+            self._resume_credit_worker = None
+            self._resume_credit_since = None
+            self._resume_credit_id = None
+            self._resume_credits_outstanding = 0
+        logger.info("[S172-BP] resume_credit_cleared delivered=unknown "
+                    "disposition=%s worker=%s credit_id=%s "
+                    "credits_outstanding=0", disposition, worker, cleared_id)
+        return True
+
+    def resume_credits_outstanding(self) -> int:
+        with self._pause_lock:
+            return self._resume_credits_outstanding
+
+    def holds_resume_credit(self, conn_key: Any) -> bool:
+        """True while `conn_key` still owns an UNDISPOSED reservation."""
+        with self._pause_lock:
+            return self._resume_credit_holder is conn_key
+
+    def resume_credit_id(self) -> Optional[int]:
+        """[S172-BP AMENDMENT F1-R2a] The token of the outstanding reservation, or
+        None when none is outstanding. The pre-decode barrier compares against
+        THIS: a barrier releases when the coordinator's current token is no longer
+        the one the waiting reader delivered — whether that happened by exact
+        disposition or by a force-clear."""
+        with self._pause_lock:
+            return self._resume_credit_id
+
+    def resume_credit_id_for(self, conn_key: Any) -> Optional[int]:
+        """[S172-BP AMENDMENT F1-R2a] The token `conn_key` currently holds, or
+        None. Read by the woken reader to stamp the envelope it is about to
+        deliver, and by the gates to assert on the EXACT reservation rather than on
+        a count that cannot distinguish one grant from the next."""
+        with self._pause_lock:
+            if self._resume_credit_holder is not conn_key:
+                return None
+            return self._resume_credit_id
+
+    def resume_credit_state(self, now: Optional[float] = None) -> Tuple[
+            Optional[str], Optional[float]]:
+        """(worker_id, age_seconds) of the outstanding reservation; (None, None)
+        when clear. §4 metrics only."""
+        now = time.time() if now is None else now
+        with self._pause_lock:
+            if self._resume_credit_holder is None:
+                return None, None
+            since = self._resume_credit_since
+            return self._resume_credit_worker, (
+                None if since is None else max(0.0, now - since))
+
+    def _await_exact_credit_clear(self, credit_id: int, reader_stop) -> bool:
+        """[S172-BP AMENDMENT F1-R2b] THE PRE-DECODE BARRIER's wait.
+
+        Block this reader until the reservation identified by `credit_id` — the one
+        it delivered — has been disposed of, whether by the dispatch seam's exact
+        clear or by any force-clear path. Identity is the TOKEN, not the socket:
+        the reader is waiting for ITS OWN envelope to be disposed of, and a socket
+        test cannot tell that from some later grant.
+
+        Round 2 ran this wait AFTER `recv_msg` returned. By then the connection
+        owned TWO decoded envelopes — the credited one already in `inbound` and the
+        next one in the reader's local — which breaks the one-decoded-envelope-per-
+        connection bound the §1.2 resume margin is derived from. Called from the
+        TOP of the loop instead, the next frame stays ON THE WIRE, where TCP
+        back-pressure parks the worker's `_sendall` harmlessly (§1.1).
+
+        Returns True when the reservation has cleared and the loop may decode
+        again; False when the reader must exit — on `reader_stop` or the latched
+        §1.5 capacity timeout. Exiting here holds NOTHING: the credited envelope
+        was already delivered to `inbound`, so nothing is discarded and nothing is
+        routed to the matrix. Cadence (50 ms), stop handling and the no-ledger-state
+        rule are identical to the pause loop's.
+
+        This cannot wedge: dispatch is single-threaded and unconditional, and every
+        terminal path — eof, reaped socket, trial-terminal — clears the reservation
+        on the serve side."""
+        while not reader_stop.is_set():
+            if self.resume_credit_id() != credit_id:
+                return True
+            if self.staging_capacity_timeout_expired():
+                return False
+            time.sleep(0.05)
+        return False
+
     def _resume_paused_connections(self) -> None:
-        """[§1.2 resume trigger] Wake paused readers in PAUSE-ENTRY ORDER (FIFO)
-        while capacity holds. Called AFTER `_pump_deferred` at every
-        capacity-release point, so the deferred queue gets first claim on a freed
-        slot and a resumed reader does not immediately re-pause."""
-        while True:
-            if not self.staging_can_accept():
-                return
-            with self._pause_lock:
-                target = None
-                for key, rec in self._paused_connections.items():
-                    if not rec["event"].is_set():
-                        target = rec
-                        break
-                if target is None:
-                    return
-                target["event"].set()
-                worker_id = target["worker_id"]
-            logger.info("[S172-BP] resume_signal worker=%s deferred=%d bound=%d",
-                        worker_id, len(self._deferred),
-                        self.staging_deferred_bound())
-            # Only ONE reader is released per confirmed capacity observation; the
-            # loop re-checks `staging_can_accept()` before releasing the next, so a
-            # single freed slot cannot wake the whole fleet at once.
-            if not self.staging_can_accept():
-                return
+        """[§1.2 resume trigger] Exactly ONE grant per capacity-release event
+        (F1). Called AFTER `_pump_deferred` at every capacity-release point, so the
+        deferred queue gets first claim on a freed slot and a resumed reader does
+        not immediately re-pause."""
+        self._grant_resume_credit()
+
+    # ----- F2 the lease-exemption resume grace -----------------------------
+    def capacity_resume_grace(self, now: Optional[float] = None) -> Dict[str, float]:
+        """Worker identities still inside their post-resume grace window, PRUNING
+        expired entries in the same pass (F2 item 3)."""
+        now = time.time() if now is None else now
+        with self._pause_lock:
+            for wid in [w for w, until in self._capacity_resume_grace.items()
+                        if until <= now]:
+                del self._capacity_resume_grace[wid]
+            return dict(self._capacity_resume_grace)
+
+    def clear_capacity_resume_grace(self, worker_id: Optional[str]) -> bool:
+        """Drop one worker's grace entry. Called when `renew_lease` succeeds (the
+        real lease is renewed, so the bridge is no longer needed) and when the
+        worker's connection is dropped."""
+        if worker_id is None:
+            return False
+        with self._pause_lock:
+            return self._capacity_resume_grace.pop(worker_id, None) is not None
+
+    def clear_all_capacity_resume_grace(self) -> int:
+        """Trial-terminal cleanup: no grace outlives its trial (F2 item 5)."""
+        with self._pause_lock:
+            n = len(self._capacity_resume_grace)
+            self._capacity_resume_grace.clear()
+        return n
 
     def _release_capacity(self) -> None:
         """The named capacity-release sequence: pump the deferred queue, which then
@@ -3119,26 +3518,65 @@ class RangeMinerCoordinator:
             return False
         now = time.time() if now is None else now
         with self._pause_lock:
+            # Re-checked under the lock: two reader threads and the serve loop can
+            # all reach here, and exactly one of them must take the snapshot.
+            if self._capacity_timeout_latched_at is not None:
+                return True
             oldest = min((r["since"] for r in self._paused_connections.values()),
                          default=None)
-        if oldest is None or (now - oldest) <= limit:
-            return False
-        self._capacity_timeout_latched_at = now
+            if oldest is None or (now - oldest) <= limit:
+                return False
+            self._capacity_timeout_latched_at = now
+            # [S172-BP AMENDMENT F3] TIMEOUT EVIDENCE SNAPSHOT, taken in the SAME
+            # critical section as the oldest-pause read that decided the timeout.
+            # A reader can observe the latch, deregister and exit before the serve
+            # loop builds the terminal reason; reading the live registry then
+            # truthfully reports "0 connections paused (none)" about a timeout that
+            # paused workers caused. The count and identities in the terminal
+            # reason must be the TRIGGERING ones.
+            self._capacity_timeout_snapshot = {
+                "latched_at": now,
+                "oldest_since": oldest,
+                "paused_count": len(self._paused_connections),
+                "worker_ids": sorted(
+                    str(r["worker_id"]) for r in
+                    self._paused_connections.values()),
+            }
         return True
+
+    def capacity_timeout_snapshot(self) -> Optional[Dict[str, Any]]:
+        """The F3 evidence snapshot, or None if the timeout never latched."""
+        with self._pause_lock:
+            snap = self._capacity_timeout_snapshot
+            return dict(snap) if snap is not None else None
 
     def staging_capacity_timeout_reason(self, now: Optional[float] = None) -> str:
         """The §1.5 terminal reason string. Leads with the ROOT CAUSE (the Part B
         convention) and is explicitly a COORDINATOR/INFRASTRUCTURE condition, so a
-        reader of the terminal report is never pointed at a worker."""
+        reader of the terminal report is never pointed at a worker.
+
+        [S172-BP AMENDMENT F3] The count and identities come from the SNAPSHOT
+        taken when the latch was set. The live registry is consulted ONLY when the
+        timeout never latched (there is then nothing to attribute)."""
         now = time.time() if now is None else now
         limit = float(getattr(self.config, "staging_capacity_timeout", 600.0) or 0.0)
         with self._pause_lock:
-            n = len(self._paused_connections)
-            ids = sorted(str(r["worker_id"]) for r in
-                         self._paused_connections.values())
+            snap = self._capacity_timeout_snapshot
+            if snap is not None:
+                n = int(snap["paused_count"])
+                ids = list(snap["worker_ids"])
+                held = max(0.0, float(snap["latched_at"])
+                           - float(snap["oldest_since"]))
+            else:
+                n = len(self._paused_connections)
+                ids = sorted(str(r["worker_id"]) for r in
+                             self._paused_connections.values())
+                held = None
+        oldest_phrase = ("" if held is None
+                         else f"; oldest pause held {held:.1f}s at the latch")
         return (f"coordinator_staging_capacity_timeout: staging did not release "
                 f"capacity within {limit:.1f}s; {n} connections paused "
-                f"({', '.join(ids) if ids else 'none'})")
+                f"({', '.join(ids) if ids else 'none'}){oldest_phrase}")
 
     # ----- §4 metrics ------------------------------------------------------
     def note_inbound_occupancy(self, qsize: int) -> None:
@@ -3156,10 +3594,45 @@ class RangeMinerCoordinator:
         out["staging_jobs_per_sec"] = (
             out["staging_jobs_completed"] / elapsed if elapsed else None)
         out["derived_bound"] = self._derived_deferred_bound
-        out["bound_in_force"] = self.staging_deferred_bound()
+        # [ALPHA REVIEW FIX, amendment round] THE TERMINAL SUMMARY MUST NEVER
+        # RAISE. `staging_deferred_bound()` falls back to the on-demand derivation
+        # when no stage bound was installed — and the one production path where
+        # that is true at trial-terminal time is precisely an F5 sizing failure,
+        # where the SAME malformed cap record that failed stage setup would now
+        # raise HERE and mask the honest `coordinator_staging_sizing` termination
+        # (the F3 disease, relocated to the reporting layer). Reporting degrades;
+        # it never overwrites the terminal truth.
+        try:
+            out["bound_in_force"] = self.staging_deferred_bound()
+        except Exception as _bound_exc:  # noqa: BLE001
+            out["bound_in_force"] = None
+            out["bound_in_force_error"] = (
+                f"{type(_bound_exc).__name__}: {_bound_exc}")
         out["derived_bound_detail"] = dict(self._derived_bound_detail)
         out["deferred_now"] = len(self._deferred)
         out["paused_now"] = self.paused_connection_count()
+        # [S172-BP AMENDMENT F3] the TRIGGERING evidence, not the live registry —
+        # the same snapshot the terminal reason is built from.
+        snap = self.capacity_timeout_snapshot()
+        out["capacity_timeout_snapshot"] = snap
+        out["paused_at_capacity_timeout"] = (
+            int(snap["paused_count"]) if snap else 0)
+        out["capacity_timeout_worker_ids"] = (
+            list(snap["worker_ids"]) if snap else [])
+        # [S172-BP AMENDMENT F1/F2] credit + grace occupancy
+        out["resume_credits_outstanding"] = self.resume_credits_outstanding()
+        # [S172-BP AMENDMENT F1-R §8.4] WHO holds the undisposed reservation and
+        # for how long. The credit now spans reader -> serve-loop disposition, so
+        # "outstanding" alone can no longer distinguish a healthy in-flight handoff
+        # from a wedged one; both are None while it is clear.
+        _credit_worker, _credit_age = self.resume_credit_state(now)
+        out["resume_credit_holder_worker"] = _credit_worker
+        out["resume_credit_age_s"] = _credit_age
+        # [S172-BP AMENDMENT F1-R2a §7.5] WHICH reservation, not just whether one
+        # exists — the token that the grant log, the clear log and the delivered
+        # envelope all carry, so a wedged handoff is traceable to one grant.
+        out["resume_credit_id"] = self.resume_credit_id()
+        out["capacity_resume_grace_now"] = len(self.capacity_resume_grace(now))
         return out
 
     def log_staging_backpressure_summary(
@@ -3170,7 +3643,7 @@ class RangeMinerCoordinator:
         m = self.staging_backpressure_metrics(now)
         logger.info(
             "[S172-BP] summary run=%s inbound_qsize_high_water=%d "
-            "deferred_high_water=%d derived_bound=%s bound_in_force=%d "
+            "deferred_high_water=%d derived_bound=%s bound_in_force=%s "
             "paused_high_water=%d pause_events=%d pause_seconds_total=%.3f "
             "pause_seconds_max=%.3f staging_jobs_completed=%d "
             "staging_jobs_per_sec=%s capacity_timeout_terminations=%d "
@@ -3195,14 +3668,27 @@ class RangeMinerCoordinator:
         (conservative burst + margin) and the §1 reader pause holding traffic on
         the wire, a False return is MATHEMATICALLY UNREACHABLE — §1.6 treats it as
         a sizing INVARIANT violation, never as a matrix event.
+        [S172-BP AMENDMENT F5, Beta item-3 ratification detail] A refusal records
+        WHICH bound tripped in `_last_defer_refusal`, because the §1.6 invariant
+        reason must distinguish the three cases — a derived-count trip is a SIZING
+        defect, an operator-override-count trip is an OPERATOR decision that
+        re-armed the condition, and a retained-bytes trip is a RAM ceiling that
+        the count derivation does not govern at all. Written under the caller's
+        `_admission_lock`, read by `enqueue_staging` on the same thread.
         Caller MUST hold _admission_lock."""
         max_count = self.staging_deferred_bound()
         max_bytes = int(self.config.staging_high_water_bytes)
         add_bytes = self._entry_bytes(entry)
         if len(self._deferred) + 1 > max_count:
+            self._last_defer_refusal = (
+                "operator_override_count_bound"
+                if getattr(self.config, "staging_deferred_max", None) is not None
+                else "derived_count_bound")
             return False
         if self._deferred_retained_bytes() + add_bytes > max_bytes:
+            self._last_defer_refusal = "retained_bytes_high_water"
             return False
+        self._last_defer_refusal = None
         self._deferred.append(entry)
         with self._bp_lock:
             self._bp["deferred_high_water"] = max(
@@ -3303,7 +3789,29 @@ class RangeMinerCoordinator:
         # ⚠ FLAGGED FOR BETA (§1.6): this disposition is Alpha's reading of "an
         # invariant, not a matrix event"; Beta may amend it.
         detail = self._derived_bound_detail or {}
+        # [S172-BP AMENDMENT F5, Beta item-3] WHICH bound tripped, as one of three
+        # explicit phrases. They are different defects: the derived-count bound is
+        # a SIZING failure (Alpha's), the operator-override count is a decision
+        # somebody made against the warning, and the retained-bytes high-water is a
+        # RAM ceiling the count derivation does not govern. A single undifferentiated
+        # "the deferred queue overflowed" sends all three to the wrong owner.
+        _TRIP_PHRASES = {
+            "derived_count_bound":
+                "the DERIVED COUNT bound (burst_conservative + resume_margin) was "
+                "exceeded — the stage sizing was wrong",
+            "operator_override_count_bound":
+                "the OPERATOR OVERRIDE COUNT bound (staging_deferred_max) was "
+                "exceeded — an explicit override below the derived bound re-armed "
+                "this condition",
+            "retained_bytes_high_water":
+                "the RETAINED-BYTES HIGH-WATER (staging_high_water_bytes) was "
+                "exceeded — retained coordinator RAM, not the count bound",
+        }
+        tripped = self._last_defer_refusal
+        trip_phrase = _TRIP_PHRASES.get(
+            tripped, "the tripped bound could not be determined")
         arithmetic = (
+            f"bound_tripped={tripped!r} ({trip_phrase}) "
             f"deferred={len(self._deferred)} bound_in_force="
             f"{self.staging_deferred_bound()} derived_bound="
             f"{self._derived_deferred_bound!r} override="
@@ -3739,9 +4247,23 @@ class RangeMinerCoordinator:
             forever;
           * an UNPAUSED worker's genuine silence still expires normally.
         On resume, the queued heartbeats process and renewal restarts.
+
+        [S172-BP AMENDMENT F2 — THE RESUME GRACE]
+        Live membership in `_paused_connections` is NOT sufficient. A resuming
+        reader deregisters FIRST, then delivers its held envelope, and only later
+        reaches the heartbeat that was queued behind it on the same ordered TCP
+        stream. In that window the worker is unpaused, its lease has been expired
+        for as long as the pause ran (up to `staging_capacity_timeout` = 600 s
+        against `compute_lease_timeout` = 300 s), and its renewal is still in
+        flight — so this scan would route the stripe into the matrix for a silence
+        the coordinator itself caused. A worker with a LIVE grace entry is
+        therefore skipped too. Expired grace entries are pruned in the same pass,
+        so an entry that outlives its bound with no heartbeat simply stops
+        matching and normal expiry handling resumes.
         """
         now = time.time() if now is None else now
         paused = self.paused_worker_ids()
+        grace = self.capacity_resume_grace(now)
         out = []
         for st in self.ledger.expired_claimed_stripes(run_id, now):
             if st["claimed_by"] in paused:
@@ -3752,6 +4274,15 @@ class RangeMinerCoordinator:
                     "staging_capacity_timeout=%.1fs)",
                     st["stripe_id"], st["claimed_by"],
                     float(getattr(self.config, "staging_capacity_timeout", 600.0)))
+                continue
+            if st["claimed_by"] in grace:
+                logger.info(
+                    "[S172-BP] lease_grace stripe=%s worker=%s — expiry SKIPPED: "
+                    "this connection resumed from a coordinator-initiated pause "
+                    "and its renewing heartbeat is still queued behind the "
+                    "envelope it was holding; grace until=%.3f now=%.3f",
+                    st["stripe_id"], st["claimed_by"],
+                    grace[st["claimed_by"]], now)
                 continue
             out.append(self.handle_stripe_failure(
                 run_id, st["stripe_id"], retryable=True,
@@ -4520,11 +5051,23 @@ class RangeMinerCoordinator:
                 drained = 0
                 while drained < 256:
                     try:
-                        kind, rawsock, msg = inbound.get(timeout=poll if drained == 0 else 0)
+                        # [S172-BP AMENDMENT F1-R2a] FOUR fields: the credit token
+                        # rides with the envelope. `None` for every ordinary
+                        # message and for every 'eof'.
+                        kind, rawsock, msg, credit_id = inbound.get(
+                            timeout=poll if drained == 0 else 0)
                     except _queue.Empty:
                         break
                     drained += 1
                     if kind == "eof":
+                        # [S172-BP AMENDMENT F1-R] disposition (iv): the connection
+                        # terminated. `inbound` is FIFO, so a credited envelope that
+                        # was actually delivered has ALREADY been dispatched (and
+                        # cleared) above this eof — this therefore only fires for
+                        # the undispatched-and-gone case, where nothing else will
+                        # ever dispose of the reservation.
+                        self._release_resume_credit(rawsock, delivered=False,
+                                                    disposition="eof")
                         # Defect 3 (C5): a disconnected worker is evicted from the
                         # eligible pool (wconn_by_worker / connections / registered).
                         self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
@@ -4533,6 +5076,12 @@ class RangeMinerCoordinator:
                         reader_threads.pop(rawsock, None)
                         continue
                     if rawsock not in fs_by_sock:
+                        # [S172-BP AMENDMENT F1-R] disposition (iv) again: the
+                        # socket was already reaped, so this envelope is discarded
+                        # here rather than dispatched. Same fact, earlier line.
+                        if getattr(msg, "message_type", None) == "sub_stripe_result":
+                            self._release_resume_credit(
+                                rawsock, delivered=True, disposition="conn_dropped")
                         continue   # connection already dropped (reaped/closed)
                     if msg.message_type == "register":
                         status = self._serve_register(
@@ -4555,9 +5104,12 @@ class RangeMinerCoordinator:
                     else:
                         # Defect 3: the RECEIVING socket's bound identity is
                         # authoritative — pass it, never trust msg.worker_id alone.
-                        self._serve_dispatch(
-                            msg, run_id, worker_by_sock.get(rawsock), wconn_by_worker,
-                            _eligible)
+                        # [S172-BP AMENDMENT F1-R] through the disposition-bounded
+                        # seam: `_serve_dispatch` runs unchanged, and the ingress
+                        # reservation is released only AFTER it returns.
+                        self.dispatch_inbound_result(
+                            msg, rawsock, run_id, worker_by_sock.get(rawsock),
+                            wconn_by_worker, _eligible, credit_id)
 
                 # --- read deadline: drop unregistered connections that never
                 # completed a frame (silent or partial), so they cannot wedge the
@@ -4661,10 +5213,33 @@ class RangeMinerCoordinator:
                         # produce; the spans come from the assignments themselves,
                         # so a short final macro-stripe is not rounded up to
                         # miner_stripe_size.
+                        #
+                        # [S172-BP AMENDMENT F5] A SIZING FAILURE FAILS CLOSED.
+                        # The pre-amendment handler swallowed the exception and let
+                        # `staging_deferred_bound()` fall back to
+                        # `_derive_bound_from_current_state` — ONE macro-stripe,
+                        # phase 1 — which answers a different question and can be
+                        # MATERIALLY SMALLER than the stage derivation that just
+                        # failed (multi-stripe stages, hybrid caps). That silently
+                        # re-armed the very undersized-queue condition this work
+                        # exists to remove. The inputs are materialized ONCE at
+                        # entry and any derivation exception terminates the trial
+                        # DIRECTLY — never the matrix, never a smaller implicit
+                        # bound, and BEFORE any result traffic for this stage
+                        # (`_dispatch_pending` is below the `continue`).
                         try:
+                            _stripe_spans = [int(a["seed_count"])
+                                             for a in _stage_assignments]
+                            _eligible_records = list(eligible)
+                            _exact_rows = [
+                                {"stripe_span": a["seed_count"],
+                                 "effective_cap": a["effective_cap"],
+                                 "phase": ph, "family_name": fam}
+                                for a in _stage_assignments
+                                if a.get("effective_cap")]
                             self.derive_staging_deferred_bound(
-                                [int(a["seed_count"]) for a in _stage_assignments],
-                                eligible, ph, family_name=fam)
+                                _stripe_spans, _eligible_records, ph,
+                                family_name=fam)
                             # The EXACT bound for the assignment that was actually
                             # made — logged beside the conservative one so the
                             # 116-vs-136 distinction is visible in every run log,
@@ -4673,21 +5248,32 @@ class RangeMinerCoordinator:
                                 "[S172-BP] burst_exact stage=%d family=%s phase=%s "
                                 "exact=%d conservative=%d",
                                 stage_idx, fam, ph,
-                                staging_burst_bound_exact([
-                                    {"stripe_span": a["seed_count"],
-                                     "effective_cap": a["effective_cap"],
-                                     "phase": ph, "family_name": fam}
-                                    for a in _stage_assignments
-                                    if a.get("effective_cap")]),
+                                staging_burst_bound_exact(_exact_rows),
                                 self._derived_bound_detail.get(
                                     "burst_bound_conservative"))
-                        except (ValueError, TypeError):
-                            # Sizing must never be the thing that kills a trial;
-                            # the accessor's on-demand derivation still applies.
+                        except Exception as _sizing_exc:      # noqa: BLE001
                             logger.exception(
-                                "[S172-BP] could not derive the staging deferred "
-                                "bound for stage %d — falling back to the "
-                                "on-demand derivation", stage_idx)
+                                "[S172-BP] STAGING SIZING FAILED CLOSED at stage "
+                                "%d — run=%s family=%s phase=%s assignments=%d "
+                                "eligible=%d spans=%r caps=%r: the staging "
+                                "deferred bound could not be derived, so the "
+                                "trial is terminated rather than run on the "
+                                "on-demand (one-macro-stripe, phase-1) "
+                                "derivation, which can be materially smaller",
+                                stage_idx, run_id, fam, ph,
+                                len(_stage_assignments), len(eligible),
+                                [a.get("seed_count") for a in _stage_assignments],
+                                self._central_caps())
+                            self.fail_trial(
+                                run_id,
+                                reason=(
+                                    f"coordinator_staging_sizing: could not derive "
+                                    f"the staging deferred bound for stage "
+                                    f"{stage_idx} — "
+                                    f"{type(_sizing_exc).__name__}: "
+                                    f"{_sizing_exc}"),
+                                now=now)
+                            continue
                         stage_assigned = True
                     # ---- MAINTENANCE (unbounded, threshold-free) ---------------
                     # Everything below runs for an ASSIGNED stage regardless of the
@@ -4801,6 +5387,19 @@ class RangeMinerCoordinator:
             if residual:
                 logger.warning("%d orphan fetch thread(s) still live at shutdown "
                                "(hung transport)", residual)
+            # [S172-BP AMENDMENT F2] trial-terminal cleanup: no resume grace
+            # outlives its trial. Anything still here bridges a renewal for a
+            # trial that no longer exists.
+            _dropped_grace = self.clear_all_capacity_resume_grace()
+            if _dropped_grace:
+                logger.info("[S172-BP] resume_grace_cleared_at_terminal count=%d "
+                            "run=%s", _dropped_grace, run_id)
+            # [S172-BP AMENDMENT F1-R] disposition (iv), trial-terminal arm. Any
+            # reservation still outstanding here belongs to an envelope that will
+            # never be dispatched, on a trial that no longer exists.
+            if self.clear_any_resume_credit(disposition="trial_terminal"):
+                logger.info("[S172-BP] resume_credit_cleared_at_terminal run=%s",
+                            run_id)
 
         trial = self.ledger.get_trial(run_id)
         stripes = {s["stripe_id"]: {
@@ -4884,8 +5483,45 @@ class RangeMinerCoordinator:
         """
         import queue as _queue
         pending_envelope = None
+        # [S172-BP AMENDMENT F1-R] Does the reservation this reader was woken on
+        # still belong to this thread at exit? Reset at every PAUSE ENTRY (a new
+        # wake cycle, a new reservation) and set once the held envelope reaches
+        # `inbound` — from that instant the clear belongs to the serve loop's
+        # disposition, never to this thread.
+        credit_delivered = False
+        # [S172-BP AMENDMENT F1-R2b] The TOKEN of a reservation this thread has
+        # already handed to the serve loop, and therefore the thing the PRE-DECODE
+        # BARRIER at the top of the loop waits on. None whenever this connection
+        # owes the serve loop nothing.
+        delivered_credit_id = None
         try:
             while not reader_stop.is_set():
+                # ---- PRE-DECODE BARRIER (Beta F1-R2b §4.2) -------------------
+                # BEFORE `recv_msg`, never after. While our credited envelope is
+                # still undisposed, the next frame must stay ON THE WIRE: decoding
+                # it here would give this ONE connection two decoded envelopes at
+                # once (the credited one in `inbound`, this one in our local),
+                # which is exactly the bound the §1.2 resume margin is derived
+                # from. It also re-serves the §4-tail rule — one result per
+                # reservation — from the correct side of the decode.
+                #
+                # Heartbeats and completions queued behind the result are held on
+                # the wire too, and Beta §4.2 ACCEPTS that: the interval is short,
+                # the RATIFIED resume grace (F2) already covers the lease across
+                # exactly this window, and TCP ordering makes selective bypass
+                # impossible in any case.
+                if delivered_credit_id is not None:
+                    if not self._await_exact_credit_clear(delivered_credit_id,
+                                                          reader_stop):
+                        # shutdown or the latched §1.5 capacity timeout. Nothing is
+                        # held here — the credited envelope is already delivered —
+                        # so this exit discards nothing and routes nothing.
+                        break
+                    delivered_credit_id = None
+
+                # Ordinary frames carry NO token. Only the envelope a wake was
+                # granted for is stamped, on the resume path below.
+                put_credit_id = None
                 try:
                     msg = cfs.recv_msg()
                 except (ConnectionError, ValueError, OSError):
@@ -4893,15 +5529,40 @@ class RangeMinerCoordinator:
                 except Exception:  # noqa: BLE001 — any decode error drops the conn
                     break
 
-                if (getattr(msg, "message_type", None) == "sub_stripe_result"
-                        and not self.staging_can_accept()):
+                # [S172-BP AMENDMENT F4] REGISTERED WORKERS ONLY. The pause
+                # condition tested message type + capacity but not IDENTITY, so an
+                # unregistered socket sending a well-formed `sub_stripe_result`
+                # under saturation acquired pause state (`worker_id=None`),
+                # consumed the one-envelope allowance, joined the oldest-pause
+                # clock that §1.5 measures, and was held BEFORE the serve loop's
+                # identity rejection could ever see it. `worker_by_sock` is written
+                # only at registration (`_serve_register`), so it IS the
+                # bound-worker predicate. An unbound result under saturation is NOT
+                # paused and NOT held: it flows to `inbound` unchanged and dies in
+                # the EXISTING serve-loop identity/protocol rejection, exactly as
+                # it did pre-amendment. No new rejection logic is added here — the
+                # point is to stop intercepting the message before the existing
+                # guard.
+                bound_worker_id = (worker_by_sock.get(rawsock)
+                                   if worker_by_sock is not None else None)
+                gated_result = (getattr(msg, "message_type", None)
+                                == "sub_stripe_result"
+                                and bound_worker_id is not None)
+
+                # [S172-BP AMENDMENT F1-R2b] The round-2 POST-decode §4-tail gate
+                # stood here (`holds_resume_credit` + `_await_resume_credit_clear`).
+                # It is DELETED, not moved-and-kept: waiting here is what let the
+                # connection hold a second decoded envelope. The barrier at the top
+                # of the loop enforces the same one-result-per-reservation rule
+                # before anything is decoded.
+
+                if gated_result and not self.staging_can_accept():
                     # ---- PAUSE (per connection, never global) ----------------
+                    credit_delivered = False
+                    delivered_credit_id = None
                     pending_envelope = msg
-                    worker_id = None
-                    if worker_by_sock is not None:
-                        worker_id = worker_by_sock.get(rawsock)
                     resume_event = self.register_paused_connection(
-                        rawsock, worker_id)
+                        rawsock, bound_worker_id)
                     released = False
                     while not reader_stop.is_set():
                         if resume_event.wait(0.05):
@@ -4913,13 +5574,18 @@ class RangeMinerCoordinator:
                             # reader observes it, DISCARDS the held envelope and
                             # exits — it never routes anything to the matrix.
                             break
-                        # Defensive re-check: a capacity release that happened
+                        # Defensive re-check, [S172-BP AMENDMENT F1] now a
+                        # HEAD-ONLY SELF-GRANT. A capacity release that happened
                         # between our gate read and the registration would
                         # otherwise leave this reader waiting for an event nobody
-                        # will set again. This is the decode race the documented
-                        # resume margin (§1.2) covers; observing it directly costs
-                        # one cheap read per 50 ms.
-                        if self.staging_can_accept():
+                        # will set again — the decode race the documented resume
+                        # margin (§1.2) covers, unchanged and still the final
+                        # backstop. The bare `staging_can_accept()` escape this
+                        # replaces let EVERY paused reader self-release on ONE
+                        # observation; `_try_self_resume` succeeds only for the
+                        # FIFO-oldest paused connection, only when no grant is in
+                        # flight, and TAKES the credit itself.
+                        if self._try_self_resume(rawsock):
                             released = True
                             break
                     self.deregister_paused_connection(
@@ -4928,6 +5594,15 @@ class RangeMinerCoordinator:
                     if not released:
                         pending_envelope = None
                         break
+                    # [S172-BP AMENDMENT F1-R2a] READ BACK OUR OWN TOKEN. It was
+                    # minted into this connection's pause record before the event
+                    # was set, so the credited envelope can carry it to the serve
+                    # loop and be disposed of by EXACT identity there. None here
+                    # means the reservation was already force-cleared (trial
+                    # terminal, say) — the envelope then carries no token and
+                    # clears nothing, which is correct: there is nothing left to
+                    # clear.
+                    put_credit_id = self.resume_credit_id_for(rawsock)
                     # ---- RESUME: deliver the held envelope, exactly once ------
                     # It was NEVER dispatched while paused: record_substripe_result
                     # runs only when the serve loop processes it AFTER resume, so
@@ -4940,17 +5615,51 @@ class RangeMinerCoordinator:
                     pending_envelope = None
 
                 try:
-                    inbound.put(("msg", rawsock, msg), timeout=1.0)
+                    # [S172-BP AMENDMENT F1-R2a] THE TOKEN RIDES ON THE ENVELOPE.
+                    # One producer, one place the stamp can be forgotten: ordinary
+                    # frames carry `None` (reset at the top of every iteration),
+                    # the credited envelope carries the token read back above.
+                    inbound.put(("msg", rawsock, msg, put_credit_id), timeout=1.0)
                 except _queue.Full:
                     break
+                if put_credit_id is not None:
+                    # From here the barrier owes this token a disposition before
+                    # this connection may decode anything else.
+                    delivered_credit_id = put_credit_id
+                # [S172-BP AMENDMENT F1-R] THE RESERVATION RIDES WITH THE ENVELOPE.
+                # Round 1 called `_release_resume_credit(..., delivered=True)` HERE.
+                # That was ingress, not consumption: the staging slot this wake was
+                # granted on is still physically free until the serve loop dispatches
+                # this envelope into `enqueue_staging`, so clearing here let the next
+                # FIFO head take a second wake on the SAME slot. The clear now
+                # belongs to the serve loop's disposition (F1-R §4 i-iv); all this
+                # thread records is that the hand-off has happened.
+                credit_delivered = True
         finally:
             # A held envelope belongs to a trial that is terminal or a connection
             # that is going away; dropping it is the documented disposition (§1.5).
             pending_envelope = None
+            # ORDER IS LOAD-BEARING: deregister FIRST, then clear the credit. A
+            # grant can only target a connection that is still in
+            # `_paused_connections`, so once this conn has left the registry no
+            # grant can land on it — whereas clearing first would leave a window in
+            # which a grant lands on a record about to be removed and the credit is
+            # never cleared by anyone, wedging the whole paused fleet.
+            #
+            # [S172-BP AMENDMENT F1-R] AND THE CLEAR IS NOW CONDITIONAL. A wake that
+            # delivered NOTHING must still not reserve the observation forever — but
+            # a wake that DID deliver has handed its reservation to the serve loop,
+            # and clearing it here would reopen the exact window F1-R closes (the
+            # envelope is in `inbound`, the slot is still free, and the next FIFO
+            # head would wake on it). For a delivered wake the disposition paths own
+            # the clear: dispatch, eof, already-dropped socket, or trial-terminal.
             self.deregister_paused_connection(rawsock, reason="reader_exit")
+            if not credit_delivered:
+                self._release_resume_credit(rawsock, delivered=False,
+                                            disposition="reader_exit_undelivered")
         if not reader_stop.is_set():
             try:
-                inbound.put(("eof", rawsock, None), timeout=0.5)
+                inbound.put(("eof", rawsock, None, None), timeout=0.5)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -4974,6 +5683,11 @@ class RangeMinerCoordinator:
                 self.connections.pop(wid, None)
                 if registered is not None and wid in registered:
                     registered.remove(wid)
+                # [S172-BP AMENDMENT F2] No grace outlives its connection. The
+                # grace bridges a renewal that is in flight ON THIS CONNECTION;
+                # once the connection is gone there is nothing in flight, and the
+                # worker's silence is genuine again.
+                self.clear_capacity_resume_grace(wid)
         # Defect 6 (C3): shutdown BEFORE close so a reader thread blocked in recv on
         # this socket is woken (recv returns EOF) AND the peer promptly sees the FIN
         # — a bare close() on a socket with a concurrent blocked recv may defer both.
@@ -5042,6 +5756,44 @@ class RangeMinerCoordinator:
                            msg.worker_id, wconn.quarantine_reason)
         return "ok"
 
+    def dispatch_inbound_result(self, msg, rawsock, run_id, bound_worker_id,
+                                wconn_by_worker, eligible_provider,
+                                credit_id: Optional[int] = None) -> None:
+        """[S172-BP AMENDMENT F1-R] The serve loop's DISPOSITION-BOUNDED dispatch of
+        one decoded envelope.
+
+        `_serve_dispatch` is called verbatim and is NOT modified; the only thing
+        added is the `finally` that ends the ingress reservation once the envelope
+        has been definitively disposed of. The `finally` covers dispositions (i),
+        (ii) and (iii) in one place precisely because they are indistinguishable
+        from out here — accepted into staging, retained in the deferred queue, or
+        dropped by the existing fence, the envelope is in all three cases no longer
+        pending, which is the whole content of the invariant.
+
+        [S172-BP AMENDMENT F1-R2a] IT FIRES ON THE EXACT CREDITED ENVELOPE, AND
+        NOTHING ELSE. Round 2 argued that the credited envelope is "by construction
+        the first `sub_stripe_result` the connection delivers after its resume" and
+        cleared on `rawsock is holder`. That reasoning covers LATER traffic only. An
+        OLDER result of the same connection's — already sitting in `inbound` before
+        the pause began — arrives FIRST, is dropped by the existing identity/
+        attempt/dedup/terminal fence (consuming no capacity whatsoever), and under
+        the socket-only test its `finally` released the credit while the credited
+        envelope was still queued behind it on a still-free slot. The token the
+        envelope carries is the identity: an envelope with `credit_id is None` is
+        UNCREDITED and clears nothing, no matter which socket it came in on.
+
+        This is a SEAM, not a second dispatch path: the serve loop calls it instead
+        of calling `_serve_dispatch` directly, so the clear cannot be forgotten at
+        one call site, and a gate can drive the REAL disposition sequence rather
+        than modelling it."""
+        try:
+            self._serve_dispatch(msg, run_id, bound_worker_id, wconn_by_worker,
+                                 eligible_provider)
+        finally:
+            if getattr(msg, "message_type", None) == "sub_stripe_result":
+                self._release_resume_credit_exact(
+                    rawsock, credit_id, delivered=True, disposition="dispatch")
+
     def _serve_dispatch(self, msg, run_id, bound_worker_id, wconn_by_worker,
                         eligible_provider) -> None:
         """Route ONE inbound stripe-flow message received on a socket whose bound
@@ -5069,9 +5821,22 @@ class RangeMinerCoordinator:
                 ok, _ = self.accept_stripe_message(
                     wconn, run_id, msg.current_stripe_id, bound_worker_id, (ST_CLAIMED,))
                 if ok:
-                    self.ledger.renew_lease(
+                    renewed = self.ledger.renew_lease(
                         run_id, msg.current_stripe_id, bound_worker_id,
                         time.time() + self.config.compute_lease_timeout)
+                    # [S172-BP AMENDMENT F2] The real lease is renewed, so the
+                    # resume-grace bridge has done its job and must end HERE —
+                    # leaving it in place would widen the exemption past the one
+                    # window it exists for. Gated on the LEDGER's own answer: a
+                    # renew that did not land (the stripe moved out of `claimed`,
+                    # or was re-claimed by another worker) has not restored the
+                    # lease, so the bridge must stay up until its own bound.
+                    if renewed and self.clear_capacity_resume_grace(
+                            bound_worker_id):
+                        logger.info(
+                            "[S172-BP] resume_grace_cleared worker=%s stripe=%s "
+                            "— renew_lease succeeded", bound_worker_id,
+                            msg.current_stripe_id)
             return
         if mt not in ("sub_stripe_result", "stripe_complete", "stripe_error"):
             return

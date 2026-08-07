@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import queue as _queue
+import select
 import socket
 import subprocess
 import sys
@@ -224,15 +225,25 @@ class _Peer:
     WIRE.
     """
 
-    def __init__(self, coord, worker_id, worker_by_sock, inbound, reader_stop):
+    def __init__(self, coord, worker_id, worker_by_sock, inbound, reader_stop,
+                 bind=True, fs_wrap=None):
         self.worker_id = worker_id
         self.srv, self.cli = socket.socketpair()
         self.srv_fs = MinerFramedSocket(self.srv)
         self.cli_fs = MinerFramedSocket(self.cli)
-        worker_by_sock[self.srv] = worker_id
+        # [S172-BP AMENDMENT F1-R2b] G-NO-PREDECODE answers "did this connection
+        # decode a SECOND envelope?" by COUNTING, not by inference — so the object
+        # the production reader was already being handed is wrapped, and the
+        # reader itself stays untouched production code.
+        self.reader_fs = self.srv_fs if fs_wrap is None else fs_wrap(self.srv_fs)
+        # `bind=False` models a socket that CONNECTED BUT NEVER REGISTERED —
+        # `worker_by_sock` is written only by `_serve_register`, so the absence of
+        # an entry IS "unregistered" (F4).
+        if bind:
+            worker_by_sock[self.srv] = worker_id
         self.thread = threading.Thread(
             target=coord._conn_reader_loop,
-            args=(self.srv_fs, self.srv, inbound, reader_stop, worker_by_sock),
+            args=(self.reader_fs, self.srv, inbound, reader_stop, worker_by_sock),
             name=f"reader-{worker_id}", daemon=True)
         self.thread.start()
 
@@ -254,17 +265,22 @@ class _Peer:
 class _Bench:
     """A coordinator plus N connections, each on the real reader loop."""
 
-    def __init__(self, tmp, worker_ids=("hostA:gpu0", "hostB:gpu0"), **cfg):
+    def __init__(self, tmp, worker_ids=("hostA:gpu0", "hostB:gpu0"), inbound=None,
+                 fs_wrap=None, **cfg):
         self.coord = _coord(tmp, **cfg)
         self.worker_by_sock = {}
         self.wconn_by_worker = {}
-        self.inbound = _queue.Queue(maxsize=1024)
+        # `inbound` is injectable ONLY so the F1-R mutant can restore the round-1
+        # clear-at-`inbound.put` at exactly the instruction that differs. Every
+        # other gate gets the same bounded queue the serve loop uses.
+        self.inbound = inbound if inbound is not None else _queue.Queue(maxsize=1024)
         self.reader_stop = threading.Event()
         self.peers = {}
         for wid in worker_ids:
             self.wconn_by_worker[wid] = _register(self.coord, wid)
             self.peers[wid] = _Peer(self.coord, wid, self.worker_by_sock,
-                                    self.inbound, self.reader_stop)
+                                    self.inbound, self.reader_stop,
+                                    fs_wrap=fs_wrap)
         self._held = []
 
     # --- capacity control ------------------------------------------------
@@ -299,14 +315,64 @@ class _Bench:
         return out
 
     def dispatch(self, entries, run_id, eligible=None):
-        """Feed drained frames to the REAL serve dispatcher."""
+        """Feed drained frames to the REAL serve dispatcher.
+
+        [S172-BP AMENDMENT F1-R] Through `dispatch_inbound_result`, which is the
+        exact call the serve loop makes — so the ingress reservation is disposed of
+        by PRODUCTION code here, not by the test thread. Round 1's mistake was the
+        opposite: the bench modelled the serve loop's effect on capacity itself,
+        which deleted the very interval the invariant lives in.
+
+        [S172-BP AMENDMENT F1-R2a] The credit TOKEN the envelope arrived with is
+        passed straight through, exactly as the serve loop's drain does. The bench
+        never invents one: an entry drained with `credit_id=None` is dispatched
+        with `None`, which is the whole point of the identity.
+        """
         eligible = eligible or (lambda: list(self.wconn_by_worker.values()))
-        for kind, rawsock, msg in entries:
+        for kind, rawsock, msg, credit_id in entries:
             if kind != "msg":
                 continue
-            self.coord._serve_dispatch(
-                msg, run_id, self.worker_by_sock.get(rawsock),
-                self.wconn_by_worker, eligible)
+            self.coord.dispatch_inbound_result(
+                msg, rawsock, run_id, self.worker_by_sock.get(rawsock),
+                self.wconn_by_worker, eligible, credit_id)
+
+    def pump(self, run_id, timeout=1.5, eligible=None, until=None):
+        """Drain and dispatch INTERLEAVED, the way the serve loop actually runs.
+
+        [S172-BP AMENDMENT F1-R] A reader may now hold its next `sub_stripe_result`
+        until the previous one has been DISPOSED of (Beta §4 tail: one result per
+        reservation), so `drain()`-everything-then-`dispatch()`-everything can no
+        longer see a connection's second result — not because anything is lost, but
+        because the serve loop is the thing that unblocks it. Returns every entry
+        seen, in arrival order, so ordering assertions are unaffected.
+        """
+        seen = []
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                entry = self.inbound.get(timeout=0.05)
+            except _queue.Empty:
+                if until is not None and until():
+                    break
+                continue
+            seen.append(entry)
+            self.dispatch([entry], run_id, eligible=eligible)
+            if until is not None and until():
+                break
+        return seen
+
+    def dispose(self, rawsock):
+        """[S172-BP AMENDMENT F1-R] The DISPOSITION CLEAR ALONE, through the
+        production API, for gates whose subject is NOT the handoff.
+
+        Used where dispatching the frame would drag unrelated machinery in (a
+        StripeComplete reconciliation, say) but the reservation still has to end so
+        the connection may deliver what is queued behind it. The handoff invariant
+        itself is proven in G-RESUME-HANDOFF, which drives the REAL serve path and
+        touches neither the credit nor the semaphore from the test thread.
+        """
+        return self.coord._release_resume_credit(
+            rawsock, delivered=True, disposition="dispatch")
 
     def wait_paused(self, n=1, timeout=3.0):
         deadline = time.time() + timeout
@@ -447,7 +513,7 @@ def gate1_saturation_on_phase1_fails_nothing():
                 b.coord._release_capacity()
                 assert b.wait_unpaused(), "the reader never resumed"
                 after = b.drain(0.6)
-                msgs = [m for (k, _s, m) in after if k == "msg"]
+                msgs = [m for (k, _s, m, _c) in after if k == "msg"]
                 assert len(msgs) == 1 and msgs[0].message_type == "sub_stripe_result"
                 b.dispatch(after, run_id)
                 assert spy.calls == [], (
@@ -539,9 +605,9 @@ def gate3_paused_peer_stalls_while_second_connection_flows():
                 substripes_done=1, survivors_total=1))
 
             got = b.drain(0.8)
-            from_a = [m for (k, s, m) in got
+            from_a = [m for (k, s, m, _c) in got
                       if k == "msg" and b.worker_by_sock.get(s) == "hostA:gpu0"]
-            from_b = [m for (k, s, m) in got
+            from_b = [m for (k, s, m, _c) in got
                       if k == "msg" and b.worker_by_sock.get(s) == "hostB:gpu0"]
             assert from_a == [], (
                 f"the paused connection delivered {len(from_a)} frame(s): "
@@ -556,9 +622,20 @@ def gate3_paused_peer_stalls_while_second_connection_flows():
             b.release_all_slots()
             b.coord._release_capacity()
             assert b.wait_unpaused(), "A never resumed"
-            rest = b.drain(1.0)
+            # [S172-BP AMENDMENT F1-R] A's reservation now survives until the serve
+            # loop disposes of the credited envelope, and until it does, §4-tail
+            # holds A's NEXT result. So the frames behind it arrive as each
+            # disposition lands — which is the serve loop's job, modelled here with
+            # the disposition clear alone because this gate's subject is the WIRE
+            # ORDER, not the handoff (see `_Bench.dispose`).
+            rest = []
+            sockA = b.peers["hostA:gpu0"].srv
+            deadline = time.time() + 4.0
+            while time.time() < deadline and len(rest) < 3:
+                rest.extend(b.drain(0.3))
+                b.dispose(sockA)
             seq = [(m.message_type, getattr(m, "sub_index", None))
-                   for (k, s, m) in rest
+                   for (k, s, m, _c) in rest
                    if k == "msg" and b.worker_by_sock.get(s) == "hostA:gpu0"]
             assert seq == [("sub_stripe_result", 0), ("sub_stripe_result", 1),
                            ("stripe_complete", None)], (
@@ -630,7 +707,7 @@ def gate4_capacity_release_resumes_without_operator_action():
                 "released its slot — resume is not wired to the capacity-release "
                 "path")
             got = b.drain(1.0)
-            msgs = [m for (k, _s, m) in got if k == "msg"]
+            msgs = [m for (k, _s, m, _c) in got if k == "msg"]
             assert [m.message_type for m in msgs] == ["sub_stripe_result"], (
                 f"the held envelope was not delivered on resume: {msgs}")
             m = b.coord.staging_backpressure_metrics()
@@ -662,8 +739,11 @@ def gate5_each_substripe_staged_exactly_once():
             b.release_all_slots()
             b.coord._release_capacity()
             assert b.wait_unpaused()
-            entries = b.drain(1.5)
-            b.dispatch(entries, run_id)
+            # [S172-BP AMENDMENT F1-R] drain and dispatch INTERLEAVED: the reader
+            # holds each next result until the previous one has been disposed of
+            # (§4 tail), so the serve loop has to actually run between them.
+            b.pump(run_id, timeout=6.0,
+                   until=lambda: len(b.coord.ledger.get_shards(run_id, sid, 0)) >= 4)
             rows = b.coord.ledger.get_shards(run_id, sid, 0)
             assert len(rows) == 4, f"expected 4 shard rows, got {len(rows)}"
             assert sorted(r["sub_index"] for r in rows) == [0, 1, 2, 3]
@@ -691,10 +771,11 @@ def gate6_no_duplicate_rows_no_stale_acceptance():
             b.release_all_slots()
             b.coord._release_capacity()
             assert b.wait_unpaused()
-            entries = b.drain(1.2)
-            got = [m for (k, _s, m) in entries if k == "msg"]
+            # [S172-BP AMENDMENT F1-R] interleaved, per §4 tail — the duplicate is
+            # released by the FIRST frame's disposition, not by draining harder.
+            entries = b.pump(run_id, timeout=3.0)
+            got = [m for (k, _s, m, _c) in entries if k == "msg"]
             assert len(got) == 2, f"both frames should reach the serve loop: {got}"
-            b.dispatch(entries, run_id)
             rows = b.coord.ledger.get_shards(run_id, sid, 0)
             assert len(rows) == 1, (
                 f"pause/resume produced {len(rows)} rows for ONE logical shard — "
@@ -749,7 +830,7 @@ def gate7_superseded_attempt_cannot_resume_and_publish():
             b.coord._release_capacity()
             assert b.wait_unpaused()
             entries = b.drain(1.2)
-            assert [m.message_type for (k, _s, m) in entries if k == "msg"] == \
+            assert [m.message_type for (k, _s, m, _c) in entries if k == "msg"] == \
                 ["sub_stripe_result"], "the held envelope was not re-delivered"
             b.dispatch(entries, run_id)
             # the fence dropped it: no shard row for the DEAD attempt 0, nothing
@@ -1188,6 +1269,9 @@ class _RemoteWorker:
         self._stop = threading.Event()
         self.fs = None
         self._t = None
+        # every StripeAssign this worker was actually handed — the honest way to
+        # assert "no result traffic for that stage" (G-BOUND-DERIVATION-FAILURE).
+        self.assigned = []
 
     def connect_register(self):
         sock = socket.create_connection((self.host, self.port))
@@ -1220,6 +1304,7 @@ class _RemoteWorker:
             self.err = traceback.format_exc()
 
     def _respond(self, assign):
+        self.assigned.append(assign.stripe_id)
         eff = (assign.payload or {}).get("min_match_threshold")
         # partition with the SAME cap the coordinator sized expected_substripes
         # with (advertised_effective_cap over the advertised caps) — Blocker 7.
@@ -1390,7 +1475,7 @@ def gate_pause_mutant():
             assert executed["n"] >= 1, (
                 "the mutant was never called — the reader does not consult the "
                 "capacity gate, so the pause gates prove nothing")
-            delivered = [m for (k, _s, m) in got if k == "msg"]
+            delivered = [m for (k, _s, m, _c) in got if k == "msg"]
             assert len(delivered) == 1, (
                 "with the gate removed the envelope should be delivered "
                 "IMMEDIATELY into coordinator RAM — it was not, so the pause gates "
@@ -1432,22 +1517,49 @@ def _on_staging_failed_call_sites(src_text):
     return out
 
 
+# The two BASELINES this gate compares against. They are pinned commits, NOT
+# `HEAD`, and that is the whole point:
+#
+#   * `HEAD` was correct only while the remediation was uncommitted. The moment
+#     `4b1aad6` landed, `git show HEAD:` returned the POST-fix file, so `before`
+#     became 6 and the gate red on its own success — which is exactly what it did
+#     at `42bdbb1`, before this amendment. A gate whose baseline moves with the
+#     work cannot certify the work.
+#   * A commit hash is the only thing that anchors "what the file looked like
+#     before the change", so it belongs here (it anchors a certified artifact, not
+#     a value copied from memory).
+_PRE_REMEDIATION_REV = "7c4f11b1b9910f868b56906f05f7269f58fba53e"   # parent of 4b1aad6
+_AMENDMENT_BASELINE_REV = "4b1aad6ddfa7e6f6a3082a7850fe71b7ae7825b8"  # the ruling's subject
+
+
+def _rev_source(rev, path="miner/range_miner_coordinator.py"):
+    return subprocess.run(["git", "-C", _ROOT, "show", f"{rev}:{path}"],
+                          capture_output=True, text=True, check=True).stdout
+
+
 def gate_matrix_diff_six_callers_unchanged():
     """§0: exactly ONE call site is removed and the other SIX are byte-identical.
 
-    Structural half: the pre-change file at HEAD versus the working tree, compared
-    as normalized call expressions. Seven before, six after, and the six that
-    remain must match the six that were there — set-equal, with the removed one
-    being precisely the deferred-overflow back-pressure call.
+    Structural half, over three revisions rather than two:
+      pre-remediation (7c4f11b) -> 7 call sites
+      the ruling's subject (4b1aad6) -> 6
+      the working tree (this amendment) -> the SAME 6
+    Seven before, six after, the six that remain set-equal to the six that were
+    there, and the removed one precisely the deferred-overflow back-pressure call.
+    The 4b1aad6-vs-live comparison is the amendment's own claim: F1-F5 changed
+    NOTHING in the retry matrix or its surviving callers.
     """
     live = open(os.path.join(_ROOT, "miner", "range_miner_coordinator.py")).read()
-    head = subprocess.run(
-        ["git", "-C", _ROOT, "show", "HEAD:miner/range_miner_coordinator.py"],
-        capture_output=True, text=True, check=True).stdout
+    head = _rev_source(_PRE_REMEDIATION_REV)
+    base = _rev_source(_AMENDMENT_BASELINE_REV)
     before = _on_staging_failed_call_sites(head)
+    at_baseline = _on_staging_failed_call_sites(base)
     after = _on_staging_failed_call_sites(live)
     assert len(before) == 7, (
         f"expected 7 pre-change _on_staging_failed call sites, found {len(before)}")
+    assert len(at_baseline) == 6, (
+        f"expected exactly 6 at {_AMENDMENT_BASELINE_REV[:7]}, "
+        f"found {len(at_baseline)}: {at_baseline}")
     assert len(after) == 6, (
         f"expected exactly 6 after the removal, found {len(after)}: {after}")
     removed = [c for c in before if c not in after]
@@ -1457,12 +1569,19 @@ def gate_matrix_diff_six_callers_unchanged():
     surviving_changed = [c for c in after if c not in before]
     assert surviving_changed == [], (
         f"an out-of-scope caller was modified: {surviving_changed}")
-    # ...and the matrix plumbing itself is untouched
+    # THE AMENDMENT'S OWN CLAIM: the six survivors are untouched by F1-F5.
+    assert after == at_baseline, (
+        f"this amendment changed a surviving _on_staging_failed caller:\n"
+        f"  at {_AMENDMENT_BASELINE_REV[:7]}: {at_baseline}\n"
+        f"  live: {after}")
+    # ...and the matrix plumbing itself is untouched, against BOTH baselines
     for meth in ("_on_staging_failed", "handle_stripe_failure",
                  "_handle_stripe_failure_locked"):
-        b_src = _method_source(head, meth)
         a_src = _method_source(live, meth)
-        assert b_src == a_src, f"{meth} was modified — it is out of scope"
+        assert _method_source(head, meth) == a_src, (
+            f"{meth} was modified since {_PRE_REMEDIATION_REV[:7]} — out of scope")
+        assert _method_source(base, meth) == a_src, (
+            f"{meth} was modified by THIS AMENDMENT — out of scope")
 
 
 def _method_source(module_src, name):
@@ -1606,6 +1725,1650 @@ def gate_metrics_are_grep_stable_and_complete():
 
 
 # ===========================================================================
+# S172-BP AMENDMENT (Beta findings F1-F5, ruling of 2026-08-06)
+# Five targeted gates. Every one of them is RED against the behaviour committed
+# at 4b1aad6 — the red runs come from a worktree at that commit with this file
+# copied in (see docs/CLAUDE_CODE_REPORT_S172_BP_AMENDMENT.md §red-table).
+# ===========================================================================
+
+def gate_resume_credit_one_wake_per_release():
+    """F1 / G-RESUME-CREDIT (part a — the credit arithmetic, deterministic).
+
+    TWO paused connections are registered through the REAL registry API and
+    capacity is held WIDE OPEN for the whole gate — so the ONLY thing that can
+    stop a second wake is the ingress credit. That is the defect exactly: the
+    pre-amendment `_resume_paused_connections` set an event, re-checked
+    `staging_can_accept()` and looped, and because a wake CONSUMED NOTHING one
+    freed slot satisfied the check on every iteration and released the fleet.
+
+    No reader threads here on purpose: the assertion is about which event a single
+    capacity-release invocation sets, and that is decided synchronously inside the
+    call. Part (b) drives the same property through real reader threads with real
+    capacity accounting.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_workers=2, staging_queue_depth=0,
+                       staging_deferred_max=1, miner_stripe_size=1000)
+        _register(coord, "hostA:gpu0")
+        _register(coord, "hostB:gpu0")
+        assert coord.staging_can_accept(), (
+            "capacity must be OPEN for this gate — otherwise a green result means "
+            "only that nothing could resume")
+
+        eA = coord.register_paused_connection("connA", "hostA:gpu0")
+        eB = coord.register_paused_connection("connB", "hostB:gpu0")
+        assert not eA.is_set() and not eB.is_set()
+
+        # --- ONE capacity-release path invocation -> AT MOST ONE wake ---------
+        # (asserted BEFORE anything touches the new credit API, so this gate reds
+        # against 4b1aad6 on the BEHAVIOUR rather than on a missing attribute)
+        coord._release_capacity()
+        assert eA.is_set(), "the FIFO-first paused reader was not woken at all"
+        assert not eB.is_set(), (
+            "ONE capacity observation woke MORE THAN ONE reader — the wake did "
+            "not consume the observation (thundering herd)")
+        assert coord.resume_credits_outstanding() == 1, (
+            "the wake did not take a credit, so nothing reserves the observation")
+
+        # --- further release events grant NOTHING while the credit is out -----
+        for _ in range(5):
+            coord._release_capacity()
+        assert not eB.is_set(), (
+            "a second reader was woken while a credit was outstanding — a wake "
+            "must RESERVE the observation until it is used")
+        assert coord.resume_credits_outstanding() == 1
+
+        # --- a NON-HEAD reader cannot self-resume on someone else's observation
+        assert coord.staging_can_accept()
+        assert coord._try_self_resume("connB") is False, (
+            "a non-head paused reader self-released — the defensive poll is still "
+            "a second thundering-herd door")
+
+        # --- credit consumed -> the FIFO head may take the next observation ----
+        coord.deregister_paused_connection("connA", reason="resume")
+        assert coord._release_resume_credit("connA", delivered=True) is True
+        assert coord.resume_credits_outstanding() == 0
+        assert coord._try_self_resume("connB") is True, (
+            "the FIFO head could not escape with capacity open and no grant in "
+            "flight — the lost-wakeup protection was lost")
+        assert eB.is_set()
+        assert coord.resume_credits_outstanding() == 1
+        # ...and clearing is attributable: a non-holder cannot clear it
+        assert coord._release_resume_credit("connA", delivered=False) is False
+        assert coord.resume_credits_outstanding() == 1
+        assert coord._release_resume_credit("connB", delivered=True) is True
+        assert coord.resume_credits_outstanding() == 0
+
+
+def gate_resume_credit_real_readers_fifo():
+    """F1 / G-RESUME-CREDIT (part b — real readers, real capacity accounting).
+
+    Two REAL reader threads pause on real framed sockets. Exactly ONE staging
+    capacity unit is freed and exactly ONE capacity-release path is invoked; the
+    freed unit is then RECLAIMED, which is what the serve loop does in production
+    the moment it stages the resumed envelope. The second reader must therefore
+    stay paused across a real settling window (>= 10 of its 50 ms poll cycles),
+    and must resume when a SECOND unit is freed. FIFO order is asserted throughout.
+
+    ⚠ THIS GATE DOES NOT COVER THE HANDOFF INVARIANT (Beta F1-R §5, last line).
+    It reclaims the freed unit FROM THE TEST THREAD immediately after the grant,
+    "modelling the serve loop" — and that reclaim deletes precisely the interval
+    the reservation has to survive (envelope in `inbound`, slot still physically
+    free). It went green in round 1 against a reader that cleared its credit at
+    `inbound.put`, which is the defect. What it still legitimately proves is the
+    CAPACITY ACCOUNTING: one freed unit resumes exactly one reader, FIFO-first, and
+    a second unit is needed for the second reader. The handoff itself — that the
+    reservation survives until DISPOSITION — is proven only by G-RESUME-HANDOFF,
+    which dispatches through the REAL serve path and touches neither the semaphore
+    nor the credit from the test thread.
+
+    On the reclaim window: until the woken reader deregisters it is still the FIFO
+    head — so the second reader cannot self-resume before the reclaim, which
+    happens a couple of microseconds after the grant returns while a thread wake-up
+    costs tens. The gate records the inbound depth at reclaim time so a lost race
+    is reported as itself instead of as a confusing "the second reader resumed".
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg())
+        try:
+            run_id = "runRC"
+            b.coord.ledger.create_trial(run_id, 0, now=100.0)
+            for wid, sid in (("hostA:gpu0", "runRC_sA"), ("hostB:gpu0", "runRC_sB")):
+                _claim(b.coord, run_id, sid, wid, b.wconn_by_worker[wid])
+            b.saturate()
+            sem = b.coord._staging_slots()
+
+            # A pauses FIRST, then B — the FIFO order under test.
+            b.peers["hostA:gpu0"].send(
+                _inline_result("hostA:gpu0", "runRC_sA", 0, 0, 30))
+            assert b.wait_paused(1), "A never paused"
+            b.peers["hostB:gpu0"].send(
+                _inline_result("hostB:gpu0", "runRC_sB", 0, 0, 30))
+            assert b.wait_paused(2), "B never paused"
+            order = [r["worker_id"] for r in b.coord._paused_connections.values()]
+            assert order == ["hostA:gpu0", "hostB:gpu0"], (
+                f"the pause registry is not in FIFO entry order: {order}")
+
+            # ---- free EXACTLY ONE unit, invoke EXACTLY ONE release path ------
+            b._held.pop()
+            sem.release()
+            b.coord._release_capacity()
+            depth_at_reclaim = b.inbound.qsize()
+            reclaimed = sem.acquire(blocking=False)
+            if reclaimed:
+                b._held.append(True)
+            assert reclaimed, (
+                "the freed unit could not be reclaimed — this gate models the "
+                "serve loop staging the resumed envelope, and without the reclaim "
+                "capacity stays open and nothing is being measured")
+            assert not b.coord.staging_can_accept(), (
+                "capacity is still open after the reclaim")
+
+            # ---- exactly ONE reader resumed, and it is the FIFO-first --------
+            deadline = time.time() + 3.0
+            while time.time() < deadline and b.coord.paused_connection_count() > 1:
+                time.sleep(0.01)
+            assert b.coord.paused_worker_ids() == frozenset({"hostB:gpu0"}), (
+                f"expected ONLY hostB still paused, got "
+                f"{b.coord.paused_worker_ids()} (inbound depth at reclaim = "
+                f"{depth_at_reclaim}; a nonzero depth means the woken reader beat "
+                f"the reclaim and the gate lost its capacity race)")
+            entries = b.drain(0.5)
+            first = [m for (k, s, m, _c) in entries
+                     if k == "msg" and b.worker_by_sock.get(s) == "hostA:gpu0"]
+            assert len(first) == 1, (
+                f"the FIFO-first reader did not deliver its held envelope: {first}")
+            # [S172-BP AMENDMENT F1-R] delivery is INGRESS, so the reservation is
+            # still outstanding here. Disposing of it is the serve loop's job:
+            # dispatch through the production seam. Capacity is (deliberately)
+            # closed, so this envelope is RETAINED in the bounded deferred queue —
+            # disposition (ii), which ends the reservation exactly as (i) does.
+            assert b.coord.resume_credits_outstanding() == 1, (
+                "the reservation ended at ingress — the freed slot is still "
+                "unconsumed and a second reader could wake on it")
+            b.dispatch(entries, run_id)
+
+            # ---- and B REMAINS paused across a real settling window ----------
+            settle_end = time.time() + 0.6      # >= 12 of B's 50 ms poll cycles
+            while time.time() < settle_end:
+                assert b.coord.paused_worker_ids() == frozenset({"hostB:gpu0"}), (
+                    "the second reader resumed on the FIRST reader's capacity "
+                    "observation — one freed slot woke more than one connection")
+                time.sleep(0.02)
+            assert b.coord.resume_credits_outstanding() == 0, (
+                "the wake's reservation was never released at disposition — the "
+                "fleet would wedge")
+
+            # ---- free a SECOND unit: now the second reader resumes -----------
+            b._held.pop()
+            sem.release()
+            b.coord._release_capacity()
+            assert b.wait_unpaused(), "the second reader never resumed"
+            second = [m for (k, s, m, _c) in b.drain(0.8)
+                      if k == "msg" and b.worker_by_sock.get(s) == "hostB:gpu0"]
+            assert len(second) == 1, (
+                f"the second reader did not deliver its held envelope: {second}")
+        finally:
+            b.close()
+
+
+def gate_resume_credit_mutants():
+    """MUTATION EVIDENCE for F1 (both doors), deterministic at the registry API.
+
+    Mutant 1 RESTORES THE LOOP: `_resume_paused_connections` becomes the
+    pre-amendment while-loop. It must EXECUTE and wake BOTH readers on one
+    capacity-release invocation, redding the credited assertion of part (a).
+
+    Mutant 2 lets a NON-HEAD reader self-resume (the bare `staging_can_accept()`
+    escape). It must EXECUTE and return True for a non-head connection, redding
+    the head-only assertion.
+    """
+    # ---- mutant 1: the loop -------------------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_workers=2, staging_queue_depth=0,
+                       staging_deferred_max=1, miner_stripe_size=1000)
+        _register(coord, "hostA:gpu0")
+        _register(coord, "hostB:gpu0")
+        eA = coord.register_paused_connection("connA", "hostA:gpu0")
+        eB = coord.register_paused_connection("connB", "hostB:gpu0")
+        executed = {"n": 0}
+        orig = RangeMinerCoordinator._resume_paused_connections
+
+        def _looping_mutant(self_):
+            executed["n"] += 1
+            while True:                          # the deleted loop, restored
+                if not self_.staging_can_accept():
+                    return
+                with self_._pause_lock:
+                    target = None
+                    for _key, rec in self_._paused_connections.items():
+                        if not rec["event"].is_set():
+                            target = rec
+                            break
+                    if target is None:
+                        return
+                    target["event"].set()
+                if not self_.staging_can_accept():
+                    return
+
+        RangeMinerCoordinator._resume_paused_connections = _looping_mutant
+        try:
+            coord._release_capacity()
+        finally:
+            RangeMinerCoordinator._resume_paused_connections = orig
+        assert executed["n"] >= 1, (
+            "the mutant was never called — `_pump_deferred`'s finally is not the "
+            "resume trigger, so G-RESUME-CREDIT proves nothing")
+        assert eA.is_set() and eB.is_set(), (
+            "restoring the loop did NOT wake both readers on one observation — "
+            "G-RESUME-CREDIT is vacuous")
+
+    # ---- mutant 2: non-head self-resume ------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_workers=2, staging_queue_depth=0,
+                       staging_deferred_max=1, miner_stripe_size=1000)
+        _register(coord, "hostA:gpu0")
+        _register(coord, "hostB:gpu0")
+        coord.register_paused_connection("connA", "hostA:gpu0")
+        coord.register_paused_connection("connB", "hostB:gpu0")
+        assert coord._try_self_resume("connB") is False   # the fixed behaviour
+        executed = {"n": 0}
+        orig_self = RangeMinerCoordinator._try_self_resume
+
+        def _headless_mutant(self_, conn_key):
+            executed["n"] += 1
+            # the pre-amendment escape: capacity alone, no head test, no credit
+            return bool(self_.staging_can_accept())
+
+        RangeMinerCoordinator._try_self_resume = _headless_mutant
+        try:
+            escaped = coord._try_self_resume("connB")
+        finally:
+            RangeMinerCoordinator._try_self_resume = orig_self
+        assert executed["n"] == 1, "the non-head mutant never executed"
+        assert escaped is True, (
+            "removing the head test did NOT let a non-head reader self-release — "
+            "the head-only assertion is vacuous")
+
+
+def _spool_result(wid, sid, sub_index, seed_start, seed_count):
+    """A REMOTE (spooled) result, so staging it consumes a real slot through a real
+    fetch — the slot is then held for as long as the gated transfer blocks."""
+    _obj, pb = build_substripe_payload_bytes(
+        sid, sub_index, seed_start, seed_count, [[seed_start, 0.9, None, [1]]])
+    remote = f"{SPOOL_ROOT}/{sid}/{sub_index}.json"
+    msg = SubStripeResultMessage(
+        worker_id=wid, stripe_id=sid, sub_index=sub_index, seed_start=seed_start,
+        seed_count=seed_count, survivor_count=1, spool_path=remote, inline=None,
+        size_bytes=len(pb), sha256=hashlib.sha256(pb).hexdigest(),
+        effective_threshold=0.25)
+    return msg, remote, pb
+
+
+class _Round1ClearQueue(_queue.Queue):
+    """THE ROUND-1 READER, restored at exactly the one instruction that differs.
+
+    Round 1 called `_release_resume_credit(rawsock, delivered=True)` immediately
+    after the successful `inbound.put`. Reproducing it by wrapping `put` executes
+    the same clear, in the same thread, at the same instant, without rewriting
+    `_conn_reader_loop` — so the mutant is the round-1 BEHAVIOUR and not an
+    approximation of it.
+    """
+
+    def __init__(self, executed, **kw):
+        super().__init__(**kw)
+        self.coord = None
+        self._executed = executed
+
+    def put(self, item, *a, **kw):
+        out = super().put(item, *a, **kw)
+        try:
+            kind, sock, msg, _credit_id = item
+        except (TypeError, ValueError):
+            return out
+        if (kind == "msg" and self.coord is not None
+                and getattr(msg, "message_type", None) == "sub_stripe_result"):
+            if self.coord._release_resume_credit(
+                    sock, delivered=True, disposition="round1_ingress_clear"):
+                self._executed["n"] += 1
+        return out
+
+
+def _handoff_bench(tmp, inbound=None):
+    """The shared fixture for G-RESUME-HANDOFF and its mutant: two real readers,
+    two real paused connections, and a staging job that HOLDS its slot (a gated
+    fetch) so capacity never reopens behind the gate's back."""
+    fetch_gate = threading.Event()
+    payloads, msgs = {}, {}
+    for wid, sid, subs in (("hostA:gpu0", "runRH_sA", (0, 1)),
+                           ("hostB:gpu0", "runRH_sB", (0,))):
+        for i in subs:
+            m, remote, pb = _spool_result(wid, sid, i, i * 30, 30)
+            payloads[remote] = pb
+            msgs[(wid, i)] = m
+    transfer = _GatedTransfer(payloads=payloads, gate=fetch_gate)
+    b = _Bench(tmp, transfer=transfer, inbound=inbound, **_saturating_cfg())
+    return b, fetch_gate, msgs
+
+
+def gate_resume_handoff_survives_until_disposition():
+    """F1-R / G-RESUME-HANDOFF — Beta §5, all eleven steps.
+
+    THE DEFECT. Round 1 cleared the ingress credit at `inbound.put`. But the freed
+    staging slot is consumed only when the SERVE LOOP later dispatches that
+    envelope into `enqueue_staging`. In the gap — envelope in `inbound`, slot still
+    physically free — reader B finds: B is FIFO head (A deregistered), credits == 0
+    (A cleared at put), and `staging_can_accept()` true ON THE SAME SLOT. Two
+    wakes, one slot.
+
+    THE GATE. Two REAL paused readers. Exactly ONE unit is freed and exactly ONE
+    release path is invoked. A's envelope is then allowed to reach `inbound` and A
+    to leave the pause registry — and from that instant until the dispatch, THE
+    TEST THREAD TOUCHES NEITHER THE SEMAPHORE NOR THE CREDIT. That is the whole
+    correction: round 1's part (b) reclaimed the unit itself "modelling the serve
+    loop", which deleted exactly the interval under proof. The unit here is
+    consumed by the REAL `enqueue_staging`, reached through the REAL dispatch seam.
+
+    A deliberately has a SECOND result queued behind the first, so Beta §4's tail
+    ("no second result while the reservation is out") is proven by the same hold:
+    one connection must not stream several results against one observation.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        b, fetch_gate, msgs = _handoff_bench(tmp)
+        try:
+            run_id = "runRH"
+            b.coord.ledger.create_trial(run_id, 0, now=100.0)
+            _claim(b.coord, run_id, "runRH_sA", "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"], seed_count=60, expected=2)
+            _claim(b.coord, run_id, "runRH_sB", "hostB:gpu0",
+                   b.wconn_by_worker["hostB:gpu0"], seed_count=30, expected=1)
+            b.saturate()
+            sem = b.coord._staging_slots()
+            sockA = b.peers["hostA:gpu0"].srv
+
+            # (1-3) A pauses FIRST, then B; FIFO asserted from the registry.
+            b.peers["hostA:gpu0"].send(msgs[("hostA:gpu0", 0)])
+            assert b.wait_paused(1), "A never paused"
+            b.peers["hostA:gpu0"].send(msgs[("hostA:gpu0", 1)])   # queued behind
+            b.peers["hostB:gpu0"].send(msgs[("hostB:gpu0", 0)])
+            assert b.wait_paused(2), "B never paused"
+            order = [r["worker_id"] for r in b.coord._paused_connections.values()]
+            assert order == ["hostA:gpu0", "hostB:gpu0"], (
+                f"the pause registry is not in FIFO entry order: {order}")
+
+            # (4-5) free EXACTLY ONE unit; invoke EXACTLY ONE release path.
+            b._held.pop()
+            sem.release()
+            b.coord._release_capacity()
+
+            # (6) wait until A's envelope is IN `inbound` and A has left the registry
+            entry = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if entry is None:
+                    try:
+                        entry = b.inbound.get(timeout=0.05)
+                    except _queue.Empty:
+                        continue
+                if b.coord.paused_connection_count() == 1:
+                    break
+                time.sleep(0.02)
+            assert entry is not None, "A never delivered its held envelope"
+            kind, esock, emsg, ecid = entry
+            assert kind == "msg" and esock is sockA, (kind, entry)
+            assert ecid is not None, (
+                "A's resumed envelope arrived with no credit token — the "
+                "reservation cannot be disposed of by exact identity")
+            assert emsg.message_type == "sub_stripe_result", emsg.message_type
+            assert b.coord.paused_worker_ids() == frozenset({"hostB:gpu0"}), (
+                f"expected ONLY hostB still paused, got "
+                f"{b.coord.paused_worker_ids()}")
+
+            # (7-9) HOLD. Nothing here dispatches, and nothing here touches the
+            # semaphore: the freed unit is STILL FREE and the reservation must
+            # survive on it.
+            assert b.coord.staging_can_accept(), (
+                "the freed unit is no longer free — the gate has lost the very "
+                "condition it exists to hold open, exactly as round 1 did")
+            hold_end = time.time() + 0.6          # >= 12 of B's 50 ms poll cycles
+            while time.time() < hold_end:
+                assert b.coord.paused_worker_ids() == frozenset({"hostB:gpu0"}), (
+                    "B resumed while A's envelope was still undispatched — two "
+                    "wakes on ONE unconsumed slot (Beta F1-R §2)")
+                assert b.inbound.qsize() == 0, (
+                    "a second envelope reached `inbound` while the reservation "
+                    "was outstanding — one connection streamed several results "
+                    "against one capacity observation (Beta F1-R §4 tail)")
+                assert b.coord.resume_credits_outstanding() == 1, (
+                    "the reservation ended at INGRESS — `inbound.put` moves the "
+                    "envelope, it does not consume the slot")
+                time.sleep(0.02)
+
+            # (10) dispatch through the REAL serve path; the clear must land only
+            # AFTER disposition. The spy observes the credit from INSIDE
+            # `_serve_dispatch`, which is the one place "before" is measurable.
+            seen = []
+            orig = RangeMinerCoordinator._serve_dispatch
+
+            def _spy(self_, *a, **kw):
+                seen.append(self_.resume_credits_outstanding())
+                return orig(self_, *a, **kw)
+
+            RangeMinerCoordinator._serve_dispatch = _spy
+            try:
+                b.dispatch([entry], run_id)
+            finally:
+                RangeMinerCoordinator._serve_dispatch = orig
+            assert seen == [1], (
+                f"the reservation was not still outstanding when the dispatch "
+                f"began — it was cleared before disposition: {seen}")
+            assert b.coord.resume_credits_outstanding() == 0, (
+                "the reservation outlived the disposition — the paused fleet "
+                "would never be granted another wake")
+            fetch_deadline = time.time() + 5.0
+            while (time.time() < fetch_deadline
+                   and not b.coord.transfer.fetch_calls):
+                time.sleep(0.02)
+            assert len(b.coord.transfer.fetch_calls) == 1, (
+                f"the dispatched envelope did not reach a real staging fetch, so "
+                f"nothing consumed the freed unit: "
+                f"{b.coord.transfer.fetch_calls}")
+            assert not b.coord.staging_can_accept(), (
+                "the freed unit was never consumed by the dispatch — the gate is "
+                "measuring an open capacity condition, not a handoff")
+
+            # (11) the NEXT unit resumes B — second, FIFO preserved. A, whose
+            # second result was held all along, re-pauses BEHIND B.
+            assert b.wait_paused(2, timeout=5.0), (
+                "A never re-paused on its second result after the disposition")
+            order = [r["worker_id"] for r in b.coord._paused_connections.values()]
+            assert order == ["hostB:gpu0", "hostA:gpu0"], (
+                f"FIFO was not preserved across the handoff: {order}")
+            b._held.pop()
+            sem.release()
+            b.coord._release_capacity()
+            deadline = time.time() + 5.0
+            got_b = []
+            while time.time() < deadline and not got_b:
+                got_b = [m for (k, s, m, _c) in b.drain(0.2)
+                         if k == "msg"
+                         and b.worker_by_sock.get(s) == "hostB:gpu0"]
+            assert len(got_b) == 1, (
+                f"B did not resume second on the next freed unit: {got_b}")
+            assert b.coord.paused_worker_ids() == frozenset({"hostA:gpu0"}), (
+                f"A did not stay paused behind B: {b.coord.paused_worker_ids()}")
+        finally:
+            fetch_gate.set()
+            b.close()
+
+
+def gate_resume_handoff_mutant():
+    """MUTATION EVIDENCE for F1-R (Beta §5): restore the round-1
+    clear-at-`inbound.put`, prove it EXECUTES, and prove B resumes DURING the hold
+    window on the still-unconsumed unit.
+
+    Without this the handoff gate could be green for the wrong reason — a timing
+    accident rather than the reservation. Here the ONLY difference from the gate
+    above is where the credit is cleared, and it is enough to reproduce Beta's §2
+    schedule every time.
+    """
+    executed = {"n": 0}
+    q = _Round1ClearQueue(executed, maxsize=1024)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        b, fetch_gate, msgs = _handoff_bench(tmp, inbound=q)
+        q.coord = b.coord
+        try:
+            run_id = "runRHM"
+            b.coord.ledger.create_trial(run_id, 0, now=100.0)
+            _claim(b.coord, run_id, "runRH_sA", "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"], seed_count=60, expected=2)
+            _claim(b.coord, run_id, "runRH_sB", "hostB:gpu0",
+                   b.wconn_by_worker["hostB:gpu0"], seed_count=30, expected=1)
+            b.saturate()
+            sem = b.coord._staging_slots()
+
+            b.peers["hostA:gpu0"].send(msgs[("hostA:gpu0", 0)])
+            assert b.wait_paused(1), "A never paused"
+            b.peers["hostB:gpu0"].send(msgs[("hostB:gpu0", 0)])
+            assert b.wait_paused(2), "B never paused"
+
+            b._held.pop()
+            sem.release()
+            b.coord._release_capacity()
+
+            # the SAME hold window as the gate — nothing dispatched, nothing
+            # reclaimed. Under the mutant, B must escape inside it.
+            b_resumed = False
+            hold_end = time.time() + 0.6
+            while time.time() < hold_end:
+                if "hostB:gpu0" not in b.coord.paused_worker_ids():
+                    b_resumed = True
+                    break
+                time.sleep(0.02)
+
+            assert executed["n"] >= 1, (
+                "the round-1 clear never executed — the mutant is not reproducing "
+                "clear-at-`inbound.put`, so G-RESUME-HANDOFF proves nothing")
+            assert b_resumed, (
+                "restoring the clear-at-ingress did NOT let B wake on the "
+                "still-unconsumed unit — G-RESUME-HANDOFF is vacuous")
+        finally:
+            fetch_gate.set()
+            b.close()
+
+
+def gate_summary_never_masks_the_sizing_terminal():
+    """F1-R round 2 / G-SUMMARY-NO-MASK — Beta §7.
+
+    Alpha's terminal-summary guard exists because `staging_deferred_bound()` falls
+    back to the ON-DEMAND derivation when no stage bound was installed — and the
+    one production path where that is true at trial-terminal time is precisely an
+    F5 sizing failure. The SAME malformed cap record that failed stage setup would
+    then raise again inside `log_staging_backpressure_summary`, out of the terminal
+    reporting path, and mask the honest `coordinator_staging_sizing` termination:
+    the F3 disease relocated to the reporting layer.
+
+    The existing F5 gate restores the caps from the abort callback, so it never
+    reaches this code — that gate is deliberately NOT modified. This one LEAVES the
+    record malformed all the way through terminal summary construction, which is
+    the direct execution of the guard.
+    """
+    label, exc_name, mangle = _MALFORMED_CAP_RECORDS[0]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        ds = os.path.join(tmp, "dataset.json")
+        with open(ds, "w") as f:
+            f.write('[{"draw":1},{"draw":2},{"draw":3}]')
+
+        records = []
+        _lg, _h, restore_log = _capture_bp(records)
+        state = {"injected": 0}
+        sink = _Sink()                      # NO on_abort restore — that is the point
+        transfer = _GatedTransfer()
+        orig_assign = RangeMinerCoordinator.assign_stripes
+
+        def _assign_then_corrupt(self_, *a, **kw):
+            out = orig_assign(self_, *a, **kw)
+            for _wid, conn in self_.connections.items():
+                conn.seed_caps = mangle(conn.seed_caps)
+            state["injected"] += 1
+            return out
+
+        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        lsock.bind(("127.0.0.1", 0))
+        lsock.listen(8)
+        port = lsock.getsockname()[1]
+
+        holder = {}
+        gate_caps = {**CAPS, "nvidia": 10}
+
+        def run():
+            try:
+                holder["result"] = run_trial_miner(
+                    "runSNM", None, 3, "java_lcg", [1, 2, 3], 80, 0.25, 0.25,
+                    False, ds, worker_pool_size=1,
+                    staging_dir=os.path.join(tmp, "stg"), phase5_sink=sink,
+                    transfer=transfer, listen_sock=lsock,
+                    family_name="java_lcg", workflow_phase=1,
+                    miner_stripe_size=80, seed_cap_nvidia=10,
+                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    staging_workers=2, staging_queue_depth=0,
+                    staging_high_water_bytes=64 * 1024 * 1024,
+                    serve_timeout=45.0)
+            except Exception:                                 # noqa: BLE001
+                holder["err"] = traceback.format_exc()
+
+        RangeMinerCoordinator.assign_stripes = _assign_then_corrupt
+        w = _RemoteWorker("127.0.0.1", port, "hostA", 0, caps=gate_caps)
+        try:
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            w.connect_register()
+            w.start_loop()
+            t.join(timeout=60)
+            assert not t.is_alive(), "serve_trial never terminated"
+        finally:
+            RangeMinerCoordinator.assign_stripes = orig_assign
+            restore_log()
+            w.stop()
+            try:
+                lsock.close()
+            except OSError:
+                pass
+
+        assert state["injected"] >= 1, (
+            "the malformed cap record was never injected — the gate is measuring "
+            "nothing")
+        # (1) the summary did NOT raise out of the terminal path
+        assert "err" not in holder, holder.get("err")
+        result = holder["result"]
+
+        # (2) the PRIMARY terminal truth is untouched by the reporting degradation
+        assert result["state"] == "aborted", result["state"]
+        assert sink.aborts, "no abort event was delivered"
+        reason = sink.aborts[0].get("reason", "")
+        assert reason.startswith("coordinator_staging_sizing:"), (
+            f"the summary masked the honest sizing termination: {reason!r}")
+
+        # (3) reporting DEGRADED rather than lying: no bound, and the cause named
+        bp = result["staging_backpressure"]
+        assert bp["bound_in_force"] is None, (
+            f"a bound was reported although its derivation raises: "
+            f"{bp['bound_in_force']!r}")
+        assert "bound_in_force_error" in bp, (
+            "the summary silently dropped the bound instead of recording WHY — a "
+            "None with no cause is indistinguishable from 'never derived'")
+        assert exc_name in bp["bound_in_force_error"], (
+            f"[{label}] the summary does not name the derivation exception: "
+            f"{bp['bound_in_force_error']!r}")
+
+        # (4) ...and the grep-stable summary line STILL EMITS
+        summary = [r for r in records if r.startswith("[S172-BP] summary")]
+        assert summary, (
+            "the [S172-BP] summary line never emitted — the terminal metrics "
+            "record was lost to the very failure it is supposed to report on")
+        assert "bound_in_force=None" in summary[-1], summary[-1]
+
+
+def gate_lease_handoff_grace():
+    """F2 / G-LEASE-HANDOFF. The §1.4 exemption covered only LIVE membership in
+    `_paused_connections`, but a resuming reader DEREGISTERS FIRST, delivers the
+    held envelope, and only then reaches the heartbeat queued behind it on the same
+    ordered TCP stream. In that window the worker is unpaused, its compute lease
+    (300 s) has been expired for as long as the pause ran (up to 600 s) and its
+    renewal is still in flight — so `process_lease_expiry` routed the stripe into
+    the matrix for a silence the coordinator caused.
+
+    Three arms: (1) expiry inside the window touches nothing; (2) processing the
+    heartbeat renews normally and CLEARS the grace; (3) a resumed worker that never
+    heartbeats expires once the grace bound passes — the exemption is bounded.
+    """
+    # ---- arms 1 and 2 -------------------------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg(compute_lease_timeout=300.0))
+        try:
+            run_id, sid = "runLH", "runLH_sA"
+            t0 = time.time()
+            b.coord.ledger.create_trial(run_id, 0, now=t0)
+            # HYBRID (phase 3) deliberately: a genuine expiry here is observable
+            # without the constant-phase row killing the whole trial.
+            # The lease is ALREADY past its deadline — the pause outlived it.
+            _claim(b.coord, run_id, sid, "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"], phase=3,
+                   family="java_lcg_hybrid", lease=t0 - 1.0, now=t0)
+            b.saturate()
+            b.peers["hostA:gpu0"].send(_inline_result("hostA:gpu0", sid, 0, 0, 30))
+            assert b.wait_paused(1), "the reader never paused"
+            # the renewing heartbeat is written WHILE PAUSED: TCP is ordered, so it
+            # sits on the wire behind the held result — the real shape of the bug.
+            b.peers["hostA:gpu0"].send(MinerHeartbeatMessage(
+                worker_id="hostA:gpu0", current_stripe_id=sid, busy=True))
+
+            b.release_all_slots()
+            b.coord._release_capacity()
+            assert b.wait_unpaused(), "the reader never resumed"
+            entries = b.drain(1.0)
+            kinds = [m.message_type for (k, _s, m, _c) in entries if k == "msg"]
+            # [S172-BP AMENDMENT F1-R2b] The heartbeat queued behind the held result
+            # no longer reaches `inbound` on the same drain: the PRE-DECODE BARRIER
+            # holds it ON THE WIRE until the credited envelope is disposed of, which
+            # Beta §4.2 explicitly accepts. That makes the window this gate exists
+            # for STRICTLY WIDER, not narrower — the renewal is one step further
+            # from the coordinator than round 2's version of the same handoff — so
+            # the F2 grace is needed at least as much. The gate's SUBJECT (arms 1-3)
+            # is unchanged; only where the undelivered heartbeat is parked changed.
+            assert kinds == ["sub_stripe_result"], (
+                f"the held envelope did not arrive alone, ahead of a heartbeat "
+                f"that must still be on the wire: {kinds}")
+
+            # ARM 1: expiry INSIDE the window — deregistered, heartbeat undelivered.
+            # The MATRIX assertion comes first deliberately: it is the behaviour
+            # Beta's §3 names, and asserting it before touching the new grace API
+            # is what makes this gate red against 4b1aad6 on behaviour.
+            assert b.coord.paused_worker_ids() == frozenset(), "still paused"
+            with _MatrixSpy() as spy:
+                out = b.coord.process_lease_expiry(
+                    run_id, list(b.wconn_by_worker.values()))
+            assert spy.calls == [], (
+                f"a coordinator-caused silence entered the matrix during the "
+                f"resume handoff: {spy.calls}")
+            assert out == [], out
+            assert "hostA:gpu0" in b.coord.capacity_resume_grace(), (
+                "no resume grace was recorded — the worker is unpaused with an "
+                "expired lease and its renewal still queued")
+            st = b.coord.ledger.get_stripe(run_id, sid)
+            assert st["state"] == ST_CLAIMED and st["current_attempt"] == 0
+            assert not st["phase_degraded"]
+            assert st["claimed_by"] == "hostA:gpu0"
+
+            # ARM 2: process the heartbeat -> normal renewal, grace CLEARED.
+            # [S172-BP AMENDMENT F1-R2b] The disposition comes first, because that
+            # is what releases the barrier and lets the reader decode the heartbeat
+            # at all. `dispose` is the disposition clear alone (this gate's subject
+            # is the lease, not the handoff — see `_Bench.dispose`).
+            b.dispose(b.peers["hostA:gpu0"].srv)
+            hb = []
+            hb_deadline = time.time() + 4.0
+            while time.time() < hb_deadline and not hb:
+                hb = [e for e in b.drain(0.3) if e[0] == "msg"
+                      and e[2].message_type == "heartbeat"]
+            assert hb, (
+                "the heartbeat never arrived after the credited envelope was "
+                "disposed of — the barrier did not release the wire")
+            b.dispatch(hb, run_id)
+            st2 = b.coord.ledger.get_stripe(run_id, sid)
+            assert st2["lease_expires_at"] > time.time(), (
+                f"renew_lease did not run on the delayed heartbeat: "
+                f"{st2['lease_expires_at']!r}")
+            assert b.coord.capacity_resume_grace() == {}, (
+                "the grace outlived the renewal it was bridging — the exemption "
+                "must end the moment the real lease is renewed")
+        finally:
+            b.close()
+
+    # ---- arm 3: a resumed worker that NEVER heartbeats still expires --------
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg(compute_lease_timeout=300.0))
+        try:
+            run_id, sid = "runLHB", "runLHB_sA"
+            t0 = time.time()
+            b.coord.ledger.create_trial(run_id, 0, now=t0)
+            _claim(b.coord, run_id, sid, "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"], phase=3,
+                   family="java_lcg_hybrid", lease=t0 - 1.0, now=t0)
+            b.saturate()
+            b.peers["hostA:gpu0"].send(_inline_result("hostA:gpu0", sid, 0, 0, 30))
+            assert b.wait_paused(1)
+            b.release_all_slots()
+            b.coord._release_capacity()
+            assert b.wait_unpaused()
+            b.drain(0.5)
+            assert "hostA:gpu0" in b.coord.capacity_resume_grace()
+            with _MatrixSpy() as spy:
+                out = b.coord.process_lease_expiry(
+                    run_id, list(b.wconn_by_worker.values()),
+                    now=time.time() + 301.0)      # past the grace bound
+                touched = {c["stripe_id"] for c in spy.calls}
+            assert sid in touched, (
+                "the grace never expired — an exemption with no bound is not an "
+                "exemption, it is a hole")
+            assert out and out[0]["action"] in ("reassigned", "fail_trial"), out
+            assert b.coord.capacity_resume_grace() == {}, (
+                "the expired grace entry was not pruned")
+        finally:
+            b.close()
+
+
+def gate_lease_handoff_mutant():
+    """MUTATION EVIDENCE for F2: remove ONLY the grace RECORDING (the pre-amendment
+    state of the world — deregistration wrote nothing) and prove the mutated path
+    executed and reds the credited assertion."""
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg(compute_lease_timeout=300.0))
+        try:
+            run_id, sid = "runLHM", "runLHM_sA"
+            t0 = time.time()
+            b.coord.ledger.create_trial(run_id, 0, now=t0)
+            _claim(b.coord, run_id, sid, "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"], phase=3,
+                   family="java_lcg_hybrid", lease=t0 - 1.0, now=t0)
+            b.saturate()
+
+            executed = {"n": 0}
+            orig = RangeMinerCoordinator.deregister_paused_connection
+
+            def _no_grace(self_, conn_key, now=None, reason="resume"):
+                executed["n"] += 1
+                # the fix, removed: deregister EXACTLY as before, recording nothing
+                out = orig(self_, conn_key, now=now, reason=reason)
+                self_._capacity_resume_grace.clear()
+                return out
+
+            RangeMinerCoordinator.deregister_paused_connection = _no_grace
+            try:
+                b.peers["hostA:gpu0"].send(
+                    _inline_result("hostA:gpu0", sid, 0, 0, 30))
+                assert b.wait_paused(1)
+                b.release_all_slots()
+                b.coord._release_capacity()
+                assert b.wait_unpaused()
+                b.drain(0.5)
+                assert b.coord.capacity_resume_grace() == {}, (
+                    "the mutant did not remove the grace")
+                with _MatrixSpy() as spy:
+                    b.coord.process_lease_expiry(
+                        run_id, list(b.wconn_by_worker.values()))
+                    touched = {c["stripe_id"] for c in spy.calls}
+            finally:
+                RangeMinerCoordinator.deregister_paused_connection = orig
+
+            assert executed["n"] >= 1, (
+                "the mutant was never called — the resume path does not go through "
+                "deregister_paused_connection, so G-LEASE-HANDOFF proves nothing")
+            assert sid in touched, (
+                "removing the grace recording did NOT route the resumed worker's "
+                "expiry into the matrix — G-LEASE-HANDOFF is vacuous")
+        finally:
+            b.close()
+
+
+def gate_timeout_snapshot_attributes_the_trigger():
+    """F3 / G-TIMEOUT-SNAPSHOT. A reader can observe
+    `staging_capacity_timeout_expired()`, latch it, deregister and EXIT before the
+    serve loop builds the terminal reason. Reading the LIVE registry then truthfully
+    reports `0 connections paused (none)` about a timeout that paused workers
+    caused. The count and identities must be the TRIGGERING ones.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg(staging_capacity_timeout=0.3))
+        try:
+            run_id, sid = "runTS", "runTS_s0"
+            b.coord.ledger.create_trial(run_id, 0, now=100.0)
+            _claim(b.coord, run_id, sid, "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"])
+            b.saturate()
+            b.peers["hostA:gpu0"].send(_inline_result("hostA:gpu0", sid, 0, 0, 30))
+            assert b.wait_paused(1), "the reader never paused"
+
+            # let the READER observe the latch, deregister and fully exit
+            reader = b.peers["hostA:gpu0"].thread
+            deadline = time.time() + 10.0
+            while time.time() < deadline and reader.is_alive():
+                time.sleep(0.02)
+            assert not reader.is_alive(), (
+                "the paused reader never exited on the capacity timeout")
+            assert b.coord.paused_connection_count() == 0, (
+                "the registry still holds the pause — the race this gate is about "
+                "cannot occur, so it is measuring nothing")
+
+            # the TERMINAL REASON first — that is the behaviour §4 names, and
+            # asserting it before touching the new snapshot API is what makes this
+            # gate red against 4b1aad6 on behaviour rather than on an attribute.
+            reason = b.coord.staging_capacity_timeout_reason()
+            assert reason.startswith("coordinator_staging_capacity_timeout:"), reason
+            assert "hostA:gpu0" in reason, (
+                f"the terminal reason does not name the worker whose pause caused "
+                f"the timeout: {reason!r}")
+            assert "1 connections paused" in reason, reason
+            assert "(none)" not in reason, (
+                f"the reason attributes the timeout to nobody: {reason!r}")
+
+            snap = b.coord.capacity_timeout_snapshot()
+            assert snap is not None, "the latch took no evidence snapshot"
+            assert snap["paused_count"] == 1, snap
+            assert snap["worker_ids"] == ["hostA:gpu0"], snap
+            assert snap["latched_at"] >= snap["oldest_since"], snap
+
+            m = b.coord.staging_backpressure_metrics()
+            assert m["paused_at_capacity_timeout"] == 1, m
+            assert m["capacity_timeout_worker_ids"] == ["hostA:gpu0"], m
+            assert m["capacity_timeout_snapshot"]["latched_at"] == \
+                snap["latched_at"], m
+            assert m["paused_now"] == 0, (
+                "precondition lost: the live registry must be EMPTY, otherwise the "
+                "snapshot and the live read are indistinguishable")
+        finally:
+            b.close()
+
+
+def gate_unbound_result_is_never_paused():
+    """F4 / G-BOUND-PAUSE. The reader's pause condition tested message type and
+    capacity but not IDENTITY, so an unregistered socket sending a well-formed
+    `sub_stripe_result` under saturation acquired pause state (`worker_id=None`),
+    consumed the one-envelope allowance, joined the §1.5 oldest-pause clock and was
+    held BEFORE the serve loop's identity rejection could see it.
+
+    An unbound result must NOT be paused and NOT be held: it flows to `inbound`
+    unchanged and dies in the EXISTING identity rejection. No new rejection logic.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg())
+        try:
+            run_id, sid = "runBP", "runBP_s0"
+            b.coord.ledger.create_trial(run_id, 0, now=100.0)
+            _claim(b.coord, run_id, sid, "hostA:gpu0",
+                   b.wconn_by_worker["hostA:gpu0"])
+            b.saturate()
+
+            stray = _Peer(b.coord, "stray:gpu0", b.worker_by_sock, b.inbound,
+                          b.reader_stop, bind=False)
+            b.peers["__stray__"] = stray
+            assert b.worker_by_sock.get(stray.srv) is None, (
+                "the stray socket is bound — the gate's premise is gone")
+
+            stray.send(_inline_result("stray:gpu0", sid, 0, 0, 30))
+            got = b.drain(0.8)
+            from_stray = [m for (k, s, m, _c) in got if k == "msg" and s is stray.srv]
+            assert len(from_stray) == 1, (
+                f"an UNBOUND sub_stripe_result was intercepted by the capacity "
+                f"gate instead of flowing to the existing identity check: "
+                f"{from_stray}")
+            assert b.coord.paused_connection_count() == 0, (
+                "an unregistered socket acquired pause state")
+            assert b.coord.paused_worker_ids() == frozenset()
+            assert b.coord.capacity_resume_grace() == {}, (
+                "an unregistered socket acquired a resume-grace record")
+            assert b.coord.capacity_timeout_snapshot() is None
+            assert not b.coord.staging_capacity_timeout_expired(
+                now=time.time() + 10_000.0), (
+                "an unregistered socket joined the oldest-pause clock — it can now "
+                "time out a trial it was never part of")
+
+            # ...and it dies in the EXISTING identity rejection: no ledger mutation
+            with _MatrixSpy() as spy:
+                b.dispatch(got, run_id)
+            assert spy.calls == [], f"the stray result reached the matrix: {spy.calls}"
+            assert b.coord.ledger.get_shards(run_id, sid, 0) == [], (
+                "the stray result mutated the ledger — the existing identity "
+                "rejection did not govern it")
+
+            # NARROWNESS: a BOUND connection under the same saturation still pauses
+            b.peers["hostA:gpu0"].send(_inline_result("hostA:gpu0", sid, 0, 0, 30))
+            assert b.wait_paused(1), (
+                "the identity predicate is too wide — a REGISTERED worker stopped "
+                "being back-pressured")
+            assert b.coord.paused_worker_ids() == frozenset({"hostA:gpu0"})
+        finally:
+            b.close()
+
+
+# Two malformed worker-cap records, and the exception each one produces inside the
+# stage derivation. The ValueError arm is the one Beta's §6 names: it is EXACTLY
+# the class the pre-amendment `except (ValueError, TypeError)` swallowed before
+# continuing on `_derive_bound_from_current_state`. The KeyError arm is a second
+# hole in the same handler — pre-amendment it was not caught at all and escaped
+# `serve_trial` as an unhandled exception. Failing closed answers both.
+_MALFORMED_CAP_RECORDS = [
+    # all four caps advertised as zero: expected_substripes_for() refuses a
+    # non-positive effective cap -> ValueError
+    ("zero_caps", "ValueError",
+     lambda caps: {k: 0 for k in caps}),
+    # a cap key missing: advertised_effective_cap() builds VramCaps from all four
+    # -> KeyError
+    ("missing_cap_key", "KeyError",
+     lambda caps: {k: v for k, v in caps.items() if k != "amd_hybrid"}),
+]
+
+
+def gate_bound_derivation_failure_fails_closed():
+    """F5 / G-BOUND-DERIVATION-FAILURE. A malformed worker-cap record is injected
+    at stage setup, AFTER the real `assign_stripes` and BEFORE the sizing call, so
+    the stage derivation raises exactly where Beta's §6 defect lived.
+
+    Pre-amendment the `except (ValueError, TypeError)` swallowed it and let
+    `staging_deferred_bound()` fall back to `_derive_bound_from_current_state` —
+    ONE macro-stripe, phase 1 — which can be MATERIALLY SMALLER than the stage
+    derivation that just failed, silently re-arming the undersized-queue condition.
+    It must now terminate the trial DIRECTLY, before any result traffic.
+
+    The injection is undone at the SYNCHRONOUS L7 abort discharge (`_Sink.on_abort`
+    fires at the instant the trial becomes terminal), so the gate measures the
+    fail-closed decision and not a teardown artefact of its own fault injection.
+    """
+    for label, exc_name, mangle in _MALFORMED_CAP_RECORDS:
+        _bound_derivation_failure_arm(label, exc_name, mangle)
+
+
+def _bound_derivation_failure_arm(label, exc_name, mangle):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        ds = os.path.join(tmp, "dataset.json")
+        with open(ds, "w") as f:
+            f.write('[{"draw":1},{"draw":2},{"draw":3}]')
+
+        state = {"coord": None, "injected": 0, "restored": 0, "saved": {}}
+
+        def _restore(_event):
+            coord = state["coord"]
+            if coord is None:
+                return
+            for wid, caps in state["saved"].items():
+                conn = coord.connections.get(wid)
+                if conn is not None:
+                    conn.seed_caps = dict(caps)
+            state["restored"] += 1
+
+        sink = _Sink(on_abort=_restore)
+        transfer = _GatedTransfer()
+
+        orig_assign = RangeMinerCoordinator.assign_stripes
+
+        def _assign_then_corrupt(self_, *a, **kw):
+            out = orig_assign(self_, *a, **kw)
+            # a MALFORMED worker-cap record: `advertised_effective_cap` builds a
+            # VramCaps from all four advertised keys, so a record missing one
+            # cannot resolve. Injected after the assignment so the failure lands
+            # in the SIZING derivation, which is the seam under test.
+            state["coord"] = self_
+            for wid, conn in self_.connections.items():
+                state["saved"].setdefault(wid, dict(conn.seed_caps))
+                conn.seed_caps = mangle(conn.seed_caps)
+            state["injected"] += 1
+            return out
+
+        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        lsock.bind(("127.0.0.1", 0))
+        lsock.listen(8)
+        port = lsock.getsockname()[1]
+
+        holder = {}
+        gate_caps = {**CAPS, "nvidia": 10}
+
+        def run():
+            try:
+                holder["result"] = run_trial_miner(
+                    "runBD", None, 3, "java_lcg", [1, 2, 3], 80, 0.25, 0.25,
+                    False, ds, worker_pool_size=1,
+                    staging_dir=os.path.join(tmp, "stg"), phase5_sink=sink,
+                    transfer=transfer, listen_sock=lsock,
+                    family_name="java_lcg", workflow_phase=1,
+                    miner_stripe_size=80, seed_cap_nvidia=10,
+                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    staging_workers=2, staging_queue_depth=0,
+                    staging_high_water_bytes=64 * 1024 * 1024,
+                    serve_timeout=45.0)
+            except Exception:                                 # noqa: BLE001
+                holder["err"] = traceback.format_exc()
+
+        RangeMinerCoordinator.assign_stripes = _assign_then_corrupt
+        with _MatrixSpy() as spy:
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            w = _RemoteWorker("127.0.0.1", port, "hostA", 0, caps=gate_caps)
+            try:
+                w.connect_register()
+                w.start_loop()
+                t.join(timeout=60)
+                assert not t.is_alive(), "serve_trial never terminated"
+                RangeMinerCoordinator.assign_stripes = orig_assign
+                assert "err" not in holder, holder.get("err")
+                result = holder["result"]
+
+                assert state["injected"] >= 1, (
+                    f"[{label}] the malformed cap record was never injected — the "
+                    f"gate is measuring nothing")
+                assert state["restored"] >= 1, (
+                    f"[{label}] the fault injection was never undone at the "
+                    f"terminal discharge")
+
+                # terminal, for the RIGHT reason, leading with the root cause
+                assert result["state"] == "aborted", (label, result["state"])
+                assert sink.aborts, f"[{label}] no abort event was delivered"
+                reason = sink.aborts[0].get("reason", "")
+                assert reason.startswith("coordinator_staging_sizing:"), (
+                    f"[{label}] a sizing failure did not fail closed: {reason!r}")
+                assert "stage 0" in reason, (label, reason)
+                assert exc_name in reason, (
+                    f"[{label}] the terminal reason does not carry the cause "
+                    f"({exc_name}): {reason!r}")
+
+                # never the matrix, no retry consumed
+                assert spy.calls == [], (
+                    f"[{label}] a sizing failure entered the retry matrix: "
+                    f"{spy.calls}")
+                for sid, st in result["stripes"].items():
+                    assert st["current_attempt"] == 0, (label, sid, st)
+                    assert not st["phase_degraded"], (label, sid, st)
+
+                # BEFORE any result traffic for that stage
+                assert w.assigned == [], (
+                    f"[{label}] the stage was dispatched despite a failed sizing: "
+                    f"{w.assigned}")
+                assert transfer.fetch_calls == [], (label, transfer.fetch_calls)
+                assert not sink.published, (label, sink.published)
+
+                # ...and execution never continued on the one-slot fallback
+                bp = result["staging_backpressure"]
+                assert bp["derived_bound"] is None, (
+                    f"[{label}] a bound was installed although the derivation "
+                    f"failed: {bp['derived_bound']!r}")
+                assert bp["staging_jobs_completed"] == 0, (label, bp)
+                assert bp["deferred_high_water"] == 0, (label, bp)
+                assert bp["capacity_invariant_terminations"] == 0, (label, bp)
+            finally:
+                RangeMinerCoordinator.assign_stripes = orig_assign
+                w.stop()
+                try:
+                    lsock.close()
+                except OSError:
+                    pass
+
+
+def gate_invariant_reason_names_which_bound_tripped():
+    """F5 (Beta item-3 ratification detail): the §1.6 invariant reason must
+    distinguish WHICH bound tripped — derived count, operator-override count, or
+    retained-bytes high-water. They are three different defects with three
+    different owners; one undifferentiated "the deferred queue overflowed" sends
+    all of them to the wrong place. The arithmetic already carried is retained."""
+    src = inspect.getsource(RangeMinerCoordinator.enqueue_staging)
+    for phrase in ("DERIVED COUNT bound", "OPERATOR OVERRIDE COUNT bound",
+                   "RETAINED-BYTES HIGH-WATER"):
+        assert phrase in src, (
+            f"the §1.6 invariant reason cannot say {phrase!r} — it does not "
+            f"distinguish which bound tripped")
+
+    # ...and the classification is DERIVED FROM THE REFUSAL, not from a guess.
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_workers=1, staging_queue_depth=0,
+                       miner_stripe_size=1000)
+        _register(coord, "hostA:gpu0")
+        _obj, pb = build_substripe_payload_bytes("s", 0, 0, 30,
+                                                 [[0, 0.9, None, [1]]])
+        msg = SubStripeResultMessage(
+            worker_id="hostA:gpu0", stripe_id="s", sub_index=0, seed_start=0,
+            seed_count=30, survivor_count=1, inline=_obj, size_bytes=len(pb),
+            sha256=hashlib.sha256(pb).hexdigest())
+        entry = ("inline", None, "r", "s", 0, 0, msg, None, None)
+
+        # (a) an OPERATOR OVERRIDE count trip
+        coord.config.staging_deferred_max = 1
+        with coord._admission_lock:
+            assert coord._defer_locked(entry) is True
+            assert coord._defer_locked(entry) is False
+        assert coord._last_defer_refusal == "operator_override_count_bound", (
+            coord._last_defer_refusal)
+
+        # (b) a DERIVED count trip — no override in force
+        coord._deferred = []
+        coord.config.staging_deferred_max = None
+        coord._derived_deferred_bound = 1
+        with coord._admission_lock:
+            assert coord._defer_locked(entry) is True
+            assert coord._defer_locked(entry) is False
+        assert coord._last_defer_refusal == "derived_count_bound", (
+            coord._last_defer_refusal)
+
+        # (c) a RETAINED-BYTES trip — the count bound is wide open
+        coord._deferred = []
+        coord._derived_deferred_bound = 1000
+        coord.config.staging_high_water_bytes = 1
+        with coord._admission_lock:
+            assert coord._defer_locked(entry) is False
+        assert coord._last_defer_refusal == "retained_bytes_high_water", (
+            coord._last_defer_refusal)
+
+
+# ===========================================================================
+# ===========================================================================
+# S172-BP AMENDMENT ROUND 3 (Beta F1-R2a / F1-R2b, 2026-08-07)
+# ===========================================================================
+def _identity_bench(tmp):
+    """Fixture for G-CREDIT-ENVELOPE-IDENTITY and its mutant.
+
+    Two REAL readers on real socketpairs and a staging job whose fetch is gated,
+    so the ONE unit freed here stays physically free until a credited envelope is
+    genuinely dispatched into `enqueue_staging` — the interval both the invariant
+    and the defect live in.
+    """
+    fetch_gate = threading.Event()
+    payloads, msgs = {}, {}
+    for wid, sid, subs in (("hostA:gpu0", "runCE_sA", (0, 1)),
+                           ("hostB:gpu0", "runCE_sB", (0,))):
+        for i in subs:
+            m, remote, pb = _spool_result(wid, sid, i, i * 30, 30)
+            payloads[remote] = pb
+            msgs[(wid, i)] = m
+    transfer = _GatedTransfer(payloads=payloads, gate=fetch_gate)
+    b = _Bench(tmp, transfer=transfer, **_saturating_cfg())
+    return b, fetch_gate, msgs
+
+
+def _arm_uncredited_ahead_of_credited(b, msgs, run_id):
+    """Beta §5.1 steps 1-6, shared by the gate and its mutant.
+
+    Leaves the coordinator in the exact state F1-R2a is about: an OLDER,
+    UNCREDITED result `U` of A's at the HEAD of `inbound` (enqueued under open
+    capacity, before any pause existed), A's credited envelope `C` queued BEHIND
+    it, B paused with no credit, exactly one staging unit physically free, and A's
+    exact token outstanding. Returns (sockA, entry_u, credit_id).
+    """
+    b.coord.ledger.create_trial(run_id, 0, now=100.0)
+    _claim(b.coord, run_id, "runCE_sA", "hostA:gpu0",
+           b.wconn_by_worker["hostA:gpu0"], seed_count=60, expected=2)
+    _claim(b.coord, run_id, "runCE_sB", "hostB:gpu0",
+           b.wconn_by_worker["hostB:gpu0"], seed_count=30, expected=1)
+    sockA = b.peers["hostA:gpu0"].srv
+    sem = b.coord._staging_slots()
+
+    # (1) U is made a DUPLICATE in the ledger: the shard row for (attempt 0,
+    # sub 0) already exists, so `_serve_dispatch` drops it at the EXISTING dedup
+    # insert and returns BEFORE `enqueue_staging`. It therefore consumes no
+    # capacity whatsoever — which is precisely why clearing a credit on it is a
+    # defect and not merely an ordering quirk.
+    u = msgs[("hostA:gpu0", 0)]
+    b.coord.ledger.record_substripe_result(
+        run_id, "runCE_sA", 0, 0, "hostA:gpu0", 0, 30, 1,
+        remote_spool_path=u.spool_path, size_bytes=u.size_bytes, sha256=u.sha256)
+
+    # (2) under OPEN capacity A sends U. It reaches `inbound` uncredited, and
+    # NOTHING dispatches it.
+    b.peers["hostA:gpu0"].send(u)
+    deadline = time.time() + 5.0
+    while time.time() < deadline and b.inbound.qsize() < 1:
+        time.sleep(0.02)
+    assert b.inbound.qsize() == 1, (
+        "U never reached `inbound` under open capacity — the gate's premise "
+        "(an older uncredited envelope already queued) does not hold")
+
+    # (3-4) saturate; A pauses on C, then B pauses on B1. FIFO from the registry.
+    b.saturate()
+    b.peers["hostA:gpu0"].send(msgs[("hostA:gpu0", 1)])
+    assert b.wait_paused(1), "A never paused on C"
+    b.peers["hostB:gpu0"].send(msgs[("hostB:gpu0", 0)])
+    assert b.wait_paused(2), "B never paused"
+    order = [r["worker_id"] for r in b.coord._paused_connections.values()]
+    assert order == ["hostA:gpu0", "hostB:gpu0"], (
+        f"the pause registry is not in FIFO entry order: {order}")
+
+    # (5) free EXACTLY ONE unit and invoke EXACTLY ONE release path: A takes the
+    # sole credit and queues C BEHIND U.
+    b._held.pop()
+    sem.release()
+    b.coord._release_capacity()
+    deadline = time.time() + 5.0
+    while time.time() < deadline and b.inbound.qsize() < 2:
+        time.sleep(0.02)
+    assert b.inbound.qsize() == 2, (
+        f"C never queued behind U — inbound depth {b.inbound.qsize()}")
+    credit_id = b.coord.resume_credit_id_for(sockA)
+    assert credit_id is not None, (
+        "A took the sole credit but holds no token — there is nothing to key an "
+        "exact disposition on")
+    assert b.coord.paused_worker_ids() == frozenset({"hostB:gpu0"}), (
+        f"expected ONLY B still paused: {b.coord.paused_worker_ids()}")
+
+    # (6) the FIFO head IS the uncredited U, and it carries NO token.
+    entry_u = b.inbound.get(timeout=1.0)
+    assert entry_u[0] == "msg" and entry_u[1] is sockA, entry_u[:2]
+    assert entry_u[2].sub_index == 0, (
+        f"the head of `inbound` is not the older envelope: {entry_u[2].sub_index}")
+    assert entry_u[3] is None, (
+        f"an envelope enqueued before the pause carries a credit token: "
+        f"{entry_u[3]!r}")
+    return sockA, entry_u, credit_id
+
+
+def gate_credit_clears_only_on_the_exact_envelope():
+    """F1-R2a / G-CREDIT-ENVELOPE-IDENTITY — Beta §5.1, all thirteen steps.
+
+    THE DEFECT. Round 2 ended the reservation on `rawsock is holder`. That
+    identity was defended as "the credited envelope is by construction the FIRST
+    result the connection delivers after its resume" — true of LATER traffic, and
+    silent about EARLIER traffic. An older, uncredited result `U` of the holder's,
+    already sitting in `inbound` from before the pause, dispatches first, is
+    dropped by the existing dedup fence (consuming NO capacity), and its `finally`
+    releases the credit. `C` is still queued, the freed unit is still physically
+    free, and the next FIFO head wakes on it: F1's two-wakes-one-slot, re-entered
+    from the other side of the queue.
+
+    THE GATE. Real readers, the real serve path, one real freed unit. Between
+    dispatching `U` and dispatching `C` the test thread touches NEITHER the
+    semaphore NOR the credit: the reservation must survive a dispatch that
+    disposed of something else entirely.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        b, fetch_gate, msgs = _identity_bench(tmp)
+        try:
+            run_id = "runCE"
+            sockA, entry_u, credit_id = _arm_uncredited_ahead_of_credited(
+                b, msgs, run_id)
+
+            # (7) dispatch ONLY U, through the REAL seam.
+            b.dispatch([entry_u], run_id)
+
+            # (8) it consumed nothing: fence-rejected before `enqueue_staging`.
+            assert not b.coord.transfer.fetch_calls, (
+                f"the duplicate reached a staging fetch, so it did consume "
+                f"capacity: {b.coord.transfer.fetch_calls}")
+            assert b.coord.staging_can_accept(), (
+                "the freed unit is no longer free after a fence-rejected "
+                "duplicate — the gate has lost the condition it exists to hold")
+
+            # (9-11) HOLD: A's EXACT token still outstanding, C still queued, B
+            # still paused, capacity still physically open.
+            hold_end = time.time() + 0.6        # >= 12 of B's 50 ms poll cycles
+            while time.time() < hold_end:
+                assert b.coord.resume_credit_id_for(sockA) == credit_id, (
+                    "dispatching an OLDER, UNCREDITED result of the holder's "
+                    "released the reservation — the credit is keyed on the "
+                    "socket, not on the envelope it was granted for (F1-R2a)")
+                assert b.coord.resume_credits_outstanding() == 1
+                assert b.inbound.qsize() == 1, (
+                    "the credited envelope left `inbound` — nothing in this "
+                    "window should have dispatched it")
+                assert b.coord.paused_worker_ids() == frozenset({"hostB:gpu0"}), (
+                    "B woke while A's credited envelope was still queued on an "
+                    "unconsumed unit — two wakes, one slot")
+                assert b.coord.staging_can_accept(), (
+                    "the unit stopped being free with nothing dispatched")
+                time.sleep(0.02)
+
+            # (12) dispatch C: the EXACT token clears, and the unit is consumed.
+            entry_c = b.inbound.get(timeout=1.0)
+            assert entry_c[1] is sockA and entry_c[2].sub_index == 1, entry_c[:3]
+            assert entry_c[3] == credit_id, (
+                f"the credited envelope did not carry A's token: {entry_c[3]!r} "
+                f"vs {credit_id!r}")
+            b.dispatch([entry_c], run_id)
+            assert b.coord.resume_credit_id_for(sockA) is None, (
+                "the reservation outlived the disposition of its OWN envelope")
+            assert b.coord.resume_credits_outstanding() == 0
+            fetch_deadline = time.time() + 5.0
+            while (time.time() < fetch_deadline
+                   and not b.coord.transfer.fetch_calls):
+                time.sleep(0.02)
+            assert len(b.coord.transfer.fetch_calls) == 1, (
+                f"C never reached a real staging fetch, so nothing consumed the "
+                f"freed unit: {b.coord.transfer.fetch_calls}")
+            assert not b.coord.staging_can_accept(), (
+                "the freed unit was never consumed by C's dispatch")
+
+            # (13) only NOW does B receive the next valid grant — a DIFFERENT
+            # token, on a DIFFERENT unit.
+            b._held.pop()
+            b.coord._staging_slots().release()
+            b.coord._release_capacity()
+            sockB = b.peers["hostB:gpu0"].srv
+            entry_b = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline and entry_b is None:
+                try:
+                    entry_b = b.inbound.get(timeout=0.05)
+                except _queue.Empty:
+                    continue
+            assert entry_b is not None, (
+                "B never received the next grant after the credited envelope "
+                "was disposed of — the reservation wedged the paused fleet")
+            assert entry_b[1] is sockB, "the next grant did not go to B"
+            assert entry_b[3] is not None and entry_b[3] != credit_id, (
+                f"B's envelope carries A's spent token: {entry_b[3]!r} vs "
+                f"{credit_id!r} — tokens are not unique per grant")
+        finally:
+            fetch_gate.set()
+            b.close()
+
+
+def gate_credit_envelope_identity_mutant():
+    """MUTATION EVIDENCE for F1-R2a (Beta §5.1): restore ROUND 2's socket-only
+    release at exactly the instruction that differs, prove it EXECUTES, and prove
+    that dispatching the older UNCREDITED envelope then clears the credit and lets
+    B resume while C is still queued and undispatched.
+
+    Without this, G-CREDIT-ENVELOPE-IDENTITY could be green on a timing accident
+    rather than on the token.
+    """
+    executed = {"n": 0}
+    orig = RangeMinerCoordinator._release_resume_credit_exact
+
+    def _socket_only(self_, conn_key, credit_id, delivered,
+                     disposition="dispatch"):
+        # round 2 exactly: the token is IGNORED, holder identity alone releases.
+        executed["n"] += 1
+        return self_._release_resume_credit(conn_key, delivered=delivered,
+                                            disposition=disposition)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        b, fetch_gate, msgs = _identity_bench(tmp)
+        RangeMinerCoordinator._release_resume_credit_exact = _socket_only
+        try:
+            run_id = "runCEM"
+            sockA, entry_u, credit_id = _arm_uncredited_ahead_of_credited(
+                b, msgs, run_id)
+            b.dispatch([entry_u], run_id)
+
+            assert executed["n"] >= 1, (
+                "the socket-only release never executed — the mutant is not "
+                "reproducing round 2, so G-CREDIT-ENVELOPE-IDENTITY proves "
+                "nothing")
+            assert b.coord.resume_credits_outstanding() == 0, (
+                "the restored socket-only release did not clear the credit on "
+                "the uncredited envelope — this is not the round-2 behaviour")
+
+            b_resumed = False
+            hold_end = time.time() + 0.6
+            while time.time() < hold_end:
+                if "hostB:gpu0" not in b.coord.paused_worker_ids():
+                    b_resumed = True
+                    break
+                time.sleep(0.02)
+            assert b_resumed, (
+                "B did not wake on the still-unconsumed unit under the round-2 "
+                "release — G-CREDIT-ENVELOPE-IDENTITY is vacuous")
+            still_queued = [e for e in list(b.inbound.queue)
+                            if e[1] is sockA and e[2].sub_index == 1]
+            assert still_queued, (
+                "C left `inbound` during the mutant window — the wake must be "
+                "shown happening while the credited envelope is STILL queued")
+        finally:
+            RangeMinerCoordinator._release_resume_credit_exact = orig
+            fetch_gate.set()
+            b.close()
+
+
+class _CountingFS:
+    """A pass-through proxy over the REAL `MinerFramedSocket` that COUNTS decodes.
+
+    The reader under test is the production `_conn_reader_loop`, unmodified; only
+    the object it was already being handed is instrumented. "Did this connection
+    decode a second envelope?" is then answered by a counter, not by inference
+    from what happened to arrive in `inbound`.
+    """
+
+    def __init__(self, fs):
+        self._fs = fs
+        self.started = 0
+        self.completed = 0
+
+    def recv_msg(self):
+        self.started += 1
+        msg = self._fs.recv_msg()
+        self.completed += 1
+        return msg
+
+    def __getattr__(self, name):
+        return getattr(self._fs, name)
+
+
+class _PostDecodeBarrierFS(_CountingFS):
+    """ROUND 2's PLACEMENT, restored at exactly the instruction that differs.
+
+    Round 2 waited for the reservation AFTER `recv_msg` returned. Reproducing it
+    here — decode first, wait second, on round 2's own `holds_resume_credit`
+    predicate — leaves the connection owning TWO decoded envelopes (the credited
+    one in `inbound`, this one in hand), which is what F1-R2b indicts. Paired with
+    a neutralised pre-decode barrier this IS the round-2 reader.
+    """
+
+    def __init__(self, fs):
+        super().__init__(fs)
+        self.coord = None
+        self.conn_key = None
+        self.stop = None
+        self.waits = 0
+
+    def recv_msg(self):
+        msg = super().recv_msg()          # THE DECODE HAPPENS FIRST — round 2
+        while (self.coord is not None
+               and self.coord.holds_resume_credit(self.conn_key)
+               and not (self.stop is not None and self.stop.is_set())):
+            self.waits += 1
+            time.sleep(0.05)
+        return msg
+
+
+def _predecode_bench(tmp, fs_wrap):
+    """Fixture for G-NO-PREDECODE and its mutant: A with two results to send, a
+    gated staging fetch so the freed unit is genuinely consumed by the dispatch,
+    and A's framed socket wrapped by `fs_wrap`."""
+    fetch_gate = threading.Event()
+    payloads, msgs = {}, {}
+    for i in (0, 1):
+        m, remote, pb = _spool_result("hostA:gpu0", "runND_sA", i, i * 30, 30)
+        payloads[remote] = pb
+        msgs[i] = m
+    transfer = _GatedTransfer(payloads=payloads, gate=fetch_gate)
+    b = _Bench(tmp, transfer=transfer, fs_wrap=fs_wrap, **_saturating_cfg())
+    return b, fetch_gate, msgs
+
+
+def _deliver_credited_envelope(b, msgs, run_id):
+    """Drive A to: pause on C, take the sole credit, and deliver C into `inbound`
+    UNDISPOSED. Returns (sockA, credit_id, counter)."""
+    b.coord.ledger.create_trial(run_id, 0, now=100.0)
+    _claim(b.coord, run_id, "runND_sA", "hostA:gpu0",
+           b.wconn_by_worker["hostA:gpu0"], seed_count=60, expected=2)
+    sockA = b.peers["hostA:gpu0"].srv
+    counter = b.peers["hostA:gpu0"].reader_fs
+    b.saturate()
+    b.peers["hostA:gpu0"].send(msgs[0])                     # C
+    assert b.wait_paused(1), "A never paused on C"
+    b._held.pop()
+    b.coord._staging_slots().release()
+    b.coord._release_capacity()
+    deadline = time.time() + 5.0
+    while time.time() < deadline and b.inbound.qsize() < 1:
+        time.sleep(0.02)
+    assert b.inbound.qsize() == 1, "A never delivered its credited envelope"
+    credit_id = b.coord.resume_credit_id_for(sockA)
+    assert credit_id is not None, "A delivered C without holding a token"
+    assert counter.completed == 1, (
+        f"the connection decoded {counter.completed} envelopes to reach C — the "
+        f"counter is not measuring what the gate claims")
+    return sockA, credit_id, counter
+
+
+def gate_no_predecode_while_the_credit_is_outstanding():
+    """F1-R2b / G-NO-PREDECODE — Beta §5.2.
+
+    THE DEFECT. Round 2's §4-tail wait ran AFTER `recv_msg`. While the credited
+    envelope C sat undisposed in `inbound`, the reader had ALREADY decoded the
+    next envelope C2 into its local: ONE connection, TWO decoded envelopes —
+    breaking the one-decoded-envelope-per-connection bound the §1.2 resume margin
+    is derived from, and pulling a payload off the wire that §1.1 exists to leave
+    on it.
+
+    THE GATE. The production reader, its framed socket wrapped in a counting
+    proxy. C is delivered and left UNDISPOSED; C2 is then written on the same
+    socket and the state is held for 0.6 s. Nothing further is decoded, and C2's
+    bytes are still sitting unread in the kernel receive buffer — the OS itself
+    reporting that the frame is still on the wire. The DISPOSITION of C is what
+    releases the next decode.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        b, fetch_gate, msgs = _predecode_bench(tmp, _CountingFS)
+        try:
+            run_id = "runND"
+            sockA, credit_id, counter = _deliver_credited_envelope(
+                b, msgs, run_id)
+
+            # C2 goes on the wire behind the undisposed C.
+            b.peers["hostA:gpu0"].send(msgs[1])
+            hold_end = time.time() + 0.6
+            while time.time() < hold_end:
+                assert counter.completed == 1, (
+                    f"the reader decoded a SECOND envelope while its credited "
+                    f"one was undisposed: {counter.completed} decodes (F1-R2b)")
+                assert counter.started == 1, (
+                    "the reader entered `recv_msg` again before its reservation "
+                    "was disposed of — the barrier is not PRE-decode")
+                assert b.coord.resume_credit_id_for(sockA) == credit_id, (
+                    "the reservation ended with nothing dispatched")
+                assert b.inbound.qsize() == 1, (
+                    "a second envelope reached `inbound` while the reservation "
+                    "was outstanding")
+                time.sleep(0.02)
+
+            # C2 IS STILL ON THE WIRE: the coordinator's own socket still has
+            # unread bytes pending, which is the property §1.1 is built on.
+            readable, _, _ = select.select([sockA], [], [], 0)
+            assert readable, (
+                "the coordinator's socket has no pending bytes — C2 was read off "
+                "the wire instead of being left on it")
+
+            # DISPOSE C -> and only then does the reader decode C2.
+            entry_c = b.inbound.get(timeout=1.0)
+            assert entry_c[3] == credit_id, entry_c[3]
+            b.dispatch([entry_c], run_id)
+            deadline = time.time() + 5.0
+            while time.time() < deadline and counter.completed < 2:
+                time.sleep(0.02)
+            assert counter.completed == 2, (
+                f"the reader never decoded C2 after the disposition — the "
+                f"barrier does not release: {counter.completed} decodes")
+            # C's own staging job now holds the unit (its fetch is gated), so the
+            # freshly decoded C2 meets a CLOSED capacity gate and pauses on it —
+            # one decoded envelope held, which is the bound restored, not broken.
+            assert b.wait_paused(1), (
+                "C2 was decoded but the connection neither delivered nor paused "
+                "on it")
+            b.release_all_slots()
+            b.coord._release_capacity()
+            deadline = time.time() + 5.0
+            while time.time() < deadline and b.inbound.qsize() < 1:
+                time.sleep(0.02)
+            entry_c2 = b.inbound.get(timeout=1.0)
+            assert entry_c2[2].sub_index == 1, entry_c2[2].sub_index
+            assert entry_c2[3] is not None and entry_c2[3] != credit_id, (
+                f"C2 resumed on a NEW grant but carries {entry_c2[3]!r} against "
+                f"the spent {credit_id!r} — tokens are not unique per grant")
+        finally:
+            fetch_gate.set()
+            b.close()
+
+
+def gate_no_predecode_mutant():
+    """MUTATION EVIDENCE for F1-R2b (Beta §5.2): restore the POST-decode barrier
+    placement — the pre-decode wait neutralised, round 2's wait reinstated after
+    `recv_msg` — and prove the decode counter advances while C is undisposed.
+
+    Both halves are proven live: the neutralised pre-decode barrier is shown to
+    have executed, and the restored post-decode wait is shown to have spun.
+    """
+    neutralised = {"n": 0}
+    orig_wait = RangeMinerCoordinator._await_exact_credit_clear
+
+    def _no_barrier(self_, credit_id, reader_stop):
+        # round 2: there is no wait here at all — the loop decodes immediately.
+        neutralised["n"] += 1
+        return True
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        b, fetch_gate, msgs = _predecode_bench(tmp, _PostDecodeBarrierFS)
+        RangeMinerCoordinator._await_exact_credit_clear = _no_barrier
+        try:
+            run_id = "runNDM"
+            sockA, credit_id, counter = _deliver_credited_envelope(
+                b, msgs, run_id)
+            counter.coord = b.coord
+            counter.conn_key = sockA
+            counter.stop = b.reader_stop
+
+            b.peers["hostA:gpu0"].send(msgs[1])
+            decoded_while_undisposed = False
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if counter.completed >= 2:
+                    decoded_while_undisposed = (
+                        b.coord.resume_credit_id_for(sockA) == credit_id)
+                    break
+                time.sleep(0.02)
+
+            assert neutralised["n"] >= 1, (
+                "the pre-decode barrier never ran, so removing it proves "
+                "nothing — the mutant is not exercising G-NO-PREDECODE's subject")
+            assert decoded_while_undisposed, (
+                f"restoring the post-decode placement did NOT produce a second "
+                f"decode while the reservation was outstanding — G-NO-PREDECODE "
+                f"is vacuous ({counter.completed} decodes)")
+            assert counter.waits >= 1, (
+                "the restored post-decode wait never spun — the mutant decoded "
+                "for some other reason than round 2's placement")
+        finally:
+            RangeMinerCoordinator._await_exact_credit_clear = orig_wait
+            fetch_gate.set()
+            b.close()
+
+
 def main():
     print("=" * 74)
     print("S172 STAGING BACK-PRESSURE — acceptance gates (CPU-only)")
@@ -1670,6 +3433,44 @@ def main():
     print("\n-- §4 metrics --")
     _check("G-METRICS: [S172-BP] pause/resume/summary series complete",
            gate_metrics_are_grep_stable_and_complete)
+
+    print("\n-- S172-BP AMENDMENT (Beta F1-F5, 2026-08-06) --")
+    _check("G-RESUME-CREDIT-a: ONE wake per capacity release; non-head cannot ride",
+           gate_resume_credit_one_wake_per_release)
+    _check("G-RESUME-CREDIT-b: real readers, FIFO, second stays paused, then resumes",
+           gate_resume_credit_real_readers_fifo)
+    _check("G-MUT-RESUME-CREDIT: the loop and the headless poll execute and RED it",
+           gate_resume_credit_mutants)
+
+    print("\n-- S172-BP AMENDMENT ROUND 2 (Beta F1-R, 2026-08-06) --")
+    _check("G-RESUME-HANDOFF: the reservation survives ingress and ends at disposition",
+           gate_resume_handoff_survives_until_disposition)
+    _check("G-MUT-RESUME-HANDOFF: clear-at-ingress executes and REDS the handoff",
+           gate_resume_handoff_mutant)
+    _check("G-SUMMARY-NO-MASK: a raising bound degrades reporting, never the terminal",
+           gate_summary_never_masks_the_sizing_terminal)
+    _check("G-LEASE-HANDOFF: the resume window is exempt, bounded, and self-clearing",
+           gate_lease_handoff_grace)
+    _check("G-MUT-LEASE-HANDOFF: removing the grace executes and REDS the handoff",
+           gate_lease_handoff_mutant)
+    _check("G-TIMEOUT-SNAPSHOT: the terminal reason names the TRIGGERING workers",
+           gate_timeout_snapshot_attributes_the_trigger)
+    _check("G-BOUND-PAUSE: an unregistered socket is never paused, never held",
+           gate_unbound_result_is_never_paused)
+    _check("G-BOUND-DERIVATION-FAILURE: a sizing failure fails the trial closed",
+           gate_bound_derivation_failure_fails_closed)
+    _check("G-BOUND-TRIP-PHRASE: the §1.6 reason names WHICH bound tripped",
+           gate_invariant_reason_names_which_bound_tripped)
+
+    print("\n-- S172-BP AMENDMENT ROUND 3 (Beta F1-R2a / F1-R2b, 2026-08-07) --")
+    _check("G-CREDIT-ENVELOPE-IDENTITY: only the EXACT credited envelope clears it",
+           gate_credit_clears_only_on_the_exact_envelope)
+    _check("G-MUT-CREDIT-IDENTITY: socket-only release executes and REDS it",
+           gate_credit_envelope_identity_mutant)
+    _check("G-NO-PREDECODE: nothing is decoded while the reservation is outstanding",
+           gate_no_predecode_while_the_credit_is_outstanding)
+    _check("G-MUT-NO-PREDECODE: the post-decode placement executes and REDS it",
+           gate_no_predecode_mutant)
 
     print("\n" + "=" * 74)
     passed = sum(1 for _, ok, _ in _results if ok)
