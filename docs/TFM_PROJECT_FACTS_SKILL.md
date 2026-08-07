@@ -5,7 +5,10 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v15, 2026-08-04. **D6.2 CERTIFIED `18a2419`.**
+**Currency:** v16, 2026-08-07. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+`4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
+(exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
+and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -332,7 +335,7 @@ omission and then report the run as something else; an unlabelled run is not a c
 **Chain D's `pending_approval`** is a valid authority boundary and the **Step-5 `allowed_params` filter**
 is a deliberate executable-interface boundary (§2.13).
 
-### 2.7 Recurring defect: tuned parameters don't reach kernels — SIX instances
+### 2.7 Recurring defect: tuned parameters don't reach kernels — SEVEN instances
 
 | # | instance | status |
 |---|---|---|
@@ -343,6 +346,7 @@ is a deliberate executable-interface boundary (§2.13).
 | 5 | forward hybrids ignore `offset` (sampled `window_optimizer_bayesian.py:423`) | **OPEN.** Chapter 2 F-4: `offset` drives **both** the host residue slice **and** the device pre-advance from one payload scalar — coherent only at `skip=0`. Settles Chapter 1 C-2 as an **observed inconsistency, not a repair**; belongs in the future hybrid input-semantics design, **not** a standalone arithmetic patch (TB) |
 | 5b | **`recommended_window_size` → Rule A** — the manifest declares `8`, the code reads it into `_rec_ws` (`window_optimizer_bayesian.py:500`) and **never references it**; Rule A uses a hardcoded `32` | **ROOT CAUSE FOUND.** `TRSE_INTEGRATION_PLAN_S121.md` §2C specifies `min(rec_ws * 4, …)` — and `8 × 4 = 32`. **The value is correct; the wiring is missing.** Not "a field of unclear purpose" — a **configurable input frozen at its default by a literal** |
 | 6 | **`skip_learning_rate`** configured 0.2–0.7; kernel **hard-adapts at 1.0** | **OPEN**, newly catalogued |
+| 7 | **the four staging-capacity controls** (`staging_workers` / `staging_queue_depth` / `staging_deferred_max` / `staging_capacity_timeout`) passed to `run_trial_miner` were **silently swallowed by its `**kwargs` tail** — accepted, never applied; the symptom was a HANG until `serve_timeout`, not an error | **FIXED** in the S172-BP remediation (explicit parameters, full manifest→`CoordinatorConfig` route, gate G10). Beta-accepted for this register 2026-08-06 ("fourth instance of the §2.7 silent-no-op defect class" in Beta's own count of that subclass) |
 
 Fix pattern: **one canonical path** — resolve once in the parent, never reinterpret
 downstream, record requested/payload/effective.
@@ -952,6 +956,59 @@ identity, unknown identity, and reintroduced `java_lcg` defaulting.
 **Does NOT block the miner-backed Phase-7 soak** (the soak does not invoke the legacy writer), and
 6-P2 remains independent.
 
+### 2.19 S172-BP staging back-pressure — law, mechanism, and the three-ruling F1 arc
+
+**Beta ruling 2026-08-05 (binding), remediated at `4b1aad6`:**
+- **Classification law (Beta D):** a coordinator staging capacity condition is a WAITING /
+  INFRASTRUCTURE state, never a worker-stripe fault — it may never enter
+  `_handle_stripe_failure_locked`, consume a retry, or fail a trial as a worker failure.
+  Permitted terminals: direct `fail_trial` with reasons leading
+  `coordinator_staging_capacity_timeout:` (bounded wait, default 600 s, latched, snapshot-
+  attributed), `coordinator_staging_capacity_invariant:` (post-sizing overflow, names WHICH
+  bound tripped: derived-count / operator-override-count / retained-bytes), or
+  `coordinator_staging_sizing:` (derivation failure fails CLOSED — never the smaller
+  on-demand fallback).
+- **The constant 64 is DELETED.** Bound = `staging_burst_bound_conservative` (Σ per slot of
+  max-over-eligible-workers ceil(span/cap)) + margin (= live connections). **116 vs 136 is
+  Beta-mandated:** 116 = exact recorded 2026-08-05 assignment (34+14+34+34); 136 =
+  conservative four-slot AMD-cap bound. Both logged per stage (`[S172-BP] burst_exact`).
+  `staging_deferred_max` survives only as operator override (below-derived WARNs).
+- **Pause/resume lives in `_conn_reader_loop`, per connection.** Only `sub_stripe_result`
+  gated; ≤1 decoded envelope, in the reader's local; later frames stay on the ordered TCP
+  wire (worker `_sendall` has no socket timeout — a full buffer parks its mining thread
+  harmlessly). Resume trigger: `_pump_deferred`'s `finally`.
+- **Resume credit (F1, three rulings deep — the file to read is the LAST ruling, not the
+  first):** one capacity-release event grants at most ONE wake (FIFO-oldest unsignaled);
+  the wake RESERVES the observation; only the FIFO head may self-resume via the defensive
+  poll and only when no credit is outstanding. The reservation ends at serve-side
+  DISPOSITION (admission / deferred / fenced / terminated — via the `dispatch_inbound_result`
+  seam wrapping an unchanged `_serve_dispatch`), **never at `inbound.put`** (round-1 defect),
+  **matched by exact per-grant `credit_id`, never by socket identity** (round-2 defect
+  F1-R2a: an older uncredited same-socket result cleared it), **with the one-result-per-
+  reservation barrier BEFORE `recv_msg`, not after** (round-2 defect F1-R2b: a post-decode
+  wait left the holder owning two decoded envelopes, breaking the one-envelope bound the
+  margin derives from).
+- **Lease exemption + resume grace (Beta 6.5: FULLY RATIFIED):** heartbeats are the only
+  lease-renewal path and share the ordered stream with results; exemption covers
+  coordinator-initiated pause AND a bounded post-resume grace until the first accepted
+  heartbeat (`renew_lease`'s own boolean gates the clear); genuine silence still expires.
+- **E is REJECTED:** never fix a coordinator capacity defect via seed caps or stripe
+  geometry. **Gate 56** of the phase-4 suite changed disposition under D (bound-proof
+  retained); its old assertion text is SUPERSEDED — do not cite it.
+- **Terminal summary must never raise** (Alpha guard, Beta-approved + gated
+  G-SUMMARY-NO-MASK): `bound_in_force` degrades to `None` + `bound_in_force_error` rather
+  than masking the primary terminal reason.
+
+**Governance record:** `4b1aad6` was committed and dual-pushed AHEAD of Beta's gate review
+at the owner's direction — recorded in the commit message, disclosed in the submission
+cover (`42bdbb1`), accepted by Beta as an owner-directed sequence deviation, no rollback,
+fix-forward on the hash. Precedent: disclosure-up-front is the accepted handling; the
+LAUNCH hold is the operative one and was never breached. Beta ratified: the
+gate-per-decoded-frame reading of B.1 ("one held envelope"); the `conn_dropped` clear
+(disposition (iv) — necessary because READ-DEADLINE drops emit no eof tuple); the
+`dispatch_inbound_result` seam; the G3/G5/G6 bench resequencing (assertion content proven
+byte-identical programmatically).
+
 ## 3. SUPERSEDED — in repo, NOT current
 
 > **The full register is `docs/PROJECT_FILE_CATALOG.md` §6.** §6.1 superseded facts and targets —
@@ -1073,6 +1130,34 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 - **Plans for behaviour-changing work go to Beta before implementation.** P0's procedural
   exception was granted because it was inert; Beta stated it is **not precedent**.
 - **Stage explicitly, never `git add -a`.**
+- **OWNER RULE (2026-08-06, binding): when Beta offers multiple acceptable mechanisms,
+  Alpha takes the structurally STRONGER one — the one whose properties hold by construction
+  rather than by inference. Diff size is NEVER a tiebreaker against correctness-by-
+  construction.** Origin: S172-BP round 2 — Alpha chose the smaller acknowledgment design
+  over the physical reservation; its two inferred properties each cost a full review round.
+  A review round costs days; a bigger diff costs hours.
+- **A comment asserting a concurrency property is a claim, not a proof.** Trace the
+  interleaving against an unconsumed resource, or demand a gate that drives N waiters
+  through ONE release. Concurrency changes need TRANSITION gates (the pause→resume
+  boundary), not only state gates — F2 lived exactly in the boundary G-LEASE never crossed.
+- **Differential-worktree regression proof:** attribute suite reds under an uncommitted
+  diff by running the suite in the SAME environment on the patched tree and on
+  `git worktree add <dir> <base>`, then diffing the pass/fail lists. Only the differential
+  is chargeable to the change.
+- **Committed suites carry a host assumption:** gates inheriting the 16 GiB
+  `staging_high_water_bytes` default red on hosts with a smaller free `$TMPDIR`
+  (Part B one gate; phase-4 Gate 54). Pre-existing; not regressions; new gates must set an
+  explicit high-water.
+- **Freshness probe is a content grep, not `head -1`:** revised documents rarely change
+  their first line — probe a marker unique to the current revision
+  (`grep -c "<current-hash>" <file>`). The one-document/three-locations shape (sandbox
+  outputs → ser8 Downloads → VM101 docs) produced two stale-revision events in one day.
+- **`grep` eats leading-dash patterns as options** (`grep "--params" f` → rc 1, silent).
+  Use `grep -e '--params'`. Same false-negative class as the pgrep self-match rule.
+- **Final-state evidence discipline (Beta §6, standing):** the canonical-host run happens
+  AFTER the last change and the report/cover are written AFTER that run — evidence must
+  describe the final artifact, nothing earlier.
+
 - **Never reuse a filename when uploading to chat.** Same-named uploads deduplicate somewhere
   upstream and arrive as **empty stubs** — six transfers were lost this way in one session
   before the cause was found. Give every upload a unique name. `.diff` and `.png` were 100%
@@ -1131,7 +1216,10 @@ Resolved Execution Set ✅ 63e627f · admission binding ✅ eff6616
 process_sharded import gate ✅ e0513ba — D5 25/25
 D6.2 ✅ CERTIFIED 18a2419 — n_parallel == 1 ONLY
 Phase 7 prerequisites ✅ closed on measurement; item 1 WAIVED by owner (25 GPUs)
-now    Phase 7 SOAK — LAUNCHING by owner order. 50 trials, ≥5 high + ≥5 low
+now    S172-BP F1 round-3 fix-forward (token + pre-decode barrier) → Beta delta
+       review → commit+dual-push → gate-12 production shape (4-stripe/25-daemon,
+       MICHAEL-INITIATED) → then Phase 7 SOAK. Beta HOLDS gate 12 and the soak.
+       Soak spec when authorized: 50 trials, ≥5 high + ≥5 low
        survivor, mixed const/hybrid, 25 frozen identities (bea580e76490),
        n_parallel=1 BINDING, serial_reference. FIRST execution ever with the
        S166 clear enabled — the RAM series across 50 trials IS the result.
@@ -1180,7 +1268,8 @@ variable-skip. An inventory is establishing what exists before anything is scope
 **Hard Phase-7 prerequisites — SATISFIED.** 6-P0 ✅ · 6-P0.5 ✅ · D6.2 ✅ CERTIFIED `18a2419`.
 **D6.3 and 6-P2 are NOT Phase-7 blockers** (TB): D6.3's growth is ~10.7 KB/run measured, and the
 miner-backed soak does not invoke the scraper. **D3.0-B is OPEN but blocks only legacy-writer use**
-(§2.18). **The soak is authorized and launching.**
+(§2.18). **The soak is HELD by Beta pending the S172-BP F1 round-3 delta (§2.19)** — the earlier
+"authorized and launching" state was interrupted by the 2026-08-05 staging incident.
 **Optuna:** constant-skip **may resume**; hybrid exploration **non-certifying only**; hybrid
 certification **blocked** until skip bounds are live; authoritative studies need provenance
 binding.
