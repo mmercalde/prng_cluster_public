@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v17, 2026-08-08. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+**Currency:** v18, 2026-08-08. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
 `4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
 (exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
 and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
@@ -1217,6 +1217,28 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
   `CuPy not available` / `Optuna not available` — false reds. Watch for `(torch)`.
 - **Plans for behaviour-changing work go to Beta before implementation.** P0's procedural
   exception was granted because it was inert; Beta stated it is **not precedent**.
+- **AN INHERITED ABSENCE CLAIM IS STILL AN ABSENCE CLAIM — SEARCH BEFORE AMPLIFYING IT.**
+  (Owner correction 2026-08-08, binding.) Alpha applies the §0.1 search-first rule to claims it
+  originates but NOT to claims it inherits from a Claude Code report, a Beta ruling, or a
+  document. Evaluating a finding is not verifying it; interesting-ness substitutes for
+  verification. **Before carrying any report's gap into a submission, a design decision, or a
+  statement to the owner, run the search yourself.**
+  - **A finding scoped to ONE source is not a finding about the repo.** "The document doesn't
+    decide it" is a statement about that document. The binding search order (governance trail →
+    chapters → code) applies to the inherited claim exactly as it does to an original one.
+  - **Four instances in a single session, 2026-08-08:** (a) asserted midday/evening were separate
+    machines — the CA procedures §II specify per-draw random equipment selection; (b) claimed the
+    seed cursor had "overshot a 2³² target" — Beta had already deauthorized the whole tracker;
+    (c) called `offset.max = 100` unexplained scaffolding and then proposed `n − window_size` —
+    Chapter 2's **F-4** makes it a structural coupling (one scalar drives both the history slice
+    and the generator pre-advance), not a bound edit; (d) carried forward an "unable-to-succeed"
+    concern about Daily 3's three-selection spec that the repo had already resolved at
+    `S172_ATTRIBUTION_AND_FEATURE_TRACE_REPORT.md:152` — digit features per S119 / spec
+    `03:00-09r`, additive alongside the CRT lanes (`survivor_scorer.py:616-617`, `:426-428`),
+    with the kernel deliberately sieving the published value as ONE residue
+    (`CHAPTER_2:697` — "mod 1000 | full published value").
+  - **Each was caught by the owner, not by Alpha.** If the owner is performing the verification,
+    the rule is not being followed.
 - **Stage explicitly, never `git add -a`.**
 - **OWNER RULE (2026-08-06, binding): when Beta offers multiple acceptable mechanisms,
   Alpha takes the structurally STRONGER one — the one whose properties hold by construction
