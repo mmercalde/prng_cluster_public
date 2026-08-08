@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v16, 2026-08-07. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+**Currency:** v17, 2026-08-08. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
 `4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
 (exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
 and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
@@ -1008,6 +1008,94 @@ gate-per-decoded-frame reading of B.1 ("one held envelope"); the `conn_dropped` 
 (disposition (iv) — necessary because READ-DEADLINE drops emit no eof tuple); the
 `dispatch_inbound_result` seam; the G3/G5/G6 bench resequencing (assertion content proven
 byte-identical programmatically).
+
+### 2.20 WHAT THE SYSTEM IS AND HOW THE PARTS CONNECT — read this before reasoning about intent
+
+**The authoritative statement** (`docs/BIDIRECTIONAL_SIEVE_MATHEMATICAL_WHITEPAPER.md:158-167`):
+*"Bidirectional sieving provides exponential noise suppression. Loose thresholds are not a
+weakness — they are a mathematical necessity to expose a learnable structure. ML does not guess.
+It refines a space already reduced from 2³² to 10⁴."* And the naming rule
+(`PIPELINE_BEHAVIOUR_MODEL.md:1094-1095`): **TFM = functional mimicry of PRNG surface output. NOT
+seed recovery, NOT state reconstruction.**
+
+**One paragraph:** a GPU sieve scores every candidate seed in a configured range twice — against
+the observed window in order, and reversed — keeping seeds that clear both thresholds. Because
+the thresholds are deliberately loose, what survives is a **manifold** of near-consistent
+candidates, not a shortlist. Each survivor's generator is replayed and characterised into a
+feature vector; a model ranks those vectors against a quality label computed on data the sieve
+never saw; the top-ranked survivors each vote **their generator's next value** into a prediction
+pool. The claim is not that the generator was identified — it is that survivorship plus ranking
+beats the k/1000 baseline (`evaluate_pools.py:36-40`).
+
+**THERE ARE TWO LEARNERS. DO NOT COLLAPSE THEM.** (Owner correction 2026-08-08; the
+`window_size`/`offset` finding below applies ONLY to the second.)
+
+| learner | stage | learns over | uses window_size / offset? |
+|---|---|---|---|
+| **Optuna TPE** | Step 1 | window_size, offset, skip range, sessions, thresholds | **YES — these ARE its search dimensions** |
+| **Supervised model** | Steps 4–5 | 89 survivor-derived features | **NO** — see below |
+
+- **`window_size` and `offset` do NOT reach the supervised ML; `skip_min`/`skip_max`/`skip_range`
+  DO** (features #75/#77/#78 of 89). They are in the 22-array NPZ (arrays 4, 5) but die at the
+  merge site: `survivor_scorer.py:774-779` pulls exactly **18 named fields** and neither is among
+  them. Verified four ways (NPZ contract, merge list, trained sidecar `feature_count=89` hash
+  `7733d30a913545ca`, live artifact) plus Alpha's own read of `:774-779`.
+- **`best_offset` (feature #26) is NOT the Optuna offset — it is hardcoded `0.0`**
+  (`S172_ATTRIBUTION_AND_FEATURE_TRACE_REPORT.md:128`). This is what makes the wrong intuition
+  feel confirmed.
+- **Skip still influences predictions — through a different route**: sequence regeneration at
+  Step 6 (`prediction_generator.py:845`), not the feature vector.
+- **Six of the 89 trained features are constant** — the five documented dead placeholders PLUS
+  `best_offset`. The "5 dead" figure in circulation undercounts.
+- **Training target is `holdout_quality`** — a 50/30/20 composite of CRT match quality,
+  distributional coherence and temporal stability (`holdout_quality.py:61-90`), validated by
+  K-fold (k=5) plus a structurally separate temporal holdout. **NOT `holdout_hits`** — Chapter 6
+  still says otherwise and is stale.
+- **A survivor is a scored candidate, not a verdict** (`CHAPTER_2:373-377`). The population is a
+  manifold BY DESIGN — near-misses are admitted deliberately, because a population of exactly one
+  has no variance and therefore no learning signal (whitepaper §7). **"Most likely seeds"
+  describes Step 5's output, not Step 1's.**
+- **Data spine, hop 7 — no chapter walks it.** A seed's *relevance* is its `predicted_quality`
+  under the model; its *contribution* is literally **the next value its own generator emits**,
+  regenerated with **that seed's own skip** (`prediction_generator.py:845-848`, `:530-553`:
+  *"Each survivor may have been discovered with a DIFFERENT skip value"*). Relevance decides rank;
+  the generator decides what it votes for. This is the only place the skip hypothesis does causal
+  work downstream.
+- **Pool grading** (`chapter_13_orchestrator.py:306-316`): `0.50·hit@20 + 0.30·hit@100 +
+  0.15·hit@300 + 0.05·pool_coverage`. **Unadjudicated mismatch:** this objective weights three
+  pool sizes while the live generator emits one.
+
+**Step 1's purpose, established 2026-08-08** (`CLAUDE_CODE_REPORT_STEP1_PURPOSE_LINEAGE.md`):
+the earliest authoritative source (`instructions.txt:4368-4371`) states *"The window optimizer is
+NOT a sieve itself — it's a meta-tool that finds the BEST window parameters."* Primary deliverable
+is the alignment config; survivors are evidence an alignment resolves. The sweep is **global per
+`prng_type`, never per-draw** — no source anywhere describes per-draw seed discovery. The PWC
+transport pivots (SSH→TCP→ZMQ) were **purely mechanical**; the goal never moved. A regime-shift
+rerun **exists and is human-gated**, but enters Step 1 through the same S140 coverage tracker, so
+it **sweeps the next uncovered block rather than re-examining the range that produced the current
+survivors** — this is where the owner's mental model and the implementation part company.
+
+**The sieve's physical model, established 2026-08-08**
+(`CLAUDE_CODE_REPORT_SIEVE_CONTINUITY_MODEL.md`): the kernel (`prng_registry.py:968-980`) assumes
+**ONE unbroken 48-bit LCG trajectory** — `state = seed & m`, advance `offset`, advance `skip`,
+match. **No machine identity, no A/B RNG branch, no reseed, no date or session input in the draw
+loop.** Every real-world gap (pre-test draws, other games, power-cycles) is modelled as *"advance
+N more steps."* Per the CA draw procedures the machine is selected **per draw at random** from a
+pool, each machine has **two RNGs**, and machines are **powered down between sessions** — none of
+which the model represents. **This is not automatically a defect:** the sieve is a candidate
+FILTER, not a state-recovery attack, and selectivity (P(random) ≈ 10⁻⁵⁵⁰) is what carries the
+weight. Midday↔evening crossing IS ruled and prohibited; whether one seed may span consecutive
+days' power-cycles **within** one session stream — **no evidence found, anywhere**.
+**S112 tension, unresolved:** `SESSION_CHANGELOG_20260226_S112.md:169-184` found real data
+optimises at **W8** vs W256-1024 synthetic and concluded *"real-world lottery PRNGs operate in
+short-lived regimes, not as one continuous seed stream"* — citing the draw procedures as evidence
+— yet `window_size.max` remains **50** and no bound moved. **No bound's VALUE has a derivation
+anywhere**: `skip_max = 250` (documented default 16, enumerated physical scenarios reach ~20, only
+empirical figure S5-56); `offset.max = 100` has **no `_note` and no in-repo rationale** — the
+`agent_manifests/window_optimizer.json` block declares `max: 2000` but has **no `args_map` entry
+and no CLI route**, so it is inert, and its description *"Time offset from current draw position"*
+is **wrong** (host code: head-relative index). Live bound is 100, from
+`distributed_config.json` → `window_optimizer.py:74/143/166`.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
