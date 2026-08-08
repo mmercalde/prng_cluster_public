@@ -221,7 +221,7 @@ class CoordinatorConfig:
     seed_cap_amd_hybrid: int = 1_000_000
     miner_stripe_size: int = 67_108_864
     staging_high_water_bytes: int = 16 * 1024 ** 3
-    staging_high_water_files: int = 512
+    staging_high_water_files: int = 4096
     staging_dir: Optional[str] = None
     compute_lease_timeout: float = 300.0
     staging_timeout: float = 600.0
@@ -6246,7 +6246,7 @@ def build_coordinator(
     seed_cap_amd_hybrid: int = 1_000_000,
     miner_stripe_size: int = 67_108_864,
     staging_high_water_bytes: int = 16 * 1024 ** 3,
-    staging_high_water_files: int = 512,
+    staging_high_water_files: int = 4096,
     compute_lease_timeout: float = 300.0,
     staging_timeout: float = 600.0,
     # [S172-BP §3, Beta C] The four staging-capacity controls, wired end to end.
@@ -6335,7 +6335,7 @@ def run_trial_miner(
     miner_substripes: int = 8,
     miner_output_dir: str = None,
     staging_high_water_bytes: int = 16 * 1024 ** 3,
-    staging_high_water_files: int = 512,
+    staging_high_water_files: int = 4096,
     staging_dir: str = None,
     compute_lease_timeout: float = 300.0,
     staging_timeout: float = 600.0,
