@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v18, 2026-08-08. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+**Currency:** v19, 2026-08-08. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
 `4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
 (exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
 and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
@@ -1080,8 +1080,12 @@ survivors** — this is where the owner's mental model and the implementation pa
 **ONE unbroken 48-bit LCG trajectory** — `state = seed & m`, advance `offset`, advance `skip`,
 match. **No machine identity, no A/B RNG branch, no reseed, no date or session input in the draw
 loop.** Every real-world gap (pre-test draws, other games, power-cycles) is modelled as *"advance
-N more steps."* Per the CA draw procedures the machine is selected **per draw at random** from a
-pool, each machine has **two RNGs**, and machines are **powered down between sessions** — none of
+N more steps."* Per the CA draw procedures the machine is selected **per draw SESSION** by an RNG program
+(§II; corrected 2026-08-08 — Alpha's §2.20 and §7 previously said "per draw," which the document
+does not support: the draw room is entered, used and re-sealed once per session, §V.8 selects one
+"game set," and §VII.2 conducts it with one `[Run LIVE (#) Draw]` press; there are exactly TWO
+automatic machines, §VII.5 NOTE 3). Each machine has **two RNGs**, and machines are **powered
+down between sessions** — none of
 which the model represents. **This is not automatically a defect:** the sieve is a candidate
 FILTER, not a state-recovery attack, and selectivity (P(random) ≈ 10⁻⁵⁵⁰) is what carries the
 weight. Midday↔evening crossing IS ruled and prohibited; whether one seed may span consecutive
@@ -1096,6 +1100,137 @@ empirical figure S5-56); `offset.max = 100` has **no `_note` and no in-repo rati
 and no CLI route**, so it is inert, and its description *"Time offset from current draw position"*
 is **wrong** (host code: head-relative index). Live bound is 100, from
 `distributed_config.json` → `window_optimizer.py:74/143/166`.
+
+### 2.21 THE 150-DRAW CONFOUND — read before citing ANY empirical result
+
+**Every empirical result this project has ever produced came from `data[0:150]`.** `offset ≤ 100`
+plus `window_size ≤ 50` caps the reachable filtered index at **149** of 18,068 records
+(`miner/range_miner_worker.py:648-649`; `distributed_config.json` `search_bounds`). Governed and
+already recorded: `DAILY3_CONSUMER_CONTRACT_v1.md` §4.3 — *"The production sieve analyses draws
+from March 2000."*
+
+**Consequence, and it is the load-bearing one:** selectivity spread, feature importance, survivor
+counts, S112's W8 result, S107's flat-signal finding — all were measured on 2000-2003 draws,
+because that is the only window the sieve can reach. **No conclusion drawn from historical trial
+data can distinguish "property of the metric/system" from "property of that window."** Treat every
+such number as confounded until the window can move.
+
+- The first CA-procedures-governed record sits at filtered index **6,791** (midday) / **7,830**
+  (evening); the document is effective 2021-06-09 and governs **3,447 of 18,068 records = 19.1%**
+  (measured on VM101, 2026-08-08). The sieve can reach **none** of it.
+- **`offset.max = 100` has NO derivation anywhere.** No `_note`, no rationale
+  (`window_optimizer.py:74`/`:143`/`:166`). `agent_manifests/window_optimizer.json` declares
+  `max: 2000` but has **no `args_map` entry and no CLI route** — inert — and its description
+  *"Time offset from current draw position"* is **wrong** (host code: head-relative index from the
+  OLDEST end). `config_manifests/parameter_registry.json:38-43` describes it as *"advance seeds by
+  offset*(skip+1) before testing"* — **also not what any loader does.**
+- **Raising it is NOT a config change.** Chapter 2 **F-4**: one scalar drives BOTH the history
+  slice AND the generator pre-advance, *"coherent only at skip = 0"*. Setting offset to ~7,000
+  would pre-advance the generator ~7,000 steps as a side effect of choosing which draws to look
+  at. Chapter 2 rules F-4 belongs in the hybrid input-semantics design, not an arithmetic patch.
+  **The work item is a window-anchor / generator-phase SEPARATION.**
+- **Related open question, ruled architecture:** survivors are selected on evidence at index ≤149
+  and then vote at `next_idx = len(lottery_history)` ≈ 18,068 (`prediction_generator.py:839`).
+  The governing law is `DAILY3_CONSUMER_CONTRACT_v1.md:185` — `offset = train_history_len`,
+  *"THIS IS THE LAW (per Team Beta)"*, i.e. the array index IS the generator advance count, so
+  any insert/delete/dedup/re-sort silently invalidates `holdout_hits` → `holdout_quality` → the ML
+  target. Whether a mimic fitted on a 21-draw window in 2000 still tracks ~18,000 advances later
+  is **untested**.
+
+### 2.22 TRIAL-LEVEL vs PER-SEED — a recurring category error, audited 2026-08-08
+
+**`bidirectional_selectivity` is TRIAL-LEVEL, not per-seed.** Computed once per (trial × skip-mode)
+as `len(forward_set) / max(len(reverse_set), 1)`
+(`window_optimizer_integration_final.py:1783`, hybrid `:1887`), built into `metadata_base` once at
+`:1762-1785` and dict-splatted into every survivor record at `:1801`. The code says so:
+`:1759` — *"# Trial-level context (same for all seeds in this trial)"*. Only three fields are
+re-read per seed, each marked `# v3.0: per-seed`. Miner path identical
+(`utils/canonical_records.py:234`, loop `:238`).
+
+**Already governed, NOT a new discovery** (Alpha reported it as a defect; it is status):
+`STEP2_BIDIRECTIONAL_SIEVE_DESCRIPTIVE_TRACE.md:501` marks it **TRIAL-AGG**, defined `:479-480` as
+*"a trial-level scalar stamped identically onto every record of that trial+mode."* Skill §2.3
+carries the same fact.
+
+**Verified empirically 2026-08-08:** 5 of 5 held artifacts carry exactly **one distinct value** —
+the certified release-grade generation (319 seeds, 1039.5718), two forensics NPZs at 20,949 and
+20,916 seeds, and a fixture. Zero trial-groups contain more than one value.
+
+**The S107 arithmetic closes exactly.** After the L2 merge (`run_finalizer.py:714-745`, one row per
+seed) each row carries its **winning trial's** value, so `TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`'s
+98.8%-at-floor over 6,739 survivors measures **trial concentration**, not seed quality: one trial
+won ~6,658 rows (`6739 × 0.988 ≈ 6658`), leaving the ~81 reported, and S107's own
+`bidirectional_count` max of 6702 is that trial's intersection size.
+
+**The recurring error, and it has a lineage:**
+- **S103 (2026-02-21) diagnosed this exact class** — *"all quality fields identical for every seed
+  from the same trial — zero signal for ML ranking"* — and fixed it for the match-rate fields.
+- **S104 (2026-02-22)** restored seven trial-level statistics while documenting they are *"the
+  same value for all seeds from the same trial."*
+- **S107, the same day,** made one of them Step 2's **per-seed** quality signal.
+- **v4.1's rationale was a category error** (`TB_RULING_REQUEST_STEP2_v4_1_OBJECTIVE.md:112-114`):
+  *"min=1.01, max=2.47 … This is NOT flat — there is real variance to optimize against."* That
+  spread is **between trials**; the objective needed variance **between seeds**.
+- **The approved v4.2 replacement carries the identical error** — `bidirectional_count` is
+  `len(both)`, the trial's intersection size, and died the same death
+  (`scorer_trial_worker.py:414-415`: *"structurally dead: 79.2% of pool at bc>=11300"*).
+- **Both v4.1 and v4.2 were RULED** (catalog §1.1 rows 61-62, `S107_session_log.md`, code comments
+  `scorer_trial_worker.py:198`, `:413`) — **neither is an open request.**
+
+**New defect found 2026-08-08:** `feature_registry.json` files `bidirectional_selectivity` under
+**`/per_seed_features/`** — a per-seed declaration in the same entry that correctly defines it as a
+ratio of trial-level counts. No prior record found.
+
+**Standing rule:** before using ANY survivor-record field to rank or discriminate **seeds**, verify
+it is per-seed. The trial-level fields are stamped identically and cannot. Conversely, trial-level
+scalars are well-formed **for ranking trials** — a legitimate use that is currently unexploited,
+but note that measuring across-trial spread from the historical study is **confounded by §2.21**:
+every recorded trial ran inside `data[0:150]`.
+
+### 2.23 CORRECTIONS TO THE 2026-08-07/08 ATTACK-PLAN ANALYSIS
+
+The attack-plan report's Part A/B derivations **stand**; three of its negative conclusions were
+**VOID** under the black-box framing and are recorded here so they are not re-inherited:
+
+- **Derived `skip = 9`** (session-scoped, **order-invariant**): the daily inventory is 10 game-draws
+  (midday pre-test + live = 2; evening pre-test + live {D3,D4,F5,DD} = 8), so between consecutive
+  same-session Daily 3 values lie 9 burned outputs. Evening-only era variant: **7**. H-B variant:
+  39. A chronologically combined stream is **not** constant-skip — it alternates `4+p` / `4-p`,
+  which **strengthens** the existing prohibition on combined-session sieving.
+- **A skip-pinned trial is a DIAGNOSTIC ARM, never a production config.** Alpha originally sold
+  `skip_min=9, skip_max=10` on a *"~125× less kernel work per seed"* saving. **That framing was
+  backwards:** under whitepaper §7 narrowing skip is a **manifold contraction** — fewer, less
+  varied survivors, and variance is what the ML learns from.
+- **VOID — "if each digit is its own selection the sieve can never succeed."** Under mimicry the
+  predicate asks whether a candidate *emits the published number*; the machine's assembly process
+  is not an operand. And the repo had already engaged H-B: `survivor_scorer.py:426-428` — *"Daily 3
+  = three independent Z10 draws; score each digit position directly. Additive alongside CRT lanes"*
+  (S119, spec `03:00-09r`; also `:616-617`, recorded `S172_ATTRIBUTION_AND_FEATURE_TRACE_REPORT.md:152`)
+  — placed in the **feature vector**, where it adds information, rather than the sieve predicate,
+  where it would narrow the manifold.
+- **VOID — the two-machine mixture as a fatal objection.** `2^-(n-1)` computes P(the window came
+  from one trajectory), but what decides whether the sieve returns survivors is P(∃ a
+  parameterisation in the family matching at ≥τ) — only the first depends on how the data was
+  produced. `CHAPTER_2:373-377` had already enumerated *"a partial match valid before a reseed
+  event"* as a listed survivor category.
+- **VOID — "`java_lcg` has no support in the document."** The family is a **substrate for mimicry**,
+  chosen empirically, one of **44 `KERNEL_REGISTRY` entries** = 11 base families
+  (`xorshift32, pcg32, lcg32, mt19937, xorshift64, java_lcg, minstd, xorshift128, xoshiro256pp,
+  philox4x32, sfc64`) × {base, `_reverse`, `_hybrid`, `_hybrid_reverse`}
+  (`prng_registry.py:3729`). If it stops fitting, another family is tried. The only real residue:
+  if **no** family beats k/1000, that is a fitting failure, never an identification one.
+- **WITHDRAWN — "manifold composition already measured."** No such measurement exists. 18 of the 22
+  NPZ columns cannot produce one, and the fields that could (`forward_matches`/`reverse_matches`)
+  are absent from the Step-3 merge list (§2.3).
+
+**Three owner corrections that govern all of the above (2026-08-08, binding):**
+1. **The target is a prediction-pool hit rate of ~65-85%**, not 100% and not a unique seed. No
+   survivor must explain the whole series. "No single trajectory accounts for all observations" is
+   not an objection to the method — it is a statement about pool composition.
+2. **The generator family is a substrate, not a hypothesis about the machine.** We do not care
+   which PRNG produced the data if the heuristics can be learned and the surface output mimicked.
+3. **A two-source mixture does not break a pool** — some survivors mimic one source, some the
+   other, and the pool spans both. That is the manifold behaving as designed.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
