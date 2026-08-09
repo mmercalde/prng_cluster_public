@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v20, 2026-08-09. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+**Currency:** v21, 2026-08-09. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
 `4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
 (exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
 and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
@@ -1366,10 +1366,7 @@ failure therefore produces exactly a `26 done / 6 cancelled` tail.** The forensi
 if a genuine stage-2 failure is found, **immediate termination may be CORRECT behaviour, not a
 retry defect**; the question then becomes why that worker failed.
 
-**Open at this revision:** the stage-2 terminal event · the 12:41:08 `Defect 6` 15-second
-connection drop (**correlated only, causation not established**) · `GPU_COUNT_MISMATCH: 0/8` on all
-three rigs while the cluster bot reported 8/8 one minute earlier (**must be classified before any
-saturation attempt; the bot's 8/8 is not proof the detector is wrong**).
+**ALL THREE OPEN ITEMS ARE NOW ANSWERED — see §2.26 (forensics, 2026-08-09).**
 
 **ALPHA TOOLING ERROR:** the concurrency sampler was started *after* the fleet-launch step returned,
 so it produced **no in-run rows** — this run carries **no live concurrency evidence even for the 8
@@ -1377,6 +1374,91 @@ workers used**. Any future attempt must start the sampler **before the coordinat
 first `StripeAssign`**, and Beta requires an observation window showing **≥25 distinct in-flight
 workers AND queued stripes still available**. "Distinct workers eventually used = 25" is explicitly
 insufficient.
+
+### 2.26 GATE-12 FORENSICS — THE COMPUTE LEASE MEASURES QUEUE WAIT, NOT WORKER LIVENESS
+
+Read-only forensic reconstruction of `distributed_config_t1_689f3cd9`, Beta-authorized 2026-08-09.
+**Verdict: PRODUCTION DEFECT FOUND.** All three items left open by §2.25 are answered here.
+
+**The first terminal stage-2 event:** compute-lease expiry at **12:47:13.143** on
+`…__st1_s5 / rrig6600:gpu4 / attempt 0`. Handled `range_miner_coordinator.py:6367 → :5186 →
+:5205 → :5106-5107` (`if phase in (1,2): fail_trial(...)`) `→ :5405 cancel_active_stripes`.
+**Per Beta §8 this is CORRECT behaviour, not a retry defect** — phase 2 is constant-mode and the
+reassign path is hybrid-only. **The six cancellations are the abort-cleanup footprint of this one
+event**, proven without relying on them: `cancel_active_stripes` updates `state` only, so a stripe
+killed on this path keeps `claimed_by` **and** its expired `lease_expires_at`; s5/s7/s9 show exactly
+that, while s3/s6/s26 carry `stripe_complete_seen=1` + `lease NULL`.
+
+**F-1 (PRIMARY DEFECT) — the lease is stamped at BULK-CLAIM time.** `assign_stripes`
+(`:2680-2705`) claims **every** stripe of a stage in one loop with **one `now`** (set once at
+`:2671`), stamping each `now + compute_lease_timeout` (`:2695`, 300 s at `:245`). Workers then
+execute **serially** (`range_miner_worker.py:1425-1431`). At `stripes_per_worker = 32/8 = 4`, a
+worker's last stripe does not begin until **~230-260 s of its own 300 s lease is already gone.**
+
+- **The three that expired were ACTIVELY STREAMING RESULTS** — last shards 12:47:11.338 /
+  12:47:12.056 / 12:47:12.607 against a **12:47:05.487** deadline. **Not dead workers.** The
+  lease's documented purpose (`:1663-1667`) is reclaiming leases from workers that have *stopped*.
+- **Renewal cannot compensate:** `renew_lease` (`:1648-1661`) renews **only
+  `msg.current_stripe_id`**, so a queued stripe's lease burns untouched; once current, the
+  heartbeat competes with the result stream on one ordered TCP connection (`:6549-6552`). No
+  heartbeat renewal landed on s5/s7/s9 at any point (`lease_expires_at` is still
+  assign-time + 300 to the microsecond). The §2.19 F2 lease exemption **cannot apply** — it keys on
+  `_paused_connections` and the run recorded `pause_events=0`.
+- **The clean control is in the same run:** phase 1 is geometrically identical and cleared the lease
+  by **+64 s** (4.31 shards/s); phase 2 ran 3.24 shards/s and missed by **−11 s**. **Worker compute
+  was 4.5-6.7 s per stripe throughout — the 300 s went to delivery and staging, not GPU work.**
+- **Blast radius:** phases 1 and 2 are constant-mode, so **any** stage whose per-worker stripe queue
+  takes longer than 300 s to deliver terminates the whole trial with no retry. **A fail-closed
+  cliff, not a degradation**, live at any geometry where
+  `stripes_per_worker × per-stripe delivery time → 300 s`.
+- **THEREFORE: raising `worker_pool_size` to 25 would MASK F-1, not fix it.** It drops
+  stripes-per-worker to 1-2 and would very likely have avoided the expiry in this run, but **does
+  not remove the coupling.** A gate-12 pass obtained that way would certify a latent cliff.
+- **No remedy is proposed.** The candidates — stamp the lease at dispatch rather than at claim;
+  renew on any accepted frame from the bound worker rather than heartbeat alone; claim only what a
+  worker can start — **differ materially in concurrency properties**, so the choice is Beta's, under
+  the §7 owner rule on taking the structurally stronger mechanism.
+
+**F-2 (secondary, observability) — the constant-phase terminal path is SILENT.**
+`_handle_stripe_failure_locked:5106-5107` builds a precise reason string and emits **no log
+record**; `fail_trial:5342-5348`, `abort_trial:5350-5423` and `cancel_active_stripes:1546-1556`
+emit none either, and `trials` has no column for the reason (discarded at `:5406-5407`).
+`process_lease_expiry` logs only its two *skip* branches. **Observed consequence: the coordinator
+log contains nothing at all between 12:42:05.645 and 12:47:17.448**, and the operator saw only a
+downstream `MinerIngressError` about a gate that never ran. **Every fact above had to be recovered
+from ledger row shapes** — and only because `cancel_active_stripes` happens not to overwrite
+`claimed_by`. The neighbouring capacity-timeout path *does* `logger.error` first (`:6031-6032`), so
+this is an inconsistency inside one file.
+
+**§2.25's `Defect 6` item — UNRELATED, disposed.** Two independent proofs: the branch at
+`:6127-6141` fires only for connections where `meta["registered"]` is false, and **no stage-2 stripe
+existed until 12:42:05.487**. Which worker owned it **cannot be determined** — no `worker_id` was
+ever bound and the log line carries no peer address.
+
+**§2.25's `GPU_COUNT_MISMATCH: 0/8` — disposition C, environment/probe defect.** `rocm-smi` is not
+on the **non-interactive SSH PATH** on the CT; the identical grep returns **8** via
+`/opt/rocm/bin/rocm-smi`. The parsing is correct. `0/8` did not fail the 3/3 preflight because
+`preflight_check.py:229` does `checks_passed += 1  # Don't block on GPU warnings`. Secondary: the
+probe **cannot distinguish `UNAVAILABLE` from `0`** — its `|| echo 0` reports an unobservable
+surface as a definite zero.
+
+**CORRECTIONS TO ALPHA'S OWN GATE-12 EVIDENCE PACKAGE (§3 of that document was wrong):**
+
+1. **Raising the pool to 25 does NOT change the derived retention requirement — it stays 6,528.**
+   Computed by importing the production `trial_retention_files_required` (`:613`) with the caps read
+   from this run's own ledger; the 8-worker row reproduces the run's logged line exactly. **The
+   derivation is a MAX over eligible workers, not a sum** (`:620-624`), and the tightest cap is
+   already the AMD one: `ceil(67108864/2000000)=34` constant, `ceil(67108864/1000000)=68` hybrid ⇒
+   `32×34=1088` and `32×68=2176` per stage **regardless of pool size**. It would change only if a
+   worker advertised a *smaller* cap; none of the 22 that registered does.
+2. **The sampler's first row was 12:47:28, not 12:51.**
+3. **The sampler's query cannot demonstrate Beta's criterion at all** — under bulk claim `pending`
+   never appears, and `claimed_workers` reports **assignment, not occupancy**. A second, independent
+   Alpha tooling defect; a corrected block exists in the forensics report §E.3.
+
+**STANDING LESSON:** a terminal decision that leaves no execution record is not observable. The
+fail-closed design Beta correctly credits is only auditable here by accident of which columns
+`cancel_active_stripes` leaves untouched.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
