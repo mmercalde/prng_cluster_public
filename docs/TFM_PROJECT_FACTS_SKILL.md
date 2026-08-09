@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v19, 2026-08-08. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+**Currency:** v20, 2026-08-09. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
 `4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
 (exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
 and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
@@ -1231,6 +1231,152 @@ The attack-plan report's Part A/B derivations **stand**; three of its negative c
    which PRNG produced the data if the heuristics can be learned and the surface output mimicked.
 3. **A two-source mixture does not break a pool** — some survivors mimic one source, some the
    other, and the pool spans both. That is the manifold behaving as designed.
+
+### 2.24 BOTH GATE-12 PREREQUISITE AMENDMENTS ARE CERTIFIED AND COMMITTED
+
+**S172 staging-capacity amendment — `4dd5535`, Beta CERTIFIED 2026-08-08.**
+
+- **Option C lifecycle (binding):** retain every staged shard **through** the TrialCommit attempt;
+  on SUCCESSFUL Phase-5 commit release every trial-owned reservation exactly once and delete the
+  files; on FAILED commit **retain everything** so the same event stays retryable (D1.1's
+  spool-repair contract depends on it). **Incremental Phase-5 assembly and mid-trial ack are
+  explicitly NOT authorized.**
+- **Delivery and cleanup are INDEPENDENT durable phases.** Resume is gated on
+  `commit_cleanup_status`, never on `commit_delivery_status` — otherwise a crash between
+  reservation rows strands the remainder forever (`ack_by_event_id` being idempotent is useless if
+  the recovery path never calls it). First pass and recovery run the same code path.
+- **The retention bound is DERIVED, never hardcoded.** `staging_high_water_files = None` means
+  derive; an operator value below the derived requirement **fails closed before the first
+  `StripeAssign`** — a warning is insufficient. The old 512 and the interim 4096 are both gone.
+  For the real 16-stripe gate-12 geometry the derivation gives **3,264**; at 32 stripes / 8 workers
+  it gave **6,528**. **Never transcribe either — the number comes from the geometry.**
+- **The 2026-08-07 wedge was `_run_staging_job`: `while True: … except StagingBackPressure:
+  sleep(0.02)` with NO CLOCK.** 50 Hz forever, invisible to a timeout that watched only paused
+  connections. Executor waits now register under the **same lock** as the pause registry, so
+  "oldest across both classes" is one atomic read.
+- **Cohort freeze:** at successful preflight the assignable cohort is frozen **from the same
+  `eligible_by_stage` the ceiling was derived over**, enforced at `assign_stripes`, the
+  no-eligible-worker guard, **and `_pick_other_worker`** — the retry path was a *second* unguarded
+  per-trial eligibility calculation, and fixing only initial assignment would have left the
+  invariant holding on the easy path and failing on the harder one. Reconnect signature is exactly
+  `backend` + `seed_caps` + `supported_variants`; `supported_variants = None` is kept distinct
+  from `[]`.
+- **Preflight provenance is mandatory:** if an otherwise-admissible plan cannot be durably
+  persisted, **fail closed** (`coordinator_staging_preflight_provenance:`) before any dispatch. A
+  failure to persist a *refusal* never masks the primary `coordinator_staging_retention_sizing`.
+- **`elapsed_s` is persisted** (Beta R4), `Optional[float] = None` so "not reported" stays
+  distinguishable from "measured zero". **It is stripe SERVICE TIME, not fleet throughput —
+  concurrent worker intervals overlap. Never reconstruct cluster throughput by summing or
+  averaging per-stripe rates; a fleet figure needs an overlap-aware makespan denominator.**
+- **CERTIFICATION BOUNDARY:** one active range-miner trial per coordinator process, with
+  disconnect/reconnect during that process lifetime. **NOT certified:** concurrent `run_id`s in one
+  coordinator; coordinator-process death followed by mid-trial continuation of the same admitted
+  run. If the coordinator dies mid-trial, the run is **interrupted/failed**, not resumable.
+
+**S145 seed-domain / coverage-cursor amendment — `a3bb4da`, Beta CERTIFIED 2026-08-09.**
+
+- **The discovery domain terminates at `[0, 2^32)`**, sharing `run_finalizer`'s single
+  `SEED_DOMAIN_EXCLUSIVE_MAX` (`:277`) — imported, never restated. No run may begin at, cross, or
+  publish outside it. The mathematical 48-bit state does **not** authorize sweeping it.
+- **The legacy `exhaustive_progress` tracker is DEAUTHORIZED ENTIRELY** — all 15 rows, including
+  rows 1-4. Retained and auditable as telemetry, **zero certified progress**, no longer read by the
+  cursor. Certified coverage **restarts at zero**. The ~1.07-billion-seed hole therefore needs no
+  repair: the table holding it is no longer the authority.
+- **Coverage Ledger v1 is append-only:** bare INSERT, BEFORE UPDATE and BEFORE DELETE triggers,
+  and **`PRAGMA recursive_triggers = ON` so `INSERT OR REPLACE` cannot satisfy a conflict by
+  deleting.** That pragma is **proven load-bearing**, not asserted: with it OFF a 1,000-seed smoke
+  row replaces a billion-seed production row (the legacy incident, reproduced); with it ON the
+  DELETE trigger aborts.
+- **ONE certification door:** `record_publication(artifact: RunArtifactResult, *, dataset_sha256,
+  study_identity)` derives **nine** fields from the witness; only those two come from the caller,
+  and both are absent from the frozen D3.5 contract. The raw writer is `_record_certified_interval`,
+  out of `__all__`, and a repo AST scan proves no production bypass. **Publication is the evidence
+  wall: starting a run is not coverage, receiving results is not coverage, a provisional DB write
+  is not coverage.**
+- **Coverage identity is `prng_base` + `skip_modes_executed`, with SET CONTAINMENT** —
+  `requested_modes ⊆ record.executed_modes`. `{constant}` certified does **not** satisfy a
+  `{constant, variable}` request. `_reverse` is a **direction, not a mode**. This resolved the
+  `prng_type`/`prng_base` split rather than deferring it.
+- **The cursor is FIRST UNCOVERED SEED, not `MAX(seed_range_end)`**, with an explicit `COMPLETE`
+  state ⇒ `next_seed_start = None`. There is no numeric `4,294,967,296` next run.
+- **Pre-dispatch domain wall on ALL THREE execution paths** — WATCHER, direct Bayesian, and
+  `run_with_config`, the last requiring **whole-plan** validation (at `2^30 × 5` the fifth interval
+  escapes the domain and the command is refused before iteration 1). `int()` coercions were removed
+  so the wall's strict type contract holds. **WATCHER's `max_seeds` fallback was corrected 5M → 10M**
+  — it had been validating a plan nobody executes.
+- **CERTIFICATION BOUNDARY:** append-only holds **under the production connection contract**
+  (ledger-managed connections set the pragma; the repo scan excludes any other certification path).
+  It is **NOT** tamper resistance against an external client that disables the pragma.
+- **Cursor-zero boundary:** WATCHER auto-overwrites `seed_start` only when `next_seed_start > 0`,
+  so an explicit nonzero operator start remains in force. **Nothing claims WATCHER forcibly
+  rewrites every run to the first gap.** Supply the first-gap value explicitly.
+
+### 2.25 GATE 12 — ATTEMPT 1 FAILED (`distributed_config_t1_689f3cd9`, 2026-08-09)
+
+**Beta's authorized frozen shape:** `seed_start=0`, `seed_count=2^31`, `miner_stripe_size=2^26` ⇒
+**32 macro-stripes/stage**, `java_lcg` + `{constant, variable}`, range-miner, one active trial.
+Beta chose 32 over the 25-stripe minimum deliberately: 25 fills the fleet once, **32 fills it and
+leaves seven queued**, so the run can show the scheduler and staging operating *while* saturated.
+
+**FAIL, two independent reasons. No 25-GPU saturation claim exists from this run.**
+
+**Reason A — Alpha launch-shape error.** `admission_count = min(requested, selected identities)`,
+and for the miner `requested` is **`worker_pool_size`** (`execution_set.py:170-176`), whose manifest
+default is **8** (`agent_manifests/window_optimizer.json:262`, CLI route `:38`). Alpha's `--params`
+set the seed geometry and **never overrode the pool size**, so the run asked for 8 and got 8 —
+internally consistent throughout (`gpus=25 … admission=8` → `expected_workers=8` → 8 frozen
+identities). **The correction is `"worker_pool_size": 25`.** Classified by Beta as an operator
+error, **not a production defect.**
+
+**Reason B — the four-stage workflow did not complete**, and the root terminal event is
+**undiagnosed as of this revision**. Ledger: `(phase 1, done, 32) · (phase 2, done, 26) ·
+(phase 2, cancelled, 6)`, 8 distinct workers.
+
+**PARAMETER TRAP, recorded so it is not rediscovered:** the CLI arg `--max-seeds` is mapped in
+`args_map` from the param name **`seed_count`**, but `seed_count` is **not** in `default_params`, so
+WATCHER's declared-key filter drops it. **The key that works is `max_seeds`** — it is declared, the
+S145 wall reads it, and the CLI builder falls back to underscore→hyphen. Passing `seed_count`
+silently yields the 1,073,741,824 default (16 stripes, not 32). **Booleans are flag-only:** `true`
+emits the flag, `false` **omits it entirely** — that is how `use_persistent_workers: false`
+suppresses PWC.
+
+**What the run PROVED (positive production evidence, per Beta §2):**
+- retention preflight at the authorized geometry: `mode=derived required=6528 resolved=6528
+  stages=4 stripes=32`;
+- **staging back-pressure genuinely exercised and held** — `inbound_qsize_high_water=690`,
+  `deferred_high_water=247` against `bound_in_force=1110`, **`pause_events=0`,
+  `capacity_timeout_terminations=0`, `capacity_invariant_terminations=0`**, 1,844 staging jobs at
+  3.055/sec. The 2026-08-05 deadlock class **did not recur under real pressure**;
+- **the cohort freeze worked in production:** stage 2 saw `eligible_workers=22` — workers connected
+  after preflight — and they were correctly **excluded** from the frozen trial;
+- S145 behaved correctly: no publication ⇒ **no coverage advance**, cursor still 0.
+
+**`MinerIngressError … validated=False` is the SYMPTOM, not the defect — for the FOURTH time.**
+`validate_threshold_provenance` is called **only** under `if stage_idx >= len(workflow_stages)`
+(`miner/range_miner_coordinator.py:6375-6385`), i.e. after all four stages complete. Stages 3-4
+never started, so the gate never fired and ingress correctly refused. **Do not patch or weaken that
+wall.** Note the record was **populated** this time (`payload`/`effective` present and matching)
+versus empty on 2026-08-07 — threshold propagation worked for the stages that ran.
+
+**BINDING FORENSIC FRAME (Beta):** in constant phases 1 and 2, **any stripe failure or lease expiry
+fails the trial immediately — no retry** (retry-to-another-worker is for retryable failures in
+hybrid phases 3/4). Whole-trial abort cleanup then marks pending stripes cancelled. **One real
+failure therefore produces exactly a `26 done / 6 cancelled` tail.** The forensic target is
+**the FIRST terminal event in time, worked forward** — never backward from the cancelled rows. And
+if a genuine stage-2 failure is found, **immediate termination may be CORRECT behaviour, not a
+retry defect**; the question then becomes why that worker failed.
+
+**Open at this revision:** the stage-2 terminal event · the 12:41:08 `Defect 6` 15-second
+connection drop (**correlated only, causation not established**) · `GPU_COUNT_MISMATCH: 0/8` on all
+three rigs while the cluster bot reported 8/8 one minute earlier (**must be classified before any
+saturation attempt; the bot's 8/8 is not proof the detector is wrong**).
+
+**ALPHA TOOLING ERROR:** the concurrency sampler was started *after* the fleet-launch step returned,
+so it produced **no in-run rows** — this run carries **no live concurrency evidence even for the 8
+workers used**. Any future attempt must start the sampler **before the coordinator can issue the
+first `StripeAssign`**, and Beta requires an observation window showing **≥25 distinct in-flight
+workers AND queued stripes still available**. "Distinct workers eventually used = 25" is explicitly
+insufficient.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
