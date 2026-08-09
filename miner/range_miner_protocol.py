@@ -139,7 +139,13 @@ class StripeCompleteMessage(MinerBaseMessage):
     stripe_id: str = ""
     substripes_done: int = 0
     survivors_total: int = 0
-    elapsed_s: float = 0.0
+    # [S172 elapsed_s persistence, Beta R4] Worker-measured stripe SERVICE TIME in
+    # seconds. `None` (not 0.0) is the "peer did not report it" value, matching the
+    # `effective_threshold` idiom below: a pre-R4 peer omits the key, from_dict()
+    # applies this default, and the ledger stores NULL — which a genuine 0.0 must
+    # remain distinguishable from. Defaulted like every envelope field, so an older
+    # peer still decodes.
+    elapsed_s: Optional[float] = None
     # [S172 D6 correction] the effective threshold every sub-stripe of THIS
     # stripe filtered at. None when the stripe ran no sub-stripe; a stripe whose
     # sub-stripes disagreed is a defect and reports the disagreement explicitly

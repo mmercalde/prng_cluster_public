@@ -1464,8 +1464,19 @@ def run_bidirectional_test(coordinator,
             miner_substripes       = getattr(coordinator, 'miner_substripes', 8),
             miner_output_dir       = getattr(coordinator, 'miner_output_dir', None),
             staging_dir            = getattr(coordinator, 'staging_dir', None),
+            # [S172 STAGING-CAPACITY AMENDMENT §1.3, Beta §4] hop 3 for BOTH
+            # high-waters. These are now ASSIGNED on the coordinator by
+            # window_optimizer.py (hop 2) from the manifest/CLI, so this read is no
+            # longer the production source — it is the last hop of a governed route.
+            #
+            # The old literals were the defect: `512` here never matched the
+            # committed dataclass default (4096 at `8bbe79e`, itself a run-enabling
+            # wall-move), so the number the file ceiling actually took in production
+            # corresponded to no reviewed value at all. The defaults below now mean
+            # "the route supplied nothing", and for files that is `None`, which is
+            # the DERIVE contract (§1.2) rather than a silent constant.
             staging_high_water_bytes = getattr(coordinator, 'staging_high_water_bytes', 16 * 1024 ** 3),
-            staging_high_water_files = getattr(coordinator, 'staging_high_water_files', 512),
+            staging_high_water_files = getattr(coordinator, 'staging_high_water_files', None),
             compute_lease_timeout  = getattr(coordinator, 'compute_lease_timeout', 300.0),
             staging_timeout        = getattr(coordinator, 'staging_timeout', 600.0),
             # [S172-BP §3, Beta C] The four staging-capacity controls, read off the

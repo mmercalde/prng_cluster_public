@@ -77,6 +77,9 @@ from miner.range_miner_coordinator import (  # noqa: E402
     NodeConfig,
     Phase5Sink,
     RangeMinerCoordinator,
+    StagingConfigurationError,
+    StagingPreflightProvenanceError,
+    StagingRetentionSizingError,
     TransferAdapter,
     advertised_effective_cap,
     applicable_seed_cap,
@@ -85,6 +88,7 @@ from miner.range_miner_coordinator import (  # noqa: E402
     run_trial_miner,
     staging_burst_bound_conservative,
     staging_burst_bound_exact,
+    workflow_stages_for,
 )
 from miner.range_miner_worker import (  # noqa: E402
     MinerFramedSocket,
@@ -3369,6 +3373,1430 @@ def gate_no_predecode_mutant():
             b.close()
 
 
+# ===========================================================================
+# S172 STAGING-CAPACITY AMENDMENT (Beta staging ruling §§2-6, 2026-08-07)
+# ===========================================================================
+_HIGHWATER_CONTROLS = {
+    # key: (kebab, flag, manifest default, injected value)
+    "staging_high_water_files": ("staging-high-water-files",
+                                 "--staging-high-water-files", None, 777),
+    "staging_high_water_bytes": ("staging-high-water-bytes",
+                                 "--staging-high-water-bytes",
+                                 16 * 1024 ** 3, 512 * 1024 * 1024),
+}
+
+
+def _reserve_with_file(coord, run_id, sid, sub_index, size_bytes, tmp,
+                       attempt=0, gen=0):
+    """One REAL held reservation with a REAL staged file on disk.
+
+    Uses the production `reserve_capacity` + `set_reservation_paths`, so the row
+    the release path later discharges is the same shape staging produces."""
+    rid = coord.reserve_capacity(run_id, sid, attempt, sub_index, gen, size_bytes)
+    assert rid is not None, "capacity refused a reservation the gate needs"
+    staged = os.path.join(tmp, f"{sid}_sub{sub_index}.bin")
+    with open(staged, "wb") as fh:
+        fh.write(b"\0" * size_bytes)
+    coord.ledger.set_reservation_paths(rid, staged_path=staged)
+    return rid, staged
+
+
+def gate_highwater_route():
+    """G-HIGHWATER-ROUTE. BOTH high-waters travel the complete governed route:
+
+        manifest default_params -> args_map -> window_optimizer argparse
+          -> coordinator attrs -> run_trial_miner -> build_coordinator
+          -> CoordinatorConfig
+
+    and the delivered values are LOAD-BEARING — they change the real reservation
+    limits, not just a stored field. The route is gated, not the parameters
+    (§2.15): a Step-1 key the manifest does not declare dies at hop 1.
+    """
+    mpath = os.path.join(_ROOT, "agent_manifests", "window_optimizer.json")
+    with open(mpath) as fh:
+        manifest = json.load(fh)
+    dp = manifest["default_params"]
+    amap = manifest["actions"][0]["args_map"]
+    for key, (kebab, _flag, default, _inj) in _HIGHWATER_CONTROLS.items():
+        assert key in dp, f"hop 1a: manifest default_params lacks {key}"
+        assert dp[key] == default, (
+            f"hop 1a: manifest {key}={dp[key]!r} != {default!r}")
+        assert amap.get(kebab) == key, f"hop 1b: args_map lacks {kebab!r}"
+        declared = dict(dp)
+        merged = {**declared}
+        for k, v in {key: "OVERRIDE", "undeclared_key": 1}.items():
+            if k in declared:
+                merged[k] = v
+        assert merged[key] == "OVERRIDE", f"hop 1c: {key} dies in the filter"
+        assert "undeclared_key" not in merged
+
+    wo = os.path.join(_ROOT, "window_optimizer.py")
+    with open(wo) as fh:
+        wo_src = fh.read()
+    flags = set()
+    for node in ast.walk(ast.parse(wo_src)):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"
+                and node.args and isinstance(node.args[0], ast.Constant)):
+            flags.add(node.args[0].value)
+    # hop 2b is checked over the AST, not the text: the call site legitimately
+    # wraps across lines, and a substring probe would report a broken route for a
+    # purely cosmetic line break (and, worse, would go green on a commented-out
+    # one). Collect every `<key>=getattr(args, '<key>', ...)` keyword actually
+    # passed at a call site.
+    _forwarded = set()
+    for node in ast.walk(ast.parse(wo_src)):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            v = kw.value
+            if (kw.arg and isinstance(v, ast.Call)
+                    and getattr(v.func, "id", None) == "getattr"
+                    and len(v.args) >= 2
+                    and getattr(v.args[0], "id", None) == "args"
+                    and isinstance(v.args[1], ast.Constant)
+                    and v.args[1].value == kw.arg):
+                _forwarded.add(kw.arg)
+    for key, (_kebab, flag, _d, _i) in _HIGHWATER_CONTROLS.items():
+        assert flag in flags, f"hop 2a: argparse lacks {flag}"
+        assert key in _forwarded, (
+            f"hop 2b: {flag} is parsed but never passed on")
+        assert f"coordinator.{key}" in wo_src, (
+            f"hop 2c: nothing assigns coordinator.{key} — that read is DEAD")
+
+    integ = os.path.join(_ROOT, "window_optimizer_integration_final.py")
+    with open(integ) as fh:
+        integ_src = fh.read()
+    for key in _HIGHWATER_CONTROLS:
+        assert f"getattr(coordinator, '{key}'" in integ_src, (
+            f"hop 3: the integration does not read coordinator.{key}")
+        assert key in inspect.signature(run_trial_miner).parameters
+        assert key in inspect.signature(build_coordinator).parameters
+        assert key in {f.name for f in dataclasses.fields(CoordinatorConfig)}
+
+    # The old production source was a STALE literal: `getattr(..., 512)` while the
+    # committed dataclass default was 4096. Neither survives as a default here.
+    assert "'staging_high_water_files', 512)" not in integ_src, (
+        "the stale 512 getattr fallback is still the integration's default")
+
+    injected = {k: v[3] for k, v in _HIGHWATER_CONTROLS.items()}
+    with tempfile.TemporaryDirectory() as tmp:
+        params = {**dp, **injected}
+        filtered = {k: v for k, v in params.items() if k in dp}
+        coord = build_coordinator(
+            staging_dir=os.path.join(tmp, "stg"),
+            **{k: filtered[k] for k in _HIGHWATER_CONTROLS})
+        for key, (_k, _f, _d, value) in _HIGHWATER_CONTROLS.items():
+            got = getattr(coord.config, key)
+            assert got == value, (
+                f"manifest-injected {key}={value!r} is NOT observed in the "
+                f"coordinator config (got {got!r}) — the route is broken")
+        # LOAD-BEARING: the delivered file ceiling is what reservations enforce.
+        assert coord.effective_high_water_files() == 777
+        coord.ledger.create_trial("rteR", 0, now=100.0)
+        coord.ledger.add_stripe("rteR", "rteR_s0", 0, 10, "java_lcg", 1, 100.0)
+        # a single shard larger than the delivered BYTE ceiling is refused
+        assert coord.reserve_capacity(
+            "rteR", "rteR_s0", 0, 0, 0, 512 * 1024 * 1024 + 1) is None, (
+            "the injected byte high-water does not bound real reservations")
+
+        # ---- MUTATION: break ONE hop and the gate must red -------------------
+        # hop 1 is the hop §2.15 says kills a parameter silently: drop the key
+        # from the DECLARED set and WATCHER's filter discards the operator value.
+        mutated_declared = {k: v for k, v in dp.items()
+                            if k != "staging_high_water_files"}
+        mutated = {**mutated_declared}
+        for k, v in injected.items():
+            if k in mutated_declared:
+                mutated[k] = v
+        assert "staging_high_water_files" not in mutated, (
+            "MUTATION INERT: the key survived an undeclared manifest, so this "
+            "gate would pass with hop 1 broken")
+        mcoord = build_coordinator(
+            staging_dir=os.path.join(tmp, "stg2"),
+            **{k: mutated[k] for k in _HIGHWATER_CONTROLS if k in mutated})
+        assert mcoord.config.staging_high_water_files != 777, (
+            "MUTATION DID NOT RED THE GATE: the injected value arrived even "
+            "though the manifest never declared the key")
+
+
+def gate_trial_retention_preflight():
+    """G-TRIAL-RETENTION-PREFLIGHT (compact/unit arm).
+
+    ⚠ PROVENANCE, CORRECTED [R1 §3, Beta]. This arm uses the **2026-08-05
+    STAGING-BACK-PRESSURE FIXTURE** — four macro-stripes across the recorded
+    heterogeneous worker set (34+14+34+34 = 116 exact). That fixture was built to
+    demonstrate the exact-vs-conservative burst-bound distinction and it is kept
+    here as a compact mathematical arm.
+
+    **It is NOT the gate-12 geometry**, and an earlier revision of this gate
+    mislabelled it as such. The real 2026-08-07 gate-12 production geometry —
+    1,073,741,824 seeds over 67,108,864 = 16 macro-stripes per stage — is exercised
+    by `gate_trial_retention_preflight_gate12_geometry` below.
+
+    The requirement is COMPUTED from the geometry, never transcribed: no total is
+    written as a literal in any assertion here.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_high_water_files=512,
+                       miner_stripe_size=RECORDED_STRIPE_SPAN)
+        workers = []
+        for i, (wid, backend) in enumerate(RECORDED_ASSIGNMENT):
+            workers.append(_register(coord, wid=wid, backend=backend,
+                                     now=100.0 + i))
+        stages = workflow_stages_for("java_lcg", True)
+        total_seeds = RECORDED_STRIPE_SPAN * len(RECORDED_ASSIGNMENT)
+
+        required, detail = coord.trial_retention_requirement(
+            stages, total_seeds, workers)
+        # the requirement is the sum over PLANNED PHASES of the sum over PLANNED
+        # STRIPES of max-over-eligible expected sub-stripes — recomputed here from
+        # the primitives so the gate does not merely re-read the implementation.
+        expected = 0
+        for fam, ph in stages:
+            expected += staging_burst_bound_conservative(
+                [RECORDED_STRIPE_SPAN] * len(RECORDED_ASSIGNMENT),
+                workers, ph, caps=coord._central_caps(), family_name=fam)
+        assert required == expected, (required, expected)
+        assert len(stages) == 4 and detail["stripe_count"] == 4
+        assert required > 512, (
+            f"the 2026-08-05 fixture geometry derives only {required} files, so a "
+            f"512 ceiling would NOT be undersized and this arm proves nothing")
+
+        # 512 < derived -> FAIL CLOSED, and the failure is a configuration defect
+        raised = None
+        try:
+            coord.preflight_trial_retention("runRP", stages, total_seeds, workers)
+        except StagingRetentionSizingError as e:
+            raised = e
+        assert raised is not None, (
+            "an operator ceiling below the derived requirement was ACCEPTED — "
+            "Beta: a warning is explicitly insufficient")
+        assert str(required) in str(raised) and "512" in str(raised)
+        assert isinstance(raised, StagingConfigurationError), (
+            "a retention sizing defect must be permanent/non-retryable")
+
+        # at or above the requirement -> preflight PASSES and resolves that value
+        ok = _coord(tmp, dbname="ok.db", staging_high_water_files=required,
+                    miner_stripe_size=RECORDED_STRIPE_SPAN)
+        okw = [_register(ok, wid=w, backend=b, now=100.0 + i)
+               for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        det = ok.preflight_trial_retention("runRP2", stages, total_seeds, okw)
+        assert det["mode"] == "operator" and det["resolved_files"] == required
+        assert ok.effective_high_water_files() == required
+
+        # UNSET means DERIVE: the resolved ceiling IS the derived requirement.
+        der = _coord(tmp, dbname="der.db", staging_high_water_files=None,
+                     miner_stripe_size=RECORDED_STRIPE_SPAN)
+        derw = [_register(der, wid=w, backend=b, now=100.0 + i)
+                for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        dd = der.preflight_trial_retention("runRP3", stages, total_seeds, derw)
+        assert dd["mode"] == "derived" and dd["resolved_files"] == required
+        assert der.effective_high_water_files() == required
+
+
+# --- the REAL 2026-08-07 gate-12 production geometry [R1 §3, Beta] ---------
+# max_seeds / miner_stripe_size = 16 macro-stripes per stage. Stage 0 consumed 504
+# files and stage 1 consumed 524 (total 1,028) against the 512 ceiling — an
+# OBSERVED two-stage count, recorded here as provenance only. No total below is
+# written as a literal in an assertion: the derivation produces the number.
+GATE12_MAX_SEEDS = 1_073_741_824
+GATE12_STRIPE_SIZE = 67_108_864
+GATE12_EXPECTED_STRIPES = 16
+
+
+def gate_trial_retention_preflight_gate12_geometry():
+    """G-TRIAL-RETENTION-PREFLIGHT (real gate-12 geometry) [R1 §3].
+
+    The 2026-08-07 production run that deadlocked: 1,073,741,824 seeds partitioned
+    at 67,108,864 into 16 macro-stripes per stage, full test_both_modes workflow.
+    Establishes the four things Beta asked for — derived stripe_count == 16, derived
+    requirement > 512, an explicit 512 ceiling fails closed before StripeAssign, and
+    an unset ceiling resolves to the derived requirement.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        stages = workflow_stages_for("java_lcg", True)
+
+        # ---- derived geometry -------------------------------------------------
+        coord = _coord(tmp, staging_high_water_files=512,
+                       miner_stripe_size=GATE12_STRIPE_SIZE)
+        workers = [_register(coord, wid=w, backend=b, now=100.0 + i)
+                   for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        required, detail = coord.trial_retention_requirement(
+            stages, GATE12_MAX_SEEDS, workers)
+        assert detail["stripe_count"] == GATE12_EXPECTED_STRIPES, (
+            f"the production partition yields {detail['stripe_count']} macro-"
+            f"stripes, not {GATE12_EXPECTED_STRIPES} — the geometry is wrong")
+        assert detail["stage_count"] == 4
+        assert sum(detail["stripe_spans"]) == GATE12_MAX_SEEDS
+        # recomputed from the primitives, per stage, so the gate does not merely
+        # re-read the implementation it is testing
+        ebs = coord.resolve_eligible_by_stage(stages, workers)
+        expected = sum(
+            staging_burst_bound_conservative(
+                detail["stripe_spans"], ebs[(f, p)], p,
+                caps=coord._central_caps(), family_name=f)
+            for f, p in stages)
+        assert required == expected, (required, expected)
+        assert required > 512, (
+            f"the real gate-12 geometry derives {required} files; a 512 ceiling "
+            f"must be undersized for this regression to mean anything")
+        # every stage contributes, and no stage is silently free
+        assert len(detail["per_stage"]) == 4
+        assert all(s["files"] > 0 for s in detail["per_stage"])
+        assert sum(s["files"] for s in detail["per_stage"]) == required
+
+        # ---- explicit 512 -> FAIL CLOSED --------------------------------------
+        raised = None
+        try:
+            coord.preflight_trial_retention(
+                "runG12", stages, GATE12_MAX_SEEDS, workers)
+        except StagingRetentionSizingError as e:
+            raised = e
+        assert raised is not None, (
+            "the real gate-12 geometry was ADMITTED under the 512 ceiling that "
+            "deadlocked it")
+        assert str(required) in str(raised)
+
+        # ---- unset -> resolved ceiling IS the derived requirement -------------
+        der = _coord(tmp, dbname="g12.db", staging_high_water_files=None,
+                     miner_stripe_size=GATE12_STRIPE_SIZE)
+        derw = [_register(der, wid=w, backend=b, now=100.0 + i)
+                for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        dd = der.preflight_trial_retention(
+            "runG12b", stages, GATE12_MAX_SEEDS, derw)
+        assert dd["mode"] == "derived"
+        assert dd["resolved_files"] == required == dd["required_files"]
+        assert der.effective_high_water_files() == required
+
+
+def gate_stage_specific_eligibility():
+    """G-STAGE-ELIGIBILITY [R1 §4, Beta BLOCKER B].
+
+    Eligibility is family/phase dependent by construction: the Phase-4 contract
+    requires a worker to advertise the EXACT concrete variant before assignment
+    (`can_assign_variant`). Sizing every planned stage from ONE collection is
+    therefore wrong in principle.
+
+    NEGATIVE ARM (Beta): with asymmetric variant support, demonstrate that reusing
+    a single stage's eligible population DIFFERS from the correctly stage-resolved
+    calculation, then prove the preflight uses the correct later-stage population.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_high_water_files=None,
+                       miner_stripe_size=RECORDED_STRIPE_SPAN)
+        stages = workflow_stages_for("java_lcg", True)
+
+        # Beta's example, made concrete:
+        #   A (cuda, LOOSE hybrid cap) supports the CONSTANT variants only
+        #   B (rocm, TIGHT hybrid cap)  supports the HYBRID variants only
+        const_only = ["java_lcg", "java_lcg_reverse"]
+        hybrid_only = ["java_lcg_hybrid", "java_lcg_hybrid_reverse"]
+        node = NodeConfig(hostname="hostA", spool_root=SPOOL_ROOT,
+                          ssh_address="10.0.0.9", ssh_user="michael")
+        a = coord.register_worker(
+            worker_id="hostA:gpu0", hostname="hostA", backend="cuda",
+            capabilities={"seed_caps": dict(CAPS),
+                          "supported_variants": list(const_only)},
+            node_config=node, now=100.0)
+        b = coord.register_worker(
+            worker_id="hostB:gpu0", hostname="hostB", backend="rocm",
+            capabilities={"seed_caps": dict(CAPS),
+                          "supported_variants": list(hybrid_only)},
+            node_config=NodeConfig(hostname="hostB", spool_root=SPOOL_ROOT,
+                                   ssh_address="10.0.0.10", ssh_user="michael"),
+            now=101.0)
+        candidates = [a, b]
+
+        # the resolver must partition them EXACTLY as assign_stripes would
+        ebs = coord.resolve_eligible_by_stage(stages, candidates)
+        assert [w.worker_id for w in ebs[("java_lcg", 1)]] == ["hostA:gpu0"]
+        assert [w.worker_id for w in ebs[("java_lcg_hybrid", 3)]] == ["hostB:gpu0"]
+        for (fam, ph), pop in ebs.items():
+            for w in pop:
+                assert coord.can_assign_variant(w, fam), (
+                    f"{w.worker_id} was placed in stage {(fam, ph)} but "
+                    f"assign_stripes would refuse it")
+
+        spans = [RECORDED_STRIPE_SPAN] * 2
+        total_seeds = RECORDED_STRIPE_SPAN * 2
+
+        # ---- NEGATIVE ARM: one-collection reuse DIFFERS from stage-resolved ----
+        stage0_pop = ebs[("java_lcg", 1)]              # A only
+        reuse_everywhere = sum(
+            staging_burst_bound_conservative(
+                spans, stage0_pop, p, caps=coord._central_caps(), family_name=f)
+            for f, p in stages)
+        stage_resolved = sum(
+            staging_burst_bound_conservative(
+                spans, ebs[(f, p)], p, caps=coord._central_caps(), family_name=f)
+            for f, p in stages)
+        assert reuse_everywhere != stage_resolved, (
+            "the fixture is INERT: stage-0 reuse and stage-resolved sizing agree, "
+            "so this arm cannot detect the defect it exists for")
+        # A is cuda (hybrid cap 2.5M); B is rocm (hybrid cap 1.0M). Sizing the
+        # hybrid stages from A alone UNDERSTATES them — the conservative-bound
+        # violation Beta named.
+        hyb_from_a = staging_burst_bound_conservative(
+            spans, stage0_pop, 3, caps=coord._central_caps(),
+            family_name="java_lcg_hybrid")
+        hyb_correct = staging_burst_bound_conservative(
+            spans, ebs[("java_lcg_hybrid", 3)], 3, caps=coord._central_caps(),
+            family_name="java_lcg_hybrid")
+        assert hyb_from_a < hyb_correct, (hyb_from_a, hyb_correct)
+
+        # ---- the PREFLIGHT uses the correct later-stage population ------------
+        required, detail = coord.trial_retention_requirement(
+            stages, total_seeds, candidates)
+        assert required == stage_resolved, (
+            f"the preflight derived {required}, not the stage-resolved "
+            f"{stage_resolved} — a stage is being sized from the wrong population")
+        by_key = {(s["family_name"], s["phase"]): s for s in detail["per_stage"]}
+        assert by_key[("java_lcg", 1)]["eligible_worker_ids"] == ["hostA:gpu0"]
+        assert by_key[("java_lcg_hybrid", 3)]["eligible_worker_ids"] == ["hostB:gpu0"]
+        assert by_key[("java_lcg_hybrid", 3)]["files"] == hyb_correct
+
+        # ---- a planned stage nobody can serve FAILS CLOSED --------------------
+        # (never sized as 0 files, which would let the trial start and then strand)
+        lonely = _coord(tmp, dbname="lonely.db", staging_high_water_files=None,
+                        miner_stripe_size=RECORDED_STRIPE_SPAN)
+        only_const = lonely.register_worker(
+            worker_id="hostA:gpu0", hostname="hostA", backend="cuda",
+            capabilities={"seed_caps": dict(CAPS),
+                          "supported_variants": list(const_only)},
+            node_config=node, now=100.0)
+        try:
+            lonely.trial_retention_requirement(stages, total_seeds, [only_const])
+            raise AssertionError(
+                "a planned hybrid stage with NO eligible worker was sized instead "
+                "of refused")
+        except ValueError as e:
+            assert "NO eligible worker" in str(e), e
+
+
+def gate_preflight_plan_is_persisted():
+    """G-PREFLIGHT-PLAN-PERSISTED [R1 §5, Beta REQUIRED].
+
+    The planned geometry behind an admissibility decision is durable, sufficient to
+    reproduce the decision, and written FROM THE PREFLIGHT'S OWN VALUES — never a
+    second derivation. Includes the refusal case, which is precisely the case a
+    post-mortem cannot reconstruct from stripe rows because there are none.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        stages = workflow_stages_for("java_lcg", True)
+
+        # ---- ADMITTED (derived) ----------------------------------------------
+        coord = _coord(tmp, staging_high_water_files=None,
+                       miner_stripe_size=GATE12_STRIPE_SIZE)
+        workers = [_register(coord, wid=w, backend=b, now=100.0 + i)
+                   for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        detail = coord.preflight_trial_retention(
+            "runPP", stages, GATE12_MAX_SEEDS, workers)
+        plan = coord.ledger.get_preflight_plan("runPP")
+        assert plan is not None, "no preflight plan was persisted before dispatch"
+
+        # sufficient to REPRODUCE the decision
+        assert plan["total_seeds"] == GATE12_MAX_SEEDS
+        assert plan["miner_stripe_size"] == GATE12_STRIPE_SIZE
+        assert plan["macro_stripe_count"] == GATE12_EXPECTED_STRIPES
+        assert plan["stripe_spans"] == detail["stripe_spans"]
+        assert sum(plan["stripe_spans"]) == GATE12_MAX_SEEDS
+        assert [tuple(s) for s in plan["stages"]] == [
+            (f, p) for f, p in detail["stages"]]
+        assert plan["per_stage"] == detail["per_stage"]
+        assert plan["required_files"] == detail["required_files"]
+        assert plan["high_water_mode"] == "derived"
+        assert plan["configured_files"] is None
+        assert plan["resolved_files"] == detail["resolved_files"]
+        assert plan["admitted"] is True
+        assert plan["schema_version"] == MinerLedger.PREFLIGHT_PLAN_SCHEMA_VERSION
+        assert plan["created_at"] > 0
+        assert plan["caps"] == detail["caps"]
+        assert len(plan["execution_set_sha256"]) == 64
+        assert len(plan["stripe_spans_sha256"]) == 64
+        # the stage-specific eligible sets are part of the record (R1 §4 interlock)
+        assert all(s["eligible_worker_ids"] for s in plan["per_stage"])
+
+        # the record REPRODUCES the decision: re-deriving from the persisted
+        # geometry alone reproduces the persisted total.
+        redone = sum(s["files"] for s in plan["per_stage"])
+        assert redone == plan["required_files"] == plan["resolved_files"]
+
+        # ---- written from the preflight's OWN values, not recomputed ----------
+        # If persistence re-derived anything, poisoning the derivation AFTER the
+        # preflight would change the stored row. It must not: the row is a
+        # transcript of `detail`.
+        spy = {"calls": 0}
+        real = RangeMinerCoordinator.trial_retention_requirement
+
+        def _counting(self_, *a, **k):
+            spy["calls"] += 1
+            return real(self_, *a, **k)
+        RangeMinerCoordinator.trial_retention_requirement = _counting
+        try:
+            c2 = _coord(tmp, dbname="pp2.db", staging_high_water_files=None,
+                        miner_stripe_size=GATE12_STRIPE_SIZE)
+            w2 = [_register(c2, wid=w, backend=b, now=100.0 + i)
+                  for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+            c2.preflight_trial_retention("runPP2", stages, GATE12_MAX_SEEDS, w2)
+        finally:
+            RangeMinerCoordinator.trial_retention_requirement = real
+        assert spy["calls"] == 1, (
+            f"the requirement was derived {spy['calls']} times for ONE preflight "
+            f"— persistence must transcribe the preflight's values, not recompute")
+
+        # ---- REFUSED trials are persisted too --------------------------------
+        low = _coord(tmp, dbname="pp3.db", staging_high_water_files=512,
+                     miner_stripe_size=GATE12_STRIPE_SIZE)
+        lw = [_register(low, wid=w, backend=b, now=100.0 + i)
+              for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        try:
+            low.preflight_trial_retention("runPP3", stages, GATE12_MAX_SEEDS, lw)
+            raise AssertionError("the undersized ceiling was admitted")
+        except StagingRetentionSizingError:
+            pass
+        ref = low.ledger.get_preflight_plan("runPP3")
+        assert ref is not None, (
+            "a REFUSED trial persisted no plan — this is the one case a "
+            "post-mortem cannot reconstruct, because no stripe rows exist")
+        assert ref["admitted"] is False
+        assert ref["high_water_mode"] == "operator"
+        assert ref["configured_files"] == 512
+        assert ref["resolved_files"] is None
+        assert ref["required_files"] > 512
+
+        # ⚠ The R1 arm that stood here — "a provenance-write failure must NOT
+        # change the decision … the trial is still admitted" — is DELETED under
+        # Beta's R2 §5 ruling: the durable plan was never optional telemetry, and a
+        # trial cannot satisfy both "must be persisted before dispatch" and "if
+        # persistence fails, dispatch anyway". Its two replacements are
+        # G-PREFLIGHT-PROVENANCE-FAIL-CLOSED below.
+
+
+def gate_late_worker_excluded_from_frozen_cohort():
+    """G-LATE-WORKER-EXCLUDED [R2 §4, Beta].
+
+    The trial's assignable cohort is FROZEN at successful preflight. A daemon that
+    comes online afterwards registers normally and serves a LATER trial, but cannot
+    alter the execution geometry of a trial whose ceiling is already certified and
+    persisted.
+
+    Target invariant:
+
+        actual worker used by trial ⊆ population used to derive the ceiling
+
+    Worker C is given a MATERIALLY tighter applicable cap, so if it could join it
+    would genuinely change the conservative bound — not a cosmetic difference.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_high_water_files=None,
+                       miner_stripe_size=RECORDED_STRIPE_SPAN)
+        stages = [("java_lcg", 1)]
+        total_seeds = RECORDED_STRIPE_SPAN * 2
+
+        def _reg(c, wid, backend, caps, now):
+            return c.register_worker(
+                worker_id=wid, hostname=wid.split(":")[0], backend=backend,
+                capabilities={"seed_caps": dict(caps),
+                              "supported_variants": list(VARIANTS)},
+                node_config=NodeConfig(hostname=wid.split(":")[0],
+                                       spool_root=SPOOL_ROOT,
+                                       ssh_address="10.0.0.9", ssh_user="michael"),
+                now=now)
+
+        # ---- 1) preflight with A and B (both CUDA, loose cap) ----------------
+        a = _reg(coord, "hostA:gpu0", "cuda", CAPS, 100.0)
+        b = _reg(coord, "hostB:gpu0", "cuda", CAPS, 101.0)
+        detail = coord.preflight_trial_retention(
+            "runLW", stages, total_seeds, [a, b])
+        required_before = detail["required_files"]
+
+        # ---- 2) the stage-specific execution set is persisted ----------------
+        plan = coord.ledger.get_preflight_plan("runLW")
+        assert plan is not None
+        frozen_ids = plan["per_stage"][0]["eligible_worker_ids"]
+        assert frozen_ids == ["hostA:gpu0", "hostB:gpu0"], frozen_ids
+        cohort = coord.frozen_trial_cohort("runLW")
+        assert cohort is not None, (
+            "no assignable cohort was frozen at a successful preflight — the "
+            "trial's worker population is unbounded after certification")
+        assert set(cohort[("java_lcg", 1)]) == {"hostA:gpu0", "hostB:gpu0"}
+
+        # ---- 3) C registers AFTER preflight, with a MATERIALLY tighter cap ----
+        # Beta's own example: a CUDA-only population at preflight, then a
+        # tighter-cap ROCm worker joins. The tightness must come from the BACKEND,
+        # not from advertising different numbers — `_validate_caps` requires the
+        # advertised caps to equal the central config exactly and quarantines a
+        # worker that disagrees, so a "tighter caps" worker would be excluded for
+        # an unrelated reason and would prove nothing about the freeze.
+        #   cuda -> nvidia cap 5,000,000 -> ceil(span/5M) = 14 per stripe
+        #   rocm -> amd    cap 2,000,000 -> ceil(span/2M) = 34 per stripe
+        c = _reg(coord, "hostC:gpu0", "rocm", CAPS, 102.0)
+        # C really would move the bound if it were counted
+        would_be, _ = coord.trial_retention_requirement(
+            stages, total_seeds, [a, b, c])
+        assert would_be > required_before, (
+            f"the fixture is COSMETIC: C does not change the bound "
+            f"({would_be} vs {required_before})")
+
+        # ---- 4) C cannot receive a StripeAssign for THIS trial ---------------
+        assert coord.cohort_eligible("runLW", "java_lcg", 1, c) is False
+        assert coord.can_assign_variant(c, "java_lcg") is True, (
+            "C must be variant-capable — otherwise the exclusion proves nothing "
+            "about the freeze")
+        assigns = coord.assign_stripes(
+            "runLW", "java_lcg", 1, total_seeds, [a, b, c],
+            stripe_prefix="runLW__st0")
+        claimed_by = {x["worker_id"] for x in assigns if x["claimed"]}
+        assert "hostC:gpu0" not in claimed_by, (
+            f"a post-freeze joiner received a StripeAssign: {claimed_by}")
+        assert claimed_by <= {"hostA:gpu0", "hostB:gpu0"}, claimed_by
+        # the retry path is bound by the same cohort
+        assert coord._pick_other_worker([c], "hostA:gpu0", "java_lcg") is None, (
+            "the retry matrix would reassign a stripe to a post-freeze joiner")
+        assert coord._pick_other_worker([b, c], "hostA:gpu0", "java_lcg") is b
+
+        # ---- no re-derivation happened -------------------------------------
+        assert coord._retention_preflight_detail["required_files"] == required_before
+        assert coord.effective_high_water_files() == required_before
+        assert coord.ledger.get_preflight_plan("runLW")["required_files"] == \
+            required_before
+        assert coord.frozen_trial_cohort("runLW")[("java_lcg", 1)].keys() == \
+            {"hostA:gpu0", "hostB:gpu0"}
+
+        # ---- 5) C IS usable by a later trial --------------------------------
+        later, later_detail = coord.trial_retention_requirement(
+            stages, total_seeds, [a, b, c])
+        assert later > required_before
+        d2 = coord.preflight_trial_retention("runLW2", stages, total_seeds,
+                                             [a, b, c])
+        assert "hostC:gpu0" in d2["per_stage"][0]["eligible_worker_ids"], (
+            "C was excluded from a NEW trial — the freeze is per trial, not a "
+            "global connection refusal")
+        assert coord.cohort_eligible("runLW2", "java_lcg", 1, c) is True
+        # ...and the earlier trial's cohort is untouched by the later freeze
+        assert coord.frozen_trial_cohort("runLW")[("java_lcg", 1)].keys() == \
+            {"hostA:gpu0", "hostB:gpu0"}
+
+        # ---- 6) reconnect: admissible ONLY on a matching capability signature -
+        # same identity, same advertisements -> readmitted
+        a_same = _reg(coord, "hostA:gpu0", "cuda", CAPS, 103.0)
+        assert coord.cohort_eligible("runLW", "java_lcg", 1, a_same) is True, (
+            "a frozen identity reconnecting UNCHANGED was excluded")
+        # same identity, but the BACKEND the applicable cap is read from changed:
+        # the ceiling was derived against cuda/5M, this is rocm/2M
+        a_backend = _reg(coord, "hostA:gpu0", "rocm", CAPS, 104.0)
+        assert coord.cohort_eligible("runLW", "java_lcg", 1, a_backend) is False, (
+            "a frozen identity reconnected on a DIFFERENT backend and was still "
+            "admitted — the ceiling was derived against its old advertisement")
+        # same identity, but the advertised variant set changed -> different stage
+        # membership from the one the ceiling was certified over
+        a_variants = coord.register_worker(
+            worker_id="hostA:gpu0", hostname="hostA", backend="cuda",
+            capabilities={"seed_caps": dict(CAPS),
+                          "supported_variants": ["java_lcg"]},
+            node_config=NodeConfig(hostname="hostA", spool_root=SPOOL_ROOT,
+                                   ssh_address="10.0.0.9", ssh_user="michael"),
+            now=105.0)
+        assert coord.cohort_eligible("runLW", "java_lcg", 1, a_variants) is False, (
+            "a frozen identity reconnected advertising a different variant set "
+            "and was still admitted")
+        # restore A so the closing assertions describe the real cohort
+        _reg(coord, "hostA:gpu0", "cuda", CAPS, 106.0)
+
+        # ---- losing a frozen worker never ENLARGES the cohort ----------------
+        assert coord.cohort_filter("runLW", "java_lcg", 1, [c]) == []
+
+
+def _explode_preflight_persist():
+    """Patch `record_preflight_plan` to fail. Returns a restore callable."""
+    orig = MinerLedger.record_preflight_plan
+
+    def _boom(self_, run_id, detail):
+        raise RuntimeError("disk full")
+
+    MinerLedger.record_preflight_plan = _boom
+    return lambda: setattr(MinerLedger, "record_preflight_plan", orig)
+
+
+def _prov_serve_fail_closed(tmp):
+    """Case A driven through the REAL serve loop: a would-be admitted trial whose
+    provenance write fails must terminate with the §5-A classification having
+    dispatched ZERO StripeAssign and touched the retry matrix zero times."""
+    ds = os.path.join(tmp, "prov_ds.json")
+    with open(ds, "w") as f:
+        f.write('[{"draw":1},{"draw":2},{"draw":3}]')
+    sink = _Sink()
+    lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    lsock.bind(("127.0.0.1", 0))
+    lsock.listen(8)
+    port = lsock.getsockname()[1]
+    holder = {}
+    gate_caps = {**CAPS, "nvidia": 10}
+
+    def run():
+        try:
+            holder["result"] = run_trial_miner(
+                "runPSV", None, 3, "java_lcg", [1, 2, 3], 80, 0.25, 0.25,
+                False, ds, worker_pool_size=1,
+                staging_dir=os.path.join(tmp, "prov_stg"), phase5_sink=sink,
+                listen_sock=lsock, family_name="java_lcg", workflow_phase=1,
+                miner_stripe_size=20, seed_cap_nvidia=10,
+                skip_min=0, skip_max=0, offset=0, window_size=3,
+                staging_high_water_files=None,          # would be ADMITTED
+                staging_high_water_bytes=64 * 1024 * 1024,
+                serve_timeout=45.0)
+        except Exception:
+            holder["err"] = traceback.format_exc()
+
+    restore = _explode_preflight_persist()
+    with _MatrixSpy() as spy:
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        w = _RemoteWorker("127.0.0.1", port, "hostA", 0, caps=gate_caps)
+        try:
+            w.connect_register()
+            w.start_loop()
+            t.join(timeout=60)
+            assert not t.is_alive(), "serve_trial never terminated"
+            assert "err" not in holder, holder.get("err")
+            result = holder["result"]
+            assert result["state"] == "aborted", result["state"]
+            assert sink.aborts, "no abort event delivered"
+            reason = sink.aborts[0].get("reason", "")
+            assert reason.startswith("coordinator_staging_preflight_provenance:"), (
+                f"terminal reason does not lead with the provenance "
+                f"classification: {reason!r}")
+            assert not w.assigned, (
+                f"stripes were DISPATCHED despite an unrecordable retention "
+                f"decision: {w.assigned}")
+            assert not result["stripes"], "stripe rows were created"
+            assert spy.calls == [], (
+                f"a provenance failure entered the retry matrix: {spy.calls}")
+        finally:
+            restore()
+            w.stop()
+            try:
+                lsock.close()
+            except OSError:
+                pass
+
+
+def gate_preflight_provenance_fail_closed():
+    """G-PREFLIGHT-PROVENANCE-FAIL-CLOSED [R2 §5, Beta].
+
+    The durable retention plan is NOT optional telemetry. Two asymmetric cases:
+
+      A. would-be ADMITTED + provenance failure -> FAIL CLOSED before any
+         StripeAssign, classified `coordinator_staging_preflight_provenance`;
+      B. already SIZING-REFUSED + provenance failure -> still sizing-refused; the
+         terminal cause stays `coordinator_staging_retention_sizing` and the
+         provenance failure is only secondary evidence.
+
+    Beta's framing, preserved: *"failure to write the audit record may not override
+    a safety refusal, but inability to create the mandatory audit record prevents a
+    would-be admission."*
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        stages = workflow_stages_for("java_lcg", True)
+
+        # ---- CASE A: would-be admitted -> fail closed ------------------------
+        a = _coord(tmp, dbname="provA.db", staging_high_water_files=None,
+                   miner_stripe_size=GATE12_STRIPE_SIZE)
+        aw = [_register(a, wid=w, backend=b, now=100.0 + i)
+              for i, (w, b) in enumerate(RECORDED_ASSIGNMENT)]
+        restore = _explode_preflight_persist()
+        raised = None
+        try:
+            a.preflight_trial_retention("runPA", stages, GATE12_MAX_SEEDS, aw)
+        except StagingPreflightProvenanceError as e:
+            raised = e
+        finally:
+            restore()
+        assert raised is not None, (
+            "a trial whose mandatory retention record could not be written was "
+            "ADMITTED — Beta: the durable plan was not optional telemetry")
+        assert "disk full" in str(raised)
+        assert isinstance(raised, StagingConfigurationError), (
+            "a provenance failure must be permanent/non-retryable, never charged "
+            "to a worker")
+        # NOTHING became effective: no ceiling installed, no cohort frozen
+        assert a._resolved_high_water_files is None, (
+            "the retention ceiling was installed despite the fail-closed refusal")
+        assert a.frozen_trial_cohort("runPA") is None, (
+            "a cohort was frozen for a trial that never started")
+        assert a.ledger.get_preflight_plan("runPA") is None
+
+        # ---- CASE B: sizing refusal stays PRIMARY ----------------------------
+        b = _coord(tmp, dbname="provB.db", staging_high_water_files=512,
+                   miner_stripe_size=GATE12_STRIPE_SIZE)
+        bw = [_register(b, wid=w, backend=bk, now=100.0 + i)
+              for i, (w, bk) in enumerate(RECORDED_ASSIGNMENT)]
+        restore = _explode_preflight_persist()
+        raised_b = None
+        try:
+            b.preflight_trial_retention("runPB", stages, GATE12_MAX_SEEDS, bw)
+        except StagingRetentionSizingError as e:
+            raised_b = e
+        except StagingPreflightProvenanceError as e:      # pragma: no cover
+            raise AssertionError(
+                f"a provenance failure OVERRODE a safety refusal: {e}")
+        finally:
+            restore()
+        assert raised_b is not None, "the undersized ceiling was admitted"
+        # the terminal cause is unchanged...
+        assert type(raised_b) is StagingRetentionSizingError
+        assert "cannot retain the whole" in str(raised_b)
+        # ...and the provenance failure rides along as SECONDARY evidence only
+        assert "secondary" in str(raised_b) and "disk full" in str(raised_b), (
+            f"the provenance failure was not attached as secondary evidence: "
+            f"{raised_b}")
+        assert b._resolved_high_water_files is None
+        assert b.frozen_trial_cohort("runPB") is None
+
+        # ---- CASE A through the REAL serve loop: ZERO StripeAssign ------------
+        _prov_serve_fail_closed(tmp)
+
+
+def gate_commit_cleanup_resumes_after_crash():
+    """G-COMMIT-CRASH-RESUME [R1 §2, Beta BLOCKER A].
+
+    Delivery and cleanup are two INDEPENDENT durable phases. A crash between
+    reservation releases must not strand the remainder: on restart, delivery is
+    already `done` (so the sink is NOT called again) but cleanup is not, and the
+    idempotent sweep RESUMES.
+
+    The submitted revision returned on the `delivery == done` branch before the
+    sweep, so reservations 2..N were never discharged. `ack_by_event_id` being
+    idempotent is necessary but not sufficient if the recovery path never calls it.
+
+    PROCESS RESTART IS MODELLED BY REOPENING THE LEDGER AND COORDINATOR against the
+    same on-disk SQLite file, so the resuming objects share no in-memory state with
+    the ones that crashed — the durable row is the only channel between them.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        dbp = os.path.join(tmp, "crash.db")
+        stg = os.path.join(tmp, "stg")
+        os.makedirs(stg, exist_ok=True)
+        run_id, sid = "runCC", "runCC_s0"
+        N = 3
+
+        class _CountingSink(Phase5Sink):
+            def __init__(self):
+                self.published, self.commits, self.aborts = [], [], []
+
+            def publish_shard(self, manifest):
+                self.published.append(manifest)
+
+            def commit_trial(self, event):
+                self.commits.append(dict(event))
+
+            def abort_trial(self, event):
+                self.aborts.append(event)
+
+        def _open(sink):
+            ledger = MinerLedger(dbp)
+            return RangeMinerCoordinator(
+                CoordinatorConfig(staging_dir=stg, staging_high_water_files=64,
+                                  staging_high_water_bytes=64 * 1024 * 1024),
+                ledger, phase5_sink=sink)
+
+        # ---- pass 1: commit, then FAULT after exactly one ack ----------------
+        sink1 = _CountingSink()
+        c1 = _open(sink1)
+        c1.ledger.create_trial(run_id, 0, now=100.0)
+        c1.ledger.add_stripe(run_id, sid, 0, 30, "java_lcg", 1, 100.0)
+        paths = [_reserve_with_file(c1, run_id, sid, s, 512, stg)[1]
+                 for s in range(N)]
+        assert c1.reserved_files() == N
+
+        class _Boom(RuntimeError):
+            pass
+
+        real_ack = RangeMinerCoordinator.ack_by_event_id
+        acked = {"n": 0}
+
+        def _ack_once(self_, event_id, now=None):
+            if acked["n"] >= 1:
+                raise _Boom("simulated process death mid-sweep")
+            acked["n"] += 1
+            return real_ack(self_, event_id, now)
+
+        RangeMinerCoordinator.ack_by_event_id = _ack_once
+        try:
+            c1.commit_trial(run_id)
+            raise AssertionError("the injected fault did not fire")
+        except _Boom:
+            pass
+        finally:
+            RangeMinerCoordinator.ack_by_event_id = real_ack
+
+        # the twelve-step state at the moment of the crash
+        t = c1.ledger.get_trial(run_id)
+        assert t["commit_delivery_status"] == "done", (
+            "delivery was not durably recorded before the sweep")
+        assert t["commit_cleanup_status"] != "done", (
+            "cleanup was marked done despite the sweep dying partway")
+        held = c1.ledger.held_reservations(run_id)
+        assert len(held) == N - 1, (
+            f"expected {N-1} reservations still held after one ack, got {len(held)}")
+        assert len(sink1.commits) == 1
+        survivors = [p for p in paths if os.path.exists(p)]
+        assert len(survivors) == N - 1
+
+        # ---- pass 2: RESTART — new ledger + coordinator on the same file ------
+        del c1
+        sink2 = _CountingSink()
+        c2 = _open(sink2)
+        assert c2.ledger.get_trial(run_id)["commit_delivery_status"] == "done"
+
+        ev = c2.commit_trial(run_id)
+
+        # the sink is NOT called again after durable delivery
+        assert sink2.commits == [], (
+            f"the sink was re-delivered on the recovery path: {sink2.commits}")
+        assert ev["delivery"] == "done"
+        assert ev["cleanup"] == "resumed", ev
+        # every REMAINING reservation and file is discharged...
+        assert ev["released_reservations"] == N - 1, ev
+        assert c2.ledger.held_reservations(run_id) == []
+        assert c2.reserved_files() == 0 and c2.reserved_bytes() == 0
+        for p in paths:
+            assert not os.path.exists(p), f"staged file survived recovery: {p}"
+        # ...and the ALREADY-discharged one is not discharged twice
+        assert ev["released_reservations"] != N, (
+            "the resumed sweep re-released the reservation the first pass had "
+            "already discharged")
+        assert c2.ledger.get_trial(run_id)["commit_cleanup_status"] == "done"
+
+        # a further call is now a genuine duplicate: nothing at all happens
+        ev3 = c2.commit_trial(run_id)
+        assert ev3.get("duplicate") is True and ev3["cleanup"] == "already_done"
+        assert ev3["released_reservations"] == 0
+        assert sink2.commits == []
+
+
+def gate_commit_crash_resume_mutant():
+    """G-MUT-COMMIT-CRASH-RESUME — RED-FIRST EVIDENCE for the R1 §2 blocker.
+
+    Restores the SUBMITTED semantics: `commit_delivery_status == done` treated as
+    proof that cleanup also happened. That conflation is the whole defect — the
+    submitted `commit_trial` returned on that branch before the sweep — and with it
+    restored the recovery path must strand the remaining reservations.
+
+    The restoration is executed, not described, and is asserted NON-INERT first.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        dbp = os.path.join(tmp, "mut.db")
+        stg = os.path.join(tmp, "stg")
+        os.makedirs(stg, exist_ok=True)
+        run_id, sid, N = "runMC", "runMC_s0", 3
+        sink = _Sink()
+        ledger = MinerLedger(dbp)
+        coord = RangeMinerCoordinator(
+            CoordinatorConfig(staging_dir=stg, staging_high_water_files=64,
+                              staging_high_water_bytes=64 * 1024 * 1024),
+            ledger, phase5_sink=sink)
+        coord.ledger.create_trial(run_id, 0, now=100.0)
+        coord.ledger.add_stripe(run_id, sid, 0, 30, "java_lcg", 1, 100.0)
+        paths = [_reserve_with_file(coord, run_id, sid, s, 512, stg)[1]
+                 for s in range(N)]
+
+        # crash after exactly one ack, exactly as the real gate does
+        real_ack = RangeMinerCoordinator.ack_by_event_id
+        acked = {"n": 0}
+
+        class _Boom(RuntimeError):
+            pass
+
+        def _ack_once(self_, event_id, now=None):
+            if acked["n"] >= 1:
+                raise _Boom("simulated process death mid-sweep")
+            acked["n"] += 1
+            return real_ack(self_, event_id, now)
+
+        RangeMinerCoordinator.ack_by_event_id = _ack_once
+        try:
+            coord.commit_trial(run_id)
+            raise AssertionError("the injected fault did not fire")
+        except _Boom:
+            pass
+        finally:
+            RangeMinerCoordinator.ack_by_event_id = real_ack
+        assert len(coord.ledger.held_reservations(run_id)) == N - 1
+
+        # ---- restore the SUBMITTED conflation of the two durable statuses ----
+        real_get = MinerLedger.get_trial
+
+        def _submitted_conflation(self_, rid):
+            row = real_get(self_, rid)
+            if row is not None:
+                row = dict(row)
+                # the submitted revision had no independent cleanup phase: reaching
+                # `delivery == done` was itself the "already cleaned up" signal.
+                row["commit_cleanup_status"] = row["commit_delivery_status"]
+            return row
+
+        MinerLedger.get_trial = _submitted_conflation
+        try:
+            row = MinerLedger.get_trial(ledger, run_id)
+            assert row["commit_cleanup_status"] == "done", (
+                "MUTATION INERT: the restored conflation did not take effect, so "
+                "this arm cannot demonstrate the submitted defect")
+            ev = coord.commit_trial(run_id)
+            assert ev["released_reservations"] == 0, ev
+            assert len(coord.ledger.held_reservations(run_id)) == N - 1, (
+                "MUTATION DID NOT RED THE GATE: the remaining reservations were "
+                "discharged even with the submitted conflation restored")
+            stranded = [p for p in paths if os.path.exists(p)]
+            assert len(stranded) == N - 1, (
+                f"expected {N-1} stranded staged files under the submitted "
+                f"semantics, got {len(stranded)}")
+        finally:
+            MinerLedger.get_trial = real_get
+
+        # and with the real two-phase rule back, the same call recovers
+        ev = coord.commit_trial(run_id)
+        assert ev["cleanup"] == "resumed" and ev["released_reservations"] == N - 1
+        assert coord.ledger.held_reservations(run_id) == []
+
+
+def gate_stage_eligibility_mutant():
+    """G-MUT-STAGE-ELIGIBILITY — CORRECTED [R2 §3, Beta].
+
+    ⚠ WHAT THIS MUTANT RESTORES, AND WHY IT CHANGED.
+    The R1 version of this gate claimed to restore "the submitted behaviour" by
+    taking the FIRST STAGE'S RESOLVED eligible population and copying it across
+    every stage, then asserting the result UNDERSTATED the correct one.
+
+    **That was Beta's own hypothesis, and Beta has WITHDRAWN it.** The submitted
+    code passed `serve_trial._eligible()` — ALL connected, non-quarantined workers,
+    never variant-filtered — to every stage. Since the bound is a max over the
+    supplied population, the old calculation used a SUPERSET and could only
+    OVER-estimate. There was no undercount to reproduce.
+
+    This mutant therefore restores the REAL previous behaviour:
+
+        for every planned stage:
+            eligible[stage] = ALL candidate workers (all-connected, non-quarantined)
+
+    and asserts what is actually true of it. Beta: *"Do NOT require it to
+    understate. Do not manufacture a safety failure the previous code did not
+    have."*
+
+    The gate's purpose is now exactly two things:
+      1. exact-variant stage semantics are PRESERVED by the current code;
+      2. the old all-connected calculation is DETECTABLY DIFFERENT from it
+         (and, on this asymmetric fixture, more conservative).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_high_water_files=None,
+                       miner_stripe_size=RECORDED_STRIPE_SPAN)
+        stages = workflow_stages_for("java_lcg", True)
+        a = coord.register_worker(
+            worker_id="hostA:gpu0", hostname="hostA", backend="cuda",
+            capabilities={"seed_caps": dict(CAPS),
+                          "supported_variants": ["java_lcg", "java_lcg_reverse"]},
+            node_config=NodeConfig(hostname="hostA", spool_root=SPOOL_ROOT,
+                                   ssh_address="10.0.0.9", ssh_user="michael"),
+            now=100.0)
+        b = coord.register_worker(
+            worker_id="hostB:gpu0", hostname="hostB", backend="rocm",
+            capabilities={"seed_caps": dict(CAPS),
+                          "supported_variants": ["java_lcg_hybrid",
+                                                 "java_lcg_hybrid_reverse"]},
+            node_config=NodeConfig(hostname="hostB", spool_root=SPOOL_ROOT,
+                                   ssh_address="10.0.0.10", ssh_user="michael"),
+            now=101.0)
+        candidates = [a, b]
+        total_seeds = RECORDED_STRIPE_SPAN * 2
+
+        correct, _ = coord.trial_retention_requirement(
+            stages, total_seeds, candidates)
+
+        # ---- restore the REAL previous behaviour: ALL candidates, every stage --
+        real_resolve = RangeMinerCoordinator.resolve_eligible_by_stage
+
+        def _all_connected(self_, workflow_stages, candidate_workers):
+            # exactly what the submitted code did: the un-variant-filtered
+            # all-connected, non-quarantined collection, handed to every stage
+            pool = list(candidate_workers)
+            return {(str(f), int(p)): list(pool) for f, p in workflow_stages}
+
+        RangeMinerCoordinator.resolve_eligible_by_stage = _all_connected
+        try:
+            probe = coord.resolve_eligible_by_stage(stages, candidates)
+            assert all(len(v) == len(candidates) for v in probe.values()), (
+                "MUTATION INERT: the restored all-connected resolver did not hand "
+                "every candidate to every stage")
+            previous, _ = coord.trial_retention_requirement(
+                stages, total_seeds, candidates)
+            # (1) DETECTABLY DIFFERENT — the point of the gate
+            assert previous != correct, (
+                "MUTATION DID NOT RED THE GATE: the all-connected calculation "
+                "produced the same requirement as the stage-resolved one, so this "
+                "fixture cannot detect the change in semantics")
+            # (2) and on this asymmetric fixture it is MORE CONSERVATIVE, because a
+            #     superset can only raise a max. Asserted as the observed fact, NOT
+            #     as a safety requirement: the old code did not undercount here.
+            assert previous > correct, (
+                f"the all-connected calculation produced {previous} vs the "
+                f"stage-resolved {correct}; a superset population should not "
+                f"lower a max-over-workers bound")
+        finally:
+            RangeMinerCoordinator.resolve_eligible_by_stage = real_resolve
+
+        # exact-variant stage semantics are preserved once the real resolver is back
+        again, _ = coord.trial_retention_requirement(
+            stages, total_seeds, candidates)
+        assert again == correct
+        restored = coord.resolve_eligible_by_stage(stages, candidates)
+        assert [w.worker_id for w in restored[("java_lcg", 1)]] == ["hostA:gpu0"]
+        assert [w.worker_id for w in restored[("java_lcg_hybrid", 3)]] == ["hostB:gpu0"]
+
+
+def gate_trial_retention_preflight_dispatches_nothing():
+    """G-TRIAL-RETENTION-PREFLIGHT (serve path). An undersized ceiling terminates
+    the trial through the REAL serve loop with ZERO StripeAssign, ZERO result
+    traffic and ZERO retry-matrix calls, under a `coordinator_staging_*` reason.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        ds = os.path.join(tmp, "dataset.json")
+        with open(ds, "w") as f:
+            f.write('[{"draw":1},{"draw":2},{"draw":3}]')
+        sink = _Sink()
+        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        lsock.bind(("127.0.0.1", 0))
+        lsock.listen(8)
+        port = lsock.getsockname()[1]
+        holder = {}
+        gate_caps = {**CAPS, "nvidia": 10}
+
+        def run():
+            try:
+                holder["result"] = run_trial_miner(
+                    "runRPS", None, 3, "java_lcg", [1, 2, 3], 80, 0.25, 0.25,
+                    False, ds, worker_pool_size=1,
+                    staging_dir=os.path.join(tmp, "stg"), phase5_sink=sink,
+                    listen_sock=lsock, family_name="java_lcg", workflow_phase=1,
+                    miner_stripe_size=20, seed_cap_nvidia=10,
+                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    # 80 seeds / 20 = 4 stripes, each ceil(20/10)=2 sub-stripes
+                    # => 8 files required for the one planned stage. A ceiling of
+                    # 1 cannot retain it.
+                    staging_high_water_files=1,
+                    staging_high_water_bytes=64 * 1024 * 1024,
+                    serve_timeout=45.0)
+            except Exception:
+                holder["err"] = traceback.format_exc()
+
+        with _MatrixSpy() as spy:
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            w = _RemoteWorker("127.0.0.1", port, "hostA", 0, caps=gate_caps)
+            try:
+                w.connect_register()
+                w.start_loop()
+                t.join(timeout=60)
+                assert not t.is_alive(), "serve_trial never terminated"
+                assert "err" not in holder, holder.get("err")
+                result = holder["result"]
+                assert result["state"] == "aborted", result["state"]
+                assert sink.aborts, "no abort event delivered"
+                reason = sink.aborts[0].get("reason", "")
+                assert reason.startswith("coordinator_staging_retention_sizing:"), (
+                    f"terminal reason does not lead with the retention sizing "
+                    f"classification: {reason!r}")
+                # ZERO StripeAssign reached any worker, so zero result traffic
+                assert not w.assigned, (
+                    f"stripes were DISPATCHED despite an impossible ceiling: "
+                    f"{w.assigned}")
+                assert not result["stripes"], (
+                    "stripe rows were created before the preflight refused")
+                # ZERO retry-matrix calls: this is infrastructure, not a worker fault
+                assert spy.calls == [], (
+                    f"a retention sizing refusal entered the matrix: {spy.calls}")
+            finally:
+                w.stop()
+                try:
+                    lsock.close()
+                except OSError:
+                    pass
+
+
+def gate_commit_release():
+    """G-COMMIT-RELEASE. A successful multi-shard TrialCommit releases every
+    trial-owned reservation exactly once, deletes every staged file, returns the
+    capacity, and leaves the assembly usable. A DUPLICATE successful commit
+    releases nothing a second time, deletes nothing, and re-reads no spool."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sink = _Sink()
+        coord = _coord(tmp, sink=sink, staging_high_water_files=64,
+                       staging_high_water_bytes=64 * 1024 * 1024)
+        run_id, sid = "runCR", "runCR_s0"
+        coord.ledger.create_trial(run_id, 0, now=100.0)
+        coord.ledger.add_stripe(run_id, sid, 0, 30, "java_lcg", 1, 100.0)
+        staged = []
+        for sub in range(3):
+            _rid, path = _reserve_with_file(coord, run_id, sid, sub, 1024, tmp)
+            staged.append(path)
+        assert coord.reserved_files() == 3 and coord.reserved_bytes() == 3072
+        assert all(os.path.isfile(p) for p in staged)
+
+        ev = coord.commit_trial(run_id)
+        assert ev["delivery"] == "done", ev
+        assert ev["released_reservations"] == 3, ev
+        assert ev["staged_files_deleted"] == 3, ev
+        # capacity is genuinely back
+        assert coord.ledger.held_reservations(run_id) == []
+        assert coord.reserved_files() == 0 and coord.reserved_bytes() == 0
+        # the staged files are gone from disk
+        for p in staged:
+            assert not os.path.exists(p), f"staged file survived commit: {p}"
+        # durable cleanup status, on the SUCCESS column
+        trial = coord.ledger.get_trial(run_id)
+        assert trial["commit_cleanup_status"] == "done", trial
+        assert trial["state"] == "committed"
+        # the assembly remains usable: exactly one commit was delivered
+        assert len(sink.commits) == 1, sink.commits
+
+        # ---- duplicate successful commit ------------------------------------
+        ev2 = coord.commit_trial(run_id)
+        assert ev2.get("duplicate") is True, ev2
+        assert ev2["delivery"] == "done"
+        assert ev2["released_reservations"] == 0, (
+            "a duplicate commit released capacity a second time")
+        assert ev2["staged_files_deleted"] == 0
+        assert len(sink.commits) == 1, (
+            f"a duplicate commit RE-READ the spools / re-delivered assembly: "
+            f"{sink.commits}")
+        assert coord.reserved_files() == 0
+
+
+def gate_commit_fail_retains():
+    """G-COMMIT-FAIL-RETAINS. A FAILED assembly retains every manifest, staged
+    spool and reservation, and the same event_id stays retryable. Repairing and
+    retrying THE SAME EVENT delivers `done` — and only then releases, exactly
+    once. This is D1.1's retry contract: release-on-failure would delete the very
+    spools the retry has to re-read."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state = {"fail": True}
+
+        class _FlakySink(Phase5Sink):
+            def __init__(self):
+                self.published, self.commits, self.aborts = [], [], []
+
+            def publish_shard(self, manifest):
+                self.published.append(manifest)
+
+            def commit_trial(self, event):
+                if state["fail"]:
+                    raise RuntimeError("corrupt spool: assembly failed")
+                self.commits.append(event)
+
+            def abort_trial(self, event):
+                self.aborts.append(event)
+
+        sink = _FlakySink()
+        coord = _coord(tmp, sink=sink, staging_high_water_files=64,
+                       staging_high_water_bytes=64 * 1024 * 1024)
+        run_id, sid = "runCF", "runCF_s0"
+        coord.ledger.create_trial(run_id, 0, now=100.0)
+        coord.ledger.add_stripe(run_id, sid, 0, 30, "java_lcg", 1, 100.0)
+        sink.published.append({"event_id": f"{run_id}:{sid}:0"})   # a manifest
+        staged = [ _reserve_with_file(coord, run_id, sid, s, 1024, tmp)[1]
+                   for s in range(2) ]
+        held_before = len(coord.ledger.held_reservations(run_id))
+        assert held_before == 2
+
+        ev = coord.commit_trial(run_id)
+        assert ev["delivery"] == "failed", ev
+        assert "corrupt spool" in ev.get("error", "")
+        assert ev["released_reservations"] == 0
+        # EVERYTHING is retained
+        assert len(coord.ledger.held_reservations(run_id)) == 2, (
+            "a failed assembly released reservations")
+        for p in staged:
+            assert os.path.isfile(p), f"a failed assembly deleted {p}"
+        assert len(sink.published) == 1, "a failed assembly discarded a manifest"
+        assert coord.reserved_files() == 2
+        trial = coord.ledger.get_trial(run_id)
+        assert trial["commit_delivery_status"] == "failed"
+        assert trial["commit_cleanup_status"] == "none"
+
+        # ---- repair and retry THE SAME EVENT --------------------------------
+        state["fail"] = False
+        ev2 = coord.commit_trial(run_id)
+        assert ev2["event_id"] == ev["event_id"], (
+            "the retry used a different event_id — the commit is no longer "
+            "idempotent by event")
+        assert ev2["delivery"] == "done", ev2
+        assert ev2["released_reservations"] == 2, (
+            "the repaired retry did not release the retained reservations")
+        assert coord.ledger.held_reservations(run_id) == []
+        for p in staged:
+            assert not os.path.exists(p)
+        assert coord.reserved_files() == 0
+        assert len(sink.commits) == 1
+
+        # exactly once: a third call releases nothing further
+        ev3 = coord.commit_trial(run_id)
+        assert ev3["released_reservations"] == 0 and len(sink.commits) == 1
+
+
+def gate_executor_capacity_timeout():
+    """G-EXECUTOR-CAPACITY-TIMEOUT. The exact shape the pre-amendment observer
+    could not see: NO paused connection, a staging-executor job blocked on
+    reservation capacity, waiting past the bound.
+
+    Pre-amendment `staging_capacity_timeout_expired()` read only
+    `_paused_connections`, so this waited forever — the failed run sat ~19
+    minutes against a 600 s bound.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp, staging_high_water_files=1,
+                       staging_high_water_bytes=64 * 1024 * 1024,
+                       staging_capacity_timeout=1.0)
+        conn = _register(coord)
+        run_id, sid = "runEX", "runEX_s0"
+        coord.ledger.create_trial(run_id, 0, now=100.0)
+        _claim(coord, run_id, sid, "hostA:gpu0", conn, seed_count=30, expected=2)
+        # fill the ONE available file slot so the next reserve back-pressures
+        _reserve_with_file(coord, run_id, sid, 0, 512, tmp)
+        assert coord.reserved_files() == 1
+
+        obj, pb = build_substripe_payload_bytes(sid, 1, 10, 10,
+                                                [[10, 0.9, None, [1]]])
+        msg = SubStripeResultMessage(
+            worker_id="hostA:gpu0", stripe_id=sid, sub_index=1, seed_start=10,
+            seed_count=10, survivor_count=1, inline=obj, size_bytes=len(pb),
+            sha256=hashlib.sha256(pb).hexdigest(), effective_threshold=0.25)
+
+        with _MatrixSpy() as spy:
+            t = threading.Thread(
+                target=coord._run_staging_job,
+                args=("inline", conn, run_id, sid, 0, 1, msg, lambda: [conn]),
+                daemon=True)
+            t.start()
+            # the job registers an executor-side capacity wait...
+            deadline = time.time() + 5.0
+            while (coord.staging_reservation_wait_count() == 0
+                   and time.time() < deadline):
+                time.sleep(0.01)
+            assert coord.staging_reservation_wait_count() == 1, (
+                "the staging-executor reservation wait was never registered — "
+                "the blocker is still invisible to the bounded timeout")
+            # ...with NO connection paused. This is the missing shape.
+            assert coord.paused_connection_count() == 0, (
+                "a connection is paused; this is not the executor-only shape")
+
+            # before the bound: not expired
+            assert not coord.staging_capacity_timeout_expired(), (
+                "the timeout latched before the bound elapsed")
+
+            # ---- MUTATION: restore the reader-only oldest-pause logic --------
+            # The pre-amendment observer considered ONLY paused connections. With
+            # it restored, this wait must stay INVISIBLE — the gate remains wedged.
+            orig = RangeMinerCoordinator._capacity_blockers_locked
+            try:
+                def _reader_only(self_):
+                    return [{"blocker_class": "reader_pause",
+                             "since": r["since"], "worker_id": r.get("worker_id"),
+                             "run_id": None, "stripe_id": None,
+                             "attempt": None, "sub_index": None}
+                            for r in self_._paused_connections.values()]
+                RangeMinerCoordinator._capacity_blockers_locked = _reader_only
+                time.sleep(1.3)                      # well past the 1.0 s bound
+                assert not coord.staging_capacity_timeout_expired(), (
+                    "MUTATION DID NOT RED THE GATE: the reader-only observer saw "
+                    "an executor wait, so this gate does not prove the widening")
+            finally:
+                RangeMinerCoordinator._capacity_blockers_locked = orig
+
+            # with the real observer, the bound is now exceeded
+            assert coord.staging_capacity_timeout_expired(), (
+                "the widened observer still cannot see an executor reservation "
+                "wait past the bound")
+            snap = coord.capacity_timeout_snapshot()
+            assert snap is not None
+            assert snap["blocker_class"] == "staging_reservation", snap
+            assert snap["paused_count"] == 0, snap
+            assert snap["staging_reservation_wait_count"] == 1, snap
+            trig = snap["trigger"]
+            assert trig["run_id"] == run_id and trig["stripe_id"] == sid
+            assert trig["attempt"] == 0 and trig["sub_index"] == 1
+            assert trig["worker_id"] == "hostA:gpu0"
+            # the episode carries the capacity evidence §1.4 requires
+            assert snap["reserved_files"] == 1
+            assert snap["high_water_files"] == 1
+            assert snap["high_water_bytes"] == 64 * 1024 * 1024
+            assert "reserved_bytes" in snap and "derived_required_files" in snap
+
+            reason = coord.staging_capacity_timeout_reason()
+            assert reason.startswith("coordinator_staging_capacity_timeout:")
+            assert "staging_reservation" in reason, reason
+            assert sid in reason, reason
+            # a capacity wait never enters the worker retry matrix
+            assert spy.calls == [], f"a capacity wait reached the matrix: {spy.calls}"
+
+            # the terminal snapshot survives the blocker's thread exiting (F3)
+            coord.ledger.cancel_active_stripes(run_id)
+            t.join(timeout=5.0)
+            assert coord.staging_reservation_wait_count() == 0, (
+                "the wait record leaked after the job exited — it would age into "
+                "a false capacity timeout")
+            after = coord.capacity_timeout_snapshot()
+            assert after["blocker_class"] == "staging_reservation", (
+                "the triggering blocker was lost once its thread exited")
+            assert sid in coord.staging_capacity_timeout_reason()
+
+
+def gate_sequential_trial_reuse():
+    """G-SEQUENTIAL-TRIAL-REUSE (MANDATORY). Two sequential successful trials
+    through the SAME production staging ledger and coordinator.
+
+    The failed production command requested EIGHT trials. A success path that
+    frees nothing ratchets across trials: trial 1 holds its files forever and
+    trial 2 deadlocks. After trial 1 commits, held reservations must be ZERO and
+    trial 2 must be able to consume the SAME FULL high-water again."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sink = _Sink()
+        HW = 3
+        coord = _coord(tmp, sink=sink, staging_high_water_files=HW,
+                       staging_high_water_bytes=64 * 1024 * 1024)
+        consumed = []
+        for trial in range(2):
+            run_id = f"runSEQ{trial}"
+            sid = f"{run_id}_s0"
+            coord.ledger.create_trial(run_id, trial, now=100.0 + trial)
+            coord.ledger.add_stripe(run_id, sid, 0, 30, "java_lcg", 1, 100.0)
+            paths = []
+            for sub in range(HW):                    # consume the FULL high-water
+                _rid, p = _reserve_with_file(coord, run_id, sid, sub, 256, tmp)
+                paths.append(p)
+            assert coord.reserved_files() == HW, (
+                f"trial {trial} could not consume the full high-water — capacity "
+                f"did not return from the previous trial")
+            # the ceiling is real: one more is refused
+            assert coord.reserve_capacity(run_id, sid, 0, HW, 0, 256) is None
+            consumed.append(len(paths))
+
+            ev = coord.commit_trial(run_id)
+            assert ev["delivery"] == "done", ev
+            assert ev["released_reservations"] == HW, ev
+            assert coord.reserved_files() == 0, (
+                f"after trial {trial} committed, {coord.reserved_files()} "
+                f"reservation(s) are STILL HELD — this is the ratchet that "
+                f"deadlocked the 8-trial run")
+            assert coord.ledger.held_reservations(run_id) == []
+            for p in paths:
+                assert not os.path.exists(p)
+        assert consumed == [HW, HW]
+        assert len(sink.commits) == 2, sink.commits
+
+
 def main():
     print("=" * 74)
     print("S172 STAGING BACK-PRESSURE — acceptance gates (CPU-only)")
@@ -3471,6 +4899,42 @@ def main():
            gate_no_predecode_while_the_credit_is_outstanding)
     _check("G-MUT-NO-PREDECODE: the post-decode placement executes and REDS it",
            gate_no_predecode_mutant)
+
+    print("\n-- S172 STAGING-CAPACITY AMENDMENT (Beta staging ruling, 2026-08-07) --")
+    _check("G-HIGHWATER-ROUTE: both high-waters travel the governed route (+mutation)",
+           gate_highwater_route)
+    _check("G-TRIAL-RETENTION-PREFLIGHT: 512 < derived requirement -> fail closed",
+           gate_trial_retention_preflight)
+    _check("G-TRIAL-RETENTION-PREFLIGHT: REAL gate-12 geometry (16 macro-stripes)",
+           gate_trial_retention_preflight_gate12_geometry)
+    _check("G-TRIAL-RETENTION-PREFLIGHT: zero StripeAssign, zero matrix, real serve",
+           gate_trial_retention_preflight_dispatches_nothing)
+    _check("G-COMMIT-RELEASE: success releases exactly once; duplicate releases nothing",
+           gate_commit_release)
+    _check("G-COMMIT-FAIL-RETAINS: failed assembly retains; repaired retry releases once",
+           gate_commit_fail_retains)
+    _check("G-EXECUTOR-CAPACITY-TIMEOUT: executor wait is observed (+mutation)",
+           gate_executor_capacity_timeout)
+    _check("G-SEQUENTIAL-TRIAL-REUSE: capacity returns between trials",
+           gate_sequential_trial_reuse)
+
+    print("\n-- S172 STAGING-CAPACITY REVISION 1 (Beta return-for-revision, 2026-08-08) --")
+    _check("G-COMMIT-CRASH-RESUME: cleanup resumes across a process restart",
+           gate_commit_cleanup_resumes_after_crash)
+    _check("G-MUT-COMMIT-CRASH-RESUME: the submitted conflation executes and REDS it",
+           gate_commit_crash_resume_mutant)
+    _check("G-STAGE-ELIGIBILITY: per-stage populations (+negative arm)",
+           gate_stage_specific_eligibility)
+    _check("G-MUT-STAGE-ELIGIBILITY: one-collection reuse executes and REDS it",
+           gate_stage_eligibility_mutant)
+    _check("G-PREFLIGHT-PLAN-PERSISTED: durable geometry, written not recomputed",
+           gate_preflight_plan_is_persisted)
+
+    print("\n-- S172 STAGING-CAPACITY REVISION 2 (Beta R1 ruling, 2026-08-08) --")
+    _check("G-LATE-WORKER-EXCLUDED: the assignable cohort is frozen at preflight",
+           gate_late_worker_excluded_from_frozen_cohort)
+    _check("G-PREFLIGHT-PROVENANCE-FAIL-CLOSED: admission fails closed; refusal stays primary",
+           gate_preflight_provenance_fail_closed)
 
     print("\n" + "=" * 74)
     passed = sum(1 for _, ok, _ in _results if ok)

@@ -709,6 +709,10 @@ def run_bayesian_optimization(
     staging_queue_depth: int = 2,
     staging_deferred_max: int = None,       # None => the DERIVED bound (§2)
     staging_capacity_timeout: float = 600.0,
+    # [S172 STAGING-CAPACITY AMENDMENT §1.3, Beta §4] BOTH high-waters, hop 2 of 3.
+    # files: None => DERIVE the whole-trial retention requirement (§1.2).
+    staging_high_water_files: int = None,
+    staging_high_water_bytes: int = 16 * 1024 ** 3,
     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
 ) -> Dict[str, Any]:
     """
@@ -809,6 +813,14 @@ def run_bayesian_optimization(
     coordinator.staging_queue_depth      = staging_queue_depth
     coordinator.staging_deferred_max     = staging_deferred_max
     coordinator.staging_capacity_timeout = staging_capacity_timeout
+    # [S172 STAGING-CAPACITY AMENDMENT §1.3, Beta §4] hop 2 for BOTH high-waters.
+    # These were the last two staging controls still reaching the coordinator only
+    # through a `getattr(..., <literal>)` default at
+    # window_optimizer_integration_final.py:1467-1468 — and that literal had already
+    # gone stale (512 there vs the committed dataclass default), so the production
+    # source of the file ceiling was a number that matched nothing.
+    coordinator.staging_high_water_files = staging_high_water_files
+    coordinator.staging_high_water_bytes = staging_high_water_bytes
     if use_range_miner:
         print(f"   [S172 Phase 1] RANGE-MINER backend ENABLED "
               f"(stripe={miner_stripe_size}, substripes={miner_substripes})")
@@ -825,6 +837,10 @@ def run_bayesian_optimization(
               f"deferred_max="
               f"{staging_deferred_max if staging_deferred_max is not None else 'DERIVED'} "
               f"capacity_timeout={staging_capacity_timeout}s")
+        print(f"   [S172-CAP] Staging high-water: files="
+              f"{staging_high_water_files if staging_high_water_files is not None else 'DERIVED (whole-trial retention)'} "
+              f"bytes={staging_high_water_bytes} (runtime-enforced; no "
+              f"authoritative max shard-size contract exists to derive it from)")
 
     # Add window optimizer to coordinator (this adds the optimize_window method)
     add_window_optimizer_to_coordinator()
@@ -1480,9 +1496,31 @@ def main():
                              'the derived bound logs a WARNING naming both.')
     parser.add_argument('--staging-capacity-timeout', type=float, default=600.0,
                         help='[S172-BP] Bounded wait, in seconds, measured from the '
-                             'OLDEST paused connection, after which the trial is '
+                             'OLDEST paused connection OR a staging-executor '
+                             'reservation wait, after which the trial is '
                              'terminated with a coordinator_staging_capacity_timeout '
                              'reason (never the worker retry matrix). Default 600.')
+    # [S172 STAGING-CAPACITY AMENDMENT §1.3, Beta §4] BOTH high-waters routed the
+    # same way as the four controls above. Declared in the manifest's
+    # default_params too, because WATCHER's step-scoped filter drops any key the
+    # manifest does not declare (agents/watcher_agent.py:1290-1314).
+    parser.add_argument('--staging-high-water-files', type=int, default=None,
+                        help='[S172-CAP] OPERATOR CEILING on retained staged files. '
+                             'UNSET = DERIVE the whole-trial retention requirement '
+                             '(sum over planned phases and stripes of the max '
+                             'expected sub-stripes over eligible workers) — the '
+                             'production shape. A value BELOW the derived '
+                             'requirement FAILS THE TRIAL CLOSED before the first '
+                             'stripe is dispatched, because nothing is released '
+                             'until a successful commit.')
+    parser.add_argument('--staging-high-water-bytes', type=int,
+                        default=16 * 1024 ** 3,
+                        help='[S172-CAP] Retained-BYTES ceiling for staged shards. '
+                             'RUNTIME-ENFORCED ONLY: no authoritative maximum '
+                             'shard-size contract exists in the tree, so no '
+                             'pre-dispatch byte requirement is derived (Beta §4.1 — '
+                             'a guessed byte bound is worse than an explicitly '
+                             'runtime-only one). Default 16 GiB.')
 
     args = parser.parse_args()
 
@@ -1747,6 +1785,10 @@ def main():
             staging_queue_depth=getattr(args, 'staging_queue_depth', 2),
             staging_deferred_max=getattr(args, 'staging_deferred_max', None),
             staging_capacity_timeout=getattr(args, 'staging_capacity_timeout', 600.0),
+            # [S172 STAGING-CAPACITY AMENDMENT §1.3] hop 2 of 3 for BOTH high-waters.
+            staging_high_water_files=getattr(args, 'staging_high_water_files', None),
+            staging_high_water_bytes=getattr(
+                args, 'staging_high_water_bytes', 16 * 1024 ** 3),
             # [S172 Phase-5 D6.2] the operator route's CLI end of hop 2.
             resume_checkpoint=getattr(args, 'resume_checkpoint', ''),
         )

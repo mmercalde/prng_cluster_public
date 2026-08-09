@@ -2498,18 +2498,101 @@ class _FakeWorker:
             pass
 
 
+class _CommitProbeSink(_StubSink):
+    """[S172 staging-capacity, Beta 2026-08-08 §1] A sink that records, INSIDE
+    `commit_trial`, which published staged objects still exist on disk.
+
+    That instant is the only place "the staged object was available to the sink
+    before/during commit" is observable: by the time `run_trial_miner` returns,
+    Option C has already acknowledged the reservations and deleted the files."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.commit_probe = []
+
+    def commit_trial(self, event):
+        paths = [m.get("local_spool_path") for m in self.published
+                 if m.get("local_spool_path")]
+        self.commit_probe.append({
+            "staged_paths": list(paths),
+            "existed": {p: os.path.exists(p) for p in paths},
+        })
+        return super().commit_trial(event)
+
+
+def _gate37_failed_commit_retains(tmp):
+    """Point (7) of the superseding Gate-37 contract: a FAILED assembly retains
+    the staged object and its reservation.
+
+    Driven directly against `commit_trial` rather than through a second full serve
+    run: the property under test is the commit lifecycle's failure branch, and the
+    serve path would only add non-determinism around it."""
+    stg = os.path.join(tmp, "fail_stg")
+    os.makedirs(stg, exist_ok=True)
+    ledger = MinerLedger(os.path.join(stg, "miner_ledger.db"))
+
+    class _RaisingSink(Phase5Sink):
+        def __init__(self):
+            self.published, self.commits, self.aborts = [], [], []
+
+        def publish_shard(self, manifest):
+            self.published.append(manifest)
+
+        def commit_trial(self, event):
+            raise RuntimeError("corrupt spool: assembly failed")
+
+        def abort_trial(self, event):
+            self.aborts.append(event)
+
+    sink = _RaisingSink()
+    coord = RangeMinerCoordinator(
+        CoordinatorConfig(staging_dir=stg, staging_high_water_files=16,
+                          staging_high_water_bytes=16 * 1024 * 1024),
+        ledger, phase5_sink=sink)
+    run_id, sid = "runF37", "runF37_s0"
+    ledger.create_trial(run_id, 0, now=100.0)
+    ledger.add_stripe(run_id, sid, 0, 30, "java_lcg", 1, 100.0)
+    rid = coord.reserve_capacity(run_id, sid, 0, 0, 0, 256)
+    assert rid is not None
+    staged = os.path.join(stg, "runF37_sub0.bin")
+    with open(staged, "wb") as fh:
+        fh.write(b"\0" * 256)
+    ledger.set_reservation_paths(rid, staged_path=staged)
+
+    ev = coord.commit_trial(run_id)
+    assert ev["delivery"] == "failed", ev
+    assert ev["released_reservations"] == 0
+    assert os.path.isfile(staged), (
+        "a FAILED commit deleted the staged object — D1.1's retry contract needs "
+        "the spool the retry has to re-read")
+    assert len(ledger.held_reservations(run_id)) == 1
+    assert ledger.get_trial(run_id)["commit_cleanup_status"] != "done"
+
+
 def gate37_serve_path_two_workers():
     """Beta-required: call run_trial_miner() with NO _serve, so the REAL default
     RangeMinerCoordinator.serve_trial() drives two loopback workers over real
     framed sockets. Proves: (1) both register; (2) stripes assigned; (3) a result
     traverses the real server path + is staged/verified/published; (4) the trial
     reaches a terminal state; (5) run_trial_miner returns a real dict; (6) NO
-    NotImplementedError. Plus hybrid reassignment to a DIFFERENT worker."""
+    NotImplementedError. Plus hybrid reassignment to a DIFFERENT worker.
+
+    ⚠ GATE-37 STAGED-FILE ASSERTION SUPERSEDED — Team Beta ruling 2026-08-08 §1.
+    The original *"the staged file still exists after a successful commit"* check
+    is superseded by the Option-C commit lifecycle and is REPLACED, in place and
+    under that explicit authority, by the seven-point contract marked below:
+    (1) the staged object existed and was available to the sink before/during
+    commit; (2) the sink commit succeeded; (3) only AFTER that success was the
+    reservation acknowledged; (4) the staged file is absent afterward; (5) the
+    durable cleanup state says complete; (6) a duplicate completed commit neither
+    re-delivers nor releases/deletes a second time; (7) the failed-commit path
+    still retains the staged object. The superseded line is retained as a comment,
+    not deleted — history is marked, not rewritten."""
     with tempfile.TemporaryDirectory() as tmp:
         ds = os.path.join(tmp, "dataset.json")
         with open(ds, "w") as f:
             f.write('[{"draw":1},{"draw":2},{"draw":3}]')
-        sink = _StubSink()
+        sink = _CommitProbeSink()
 
         # pre-bind an ephemeral listening socket (deterministic port for the gate)
         lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -2572,11 +2655,70 @@ def gate37_serve_path_two_workers():
             # (3) a result traversed the REAL serve path -> staged/verified/published
             assert len(result["manifests"]) >= 1
             m = result["manifests"][0]
-            assert m["local_spool_path"] and os.path.isfile(m["local_spool_path"])
+            # ---------------------------------------------------------------
+            # ⚠ SUPERSEDED ASSERTION — DO NOT RESTORE.
+            #
+            #     assert m["local_spool_path"] and os.path.isfile(m["local_spool_path"])
+            #
+            # That line asserted the staged file STILL EXISTS after a successful
+            # commit. It is SUPERSEDED BY THE OPTION-C LIFECYCLE (S172 staging-
+            # capacity amendment §1.1), under which a successful TrialCommit
+            # acknowledges every trial-owned reservation and DELETES the staged
+            # files — the file being absent here is now the CORRECT outcome.
+            #
+            # Superseded under explicit Team Beta authority: ruling "S172
+            # STAGING-CAPACITY AMENDMENT + elapsed_s" (2026-08-08) §1, which
+            # approved the supersession and required the replacement below to
+            # prove all seven properties. Beta: "Do not silently edit history.
+            # Mark the old assertion as superseded... and replace it under that
+            # explicit authority."
+            #
+            # This is the same disposition Beta D applied to Gate 56 of this suite.
+            # ---------------------------------------------------------------
+            # (3.1) the staged object EXISTED and was available to the sink during
+            #       commit — captured by the probe INSIDE Phase5Sink.commit_trial,
+            #       which is the only moment at which "before/during" is observable
+            assert sink.commit_probe, "the sink commit probe never ran"
+            probe = sink.commit_probe[0]
+            assert probe["staged_paths"], "no staged object was published to the sink"
+            assert all(probe["existed"].values()), (
+                f"a staged object was already deleted BEFORE/DURING commit — the "
+                f"acknowledgement ran too early: {probe['existed']}")
+            assert m["local_spool_path"] in probe["existed"]
             assert len(sink.published) >= 1
-            # (4) terminal state committed; (5) real result dict returned
-            assert result["state"] == "committed" and result["committed"] is True
+            # (3.2) the sink commit SUCCEEDED
             assert len(sink.commits) == 1
+            assert result["state"] == "committed" and result["committed"] is True
+            # (3.3) ONLY AFTER that success was the reservation acknowledged, so
+            #       (3.4) the staged file is absent now
+            for p in probe["staged_paths"]:
+                assert not os.path.exists(p), (
+                    f"staged file survived a successful commit: {p} — Option C "
+                    f"requires it to be deleted once the reservation is acked")
+            # (3.5) the durable cleanup state says complete, and no reservation
+            #       is still held
+            _led = MinerLedger(os.path.join(tmp, "stg", "miner_ledger.db"))
+            _run_id = sid.split("__st")[0]
+            _trial = _led.get_trial(_run_id)
+            assert _trial is not None and _trial["state"] == "committed"
+            assert _trial["commit_delivery_status"] == "done"
+            assert _trial["commit_cleanup_status"] == "done", (
+                f"durable cleanup state is {_trial['commit_cleanup_status']!r}, "
+                f"not 'done'")
+            assert _led.held_reservations(_run_id) == []
+            # (3.6) a DUPLICATE completed commit re-delivers nothing and releases
+            #       / deletes nothing a second time
+            _coord2 = RangeMinerCoordinator(
+                CoordinatorConfig(staging_dir=os.path.join(tmp, "stg")),
+                _led, phase5_sink=sink)
+            _dup = _coord2.commit_trial(_run_id)
+            assert _dup.get("duplicate") is True and _dup["cleanup"] == "already_done"
+            assert _dup["released_reservations"] == 0
+            assert _dup["staged_files_deleted"] == 0
+            assert len(sink.commits) == 1, (
+                "a duplicate completed commit re-delivered to the sink")
+            # (3.7) the FAILED-commit path still RETAINS the staged object
+            _gate37_failed_commit_retains(tmp)
         finally:
             w0.stop()
             w1.stop()

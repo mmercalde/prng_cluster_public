@@ -58,6 +58,8 @@
         "staging-queue-depth": "staging_queue_depth",
         "staging-deferred-max": "staging_deferred_max",
         "staging-capacity-timeout": "staging_capacity_timeout",
+        "staging-high-water-files": "staging_high_water_files",
+        "staging-high-water-bytes": "staging_high_water_bytes",
         "resume-checkpoint": "resume_checkpoint"
       },
       "distributed": true,
@@ -80,7 +82,7 @@
       "description": "Size of the temporal window (number of draws) for PRNG matching.",
       "optimized_by": "Optuna TPE",
       "effect": "Short-term temporal regime confirmed (167-trial run S138). TRSE Rule A caps at 32 when short_persistence active. Config ceiling 50 provides buffer. W2 dominant empirically.",
-      "_calibration_note": "S148 Run-1 ruling: W12 promoted as production default. Bounds [2,50] unchanged \u2014 Optuna explores freely."
+      "_calibration_note": "S148 Run-1 ruling: W12 promoted as production default. Bounds [2,50] unchanged — Optuna explores freely."
     },
     "offset": {
       "type": "int",
@@ -212,14 +214,14 @@
       "default": false,
       "description": "[S172 Phase 1] Enable RANGE-MINER stripe backend. Mutually exclusive with use_persistent_workers and use_zmq_sqlite. Phase 1 is scaffolding-only: setting true will raise NotImplementedError until Phases 2-5 land. Do not enable in production until Phase 7 acceptance completes.",
       "optimized_by": "Manual",
-      "effect": "Replaces chunk-dispatch Step 1 with miner-style long-lived GPU daemons (v1.4.4 \u00a73)."
+      "effect": "Replaces chunk-dispatch Step 1 with miner-style long-lived GPU daemons (v1.4.4 §3)."
     },
     "miner_stripe_size": {
       "type": "int",
       "min": 1048576,
       "max": 1073741824,
       "default": 67108864,
-      "description": "[S172 \u00a76.2] Seeds per stripe per GPU. Default 64M. Used only when use_range_miner=true.",
+      "description": "[S172 §6.2] Seeds per stripe per GPU. Default 64M. Used only when use_range_miner=true.",
       "optimized_by": "Manual"
     },
     "miner_substripes": {
@@ -227,7 +229,7 @@
       "min": 1,
       "max": 64,
       "default": 8,
-      "description": "[S172 \u00a76.2] Sub-stripe count per stripe. Default 8 (sized to fit lockup_timeout=30000). Used only when use_range_miner=true.",
+      "description": "[S172 §6.2] Sub-stripe count per stripe. Default 8 (sized to fit lockup_timeout=30000). Used only when use_range_miner=true.",
       "optimized_by": "Manual"
     },
     "miner_output_dir": {
@@ -273,6 +275,8 @@
     "staging_queue_depth": 2,
     "staging_deferred_max": null,
     "staging_capacity_timeout": 600.0,
+    "staging_high_water_files": null,
+    "staging_high_water_bytes": 17179869184,
     "resume_checkpoint": ""
   },
   "evaluation_params": {

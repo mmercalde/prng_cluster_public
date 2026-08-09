@@ -221,7 +221,26 @@ class CoordinatorConfig:
     seed_cap_amd_hybrid: int = 1_000_000
     miner_stripe_size: int = 67_108_864
     staging_high_water_bytes: int = 16 * 1024 ** 3
-    staging_high_water_files: int = 4096
+    # [S172 STAGING-CAPACITY AMENDMENT §1.2, Beta §3 — binding]
+    #   None -> DERIVE the whole-trial requirement (the production shape)
+    #   int  -> an explicit operator ceiling; still legal, but one BELOW the
+    #           derived requirement FAILS CLOSED before the first stripe is
+    #           dispatched (`preflight_trial_retention`). A warning is explicitly
+    #           insufficient: within a trial nothing is released before a
+    #           successful commit, so an under-sized ceiling deadlocks rather
+    #           than degrades.
+    #
+    # This REPLACES THE MEANING of the committed 4096 (`8bbe79e`). That value was a
+    # run-enabling wall-move after the 2026-08-07 gate-12 trial deadlocked; it moved
+    # the wall without deriving it.
+    #
+    # [R1 §3, Beta correction] The real 2026-08-07 geometry, for the record:
+    #   max_seeds = 1,073,741,824 / miner_stripe_size 67,108,864 = 16 macro-stripes
+    #   per stage; stage 0 = 504 files, stage 1 = 524 files, total 1,028 against a
+    #   512 ceiling. 1,028 is therefore an OBSERVED two-stage count for a 16-stripe
+    #   run — NOT a bound, and NOT evidence about the number of planned stripes.
+    # DO NOT reinstate a constant here, and do not hardcode 1,028.
+    staging_high_water_files: Optional[int] = None
     staging_dir: Optional[str] = None
     compute_lease_timeout: float = 300.0
     staging_timeout: float = 600.0
@@ -472,6 +491,35 @@ def _coerce_worker_cap_record(worker: Any, caps: Optional[Dict[str, int]]) -> Tu
     return str(backend), resolved
 
 
+def cohort_capability_signature(worker: Any) -> str:
+    """[S172 STAGING-CAPACITY R2 §4] The capability signature frozen per worker at
+    retention preflight, and re-checked when a frozen identity RECONNECTS.
+
+    It covers exactly the advertisements that can change the derived retention
+    ceiling or a worker's stage membership — nothing else, so an irrelevant
+    reconnect difference cannot evict a legitimate worker from its own trial:
+
+      * `backend`            -> selects which cap tier `applicable_seed_cap` reads
+      * `seed_caps`          -> the cap values the conservative bound maxes over
+      * `supported_variants` -> decides WHICH stages the worker is eligible for
+
+    `supported_variants = None` is preserved distinctly from the empty set: a
+    WorkerRecord that advertises nothing is treated as eligible for everything by
+    `can_assign_variant`, and collapsing that into `[]` would silently change the
+    contract on reconnect.
+    """
+    variants = getattr(worker, "supported_variants", None)
+    caps = getattr(worker, "seed_caps", None) or {}
+    payload = {
+        "backend": str(getattr(worker, "backend", "") or ""),
+        "seed_caps": {str(k): int(v) for k, v in sorted(caps.items())},
+        "supported_variants": (None if variants is None
+                               else sorted(str(v) for v in variants)),
+    }
+    return _sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
 def staging_burst_bound_exact(assignments: Any) -> int:
     """EXACT staging-request burst for a KNOWN assignment (§2, the 116 quantity).
 
@@ -560,6 +608,95 @@ def staging_burst_bound_conservative(
         # sub-stripe count for that slot.
         total += max(expected_substripes_for(span, cap) for cap in per_worker_caps)
     return total
+
+
+def trial_retention_files_required(
+    workflow_stages: Any, stripe_spans: Any, eligible_by_stage: Any,
+    caps: Optional[Dict[str, int]] = None,
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """[S172 STAGING-CAPACITY AMENDMENT §1.2, Beta §3] THE DERIVED WHOLE-TRIAL
+    FILE-RETENTION REQUIREMENT.
+
+        trial_retention_files_required =
+            sum over every planned workflow phase
+                sum over every planned stripe
+                    max( expected_substripes ) over workers eligible for that
+                                                stripe/phase
+
+    WHY A WHOLE-TRIAL QUANTITY, not the per-stage burst bound: within a trial no
+    file may be released before a successful commit (§1.1). Therefore the file
+    high-water must retain THE ENTIRE PLANNED TRIAL BY CONSTRUCTION — every stage's
+    output coexists on disk until the trial ends.
+
+    This REUSES `staging_burst_bound_conservative` per stage rather than restating
+    the inner max-over-eligible-workers arithmetic. That function already computes
+    exactly the inner two sums for one phase, resolving caps through
+    `advertised_effective_cap` — the coordinator's single cap path, shared with the
+    worker. A second derivation here is precisely the drift Beta named in §2.
+
+    ⚠ DO NOT HARDCODE the observed 1,028. That figure is stages 0 and 1 of the
+    2026-08-07 sixteen-stripe production run (504 + 524) hitting the 512 ceiling —
+    an OBSERVED count for one geometry, not a bound. Beta: *"The whole point of this
+    amendment is that the answer comes from the execution geometry."*
+
+    [S172 STAGING-CAPACITY R1, Beta §4 BLOCKER B] ELIGIBILITY IS PER STAGE.
+    `eligible_by_stage` maps `(family_name, phase)` -> the workers eligible for THAT
+    concrete variant. It is NOT one collection reused across every stage: the
+    Phase-4 contract requires a worker to advertise the EXACT concrete variant
+    before assignment (`can_assign_variant`), so eligibility is family/phase
+    dependent BY CONSTRUCTION and each stage must be sized by the population that
+    can actually run it.
+
+    A planned stage with NO eligible worker raises rather than contributing 0 — a
+    stage nobody can run must never be sized as free.
+
+    Returns `(total, per_stage)` where `per_stage` carries the audit detail the
+    §5 preflight record persists. The caller must not recompute it (Beta: *"No
+    parallel second derivation"*).
+
+    `workflow_stages` is the planned [(family_name, phase), ...]; `stripe_spans` the
+    per-stripe seed spans from the real macro-stripe partition (so a short final
+    stripe is not rounded up to miner_stripe_size).
+    """
+    stages = [(f, p) for f, p in workflow_stages]
+    if not stages:
+        raise ValueError(
+            "trial_retention_files_required requires at least one planned "
+            "workflow stage — a trial with no stages retains nothing and the "
+            "bound would silently be 0")
+    spans = [int(s) for s in stripe_spans]
+    if not spans:
+        raise ValueError(
+            "trial_retention_files_required requires the planned stripe spans — "
+            "an empty partition would derive a 0-file requirement, which would "
+            "pass any operator value")
+    total = 0
+    per_stage: List[Dict[str, Any]] = []
+    for family_name, phase in stages:
+        key = (family_name, int(phase))
+        if key not in eligible_by_stage:
+            raise ValueError(
+                f"no eligible-worker set was resolved for planned stage "
+                f"{key!r} — every planned stage must be resolved BEFORE the "
+                f"retention preflight, not inherited from another stage")
+        workers = list(eligible_by_stage[key])
+        if not workers:
+            raise ValueError(
+                f"planned stage {key!r} has NO eligible worker advertising that "
+                f"concrete variant — the stage cannot run, and sizing it as 0 "
+                f"files would let the trial start and then strand")
+        stage_files = staging_burst_bound_conservative(
+            spans, workers, phase, caps=caps, family_name=family_name)
+        total += stage_files
+        per_stage.append({
+            "family_name": str(family_name),
+            "phase": int(phase),
+            "eligible_worker_count": len(workers),
+            "eligible_worker_ids": sorted(
+                str(getattr(w, "worker_id", w)) for w in workers),
+            "files": int(stage_files),
+        })
+    return total, per_stage
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +852,13 @@ class MinerLedger:
                         stripe_complete_seen INTEGER NOT NULL DEFAULT 0,
                         substripes_done     INTEGER,
                         survivors_total     INTEGER,
+                        -- [S172 elapsed_s persistence, Beta R4] The WORKER-REPORTED
+                        -- stripe service time. NULLABLE and NULL-by-default: a
+                        -- completion that carried no measurement stores NULL, never
+                        -- 0.0, so "not reported" stays distinguishable from a real
+                        -- zero. Never written from a coordinator-side clock (see
+                        -- record_stripe_complete).
+                        elapsed_s           REAL,
                         created_at          REAL NOT NULL,
                         PRIMARY KEY (run_id, stripe_id)
                     )
@@ -791,8 +935,47 @@ class MinerLedger:
                         abort_cleanup_status   TEXT NOT NULL DEFAULT 'none',
                         commit_event_id        TEXT,
                         commit_delivery_status TEXT NOT NULL DEFAULT 'none',
+                        -- [S172 STAGING-CAPACITY AMENDMENT §1.1] Durable cleanup
+                        -- status for the SUCCESS path. Deliberately NOT reusing
+                        -- `abort_cleanup_status`: the two lifecycles terminate
+                        -- differently and a reviewer reading 'abort_cleanup=done'
+                        -- on a committed trial would be reading a lie. 'none'
+                        -- until a successful commit discharges the reservations.
+                        commit_cleanup_status  TEXT NOT NULL DEFAULT 'none',
                         created_at             REAL NOT NULL,
                         finalized_at           REAL
+                    )
+                """)
+                # [S172 STAGING-CAPACITY R1, Beta §5 — REQUIRED] The RETENTION
+                # PREFLIGHT PLAN: the planned geometry the admissibility decision
+                # was derived from, persisted BEFORE first dispatch.
+                #
+                # Beta ruled this mandatory, citing the 816/1,028 confusion as its
+                # own evidence. A refused trial creates NO stripe rows, so without
+                # this table a post-mortem of the most important case — the trial
+                # that was refused — has nothing at all to read.
+                #
+                # A new TABLE, so an existing ledger needs no ALTER: `CREATE TABLE
+                # IF NOT EXISTS` is itself the migration.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS preflight_plans (
+                        run_id                TEXT PRIMARY KEY,
+                        schema_version        TEXT NOT NULL,
+                        created_at            REAL NOT NULL,
+                        total_seeds           INTEGER NOT NULL,
+                        miner_stripe_size     INTEGER NOT NULL,
+                        macro_stripe_count    INTEGER NOT NULL,
+                        stripe_spans_json     TEXT NOT NULL,
+                        stripe_spans_sha256   TEXT NOT NULL,
+                        stages_json           TEXT NOT NULL,
+                        per_stage_json        TEXT NOT NULL,
+                        caps_json             TEXT NOT NULL,
+                        execution_set_sha256  TEXT NOT NULL,
+                        required_files        INTEGER NOT NULL,
+                        high_water_mode       TEXT NOT NULL,
+                        configured_files      INTEGER,
+                        resolved_files        INTEGER,
+                        admitted              INTEGER NOT NULL
                     )
                 """)
                 # D0: trial-GLOBAL immutable context, persisted ONCE per run_id
@@ -819,6 +1002,30 @@ class MinerLedger:
                         created_at         REAL NOT NULL
                     )
                 """)
+                # [S172 elapsed_s persistence, Beta R4] ADDITIVE migration for a
+                # ledger created before the column existed. `CREATE TABLE IF NOT
+                # EXISTS` is a no-op on an existing DB, so a pre-R4 miner_ledger.db
+                # would otherwise never gain the column and every write would raise.
+                # ADD COLUMN with no DEFAULT backfills existing rows as NULL, which
+                # is exactly the ruled semantics ("old rows may remain NULL").
+                # Idempotent: guarded on the live table shape, never on a version
+                # counter nobody maintains.
+                stripe_cols = {
+                    r["name"] for r in
+                    conn.execute("PRAGMA table_info(stripes)").fetchall()
+                }
+                if "elapsed_s" not in stripe_cols:
+                    conn.execute("ALTER TABLE stripes ADD COLUMN elapsed_s REAL")
+                # [S172 STAGING-CAPACITY AMENDMENT §1.1] same additive shape for the
+                # success-path cleanup status.
+                trial_cols = {
+                    r["name"] for r in
+                    conn.execute("PRAGMA table_info(trials)").fetchall()
+                }
+                if "commit_cleanup_status" not in trial_cols:
+                    conn.execute(
+                        "ALTER TABLE trials ADD COLUMN commit_cleanup_status "
+                        "TEXT NOT NULL DEFAULT 'none'")
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_stripe_state "
                     "ON stripes (run_id, state)"
@@ -1037,6 +1244,95 @@ class MinerLedger:
                     f"UPDATE stripes SET {cols} WHERE run_id=? AND stripe_id=?", vals)
                 conn.commit()
 
+    # ----- [R1 §5] retention preflight provenance --------------------------
+    PREFLIGHT_PLAN_SCHEMA_VERSION = "s172_preflight_plan_v1"
+
+    def record_preflight_plan(self, run_id: str, detail: Dict[str, Any]) -> None:
+        """Persist the retention preflight plan for `run_id`.
+
+        ⚠ EVERY value is taken from `detail`, the record the preflight itself
+        derived and consumed. The only computation here is two SHA-256 digests OVER
+        those values, so the row cannot disagree with the decision it documents
+        (Beta §5: *"No parallel second derivation"*).
+
+        `INSERT OR REPLACE`: the preflight is latched once per trial, so in practice
+        one row is written per run; REPLACE keeps the row describing the decision
+        actually in force if a run_id is ever re-preflighted."""
+        spans_json = json.dumps(detail["stripe_spans"], separators=(",", ":"))
+        # The eligible execution set, per stage, as an immutable digest PLUS the
+        # backend/cap data needed to re-derive the bound (Beta §5 allows either;
+        # per_stage_json carries the identities, so the digest binds them).
+        exec_set_repr = json.dumps(
+            {"per_stage": detail["per_stage"], "caps": detail["caps"]},
+            sort_keys=True, separators=(",", ":"))
+        with self._write_lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO preflight_plans
+                       (run_id, schema_version, created_at, total_seeds,
+                        miner_stripe_size, macro_stripe_count, stripe_spans_json,
+                        stripe_spans_sha256, stages_json, per_stage_json,
+                        caps_json, execution_set_sha256, required_files,
+                        high_water_mode, configured_files, resolved_files,
+                        admitted)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (run_id,
+                     self.PREFLIGHT_PLAN_SCHEMA_VERSION,
+                     time.time(),
+                     int(detail["total_seeds"]),
+                     int(detail["miner_stripe_size"]),
+                     int(detail["stripe_count"]),
+                     spans_json,
+                     _sha256_bytes(spans_json.encode("utf-8")),
+                     json.dumps(detail["stages"], separators=(",", ":")),
+                     json.dumps(detail["per_stage"], separators=(",", ":")),
+                     json.dumps(detail["caps"], sort_keys=True,
+                                separators=(",", ":")),
+                     _sha256_bytes(exec_set_repr.encode("utf-8")),
+                     int(detail["required_files"]),
+                     str(detail["mode"]),
+                     (None if detail.get("configured_files") is None
+                      else int(detail["configured_files"])),
+                     (None if detail.get("resolved_files") is None
+                      else int(detail["resolved_files"])),
+                     1 if detail.get("admitted") else 0),
+                )
+                conn.commit()
+
+    def get_preflight_plan(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """The persisted plan, with its JSON columns decoded — the post-mortem
+        read path, and what the gate asserts against."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM preflight_plans WHERE run_id=?", (run_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for col, key in (("stripe_spans_json", "stripe_spans"),
+                         ("stages_json", "stages"),
+                         ("per_stage_json", "per_stage"),
+                         ("caps_json", "caps")):
+            out[key] = json.loads(out[col])
+        out["admitted"] = bool(out["admitted"])
+        return out
+
+    def total_expected_substripes(self) -> int:
+        """[S172 STAGING-CAPACITY AMENDMENT §1.2] Sum of `expected_substripes` over
+        every stripe the ledger currently records that is not cancelled.
+
+        This is the §1.2 formula applied to the work ACTUALLY ADMITTED rather than
+        to a planned trial: each stripe's `expected_substripes` was recorded from
+        the assigned worker's own advertised cap (`assign_stripes`), so the sum is
+        the number of files that stripe set can produce and must retain. Used only
+        by the no-preflight fallback in `effective_high_water_files`."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(COALESCE(expected_substripes, 0)), 0) AS n "
+                "FROM stripes WHERE state != ?", (ST_CANCELLED,),
+            ).fetchone()
+        return int(row["n"] or 0)
+
     def held_reservations(
         self, run_id: str, stripe_id: Optional[str] = None,
         attempt: Optional[int] = None,
@@ -1183,6 +1479,17 @@ class MinerLedger:
             with self._conn() as conn:
                 conn.execute(
                     "UPDATE trials SET abort_cleanup_status=? WHERE run_id=?",
+                    (status, run_id),
+                )
+                conn.commit()
+
+    def set_trial_commit_cleanup_status(self, run_id: str, status: str) -> None:
+        """[S172 STAGING-CAPACITY AMENDMENT §1.1] Durable record that a SUCCESSFUL
+        commit discharged its trial-owned reservations and staged files."""
+        with self._write_lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE trials SET commit_cleanup_status=? WHERE run_id=?",
                     (status, run_id),
                 )
                 conn.commit()
@@ -1458,22 +1765,43 @@ class MinerLedger:
         worker_id: str,
         substripes_done: int,
         survivors_total: int,
+        elapsed_s: Optional[float] = None,
     ) -> bool:
         """StripeComplete arrived: the GPU is free but transfers may still run,
         so claimed -> staging (Blocker 5), NOT straight to done. Stores the two
         authoritative reconciliation inputs (substripes_done, survivors_total).
         Clears the compute lease so the stripe is not compute-reclaimed while
-        staging. Returns True on transition."""
+        staging. Returns True on transition.
+
+        [S172 elapsed_s persistence, Beta R4] `elapsed_s` is the WORKER-REPORTED
+        stripe service time, persisted verbatim. It is NEVER synthesized here: a
+        coordinator-side `time.time()` would measure arrival-to-arrival, a
+        different quantity, and substituting it would silently relabel the
+        measurement. `None` (a peer that reported nothing) stores NULL, not 0.0.
+
+        ⚠ MEASUREMENT CAVEAT (Beta R4, binding on every consumer of this column):
+        this is stripe SERVICE TIME. It is sufficient for per-stripe and per-worker
+        rate calculations and for sizing work. It is NOT aggregate cluster
+        wall-clock throughput — concurrent workers' intervals OVERLAP. DO NOT
+        reconstruct fleet throughput by summing or averaging per-stripe seeds/sec;
+        any fleet-level figure needs an overlap-aware makespan denominator.
+
+        Idempotent by construction, inherited rather than added: the UPDATE is
+        guarded on `state=ST_CLAIMED`, which the first call clears to ST_STAGING.
+        A replayed stripe_complete therefore matches zero rows and cannot
+        double-write `elapsed_s` (or any other field)."""
         with self._write_lock:
             with self._conn() as conn:
                 cur = conn.execute(
                     """UPDATE stripes
                        SET state=?, stripe_complete_seen=1,
                            substripes_done=?, survivors_total=?,
+                           elapsed_s=?,
                            lease_expires_at=NULL
                        WHERE run_id=? AND stripe_id=? AND state=?
                          AND claimed_by=? AND current_attempt=?""",
                     (ST_STAGING, substripes_done, survivors_total,
+                     None if elapsed_s is None else float(elapsed_s),
                      run_id, stripe_id, ST_CLAIMED, worker_id, attempt),
                 )
                 conn.commit()
@@ -1612,6 +1940,33 @@ class StagingConfigurationError(StagingError):
     StagingHashMismatch, StagingTimeout), KEEP their existing retryable
     classification and their existing Blocker-3 matrix rows.
     """
+
+
+class StagingRetentionSizingError(StagingConfigurationError):
+    """[S172 STAGING-CAPACITY AMENDMENT §1.2] The file high-water cannot retain the
+    whole planned trial.
+
+    A `StagingConfigurationError` on purpose: this is a permanent, operator-visible
+    sizing defect, never a transient capacity condition. Retrying it would burn a Q3
+    budget against a bound that cannot change mid-trial. Raised BEFORE the first
+    stripe is dispatched, so a trial that cannot possibly fit never starts —
+    Beta was explicit that a warning is insufficient here."""
+
+
+class StagingPreflightProvenanceError(StagingConfigurationError):
+    """[S172 STAGING-CAPACITY R2 §5-A] The retention preflight plan could not be
+    durably persisted for a trial that would otherwise have been ADMITTED.
+
+    A `StagingConfigurationError` for the same reason the sizing error is: it is a
+    permanent coordinator/infrastructure condition, so it must not consume a Q3
+    retry or be charged to a worker. Raised BEFORE the ceiling is installed, before
+    the cohort is frozen and before the first `StripeAssign`, so a trial that
+    cannot record its own safety decision performs no partial execution.
+
+    Deliberately distinct from `StagingRetentionSizingError`: the sizing refusal
+    means "this trial cannot fit", this means "this trial cannot be audited". They
+    have different owners and different remedies, and §5-B requires that a
+    provenance failure never masks a sizing refusal."""
 
 
 class TrialAborted(Exception):
@@ -1985,6 +2340,22 @@ class RangeMinerCoordinator:
         # the §1.4 lease exemption and the §1.5 capacity timeout.
         self._pause_lock = threading.Lock()
         self._paused_connections: "OrderedDict[Any, Dict[str, Any]]" = OrderedDict()
+        # [S172 STAGING-CAPACITY AMENDMENT §1.4, Beta §5] STAGING-EXECUTOR
+        # RESERVATION WAITS — the second capacity blocker class.
+        #
+        # `_paused_connections` observes only the READER side. A staging worker
+        # looping in `StagingBackPressure` inside `_run_staging_job` pauses NO
+        # connection, so with this registry absent the bounded timeout could not
+        # see it at all: the 2026-08-07 run sat ~19 minutes against a 600 s bound
+        # because `staging_capacity_timeout_expired()` read an empty pause registry
+        # and truthfully answered "nothing is waiting".
+        #
+        # Deliberately under THE SAME `_pause_lock`, not a second lock: the timeout
+        # decision is "oldest blocker across BOTH classes", and that has to be one
+        # atomic read or the two registries can race and each look younger than the
+        # bound while their true oldest exceeds it.
+        self._staging_reservation_waits: "OrderedDict[Any, Dict[str, Any]]" = \
+            OrderedDict()
         # [S172-BP AMENDMENT F1] INGRESS RESUME CREDIT. A wake must CONSUME the
         # capacity observation that produced it, or one freed slot satisfies the
         # check repeatedly and wakes the whole paused fleet. At most ONE credit is
@@ -2059,6 +2430,32 @@ class RangeMinerCoordinator:
         self._derived_deferred_bound: Optional[int] = None
         self._derived_bound_detail: Dict[str, Any] = {}
         self._fallback_bound_cache: Dict[Tuple[int, int], int] = {}
+        # [S172 STAGING-CAPACITY AMENDMENT §1.2] The FILE high-water actually in
+        # force, resolved ONCE per trial by `preflight_trial_retention` before the
+        # first stripe is dispatched. None => no preflight has run yet, in which
+        # case `effective_high_water_files()` falls back to the configured value.
+        self._resolved_high_water_files: Optional[int] = None
+        self._retention_preflight_detail: Dict[str, Any] = {}
+        # [S172 STAGING-CAPACITY R2 §4] THE FROZEN ASSIGNABLE COHORT, per run:
+        #   run_id -> {(family_name, phase) -> {worker_id: capability_signature}}
+        #
+        # Set ONCE, at a SUCCESSFUL retention preflight, from the very stage sets
+        # the ceiling was derived over. It exists to hold the invariant the whole
+        # preflight is for:
+        #
+        #   actual worker used by trial ⊆ population used to derive the ceiling
+        #
+        # A worker that registers after the freeze is a legitimate daemon and may
+        # serve a LATER trial; it simply cannot alter the execution geometry of a
+        # trial whose safety bound is already certified and persisted. Beta
+        # rejected both alternatives — re-preflighting mid-trial, and padding the
+        # bound for hypothetical fleet members.
+        self._frozen_cohorts: Dict[str, Dict[Tuple[str, int], Dict[str, str]]] = {}
+        # The run whose cohort the retry path should consult. `serve_trial` serves
+        # ONE run at a time, so this is unambiguous; it exists because
+        # `_pick_other_worker` cannot be given a run_id without editing the
+        # AST-frozen matrix plumbing (see that method).
+        self._active_cohort_run_id: Optional[str] = None
         # [S172-BP AMENDMENT F5] which of the three bounds a `_defer_locked`
         # refusal tripped: derived count / operator-override count / retained-bytes
         # high-water. The §1.6 invariant reason must name it — the three are
@@ -2263,7 +2660,13 @@ class RangeMinerCoordinator:
         # EXACT concrete variant (and are not quarantined) BEFORE round-robin —
         # round-robin only across COMPATIBLE workers, so a java_lcg stripe is never
         # blindly handed to a pcg32-only worker and stranded `pending` forever.
-        compatible = [w for w in workers if self.can_assign_variant(w, family_name)]
+        # [S172 STAGING-CAPACITY R2 §4] Exact-variant support AND membership of the
+        # trial's FROZEN COHORT. `cohort_eligible` applies `can_assign_variant`
+        # first and can only narrow the pool further, so the Blocker-7 contract is
+        # unchanged; what it adds is that a worker which joined after the retention
+        # ceiling was certified cannot receive a stripe for THIS trial. Before the
+        # freeze exists (no preflight ran) it is the identical predicate.
+        compatible = self.cohort_filter(run_id, family_name, phase, workers)
         assignments: List[Dict[str, Any]] = []
         for i, (idx, seed_start, seed_count) in enumerate(macro):
             stripe_id = f"{prefix}_s{idx}"
@@ -2478,7 +2881,7 @@ class RangeMinerCoordinator:
         return self.ledger.reserve(
             run_id, stripe_id, attempt, sub_index, staging_generation, size_bytes,
             self.config.staging_high_water_bytes,
-            self.config.staging_high_water_files, now,
+            self.effective_high_water_files(), now,
         )
 
     def _fail_and_release(
@@ -2883,7 +3286,7 @@ class RangeMinerCoordinator:
         estimate, which is simultaneously too large for tiny inline results and too
         small for large remote spools."""
         need_files = self._attempt_need_files(stripe)
-        hw_files = self.config.staging_high_water_files
+        hw_files = self.effective_high_water_files()
         if need_files > hw_files:
             return (f"attempt needs {need_files} staging files but high-water is "
                     f"{hw_files} (staging_high_water_files)")
@@ -3061,6 +3464,330 @@ class RangeMinerCoordinator:
                 "the burst; detail=%s",
                 override, derived, self._derived_bound_detail)
         return override
+
+    # ----- §1.2 the derived whole-trial FILE retention bound ----------------
+    def resolve_eligible_by_stage(
+        self, workflow_stages: Any, candidate_workers: Any,
+    ) -> Dict[Tuple[str, int], List[Any]]:
+        """[S172 STAGING-CAPACITY R1, Beta §4 BLOCKER B] Resolve the eligible set
+        for EVERY planned stage, before the retention preflight.
+
+        Uses `can_assign_variant` — the SAME exact-variant rule `assign_stripes`
+        applies when it builds its `compatible` pool (`:2451`) — so the population
+        each stage is sized against is the population that stage will actually be
+        assigned to. Resolving once and reusing one collection across stages is
+        what Beta refused: a worker advertising only `java_lcg_hybrid` belongs to
+        the hybrid stages' sets and to no other.
+        """
+        candidates = list(candidate_workers)
+        out: Dict[Tuple[str, int], List[Any]] = {}
+        for family_name, phase in workflow_stages:
+            out[(str(family_name), int(phase))] = [
+                w for w in candidates if self.can_assign_variant(w, family_name)
+            ]
+        return out
+
+    # ----- [R2 §4] the frozen assignable cohort ----------------------------
+    def freeze_trial_cohort(
+        self, run_id: str,
+        eligible_by_stage: Dict[Tuple[str, int], List[Any]],
+    ) -> Dict[Tuple[str, int], Dict[str, str]]:
+        """Freeze the per-stage worker identities (and their capability
+        signatures) that the retention ceiling was derived over.
+
+        Called ONLY on a successful preflight, from the SAME `eligible_by_stage`
+        the derivation consumed — so the frozen cohort cannot describe a different
+        population from the one the persisted plan documents."""
+        frozen: Dict[Tuple[str, int], Dict[str, str]] = {}
+        for (family_name, phase), workers in eligible_by_stage.items():
+            frozen[(str(family_name), int(phase))] = {
+                str(getattr(w, "worker_id", w)): cohort_capability_signature(w)
+                for w in workers
+            }
+        self._frozen_cohorts[str(run_id)] = frozen
+        self._active_cohort_run_id = str(run_id)
+        logger.info(
+            "[S172-CAP] cohort frozen run=%s stages=%s",
+            run_id, {f"{f}/{p}": sorted(ids) for (f, p), ids in frozen.items()})
+        return frozen
+
+    def frozen_trial_cohort(
+        self, run_id: str,
+    ) -> Optional[Dict[Tuple[str, int], Dict[str, str]]]:
+        """The frozen cohort for `run_id`, or None if no preflight froze one."""
+        return self._frozen_cohorts.get(str(run_id))
+
+    def cohort_eligible(
+        self, run_id: str, family_name: str, phase: int, worker: Any,
+    ) -> bool:
+        """[R2 §4] THE ONE eligibility predicate every per-trial worker selection
+        must pass: exact-variant support AND membership of the frozen cohort.
+
+        Ordering matters — `can_assign_variant` first, so the Phase-4 exact-variant
+        contract is never weakened by anything here; the freeze can only ever
+        REMOVE candidates, never add one.
+
+        Returns True unconditionally when no cohort was frozen for this run. That
+        is the bare-API/gate path (no preflight ran), and it keeps this predicate a
+        strict refinement of the pre-R2 behaviour rather than a second, divergent
+        eligibility rule.
+        """
+        if not self.can_assign_variant(worker, family_name):
+            return False
+        frozen = self._frozen_cohorts.get(str(run_id))
+        if frozen is None:
+            return True
+        stage = frozen.get((str(family_name), int(phase)))
+        if stage is None:
+            # Not a stage this trial planned: nothing was certified for it.
+            return False
+        wid = str(getattr(worker, "worker_id", worker))
+        expected_sig = stage.get(wid)
+        if expected_sig is None:
+            # A LATE JOINER. It may register and serve a subsequent trial; it may
+            # not enter one whose ceiling was derived without it.
+            return False
+        # A frozen identity that RECONNECTED re-enters only if the advertisements
+        # the ceiling depended on are unchanged.
+        return expected_sig == cohort_capability_signature(worker)
+
+    def cohort_filter(
+        self, run_id: str, family_name: str, phase: int, workers: Any,
+    ) -> List[Any]:
+        """`workers` intersected with the frozen cohort for this trial/stage."""
+        return [w for w in workers
+                if self.cohort_eligible(run_id, family_name, phase, w)]
+
+    def trial_retention_requirement(
+        self, workflow_stages: Any, total_seeds: int, candidate_workers: Any,
+        eligible_by_stage: Optional[Dict[Tuple[str, int], List[Any]]] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """The §1.2 derived file requirement for the WHOLE planned trial, plus the
+        detail record that makes it auditable and durably reproducible (§5).
+
+        The stripe spans come from the REAL macro-stripe partition, so the last
+        (possibly short) stripe is counted at its true span rather than rounded up
+        to `miner_stripe_size`.
+
+        [R1 §4] `candidate_workers` is the connected, non-quarantined pool; the
+        per-stage eligible sets are resolved from it unless a caller supplies them
+        (gates inject asymmetric sets directly). Every number in the returned
+        detail comes from THIS derivation — nothing downstream recomputes it."""
+        macro = partition_macro_stripes(
+            int(total_seeds), int(self.config.miner_stripe_size), 0)
+        spans = [int(count) for (_idx, _start, count) in macro]
+        stages = [(str(f), int(p)) for f, p in workflow_stages]
+        if eligible_by_stage is None:
+            eligible_by_stage = self.resolve_eligible_by_stage(
+                stages, candidate_workers)
+        required, per_stage = trial_retention_files_required(
+            stages, spans, eligible_by_stage, caps=self._central_caps())
+        detail = {
+            "required_files": required,
+            "stages": stages,
+            "stage_count": len(stages),
+            "per_stage": per_stage,
+            "stripe_spans": spans,
+            "stripe_count": len(spans),
+            "candidate_workers": len(list(candidate_workers)),
+            # retained for continuity of the existing metrics/report surface: the
+            # stage-0 population size. The BINDING numbers are per_stage.
+            "eligible_workers": (per_stage[0]["eligible_worker_count"]
+                                 if per_stage else 0),
+            "miner_stripe_size": int(self.config.miner_stripe_size),
+            "total_seeds": int(total_seeds),
+            "caps": dict(self._central_caps()),
+        }
+        return required, detail
+
+    def effective_high_water_files(self) -> int:
+        """The FILE high-water in force right now — never None.
+
+        Resolution order, and the order is the contract:
+          1. the value `preflight_trial_retention` resolved for THIS trial;
+          2. an explicit operator value from config (legal, and already proven
+             >= the derived requirement by the preflight);
+          3. neither — the bare-API/gate path, which derives on demand from live
+             config and the currently-registered workers.
+
+        ⚠ BRANCH 3 IS NOT A PRODUCTION SOURCE, and that is what keeps it legal
+        under §1.3's "no silent fallback may remain the only production source".
+        `serve_trial` runs `preflight_trial_retention` ABOVE `assign_stripes`, so
+        every production reservation is made against a value resolved in branch 1
+        or 2. Branch 3 exists only for callers that never had a trial plan — it
+        reuses `_derive_bound_from_current_state`, the SAME on-demand derivation
+        the deferred bound already uses, rather than a second invented rule, and
+        it is still derived from live geometry and caps, never a constant.
+
+        Branch 3 takes the LARGER of two honest derivations, because each answers a
+        question the other cannot:
+          * `_derive_bound_from_current_state()` — one macro-stripe against the
+            tightest registered cap; the right answer before any stripe exists;
+          * `ledger.total_expected_substripes()` — the §1.2 formula applied to the
+            stripes actually admitted, using each stripe's own recorded
+            `expected_substripes`; the right answer once work is admitted, and the
+            one the first form under-answers when several stripes are in flight.
+        Taking the max is what stops the fallback from silently under-sizing the
+        way the on-demand deferred-bound derivation does (the F5 hazard)."""
+        if self._resolved_high_water_files is not None:
+            return int(self._resolved_high_water_files)
+        configured = getattr(self.config, "staging_high_water_files", None)
+        if configured is not None:
+            return int(configured)
+        return max(1,
+                   int(self._derive_bound_from_current_state()),
+                   int(self.ledger.total_expected_substripes()))
+
+    def preflight_trial_retention(
+        self, run_id: str, workflow_stages: Any, total_seeds: int,
+        candidate_workers: Any,
+        eligible_by_stage: Optional[Dict[Tuple[str, int], List[Any]]] = None,
+    ) -> Dict[str, Any]:
+        """[§1.2, binding] Resolve and ENFORCE the file high-water for this trial,
+        BEFORE the first stripe is dispatched.
+
+        `staging_high_water_files = None` means DERIVE. An explicit operator value
+        stays legal, but one BELOW the derived requirement raises
+        `StagingRetentionSizingError` — a warning is explicitly insufficient (Beta
+        §3), because within a trial nothing is released until commit, so an
+        under-sized ceiling cannot be recovered from once stripes are in flight.
+        That is the shape of the 2026-08-07 deadlock: a 16-macro-stripe production
+        run whose stages 0 and 1 alone needed 504 + 524 = 1,028 files against a
+        512 ceiling, with no route out.
+
+        [R1 §5] The resolved plan is PERSISTED before dispatch, from the very values
+        this method consumed — never a second derivation for logging.
+
+        [R2 §4] On success the stage-specific worker identities are FROZEN as this
+        trial's assignable cohort.
+
+        [R2 §5] Persistence is NOT optional telemetry. A trial cannot satisfy both
+        "the plan must be durably persisted before dispatch" and "if persistence
+        fails, dispatch anyway", so a provenance write failure on the ADMIT path is
+        terminal (`StagingPreflightProvenanceError`). On the REFUSAL path the sizing
+        refusal stays primary and the provenance failure is attached as secondary
+        evidence — an audit-write failure may not override a safety refusal, but an
+        inability to create the mandatory audit record does prevent a would-be
+        admission."""
+        stages = [(str(f), int(p)) for f, p in workflow_stages]
+        # Resolve ONCE, here, so the derivation, the persisted plan and the frozen
+        # cohort all describe the identical population (the anti-drift
+        # single-derivation design — unchanged, and now also load-bearing for §4).
+        if eligible_by_stage is None:
+            eligible_by_stage = self.resolve_eligible_by_stage(
+                stages, candidate_workers)
+        required, detail = self.trial_retention_requirement(
+            stages, total_seeds, candidate_workers,
+            eligible_by_stage=eligible_by_stage)
+        configured = getattr(self.config, "staging_high_water_files", None)
+        if configured is None:
+            resolved, mode = required, "derived"
+        else:
+            resolved, mode = int(configured), "operator"
+            if resolved < required:
+                detail.update({"configured_files": resolved, "mode": mode,
+                               "resolved_files": None, "admitted": False})
+                self._retention_preflight_detail = detail
+                # Persist the REFUSAL too: a trial that never started is exactly
+                # the case a post-mortem cannot reconstruct from stripe rows,
+                # because there are none.
+                #
+                # [R2 §5-B] THE SIZING REFUSAL IS PRIMARY. If this write fails the
+                # trial is still refused for sizing, with the same terminal
+                # classification; the provenance failure rides along as secondary
+                # evidence and NEVER becomes the reason. No cohort is frozen — a
+                # refused trial has no assignable population.
+                _prov_error = self._persist_preflight_plan(
+                    run_id, detail, fail_closed=False)
+                _secondary = ("" if _prov_error is None else
+                              f" [secondary: the refusal record could not be "
+                              f"persisted — {_prov_error}]")
+                raise StagingRetentionSizingError(
+                    f"staging_high_water_files={resolved} cannot retain the whole "
+                    f"planned trial, which requires {required} file(s): "
+                    f"{detail['stage_count']} planned stage(s) x "
+                    f"{detail['stripe_count']} planned stripe(s), sized per stage "
+                    f"by the tightest cap among that stage's eligible workers "
+                    f"({', '.join(str(s['files']) for s in detail['per_stage'])} "
+                    f"files per stage). Within a trial NOTHING is released before a "
+                    f"successful commit, so this trial would deadlock rather than "
+                    f"slow down. Raise staging_high_water_files to >= {required}, "
+                    f"or leave it unset to derive it.{_secondary}")
+        detail.update({"configured_files": configured, "mode": mode,
+                       "resolved_files": resolved, "admitted": True})
+        # [R2 §5-A] PERSIST BEFORE ANYTHING BECOMES EFFECTIVE. The ceiling is not
+        # installed and no cohort is frozen until the mandatory audit record is
+        # durable, so a failure here leaves the coordinator in exactly the state it
+        # was in before the preflight ran — nothing to unwind.
+        self._persist_preflight_plan(run_id, detail, fail_closed=True)
+        self._resolved_high_water_files = resolved
+        self._retention_preflight_detail = detail
+        # [R2 §4] Freeze the cohort from the SAME stage sets the ceiling was derived
+        # over. Everything after this point intersects against it.
+        self.freeze_trial_cohort(run_id, eligible_by_stage)
+        logger.info(
+            "[S172-CAP] retention preflight run=%s mode=%s required=%d resolved=%d "
+            "stages=%d stripes=%d per_stage=%s",
+            run_id, mode, required, resolved, detail["stage_count"],
+            detail["stripe_count"],
+            [(s["family_name"], s["phase"], s["eligible_worker_count"], s["files"])
+             for s in detail["per_stage"]])
+        return detail
+
+    def _persist_preflight_plan(
+        self, run_id: str, detail: Dict[str, Any], fail_closed: bool,
+    ) -> Optional[str]:
+        """[S172 STAGING-CAPACITY R1, Beta §5 — REQUIRED] Durably record the
+        planned geometry the retention decision was made from.
+
+        Beta ruled this mandatory, citing the 816/1,028 confusion as its own
+        evidence: a derived safety decision that determines admissibility needs
+        durable provenance, and a post-mortem must not have to reconstruct what the
+        coordinator believed from surviving stripe rows.
+
+        ⚠ WRITTEN FROM `detail` — the SAME object `preflight_trial_retention` just
+        consumed. Nothing here recomputes a requirement, a span or an eligible set
+        (Beta: *"No parallel second derivation"*). This method's only arithmetic is
+        a digest OVER those values.
+
+        [S172 STAGING-CAPACITY R2 §5 — CORRECTED] `fail_closed` selects the two
+        ruled behaviours, and the split exists because the two cases are NOT
+        symmetric:
+
+          * `fail_closed=True`  (the trial would be ADMITTED) — raise
+            `StagingPreflightProvenanceError`. The durable plan is not optional
+            telemetry; a would-be admission that cannot create its mandatory audit
+            record must not dispatch.
+          * `fail_closed=False` (the trial is ALREADY REFUSED for sizing) — return
+            the error string for the caller to attach as SECONDARY evidence. A
+            failure to write the audit record may not override a safety refusal,
+            and must not mask its root classification.
+
+        Returns None on success, or the error description when `fail_closed=False`.
+
+        ⚠ The previous revision swallowed BOTH cases and admitted the trial anyway.
+        Beta ruled that contradicts the requirement it was implementing."""
+        try:
+            self.ledger.record_preflight_plan(run_id, detail)
+            return None
+        except Exception as e:                                # noqa: BLE001
+            desc = f"{type(e).__name__}: {e}"
+            if fail_closed:
+                logger.error(
+                    "[S172-CAP] PREFLIGHT PROVENANCE WRITE FAILED for run=%s — the "
+                    "trial is REFUSED rather than dispatched without its mandatory "
+                    "retention record: %s", run_id, desc)
+                raise StagingPreflightProvenanceError(
+                    f"unable to durably persist retention plan for run {run_id!r}: "
+                    f"{desc}. The plan is a required pre-dispatch record, not "
+                    f"telemetry — a trial whose retention decision cannot be "
+                    f"audited does not start.") from e
+            logger.error(
+                "[S172-CAP] could not persist the retention preflight REFUSAL "
+                "record for run=%s (the sizing refusal STANDS and remains the "
+                "terminal cause; this is secondary evidence only): "
+                "%s", run_id, desc)
+            return desc
 
     # ----- §1.2 the capacity gate the reader consults ----------------------
     def staging_can_accept(self) -> bool:
@@ -3505,12 +4232,77 @@ class RangeMinerCoordinator:
         method being edited (§0)."""
         self._pump_deferred()
 
+    # ----- §1.4 staging-executor reservation waits (the 2nd blocker class) --
+    def register_staging_reservation_wait(
+        self, run_id: str, stripe_id: str, attempt: int, sub_index: int,
+        worker_id: Optional[str] = None, now: Optional[float] = None,
+    ) -> Any:
+        """[§1.4] Record that a staging-executor job is blocked on reservation
+        capacity. Idempotent and KEEPS THE ORIGINAL entry time on re-register, for
+        the same reason the pause registry does: the §1.4 clock measures how long
+        the OLDEST blocker has waited, and a spin loop re-entering every 20 ms must
+        not reset it (that would make the bound unreachable by construction)."""
+        now = time.time() if now is None else now
+        key = (run_id, stripe_id, int(attempt), int(sub_index))
+        with self._pause_lock:
+            rec = self._staging_reservation_waits.get(key)
+            if rec is None:
+                self._staging_reservation_waits[key] = {
+                    "since": now, "run_id": run_id, "stripe_id": stripe_id,
+                    "attempt": int(attempt), "sub_index": int(sub_index),
+                    "worker_id": str(worker_id) if worker_id else None,
+                }
+        return key
+
+    def clear_staging_reservation_wait(self, key: Any) -> None:
+        """[§1.4] The job reserved, or gave up. Idempotent."""
+        with self._pause_lock:
+            self._staging_reservation_waits.pop(key, None)
+
+    def staging_reservation_wait_count(self) -> int:
+        with self._pause_lock:
+            return len(self._staging_reservation_waits)
+
+    def _capacity_blockers_locked(self) -> List[Dict[str, Any]]:
+        """Every current capacity blocker, both classes, as one list.
+
+        MUST be called with `_pause_lock` held — that is what makes "oldest across
+        both classes" a single consistent observation."""
+        out: List[Dict[str, Any]] = []
+        for rec in self._paused_connections.values():
+            out.append({
+                "blocker_class": "reader_pause",
+                "since": rec["since"],
+                "worker_id": rec.get("worker_id"),
+                "run_id": None, "stripe_id": None,
+                "attempt": None, "sub_index": None,
+            })
+        for rec in self._staging_reservation_waits.values():
+            out.append({
+                "blocker_class": "staging_reservation",
+                "since": rec["since"],
+                "worker_id": rec.get("worker_id"),
+                "run_id": rec.get("run_id"), "stripe_id": rec.get("stripe_id"),
+                "attempt": rec.get("attempt"), "sub_index": rec.get("sub_index"),
+            })
+        return out
+
     # ----- §1.5 the bounded capacity timeout -------------------------------
     def staging_capacity_timeout_expired(self, now: Optional[float] = None) -> bool:
-        """True once the OLDEST currently-paused connection has been paused longer
-        than `staging_capacity_timeout`. LATCHED: once observed it stays true, so a
+        """True once the OLDEST capacity blocker has waited longer than
+        `staging_capacity_timeout`. LATCHED: once observed it stays true, so a
         reader thread and the serve loop can never disagree about whether the
-        bounded wait was exceeded."""
+        bounded wait was exceeded.
+
+        [S172 STAGING-CAPACITY AMENDMENT §1.4, Beta §5] A capacity wait is now
+
+            reader-side pause  OR  staging-executor reservation wait
+
+        This WIDENS THE OBSERVER, NOT THE CLASSIFICATION LAW. The reader-side
+        timeout keeps its exact previous meaning and the terminal reason is still a
+        coordinator/infrastructure condition that never enters the retry matrix —
+        the only change is that a blocker which paused no connection is no longer
+        invisible to the bound."""
         if self._capacity_timeout_latched_at is not None:
             return True
         limit = float(getattr(self.config, "staging_capacity_timeout", 600.0) or 0.0)
@@ -3522,8 +4314,9 @@ class RangeMinerCoordinator:
             # all reach here, and exactly one of them must take the snapshot.
             if self._capacity_timeout_latched_at is not None:
                 return True
-            oldest = min((r["since"] for r in self._paused_connections.values()),
-                         default=None)
+            blockers = self._capacity_blockers_locked()
+            oldest_rec = min(blockers, key=lambda r: r["since"], default=None)
+            oldest = oldest_rec["since"] if oldest_rec is not None else None
             if oldest is None or (now - oldest) <= limit:
                 return False
             self._capacity_timeout_latched_at = now
@@ -3534,6 +4327,14 @@ class RangeMinerCoordinator:
             # truthfully reports "0 connections paused (none)" about a timeout that
             # paused workers caused. The count and identities in the terminal
             # reason must be the TRIGGERING ones.
+            #
+            # [S172 STAGING-CAPACITY AMENDMENT §1.4] The snapshot now describes ONE
+            # capacity-block EPISODE spanning both blocker classes, and must name
+            # the ACTUAL TRIGGERING BLOCKER even if its thread has since exited —
+            # which is exactly the F3 pattern, extended to the executor side (a
+            # staging job that gives up and returns clears its wait record, and
+            # reading the live registry afterwards would attribute the timeout to
+            # nothing at all).
             self._capacity_timeout_snapshot = {
                 "latched_at": now,
                 "oldest_since": oldest,
@@ -3541,8 +4342,29 @@ class RangeMinerCoordinator:
                 "worker_ids": sorted(
                     str(r["worker_id"]) for r in
                     self._paused_connections.values()),
+                # --- §1.4 episode fields ---
+                "blocker_class": oldest_rec["blocker_class"],
+                "trigger": dict(oldest_rec),
+                "staging_reservation_wait_count":
+                    len(self._staging_reservation_waits),
+                "blocker_count": len(blockers),
+                "reserved_files": self.reserved_files(),
+                "reserved_bytes": self.reserved_bytes(),
+                "high_water_files": self._high_water_files_for_report(),
+                "high_water_bytes": int(self.config.staging_high_water_bytes),
+                "derived_required_files":
+                    self._retention_preflight_detail.get("required_files"),
             }
         return True
+
+    def _high_water_files_for_report(self) -> Optional[int]:
+        """The file ceiling for evidence/reporting. Never raises: a terminal
+        snapshot must not be able to mask the termination it is describing (the
+        G-SUMMARY-NO-MASK discipline)."""
+        try:
+            return int(self.effective_high_water_files())
+        except Exception:                                     # noqa: BLE001
+            return None
 
     def capacity_timeout_snapshot(self) -> Optional[Dict[str, Any]]:
         """The F3 evidence snapshot, or None if the timeout never latched."""
@@ -3560,6 +4382,7 @@ class RangeMinerCoordinator:
         timeout never latched (there is then nothing to attribute)."""
         now = time.time() if now is None else now
         limit = float(getattr(self.config, "staging_capacity_timeout", 600.0) or 0.0)
+        trigger_phrase = ""
         with self._pause_lock:
             snap = self._capacity_timeout_snapshot
             if snap is not None:
@@ -3567,6 +4390,32 @@ class RangeMinerCoordinator:
                 ids = list(snap["worker_ids"])
                 held = max(0.0, float(snap["latched_at"])
                            - float(snap["oldest_since"]))
+                # [§1.4] Name the TRIGGERING blocker and its class explicitly. A
+                # reader-pause timeout and an executor reservation wait are
+                # different infrastructure conditions with different remedies, and
+                # a terminal report that does not distinguish them sends the
+                # operator to the wrong side of the coordinator.
+                trig = snap.get("trigger") or {}
+                cls = snap.get("blocker_class", "unknown")
+                where = ""
+                if trig.get("stripe_id") is not None:
+                    where = (f" at {trig.get('run_id')}/{trig.get('stripe_id')}"
+                             f" attempt={trig.get('attempt')}"
+                             f" sub={trig.get('sub_index')}")
+                if trig.get("worker_id"):
+                    where += f" worker={trig['worker_id']}"
+                trigger_phrase = (
+                    f"; triggering blocker class={cls}{where}"
+                    f"; blockers at latch: {snap.get('blocker_count')} "
+                    f"({n} reader_pause, "
+                    f"{snap.get('staging_reservation_wait_count')} "
+                    f"staging_reservation)"
+                    f"; reservations held: files={snap.get('reserved_files')} "
+                    f"bytes={snap.get('reserved_bytes')}"
+                    f"; high_water files={snap.get('high_water_files')} "
+                    f"bytes={snap.get('high_water_bytes')}"
+                    f"; derived_required_files="
+                    f"{snap.get('derived_required_files')}")
             else:
                 n = len(self._paused_connections)
                 ids = sorted(str(r["worker_id"]) for r in
@@ -3576,7 +4425,8 @@ class RangeMinerCoordinator:
                          else f"; oldest pause held {held:.1f}s at the latch")
         return (f"coordinator_staging_capacity_timeout: staging did not release "
                 f"capacity within {limit:.1f}s; {n} connections paused "
-                f"({', '.join(ids) if ids else 'none'}){oldest_phrase}")
+                f"({', '.join(ids) if ids else 'none'})"
+                f"{oldest_phrase}{trigger_phrase}")
 
     # ----- §4 metrics ------------------------------------------------------
     def note_inbound_occupancy(self, qsize: int) -> None:
@@ -3930,67 +4780,95 @@ class RangeMinerCoordinator:
         renames, marks verified — then completes the stripe. A genuine failure
         (fetch/IO error, fetch StagingTimeout, hash mismatch) is routed through the
         phase-specific matrix (never a bare log)."""
-        while True:
-            try:
-                if kind == "inline":
-                    survivors = (getattr(msg, "inline", None) or {}).get("survivors", [])
-                    self.stage_inline_shard(
-                        run_id, stripe_id, attempt, sub_index, msg.seed_start,
-                        msg.seed_count, survivors, msg.size_bytes, msg.sha256)
-                else:
-                    self.stage_remote_shard(
-                        wconn, run_id, stripe_id, attempt, sub_index, msg.spool_path,
-                        msg.size_bytes, msg.sha256,
-                        fetch_timeout=self.config.staging_timeout)
-                break
-            except StagingBackPressure:
-                # Defect 3 (C3): an admitted attempt's sub-stripe that cannot reserve
-                # yet WAITS and resumes (nonblocking, off the dispatch loop) until
-                # capacity frees — it is NOT timed out into the retry matrix (that is
-                # for genuine worker failure, not self-inflicted starvation). Bail
-                # ONLY if the attempt is superseded / the stripe cancelled / the
-                # trial terminal, in which case its admission budget is de-committed.
-                if not self._attempt_live_locked(run_id, stripe_id, attempt):
-                    self._release_admission(run_id, stripe_id, attempt)
+        # [S172 STAGING-CAPACITY AMENDMENT §1.4] the executor-side capacity-wait
+        # registration for THIS job, if it ever blocks. Cleared on every exit path.
+        _cap_wait_key = None
+        try:
+            while True:
+                try:
+                    if kind == "inline":
+                        survivors = (getattr(msg, "inline", None) or {}).get("survivors", [])
+                        self.stage_inline_shard(
+                            run_id, stripe_id, attempt, sub_index, msg.seed_start,
+                            msg.seed_count, survivors, msg.size_bytes, msg.sha256)
+                    else:
+                        self.stage_remote_shard(
+                            wconn, run_id, stripe_id, attempt, sub_index, msg.spool_path,
+                            msg.size_bytes, msg.sha256,
+                            fetch_timeout=self.config.staging_timeout)
+                    break
+                except StagingBackPressure:
+                    # Defect 3 (C3): an admitted attempt's sub-stripe that cannot reserve
+                    # yet WAITS and resumes (nonblocking, off the dispatch loop) until
+                    # capacity frees — it is NOT timed out into the retry matrix (that is
+                    # for genuine worker failure, not self-inflicted starvation). Bail
+                    # ONLY if the attempt is superseded / the stripe cancelled / the
+                    # trial terminal, in which case its admission budget is de-committed.
+                    #
+                    # [S172 STAGING-CAPACITY AMENDMENT §1.4, Beta §5] THIS LOOP WAS
+                    # THE INVISIBLE BLOCKER. It pauses no connection, so before this
+                    # registration the bounded capacity timeout read an empty pause
+                    # registry and truthfully answered "nothing is waiting" while
+                    # this thread spun — the 2026-08-07 run sat ~19 minutes against a
+                    # 600 s bound. Registering here makes the wait OBSERVABLE to the
+                    # existing §1.5 clock. It does NOT add a second terminal path:
+                    # the serve loop's one permitted `fail_trial` now simply sees a
+                    # blocker it previously could not, which is what keeps this a
+                    # widening of the observer rather than of the classification law.
+                    if _cap_wait_key is None:
+                        _cap_wait_key = self.register_staging_reservation_wait(
+                            run_id, stripe_id, attempt, sub_index,
+                            worker_id=getattr(wconn, "worker_id", None))
+                    if not self._attempt_live_locked(run_id, stripe_id, attempt):
+                        self._release_admission(run_id, stripe_id, attempt)
+                        return None
+                    time.sleep(0.02)
+                    continue
+                except StagingHashMismatch:
+                    # Defect 5 (C3): an advertised-bytes hash mismatch is a FAILED
+                    # sub-stripe that feeds the one-retry path (approved brief), NOT a
+                    # trial-aborting non-retryable failure. retryable=True lets the
+                    # phase-specific matrix decide: constant phases (1/2) still fail
+                    # CLOSED, a hybrid stripe (3/4) gets its single retry to a DIFFERENT
+                    # worker (phase_degraded). Marking it non-retryable wrongly aborted
+                    # a hybrid trial on attempt 0.
+                    self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
+                                            "hash mismatch on advertised bytes")
                     return None
-                time.sleep(0.02)
-                continue
-            except StagingHashMismatch:
-                # Defect 5 (C3): an advertised-bytes hash mismatch is a FAILED
-                # sub-stripe that feeds the one-retry path (approved brief), NOT a
-                # trial-aborting non-retryable failure. retryable=True lets the
-                # phase-specific matrix decide: constant phases (1/2) still fail
-                # CLOSED, a hybrid stripe (3/4) gets its single retry to a DIFFERENT
-                # worker (phase_degraded). Marking it non-retryable wrongly aborted
-                # a hybrid trial on attempt 0.
-                self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
-                                        "hash mismatch on advertised bytes")
-                return None
-            except StagingTimeout:
-                self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
-                                        "staging timeout")
-                return None
-            except StagingConfigurationError as e:
-                # [Part B §2] Caught BEFORE the generic handler below. A staging
-                # CONFIGURATION defect (missing / conflicting / non-absolute /
-                # unwritable / capacity-invalid) is PERMANENT -> retryable=False,
-                # which routes to the matrix's existing non-retryable row and does
-                # NOT consume a Q3 retry.
-                #
-                # ⚠ NARROW BY CONSTRUCTION: only this subtype is reclassified.
-                # StagingError itself, StagingBackPressure, StagingHashMismatch and
-                # StagingTimeout keep their existing classifications above, and the
-                # generic transient handler below is unchanged.
-                #
-                # The reason string leads with the ROOT CAUSE so the terminal report
-                # names staging configuration, not a downstream MinerIngressError.
-                self._on_staging_failed(
-                    run_id, stripe_id, False, eligible_provider,
-                    f"staging configuration error (non-retryable): {e}")
-                return None
-            except Exception as e:  # noqa: BLE001 — transient fetch/IO -> retryable
-                self._on_staging_failed(run_id, stripe_id, True, eligible_provider, str(e))
-                return None
+                except StagingTimeout:
+                    self._on_staging_failed(run_id, stripe_id, True, eligible_provider,
+                                            "staging timeout")
+                    return None
+                except StagingConfigurationError as e:
+                    # [Part B §2] Caught BEFORE the generic handler below. A staging
+                    # CONFIGURATION defect (missing / conflicting / non-absolute /
+                    # unwritable / capacity-invalid) is PERMANENT -> retryable=False,
+                    # which routes to the matrix's existing non-retryable row and does
+                    # NOT consume a Q3 retry.
+                    #
+                    # ⚠ NARROW BY CONSTRUCTION: only this subtype is reclassified.
+                    # StagingError itself, StagingBackPressure, StagingHashMismatch and
+                    # StagingTimeout keep their existing classifications above, and the
+                    # generic transient handler below is unchanged.
+                    #
+                    # The reason string leads with the ROOT CAUSE so the terminal report
+                    # names staging configuration, not a downstream MinerIngressError.
+                    self._on_staging_failed(
+                        run_id, stripe_id, False, eligible_provider,
+                        f"staging configuration error (non-retryable): {e}")
+                    return None
+                except Exception as e:  # noqa: BLE001 — transient fetch/IO -> retryable
+                    self._on_staging_failed(run_id, stripe_id, True, eligible_provider, str(e))
+                    return None
+        finally:
+            # [§1.4] The wait record is cleared on EVERY exit — success, break,
+            # each `return None`, and any propagating exception. A leaked record
+            # would be a permanently-aging blocker that eventually trips the
+            # bounded timeout for a job that finished long ago, which is a worse
+            # failure than the one this registry exists to catch. `finally` is what
+            # makes that hold by construction rather than by enumerating the exits.
+            if _cap_wait_key is not None:
+                self.clear_staging_reservation_wait(_cap_wait_key)
         # success -> try to complete the stripe (idempotent, lifecycle-locked).
         # Defect 4 (C3): pass the eligible provider so a definitive reconciliation
         # failure discovered when the final shard verifies is routed to the matrix.
@@ -4134,11 +5012,51 @@ class RangeMinerCoordinator:
     def _pick_other_worker(
         self, workers: List[Any], exclude_worker_id: str, family_name: str
     ) -> Optional[Any]:
+        """[S172 STAGING-CAPACITY R2 §4] The retry matrix's reassignment is a
+        SECOND per-trial eligibility calculation, so it is frozen-cohort bound too.
+        Without this the invariant
+
+            actual worker used by trial ⊆ population the ceiling was derived over
+
+        would hold for the initial assignment and quietly fail on the retry path,
+        which is the harder failure to see.
+
+        ⚠ THE COHORT CHECK LIVES HERE, NOT AT THE CALL SITE, DELIBERATELY.
+        `_handle_stripe_failure_locked`, `handle_stripe_failure` and
+        `_on_staging_failed` are held AST-IDENTICAL to `4b1aad6` by
+        `G-MATRIX-DIFF-a` — the retry matrix and its surviving callers are
+        explicitly out of scope for this amendment. Threading `run_id`/`phase`
+        through the caller would have modified protected source; resolving the
+        frozen stage from `family_name` inside this (unprotected) helper achieves
+        the same restriction and leaves the matrix plumbing untouched.
+
+        The stage is resolved by family because `workflow_stages_for` emits a
+        DISTINCT concrete family per stage (`java_lcg`, `java_lcg_reverse`,
+        `java_lcg_hybrid`, `java_lcg_hybrid_reverse`), so a family names its stage
+        unambiguously. If several frozen stages ever shared a family, a worker
+        frozen for ANY of them is accepted — the union, which is the conservative
+        direction for a restriction.
+        """
+        frozen = (self._frozen_cohorts.get(self._active_cohort_run_id)
+                  if self._active_cohort_run_id else None)
+        stage_sigs: Dict[str, str] = {}
+        if frozen is not None:
+            for (fam, _ph), sigs in frozen.items():
+                if fam == str(family_name):
+                    stage_sigs.update(sigs)
         for w in workers:
             if getattr(w, "worker_id", None) == exclude_worker_id:
                 continue
-            if self.can_assign_variant(w, family_name):
-                return w
+            if not self.can_assign_variant(w, family_name):
+                continue
+            if frozen is not None:
+                wid = str(getattr(w, "worker_id", w))
+                expected = stage_sigs.get(wid)
+                if expected is None or expected != cohort_capability_signature(w):
+                    # a post-freeze joiner, or a reconnect whose relevant
+                    # advertisements changed: not assignable to THIS trial
+                    continue
+            return w
         return None
 
     def handle_stripe_failure(
@@ -4313,6 +5231,12 @@ class RangeMinerCoordinator:
                 event_id = commit_event_id
                 deliver = True
         event = {"event_type": "trial_commit", "run_id": run_id, "event_id": event_id}
+
+        # ================== PHASE 1 — DELIVERY (durable) ==================
+        # [S172 STAGING-CAPACITY R1, Beta §2 BLOCKER A] DELIVERY AND CLEANUP ARE
+        # TWO INDEPENDENT DURABLE PHASES. `commit_delivery_status` records ONLY
+        # that the sink returned successfully. It is NOT evidence that the
+        # reservation sweep finished — see phase 2.
         if deliver:
             try:
                 if self.phase5_sink is not None:
@@ -4323,9 +5247,96 @@ class RangeMinerCoordinator:
                 self.ledger.set_trial_commit_status(run_id, "failed")
                 event["delivery"] = "failed"
                 event["error"] = str(e)
+                # [§1.1, Beta Option C] ASSEMBLY FAILED: retain manifests, staged
+                # files AND reservations. The event_id stays retryable and a
+                # repaired retry re-enters this branch (delivery_status != "done"),
+                # so the sweep below happens exactly once, on the attempt that
+                # actually succeeded. D1.1's failed-commit retry contract depends
+                # on this retention — releasing here would delete the spools the
+                # retry has to re-read.
+                event["released_reservations"] = 0
+                event["staged_files_deleted"] = 0
+                event["cleanup"] = "retained"
+                return event
         else:
+            # Delivery is ALREADY durable. THE SINK IS NOT CALLED A SECOND TIME —
+            # but this is emphatically NOT a reason to return: see phase 2.
             event["delivery"] = "done"
+
+        # ================== PHASE 2 — CLEANUP (durable, RESUMABLE) ==========
+        # [S172 STAGING-CAPACITY R1, Beta §2 BLOCKER A — the defect this fixes]
+        #
+        # The submitted revision treated `commit_delivery_status == done` as proof
+        # that cleanup had also happened, and RETURNED on that branch before the
+        # sweep. That stranded reservations across a crash:
+        #
+        #     sink commit returns  -> delivery_status = done
+        #     release reservation 1
+        #     PROCESS CRASHES              (2..N still held, cleanup != done)
+        #     restart, same commit event
+        #     delivery_status == done -> old code returned here
+        #     -> reservations 2..N were NEVER discharged
+        #
+        # `ack_by_event_id` being idempotent is NECESSARY BUT NOT SUFFICIENT if the
+        # recovery path never calls it. The gating question is therefore
+        # `commit_cleanup_status`, never `commit_delivery_status`.
+        #
+        # Re-read from the LEDGER rather than trusting the pre-lock snapshot: on a
+        # restart this process has no in-memory history at all, and that is exactly
+        # the path that must work.
+        trial_row = self.ledger.get_trial(run_id)
+        if (trial_row or {}).get("commit_cleanup_status") == "done":
+            # Both phases are durably complete: a genuine duplicate. Release
+            # nothing, delete nothing, re-read no spool. Reported explicitly so a
+            # gate can assert the absence rather than infer it.
             event["duplicate"] = True
+            event["cleanup"] = "already_done"
+            event["released_reservations"] = 0
+            event["staged_files_deleted"] = 0
+            return event
+
+        # Delivery is done and cleanup is not: either this is the first pass, or a
+        # previous pass died partway through the sweep. Both take the same code
+        # path — that is what makes recovery a property of the design rather than a
+        # separate repair routine nobody exercises.
+        event["cleanup"] = "done" if deliver else "resumed"
+
+        # [S172 STAGING-CAPACITY AMENDMENT §1.1, Beta Option C — binding]
+        # RELEASE OCCURS ONLY AFTER THE SINK'S SUCCESSFUL COMMIT RETURN.
+        #
+        # Pre-amendment `commit_trial` released nothing, so a trial that SUCCEEDED
+        # held its whole file/byte reservation for the life of the coordinator.
+        # The failed 2026-08-07 run requested EIGHT trials: even sized for one whole
+        # trial, a success path that frees nothing ratchets across trials until the
+        # next one deadlocks. That is why G-SEQUENTIAL-TRIAL-REUSE is mandatory.
+        #
+        # This is NOT incremental assembly and NOT a mid-trial ack (Beta §2.1
+        # explicitly refuses both): every trial-owned reservation is discharged in
+        # one pass, after the terminal success.
+        #
+        # `ack_by_event_id` is REUSED rather than a second release path being
+        # written beside it (it had zero production callers). It is keyed solely by
+        # the reservation's immutable event_id and refuses any row not still
+        # `held`, so a row discharged by an earlier partial sweep is a no-op on
+        # resume, and it marks the shard acked and locally-deleted rather than
+        # merely dropping the reservation. `held_reservations` returns only rows
+        # still held, so the resumed sweep naturally sees exactly the remainder.
+        released = 0
+        for res in self.ledger.held_reservations(run_id):
+            if self.ack_by_event_id(res["event_id"], now):
+                released += 1
+        self.ledger.set_trial_commit_cleanup_status(run_id, "done")
+        # Capacity is now free; wake anything parked on it. `ack_by_event_id` pumps
+        # per release, so this is the zero-reservation case only — kept for parity
+        # with the abort discharge, which ends the same way.
+        self._pump_deferred()
+        event["released_reservations"] = released
+        event["staged_files_deleted"] = released
+        logger.info(
+            "[S172-CAP] trial %s commit cleanup %s — released %d trial-owned "
+            "reservation(s), deleted %d staged file(s); held_files=%d held_bytes=%d",
+            run_id, event["cleanup"], released, released,
+            self.reserved_files(), self.reserved_bytes())
         return event
 
     def fail_trial(
@@ -4969,6 +5980,9 @@ class RangeMinerCoordinator:
         workflow_stages = context.get("workflow_stages") or [(family_name, phase)]
         stage_idx = 0
         stage_assigned = False
+        # [S172 STAGING-CAPACITY AMENDMENT §1.2] the whole-trial retention preflight
+        # is a TRIAL-scoped decision, so it is latched here, not per stage.
+        retention_preflighted = False
         # [§4.3] Admission-window state. `admission_stage_idx` is the STAGE the
         # current window belongs to, and is the ONLY thing that can re-arm it —
         # which is how "reset only at a genuine new-stage boundary" is enforced
@@ -5197,11 +6211,72 @@ class RangeMinerCoordinator:
                         # variant, FAIL THE TRIAL EXPLICITLY — never strand stripes
                         # `pending` forever (which, with the now-unbounded timeout,
                         # would hang the trial).
-                        if not any(self.can_assign_variant(w, fam) for w in eligible):
+                        # [R2 §4] Uses the SAME cohort-aware predicate assignment
+                        # will use, so this guard and `assign_stripes` can never
+                        # disagree — otherwise a stage whose only candidates are
+                        # post-freeze joiners would pass here and then strand every
+                        # stripe `pending`, which is precisely what this guard
+                        # exists to prevent.
+                        if not any(self.cohort_eligible(run_id, fam, ph, w)
+                                   for w in eligible):
                             self.fail_trial(
                                 run_id,
                                 reason=f"no eligible worker supports variant {fam!r}")
                             continue
+                        # [S172 STAGING-CAPACITY AMENDMENT §1.2] TRIAL RETENTION
+                        # PREFLIGHT — resolve and enforce the FILE high-water for
+                        # the WHOLE planned trial.
+                        #
+                        # Placed HERE, above assign_stripes, so a trial that cannot
+                        # possibly fit creates no stripe rows, claims no stripe,
+                        # sends ZERO StripeAssign and generates zero result traffic.
+                        # It runs ONCE per trial (not per stage) because the
+                        # requirement is a whole-trial quantity: nothing is released
+                        # before a successful commit, so every stage's files coexist.
+                        # It runs at the FIRST stage because that is the earliest
+                        # point at which the eligible set is known — admission has
+                        # already completed above.
+                        if not retention_preflighted:
+                            try:
+                                self.preflight_trial_retention(
+                                    run_id, workflow_stages, total_seeds, eligible)
+                            except StagingRetentionSizingError as _ret_exc:
+                                # [R2 §5-B] The SIZING refusal stays primary even
+                                # when the refusal record could not be written; any
+                                # provenance failure rides inside `_ret_exc` as
+                                # secondary evidence and never becomes the reason.
+                                logger.error(
+                                    "[S172-CAP] TRIAL RETENTION PREFLIGHT FAILED "
+                                    "CLOSED — run=%s stages=%r total_seeds=%d "
+                                    "eligible=%d: %s",
+                                    run_id, workflow_stages, total_seeds,
+                                    len(eligible), _ret_exc)
+                                self.fail_trial(
+                                    run_id,
+                                    reason=(f"coordinator_staging_retention_sizing: "
+                                            f"{_ret_exc}"),
+                                    now=now)
+                                continue
+                            except StagingPreflightProvenanceError as _prov_exc:
+                                # [R2 §5-A] A would-be ADMISSION that cannot record
+                                # its own retention decision does not dispatch. This
+                                # is a coordinator/infrastructure terminal: direct
+                                # fail_trial, never the worker retry matrix, and it
+                                # happens before the ceiling is installed, before
+                                # the cohort is frozen and before any StripeAssign.
+                                logger.error(
+                                    "[S172-CAP] TRIAL RETENTION PREFLIGHT FAILED "
+                                    "CLOSED ON PROVENANCE — run=%s stages=%r "
+                                    "total_seeds=%d eligible=%d: %s",
+                                    run_id, workflow_stages, total_seeds,
+                                    len(eligible), _prov_exc)
+                                self.fail_trial(
+                                    run_id,
+                                    reason=(f"coordinator_staging_preflight_"
+                                            f"provenance: {_prov_exc}"),
+                                    now=now)
+                                continue
+                            retention_preflighted = True
                         _stage_assignments = self.assign_stripes(
                             run_id, fam, ph, total_seeds, eligible,
                             stripe_prefix=_stage_prefix(stage_idx))
@@ -5900,9 +6975,12 @@ class RangeMinerCoordinator:
                     run_id, msg.stripe_id, retryable=False,
                     eligible_workers=eligible_provider())
         elif mt == "stripe_complete":
+            # [S172 elapsed_s persistence, Beta R4] the worker's own measurement is
+            # threaded through verbatim; this call site used to drop it on the floor.
             self.ledger.record_stripe_complete(
                 run_id, msg.stripe_id, attempt, bound_worker_id,
-                msg.substripes_done, msg.survivors_total)
+                msg.substripes_done, msg.survivors_total,
+                elapsed_s=getattr(msg, "elapsed_s", None))
             # Defect 4 (C3): a StripeComplete whose totals do not reconcile is a
             # definitive failure routed through the matrix, not a park in staging.
             self.finalize_stripe(run_id, msg.stripe_id, eligible_provider=eligible_provider)
@@ -6246,7 +7324,8 @@ def build_coordinator(
     seed_cap_amd_hybrid: int = 1_000_000,
     miner_stripe_size: int = 67_108_864,
     staging_high_water_bytes: int = 16 * 1024 ** 3,
-    staging_high_water_files: int = 4096,
+    # [§1.2] None => derive the whole-trial requirement; see CoordinatorConfig.
+    staging_high_water_files: Optional[int] = None,
     compute_lease_timeout: float = 300.0,
     staging_timeout: float = 600.0,
     # [S172-BP §3, Beta C] The four staging-capacity controls, wired end to end.
@@ -6335,7 +7414,8 @@ def run_trial_miner(
     miner_substripes: int = 8,
     miner_output_dir: str = None,
     staging_high_water_bytes: int = 16 * 1024 ** 3,
-    staging_high_water_files: int = 4096,
+    # [§1.2] None => derive the whole-trial requirement; see CoordinatorConfig.
+    staging_high_water_files: Optional[int] = None,
     staging_dir: str = None,
     compute_lease_timeout: float = 300.0,
     staging_timeout: float = 600.0,
