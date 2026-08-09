@@ -1659,55 +1659,144 @@ class WatcherAgent:
                     "blocked_by": "dataset_authority_p0_5",
                 }
 
-        # [S140] SEED COVERAGE TRACKER — Step 1 only
-        # Reads MAX(seed_range_end) for this prng_type from exhaustive_progress.
-        # Advances seed_start between pipeline runs so we never re-search covered ranges.
-        # If DB lookup fails for any reason, defaults to 0 — run proceeds normally.
-        # Invariant: new seed range forces fresh study (resume_study=False, study_name='')
+        # [S145] CERTIFIED SEED COVERAGE CURSOR + PRE-DISPATCH DOMAIN WALL — Step 1 only
+        #
+        # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE AUTHORITY"
+        # (2026-08-07). Three changes from the S140 block this replaces:
+        #
+        #   1. CURSOR LAW (§6). The cursor is the FIRST GAP in the CERTIFIED union,
+        #      not MAX(seed_range_end) over exhaustive_progress. The legacy tracker
+        #      is deauthorized outright and is not read here or anywhere below it.
+        #   2. COMPLETE IS EXPLICIT (§6). When the certified union covers [0, 2^32)
+        #      exactly, NO RUN IS GENERATED and the operator is told the domain is
+        #      exhausted. There is no 4,294,967,296 next run, and the completion
+        #      state is never signalled by an out-of-range number.
+        #   3. FAIL-CLOSED (§7). S140 swallowed every exception and proceeded at
+        #      seed_start=0, so a broken coverage lookup was indistinguishable from
+        #      "no coverage yet". Step 1 is now BLOCKED instead, mirroring the
+        #      dataset-authority P0.5 block immediately above.
+        #
+        # The pre-dispatch wall runs here because this is upstream of the backend
+        # cascade: it is reached before the Step-1 subprocess is even spawned, and
+        # therefore before fleet work assignment, sieve execution, staging, or any
+        # coverage mutation — on the PWC path and the miner path alike.
         if step == 1 and 'seed_start' in final_params:
             try:
                 import sys as _sys
                 _sys.path.insert(0, str(Path(__file__).parent.parent))
                 from database_system import DistributedPRNGDatabase as _DBM
+                from utils.seed_coverage_ledger import (
+                    assert_seed_domain_preflight as _s145_domain_wall,
+                    SeedDomainPreflightError as _S145DomainError,
+                )
                 _db = _DBM()
                 _prng_type = final_params.get('prng_type', 'java_lcg')
-                _chunk_size = final_params.get('max_seeds', 5_000_000)
-                _next_start = _db.get_next_seed_start(_prng_type, _chunk_size)
-                if _next_start > 0:
-                    final_params['seed_start'] = _next_start
-                    # [S145-R1] Conditionalize fresh-study invariant on study_name presence.
-                    # If operator explicitly provides study_name in default_params, preserve
-                    # Optuna continuity across seed range boundaries (cross-session resume).
-                    # Default behavior (no study_name) unchanged — fresh study on range advance.
-                    _explicit_study = final_params.get('study_name', '')
-                    if not _explicit_study:
-                        final_params['resume_study'] = False   # INVARIANT: new range = fresh study
-                        final_params['study_name'] = ''        # force fresh study name
-                        logger.info(
-                            f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
-                            f"for {_prng_type} — forcing fresh study (no explicit study_name)"
-                        )
-                    else:
-                        final_params['resume_study'] = True
-                        logger.info(
-                            f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
-                            f"for {_prng_type} — preserving Optuna continuity "
-                            f"(study_name='{_explicit_study}' explicitly set) [S145-R1]"
-                        )
-                else:
-                    logger.info(
-                        f"[COVERAGE] Step 1: no prior coverage for "
-                        f"{_prng_type} — using seed_start=0"
-                    )
-
-                # [S167] warm-start DB injection removed per Team Beta ruling.
-                # Fresh runs must not be silently converted to historical warm-start runs.
-                # Resume is handled exclusively via explicit study_name / --resume-study.
-
+                # [S145 R1 C.2] NOT coerced. `max_seeds` absent/None means the
+                # run will use window_optimizer's own default (10_000_000,
+                # `window_optimizer.py:1753` and the `seed_count` default of
+                # `run_bayesian_optimization`), so that is what the wall must
+                # validate — validating a different number than the run uses
+                # would make this check describe a plan nobody executes. Any
+                # OTHER value is passed to the wall exactly as supplied.
+                _chunk_size = final_params.get('max_seeds', None)
+                if _chunk_size is None:
+                    _chunk_size = 10_000_000
+                # [S145 R1 Blocker B] truthiness is deliberate and fail-safe: a
+                # non-bool that reads as true yields {constant, variable}, the
+                # STRONGER request, which counts FEWER certified records and can
+                # only under-claim coverage (re-sweep), never over-claim it.
+                _test_both = bool(final_params.get('test_both_modes', False))
+                _cursor = _db.get_certified_cursor(
+                    _prng_type, test_both_modes=_test_both)
             except Exception as _e:
-                logger.warning(
-                    f"[COVERAGE] Seed coverage lookup failed: {_e} — using seed_start=0"
+                _msg = (f"SEED_COVERAGE_S145: certified cursor unavailable for Step 1: "
+                        f"{_e}. Refusing to fall back to seed_start=0 — a silent "
+                        f"fallback would re-sweep certified ground and is the defect "
+                        f"class this amendment closes.")
+                logger.error("Step %d blocked before dispatch: %s", step, _msg)
+                print(f"❌ {_msg}")
+                return {
+                    "success": False,
+                    "error": _msg,
+                    "blocked_by": "seed_coverage_cursor_unavailable",
+                }
+
+            # --- §6 COMPLETE: the domain is exhausted. No run is generated. ---
+            if _cursor.is_complete:
+                _msg = (f"SEED_DOMAIN_COMPLETE: the certified coverage union for "
+                        f"{_prng_type} covers the governed domain "
+                        f"[{_cursor.domain_start}, {_cursor.domain_end_exclusive}) "
+                        f"exactly ({_cursor.covered_seed_count:,} seeds across "
+                        f"{_cursor.certified_interval_count} certified interval(s)). "
+                        f"The sweep is finished; there is no next seed_start. No Step 1 "
+                        f"run was generated.")
+                logger.info("Step %d not generated: %s", step, _msg)
+                print(f"✅ {_msg}")
+                return {
+                    "success": False,
+                    "error": _msg,
+                    "blocked_by": "seed_domain_complete",
+                    "seed_domain_complete": True,
+                    "next_seed_start": None,
+                }
+
+            _next_start = _cursor.next_seed_start
+            if _next_start > 0:
+                final_params['seed_start'] = _next_start
+                # [S145-R1] Conditionalize fresh-study invariant on study_name presence.
+                # If operator explicitly provides study_name in default_params, preserve
+                # Optuna continuity across seed range boundaries (cross-session resume).
+                # Default behavior (no study_name) unchanged — fresh study on range advance.
+                _explicit_study = final_params.get('study_name', '')
+                if not _explicit_study:
+                    final_params['resume_study'] = False   # INVARIANT: new range = fresh study
+                    final_params['study_name'] = ''        # force fresh study name
+                    logger.info(
+                        f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
+                        f"for {_prng_type} — forcing fresh study (no explicit study_name)"
+                    )
+                else:
+                    final_params['resume_study'] = True
+                    logger.info(
+                        f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
+                        f"for {_prng_type} — preserving Optuna continuity "
+                        f"(study_name='{_explicit_study}' explicitly set) [S145-R1]"
+                    )
+            else:
+                logger.info(
+                    f"[COVERAGE] Step 1: no certified coverage for {_prng_type} — "
+                    f"using seed_start=0 (the legacy exhaustive_progress tracker is "
+                    f"retained as telemetry and carries zero certified authority)"
                 )
+
+            # [S167] warm-start DB injection removed per Team Beta ruling.
+            # Fresh runs must not be silently converted to historical warm-start runs.
+            # Resume is handled exclusively via explicit study_name / --resume-study.
+
+            # --- §7 PRE-DISPATCH SEED-DOMAIN WALL -------------------------------
+            # Same law as utils/run_finalizer.py:533/:547, same imported constant,
+            # applied BEFORE the work instead of after it. Zero GPU assignments on
+            # failure: nothing has been dispatched at this point in the function.
+            # [S145 R1 C.2] The values reach the wall in their AUTHORITATIVE
+            # FORM. The pre-R1 code wrapped both in `int(...)`, which defeated
+            # the wall's own type contract: `wall(True)` rejects, but
+            # `int(True) -> 1` sails through, and `int(1.9) -> 1` silently
+            # truncates a malformed request into an accepted one. Normal
+            # argparse/manifest operation already yields integers, so nothing
+            # legitimate changes.
+            try:
+                _s145_domain_wall(
+                    final_params['seed_start'], _chunk_size,
+                    context=f"watcher_step1 {_prng_type}",
+                )
+            except _S145DomainError as _e:
+                logger.error("Step %d blocked before dispatch: %s", step, _e)
+                print(f"❌ {_e}")
+                return {
+                    "success": False,
+                    "error": str(_e),
+                    "blocked_by": "seed_domain_preflight",
+                }
 
         # Build command
         # Detect script type: .sh uses bash, .py uses python3

@@ -736,6 +736,40 @@ def run_bayesian_optimization(
         Dictionary with optimization results
     """
 
+    # [S145] PRE-DISPATCH SEED-DOMAIN WALL — the CLI entry point.
+    #
+    # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE
+    # AUTHORITY" §7. The WATCHER path applies this same wall before it spawns
+    # Step 1; this is the OTHER entry point. A direct
+    # `python3 window_optimizer.py --seed-start ...` invocation does not pass
+    # through WATCHER, and without this it would run a full sieve across the
+    # fleet and only be refused by the finalizer at publication — the expensive
+    # after-the-GPU-work rejection §7 exists to eliminate.
+    #
+    # THE FIRST STATEMENT OF THE FUNCTION BODY, deliberately, and gated: not one
+    # call of any kind may execute ahead of it. That is not a claim in a comment
+    # — G-DOMAIN-PREFLIGHT walks this function's live AST and reds if any Call
+    # node appears at a lower line number.
+    #
+    # It shares the finalizer's single SEED_DOMAIN_EXCLUSIVE_MAX (§1); this
+    # module defines no domain constant of its own.
+    from utils.seed_coverage_ledger import (
+        assert_seed_domain_preflight as _s145_domain_wall,
+        SeedDomainPreflightError as _S145DomainError,
+    )
+    # [R1 C.2] Values reach the wall in their AUTHORITATIVE FORM — no `int(...)`
+    # coercion. `wall(True)` rejects, but `int(True) -> 1` would be accepted,
+    # and `int(1.9) -> 1` would silently truncate a malformed request into a
+    # legal one, defeating `_require_int`'s contract.
+    try:
+        _s145_domain_wall(seed_start, seed_count,
+                          context=f"window_optimizer CLI {prng_type}")
+    except _S145DomainError as _s145_err:
+        print(f"\n❌ {_s145_err}")
+        print("   Refused BEFORE dispatch: no fleet work assignment, no sieve "
+              "execution, no staging, no coverage mutation.")
+        raise
+
     if not COORDINATOR_AVAILABLE:
         print("❌ Error: coordinator.py not available")
         print("   Cannot run sieves without coordinator")
@@ -1074,6 +1108,29 @@ def run_bayesian_optimization(
     return results
 
 
+def _s145_plan_iterations(iterations):
+    """Validate the plan's iteration count (S145 R1 Blocker C).
+
+    Raises the wall's own error type so the caller's single `except
+    SeedDomainPreflightError` arm covers the whole plan validation, and so a
+    malformed `iterations` is refused with the same fail-closed vocabulary as a
+    malformed seed range. `bool` is rejected for the same reason the wall
+    rejects it: `True == 1` in Python.
+    """
+    from utils.seed_coverage_ledger import SeedDomainPreflightError
+    if isinstance(iterations, bool) or not isinstance(iterations, int):
+        raise SeedDomainPreflightError(
+            f"seed_domain_preflight [run_with_config plan]: iterations must be "
+            f"a Python int, got {iterations!r} ({type(iterations).__name__})."
+        )
+    if iterations <= 0:
+        raise SeedDomainPreflightError(
+            f"seed_domain_preflight [run_with_config plan]: iterations "
+            f"{iterations} must be strictly positive."
+        )
+    return iterations
+
+
 def run_with_config(
     config_file: str,
     lottery_file: str,
@@ -1095,6 +1152,49 @@ def run_with_config(
     This mode is for when you already have optimal_window_config.json
     and just want to generate survivors with those parameters.
     """
+
+    # [S145 R1 BLOCKER C] WHOLE-PLAN PRE-DISPATCH SEED-DOMAIN WALL.
+    #
+    # This is the THIRD execution path. `run_with_config` invokes
+    # `run_bidirectional_test` directly in a loop, so it never passes through
+    # WATCHER or `run_bayesian_optimization` and the pre-R1 wall did not cover
+    # it — the report's claim of "both entry points" was too broad.
+    #
+    # VALIDATING ONLY THE FIRST CHUNK IS INSUFFICIENT. The loop sweeps
+    # `[iteration * max_seeds, +max_seeds)`, so at `max_seeds = 2^30` with
+    # `iterations = 5` the first four intervals are legal and THE FIFTH escapes
+    # [0, 2^32). §7 exists to refuse that before the first GPU iteration rather
+    # than after ~4 billion seeds of work.
+    #
+    # THE FIRST STATEMENT OF THE FUNCTION BODY, gated: no call may execute ahead
+    # of it, and no `run_bidirectional_test` may execute before the ENTIRE plan
+    # validates. Values are passed in their authoritative form — no `int(...)`
+    # coercion (R1 C.2).
+    from utils.seed_coverage_ledger import (
+        assert_seed_domain_preflight as _s145_domain_wall,
+        SeedDomainPreflightError as _S145DomainError,
+    )
+    try:
+        # (1) Type-gate `max_seeds` THROUGH THE WALL before any arithmetic uses
+        #     it. seed_start=0 is always legal, so this call can only fail on
+        #     `max_seeds` itself — which is what stops a str/float/bool reaching
+        #     the multiplication below and producing a nonsense plan.
+        _s145_domain_wall(0, max_seeds, context="run_with_config plan sizing")
+        _s145_iterations = _s145_plan_iterations(iterations)
+        # (2) EVERY interval the loop will generate, not just the first.
+        for _s145_i in range(_s145_iterations):
+            _s145_domain_wall(
+                _s145_i * max_seeds, max_seeds,
+                context=(f"run_with_config plan iteration "
+                         f"{_s145_i + 1}/{_s145_iterations}"),
+            )
+    except _S145DomainError as _s145_err:
+        print(f"\n❌ {_s145_err}")
+        print(f"   The REQUESTED PLAN was refused as a whole before any "
+              f"iteration ran: max_seeds={max_seeds!r} x iterations="
+              f"{iterations!r}. No fleet work assignment, no sieve execution, "
+              f"no staging, no coverage mutation.")
+        raise
 
     if not COORDINATOR_AVAILABLE:
         print("❌ Error: coordinator.py not available")

@@ -3005,6 +3005,48 @@ def add_window_optimizer_to_coordinator():
         print(f"✅ {_BINARY_NPZ_NAME_d3_5} now resolves to the certified "
               f"generation ({_artifact_d3_5.final_row_count:,} seeds, 22 fields)")
 
+        # [S145] BIND CERTIFIED COVERAGE TO THIS PUBLICATION.
+        #
+        # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE
+        # AUTHORITY" §5, verbatim: "Starting a run is not coverage. Receiving
+        # all GPU results is not coverage. Writing a provisional DB row is not
+        # coverage. The canonical retained artifact is the evidence wall."
+        #
+        # This is the ONLY producer of certified coverage, and it sits AFTER
+        # `finalize_run` returned a RunArtifactResult. Every failure mode of the
+        # finalizer raises and returns no result, so a failed publication cannot
+        # reach this line and cannot create an interval.
+        #
+        # IT RAISES ON FAILURE, and that is deliberate. The generation is
+        # already published and stays published; what fails is the coverage
+        # record. Swallowing that would leave the cursor silently wrong and the
+        # next run silently re-sweeping — the exact defect class this amendment
+        # closes. The write is idempotent (content-addressed coverage_id), so a
+        # retry after the cause is fixed is safe. Precedent for failing loudly
+        # after a committed action: the finalizer's own
+        # PublicationDurabilityError.
+        from database_system import DistributedPRNGDatabase as _DBM_s145
+        from miner.dataset_authority import get_frozen_dataset as _frozen_ds_s145
+
+        # [R1 Blocker A] EVERY coverage field is derived from the artifact
+        # inside the ledger — run_id, prng_base, skip_modes_executed, the seed
+        # range, the artifact digest, the generation and the repository commit.
+        # Nothing here can substitute a value the artifact does not attest;
+        # there is no parameter for it. The only two inputs are the run-scoped
+        # frozen dataset digest (provenance, per Beta NOT a partition key) and
+        # the optional study name.
+        _s145_coverage = _DBM_s145().record_certified_coverage(
+            _artifact_d3_5,
+            dataset_sha256=_frozen_ds_s145().sha256,
+            study_identity=str(locals().get('_mp_study_name') or '') or None,
+        )
+        print(f"   [S145 COVERAGE] certified "
+              f"[{_s145_coverage.seed_start:,}, "
+              f"{_s145_coverage.seed_end_exclusive:,}) for "
+              f"{_s145_coverage.prng_base} "
+              f"modes={{{_s145_coverage.skip_modes_executed}}} "
+              f"— coverage_id {_s145_coverage.coverage_id[:16]}")
+
         # [S172 Phase-5 D3.5 §10] `bidirectional_survivors.json` is a
         # POST-SUCCESS SUMMARY of the generation that was just certified. It is
         # NO LONGER the canonical Steps 2-6 input, and it is no longer produced

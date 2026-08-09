@@ -327,48 +327,134 @@ class DistributedPRNGDatabase:
             
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_next_seed_start(self, prng_type: str, chunk_size: int) -> int:
-        """
-        [S140] Seed Coverage Tracker — returns the next uncovered seed_start
-        for a given prng_type across ALL prior runs.
+    # -----------------------------------------------------------------
+    # [S145] CERTIFIED COVERAGE — the cursor authority.
+    #
+    # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE
+    # AUTHORITY" (2026-08-07) deauthorized `exhaustive_progress` as a cursor
+    # source entirely. Its 15 rows are RETAINED above as historical telemetry
+    # and are never read by anything below this line.
+    #
+    # `update_exhaustive_progress` / `get_exhaustive_progress` are deliberately
+    # unchanged: Beta ruled the rows may be displayed and audited, only never
+    # used to select the seed start of a certified generation.
+    # -----------------------------------------------------------------
+    def _coverage_ledger(self):
+        """The append-only certified coverage ledger, lazily constructed.
 
-        Queries MAX(seed_range_end) from exhaustive_progress for this prng_type.
-        If no prior coverage exists, returns 0 (start from beginning).
+        Imported lazily so that adding a coverage authority does not change
+        `database_system`'s import surface for its many existing consumers —
+        matching this module's established style (see the in-function
+        `import logging` calls).
+        """
+        ledger = getattr(self, '_coverage_ledger_obj', None)
+        if ledger is None:
+            from utils.seed_coverage_ledger import CoverageLedger
+            ledger = CoverageLedger(self.db_path)
+            self._coverage_ledger_obj = ledger
+        return ledger
+
+    def get_certified_cursor(self, prng_type: str, *, test_both_modes: bool):
+        """[S145] The certified cursor: first gap, or an explicit COMPLETE.
+
+        Returns a `CursorResult` carrying `status` ('OPEN' | 'COMPLETE'),
+        `next_seed_start` (None exactly when COMPLETE), the covered seed count
+        and the normalized union. Read `status` — never the number alone.
+
+        [R1 Blocker B] `prng_type` and `test_both_modes` are CANONICALIZED here
+        into Beta's coverage identity — `prng_base` plus the required
+        executed-mode set — so a WATCHER query for `java_lcg_hybrid` and a
+        publication hook recording `java_lcg` land in the SAME namespace instead
+        of splitting one logical search in two.
+
+        `test_both_modes` is keyword-only with NO DEFAULT, deliberately. Under
+        the containment law a smaller requested set is the WEAKER request, so a
+        defaulted value would silently over-claim coverage — the exact failure
+        the blocker exists to prevent. The caller must state what it searched.
+
+        FAIL-CLOSED, and this is a deliberate change from S140. The old
+        `get_next_seed_start` swallowed every exception and returned 0, so a
+        broken coverage lookup was indistinguishable from "no coverage yet" and
+        silently re-swept certified ground. Silent coverage failure is the
+        defect class this whole amendment exists to close, so the exception now
+        propagates and the caller must decide explicitly.
+        """
+        from utils.seed_coverage_ledger import canonical_coverage_identity
+        prng_base, required_modes = canonical_coverage_identity(
+            prng_type, test_both_modes=test_both_modes)
+        return self._coverage_ledger().certified_cursor(prng_base, required_modes)
+
+    def get_next_seed_start(self, prng_type: str, chunk_size: int,
+                            *, test_both_modes: bool) -> Optional[int]:
+        """[S145] Next certified seed_start — FIRST GAP, not MAX(seed_range_end).
+
+        Beta §6: `MAX(seed_range_end)` is invalid in the presence of gaps and
+        contaminated history. With certified [0, 1000) and [2^30, 2^31) the
+        answer is 1000, not 2^31 — the old rule declared the ~1.07-billion-seed
+        hole covered.
 
         Args:
             prng_type:  PRNG identifier e.g. 'java_lcg', 'mt19937'
             chunk_size: Size of each search chunk (logged for context only)
 
         Returns:
-            int: Next seed_start to use (0 if no prior coverage recorded)
+            Optional[int]: the first uncovered seed, or **None** when the
+            certified union covers [0, 2^32) exactly. None is the explicit
+            completion state — Beta §6: "There is no 4,294,967,296 next run."
+            A caller that ignores it and uses the value arithmetically gets a
+            TypeError, never an out-of-domain sweep.
         """
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                result = conn.execute(
-                    'SELECT MAX(seed_range_end) FROM exhaustive_progress WHERE prng_type = ?',
-                    (prng_type,)
-                ).fetchone()
-                if result and result[0] is not None:
-                    next_start = int(result[0])
-                    import logging
-                    logging.getLogger(__name__).info(
-                        f"[COVERAGE] {prng_type}: prior coverage up to {next_start:,} — "
-                        f"next seed_start={next_start:,}"
-                    )
-                    return next_start
-                else:
-                    import logging
-                    logging.getLogger(__name__).info(
-                        f"[COVERAGE] {prng_type}: no prior coverage — starting at seed 0"
-                    )
-                    return 0
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"[COVERAGE] get_next_seed_start failed: {e} — defaulting to seed_start=0"
+        import logging
+        cursor = self.get_certified_cursor(prng_type,
+                                           test_both_modes=test_both_modes)
+        _log = logging.getLogger(__name__)
+
+        if cursor.is_complete:
+            _log.info(
+                f"[COVERAGE] {prng_type}: certified domain "
+                f"[{cursor.domain_start}, {cursor.domain_end_exclusive}) is "
+                f"COMPLETE — no next seed_start exists."
             )
-            return 0
-    
+            return None
+
+        if cursor.certified_interval_count == 0:
+            _log.info(
+                f"[COVERAGE] {prng_type}: no CERTIFIED coverage — starting at "
+                f"seed 0. (The legacy exhaustive_progress tracker is retained "
+                f"as telemetry and carries zero certified authority.)"
+            )
+        else:
+            _log.info(
+                f"[COVERAGE] {prng_type}: {cursor.covered_seed_count:,} seeds "
+                f"certified across {cursor.certified_interval_count} interval(s) "
+                f"— next seed_start={cursor.next_seed_start:,} (first gap; "
+                f"chunk_size={chunk_size:,})"
+            )
+        return cursor.next_seed_start
+
+    def record_certified_coverage(self, artifact, *, dataset_sha256: str,
+                                  study_identity: str = None):
+        """[S145] Bind ONE certified interval to a successful publication.
+
+        Beta §5, verbatim: "Starting a run is not coverage. Receiving all GPU
+        results is not coverage. Writing a provisional DB row is not coverage.
+        The canonical retained artifact is the evidence wall."
+
+        [R1 Blocker A] A thin pass-through to the ONE certification door.
+        `artifact` must be the `RunArtifactResult` returned by a successful
+        `utils.run_finalizer.finalize_run`; every coverage field — run_id,
+        prng_base, skip_modes_executed, seed range, artifact digest, generation
+        and repository commit — is derived FROM it. This wrapper accepts no
+        substitute for any of them, so a caller cannot record a range or an
+        identity the artifact does not attest.
+        """
+        return self._coverage_ledger().record_publication(
+            artifact,
+            dataset_sha256=dataset_sha256,
+            study_identity=study_identity,
+        )
+
+
     def write_step1_trial(self, run_id, study_name, trial_number, prng_type,
                           seed_range_start, seed_range_end, params,
                           trial_score, forward_survivors, reverse_survivors,
