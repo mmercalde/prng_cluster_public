@@ -2534,6 +2534,13 @@ class RangeMinerCoordinator:
         self.phase5_sink = phase5_sink
         # worker_id -> live WorkerConnection (Decision A binding)
         self.connections: Dict[str, WorkerConnection] = {}
+        # [DEFECT A §15] worker_id -> how many times it has completed a REGISTER
+        # handshake in the CURRENT trial, so the observability record can say
+        # REGISTERED vs RECONNECTED. Run-scoped: cleared at each serve_trial, so a
+        # later trial's first registration is never mislabelled a reconnect. It is
+        # a record-keeping counter ONLY — nothing reads it to decide eligibility,
+        # which stays with the frozen execution set.
+        self._registration_generation: Dict[str, int] = {}
         # Manifests published to Phase 5 this run (attempt-scoped, Blocker 2).
         # Test-inspectable; the real handoff is phase5_sink.publish_shard.
         self.enqueued: List[Dict[str, Any]] = []
@@ -6532,6 +6539,8 @@ class RangeMinerCoordinator:
         workflow_stages = context.get("workflow_stages") or [(family_name, phase)]
         stage_idx = 0
         stage_assigned = False
+        # [DEFECT A §15] REGISTERED-vs-RECONNECTED is a within-trial distinction.
+        self._registration_generation = {}
         # [S172 STAGING-CAPACITY AMENDMENT §1.2] the whole-trial retention preflight
         # is a TRIAL-scoped decision, so it is latched here, not per stage.
         retention_preflighted = False
@@ -6647,7 +6656,10 @@ class RangeMinerCoordinator:
                         # Defect 3 (C5): a disconnected worker is evicted from the
                         # eligible pool (wconn_by_worker / connections / registered).
                         self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
-                                        fs_by_worker, wconn_by_worker, registered)
+                                        fs_by_worker, wconn_by_worker, registered,
+                                        stage_idx=stage_idx,
+                                        stage_assigned=stage_assigned,
+                                        eligible_fn=_eligible)
                         conn_meta.pop(rawsock, None)
                         reader_threads.pop(rawsock, None)
                         continue
@@ -6662,7 +6674,8 @@ class RangeMinerCoordinator:
                     if msg.message_type == "register":
                         status = self._serve_register(
                             msg, rawsock, node_allowlist, fs_by_sock, worker_by_sock,
-                            wconn_by_worker, fs_by_worker, registered)
+                            wconn_by_worker, fs_by_worker, registered,
+                            eligible_fn=_eligible)
                         meta = conn_meta.get(rawsock)
                         if status == "ok":
                             if meta is not None:
@@ -6672,7 +6685,10 @@ class RangeMinerCoordinator:
                             # It was never bound, so the guard leaves the ORIGINAL
                             # worker's identity intact (Defect 3 C4/C5).
                             self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
-                                            fs_by_worker, wconn_by_worker, registered)
+                                            fs_by_worker, wconn_by_worker, registered,
+                                            stage_idx=stage_idx,
+                                            stage_assigned=stage_assigned,
+                                            eligible_fn=_eligible)
                             conn_meta.pop(rawsock, None)
                             reader_threads.pop(rawsock, None)
                         # reject_rebind: leave the socket bound to its ORIGINAL id
@@ -6698,7 +6714,10 @@ class RangeMinerCoordinator:
                             "dropping connection that never completed a frame "
                             "within %.1fs read deadline (Defect 6)", read_deadline)
                         self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
-                                        fs_by_worker, wconn_by_worker, registered)
+                                        fs_by_worker, wconn_by_worker, registered,
+                                        stage_idx=stage_idx,
+                                        stage_assigned=stage_assigned,
+                                        eligible_fn=_eligible)
                         conn_meta.pop(rawsock, None)
                         reader_threads.pop(rawsock, None)
 
@@ -7363,15 +7382,28 @@ class RangeMinerCoordinator:
                 pass
 
     def _drop_conn(self, rawsock, fs_by_sock, worker_by_sock, fs_by_worker,
-                   wconn_by_worker=None, registered=None) -> None:
+                   wconn_by_worker=None, registered=None, *,
+                   stage_idx=None, stage_assigned=None, eligible_fn=None) -> None:
         """Drop a connection and EVICT its worker identity from every structure the
         eligible pool is built from (Defect 3 C5): fs_by_worker, wconn_by_worker,
         self.connections, registered — so a worker whose socket is gone is never
         handed NEW stripes. Identity is evicted ONLY if THIS dropped socket is the
         one currently bound to the worker_id, so a fenced replacement that legitimately
-        rebound the same worker_id to a DIFFERENT live socket is NOT evicted."""
+        rebound the same worker_id to a DIFFERENT live socket is NOT evicted.
+
+        [DEFECT A §15] The eviction used to be SILENT, which is the whole reason
+        attempt 2 could not name the two workers it lost — the trial reported
+        "23 admitted" and nothing anywhere said which two were missing or when.
+        `WORKER_DISCONNECTED` now brackets the drop with the worker_id, the stage
+        it happened in, and the eligible count AFTER the eviction, so a future
+        23/25 names its two IDs directly instead of being reconstructed
+        indirectly. `stage_idx`/`stage_assigned`/`eligible_fn` come from the serve
+        loop that owns them; where a caller cannot supply one it is reported as
+        UNOBSERVED and never as a zero (a zero eligible pool is a real and very
+        different fact from an unmeasured one)."""
         fs = fs_by_sock.pop(rawsock, None)
         wid = worker_by_sock.pop(rawsock, None)
+        identity_evicted = False
         if wid is not None:
             # Only evict the worker_id's identity if the mapping still points at THIS
             # socket (guards the fenced-replacement case from Defect 3 C4).
@@ -7387,6 +7419,27 @@ class RangeMinerCoordinator:
                 # once the connection is gone there is nothing in flight, and the
                 # worker's silence is genuine again.
                 self.clear_capacity_resume_grace(wid)
+                identity_evicted = True
+            # [DEFECT A §15] Emitted AFTER the eviction so the count is the pool the
+            # next admission check will actually see. `identity_evicted=False` is the
+            # fenced-replacement case: this socket died but the worker_id is live on
+            # a DIFFERENT socket, so the pool did not shrink — recorded as the
+            # distinct fact it is rather than logged as a lost worker.
+            if eligible_fn is None:
+                eligible_after, obs_status = None, "UNOBSERVED"
+            else:
+                eligible_after, obs_status = len(eligible_fn()), "OBSERVED"
+            logger.warning(
+                "[MINER-SESSION] WORKER_DISCONNECTED %s",
+                json.dumps({
+                    "event": "WORKER_DISCONNECTED",
+                    "worker_id": wid,
+                    "stage_idx": stage_idx,
+                    "stage_assigned": stage_assigned,
+                    "identity_evicted": identity_evicted,
+                    "obs_status": obs_status,
+                    "eligible_count_after_drop": eligible_after,
+                }, default=str, sort_keys=True))
         # Defect 6 (C3): shutdown BEFORE close so a reader thread blocked in recv on
         # this socket is woken (recv returns EOF) AND the peer promptly sees the FIN
         # — a bare close() on a socket with a concurrent blocked recv may defer both.
@@ -7402,7 +7455,7 @@ class RangeMinerCoordinator:
 
     def _serve_register(self, msg, rawsock, node_allowlist, fs_by_sock,
                         worker_by_sock, wconn_by_worker, fs_by_worker,
-                        registered) -> str:
+                        registered, *, eligible_fn=None) -> str:
         """Bind ONE worker to this socket. Returns a status:
           "ok"               — registered (or a benign re-send of the SAME id)
           "reject_rebind"    — a REGISTER arrived on an already-bound socket claiming
@@ -7453,6 +7506,29 @@ class RangeMinerCoordinator:
         if wconn.quarantined:
             logger.warning("worker %s registered but quarantined: %s",
                            msg.worker_id, wconn.quarantine_reason)
+        # [DEFECT A §15] The other half of the bracket. A first registration and a
+        # RE-registration after a transport loss are the same code path here (which
+        # is correct — the frozen cohort, not the socket's history, decides
+        # eligibility), but they are very different events to read afterwards, so
+        # the record names which one it was and how big the pool is now.
+        self._registration_generation[msg.worker_id] = (
+            self._registration_generation.get(msg.worker_id, 0) + 1)
+        generation = self._registration_generation[msg.worker_id]
+        if eligible_fn is None:
+            eligible_after, obs_status = None, "UNOBSERVED"
+        else:
+            eligible_after, obs_status = len(eligible_fn()), "OBSERVED"
+        event = "WORKER_REGISTERED" if generation == 1 else "WORKER_RECONNECTED"
+        logger.warning(
+            "[MINER-SESSION] %s %s", event,
+            json.dumps({
+                "event": event,
+                "worker_id": msg.worker_id,
+                "registration_generation": generation,
+                "quarantined": wconn.quarantined,
+                "obs_status": obs_status,
+                "eligible_count_after_register": eligible_after,
+            }, default=str, sort_keys=True))
         return "ok"
 
     def dispatch_inbound_result(self, msg, rawsock, run_id, bound_worker_id,

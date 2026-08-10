@@ -47,6 +47,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import math
 import os
 import signal
 import socket
@@ -1135,6 +1136,16 @@ class MinerFramedSocket:
         return bytes(chunks)
 
     def close(self) -> None:
+        # [DEFECT A] shutdown BEFORE close, for the same reason the coordinator's
+        # `_drop_conn` does it (Defect 6 C3): a bare close() on a socket with a
+        # concurrent BLOCKED recv may defer both the wake-up and the peer's FIN.
+        # The worker's control loop is normally parked in `recv_msg`, so without
+        # this a signal-driven `shutdown()` could leave the daemon blocked in a
+        # read on an already-closed fd instead of exiting — the SIGNAL leg of §10.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self.sock.close()
         except Exception:
@@ -1186,6 +1197,117 @@ def warm_gpu(device_index: int) -> None:
 ExecutorFn = Callable[[StripeAssignMessage, int, int], SubStripeOutcome]
 
 
+# ===========================================================================
+# [DEFECT A] TRANSPORT-SESSION RECOVERY — Beta Gate-12 attempt-2 ruling §§10-14
+# ===========================================================================
+# The defect: `serve_forever` exited at ONE point for THREE different causes —
+# an explicit `shutdown` frame, a signal, and a bare transport loss — so a
+# permitted worker that lost its session could never re-register, and a later
+# stage's admission was permanently short (attempt-2's 23/25). The coordinator
+# already holds the useful half (`_drop_conn` evicts the dead socket's identity;
+# `_serve_register` accepts the same identity on a NEW socket once evicted, and
+# rejects a duplicate that races the eviction). The missing seam was worker-side.
+#
+# §10 three-way session state machine. THE LOAD-BEARING DISCRIMINATOR is
+# `self._stop.is_set()` at the moment the transport exception is caught:
+#   _stop SET   -> a `shutdown` frame (`_dispatch`) or a signal (`_handle_sig`)
+#                  already fired. Exit. NO reconnect. (gate A6)
+#   _stop CLEAR -> genuine transport loss. Close the dead session, reconnect
+#                  under a bounded backoff, re-register the SAME identity, and
+#                  resume an IDLE service loop. (gate A1)
+STOP_CAUSE_EXPLICIT_SHUTDOWN = "explicit_shutdown"   # `shutdown` frame
+STOP_CAUSE_SIGNAL = "signal"                         # SIGTERM / SIGINT
+SESSION_END_TRANSPORT_LOSS = "transport_loss"        # recoverable
+SESSION_END_IDENTITY_REFUSED = "identity_refused"    # §13 fail-closed
+
+# The RECEIVE-side transport surface. Identical to the tuple the certified loop
+# already caught, so classification does not widen what counts as a transport
+# failure on the read path: unexpected EOF and framing failures arrive as
+# ConnectionError / ValueError from MinerFramedSocket.recv_msg, and socket faults
+# as OSError (ConnectionError is itself an OSError subclass; both are named for
+# intent, as before).
+TRANSPORT_EXCEPTIONS = (ConnectionError, ValueError, OSError)
+
+# The SEND-side surface, deliberately NARROWER — ValueError is excluded.
+# `_dispatch` was previously outside any guard, so widening it needs care: on the
+# write path a ValueError is NOT a dead socket, it is `message_to_bytes` refusing
+# an oversized frame, i.e. a payload-contract violation. Recovering from that
+# would reconnect the worker and swallow a real defect, so it stays uncaught and
+# keeps propagating exactly as it does today.
+SEND_TRANSPORT_EXCEPTIONS = (ConnectionError, OSError)
+
+# §14 backoff shape. Bounded and DERIVED from the recovery budget rather than
+# invented: the per-attempt ceiling is a twelfth of the budget, so at the 180 s
+# anchor the ceiling is 15 s and at least a dozen attempts fit inside the bound
+# (1+2+4+8 then 15 s steps). The budget itself is the authority; these only
+# shape the spacing of attempts underneath it.
+RECONNECT_BACKOFF_INITIAL_S = 1.0
+RECONNECT_BACKOFF_BUDGET_DIVISOR = 12.0
+
+
+def default_recovery_budget_s() -> float:
+    """§14 RECONNECT BOUND — a POSITIVE FINITE run-scoped bound, DERIVED from the
+    existing liveness contract rather than invented.
+
+    The anchor is `DEFAULT_WORKER_ADMISSION_TIMEOUT` (the coordinator's
+    `worker_admission_timeout` / `_tcp_wait_ready` authority): a worker whose
+    recovery exceeds the window the coordinator would wait for it cannot help
+    this trial anyway. The constant is READ, never redefined and never changed —
+    it is on Beta's §25 no-touch list.
+
+    Imported lazily and NOT at module scope on purpose: `miner/__init__.py`
+    imports the coordinator, and the coordinator imports THIS module at its
+    line 55, so a module-level `from miner.range_miner_coordinator import ...`
+    here would resolve against a half-initialised coordinator (the constant is
+    defined below that import) and raise ImportError. At call time the package
+    is fully loaded.
+    """
+    from miner.range_miner_coordinator import DEFAULT_WORKER_ADMISSION_TIMEOUT
+    return float(DEFAULT_WORKER_ADMISSION_TIMEOUT)
+
+
+@dataclass
+class SessionOutcome:
+    """Why one transport session ended, and what was in flight when it did."""
+    cause: str
+    exc_class: Optional[str] = None
+    exc_text: Optional[str] = None
+    assignment_active: bool = False
+    stripe_id: str = ""
+    sub_index: int = -1
+
+    @property
+    def recoverable(self) -> bool:
+        return self.cause == SESSION_END_TRANSPORT_LOSS
+
+
+class WorkerIdentityChanged(RuntimeError):
+    """§13 frozen-cohort wall: a re-registration whose capability identity is not
+    byte-identical to the one the cohort was frozen against. Fail closed."""
+
+
+# §13 IDENTITY = exactly the fields the frozen cohort was admitted on. Enumerated
+# rather than taken as "every field of RegisterMessage", because the envelope also
+# carries PER-MESSAGE metadata: `timestamp` necessarily differs between the first
+# registration and any reconnect, so comparing the whole dataclass would fail
+# closed on every recovery and silently re-create the no-reconnect defect wearing
+# a §13 costume. `message_type`/`protocol_version` are framing, not identity.
+IDENTITY_FIELDS = (
+    "worker_id",       # {hostname}:gpu{gpu_id} — the admission key
+    "hostname",        # node identity
+    "gpu_id",          # device identity within the node
+    "gpu_name",
+    "backend",         # rocm | cuda
+    "vram_bytes",
+    "capabilities",    # supported_variants + seed_caps (the capability signature)
+)
+
+
+def identity_projection(msg: RegisterMessage) -> Dict[str, Any]:
+    """The §13 comparison surface of a REGISTER frame."""
+    return {k: getattr(msg, k) for k in IDENTITY_FIELDS}
+
+
 class RangeMinerWorker:
     def __init__(
         self,
@@ -1201,6 +1323,8 @@ class RangeMinerWorker:
         heartbeat_interval: float = 30.0,
         default_stripe_seeds: int = 67_108_864,
         miner_output_dir: Optional[str] = None,
+        recovery_budget_s: Optional[float] = None,
+        reconnect_enabled: bool = True,
     ) -> None:
         self.host = host
         self.port = port
@@ -1226,6 +1350,57 @@ class RangeMinerWorker:
         self.progress = 0.0
         self.stripes_done = 0
         self.stripes_error = 0
+
+        # ----- [DEFECT A] transport-session recovery state (§§10-15) --------
+        # `_stop_cause` records WHY the stop flag was raised, first-writer wins,
+        # so an explicit shutdown and a signal stay distinguishable (§10) instead
+        # of collapsing into the one exit the defect was made of.
+        self._stop_cause: Optional[str] = None
+        self.reconnect_enabled = reconnect_enabled
+        # §14: a POSITIVE FINITE run-scoped bound. Resolution of the default is
+        # deferred to first use so the derivation is read at runtime, not baked.
+        self._recovery_budget_s: Optional[float] = (
+            None if recovery_budget_s is None else float(recovery_budget_s))
+        # Cumulative, NOT per-episode: total wall time this worker has ever spent
+        # inside recovery. A per-episode budget would reset on every session and
+        # re-create the immortal orphan §14 forbids (a duplicate-rejection
+        # ping-pong would retry for ever). Productive time is never charged.
+        self._recovery_spent_s = 0.0
+        self.reconnect_attempts_total = 0
+        self.session_generation = 1
+        self.session_events: List[Dict[str, Any]] = []
+        # §13: the identity the cohort was frozen against, captured at the FIRST
+        # registration and re-sent verbatim on every reconnect.
+        self._identity_frame: Optional[Dict[str, Any]] = None
+
+    # ----- [DEFECT A] §15 observability ------------------------------------
+    def _emit_session_event(self, kind: str, **fields: Any) -> Dict[str, Any]:
+        """Record one session-lifecycle fact. Structured fields carry machine
+        truth (the harness and any future forensic read off `session_events`),
+        the log line carries the diagnostic prose. Emitted ONLY on session
+        transitions — never per heartbeat, per §15's no-high-rate-noise bar."""
+        event = {
+            "event": kind,
+            "worker_id": self.worker_id,
+            "session_generation": self.session_generation,
+            **fields,
+        }
+        self.session_events.append(event)
+        logger.warning("[MINER-SESSION] %s %s", kind, json.dumps(event, default=str,
+                                                                 sort_keys=True))
+        return event
+
+    def recovery_budget_s(self) -> float:
+        """§14 bound, validated POSITIVE FINITE exactly as the coordinator
+        validates `worker_admission_timeout` itself."""
+        if self._recovery_budget_s is None:
+            self._recovery_budget_s = default_recovery_budget_s()
+        budget = self._recovery_budget_s
+        if not (budget > 0.0 and math.isfinite(budget)):
+            raise ValueError(
+                "recovery_budget_s must be a POSITIVE FINITE number of seconds "
+                f"(got {budget!r})")
+        return budget
 
     # ----- connection / handshake ------------------------------------------
     def connect(self) -> None:
@@ -1254,7 +1429,29 @@ class RangeMinerWorker:
         if self.gpu_info is None:
             self.gpu_info = detect_gpu(self.device_index)
             warm_gpu(self.device_index)
-        self._send(self._build_register_message())
+        msg = self._build_register_message()
+        # [DEFECT A §13] FROZEN COHORT REMAINS AUTHORITY. The first registration
+        # freezes the identity this worker was admitted under — worker_id, node
+        # identity, gpu/device identity, backend, VRAM, supported variants, seed
+        # caps. Every reconnect re-sends THAT frame verbatim, and an identity that
+        # has drifted fails closed instead of re-registering as something else.
+        # No cohort expansion, and no reconnect that quietly changes what the
+        # coordinator admitted.
+        frame = identity_projection(msg)
+        if self._identity_frame is None:
+            self._identity_frame = frame
+        elif frame != self._identity_frame:
+            changed = sorted(
+                k for k in set(frame) | set(self._identity_frame)
+                if frame.get(k) != self._identity_frame.get(k))
+            self._emit_session_event(
+                "IDENTITY_REFUSED", changed_fields=changed,
+                reason="capability identity differs from the frozen registration")
+            raise WorkerIdentityChanged(
+                f"reconnect identity for {self.worker_id} differs from the frozen "
+                f"cohort registration in {changed}; refusing to re-register "
+                f"(Beta §13 — the frozen cohort remains authority)")
+        self._send(msg)
 
     # ----- send helper (serialized) ----------------------------------------
     def _send(self, msg: MinerBaseMessage) -> None:
@@ -1415,26 +1612,223 @@ class RangeMinerWorker:
 
     # ----- control loop ----------------------------------------------------
     def serve_forever(self) -> None:
+        """[DEFECT A §10] Serve transport SESSIONS, not one socket.
+
+        A session ends for exactly one of three causes, and they no longer share
+        an exit: an explicit `shutdown` frame and a signal both end the daemon,
+        while a transport loss with `_stop` clear is recovered. See
+        `_run_session` for the classification and `_recover_session` for §§11-14.
+        """
         assert self.conn is not None, "call connect() + register() first"
-        self._hb_thread = threading.Thread(
-            target=self._heartbeat_loop, name="miner-heartbeat", daemon=True
-        )
-        self._hb_thread.start()
         try:
-            while not self._stop.is_set():
-                try:
-                    msg = self.conn.recv_msg()
-                except (ConnectionError, ValueError, OSError):
-                    break
-                self._dispatch(msg)
+            while True:
+                outcome = self._run_session()
+                if not outcome.recoverable:
+                    # EXPLICIT SHUTDOWN or SIGNAL (or a §13 identity refusal):
+                    # exit, NO reconnect. This is the branch A6 gates.
+                    self._emit_session_event(
+                        "SESSION_END", classification=outcome.cause,
+                        exc_class=outcome.exc_class,
+                        reconnect_attempted=False,
+                        assignment_active_at_loss=outcome.assignment_active)
+                    return
+                if not self._recover_session(outcome):
+                    return
         finally:
             self.shutdown()
+
+    def _run_session(self) -> SessionOutcome:
+        """Run ONE transport session to its end and classify why it ended."""
+        self._start_heartbeat()
+        while not self._stop.is_set():
+            conn = self.conn
+            if conn is None:
+                # shutdown() ran concurrently (signal path closes the socket and
+                # clears the handle); that is a stop, never a transport loss.
+                break
+            try:
+                msg = conn.recv_msg()
+            except TRANSPORT_EXCEPTIONS as e:
+                return self._classify_session_end(e)
+            try:
+                self._dispatch(msg)
+            except SEND_TRANSPORT_EXCEPTIONS as e:
+                # The loss surfaced on a SEND — the socket died while this worker
+                # was streaming results for an ACTIVE assignment. Before Defect A
+                # this propagated straight out of `serve_forever` as an uncaught
+                # traceback; it is the same transport loss and is classified as
+                # one. What happens to the abandoned assignment is F1/F2's call,
+                # never this worker's (§11).
+                return self._classify_session_end(e)
+        return SessionOutcome(
+            cause=self._stop_cause or STOP_CAUSE_EXPLICIT_SHUTDOWN,
+            assignment_active=(self.state == "mining"),
+            stripe_id=self.current_stripe_id,
+            sub_index=self.current_sub_index,
+        )
+
+    def _classify_session_end(self, exc: BaseException) -> SessionOutcome:
+        """THE §10 DISCRIMINATOR. A transport exception alone does not authorise a
+        reconnect — `_stop` must also be clear. If `_stop` is set, a `shutdown`
+        frame or a signal already decided this daemon is finished, and the dying
+        socket is a CONSEQUENCE of that decision, not a reason to re-register."""
+        cause = (self._stop_cause or STOP_CAUSE_EXPLICIT_SHUTDOWN
+                 if self._stop.is_set() else SESSION_END_TRANSPORT_LOSS)
+        return SessionOutcome(
+            cause=cause,
+            exc_class=type(exc).__name__,
+            exc_text=str(exc),
+            assignment_active=(self.state == "mining"),
+            stripe_id=self.current_stripe_id,
+            sub_index=self.current_sub_index,
+        )
+
+    def _start_heartbeat(self) -> None:
+        """Bind a heartbeat thread to the CURRENT session. `_heartbeat_loop`
+        breaks out when its send fails, so a recovered session needs a live
+        thread again; a thread that survived the loss keeps serving the new
+        socket and is not duplicated."""
+        if self._hb_thread is not None and self._hb_thread.is_alive():
+            return
+        self._hb_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f"miner-heartbeat-g{self.session_generation}", daemon=True)
+        self._hb_thread.start()
+
+    # ----- [DEFECT A §§11-14] session recovery ------------------------------
+    def _abandon_assignment_no_replay(self, outcome: SessionOutcome) -> None:
+        """§11 NO STALE-WORK REPLAY. Reconnect is TRANSPORT recovery, not
+        ASSIGNMENT recovery. The in-flight assignment is dropped here and nowhere
+        remembered: this worker does not re-send the `SubStripeResult` whose write
+        failed, does not resume the stripe from private state, does not declare
+        the old assignment complete, and does not create a retry for itself. The
+        certified F1/F2 machinery alone decides the abandoned assignment —
+        constant-phase loss is terminal, a hybrid first loss earns the one
+        certified retry on an alternate worker, a hybrid second loss is terminal.
+        The worker comes back IDLE and waits for new dispatch."""
+        self.state = "idle"
+        self.current_stripe_id = ""
+        self.current_sub_index = -1
+        self.progress = 0.0
+        if outcome.assignment_active:
+            self._emit_session_event(
+                "ASSIGNMENT_ABANDONED", stripe_id=outcome.stripe_id,
+                sub_index=outcome.sub_index, replayed=False,
+                authority="F1/F2 decides the abandoned assignment (Beta §11)")
+
+    def _close_dead_session(self) -> None:
+        """Drop the dead socket WITHOUT setting `_stop` (which `shutdown()` would
+        do) and without opening a second one — §12's one-live-socket rule."""
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+    def _backoff_delay(self, attempt: int) -> float:
+        ceiling = max(RECONNECT_BACKOFF_INITIAL_S,
+                      self.recovery_budget_s() / RECONNECT_BACKOFF_BUDGET_DIVISOR)
+        return min(RECONNECT_BACKOFF_INITIAL_S * (2 ** max(0, attempt - 1)), ceiling)
+
+    def _recover_session(self, outcome: SessionOutcome) -> bool:
+        """Re-establish ONE session for the SAME identity. True if serving may
+        resume, False if the daemon must exit (bound exhausted, stop raised, or a
+        §13 identity refusal). Gates A1/A3/A4/A5/A7/A8."""
+        self._abandon_assignment_no_replay(outcome)
+        self._emit_session_event(
+            "TRANSPORT_LOSS", classification=SESSION_END_TRANSPORT_LOSS,
+            exc_class=outcome.exc_class, exc_text=outcome.exc_text,
+            assignment_active_at_loss=outcome.assignment_active,
+            stripe_id_at_loss=outcome.stripe_id,
+            recovery_spent_s=round(self._recovery_spent_s, 3))
+        self._close_dead_session()
+
+        if not self.reconnect_enabled:
+            # A2's control: the fix disabled. The worker exits exactly as it did
+            # before Defect A, so admission is short and the certified
+            # `worker_admission_timeout` decides the trial — untouched.
+            self._emit_session_event("RECONNECT_DISABLED", reconnect_attempted=False)
+            return False
+
+        budget = self.recovery_budget_s()
+        attempt = 0
+        while True:
+            if self._stop.is_set():
+                # A shutdown frame or signal landed mid-recovery: stop wins.
+                self._emit_session_event(
+                    "RECONNECT_ABANDONED", reason=self._stop_cause or "stop_set",
+                    attempt=attempt)
+                return False
+            remaining = budget - self._recovery_spent_s
+            if remaining <= 0.0:
+                # §14 exhaustion: exit cleanly. No immortal orphan that could
+                # attach to a later, unrelated trial. Gate A8.
+                self._emit_session_event(
+                    "RECONNECT_EXHAUSTED", attempts=attempt,
+                    recovery_budget_s=budget,
+                    recovery_spent_s=round(self._recovery_spent_s, 3),
+                    reconnect_success=False)
+                return False
+
+            delay = min(self._backoff_delay(attempt + 1), remaining)
+            waited_from = time.monotonic()
+            stopped = self._stop.wait(delay)
+            self._recovery_spent_s += time.monotonic() - waited_from
+            if stopped:
+                self._emit_session_event(
+                    "RECONNECT_ABANDONED", reason=self._stop_cause or "stop_set",
+                    attempt=attempt)
+                return False
+
+            attempt += 1
+            self.reconnect_attempts_total += 1
+            t0 = time.monotonic()
+            try:
+                self.connect()
+                self.register()
+            except WorkerIdentityChanged:
+                # §13 fail-closed. Not retryable: the identity, not the socket,
+                # is what the coordinator refused. Gate A7.
+                self._recovery_spent_s += time.monotonic() - t0
+                self._close_dead_session()
+                self._emit_session_event(
+                    "SESSION_END", classification=SESSION_END_IDENTITY_REFUSED,
+                    reconnect_attempted=True, attempt=attempt,
+                    reconnect_success=False)
+                return False
+            except TRANSPORT_EXCEPTIONS as e:
+                # §12: a coordinator that rejects the duplicate registration
+                # races the eviction of the old socket and simply drops this new
+                # one, so the refusal ARRIVES as a transport failure. It is a
+                # retryable session-establishment condition: back off and try the
+                # SAME identity again. Never force-replace, never hold a second
+                # live socket. Gate A5.
+                self._recovery_spent_s += time.monotonic() - t0
+                self._close_dead_session()
+                self._emit_session_event(
+                    "RECONNECT_FAILED", attempt=attempt,
+                    attempts_total=self.reconnect_attempts_total,
+                    exc_class=type(e).__name__, exc_text=str(e),
+                    reconnect_success=False,
+                    recovery_spent_s=round(self._recovery_spent_s, 3))
+                continue
+
+            self._recovery_spent_s += time.monotonic() - t0
+            self.session_generation += 1
+            self._emit_session_event(
+                "RECONNECTED", attempt=attempt,
+                attempts_total=self.reconnect_attempts_total,
+                reconnect_success=True, resumed_state="idle",
+                recovery_spent_s=round(self._recovery_spent_s, 3))
+            return True
 
     def _dispatch(self, msg: MinerBaseMessage) -> None:
         mtype = msg.message_type
         if mtype == "stripe_assign":
             self.handle_stripe(msg)  # type: ignore[arg-type]
         elif mtype == "shutdown":
+            # [DEFECT A §10] EXPLICIT SHUTDOWN. Recording the cause is what keeps
+            # this distinguishable from a transport loss; the socket dying right
+            # after this frame must NOT be recovered. Gate A6.
+            self._set_stop_cause(STOP_CAUSE_EXPLICIT_SHUTDOWN)
             self._stop.set()
         elif mtype == "status":
             self._send(
@@ -1451,7 +1845,16 @@ class RangeMinerWorker:
                 )
             )
 
-    def shutdown(self) -> None:
+    def _set_stop_cause(self, cause: str) -> None:
+        """First writer wins — the cause that actually stopped the daemon, not the
+        last teardown to run. `serve_forever`'s `finally: shutdown()` must never
+        overwrite the real reason with a generic one."""
+        if self._stop_cause is None:
+            self._stop_cause = cause
+
+    def shutdown(self, cause: Optional[str] = None) -> None:
+        if cause is not None:
+            self._set_stop_cause(cause)
         self._stop.set()
         if self.conn is not None:
             self.conn.close()
@@ -1509,7 +1912,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     def _handle_sig(signum, frame):  # noqa: ARG001
-        worker.shutdown()
+        # [DEFECT A §10] SIGNAL — a stop, never a transport loss. Naming the cause
+        # is what stops the reconnect branch from firing on a real teardown (A6).
+        worker.shutdown(cause=STOP_CAUSE_SIGNAL)
 
     signal.signal(signal.SIGTERM, _handle_sig)
     signal.signal(signal.SIGINT, _handle_sig)
