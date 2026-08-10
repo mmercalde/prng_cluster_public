@@ -528,10 +528,60 @@ def g_b_forbidden_unchanged():
         assert len(hits) == 1, f"{name}: {len(hits)}"
         return ast.get_source_segment(s, hits[0])
 
-    for fn in ("handle_stripe_failure", "_handle_stripe_failure_locked",
-               "_pick_other_worker", "process_lease_expiry"):
+    # BYTE IDENTITY RETAINED for the three the F1/F2 amendment does not touch.
+    for fn in ("handle_stripe_failure", "_pick_other_worker",
+               "process_lease_expiry"):
         assert _fn(head.stdout, fn) == _fn(src, fn), \
             f"{fn} changed — the Blocker-3 matrix must be untouched"
+
+    # SUPERSEDED for `_handle_stripe_failure_locked` ONLY.
+    #
+    # ⚠ ALPHA JUDGMENT CALL — FLAGGED FOR BETA. Team Beta's F1/F2 R1 §C granted
+    # this supersession and ENUMERATED TWO guards to update
+    # (tests/test_s172_admission_liveness.py and G-MATRIX-DIFF-a in
+    # tests/test_s172_staging_backpressure.py). THIS IS A THIRD SITE CARRYING
+    # THE IDENTICAL ASSUMPTION, which Beta's list did not name. A baseline
+    # differential against eecfff7 shows B7 is the ONLY gate in this file
+    # chargeable to F1/F2 (the other nine reds fail identically at baseline for
+    # an unrelated environment reason: the localhost execution set now declares
+    # one GPU, not two). It is treated exactly as the two named guards were —
+    # same invariant, no other assertion touched — so that "all F1/F2-chargeable
+    # reds green" is true of the package. If Beta intended the supersession to
+    # stop at the two enumerated sites, revert THIS hunk only.
+    #
+    # THE SUPERSEDING INVARIANT: the four terminal decisions, in order, plus both
+    # ratified nonterminal outcomes of the hybrid first failure, plus identity
+    # (never prefix) selection on the immediate placement. "Failure matrix
+    # unchanged" means terminal decision semantics unchanged; F1 changed only how
+    # a hybrid first failure is PLACED, and R1 Blocker A changed only the
+    # retry's SELECTOR. Blockers A and B were fixed BEFORE this baseline moved.
+    EXPECTED_TERMINAL_ORDER = ["non_retryable", "constant_phase",
+                               "no_alternate_worker", "hybrid_second_failure"]
+    hits = [n for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_handle_stripe_failure_locked"]
+    assert len(hits) == 1, hits
+    terminal, nonterminal = [], []
+    for node in ast.walk(hits[0]):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
+            continue
+        d = {k.value: v.value
+             for k, v in zip(node.value.keys, node.value.values)
+             if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)}
+        if d.get("action") == "fail_trial":
+            terminal.append((node.lineno, d.get("reason")))
+        elif d.get("action") in ("reassigned", "requeued", "noop"):
+            nonterminal.append(d["action"])
+    ordered = [r for _ln, r in sorted(terminal)]
+    assert ordered == EXPECTED_TERMINAL_ORDER, \
+        f"the four terminal decisions changed or were reordered: {ordered}"
+    assert {"reassigned", "requeued"} <= set(nonterminal), \
+        f"the hybrid nonterminal branch lost a ratified outcome: {nonterminal}"
+    _locked_src = ast.unparse(hits[0])
+    assert "exact_stripe_id=stripe_id" in _locked_src, \
+        "the hybrid immediate placement no longer selects by stripe identity"
+    assert "stripe_prefix=stripe_id" not in _locked_src, \
+        "prefix-as-exact selection was reintroduced (R1 Blocker A)"
 
     cfg = json.load(open(os.path.join(_ROOT, "distributed_config.json")))
     assert [n["hostname"] for n in cfg["nodes"]] == [
@@ -764,7 +814,12 @@ def g_c6_full_fleet_default_eight_unchanged():
                             requested_pool=8, admission_timeout=6.0)
     assert not o2.still_hung, o2.summary()
     reasons2 = " | ".join(o2.abort_reasons)
-    assert "expected 8 eligible worker(s), 2 admitted after" in reasons2, reasons2
+    # [F1/F2 R2] The abort event's legacy `reason` key now derives from the
+    # canonical TerminalRecord instead of the caller's prose, so the punctuation
+    # between the two counts is the record's semicolon, not the caller's comma.
+    # WHAT this asserts is unchanged and is the whole point of the gate: the
+    # refusal still NAMES 8 as the expectation and reports the 2 that arrived.
+    assert "expected 8 eligible worker(s); 2 admitted after" in reasons2, reasons2
     return ("8 listed workers -> committed at expected_workers=8; "
             "2 workers -> still refuses, naming 8")
 

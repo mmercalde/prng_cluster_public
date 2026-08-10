@@ -71,6 +71,7 @@ from miner.range_miner_coordinator import (  # noqa: E402
     ST_CLAIMED,
     ST_DONE,
     ST_FAILED,
+    ST_PENDING,
     ST_STAGING,
     CoordinatorConfig,
     MinerLedger,
@@ -1390,8 +1391,32 @@ def gate_lease_exemption_is_required_and_narrow():
             assert sa["current_attempt"] == 0 and sa["claimed_by"] == "hostA:gpu0"
             assert not sa["phase_degraded"]
             # ...while B's genuine expiry really did go through the matrix.
-            assert out[0]["action"] == "reassigned", out
+            #
+            # [F1/F2 R1 §C] UPDATED TO THE RATIFIED DEFERRED-PLACEMENT SEMANTICS.
+            # This gate used to assert a direct "reassigned", which is the OLD
+            # model: the retry claimed an alternate whether or not that alternate
+            # was compute-idle. Under F1 the requeue does not claim — it returns
+            # the stripe to the coordinator-owned backlog and the scheduler hands
+            # it to the first idle alternate with a FRESH lease. Here the only
+            # alternate (hostA) is compute-busy holding its own stripe and the
+            # prior claimer (hostB) may not take its own failure back, so the
+            # ratified outcome is "requeued": queued, never lost.
+            #
+            # WHAT THIS GATE MEASURES IS UNCHANGED — the pause exemption and its
+            # narrowness. The retry ACCOUNTING below is asserted exactly as
+            # before (one budget consumed, degraded, trial alive); only the
+            # placement outcome moved, and it moved because Beta ratified that it
+            # should.
+            assert out[0]["action"] == "requeued", out
+            assert out[0]["worker_id"] is None, out
             sb = b.coord.ledger.get_stripe(run_id, "runLEASE_sB")
+            assert sb["state"] == ST_PENDING, (
+                f"a requeued stripe must return to the backlog, not vanish: {sb}")
+            assert sb["claimed_by"] == "hostB:gpu0", (
+                "the prior claimer must survive on the pending row — it is what "
+                "stops the scheduler handing the stripe straight back")
+            assert sb["lease_expires_at"] is None, (
+                f"backlog carries a ticking lease: {sb}")
             assert sb["current_attempt"] == 1 and sb["phase_degraded"]
             assert b.coord.ledger.get_trial(run_id)["state"] == "running"
         finally:
@@ -1578,14 +1603,78 @@ def gate_matrix_diff_six_callers_unchanged():
         f"this amendment changed a surviving _on_staging_failed caller:\n"
         f"  at {_AMENDMENT_BASELINE_REV[:7]}: {at_baseline}\n"
         f"  live: {after}")
-    # ...and the matrix plumbing itself is untouched, against BOTH baselines
-    for meth in ("_on_staging_failed", "handle_stripe_failure",
-                 "_handle_stripe_failure_locked"):
+    # ...and the matrix plumbing itself is untouched, against BOTH baselines.
+    #
+    # BYTE (AST) IDENTITY RETAINED for the two the F1/F2 amendment does not
+    # touch. This is the strongest check available and it still applies to them.
+    for meth in ("_on_staging_failed", "handle_stripe_failure"):
         a_src = _method_source(live, meth)
         assert _method_source(head, meth) == a_src, (
             f"{meth} was modified since {_PRE_REMEDIATION_REV[:7]} — out of scope")
         assert _method_source(base, meth) == a_src, (
             f"{meth} was modified by THIS AMENDMENT — out of scope")
+
+    # SUPERSEDED for `_handle_stripe_failure_locked` ONLY (Team Beta, F1/F2 R1
+    # §C). Beta granted the supersession WITH AN ORDER CONSTRAINT — "do not
+    # simply update the old baseline to the current submitted source; the
+    # current source contains Blockers A and B; that would certify the defects."
+    # Blockers A and B were fixed FIRST; what is certified below is the
+    # corrected function.
+    #
+    # "Failure matrix unchanged" means TERMINAL DECISION SEMANTICS unchanged.
+    # F1 changed how a hybrid first failure is PLACED (deferred placement: the
+    # requeue no longer claims), and R1 Blocker A changed the retry's selector
+    # from a LIKE-scoped prefix to stripe identity. Both live inside this
+    # function; neither is a terminal decision, and an AST comparison cannot
+    # express that distinction. The invariant that can:
+    #
+    #   the four terminal decisions, IN ORDER
+    #     non-retryable                                -> non_retryable
+    #     constant phase                               -> constant_phase
+    #     hybrid first failure + no alternate eligible -> no_alternate_worker
+    #     hybrid second failure                        -> hybrid_second_failure
+    #   plus BOTH ratified nonterminal outcomes of the hybrid first failure,
+    #   plus identity (never prefix) selection on the immediate placement.
+    #
+    # The behavioural half is `gate_matrix_diff_behavioural` below, which DRIVES
+    # every one of these rows including the busy-alternate requeue.
+    _assert_matrix_invariant(live)
+
+
+def _assert_matrix_invariant(module_src):
+    """[F1/F2 R1 §C] The superseding invariant for `_handle_stripe_failure_locked`,
+    read off the LIVE source by AST. Replaces byte identity for that ONE method;
+    every other assertion in the gate that owns it is preserved."""
+    EXPECTED = ["non_retryable", "constant_phase", "no_alternate_worker",
+                "hybrid_second_failure"]
+    hits = [n for n in ast.walk(ast.parse(module_src))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_handle_stripe_failure_locked"]
+    assert len(hits) == 1, hits
+    terminal, nonterminal = [], []
+    for node in ast.walk(hits[0]):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
+            continue
+        d = {k.value: v.value
+             for k, v in zip(node.value.keys, node.value.values)
+             if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)}
+        if d.get("action") == "fail_trial":
+            terminal.append((node.lineno, d.get("reason")))
+        elif d.get("action") in ("reassigned", "requeued", "noop"):
+            nonterminal.append(d["action"])
+    ordered = [r for _ln, r in sorted(terminal)]
+    assert ordered == EXPECTED, (
+        f"the four terminal decisions changed or were reordered: "
+        f"{ordered} != {EXPECTED}")
+    assert {"reassigned", "requeued"} <= set(nonterminal), (
+        f"the hybrid first-failure nonterminal branch lost a ratified outcome: "
+        f"{nonterminal}")
+    src = ast.unparse(hits[0])
+    assert "exact_stripe_id=stripe_id" in src, (
+        "the hybrid immediate placement no longer selects by stripe identity "
+        "(R1 Blocker A)")
+    assert "stripe_prefix=stripe_id" not in src, (
+        "prefix-as-exact selection was reintroduced (R1 Blocker A)")
 
 
 def _method_source(module_src, name):
@@ -1643,6 +1732,52 @@ def gate_matrix_diff_behavioural():
             if exp_action == "reassigned":
                 assert got["attempt"] == 1 and got["phase_degraded"] is True
     assert len(_OUT_OF_SCOPE_CALLERS) == 6
+
+    # [F1/F2 R1 §C] THE SECOND RATIFIED NONTERMINAL OUTCOME, driven rather than
+    # asserted structurally: the hybrid first failure with an alternate that
+    # EXISTS but is temporarily COMPUTE-BUSY. Under the old model the retry
+    # claimed the alternate regardless of occupancy; under the ratified
+    # deferred-placement semantics the stripe returns to the backlog with its
+    # retry budget consumed and the trial alive, and the scheduler places it on
+    # the first alternate to go idle — with a fresh lease.
+    #
+    # The terminal rows above are unchanged and are what this gate has always
+    # certified; this row exists so "the alternate is busy" can never silently
+    # become a terminal decision.
+    with tempfile.TemporaryDirectory() as tmp:
+        coord = _coord(tmp)
+        run_id = "runMDBUSY"
+        coord.ledger.create_trial(run_id, 0)
+        w0 = _register(coord, "hostA:gpu0")
+        w1 = _register(coord, "hostB:gpu0")
+        # both workers get one stripe, so the only alternate is compute-busy
+        a = coord.assign_stripes(run_id, "java_lcg_hybrid", 3,
+                                 2 * coord.config.miner_stripe_size,
+                                 [w0, w1], now=100.0)
+        claimed = [r for r in a if r["claimed"]]
+        assert len(claimed) == 2, a
+        sid = claimed[0]["stripe_id"]
+        prior = claimed[0]["worker_id"]
+        other = next(r["worker_id"] for r in claimed if r["worker_id"] != prior)
+        got = coord.handle_stripe_failure(
+            run_id, sid, retryable=True, eligible_workers=[w0, w1], now=200.0)
+        assert got["action"] == "requeued", (
+            f"[hybrid attempt 0, alternate exists but is COMPUTE-BUSY] {got}")
+        assert got["attempt"] == 1 and got["phase_degraded"] is True, got
+        assert coord.ledger.get_trial(run_id)["state"] == "running", (
+            "a temporarily-busy alternate became a TERMINAL decision")
+        st = coord.ledger.get_stripe(run_id, sid)
+        assert st["state"] == ST_PENDING and st["lease_expires_at"] is None, st
+        # ...and it really is placed once that alternate frees its compute slot
+        osid = next(r["stripe_id"] for r in claimed if r["worker_id"] == other)
+        coord.ledger.record_stripe_complete(run_id, osid, 0, other, 1, 0)
+        placed = coord.schedule_pending_stripes(
+            run_id, "java_lcg_hybrid", 3, [w0, w1],
+            stage_prefix=run_id, now=300.0)
+        assert [p["stripe_id"] for p in placed] == [sid], placed
+        assert placed[0]["worker_id"] == other != prior, placed
+        st2 = coord.ledger.get_stripe(run_id, sid)
+        assert st2["lease_expires_at"] == 300.0 + coord.config.compute_lease_timeout, st2
 
 
 def gate_no_capacity_path_reaches_the_matrix():

@@ -91,6 +91,10 @@ import miner.range_miner_coordinator as COORD           # noqa: E402
 from miner.range_miner_coordinator import (              # noqa: E402
     DEFAULT_WORKER_ADMISSION_TIMEOUT,
     ST_DONE,
+    TC_COMPUTE_LEASE_EXPIRY,
+    TC_SERVE_TIMEOUT,
+    TC_STRIPE_ERROR,
+    TC_WORKER_ADMISSION_TIMEOUT,
 )
 
 # Reuse the Phase-4 harness's REAL-wire worker and Phase-5 sink stubs rather than
@@ -294,6 +298,12 @@ class _RunOutcome:
     state: str
     committed: bool
     abort_reasons: List[str] = field(default_factory=list)
+    # [F1/F2 R2] The WHOLE abort event, not just its prose. F2's canonicalization
+    # made `reason` derive from the TerminalRecord, so the caller's short prose
+    # ("serve_trial timeout", "…: constant-phase failure") is no longer on the
+    # wire — the machine-readable answer is `terminal_class`, which is what this
+    # harness should have been reading all along. See `ended_by` below.
+    abort_events: List[Dict[str, Any]] = field(default_factory=list)
     run_id: Optional[str] = None
     stripes: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
@@ -301,10 +311,24 @@ class _RunOutcome:
     workers: List[_LiveWorker] = field(default_factory=list)
 
     @property
+    def abort_classes(self) -> List[str]:
+        return [str(e.get("terminal_class", "")) for e in self.abort_events]
+
+    @property
     def ended_by(self) -> str:
         if self.still_hung:
             return "still-hung"
-        if any("serve_trial timeout" in r for r in self.abort_reasons):
+        # [F1/F2 R2] CLASSIFY ON THE STRUCTURED CLASS, NOT ON PROSE.
+        #
+        # This branch used to match the literal "serve_trial timeout" — the
+        # CALLER's prose. F2's reason canonicalization replaced the event's
+        # `reason` with the TerminalRecord's own text ("serve_trial exceeded its
+        # configured serve_timeout of 20.0s (elapsed 20.1s)"), which does not
+        # contain that literal, so the branch went permanently false and the
+        # harness would have silently lost its ability to distinguish a
+        # harness-injected clock from the code's own decision. `TC_SERVE_TIMEOUT`
+        # is the field that exists to answer this and cannot drift with wording.
+        if TC_SERVE_TIMEOUT in self.abort_classes:
             return "harness-injected-clock"
         if self.error:
             return "raised"
@@ -435,6 +459,7 @@ def _drive(mod, *, worker_specs, expected_workers, admission_timeout,
         state=result.get("state", "unknown"),
         committed=bool(result.get("committed")),
         abort_reasons=[str(e.get("reason", "")) for e in sink.aborts],
+        abort_events=[dict(e) for e in sink.aborts],
         run_id=result.get("run_id"),
         stripes=result.get("stripes", {}),
         error=holder.get("err"),
@@ -470,9 +495,16 @@ def _run_id_diagnostics(o: _RunOutcome, stage: int, expected: int):
     and pinning it would make the gate assert the fixture instead of the
     contract."""
     assert o.abort_reasons, "no abort event reached the Phase-5 sink"
+    ev = o.abort_events[0]
     reason = o.abort_reasons[0]
-    assert "admission timeout" in reason, reason
-    assert o.run_id and o.run_id in reason, (o.run_id, reason)
+    # [F1/F2 R2] Beta's four required facts are UNCHANGED; two of them now live in
+    # structured event fields rather than in the prose, because F2 canonicalized
+    # `reason` onto the TerminalRecord. WHAT is asserted is identical — the
+    # terminal cause and the run identity — and reading them from
+    # `terminal_class` / `run_id` is stronger than a substring of a message.
+    assert ev.get("terminal_class") == TC_WORKER_ADMISSION_TIMEOUT, (
+        f"the terminal cause is not the admission window: {ev}")
+    assert o.run_id and ev.get("run_id") == o.run_id, (o.run_id, ev)
     assert f"stage {stage}" in reason, reason
     assert f"expected {expected}" in reason, reason
     m = re.search(r"(\d+) admitted", reason)
@@ -660,10 +692,17 @@ def g_cross_constant():
     _assert_not_vacuous(o)
     assert o.state == "aborted" and not o.committed, o.summary()
     joined = " | ".join(o.abort_reasons)
-    assert "constant-phase failure" in joined, joined
-    assert "admission timeout" not in joined, (
+    # [F1/F2 R2] Same two facts, read off the canonical surfaces. The constant
+    # row is identified by its terminal CLASS (a lease expiry or a reported
+    # stripe error routed through the phase policy) plus the phase policy the
+    # record states in full; the negative check becomes "the admission window is
+    # not the terminal cause", asserted on the class rather than on wording.
+    assert set(o.abort_classes) <= {TC_COMPUTE_LEASE_EXPIRY, TC_STRIPE_ERROR}, (
+        f"unexpected terminal class for the constant row: {o.abort_classes}")
+    assert "CONSTANT-MODE" in joined, joined
+    assert TC_WORKER_ADMISSION_TIMEOUT not in o.abort_classes, (
         "the failure came from the admission window, not from lease expiry "
-        f"reaching the matrix: {joined}")
+        f"reaching the matrix: {o.abort_classes} :: {joined}")
     return f"Blocker-3 constant row reached below threshold ({o.elapsed:.1f}s)"
 
 
@@ -804,11 +843,80 @@ def g_forbidden_changes_absent():
     assert head.returncode == 0, head.stderr
     old, new = head.stdout, open(_COORD_PATH, encoding="utf-8").read()
 
-    # 1. The Blocker-3 failure matrix is BYTE-IDENTICAL — reachable, not rewritten.
-    for fn in ("handle_stripe_failure", "_handle_stripe_failure_locked",
-               "_pick_other_worker", "process_lease_expiry"):
+    # 1. The Blocker-3 failure matrix is REACHABLE AND UNREWRITTEN.
+    #
+    #    BYTE IDENTITY RETAINED for three of the four. Nothing in F1/F2 touches
+    #    the entry point, the alternate-selection predicate or the expiry sweep,
+    #    so the strongest available check still applies to them unchanged.
+    for fn in ("handle_stripe_failure", "_pick_other_worker",
+               "process_lease_expiry"):
         assert _fn_src(old, fn) == _fn_src(new, fn), (
             f"{fn} changed — the Blocker-3 matrix must be untouched")
+
+    #    SUPERSEDED for `_handle_stripe_failure_locked` ONLY (Team Beta, F1/F2 R1
+    #    §C — granted on Alpha's §3 request, and granted with an ORDER
+    #    CONSTRAINT that was honoured: Blockers A and B were fixed BEFORE this
+    #    baseline moved, so what is certified below is the corrected function,
+    #    never the defective one).
+    #
+    #    WHAT CHANGED AND WHY THE OLD FORM NO LONGER FITS. "Failure matrix
+    #    unchanged" means TERMINAL DECISION SEMANTICS unchanged — not that the
+    #    function may never change a byte. F1 changed how a hybrid first failure
+    #    is PLACED (the requeue no longer claims; the scheduler hands the stripe
+    #    to the first idle alternate with a fresh lease), and R1 Blocker A
+    #    changed the retry's selector from a LIKE-scoped prefix to stripe
+    #    identity. Both live inside this function; neither is a terminal
+    #    decision. A byte comparison cannot express that distinction, so it is
+    #    replaced by the invariant that can.
+    #
+    #    THE SUPERSEDING INVARIANT — the four terminal decisions, IN ORDER:
+    #        non-retryable                                -> non_retryable
+    #        constant phase                               -> constant_phase
+    #        hybrid first failure + no alternate eligible -> no_alternate_worker
+    #        hybrid second failure                        -> hybrid_second_failure
+    #    Read off the LIVE source by AST, in source order, so a reordering (which
+    #    WOULD be a semantic change: the non-retryable test must precede the
+    #    phase test, and the no-alternate test must precede the second-failure
+    #    row) reds this gate.
+    EXPECTED_TERMINAL_ORDER = ["non_retryable", "constant_phase",
+                               "no_alternate_worker", "hybrid_second_failure"]
+    fn_ast = [n for n in ast.walk(ast.parse(new))
+              if isinstance(n, ast.FunctionDef)
+              and n.name == "_handle_stripe_failure_locked"]
+    assert len(fn_ast) == 1, fn_ast
+    terminal_reasons, nonterminal_actions = [], []
+    for node in ast.walk(fn_ast[0]):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
+            continue
+        d = {}
+        for k, v in zip(node.value.keys, node.value.values):
+            if isinstance(k, ast.Constant) and isinstance(v, ast.Constant):
+                d[k.value] = v.value
+        if d.get("action") == "fail_trial":
+            terminal_reasons.append((node.lineno, d.get("reason")))
+        elif d.get("action") in ("reassigned", "requeued", "noop"):
+            nonterminal_actions.append(d["action"])
+    ordered = [r for _ln, r in sorted(terminal_reasons)]
+    assert ordered == EXPECTED_TERMINAL_ORDER, (
+        f"the four terminal decisions changed or were reordered: {ordered} != "
+        f"{EXPECTED_TERMINAL_ORDER}")
+    #    ...and the hybrid first-failure NONTERMINAL branch still has BOTH of its
+    #    ratified outcomes available — immediate reassignment when an eligible
+    #    alternate is truly idle, OR pending/requeued when alternate capacity is
+    #    temporarily busy. (Behaviourally certified in
+    #    tests/test_s172_staging_backpressure.py::gate_matrix_diff_behavioural and
+    #    tests/test_s172_f1_f2_active_lease.py G-F1-HYBRID-MATRIX /
+    #    G-F1-EXACT-STRIPE-COLLISION; asserted structurally here so this gate
+    #    cannot go green on a function that lost one of them.)
+    assert {"reassigned", "requeued"} <= set(nonterminal_actions), (
+        f"the hybrid nonterminal branch lost an outcome: {nonterminal_actions}")
+    #    The selector the retry path uses is IDENTITY, never a prefix (R1
+    #    Blocker A): `run__st0_s1%` also matches `run__st0_s10 … s19`.
+    body_src = ast.unparse(fn_ast[0])
+    assert "exact_stripe_id=stripe_id" in body_src, (
+        "the hybrid immediate placement no longer selects by stripe identity")
+    assert "stripe_prefix=stripe_id" not in body_src, (
+        "prefix-as-exact selection was reintroduced (R1 Blocker A)")
 
     # 2. expected_workers is never reduced dynamically: it is bound exactly once,
     #    in serve_trial's preamble, from the requested worker_pool_size.
@@ -894,8 +1002,11 @@ def g_forbidden_changes_absent():
     #    the serve loop and the runner's context.
     assert '_timeout_raw = context.get("serve_timeout", None)' in new
     assert '"serve_timeout": kwargs.get("serve_timeout", None),' in new
-    return ("matrix byte-identical; expected_workers bound once in the "
-            "preamble from worker_pool_size; serve_timeout default still None")
+    return ("matrix: 3/4 byte-identical, _handle_stripe_failure_locked "
+            "certified by the superseding invariant (4 terminal decisions in "
+            "order + both nonterminal outcomes + identity selector); "
+            "expected_workers bound once in the preamble from worker_pool_size; "
+            "serve_timeout default still None")
 
 
 # ===========================================================================

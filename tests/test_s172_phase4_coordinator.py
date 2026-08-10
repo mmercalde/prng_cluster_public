@@ -190,21 +190,39 @@ def gate1_macro_partition_assign():
         w = _worker()
         a = coord.assign_stripes("run1", "java_lcg", 1, 2 * MACRO + 500, [w], now=100.0)
         assert len(a) == 3
-        # coverage of the assigned macro-stripes is exact
+        # coverage of the PLANNED macro-stripes is exact and every row EXISTS.
+        # [F1 §4] UPDATED: the governed geometry is still created in full (this is
+        # the property gate-12's 32-stripe shape depends on); what changed is that
+        # only as many stripes are CLAIMED as there are compute-idle workers — here
+        # one — and the remaining two are coordinator-owned backlog with no lease.
+        # The pre-F1 form of this gate asserted all three claimed, which is exactly
+        # the bulk claim that stamped a 300 s lease on work a serial worker could
+        # not begin for another 230 s.
         cur = 0
         for rec in a:
-            assert rec["seed_start"] == cur and rec["claimed"] is True
-            assert rec["worker_id"] == w.worker_id
+            assert rec["seed_start"] == cur
             cur += rec["seed_count"]
         assert cur == 2 * MACRO + 500
-        # expected_substripes from the worker's advertised constant cap (5M)
-        assert [r["expected_substripes"] for r in a] == [14, 14, 1]
-        for rec in a:
+        assert [r["seed_count"] for r in a] == [MACRO, MACRO, 500]
+        claimed = [r for r in a if r["claimed"]]
+        queued = [r for r in a if not r["claimed"]]
+        assert len(claimed) == 1 and len(queued) == 2, (claimed, queued)
+        assert claimed[0]["seed_start"] == 0, "scheduling is not deterministic"
+        assert claimed[0]["worker_id"] == w.worker_id
+        # expected_substripes still comes from the worker's advertised constant cap
+        assert claimed[0]["expected_substripes"] == 14
+        assert expected_substripes_for(500, 5_000_000) == 1
+        st0 = coord.ledger.get_stripe("run1", claimed[0]["stripe_id"])
+        assert st0["state"] == ST_CLAIMED and st0["current_attempt"] == 0
+        assert st0["lease_expires_at"] == 100.0 + 300.0, st0["lease_expires_at"]
+        for rec in queued:
             st = coord.ledger.get_stripe("run1", rec["stripe_id"])
-            assert st["state"] == ST_CLAIMED and st["current_attempt"] == 0
+            assert st["state"] == ST_PENDING, st
+            assert st["claimed_by"] is None and st["lease_expires_at"] is None, st
 
         # hybrid family selects the tighter advertised cap -> more sub-stripes
         h = coord.assign_stripes("runH", "java_lcg_hybrid", 3, MACRO, [w], now=100.0)
+        assert len(h) == 1 and h[0]["claimed"] is True   # one stripe, one worker
         assert h[0]["expected_substripes"] == 27
         assert h[0]["effective_cap"] == 2_500_000
 
@@ -2359,6 +2377,41 @@ def gate22_coexistence():
         # No kernel, sampler, threshold, protocol, dataset-authority, execution-set,
         # PWC or ZMQ path is touched (flagged for review).
         "tests/test_chapter2_content_gate.py",
+        # ─────────────────────────────────────────────────────────────────────
+        # S172 F1/F2 ACTIVE-LEASE AMENDMENT + R1 (2026-08-09). Registered by the
+        # same standing rule as every block above and APPENDED to them; nothing
+        # earlier is rewritten.
+        #
+        # F1 replaces bulk stripe claim with a coordinator-owned backlog and an
+        # active-lease scheduler (the lease is stamped at the real handoff to an
+        # idle worker, not when the stage was planned — the gate-12 defect of
+        # 2026-08-09); F2 makes the terminal decision durable and observable.
+        # R1 then closed the two production defects Beta found in that
+        # amendment: Blocker A (a LIKE-scoped prefix selector used as an EXACT
+        # stripe selector on the hybrid retry path) and Blocker B (a later
+        # idempotent/race-lost abort constructing its outward event from its own
+        # proposed terminal record instead of the durable one).
+        #
+        # The production change is confined to miner/range_miner_coordinator.py,
+        # already allowed above. The .py files this deliverable adds or edits:
+        #   * tests/test_s172_f1_f2_active_lease.py — NEW, the amendment's own
+        #     acceptance harness (16 gates, every clock injected, mutation
+        #     evidence per gate). A NEW harness for the same reason as every one
+        #     before it: §6 pins THIS file's tally at 63/63, and growing it would
+        #     silently move a number other artifacts cite.
+        #   * tests/test_s172_staging_backpressure.py — EDITED, and only where
+        #     Team Beta's F1/F2 R1 §C supersession ruling requires it: G-LEASE's
+        #     expectation of a direct "reassigned" (the pre-F1 model) becomes the
+        #     ratified deferred-placement outcome, and G-MATRIX-DIFF-a's byte
+        #     comparison of `_handle_stripe_failure_locked` becomes the
+        #     superseding invariant (four terminal decisions in order + both
+        #     ratified nonterminal outcomes + identity selection). Byte identity
+        #     is RETAINED for every other method that gate covers, and no
+        #     unaffected assertion was removed.
+        # No kernel, sampler, threshold, protocol, dataset-authority,
+        # execution-set, PWC or ZMQ path is touched (flagged for review).
+        "tests/test_s172_f1_f2_active_lease.py",
+        "tests/test_s172_staging_backpressure.py",
     }
     assert changed_py <= allowed, f"unexpected changed .py files: {changed_py - allowed}"
     # D3.25: PWC and ZMQ are deliberately no longer asserted unmodified — see the
@@ -2776,6 +2829,33 @@ def gate38_stale_finish_private_path():
         assert not os.path.isfile(task0.staged_path)       # stale removed only its own
 
 
+def _compute_done(coord, run_id, stripe_id, worker_id, substripes, survivors):
+    """[F1 §3] Release a stripe's COMPUTE slot without touching its staging work.
+
+    Under the F1 active-lease scheduler a worker may hold at most ONE
+    compute-active (`claimed`) stripe, and `claim_stripe` raises
+    `LeaseInvariantError` on a second one. Several staging gates below need TWO
+    stripes generating staging traffic for the SAME worker at once — which is a
+    real production shape (`staging` explicitly does not occupy the compute slot,
+    F1 §3/§5), just not one reachable by claiming twice.
+
+    This calls the PRODUCTION transition — `record_stripe_complete`, exactly what
+    accepting the worker's `StripeComplete` frame does — rather than poking the
+    state column. That matters: the real call also sets `stripe_complete_seen`,
+    `substripes_done` and `survivors_total`, which `finalize_stripe` later reads to
+    promote the stripe to `done`. A hand-written `state=STAGING` would leave those
+    unset and silently break the very publication these gates assert.
+
+    A gate that ALSO issues its own `record_stripe_complete` later keeps working:
+    that call is idempotent by construction (guarded on `state=ST_CLAIMED`, which
+    the first call has already cleared) and matches zero rows.
+
+    It WEAKENS NO ASSERTION — every gate using it still asserts exactly what it
+    asserted before about admission, deferral, bounds and publication."""
+    coord.ledger.record_stripe_complete(
+        run_id, stripe_id, 0, worker_id, substripes, survivors)
+
+
 def _drain_staging(coord):
     if coord._staging_executor is not None:
         coord._staging_executor.shutdown(wait=True)
@@ -2943,7 +3023,13 @@ def gate42_staging_timeout_matrix():
         deadline = time.time() + 3
         while time.time() < deadline:
             st = coord.ledger.get_stripe("run", sid)
-            if st["current_attempt"] == 1:
+            # [F1] Wait for the SETTLED reassignment. The requeue is now two steps —
+            # the matrix returns the stripe to `pending` with attempt 1, then the
+            # scheduler claims it to an idle alternate — so `current_attempt == 1`
+            # alone is briefly true while `claimed_by` is still the FAILED worker.
+            # Polling the attempt alone was always racy; before F1 the transition
+            # was a single UPDATE, so the race could not be observed.
+            if st["current_attempt"] == 1 and st["state"] == ST_CLAIMED:
                 break
             time.sleep(0.02)
         st = coord.ledger.get_stripe("run", sid)
@@ -2989,6 +3075,10 @@ def gate43_admission_deferred_resume_real_lifecycle():
             coord.ledger.add_stripe("run", sid, 0, 30, "java_lcg", 1, now=100.0)
             coord.ledger.claim_stripe("run", sid, "hostA:gpu0", 0, 2, lease_expires_at=1e9)
             conn.record_assignment(sid, 0)
+            # [F1] one compute-active claim per worker: A's compute is finished and
+            # only its STAGING is still in flight, which is what this gate exercises.
+            if sid == sidA:
+                _compute_done(coord, "run", sidA, "hostA:gpu0", 2, 2)
 
         def _mk(sid, sub, ss, sc):
             survs = [[sub, 0.9, None, [sub]]]
@@ -3254,6 +3344,7 @@ def gate49_dispatch_not_blocked_when_staging_saturated():
         coord.ledger.add_stripe("run", sidX, 0, 20, "java_lcg", 1, now=100.0)
         coord.ledger.claim_stripe("run", sidX, "hostA:gpu0", 0, 2, lease_expires_at=1e9)
         connA.record_assignment(sidX, 0)
+        _compute_done(coord, "run", sidX, "hostA:gpu0", 2, 2)  # [F1] sidX STAGING
         satpayloads = {}
         for i, ss in enumerate((0, 10)):
             _, pb = build_substripe_payload_bytes(sidX, i, ss, 10, [[i, 0.9, 0, [i]]])
@@ -3651,6 +3742,7 @@ def gate56_bounded_deferred_queue():
         coord.ledger.add_stripe("run", sidH, 0, 30, "java_lcg_hybrid", 3, now=100.0)
         coord.ledger.claim_stripe("run", sidH, "hostA:gpu0", 0, 1, lease_expires_at=1e9)
         connA.record_assignment(sidH, 0)
+        _compute_done(coord, "run", sidH, "hostA:gpu0", 1, 1)  # [F1] holder STAGING
         coord.ledger.record_substripe_result("run", sidH, 0, 0, "hostA:gpu0", 0, 10, 1,
             remote_spool_path=remoteH, size_bytes=len(pbH), sha256=shaH)
         coord.enqueue_staging("remote", connA, "run", sidH, 0, 0,
@@ -3669,6 +3761,7 @@ def gate56_bounded_deferred_queue():
             coord.ledger.add_stripe("run", sid, 0, 30, "java_lcg_hybrid", 3, now=100.0)
             coord.ledger.claim_stripe("run", sid, "hostA:gpu0", 0, 1, lease_expires_at=1e9)
             connA.record_assignment(sid, 0)
+            _compute_done(coord, "run", sid, "hostA:gpu0", 1, 1)  # [F1] slot freed
             obj, pb = build_substripe_payload_bytes(sid, 0, 0, 30, [[1, 0.9, None, [1]]])
             m = SubStripeResultMessage(worker_id="hostA:gpu0", stripe_id=sid, sub_index=0,
                 seed_start=0, seed_count=30, survivor_count=1, inline=obj,
@@ -3708,12 +3801,33 @@ def gate57_variant_filtered_scheduling():
         B = _register(coord, "hostB:gpu0", variants=VARIANTS)
         assigns = coord.assign_stripes("run", "java_lcg", 1, 60, [A, B], now=100.0)
         assert len(assigns) == 2
-        for a in assigns:
-            assert a["claimed"] is True and a["worker_id"] == "hostB:gpu0", a
-            assert coord.ledger.get_stripe("run", a["stripe_id"])["claimed_by"] == "hostB:gpu0"
-            assert coord.ledger.get_stripe("run", a["stripe_id"])["state"] == ST_CLAIMED
-        # none stranded pending
-        assert coord.ledger.stripes_by_state("run", ST_PENDING) == []
+        # [F1 §4/§5] UPDATED: A is pcg32-only, so B is the ONLY compatible worker
+        # and therefore the only compute-idle candidate — one stripe is claimed to
+        # B, the other is backlog. The property this gate exists for is unchanged
+        # and still asserted: NOTHING is ever routed to the incompatible worker.
+        claimed = [a for a in assigns if a["claimed"]]
+        queued = [a for a in assigns if not a["claimed"]]
+        assert len(claimed) == 1 and len(queued) == 1, assigns
+        assert claimed[0]["worker_id"] == "hostB:gpu0", claimed
+        st = coord.ledger.get_stripe("run", claimed[0]["stripe_id"])
+        assert st["claimed_by"] == "hostB:gpu0" and st["state"] == ST_CLAIMED
+        qst = coord.ledger.get_stripe("run", queued[0]["stripe_id"])
+        assert qst["state"] == ST_PENDING and qst["claimed_by"] is None
+        # NOT stranded — the backlog is reachable. Free B's compute slot and the
+        # scheduler places the second stripe on B too, never on A. (Pre-F1 this was
+        # asserted as `stripes_by_state(PENDING) == []`, which under bulk claim was
+        # the only way to say "no stripe was left with no possible worker"; the
+        # queue now has a legitimate meaning, so the property is proven by driving
+        # it rather than by asserting the queue is empty.)
+        _compute_done(coord, "run", claimed[0]["stripe_id"], "hostB:gpu0",
+                      claimed[0]["expected_substripes"], 0)
+        placed = coord.schedule_pending_stripes("run", "java_lcg", 1, [A, B], now=200.0)
+        assert len(placed) == 1 and placed[0]["worker_id"] == "hostB:gpu0", placed
+        qst2 = coord.ledger.get_stripe("run", queued[0]["stripe_id"])
+        assert qst2["state"] == ST_CLAIMED and qst2["claimed_by"] == "hostB:gpu0"
+        assert qst2["lease_expires_at"] == 200.0 + 300.0, "lease not stamped at handoff"
+        assert [s2 for s2 in coord.ledger.all_stripes("run")
+                if s2["claimed_by"] == "hostA:gpu0"] == []
 
     # (b) a family NO worker supports -> the trial FAILS EXPLICITLY, not hangs
     with tempfile.TemporaryDirectory() as tmp:
@@ -3934,8 +4048,19 @@ def gate61_disconnected_worker_not_eligible():
             # every new compatible stripe now goes to B, NONE to A, none unsendable
             assigns = coord.assign_stripes("run", "java_lcg", 1, 60, eligible, now=100.0)
             assert len(assigns) == 2
-            for a in assigns:
-                assert a["worker_id"] == "B:gpu0" and a["claimed"] is True
+            # [F1 §4/§5] UPDATED: B is the only eligible worker, so one stripe is
+            # claimed and one is backlog. The gate's property — the DISCONNECTED
+            # worker A never receives work, on the initial handoff OR on any later
+            # scheduler pass — is asserted for both.
+            claimed = [a for a in assigns if a["claimed"]]
+            queued = [a for a in assigns if not a["claimed"]]
+            assert len(claimed) == 1 and len(queued) == 1, assigns
+            assert claimed[0]["worker_id"] == "B:gpu0"
+            _compute_done(coord, "run", claimed[0]["stripe_id"], "B:gpu0",
+                          claimed[0]["expected_substripes"], 0)
+            placed = coord.schedule_pending_stripes(
+                "run", "java_lcg", 1, eligible, now=200.0)
+            assert len(placed) == 1 and placed[0]["worker_id"] == "B:gpu0", placed
             claimedA = [s for s in coord.ledger.all_stripes("run")
                         if s["claimed_by"] == "A:gpu0"]
             assert claimedA == [], "a stripe was left claimed by the disconnected A"
@@ -4020,6 +4145,8 @@ def gate63_cross_attempt_remote_serialized():
             coord.ledger.add_stripe("run", sid, 0, 30, "java_lcg", 1, now=100.0)
             coord.ledger.claim_stripe("run", sid, "hostA:gpu0", 0, 2, lease_expires_at=1e9)  # E=2
             conn.record_assignment(sid, 0)
+            if sid == sidA:
+                _compute_done(coord, "run", sidA, "hostA:gpu0", 2, 2)  # [F1] slot freed
             for sub, ss, sc in ((0, 0, 15), (1, 15, 15)):
                 remote = f"/var/spool/miner/{sid}/{sub}.json"
                 payloads[remote] = pb

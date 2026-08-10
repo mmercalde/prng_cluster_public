@@ -134,6 +134,83 @@ ST_DONE = "done"
 ST_FAILED = "failed"
 ST_CANCELLED = "cancelled"
 
+
+# ---------------------------------------------------------------------------
+# [F2 TERMINAL OBSERVABILITY — Beta §11] THE terminal record.
+#
+# ONE construction, THREE surfaces. Beta: *"Do not construct three independent
+# reason strings."* Every terminal path builds exactly one `TerminalRecord`; that
+# single object is what
+#   (1) `mark_trial_aborted` persists — in the SAME UPDATE as the state change,
+#   (2) `abort_trial` puts on the `Phase5Sink.abort_trial(event)` event, and
+#   (3) `abort_trial` logs at ERROR level.
+# There is no path that formats a reason twice, so the three surfaces cannot
+# disagree by construction rather than by review.
+#
+# `reason` is prose for a human. `terminal_class` is the machine field, and it is
+# RECORDED AT THE SITE THAT KNOWS — never inferred downstream from the prose,
+# which is the failure mode Beta named explicitly.
+# ---------------------------------------------------------------------------
+TC_COMPUTE_LEASE_EXPIRY = "compute_lease_expiry"
+TC_STRIPE_ERROR = "stripe_error"
+TC_STAGING_CAPACITY_TIMEOUT = "staging_capacity_timeout"
+TC_STAGING_CAPACITY_INVARIANT = "staging_capacity_invariant"
+TC_STAGING_SIZING_FAILURE = "staging_sizing_failure"
+TC_WORKER_ADMISSION_TIMEOUT = "worker_admission_timeout"
+TC_NO_ELIGIBLE_WORKER = "no_eligible_worker"
+TC_THRESHOLD_PROVENANCE = "threshold_provenance_violation"
+TC_SERVE_TIMEOUT = "serve_trial_timeout"
+TC_EXPLICIT_ABORT = "explicit_abort"
+TC_COORDINATOR_ERROR = "coordinator_error"
+
+
+@dataclass(frozen=True)
+class TerminalRecord:
+    """The authoritative description of why a trial terminated (F2).
+
+    Immutable so that the object handed to the ledger, to the sink event and to
+    the logger is provably the same value on all three — a mutable record could
+    be edited between surfaces and reintroduce exactly the divergence this type
+    exists to prevent."""
+    terminal_class: str
+    reason: str
+    stripe_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    attempt: Optional[int] = None
+
+    def as_event_fields(self) -> Dict[str, Any]:
+        """The projection carried on the TrialAbort event (surface 2)."""
+        return {
+            "terminal_class": self.terminal_class,
+            "terminal_reason": self.reason,
+            "terminal_stripe_id": self.stripe_id,
+            "terminal_worker_id": self.worker_id,
+            "terminal_attempt": self.attempt,
+        }
+
+    def log_line(self) -> str:
+        """The single human-readable rendering (surface 3). Derived from the same
+        fields the other two surfaces carry, never re-composed from scratch."""
+        where = " ".join(
+            f"{k}={v!r}" for k, v in (
+                ("stripe", self.stripe_id), ("worker", self.worker_id),
+                ("attempt", self.attempt)) if v is not None)
+        return (f"class={self.terminal_class}"
+                + (f" {where}" if where else "")
+                + f" reason={self.reason}")
+
+
+class LeaseInvariantError(RuntimeError):
+    """[F1 §3] A second compute-active claim was attempted for a worker that
+    already holds one.
+
+    Raised, never silently refused. A silent refusal would let a regression that
+    restores bulk claim look like correct behaviour (the ledger would simply
+    decline the extra claims), which is precisely what G-F1-ONE-ACTIVE has to be
+    able to detect. Under the amended scheduler this is unreachable: the only
+    caller asks for a claim solely for a worker it has just established is
+    compute-idle."""
+
 # Shard staging lifecycle (Stage 3 completes the transitions).
 SH_PENDING = "pending"     # result recorded; local file not yet materialized
 SH_STAGED = "staged"       # local file written, not yet hash-verified
@@ -942,6 +1019,20 @@ class MinerLedger:
                         -- on a committed trial would be reading a lie. 'none'
                         -- until a successful commit discharges the reservations.
                         commit_cleanup_status  TEXT NOT NULL DEFAULT 'none',
+                        -- [F2 TERMINAL OBSERVABILITY, Beta §11] The AUTHORITATIVE
+                        -- terminal record. Written in the SAME UPDATE as the
+                        -- state transition (mark_trial_aborted), so a crash can
+                        -- never leave state='aborted' with a NULL reason on a
+                        -- path that possessed one. `finalized_at` already carries
+                        -- terminal TIME; these carry terminal IDENTITY.
+                        -- Fields that do not apply to a class stay NULL — a
+                        -- coordinator-scoped terminal has no stripe or worker.
+                        -- The class is RECORDED, never inferred later from prose.
+                        terminal_class         TEXT,
+                        terminal_reason        TEXT,
+                        terminal_stripe_id     TEXT,
+                        terminal_worker_id     TEXT,
+                        terminal_attempt       INTEGER,
                         created_at             REAL NOT NULL,
                         finalized_at           REAL
                     )
@@ -1026,6 +1117,22 @@ class MinerLedger:
                     conn.execute(
                         "ALTER TABLE trials ADD COLUMN commit_cleanup_status "
                         "TEXT NOT NULL DEFAULT 'none'")
+                # [F2 TERMINAL OBSERVABILITY] Same additive shape, same idiom:
+                # guarded on the LIVE table shape, never on a version counter
+                # nobody maintains. ADD COLUMN with no DEFAULT backfills existing
+                # rows as NULL, which is the correct semantics — a trial that
+                # terminated before this amendment genuinely has no recorded
+                # class, and NULL says exactly that rather than inventing one.
+                for _f2_col, _f2_type in (
+                    ("terminal_class", "TEXT"),
+                    ("terminal_reason", "TEXT"),
+                    ("terminal_stripe_id", "TEXT"),
+                    ("terminal_worker_id", "TEXT"),
+                    ("terminal_attempt", "INTEGER"),
+                ):
+                    if _f2_col not in trial_cols:
+                        conn.execute(
+                            f"ALTER TABLE trials ADD COLUMN {_f2_col} {_f2_type}")
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_stripe_state "
                     "ON stripes (run_id, state)"
@@ -1454,22 +1561,40 @@ class MinerLedger:
         return _trial_context_row_to_ctx(row)
 
     def mark_trial_aborted(
-        self, run_id: str, abort_event_id: str, now: Optional[float] = None
+        self, run_id: str, abort_event_id: str, now: Optional[float] = None,
+        terminal: Optional["TerminalRecord"] = None,
     ) -> bool:
         """Persist the terminal abort. Defect 5: terminal transitions happen ONLY
         from state='running', so committed and aborted are mutually exclusive — a
         COMMITTED trial can NEVER be flipped to aborted. Returns True only for the
         FIRST transition to aborted (exactly one abort event); a trial already
-        aborted returns False and keeps its original event id."""
+        aborted returns False and keeps its original event id.
+
+        [F2 ATOMICITY, Beta §11] The terminal record is written by THIS statement,
+        not by a follow-up UPDATE. One statement, one commit, one rowcount: a
+        crash cannot interleave between "the trial is aborted" and "this is why",
+        so `state='aborted' AND terminal_class IS NULL` is unreachable for any
+        path that possessed a record. A path that genuinely has none (a bare-API
+        abort in a unit test) writes NULLs, which is an honest absence rather than
+        a fabricated class."""
         now = time.time() if now is None else now
         with self._write_lock:
             with self._conn() as conn:
                 cur = conn.execute(
                     """UPDATE trials
                        SET state='aborted', abort_event_id=?,
-                           abort_cleanup_status='pending', finalized_at=?
+                           abort_cleanup_status='pending', finalized_at=?,
+                           terminal_class=?, terminal_reason=?,
+                           terminal_stripe_id=?, terminal_worker_id=?,
+                           terminal_attempt=?
                        WHERE run_id=? AND state='running'""",
-                    (abort_event_id, now, run_id),
+                    (abort_event_id, now,
+                     None if terminal is None else terminal.terminal_class,
+                     None if terminal is None else terminal.reason,
+                     None if terminal is None else terminal.stripe_id,
+                     None if terminal is None else terminal.worker_id,
+                     None if terminal is None else terminal.attempt,
+                     run_id),
                 )
                 conn.commit()
                 return cur.rowcount == 1
@@ -1629,18 +1754,76 @@ class MinerLedger:
         lease_expires_at: float,
     ) -> bool:
         """pending|failed -> claimed. Records the assignment attempt (L1 authority)
-        and the expected sub-stripe count (L8). Returns True on transition."""
+        and the expected sub-stripe count (L8). Returns True on transition.
+
+        [F1 §3/§5 + §10] TWO invariants are enforced HERE, in the ledger, rather
+        than by the caller checking first:
+
+        1. ONE COMPUTE-ACTIVE CLAIM PER WORKER. A worker that already holds a
+           stripe in `claimed` for this run cannot receive a second one.
+
+           ⚠ THE PRECISE CLAIM, and it is narrower than an earlier revision of
+           this docstring said (corrected per Beta §10, F1/F2 R1 §D). The existing
+           -active SELECT and the claim UPDATE are NOT one SQL statement — they
+           are two statements. What serializes them is the coordinator process's
+           ledger `_write_lock`, held across both:
+
+               _write_lock
+                   -> SELECT an existing compute-active claim for this worker
+                   -> if none: UPDATE the requested stripe
+                      (the §10 terminal-state guard is embedded in that UPDATE)
+
+           So: WITHIN ONE COORDINATOR PROCESS, the ledger write lock serializes
+           the existing-active check and the subsequent claim update. That is the
+           whole guarantee. This does NOT claim protection against an independent
+           external writer or a second coordinator process — enforcing it against
+           those would need database-level enforcement, which is outside F1 and
+           deliberately not implemented. It is consistent with the S172
+           certification boundary already on record: one active trial per
+           coordinator process.
+
+           A violation RAISES (`LeaseInvariantError`) instead of returning False —
+           see that class for why silence would defeat G-F1-ONE-ACTIVE.
+           `staging` deliberately does NOT count: a stripe whose compute finished
+           has released the worker's compute slot (§5), and its lease is already
+           NULL.
+
+        2. NO CLAIM AFTER TERMINATION. Once the trial row is `aborted` or
+           `committed`, no row may leave `pending` again — otherwise a scheduler
+           pass racing the abort could re-arm work that `cancel_active_stripes`
+           has already cancelled, which is exactly the post-termination claim
+           §10 forbids. Expressed as NOT EXISTS rather than "require running" so
+           that the bare-API paths (unit tests that never create a trial row)
+           keep working: absence of a trial row is not termination.
+        """
         with self._write_lock:
             with self._conn() as conn:
+                busy = conn.execute(
+                    """SELECT stripe_id FROM stripes
+                       WHERE run_id=? AND claimed_by=? AND state=?
+                         AND stripe_id<>?""",
+                    (run_id, worker_id, ST_CLAIMED, stripe_id),
+                ).fetchone()
+                if busy is not None:
+                    raise LeaseInvariantError(
+                        f"worker {worker_id!r} already holds compute-active stripe "
+                        f"{busy['stripe_id']!r} for run {run_id!r}; refusing to "
+                        f"claim {stripe_id!r} as a second concurrent compute "
+                        f"assignment. A queued stripe must stay `pending` with no "
+                        f"lease until the worker is compute-idle (F1 §3/§5).")
                 cur = conn.execute(
                     """UPDATE stripes
                        SET state=?, claimed_by=?, current_attempt=?,
                            expected_substripes=?, lease_expires_at=?,
                            stripe_complete_seen=0, substripes_done=NULL,
                            survivors_total=NULL
-                       WHERE run_id=? AND stripe_id=? AND state IN (?,?)""",
+                       WHERE run_id=? AND stripe_id=? AND state IN (?,?)
+                         AND NOT EXISTS (SELECT 1 FROM trials t
+                                         WHERE t.run_id=?
+                                           AND t.state IN ('aborted','committed'))""",
                     (ST_CLAIMED, worker_id, attempt, expected_substripes,
-                     lease_expires_at, run_id, stripe_id, ST_PENDING, ST_FAILED),
+                     lease_expires_at, run_id, stripe_id, ST_PENDING, ST_FAILED,
+                     run_id),
                 )
                 conn.commit()
                 return cur.rowcount == 1
@@ -1879,6 +2062,67 @@ class MinerLedger:
                 (run_id, state),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ----- F1 scheduler queries --------------------------------------------
+    def compute_busy_worker_ids(self, run_id: str) -> set:
+        """[F1 §3] The worker identities that currently hold a COMPUTE-ACTIVE
+        claim for this run — i.e. exactly the workers that may not be handed
+        another stripe.
+
+        `staging` is excluded deliberately and this is the §5 rule in one place:
+        a stripe whose `StripeComplete` has been accepted no longer occupies its
+        worker's compute slot, so the worker is schedulable again while its shards
+        are still being staged asynchronously."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT claimed_by FROM stripes
+                   WHERE run_id=? AND state=? AND claimed_by IS NOT NULL""",
+                (run_id, ST_CLAIMED),
+            ).fetchall()
+        return {r["claimed_by"] for r in rows}
+
+    def pending_stripes(
+        self, run_id: str, stage_prefix: Optional[str] = None,
+        *, exact_stripe_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """[F1 §4] The coordinator-owned backlog: rows created for the stage but
+        not yet handed to a worker. Ordered by `seed_start` so scheduling is
+        deterministic and a replay of the same run produces the same handoffs.
+
+        [F1/F2 R1 BLOCKER A — TWO SELECTORS, NEVER ONE] There are two genuinely
+        different questions a caller can ask, and they are now different
+        parameters:
+
+          * `stage_prefix`     — LIKE-scoped. "every pending row of THIS STAGE."
+            A multi-family workflow's later stages have no rows yet, but a caller
+            must never be able to reach across stages even so.
+          * `exact_stripe_id`  — IDENTITY. "this one stripe, if it is pending."
+
+        They are mutually exclusive and the caller must SAY WHICH. Nothing here
+        inspects the shape of the string to guess what was meant: at the gate-12
+        geometry a complete stripe id `run__st0_s1` passed as a prefix ALSO
+        matches `run__st0_s10 … s19`, so a caller intending one stripe silently
+        selected eleven, and an unrelated sibling could be claimed and reported
+        as the reassignment of the failed one."""
+        if stage_prefix is not None and exact_stripe_id is not None:
+            raise ValueError(
+                "pending_stripes accepts stage_prefix OR exact_stripe_id, never "
+                "both: they are different questions (LIKE-scoped stage vs stripe "
+                "identity) and answering one while the caller meant the other is "
+                "the F1/F2 R1 Blocker-A defect.")
+        args: List[Any] = [run_id, ST_PENDING]
+        if exact_stripe_id is not None:
+            selector = " AND stripe_id = ?"
+            args.append(exact_stripe_id)
+        elif stage_prefix:
+            selector = " AND stripe_id LIKE ?"
+            args.append(stage_prefix.replace("%", "") + "%")
+        else:
+            selector = ""
+        sql = ("SELECT * FROM stripes WHERE run_id=? AND state=?" + selector
+               + " ORDER BY seed_start, stripe_id")
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(args)).fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -2648,7 +2892,12 @@ class RangeMinerCoordinator:
 
         stripe_prefix defaults to run_id; serve_trial passes a per-STAGE prefix
         (`{run_id}__st{n}`) so a multi-family workflow's stages never collide on
-        stripe IDs (Defect 6)."""
+        stripe IDs (Defect 6).
+
+        [F1/F2 R1 BLOCKER A] `stripe_prefix` here is a STAGE prefix and nothing
+        else. It is used to CONSTRUCT stripe ids (`{prefix}_s{idx}`) and is
+        forwarded to the scheduler as `stage_prefix=`, never as an exact stripe
+        selector. A complete stripe id is not a legal value."""
         if not workers:
             raise ValueError("assign_stripes requires at least one worker")
         now = time.time() if now is None else now
@@ -2668,47 +2917,162 @@ class RangeMinerCoordinator:
         # freeze exists (no preflight ran) it is the identical predicate.
         compatible = self.cohort_filter(run_id, family_name, phase, workers)
         assignments: List[Dict[str, Any]] = []
-        for i, (idx, seed_start, seed_count) in enumerate(macro):
+        for _i, (idx, seed_start, seed_count) in enumerate(macro):
             stripe_id = f"{prefix}_s{idx}"
+            # [F1 §4] CREATE THE WHOLE GOVERNED GEOMETRY. Every planned stripe row
+            # exists from stage setup — for gate 12 all 32 — because the retention
+            # preflight, the burst bound and the saturation evidence are all
+            # whole-stage quantities. What changes is that a row is born
+            # `pending / claimed_by NULL / lease_expires_at NULL` and STAYS that
+            # way until a worker is actually free to run it.
             self.ledger.add_stripe(
                 run_id, stripe_id, seed_start, seed_count, family_name, phase, now
             )
+            record: Dict[str, Any] = {
+                "stripe_id": stripe_id, "seed_start": seed_start,
+                "seed_count": seed_count, "worker_id": None,
+                "attempt": attempt, "expected_substripes": None,
+                "effective_cap": None, "claimed": False,
+            }
             # No compatible worker in the pool -> refuse (pending). serve_trial turns
             # this into an EXPLICIT trial failure (never an indefinite strand).
             if not compatible:
-                assignments.append({
-                    "stripe_id": stripe_id, "seed_start": seed_start,
-                    "seed_count": seed_count, "worker_id": None,
-                    "attempt": attempt, "expected_substripes": None,
-                    "effective_cap": None, "claimed": False,
-                    "refused_reason": f"no eligible worker (cannot serve variant "
-                                      f"{family_name!r})",
+                record["refused_reason"] = (
+                    f"no eligible worker (cannot serve variant {family_name!r})")
+            assignments.append(record)
+        if not compatible:
+            return assignments
+        # [F1 §5] The initial handoff goes through the SAME scheduler that every
+        # later handoff uses. There is deliberately no second claiming path here:
+        # one code path stamps compute leases, so "the lease begins at the real
+        # handoff to an idle worker" is a property of the program's shape rather
+        # than of two call sites agreeing. At W idle workers and N planned stripes
+        # this claims min(W, N) and leaves the rest as backlog.
+        placed = self.schedule_pending_stripes(
+            run_id, family_name, phase, workers,
+            stage_prefix=prefix, attempt=attempt, now=now)
+        by_id = {p["stripe_id"]: p for p in placed}
+        for record in assignments:
+            p = by_id.get(record["stripe_id"])
+            if p is not None:
+                record.update({
+                    "worker_id": p["worker_id"],
+                    "attempt": p["attempt"],
+                    "expected_substripes": p["expected_substripes"],
+                    "effective_cap": p["effective_cap"],
+                    "claimed": True,
                 })
+        return assignments
+
+    def schedule_pending_stripes(
+        self,
+        run_id: str,
+        family_name: str,
+        phase: int,
+        workers: List[Any],
+        *,
+        stage_prefix: Optional[str] = None,
+        exact_stripe_id: Optional[str] = None,
+        attempt: int = 0,
+        now: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """[F1 §5 — THE ACTIVE-LEASE SCHEDULER] Hand pending stripes to workers
+        that are eligible, in the frozen cohort, and CURRENTLY COMPUTE-IDLE.
+
+        [F1/F2 R1 BLOCKER A] THE SELECTOR IS EXPLICIT AND KEYWORD-ONLY.
+        `stage_prefix` is the LIKE-scoped stage question used by normal stage
+        scheduling; `exact_stripe_id` is stripe IDENTITY, used by the hybrid
+        immediate-placement path, which means exactly one row and must never be
+        able to touch a lexical sibling. Passing both is a `ValueError`; passing
+        neither means the whole run's backlog, which is the legacy default.
+        Keyword-only on purpose: the two are indistinguishable positionally, and
+        it was precisely a positional-shaped confusion between them (a complete
+        stripe id handed to a prefix parameter) that let `run__st0_s1`'s retry
+        claim `run__st0_s10` and report it as a reassignment of `s1`.
+
+        This is the ONLY place in the coordinator that creates a compute lease,
+        and that is the whole point of the amendment. Because a lease is stamped
+        `now + compute_lease_timeout` at the instant the stripe is handed to an
+        idle worker, the lease measures the worker's service of THAT stripe — not
+        how long the stripe waited in a queue the worker could not yet reach.
+
+        Three filters, in order, and each is load-bearing:
+          * FROZEN COHORT (§9) — `cohort_filter` is the same predicate initial
+            assignment used before this amendment, so dynamic one-at-a-time
+            handoff does NOT reopen worker eligibility. A worker that registered
+            after the retention preflight froze the cohort is skipped here exactly
+            as it was skipped there.
+          * COMPUTE-IDLE (§3) — a worker already holding a `claimed` stripe is not
+            a candidate. `staging` does not disqualify: compute and staging
+            genuinely overlap, and Beta's §5 says not to wait for staging.
+          * NOT THE PRIOR CLAIMER — a stripe requeued by the hybrid retry path
+            retains `claimed_by` as the worker that just failed it, so the
+            scheduler cannot hand it straight back. See
+            `_handle_stripe_failure_locked` for why the requeue keeps that field.
+
+        Returns one record per stripe actually handed off (possibly empty). The
+        caller never needs to know how many: `_dispatch_pending` sends assignments
+        for whatever is in `claimed`, so an empty return simply means "no capacity
+        freed this pass"."""
+        now = time.time() if now is None else now
+        pending = self.ledger.pending_stripes(
+            run_id, stage_prefix, exact_stripe_id=exact_stripe_id)
+        if not pending:
+            return []
+        busy = self.ledger.compute_busy_worker_ids(run_id)
+        idle = [w for w in self.cohort_filter(run_id, family_name, phase, workers)
+                if getattr(w, "worker_id", None) not in busy]
+        if not idle:
+            return []
+        placed: List[Dict[str, Any]] = []
+        for row in pending:
+            if not idle:
+                break
+            prior = row["claimed_by"]
+            pick = next((w for w in idle
+                         if getattr(w, "worker_id", None) != prior), None)
+            if pick is None:
+                # Every free worker is the one that just failed this stripe. Leave
+                # it pending; a different worker freeing up will take it. This is a
+                # WAIT, never a failure — the terminal "no alternate eligible
+                # worker" decision belongs to the matrix and has already been made
+                # by the time a stripe is requeued.
                 continue
-            worker = compatible[i % len(compatible)]
+            idle.remove(pick)
             cap = advertised_effective_cap(
-                worker.backend, family_name, worker.seed_caps
-            )
-            expected = expected_substripes_for(seed_count, cap)
+                pick.backend, family_name, pick.seed_caps)
+            expected = expected_substripes_for(row["seed_count"], cap)
+            # A requeued stripe carries its own advanced attempt; a fresh one uses
+            # the caller's. Reading it from the ROW keeps the ledger authoritative
+            # rather than trusting a parameter that has travelled further.
+            row_attempt = (int(row["current_attempt"])
+                           if row["claimed_by"] is not None else int(attempt))
             claimed = self.ledger.claim_stripe(
-                run_id, stripe_id, worker.worker_id, attempt, expected,
+                run_id, row["stripe_id"], pick.worker_id, row_attempt, expected,
                 now + self.config.compute_lease_timeout,
             )
+            if not claimed:
+                # The only ways this returns False are a concurrent state change
+                # or a terminal trial (the §10 guard). Neither is this scheduler's
+                # to resolve: put the worker back and let the next pass re-read
+                # authoritative state.
+                idle.append(pick)
+                continue
             # L1: the connection records the attempt it was handed, paired against
             # the ledger's authoritative current_attempt on every later message.
-            if claimed and hasattr(worker, "record_assignment"):
-                worker.record_assignment(stripe_id, attempt)
-            assignments.append({
-                "stripe_id": stripe_id,
-                "seed_start": seed_start,
-                "seed_count": seed_count,
-                "worker_id": worker.worker_id,
-                "attempt": attempt,
+            if hasattr(pick, "record_assignment"):
+                pick.record_assignment(row["stripe_id"], row_attempt)
+            placed.append({
+                "stripe_id": row["stripe_id"],
+                "seed_start": row["seed_start"],
+                "seed_count": row["seed_count"],
+                "worker_id": pick.worker_id,
+                "attempt": row_attempt,
                 "expected_substripes": expected,
                 "effective_cap": cap,
-                "claimed": claimed,
+                "claimed": True,
             })
-        return assignments
+        return placed
 
     # ----- completion (Blocker 1 + L8) -------------------------------------
     def evaluate_stripe(self, run_id: str, stripe_id: str) -> CompletionCheck:
@@ -4682,10 +5046,13 @@ class RangeMinerCoordinator:
             run_id, stripe_id, arithmetic)
         with self._bp_lock:
             self._bp["capacity_invariant_terminations"] += 1
+        _inv_reason = (f"coordinator_staging_capacity_invariant: deferred staging "
+                       f"queue overflowed at {stripe_id}; {arithmetic}")
         self.fail_trial(
-            run_id,
-            reason=(f"coordinator_staging_capacity_invariant: deferred staging "
-                    f"queue overflowed at {stripe_id}; {arithmetic}"))
+            run_id, reason=_inv_reason,
+            terminal=TerminalRecord(
+                terminal_class=TC_STAGING_CAPACITY_INVARIANT,
+                reason=_inv_reason, stripe_id=stripe_id))
         if not fut.done():
             fut.set_result(None)
         return fut
@@ -5098,44 +5465,122 @@ class RangeMinerCoordinator:
         # ANY explicit non-retryable failure -> fail trial, retry NOT consumed.
         # (Lease expiry is treated as a retryable condition routed through the
         # phase policy below, per the matrix.)
+        # [F2] The class is decided HERE, where the caller's `lease_expiry` flag is
+        # still in scope — the one place that actually knows whether this was a
+        # dead worker or a reported error. Downstream never re-derives it from the
+        # prose, which is the inference Beta forbids.
+        failed_worker = stripe["claimed_by"]
+        _cls = TC_COMPUTE_LEASE_EXPIRY if lease_expiry else TC_STRIPE_ERROR
+
         if not retryable and not lease_expiry:
-            self.fail_trial(run_id, reason=f"{stripe_id}: non-retryable failure", now=now)
+            self.fail_trial(
+                run_id, reason=f"{stripe_id}: non-retryable failure", now=now,
+                terminal=TerminalRecord(
+                    terminal_class=TC_STRIPE_ERROR,
+                    reason=(f"stripe {stripe_id} reported a NON-RETRYABLE failure "
+                            f"on worker {failed_worker!r} attempt {attempt} "
+                            f"(phase {phase}); the matrix fails the trial without "
+                            f"consuming a retry"),
+                    stripe_id=stripe_id, worker_id=failed_worker, attempt=attempt))
             return {"action": "fail_trial", "reason": "non_retryable"}
 
         # Constant workflow phases fail closed.
         if phase in (1, 2):
-            self.fail_trial(run_id, reason=f"{stripe_id}: constant-phase failure", now=now)
+            self.fail_trial(
+                run_id, reason=f"{stripe_id}: constant-phase failure", now=now,
+                terminal=TerminalRecord(
+                    terminal_class=_cls,
+                    reason=(f"stripe {stripe_id} on worker {failed_worker!r} "
+                            f"attempt {attempt} "
+                            + ("exceeded its compute lease with no valid "
+                               "heartbeat or active-stripe progress"
+                               if lease_expiry else
+                               "reported a retryable failure")
+                            + f"; workflow phase {phase} is CONSTANT-MODE, which "
+                              f"fails the trial immediately and never retries "
+                              f"(retry-to-another-worker exists for hybrid "
+                              f"phases 3/4 only)"),
+                    stripe_id=stripe_id, worker_id=failed_worker, attempt=attempt))
             return {"action": "fail_trial", "reason": "constant_phase"}
 
         # Hybrid workflow phases: one retry then fail.
         if attempt == 0:
             # Blocker 2: clean up the failed attempt's local shards BEFORE retry.
             self.cleanup_attempt(run_id, stripe_id, attempt, now)
+            # The TERMINAL decision is unchanged (F1 §8: the matrix is untouched):
+            # "is there any alternate eligible cohort worker at all?" — deliberately
+            # NOT "is one free right now". Busy-ness is a scheduling question and a
+            # transient one; making it terminal would turn every saturated hybrid
+            # retry into a trial failure, which would be a far worse regression
+            # than the defect being repaired.
             other = self._pick_other_worker(
-                eligible_workers, stripe["claimed_by"], stripe["family_name"])
+                eligible_workers, failed_worker, stripe["family_name"])
             if other is None:
                 self.fail_trial(
-                    run_id, reason=f"{stripe_id}: no alternate eligible worker", now=now)
+                    run_id, reason=f"{stripe_id}: no alternate eligible worker",
+                    now=now,
+                    terminal=TerminalRecord(
+                        terminal_class=TC_NO_ELIGIBLE_WORKER,
+                        reason=(f"stripe {stripe_id} needs reassignment away from "
+                                f"{failed_worker!r} but no other worker in the "
+                                f"frozen cohort can serve variant "
+                                f"{stripe['family_name']!r}"),
+                        stripe_id=stripe_id, worker_id=failed_worker,
+                        attempt=attempt))
                 return {"action": "fail_trial", "reason": "no_alternate_worker"}
             # Fence the superseded assignment (staging_generation++ — L5) and
-            # requeue the WHOLE stripe as attempt 1 on the different worker.
+            # requeue the WHOLE stripe as attempt 1.
+            #
+            # [F1 §5] The requeue does NOT claim. Claiming here would hand the
+            # stripe to `other` whether or not `other` is compute-idle, and at
+            # saturation it never is — which would re-create the exact defect this
+            # amendment removes, one stripe deep, on the retry path. So the stripe
+            # returns to the backlog and the scheduler places it on the next idle
+            # alternate.
+            #
+            # `claimed_by` is deliberately RETAINED as the worker that just failed,
+            # instead of being nulled. On a `pending` row it is inert everywhere
+            # (dispatch, lease expiry and completion all read `claimed`), and it is
+            # the durable record of which worker the scheduler must not choose —
+            # which is how `_pick_other_worker`'s "a DIFFERENT worker" guarantee
+            # survives the handoff being deferred. See `schedule_pending_stripes`.
             self.ledger.set_stripe_fields(
                 run_id, stripe_id, phase_degraded=1, state=ST_PENDING,
-                claimed_by=None, lease_expires_at=None,
+                claimed_by=failed_worker, current_attempt=1, lease_expires_at=None,
                 staging_generation=stripe["staging_generation"] + 1)
-            cap = advertised_effective_cap(
-                other.backend, stripe["family_name"], other.seed_caps)
-            expected = expected_substripes_for(stripe["seed_count"], cap)
-            self.ledger.claim_stripe(
-                run_id, stripe_id, other.worker_id, 1, expected,
-                now + self.config.compute_lease_timeout)
-            if hasattr(other, "record_assignment"):
-                other.record_assignment(stripe_id, 1)
-            return {"action": "reassigned", "worker_id": other.worker_id,
+            #
+            # [F1/F2 R1 BLOCKER A] EXACT IDENTITY, not a prefix. This call means
+            # "place THIS stripe if an alternate is free", and it used to pass a
+            # complete stripe id into a LIKE-scoped prefix parameter. At the
+            # gate-12 32-stripe geometry `run__st0_s1%` also matches
+            # `run__st0_s10 … s19`, so with every legitimate alternate busy and
+            # the prior claimer idle the failed stripe was correctly skipped
+            # while an unrelated PENDING sibling was claimed instead — and the
+            # non-empty result was then reported below as
+            # `action="reassigned", worker_id=<sibling's worker>` for a stripe
+            # that had not been reassigned at all.
+            placed = self.schedule_pending_stripes(
+                run_id, stripe["family_name"], phase, eligible_workers,
+                exact_stripe_id=stripe_id, attempt=1, now=now)
+            if placed:
+                return {"action": "reassigned", "worker_id": placed[0]["worker_id"],
+                        "attempt": 1, "phase_degraded": True}
+            # Every alternate is busy this instant. The stripe is queued, not lost:
+            # the serve loop schedules on every pass, so the first alternate to go
+            # compute-idle takes it — with a FRESH lease, which is the whole point.
+            return {"action": "requeued", "worker_id": None,
                     "attempt": 1, "phase_degraded": True}
 
         # Second hybrid failure -> fail trial.
-        self.fail_trial(run_id, reason=f"{stripe_id}: hybrid second failure", now=now)
+        self.fail_trial(
+            run_id, reason=f"{stripe_id}: hybrid second failure", now=now,
+            terminal=TerminalRecord(
+                terminal_class=_cls,
+                reason=(f"stripe {stripe_id} failed a SECOND time on worker "
+                        f"{failed_worker!r} at attempt {attempt} (phase {phase}); "
+                        f"the hybrid matrix allows one reassignment and this "
+                        f"exhausts it"),
+                stripe_id=stripe_id, worker_id=failed_worker, attempt=attempt))
         return {"action": "fail_trial", "reason": "hybrid_second_failure"}
 
     def process_lease_expiry(
@@ -5340,15 +5785,22 @@ class RangeMinerCoordinator:
         return event
 
     def fail_trial(
-        self, run_id: str, reason: str = "", now: Optional[float] = None
+        self, run_id: str, reason: str = "", now: Optional[float] = None,
+        terminal: Optional[TerminalRecord] = None,
     ) -> Dict[str, Any]:
         """Terminal trial failure -> whole-trial abort routed OFF the dispatch loop
         via the cleanup executor (Defect 5), waiting for the synchronous discharge
-        to complete. Never runs the abort discharge on the dispatcher."""
-        return self.submit_abort(run_id, reason, now).result()
+        to complete. Never runs the abort discharge on the dispatcher.
+
+        [F2] `terminal` is the authoritative record; `reason` is retained as the
+        legacy prose for callers and gates that only ever passed a string. When a
+        caller supplies only prose, the record is built here with an EXPLICIT
+        `coordinator_error` class — the class is never parsed out of the prose."""
+        return self.submit_abort(run_id, reason, now, terminal).result()
 
     def abort_trial(
-        self, run_id: str, reason: str = "", now: Optional[float] = None
+        self, run_id: str, reason: str = "", now: Optional[float] = None,
+        terminal: Optional[TerminalRecord] = None,
     ) -> Dict[str, Any]:
         """Whole-trial terminal abort (L3) with the L7 synchronous discharge
         (Team Beta binding — Option A). Order (run off the dispatch loop, see
@@ -5378,6 +5830,31 @@ class RangeMinerCoordinator:
         deadlock permanently (RLock is reentrant only for the same thread). The
         ledger methods' own internal `_write_lock` is unaffected."""
         now = time.time() if now is None else now
+        # [F2] ONE construction, from here down. Every surface below reads THIS
+        # object; nothing re-formats the reason. A caller that passed only prose
+        # gets an explicitly-classed record rather than an inferred one.
+        if terminal is None:
+            terminal = TerminalRecord(
+                terminal_class=TC_COORDINATOR_ERROR,
+                reason=reason or "terminal abort with no reason supplied")
+        # [F2 §7 — R2] ONCE A TerminalRecord EXISTS, `terminal.reason` IS THE SOLE
+        # REASON AUTHORITY FOR THE ABORT EVENT.
+        #
+        # The legacy `reason` key stays on the event for compatibility, but it is
+        # DERIVED here rather than carried from the caller — and it is derived
+        # BEFORE the first/non-first divergence below, so both deliveries of one
+        # `event_id` are built from the same canonical record. Previously this
+        # assignment existed only on the non-first path, which left a caller whose
+        # prose differed from the record's reason emitting the SAME event_id twice
+        # with two different payloads: `reason` = the caller's string on the first
+        # delivery and `terminal.reason` on the replay. F2's rule is not "the five
+        # terminal_* fields agree" — it is that ONE canonical terminal decision
+        # feeds every durable and externally visible representation.
+        #
+        # The non-first branch re-assigns `terminal`, `reason` and
+        # `abort_event_id` from the WINNING durable record; that reconstruction is
+        # unchanged and remains authoritative over this line.
+        reason = terminal.reason
         self.ledger.create_trial(run_id, -1, now)
         trial = self.ledger.get_trial(run_id)
         if trial is not None and trial["state"] == "committed":
@@ -5389,7 +5866,8 @@ class RangeMinerCoordinator:
         if trial is not None and trial["state"] == "aborted":
             first = False
         else:
-            first = self.ledger.mark_trial_aborted(run_id, abort_event_id, now)
+            first = self.ledger.mark_trial_aborted(
+                run_id, abort_event_id, now, terminal=terminal)
             if not first:
                 # The read above may now be stale. Determine which terminal
                 # transition actually won the atomic state='running' race.
@@ -5400,11 +5878,49 @@ class RangeMinerCoordinator:
                 if trial is None or trial["state"] != "aborted":
                     raise RuntimeError(
                         f"unexpected terminal transition for {run_id!r}")
+        if not first:
+            # [F2 §7 — R1 BLOCKER B] THE FIRST DURABLE TERMINAL TRANSITION OWNS
+            # TERMINAL IDENTITY PERMANENTLY.
+            #
+            # Two ways to arrive here: the trial was ALREADY aborted when we
+            # read it, or `mark_trial_aborted` returned False because another
+            # abort won the atomic `state='running'` transition after our read.
+            # Both are the same fact — someone else's record is the canonical
+            # one — and in both the local `terminal` is still THIS caller's
+            # proposal. Leaving it in place produced a reachable divergence:
+            # ledger and ERROR log carried A while a replayed sink event carried
+            # a contradictory B, which is exactly the canonical-record claim F2
+            # exists to make. The later caller's proposed class/reason is NOT
+            # authoritative; the durable row is. Re-read rather than reuse the
+            # row above, because the row above may predate the winning write.
+            durable = self.ledger.get_trial(run_id)
+            terminal = self._terminal_from_trial_row(durable)
+            reason = terminal.reason
+            if durable is not None and durable["abort_event_id"]:
+                abort_event_id = durable["abort_event_id"]
         if first:
+            # [F2 LOG PARITY, Beta §11] THE synchronous ERROR record, emitted from
+            # the one canonical terminal event, gated on `first` so an idempotent
+            # re-abort cannot double-log. This is the line whose absence produced
+            # five minutes of coordinator silence on 2026-08-09: the constant-phase
+            # branch built a precise reason and nothing ever printed it. Emitted
+            # from the SAME `terminal` object the ledger row and the sink event
+            # carry, so the three cannot diverge.
+            logger.error("[F1/F2] TRIAL TERMINAL run=%s %s",
+                         run_id, terminal.log_line())
             # fence every still-active assignment (L3): pending/claimed/staging -> cancelled
+            #
+            # [F1 §10] `pending` was already in this transition's state list, and
+            # that is now load-bearing rather than incidental: replacing bulk claim
+            # with coordinator-owned backlog means a terminal trial routinely holds
+            # substantial PENDING work, and none of it may remain runnable. The
+            # companion half of the guarantee is in `claim_stripe`, which refuses
+            # to move any row out of `pending` once the trial row is terminal — so
+            # a scheduler pass racing this cleanup cannot re-arm a cancelled row.
             self.ledger.cancel_active_stripes(run_id)
         event = {"event_type": "trial_abort", "run_id": run_id,
-                 "event_id": abort_event_id, "reason": reason}
+                 "event_id": abort_event_id, "reason": reason,
+                 **terminal.as_event_fields()}
         try:
             if self.phase5_sink is not None:
                 self.phase5_sink.abort_trial(event)   # SYNCHRONOUS (Option A)
@@ -5423,6 +5939,40 @@ class RangeMinerCoordinator:
             self.ledger.set_trial_cleanup_status(run_id, "failed")
             return {"event": event, "cleanup": "failed", "error": str(e), "first": first}
 
+    @staticmethod
+    def _terminal_from_trial_row(
+        row: Optional[Dict[str, Any]]
+    ) -> TerminalRecord:
+        """[F2 §7 — R1 BLOCKER B] Rebuild the canonical terminal identity from the
+        DURABLE row, for any caller that did not win the first terminal
+        transition.
+
+        The reconstruction is total: every outward surface of a losing/idempotent
+        abort is built from what came back out of this function, so the later
+        caller's proposed class, reason, stripe, worker and attempt have no route
+        to the event, the log or the return value.
+
+        A durable row with `terminal_class IS NULL` is an HONEST ABSENCE, not an
+        invitation to substitute the caller's proposal — it means the first
+        transition genuinely persisted no record (the bare-API path
+        `mark_trial_aborted` allows). The reconstruction says exactly that
+        instead, because "the earlier transition recorded nothing" and "the
+        earlier transition recorded what I am proposing now" are different
+        facts."""
+        if row is None or row["terminal_class"] is None:
+            return TerminalRecord(
+                terminal_class=TC_COORDINATOR_ERROR,
+                reason=("trial was already terminally aborted by an earlier "
+                        "transition that persisted no terminal record; this "
+                        "later caller's proposed class/reason is NOT "
+                        "authoritative (F2 §7)"))
+        return TerminalRecord(
+            terminal_class=row["terminal_class"],
+            reason=row["terminal_reason"] or "",
+            stripe_id=row["terminal_stripe_id"],
+            worker_id=row["terminal_worker_id"],
+            attempt=row["terminal_attempt"])
+
     def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         if getattr(self, "_cleanup_executor", None) is None:
             self._cleanup_executor = concurrent.futures.ThreadPoolExecutor(
@@ -5430,12 +5980,14 @@ class RangeMinerCoordinator:
         return self._cleanup_executor
 
     def submit_abort(
-        self, run_id: str, reason: str = "", now: Optional[float] = None
+        self, run_id: str, reason: str = "", now: Optional[float] = None,
+        terminal: Optional[TerminalRecord] = None,
     ) -> "concurrent.futures.Future":
         """Route the synchronous abort discharge onto the cleanup executor so it
         NEVER runs inside the socket receive/dispatch loop (L7 dispatch-thread
         requirement). Returns a Future; the caller waits for successful completion."""
-        return self._executor().submit(self.abort_trial, run_id, reason, now)
+        return self._executor().submit(
+            self.abort_trial, run_id, reason, now, terminal)
 
     # ----- threshold provenance + parent-side enforcement (S172 D6) --------
     #
@@ -6016,7 +6568,13 @@ class RangeMinerCoordinator:
                 now = time.time()
                 if trial_timeout is not None and now - start > trial_timeout:
                     # Defect 5: terminal abort routed OFF the dispatch loop.
-                    self.fail_trial(run_id, reason="serve_trial timeout")
+                    self.fail_trial(
+                        run_id, reason="serve_trial timeout",
+                        terminal=TerminalRecord(
+                            terminal_class=TC_SERVE_TIMEOUT,
+                            reason=(f"serve_trial exceeded its configured "
+                                    f"serve_timeout of {trial_timeout}s "
+                                    f"(elapsed {now - start:.1f}s)")))
                     continue
 
                 # [S172-BP §1.5] THE BOUNDED CAPACITY TIMEOUT — the ONE permitted
@@ -6031,7 +6589,11 @@ class RangeMinerCoordinator:
                                  run_id, _reason)
                     with self._bp_lock:
                         self._bp["capacity_timeout_terminations"] += 1
-                    self.fail_trial(run_id, reason=_reason, now=now)
+                    self.fail_trial(
+                        run_id, reason=_reason, now=now,
+                        terminal=TerminalRecord(
+                            terminal_class=TC_STAGING_CAPACITY_TIMEOUT,
+                            reason=_reason))
                     continue
 
                 # --- accept new connections (no blocking read on the loop) ---
@@ -6201,7 +6763,17 @@ class RangeMinerCoordinator:
                                         f"{waited:.1f}s "
                                         f"(worker_admission_timeout="
                                         f"{worker_admission_timeout:.1f}s)"),
-                                    now=now)
+                                    now=now,
+                                    terminal=TerminalRecord(
+                                        terminal_class=TC_WORKER_ADMISSION_TIMEOUT,
+                                        reason=(
+                                            f"stage {stage_idx} (family {fam!r}, "
+                                            f"phase {ph}) expected "
+                                            f"{expected_workers} eligible "
+                                            f"worker(s); {len(eligible)} admitted "
+                                            f"after {waited:.1f}s "
+                                            f"(worker_admission_timeout="
+                                            f"{worker_admission_timeout:.1f}s)")))
                             # Short pool and the window is still open (or the trial
                             # is now terminal): this stage is NOT assigned, so there
                             # is nothing to dispatch and no lease to maintain. Keep
@@ -6221,7 +6793,13 @@ class RangeMinerCoordinator:
                                    for w in eligible):
                             self.fail_trial(
                                 run_id,
-                                reason=f"no eligible worker supports variant {fam!r}")
+                                reason=f"no eligible worker supports variant {fam!r}",
+                                terminal=TerminalRecord(
+                                    terminal_class=TC_NO_ELIGIBLE_WORKER,
+                                    reason=(f"no worker in the frozen cohort "
+                                            f"advertises variant {fam!r} for stage "
+                                            f"{stage_idx} (phase {ph}); "
+                                            f"{len(eligible)} worker(s) eligible")))
                             continue
                         # [S172 STAGING-CAPACITY AMENDMENT §1.2] TRIAL RETENTION
                         # PREFLIGHT — resolve and enforce the FILE high-water for
@@ -6255,7 +6833,11 @@ class RangeMinerCoordinator:
                                     run_id,
                                     reason=(f"coordinator_staging_retention_sizing: "
                                             f"{_ret_exc}"),
-                                    now=now)
+                                    now=now,
+                                    terminal=TerminalRecord(
+                                        terminal_class=TC_STAGING_SIZING_FAILURE,
+                                        reason=(f"coordinator_staging_retention_"
+                                                f"sizing: {_ret_exc}")))
                                 continue
                             except StagingPreflightProvenanceError as _prov_exc:
                                 # [R2 §5-A] A would-be ADMISSION that cannot record
@@ -6274,7 +6856,11 @@ class RangeMinerCoordinator:
                                     run_id,
                                     reason=(f"coordinator_staging_preflight_"
                                             f"provenance: {_prov_exc}"),
-                                    now=now)
+                                    now=now,
+                                    terminal=TerminalRecord(
+                                        terminal_class=TC_STAGING_SIZING_FAILURE,
+                                        reason=(f"coordinator_staging_preflight_"
+                                                f"provenance: {_prov_exc}")))
                                 continue
                             retention_preflighted = True
                         _stage_assignments = self.assign_stripes(
@@ -6319,13 +6905,26 @@ class RangeMinerCoordinator:
                             # made — logged beside the conservative one so the
                             # 116-vs-136 distinction is visible in every run log,
                             # not only in the tests.
+                            # [F1] `claimed`/`queued` are logged beside the bounds
+                            # because the EXACT bound is now the burst of the
+                            # stripes actually handed out at stage setup, which
+                            # under the active-lease scheduler is min(idle workers,
+                            # planned stripes) rather than the whole stage. Without
+                            # these two counts the `exact` figure would look like a
+                            # regression against the pre-amendment logs instead of
+                            # the intended consequence of the backlog existing. The
+                            # CONSERVATIVE bound is unchanged and still sized over
+                            # every planned stripe, so nothing in force shrank.
                             logger.info(
                                 "[S172-BP] burst_exact stage=%d family=%s phase=%s "
-                                "exact=%d conservative=%d",
+                                "exact=%d conservative=%d claimed=%d queued=%d",
                                 stage_idx, fam, ph,
                                 staging_burst_bound_exact(_exact_rows),
                                 self._derived_bound_detail.get(
-                                    "burst_bound_conservative"))
+                                    "burst_bound_conservative"),
+                                sum(1 for a in _stage_assignments if a.get("claimed")),
+                                sum(1 for a in _stage_assignments
+                                    if not a.get("claimed")))
                         except Exception as _sizing_exc:      # noqa: BLE001
                             logger.exception(
                                 "[S172-BP] STAGING SIZING FAILED CLOSED at stage "
@@ -6339,15 +6938,16 @@ class RangeMinerCoordinator:
                                 len(_stage_assignments), len(eligible),
                                 [a.get("seed_count") for a in _stage_assignments],
                                 self._central_caps())
+                            _sizing_reason = (
+                                f"coordinator_staging_sizing: could not derive the "
+                                f"staging deferred bound for stage {stage_idx} "
+                                f"(family {fam!r}, phase {ph}) — "
+                                f"{type(_sizing_exc).__name__}: {_sizing_exc}")
                             self.fail_trial(
-                                run_id,
-                                reason=(
-                                    f"coordinator_staging_sizing: could not derive "
-                                    f"the staging deferred bound for stage "
-                                    f"{stage_idx} — "
-                                    f"{type(_sizing_exc).__name__}: "
-                                    f"{_sizing_exc}"),
-                                now=now)
+                                run_id, reason=_sizing_reason, now=now,
+                                terminal=TerminalRecord(
+                                    terminal_class=TC_STAGING_SIZING_FAILURE,
+                                    reason=_sizing_reason))
                             continue
                         stage_assigned = True
                     # ---- MAINTENANCE (unbounded, threshold-free) ---------------
@@ -6358,6 +6958,26 @@ class RangeMinerCoordinator:
                     # a legitimate input that the matrix already handles (hybrid with
                     # no alternate -> fail_trial). It is no longer a gate on whether
                     # the matrix runs at all.
+                    # [F1 §5] THE HANDOFF PASS. Every maintenance iteration offers
+                    # the stage's pending backlog to whichever cohort workers are
+                    # compute-idle right now. This is what turns "24 stripes with
+                    # no lease" into work: a worker whose StripeComplete was
+                    # accepted becomes idle here and takes its next stripe with a
+                    # FRESH lease stamped at this instant.
+                    #
+                    # Deliberately ABOVE `_dispatch_pending`: the scheduler moves
+                    # rows into `claimed`, and `_dispatch_pending` sends an assign
+                    # for whatever is in `claimed`. Ordering them this way means a
+                    # stripe handed off on this pass is also dispatched on this
+                    # pass, so a freed worker never idles a whole poll interval.
+                    #
+                    # Deliberately BELOW the terminal check at the top of the loop
+                    # and paired with `claim_stripe`'s own terminal guard (§10):
+                    # a trial that aborted earlier in this iteration cannot have
+                    # cancelled rows re-armed here.
+                    self.schedule_pending_stripes(
+                        run_id, fam, ph, eligible,
+                        stage_prefix=_stage_prefix(stage_idx), now=now)
                     self._dispatch_pending(
                         run_id, fam, ph, fs_by_worker, dispatched, dataset_path,
                         dataset_sha256, window_size, sessions, offset, residues,
@@ -6409,7 +7029,11 @@ class RangeMinerCoordinator:
                                     self.abort_trial(
                                         run_id,
                                         reason=f"threshold provenance violation: "
-                                               f"{primary}")
+                                               f"{primary}",
+                                        terminal=TerminalRecord(
+                                            terminal_class=TC_THRESHOLD_PROVENANCE,
+                                            reason=(f"threshold provenance "
+                                                    f"violation: {primary}")))
                                 except Exception:       # noqa: BLE001
                                     logger.exception(
                                         "abort/cleanup ALSO failed while handling a "
@@ -6892,26 +7516,11 @@ class RangeMinerCoordinator:
             return
 
         if mt == "heartbeat":
-            if msg.current_stripe_id:
-                ok, _ = self.accept_stripe_message(
-                    wconn, run_id, msg.current_stripe_id, bound_worker_id, (ST_CLAIMED,))
-                if ok:
-                    renewed = self.ledger.renew_lease(
-                        run_id, msg.current_stripe_id, bound_worker_id,
-                        time.time() + self.config.compute_lease_timeout)
-                    # [S172-BP AMENDMENT F2] The real lease is renewed, so the
-                    # resume-grace bridge has done its job and must end HERE —
-                    # leaving it in place would widen the exemption past the one
-                    # window it exists for. Gated on the LEDGER's own answer: a
-                    # renew that did not land (the stripe moved out of `claimed`,
-                    # or was re-claimed by another worker) has not restored the
-                    # lease, so the bridge must stay up until its own bound.
-                    if renewed and self.clear_capacity_resume_grace(
-                            bound_worker_id):
-                        logger.info(
-                            "[S172-BP] resume_grace_cleared worker=%s stripe=%s "
-                            "— renew_lease succeeded", bound_worker_id,
-                            msg.current_stripe_id)
+            # [F1 §6] Heartbeat remains valid, and is now ONE OF TWO liveness
+            # sources rather than the only one. Same predicate as progress.
+            self._renew_active_lease(
+                wconn, run_id, getattr(msg, "current_stripe_id", None),
+                bound_worker_id, source="heartbeat")
             return
         if mt not in ("sub_stripe_result", "stripe_complete", "stripe_error"):
             return
@@ -6951,6 +7560,14 @@ class RangeMinerCoordinator:
                 logger.warning("duplicate sub-stripe result %s/%s dropped",
                                msg.stripe_id, msg.sub_index)
                 return
+            # [F1 §6] PROGRESS IS LIVENESS. The result was accepted by the L1
+            # fence AND newly inserted, so it is genuine forward progress on this
+            # active attempt — renew. Placed AFTER `inserted` deliberately: a
+            # replayed sub-stripe is not progress, and letting a duplicate renew
+            # would make a stuck worker look alive by retransmitting.
+            self._renew_active_lease(
+                wconn, run_id, msg.stripe_id, bound_worker_id,
+                source="sub_stripe_result")
             # Defect 4: stage OFF the dispatch loop (fetch/verify/rename/fsync in
             # the bounded staging executor).
             if msg.inline is not None:
@@ -6988,6 +7605,67 @@ class RangeMinerCoordinator:
             self.handle_stripe_failure(
                 run_id, msg.stripe_id, retryable=msg.retryable,
                 eligible_workers=eligible_provider())
+
+    def _renew_active_lease(
+        self, wconn, run_id: str, stripe_id: Optional[str], worker_id: str,
+        source: str, now: Optional[float] = None,
+    ) -> bool:
+        """[F1 §6] THE renewal predicate. One construction, both liveness sources.
+
+        Beta calls the scope distinction load-bearing:
+            *progress on THIS active attempt renews THIS active attempt* —
+            NOT *any traffic from the host keeps everything it owns alive.*
+
+        Every forbidden case is rejected by a named branch, and all but two are
+        rejected by machinery that already existed and is already gated:
+
+        | forbidden                | rejected by                                  |
+        |--------------------------|----------------------------------------------|
+        | wrong worker             | `accept_stripe_message` — `conn.worker_id !=` |
+        |                          | `msg_worker_id`, and `claimed_by != worker`  |
+        | wrong stripe             | `accept_stripe_message` — unknown stripe /   |
+        |                          | `claimed_by` mismatch                        |
+        | stale attempt            | `accept_stripe_message` — ledger              |
+        |                          | `current_attempt` vs the CONNECTION's         |
+        |                          | recorded assignment attempt                  |
+        | late result, prior attempt | same attempt check; the retry path also    |
+        |                          | re-claims to a DIFFERENT worker              |
+        | not compute-active       | permitted-states `(ST_CLAIMED,)` — a         |
+        |                          | `staging` stripe has no compute lease        |
+        | invalid/rejected result  | caller: only reached when the L1 fence passed |
+        |                          | AND `record_substripe_result` newly inserted  |
+        | `status` frame           | caller: `_serve_dispatch` returns before any  |
+        | `register`               | renewal for every type outside the two above  |
+
+        The final authority is `renew_lease` itself, whose WHERE clause re-tests
+        `state='claimed' AND claimed_by=worker` in the same statement that writes
+        the new expiry — so even a caller that reasoned wrongly cannot extend the
+        lease of a stripe the worker does not currently own."""
+        if not stripe_id:
+            return False
+        ok, why = self.accept_stripe_message(
+            wconn, run_id, stripe_id, worker_id, (ST_CLAIMED,))
+        if not ok:
+            logger.debug(
+                "[F1] lease renewal REFUSED (%s) worker=%s stripe=%s: %s",
+                source, worker_id, stripe_id, why)
+            return False
+        now = time.time() if now is None else now
+        renewed = self.ledger.renew_lease(
+            run_id, stripe_id, worker_id,
+            now + self.config.compute_lease_timeout)
+        # [S172-BP §1.4/F2 — the RESUME GRACE, unchanged and deliberately kept]
+        # This is the certified back-pressure protection, NOT this amendment's F2.
+        # It solves a different problem (coordinator-CAUSED silence must not enter
+        # the worker-failure matrix) and the two are complementary: the grace
+        # bridges a pause, and the first real renewal after resume ends it. Gated
+        # on the LEDGER's own answer, so a renew that did not land leaves the
+        # bridge up until its own bound.
+        if renewed and self.clear_capacity_resume_grace(worker_id):
+            logger.info(
+                "[S172-BP] resume_grace_cleared worker=%s stripe=%s "
+                "— renew_lease succeeded via %s", worker_id, stripe_id, source)
+        return renewed
 
     def _dispatch_pending(self, run_id, family_name, phase, fs_by_worker,
                           dispatched, dataset_path, dataset_sha256, window_size,
