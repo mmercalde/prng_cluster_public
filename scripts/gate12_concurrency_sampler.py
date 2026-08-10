@@ -487,21 +487,14 @@ def summarize_estab(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
 # verdict
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _turnover(window: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
-    """VERDICT 2 — was queued work actually CONSUMED during the qualifying
-    window (Beta R1 §5)?
+TURNOVER_WITNESS_RULE = ("the EARLIEST qualifying window, by start epoch, that "
+                         "shows turnover")
 
-    Simultaneity proves the queue was non-empty, not that it moved. A run
-    holding 25 claimed and 7 pending statically for the whole window satisfies
-    verdict 1 and demonstrates no scheduler turnover, no completion, no
-    reassignment, no staging and no back-pressure — which is the entire reason
-    32 stripes were chosen over the 25-stripe minimum.
 
-    THE TURNOVER WINDOW IS THE QUALIFYING SIMULTANEITY WINDOW — the single
-    longest run of consecutive satisfying samples, the same interval verdict 1
-    is decided on. It is NOT the whole run. Measuring over the run would let a
-    drain that happened while the fleet was half-idle count as turnover under
-    full occupancy, which is the opposite of the claim.
+def _window_turnover(window: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """MEASUREMENT of one qualifying window. No verdict, no aggregation — this
+    function answers "what moved inside THIS window", and `_turnover` decides
+    what the set of those answers means.
 
     Two independent pieces of evidence, either sufficient:
       * `pending` DRAINED across steps inside the window — the backlog moved;
@@ -513,35 +506,18 @@ def _turnover(window: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
     construction — so each counted step is bracketed by two at-threshold
     samples. That is what "while occupancy remained at the threshold" means
     here, and it is why a run-wide monotonic `pending` decrease does not qualify
-    on its own.
+    on its own. Because the pairs are drawn from ONE window, no step ever spans
+    the interval between two windows: the dip or the gap that separated them is
+    exactly the unproven stretch, and nothing crossing it is counted.
 
     `done_delta` is reported alongside because it is the completion count on its
     own, unmixed with staging.
     """
-    if not window:
-        return {"turnover_satisfied": False,
-                "turnover_reason": "no qualifying window to measure turnover in",
-                "turnover_pending_delta": None,
-                "turnover_pending_drained": None,
-                "turnover_transitions": None,
-                "turnover_done_delta": None,
-                "turnover_pending_first": None,
-                "turnover_pending_last": None,
-                "turnover_window_samples": 0,
-                "turnover_window_start": None,
-                "turnover_window_end": None,
-                "turnover_window_min_active": None}
-
     pending_first = window[0]["queued_pending"]
     pending_last = window[-1]["queued_pending"]
     pending_delta = pending_first - pending_last          # positive == drained
     done_delta = window[-1].get("done", 0) - window[0].get("done", 0)
 
-    # Both terms are STEP-WISE, over consecutive pairs INSIDE the window.
-    # That is what pairs consumption with sustained occupancy (Beta R2 §2.4):
-    # every step counted is bracketed by two samples that are themselves at or
-    # above the threshold, so no drain that happened while the fleet was empty
-    # can be credited. A run-wide monotonic decrease proves neither.
     pending_drained = 0
     transitions = 0
     for a, b in zip(window, window[1:]):
@@ -553,24 +529,126 @@ def _turnover(window: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
         if step > 0:
             transitions += step
 
-    satisfied = pending_drained > 0 or transitions > 0
+    return {
+        # the pre-existing `windows_detail` shape, unchanged — this function is
+        # now the single source of truth for both the window census and the
+        # turnover measurement, so the two can never describe different windows.
+        "samples": len(window),
+        "seconds": window[-1]["epoch"] - window[0]["epoch"],
+        "start": window[0]["ts_iso"],
+        "end": window[-1]["ts_iso"],
+        "min_active": min(s["compute_active"] for s in window),
+        "min_queued": min(s["queued_pending"] for s in window),
+        # the turnover measurement for this window alone
+        "pending_first": pending_first,
+        "pending_last": pending_last,
+        "pending_delta": pending_delta,
+        "pending_drained": pending_drained,
+        "transitions": transitions,
+        "done_delta": done_delta,
+        "turnover": pending_drained > 0 or transitions > 0,
+    }
+
+
+def _turnover(measurements: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """VERDICT 2 — was queued work actually CONSUMED under full occupancy
+    (Beta R1 §5)?
+
+    Simultaneity proves the queue was non-empty, not that it moved. A run
+    holding 25 claimed and 7 pending statically for the whole window satisfies
+    verdict 1 and demonstrates no scheduler turnover, no completion, no
+    reassignment, no staging and no back-pressure — which is the entire reason
+    32 stripes were chosen over the 25-stripe minimum.
+
+    TURNOVER IS MEASURED INSIDE QUALIFYING SIMULTANEITY WINDOWS, never over the
+    whole run: measuring over the run would let a drain that happened while the
+    fleet was half-idle count as turnover under full occupancy, which is the
+    opposite of the claim.
+
+    THE AGGREGATE IS EXISTENTIAL OVER ALL QUALIFYING WINDOWS (Beta §17/§18):
+
+        TURNOVER_SATISFIED <=> EXISTS a qualifying window with
+                               pending_drained > 0 OR transitions > 0
+
+    and NOT a property of the longest window. This function previously received
+    the single longest qualifying window and reported its result as the verdict.
+    That is a false negative whenever a shorter qualifying window holds real
+    turnover while the longest is static — the shorter window is genuine
+    evidence that the queue was consumed under full occupancy, and the longest
+    one being static is not evidence against it. The two are not in tension;
+    only the aggregation was wrong. Attempt 2 had exactly the risk shape: six
+    qualifying windows, turnover judged solely on the 19-sample longest.
+
+    Widening from one window to all does NOT widen the interval any single
+    measurement is taken over — each is still confined to one window by
+    `_window_turnover`, so B2 (a drain during an occupancy dip) and B3 (a gap)
+    remain uncreditable: the movement they contain lies between windows, inside
+    none of them.
+
+    THE WITNESS is reported so a reader can check the claim against a named
+    interval rather than take "some window moved" on trust. It is chosen
+    deterministically as TURNOVER_WITNESS_RULE — the earliest such window, by
+    start epoch. `measurements` arrives in temporal order (windows are cut from
+    the sample sequence in order), so the earliest is the first hit and the
+    choice is stable across runs of identical input. When NO window shows
+    turnover there is no witness; the basis reported alongside is then the
+    earliest qualifying window, stated as the representative of a set in which
+    nothing moved, and the verdict is NOT SATISFIED either way.
+    """
+    n = len(measurements)
+    hits = [i for i, m in enumerate(measurements) if m["turnover"]]
+    if not measurements:
+        return {"turnover_satisfied": False,
+                "turnover_reason": "no qualifying window to measure turnover in",
+                "turnover_pending_delta": None,
+                "turnover_pending_drained": None,
+                "turnover_transitions": None,
+                "turnover_done_delta": None,
+                "turnover_pending_first": None,
+                "turnover_pending_last": None,
+                "turnover_window_samples": 0,
+                "turnover_window_start": None,
+                "turnover_window_end": None,
+                "turnover_window_min_active": None,
+                "turnover_witness_rule": TURNOVER_WITNESS_RULE,
+                "turnover_witness_window": None,
+                "turnover_basis_window": None,
+                "turnover_qualifying_windows": 0,
+                "turnover_windows_with_turnover": 0}
+
+    satisfied = bool(hits)
+    # 1-based, to match the `window N` labels the summary prints.
+    witness_index = hits[0] + 1 if hits else None
+    basis_i = hits[0] if hits else 0
+    m = measurements[basis_i]
+
     if satisfied:
-        reason = "queued work was consumed under full occupancy"
+        reason = ("queued work was consumed under full occupancy in qualifying "
+                  f"window {witness_index} of {n} "
+                  f"({m['pending_drained']} drained, {m['transitions']} "
+                  f"transitions)")
     else:
-        reason = ("occupancy held at the threshold but nothing moved: pending "
-                  f"stayed at {pending_last} and no stripe entered done/staging")
+        reason = (f"none of the {n} qualifying window(s) showed turnover: "
+                  "occupancy held at the threshold but nothing moved — pending "
+                  f"stayed at {m['pending_last']} in the earliest of them and "
+                  "no stripe entered done/staging in any")
     return {"turnover_satisfied": satisfied,
             "turnover_reason": reason,
-            "turnover_pending_delta": pending_delta,
-            "turnover_pending_drained": pending_drained,
-            "turnover_transitions": transitions,
-            "turnover_done_delta": done_delta,
-            "turnover_pending_first": pending_first,
-            "turnover_pending_last": pending_last,
-            "turnover_window_samples": len(window),
-            "turnover_window_start": window[0]["ts_iso"],
-            "turnover_window_end": window[-1]["ts_iso"],
-            "turnover_window_min_active": min(s["compute_active"] for s in window)}
+            "turnover_pending_delta": m["pending_delta"],
+            "turnover_pending_drained": m["pending_drained"],
+            "turnover_transitions": m["transitions"],
+            "turnover_done_delta": m["done_delta"],
+            "turnover_pending_first": m["pending_first"],
+            "turnover_pending_last": m["pending_last"],
+            "turnover_window_samples": m["samples"],
+            "turnover_window_start": m["start"],
+            "turnover_window_end": m["end"],
+            "turnover_window_min_active": m["min_active"],
+            "turnover_witness_rule": TURNOVER_WITNESS_RULE,
+            "turnover_witness_window": witness_index,
+            "turnover_basis_window": basis_i + 1,
+            "turnover_qualifying_windows": n,
+            "turnover_windows_with_turnover": len(hits)}
 
 
 def evaluate(samples: List[Dict[str, Any]], threshold: int,
@@ -648,20 +726,17 @@ def evaluate(samples: List[Dict[str, Any]], threshold: int,
     satisfied = best is not None and len(best) >= min_window_samples
 
     qualifying_windows = [w for w in windows if len(w) >= min_window_samples]
-    windows_detail = [{
-        "samples": len(w),
-        "seconds": w[-1]["epoch"] - w[0]["epoch"],
-        "start": w[0]["ts_iso"], "end": w[-1]["ts_iso"],
-        "min_active": min(x["compute_active"] for x in w),
-        "min_queued": min(x["queued_pending"] for x in w),
-    } for w in qualifying_windows]
 
-    # Turnover is only meaningful inside a window that actually qualifies.
-    qualifying = best if satisfied else None
+    # Turnover is only meaningful inside a window that actually qualifies — and
+    # it is measured in EVERY one of them, independently, then aggregated
+    # existentially by `_turnover`. `windows_detail` and the turnover verdict
+    # are the same measurement, computed once: the summary's per-window census
+    # and the verdict can therefore never disagree about what a window held.
+    windows_detail = [_window_turnover(w) for w in qualifying_windows]
 
     return {
         "satisfied": satisfied,
-        **_turnover(qualifying),
+        **_turnover(windows_detail),
         "threshold": threshold,
         "min_window_samples": min_window_samples,
         "samples_total": len(scored),
@@ -770,18 +845,31 @@ def render_summary(v: Dict[str, Any], run_id: Optional[str],
         "      staging is deliberately excluded — StripeComplete has already",
         "      released that worker's compute slot, so counting it overstates.",
         "",
-        "CRITERION 2 (turnover under full occupancy), measured over THE",
-        "  QUALIFYING SIMULTANEITY WINDOW — the same interval criterion 1 was",
-        "  decided on, NOT the whole run:",
+        "CRITERION 2 (turnover under full occupancy), measured INSIDE EACH",
+        "  QUALIFYING SIMULTANEITY WINDOW — the same intervals criterion 1 was",
+        "  decided on, NOT the whole run, and never across the stretch between",
+        "  two windows:",
         "      pending_drained = SUM over consecutive pairs (a,b) in the window",
         "                        of max(0, a.pending - b.pending)",
         "      transitions     = SUM over the same pairs",
         "                        of max(0, (b.done+b.staging) - (a.done+a.staging))",
-        "    VERDICT 2 satisfied  <=>  pending_drained > 0  OR  transitions > 0",
+        "    a window SHOWS TURNOVER  <=>  pending_drained > 0  OR  transitions > 0",
+        "    VERDICT 2 satisfied  <=>  THERE EXISTS a qualifying window that shows",
+        "      turnover. The test is EXISTENTIAL over all qualifying windows, not",
+        "      a property of the longest one: a shorter window in which the queue",
+        "      genuinely moved is evidence that it was consumed under full",
+        "      occupancy, and the longest window being static is not evidence",
+        "      against it. Each measurement stays confined to a single window, so",
+        "      widening the aggregation does not widen any measured interval.",
         "      Every counted step is bracketed by two samples that are themselves",
         "      at or above the threshold, so consumption is paired with sustained",
         "      occupancy across the SAME samples. A run-wide monotonic decrease",
         "      does not qualify on its own.",
+        "    WITNESS RULE: when satisfied, the window credited is",
+        f"      {v['turnover_witness_rule']}.",
+        "      A deterministic choice, stable across runs of identical input,",
+        "      and named below so the claim can be checked against an interval",
+        "      rather than taken on trust.",
         "",
         "THE TWO ARE SEPARATE AND ARE NOT COLLAPSED. Criterion 1 proves the queue",
         "was non-empty; only criterion 2 proves it was consumed.",
@@ -808,24 +896,56 @@ def render_summary(v: Dict[str, Any], run_id: Optional[str],
     ]
     if v["windows_detail"]:
         for i, w in enumerate(v["windows_detail"], 1):
+            mark = ("   <-- TURNOVER WITNESS"
+                    if i == v["turnover_witness_window"] else "")
             lines.append(
                 f"    window {i}: {w['samples']} samples, {w['seconds']:.1f}s, "
                 f"{w['start']} -> {w['end']}, "
                 f"min_active={w['min_active']} min_queued={w['min_queued']}")
+            # Every qualifying window's turnover is printed, not just the
+            # credited one: the existential verdict is only checkable if a
+            # reader can see each window it quantifies over.
+            lines.append(
+                f"      turnover: drained={w['pending_drained']} "
+                f"transitions={w['transitions']} done_delta={w['done_delta']} "
+                f"-> {'YES' if w['turnover'] else 'no'}{mark}")
     else:
         lines.append("    (none)")
+
+    witness = v["turnover_witness_window"]
+    if witness is not None:
+        basis_label = (f"window {witness} (THE WITNESS — this window's own "
+                       f"movement is what satisfies verdict 2)")
+    elif v["turnover_basis_window"] is not None:
+        basis_label = (f"window {v['turnover_basis_window']} (no witness "
+                       f"exists; shown as the earliest qualifying window)")
+    else:
+        basis_label = "none (no qualifying window)"
+
     lines += [
         f"longest window                           : {v['longest_window_samples']} samples, "
         f"{v['longest_window_seconds']:.1f}s",
         f"  from / to                              : {v['longest_window_start']} -> {v['longest_window_end']}",
         f"  min compute-active within window       : {v['longest_window_min_active']}",
         f"  min queued within window               : {v['longest_window_min_queued']}",
+        "  CONTEXT ONLY. The longest window is NOT the turnover basis and never",
+        "  substitutes for the witness below — verdict 2 quantifies over every",
+        "  qualifying window, and the longest holds no special standing in it.",
         "",
-        "-- verdict 2 evidence: turnover WITHIN the qualifying window --",
-        f"turnover window                          : "
+        "-- verdict 2 evidence: turnover WITHIN a qualifying window --",
+        f"qualifying windows examined              : "
+        f"{v['turnover_qualifying_windows']}",
+        f"  of those, showing turnover             : "
+        f"{v['turnover_windows_with_turnover']}",
+        f"TURNOVER WITNESS                         : "
+        + (f"window {witness}" if witness is not None
+           else "NONE — no qualifying window showed turnover"),
+        f"  witness rule                           : {v['turnover_witness_rule']}",
+        f"turnover basis window                    : {basis_label}",
+        f"  measured over                          : "
         f"{v['turnover_window_samples']} samples, "
         f"{v['turnover_window_start']} -> {v['turnover_window_end']}",
-        f"  (this is the qualifying simultaneity window, not the whole run)",
+        f"  (a qualifying simultaneity window, not the whole run)",
         f"  min compute-active across it           : {v['turnover_window_min_active']}",
         f"pending at window start / end            : "
         f"{v['turnover_pending_first']} -> {v['turnover_pending_last']}",
@@ -891,7 +1011,8 @@ def render_summary(v: Dict[str, Any], run_id: Optional[str],
         lines += [
             "WHY NOT (verdict 2): " + str(v["turnover_reason"]),
             "  The fleet was full and the queue was non-empty, but the queue did",
-            "  not move. Seven stripes held behind a saturated fleet that never",
+            "  not move in ANY qualifying window — not merely in the longest.",
+            "  Seven stripes held behind a saturated fleet that never",
             "  drains exercises no scheduler turnover, no completion path, no",
             "  reassignment and no staging back-pressure — which is what the",
             "  32-stripe geometry exists to demonstrate.",

@@ -42,6 +42,25 @@ REVISION 1 ARMS (Beta "PRE-RERUN ITEMS REVIEW" §3, §4, §5)
       transition term alone
   C5  the two verdicts are rendered separately and are never collapsed
 
+DEFECT-B ARMS — ALL-WINDOW TURNOVER AGGREGATION (Beta "GATE-12 ATTEMPT-2
+FORENSIC RULING" §§17-19). Turnover was aggregated over the SINGLE LONGEST
+qualifying window; the Gate-12 question is existential over ALL of them.
+
+Beta numbers these gates B1-B5. They are named DB1-DB5 in this file because the
+ESTAB arms above already own the labels B1-B7, and two arms answering to "B1" in
+one evidence log is a defect in the log. DBn IS Beta's Bn, one for one.
+  DB1 longest qualifying window static, a SHORTER one holds turnover -> BOTH
+      satisfied.  THE DEFECT REPRODUCTION: reds under the longest-only
+      aggregation, and the in-arm mutant restoring longest-only reds with it
+  DB2 pending drains while occupancy DIPS below threshold -> not credited, and
+      still not credited once the aggregation quantifies over both windows
+  DB3 an UNOBSERVED gap separates the movement -> neither window may borrow the
+      other's; a window broken by a gap is two windows
+  DB4 several qualifying windows, all static -> NOT satisfied.  THE CONTROL:
+      the fix must not turn a genuinely static run into a false positive
+  DB5 several windows hold turnover -> the witness is the documented
+      deterministic choice (earliest, NOT longest), labelled, and stable
+
 RUN: source ~/venvs/torch/bin/activate && python3 -u tests/test_gate12_concurrency_sampler.py
 """
 
@@ -932,6 +951,213 @@ def e3_stagewise_refill_still_counts():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# B: TURNOVER IS EXISTENTIAL OVER ALL QUALIFYING WINDOWS  (Beta §§17-19)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _longest_only(v):
+    """THE PRE-FIX AGGREGATION, reconstructed from the verdict's own per-window
+    measurements: hand `_turnover` the single longest qualifying window, which
+    is exactly what `evaluate` used to pass it (`qualifying = best`).
+
+    Built from `windows_detail` rather than from a saved copy of the old source
+    so the mutant cannot drift away from the code under test — it is the same
+    aggregator, differing only in the set it quantifies over.
+    """
+    if not v["windows_detail"]:
+        return S._turnover([])
+    longest = max(v["windows_detail"], key=lambda w: (w["samples"], w["seconds"]))
+    return S._turnover([longest])
+
+
+def b1_shorter_window_turnover_is_credited():
+    """THE ARM THIS ITEM EXISTS FOR (Beta §19-B1).
+
+    The fleet saturates and holds 7 pending flat for five samples, dips, then
+    saturates again and genuinely drains 7 -> 3. The LONGEST qualifying window
+    is the static one; the shorter, later window is where the queue actually
+    moved. Longest-only aggregation reports NO TURNOVER and publishes a run
+    that demonstrably consumed queued work under full occupancy as unsaturated.
+
+    The shorter window is not weaker evidence. Every step it counts is bracketed
+    by two at-threshold samples, exactly as in the longest window — it is simply
+    shorter. Turnover is a question of whether the queue EVER moved under full
+    occupancy, so the aggregate is EXISTS, and the longest window being static
+    is not evidence against a different window that moved.
+    """
+    w25, w3 = _w25(), {"w0", "w1", "w2"}
+    seq = ([(w25, 7)] * 5           # window 1: LONGEST, and completely static
+           + [(w3, 7)]              # dip -- breaks the run
+           + [(w25, 7), (w25, 5), (w25, 3)])   # window 2: SHORTER, drains 4
+    v = S.evaluate(samples_from(seq), 25, 2)
+    text = S.render_summary(v, "runB1", "t0", "t1", "/x/db")
+    wd = v["windows_detail"]
+    mutant = _longest_only(v)
+
+    check("DB1-SHORTER-WINDOW-TURNOVER-CREDITED",
+          v["satisfied"] is True
+          and v["qualifying_window_count"] == 2
+          and v["longest_window_samples"] == 5        # the static one is longest
+          and wd[0]["turnover"] is False              # ...and shows no turnover
+          and wd[1]["samples"] == 3 and wd[1]["turnover"] is True
+          and v["turnover_satisfied"] is True
+          and v["turnover_witness_window"] == 2       # the shorter window
+          and v["turnover_pending_drained"] == 4      # measured in the witness
+          and S.overall_satisfied(v) is True
+          and S.exit_code(v) == 0
+          and f"{S.LABEL_OVERALL:<42}: SATISFIED" in text
+          # RED-FIRST: the pre-fix aggregation over the longest window alone
+          # calls this same run NOT SATISFIED.
+          and mutant["turnover_satisfied"] is False,
+          f"longest window ({v['longest_window_samples']} samples) static, "
+          f"witness is window {v['turnover_witness_window']} "
+          f"({wd[1]['samples']} samples, drained {wd[1]['pending_drained']}) "
+          f"-> SATISFIED; longest-only mutant -> "
+          f"{'SATISFIED' if mutant['turnover_satisfied'] else 'NOT SATISFIED'}")
+
+
+def b2_drain_outside_occupancy_still_not_credited():
+    """Beta §19-B2 — prove the step-wise-inside-window rule SURVIVES the change.
+
+    Widening the aggregation from one window to all is the one change that could
+    plausibly leak movement in from outside occupancy, so the property is
+    re-proved against a MULTI-window fixture: pending falls 10 -> 2 precisely
+    while occupancy dips to 3. Run-wide the queue drained 8. Inside window 1 it
+    is flat at 10, inside window 2 flat at 2, and the drop belongs to neither
+    because no consecutive pair lies inside a window and spans it.
+    """
+    w25, w3 = _w25(), {"w0", "w1", "w2"}
+    seq = [(w25, 10), (w25, 10), (w3, 6), (w3, 2), (w25, 2), (w25, 2)]
+    v = S.evaluate(samples_from(seq), 25, 2)
+    run_wide = seq[0][1] - seq[-1][1]
+
+    check("DB2-DIP-DRAIN-NOT-CREDITED-MULTIWINDOW",
+          v["satisfied"] is True
+          and v["qualifying_window_count"] == 2
+          and all(w["turnover"] is False for w in v["windows_detail"])
+          and all(w["pending_drained"] == 0 for w in v["windows_detail"])
+          and v["turnover_satisfied"] is False
+          and v["turnover_witness_window"] is None
+          and S.overall_satisfied(v) is False
+          and S.exit_code(v) == 3
+          and run_wide == 8,
+          f"run-wide pending fell {run_wide} during an occupancy dip; both "
+          f"qualifying windows drained 0 -> existential aggregate still NOT "
+          f"satisfied (rc={S.exit_code(v)})")
+
+
+def b3_gap_forbids_borrowed_turnover():
+    """Beta §19-B3 — no turnover may be inferred ACROSS an UNOBSERVED gap.
+
+    A window broken by a gap is two windows, and the existential aggregate must
+    not become a back door for the movement the gap conceals: pending is 10
+    before it and 4 after, but nothing in the evidence file can say whether that
+    drain happened under full occupancy or while the fleet stood empty. Neither
+    window may borrow the other's endpoint.
+    """
+    w25 = _w25()
+    built = samples_from([(w25, 10), (w25, 10), (w25, 10), (w25, 4), (w25, 4)])
+    built[2] = gap(built[2])
+    v = S.evaluate(built, 25, 2)
+    # The control: the identical fixture with that sample OBSERVED is one
+    # window, and the drain inside it is then genuinely creditable.
+    v_cont = S.evaluate(samples_from(
+        [(w25, 10), (w25, 10), (w25, 10), (w25, 4), (w25, 4)]), 25, 2)
+
+    check("DB3-GAP-FORBIDS-BORROWED-TURNOVER",
+          v["samples_unobserved"] == 1
+          and v["qualifying_window_count"] == 2
+          and all(w["pending_drained"] == 0 for w in v["windows_detail"])
+          and v["turnover_satisfied"] is False
+          and v["turnover_witness_window"] is None
+          and v_cont["qualifying_window_count"] == 1      # clean control
+          and v_cont["turnover_satisfied"] is True
+          and v_cont["turnover_pending_drained"] == 6,
+          f"gap splits 5 samples into {v['qualifying_window_count']} windows, "
+          f"neither drains -> NOT satisfied; the same fixture without the gap "
+          f"is 1 window draining {v_cont['turnover_pending_drained']}")
+
+
+def b4_no_turnover_anywhere_is_still_not_satisfied():
+    """Beta §19-B4 — THE CONTROL. Several qualifying windows, every one static.
+
+    B1 widens what can satisfy verdict 2, and the risk a widening always carries
+    is that it satisfies something. A run where the fleet repeatedly saturated
+    and the queue never moved in ANY window must still fail, with the same exit
+    code and the same authority line as before the change.
+    """
+    w25, w3 = _w25(), {"w0", "w1", "w2"}
+    seq = ([(w25, 7)] * 3 + [(w3, 7)]
+           + [(w25, 7)] * 3 + [(w3, 7)]
+           + [(w25, 7)] * 2)
+    v = S.evaluate(samples_from(seq), 25, 2)
+    text = S.render_summary(v, "runB4", "t0", "t1", "/x/db")
+
+    check("DB4-NO-TURNOVER-ANYWHERE-CONTROL",
+          v["satisfied"] is True
+          and v["qualifying_window_count"] == 3
+          and all(w["turnover"] is False for w in v["windows_detail"])
+          and v["turnover_satisfied"] is False
+          and v["turnover_witness_window"] is None
+          and v["turnover_windows_with_turnover"] == 0
+          and v["turnover_basis_window"] == 1       # earliest, stated as such
+          and S.overall_satisfied(v) is False
+          and S.exit_code(v) == 3
+          and f"{S.LABEL_OVERALL:<42}: NOT SATISFIED" in text
+          and "TURNOVER WITNESS                         : NONE" in text
+          and "WHY NOT (verdict 2)" in text,
+          f"{v['qualifying_window_count']} qualifying windows, "
+          f"{v['turnover_windows_with_turnover']} with turnover -> NOT "
+          f"SATISFIED, no witness (rc={S.exit_code(v)})")
+
+
+def b5_witness_is_deterministic_and_labelled():
+    """Beta §19-B5 — the witness is CHOSEN, DOCUMENTED, LABELLED and STABLE.
+
+    Three qualifying windows: window 1 static, windows 2 and 3 both holding
+    turnover, and window 3 is deliberately the LONGEST. The witness must be
+    window 2 -- the documented rule is EARLIEST-qualifying-window-with-turnover,
+    so a run must never silently present the longest window as the basis, which
+    is the substitution the defect made structural.
+
+    Stability is checked by evaluating identical input twice and requiring the
+    rendered evidence to be byte-identical: a witness picked by set iteration or
+    by a max() over an unstable key would satisfy the same assertions once and
+    not the next time.
+    """
+    w25, w3 = _w25(), {"w0", "w1", "w2"}
+    seq = ([(w25, 7), (w25, 7)]                      # window 1: static
+           + [(w3, 7)]
+           + [(w25, 7), (w25, 5), (w25, 4)]          # window 2: drains 3
+           + [(w3, 4)]
+           + [(w25, 4), (w25, 3), (w25, 2), (w25, 1)])  # window 3: LONGEST, drains 3
+    v = S.evaluate(samples_from(seq), 25, 2)
+    text = S.render_summary(v, "runB5", "t0", "t1", "/x/db")
+    again = S.render_summary(S.evaluate(samples_from(seq), 25, 2),
+                             "runB5", "t0", "t1", "/x/db")
+    wd = v["windows_detail"]
+    longest_i = 1 + max(range(len(wd)), key=lambda i: (wd[i]["samples"],
+                                                       wd[i]["seconds"]))
+
+    check("DB5-WITNESS-DETERMINISTIC-AND-LABELLED",
+          v["qualifying_window_count"] == 3
+          and [w["turnover"] for w in wd] == [False, True, True]
+          and longest_i == 3                       # the longest also has turnover
+          and v["turnover_witness_window"] == 2    # ...and is NOT the witness
+          and v["turnover_windows_with_turnover"] == 2
+          and v["turnover_basis_window"] == 2      # basis IS the witness
+          and v["turnover_window_samples"] == 3    # window 2's geometry, not 4
+          and "EARLIEST" in v["turnover_witness_rule"]
+          and "TURNOVER WITNESS                         : window 2" in text
+          and text.count("<-- TURNOVER WITNESS") == 1
+          and v["turnover_witness_rule"] in text   # the rule is self-described
+          and "CONTEXT ONLY" in text               # longest labelled as context
+          and again == text,                       # stable on identical input
+          f"windows with turnover: 2 and {longest_i} (the longest); witness is "
+          f"window {v['turnover_witness_window']} by the earliest rule, "
+          f"labelled once, render stable across repeat evaluation")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # F: THE EVIDENCE FILE STANDS ALONE  (Beta R2 §4)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1220,6 +1446,12 @@ def main():
     e1_turnover_window_is_not_the_run()
     e2_drain_during_an_occupancy_dip_is_not_credited()
     e3_stagewise_refill_still_counts()
+    print("\n-- defect B (§§17-19): turnover is EXISTENTIAL over all windows --")
+    b1_shorter_window_turnover_is_credited()
+    b2_drain_outside_occupancy_still_not_credited()
+    b3_gap_forbids_borrowed_turnover()
+    b4_no_turnover_anywhere_is_still_not_satisfied()
+    b5_witness_is_deterministic_and_labelled()
     print("\n-- self-describing evidence (R2 §4) --")
     f1_summary_is_self_describing()
     f2_exit_code_matches_the_legend()
