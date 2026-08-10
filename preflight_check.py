@@ -54,6 +54,124 @@ RAMDISK_CHECK_TIMEOUT_SECONDS = 10
 RAMDISK_REMEDIATION_TIMEOUT_SECONDS = 60
 
 
+# ════════════════════════════════════════════════════════════════════════════════
+# GPU PROBE — THREE OUTCOMES, NEVER TWO
+# ════════════════════════════════════════════════════════════════════════════════
+# [2026-08-09] The previous probe ran
+#
+#     ssh <host> bash -lc "rocm-smi 2>/dev/null | grep -cE '^[0-9]+[[:space:]]' || echo 0"
+#
+# and reported all three rigs as 0/8 while they each had 8 healthy GPUs. The
+# PARSING was correct; the OBSERVATION was not. Two constructs conspired:
+# `2>/dev/null` swallowed the "command not found" diagnostic, and `|| echo 0`
+# converted an unobservable surface into a definite count of zero.
+#
+# ROOT CAUSE, measured live on all three CTs 2026-08-09 (not inferred):
+#   * /opt/rocm/bin is placed on PATH by ~/.bashrc:120 and by nothing else —
+#     no /etc/profile.d script, no /etc/profile, no /etc/environment entry
+#     mentions rocm.
+#   * ~/.bashrc:5-8 is Ubuntu's stock non-interactive guard
+#     (`case $- in *i*) ;; *) return;; esac`), which returns ~112 lines BEFORE
+#     the PATH export.
+#   * `bash -l` sources /etc/profile and ~/.profile, and ~/.profile does source
+#     ~/.bashrc — but .bashrc returns at the guard. So the login shell is NOT a
+#     remedy here: `bash -lc` and a bare non-interactive command observe the
+#     IDENTICAL PATH, neither containing /opt/rocm/bin. Only `bash -lic` sees it,
+#     and forcing an interactive shell over SSH is not a probe contract.
+#
+# The remedy is therefore to LOCATE the binary rather than assume a PATH: prefer
+# whatever `command -v` resolves (so a rig that installs it elsewhere still
+# works), and fall back to the verified absolute path. Diagnostics are captured,
+# never discarded.
+#
+# VIR-5: an inaccessible surface is not a clean one. UNAVAILABLE is not zero.
+GPU_PROBE_OK = "OK"                    # probe ran; count is an observation
+GPU_PROBE_UNAVAILABLE = "UNAVAILABLE"  # probe could not run — NOT zero
+GPU_PROBE_ERROR = "ERROR"              # probe ran; output could not be parsed
+
+# Fallback absolute path, live-verified on 192.168.3.122/.156/.164 (2026-08-09):
+#   /opt/rocm/bin/rocm-smi -> ../libexec/rocm_smi/rocm_smi.py  (/opt/rocm -> /opt/rocm-6.4.3)
+# PATH resolution takes precedence; this is only consulted when `command -v`
+# finds nothing, and its absence is reported as UNAVAILABLE rather than as 0.
+ROCM_SMI_FALLBACK_PATHS = ("/opt/rocm/bin/rocm-smi",)
+
+_PROBE_BIN = "TFM_PROBE_BIN="
+_PROBE_STATUS = "TFM_PROBE_STATUS="
+_PROBE_COUNT = "TFM_PROBE_COUNT="
+
+
+def _build_gpu_probe_script(fallbacks=None) -> str:
+    """The remote command, as ONE ssh argument.
+
+    Passed as a single argv element deliberately: ssh joins multiple trailing
+    arguments with spaces and does NOT re-quote them, so the old
+    `["bash", "-lc", "<pipeline>"]` form was re-parsed by the remote login shell
+    with its quoting already flattened. One string is parsed exactly once.
+
+    No `2>/dev/null` and no `|| echo 0`: stderr flows back over the SSH channel
+    and is captured by the caller, and a probe that could not run says so.
+    """
+    # Resolved at CALL time, not bound as a default: the fallback list is a
+    # module global so a test can repoint it without patching this function.
+    if fallbacks is None:
+        fallbacks = ROCM_SMI_FALLBACK_PATHS
+    lines = ['RS=$(command -v rocm-smi 2>/dev/null)']
+    for path in fallbacks:
+        lines.append(f'if [ -z "$RS" ] && [ -x {path} ]; then RS={path}; fi')
+    lines += [
+        f'if [ -z "$RS" ]; then echo "{_PROBE_STATUS}NO_BINARY"; exit 0; fi',
+        f'echo "{_PROBE_BIN}$RS"',
+        'OUT=$("$RS"); RC=$?',
+        f'if [ "$RC" -ne 0 ]; then echo "{_PROBE_STATUS}EXIT_$RC"; exit 0; fi',
+        f'echo "{_PROBE_STATUS}OK"',
+        "printf '%s\\n' \"$OUT\" | grep -cE '^[0-9]+[[:space:]]' "
+        f"| sed 's/^/{_PROBE_COUNT}/'",
+    ]
+    return "; ".join(lines)
+
+
+def _parse_gpu_probe(stdout: str) -> Dict[str, Any]:
+    """Classify probe stdout into exactly one of the three outcomes.
+
+    Kept separate from the SSH call so the classification is testable without a
+    rig, and so a future transport change cannot quietly alter the semantics.
+    """
+    binary = None
+    status_token = None
+    count = None
+    saw_count_line = False
+
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if line.startswith(_PROBE_BIN):
+            binary = line[len(_PROBE_BIN):] or None
+        elif line.startswith(_PROBE_STATUS):
+            status_token = line[len(_PROBE_STATUS):]
+        elif line.startswith(_PROBE_COUNT):
+            saw_count_line = True
+            value = line[len(_PROBE_COUNT):].strip()
+            count = int(value) if value.isdigit() else None
+
+    if status_token is None:
+        # The probe never announced itself: we cannot say it saw zero devices.
+        return {"status": GPU_PROBE_ERROR, "gpu_count": None, "binary": binary,
+                "reason": "probe_emitted_no_status"}
+    if status_token == "NO_BINARY":
+        return {"status": GPU_PROBE_UNAVAILABLE, "gpu_count": None, "binary": None,
+                "reason": "binary_not_found"}
+    if status_token.startswith("EXIT_"):
+        return {"status": GPU_PROBE_UNAVAILABLE, "gpu_count": None, "binary": binary,
+                "reason": f"rocm_smi_exit_{status_token[len('EXIT_'):]}"}
+    if status_token != "OK":
+        return {"status": GPU_PROBE_ERROR, "gpu_count": None, "binary": binary,
+                "reason": f"unrecognized_status:{status_token}"}
+    if not saw_count_line or count is None:
+        return {"status": GPU_PROBE_ERROR, "gpu_count": None, "binary": binary,
+                "reason": "unparseable_device_count"}
+    return {"status": GPU_PROBE_OK, "gpu_count": count, "binary": binary,
+            "reason": None}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # [RESOLVED EXECUTION SET] consumer seam — see coordinator.py for the rationale.
 # Lazy, defensive, and a no-op when no set is frozen.
@@ -64,6 +182,29 @@ def _execution_set_nodes(node_dicts, *, consumer: str):
     except ImportError:
         return list(node_dicts)
     return filter_config_nodes(node_dicts, consumer=consumer)
+
+
+def _render_gpu_issue(issue: Dict[str, Any]) -> str:
+    """Warning text for one GPU finding.
+
+    An UNAVAILABLE node must never render as `0/8` or `None/8` — the whole point
+    of the three-outcome probe is lost the moment the operator-facing string
+    puts an un-observed surface into a count-shaped slot.
+    """
+    node = issue.get("node")
+    expected = issue.get("expected")
+    status = issue.get("status")
+    reason = issue.get("reason")
+    stderr = (issue.get("stderr") or "").strip()
+
+    if status in (GPU_PROBE_UNAVAILABLE, GPU_PROBE_ERROR):
+        text = (f"GPU: {node} - {issue.get('type')}: device count {status} "
+                f"(expected {expected}) — NOT observed as zero; reason={reason}")
+        if stderr:
+            text += f"; stderr={stderr.splitlines()[0][:200]}"
+        return text
+    return (f"GPU: {node} - {issue.get('type')}: "
+            f"{issue.get('observed')}/{expected}")
 
 
 @dataclass
@@ -223,7 +364,7 @@ class PreflightChecker:
             for issue in gpu_result.get("issues", []):
                 # Team Beta: Use structured warning format
                 if isinstance(issue, dict):
-                    result.add_warning(f"GPU: {issue['node']} - {issue['type']}: {issue.get('observed')}/{issue.get('expected')}")
+                    result.add_warning(_render_gpu_issue(issue))
                 else:
                     result.add_warning(f"GPU: {issue}")
             result.checks_passed += 1  # Don't block on GPU warnings
@@ -314,73 +455,114 @@ class PreflightChecker:
         }
     
     def check_gpu_health(self) -> Dict:
-        """Check GPU availability via rocm-smi."""
+        """Check GPU availability via rocm-smi.
+
+        Reports exactly one of three outcomes per node, which are never
+        conflated (see the GPU PROBE block at the top of this module):
+
+          * OK          — the probe ran; `gpu_count` is a real observation, and
+                          a genuine zero is reported as a genuine zero.
+          * UNAVAILABLE — the probe could not run (binary absent, non-zero exit,
+                          SSH failure, timeout). THIS IS NOT ZERO. `gpu_count`
+                          is None and no count is invented.
+          * ERROR       — the probe ran but produced output we cannot parse.
+
+        Gating is deliberately UNCHANGED: `check_all` records every finding here
+        via `add_warning` and still counts the check as passed (:229). This
+        method tells the truth about what was observed; it does not decide
+        whether the run proceeds.
+        """
         results = {"all_healthy": True, "nodes": {}, "issues": []}
-        
+        script = _build_gpu_probe_script()
+
         for node in self.nodes:
             hostname = node["hostname"]
             expected = node.get("gpu_count", 12)
-            
+
+            def _unavailable(reason: str, stderr: str = "", binary=None):
+                """An unobservable surface is not a clean one (VIR-5)."""
+                results["nodes"][hostname] = {
+                    "status": GPU_PROBE_UNAVAILABLE, "gpu_count": None,
+                    "expected": expected, "reason": reason,
+                    "binary": binary, "stderr": stderr,
+                }
+                results["issues"].append({
+                    "node": hostname,
+                    "type": "GPU_PROBE_UNAVAILABLE",
+                    "status": GPU_PROBE_UNAVAILABLE,
+                    "observed": None,
+                    "expected": expected,
+                    "reason": reason,
+                    "stderr": stderr,
+                })
+                results["all_healthy"] = False
+
             try:
-                # v1.1.0 FIX: Use correct rocm-smi parsing
-                # rocm-smi output has lines starting with device numbers (0, 1, 2, ...)
-                # Count lines matching "^[0-9]" pattern (device rows)
                 cmd = [
-                    "ssh", "-o", f"ConnectTimeout={SSH_TIMEOUT_SECONDS}", hostname,
-                    "bash", "-lc",
-                    "rocm-smi 2>/dev/null | grep -cE '^[0-9]+[[:space:]]' || echo 0"
+                    "ssh",
+                    "-o", f"ConnectTimeout={SSH_TIMEOUT_SECONDS}",
+                    "-o", "BatchMode=yes",
+                    hostname,
+                    script,          # ONE argument — see _build_gpu_probe_script
                 ]
-                proc = subprocess.run(cmd, capture_output=True, timeout=GPU_CHECK_TIMEOUT_SECONDS)
-                
-                if proc.returncode == 0:
-                    output = proc.stdout.decode().strip()
-                    # Get the last number from output (the count)
-                    lines = [l.strip() for l in output.splitlines() if l.strip()]
-                    gpu_count = 0
-                    for line in reversed(lines):
-                        if line.isdigit():
-                            gpu_count = int(line)
-                            break
-                    
-                    results["nodes"][hostname] = {"gpu_count": gpu_count, "expected": expected}
-                    if gpu_count < expected:
-                        results["issues"].append({
-                            "node": hostname,
-                            "type": "GPU_COUNT_MISMATCH",
-                            "observed": gpu_count,
-                            "expected": expected
-                        })
-                        results["all_healthy"] = False
-                    else:
-                        logger.debug(f"[PREFLIGHT] {hostname}: {gpu_count}/{expected} GPUs")
-                else:
-                    results["nodes"][hostname] = {"error": "rocm-smi failed"}
+                proc = subprocess.run(cmd, capture_output=True,
+                                      timeout=GPU_CHECK_TIMEOUT_SECONDS)
+                stderr = proc.stderr.decode(errors="replace").strip()
+
+                if proc.returncode != 0:
+                    _unavailable(f"ssh_exit_{proc.returncode}", stderr)
+                    continue
+
+                parsed = _parse_gpu_probe(proc.stdout.decode(errors="replace"))
+
+                if parsed["status"] == GPU_PROBE_UNAVAILABLE:
+                    _unavailable(parsed["reason"], stderr, parsed["binary"])
+                    continue
+
+                if parsed["status"] == GPU_PROBE_ERROR:
+                    results["nodes"][hostname] = {
+                        "status": GPU_PROBE_ERROR, "gpu_count": None,
+                        "expected": expected, "reason": parsed["reason"],
+                        "binary": parsed["binary"], "stderr": stderr,
+                    }
                     results["issues"].append({
                         "node": hostname,
-                        "type": "ROCM_SMI_FAILED",
+                        "type": "GPU_PROBE_ERROR",
+                        "status": GPU_PROBE_ERROR,
                         "observed": None,
-                        "expected": expected
+                        "expected": expected,
+                        "reason": parsed["reason"],
+                        "stderr": stderr,
                     })
                     results["all_healthy"] = False
+                    continue
+
+                gpu_count = parsed["gpu_count"]
+                results["nodes"][hostname] = {
+                    "status": GPU_PROBE_OK, "gpu_count": gpu_count,
+                    "expected": expected, "reason": None,
+                    "binary": parsed["binary"], "stderr": stderr,
+                }
+                if gpu_count < expected:
+                    results["issues"].append({
+                        "node": hostname,
+                        "type": "GPU_COUNT_MISMATCH",
+                        "status": GPU_PROBE_OK,
+                        "observed": gpu_count,
+                        "expected": expected,
+                        "reason": None,
+                        "stderr": stderr,
+                    })
+                    results["all_healthy"] = False
+                else:
+                    logger.debug(
+                        f"[PREFLIGHT] {hostname}: {gpu_count}/{expected} GPUs "
+                        f"via {parsed['binary']}")
             except subprocess.TimeoutExpired:
-                results["nodes"][hostname] = {"error": "timeout"}
-                results["issues"].append({
-                    "node": hostname,
-                    "type": "TIMEOUT",
-                    "observed": None,
-                    "expected": expected
-                })
-                results["all_healthy"] = False
+                _unavailable("timeout")
             except Exception as e:
-                results["nodes"][hostname] = {"error": str(e)}
-                results["issues"].append({
-                    "node": hostname,
-                    "type": "ERROR",
-                    "observed": str(e),
-                    "expected": expected
-                })
-                results["all_healthy"] = False
-        
+                _unavailable(f"probe_exception:{type(e).__name__}: {e}")
+
         return results
     
     def check_ramdisk(self, step: int) -> Dict:

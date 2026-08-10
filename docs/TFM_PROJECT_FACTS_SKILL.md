@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v21, 2026-08-09. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
+**Currency:** v22, 2026-08-10. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
 `4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
 (exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
 and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
@@ -1459,6 +1459,180 @@ surface as a definite zero.
 **STANDING LESSON:** a terminal decision that leaves no execution record is not observable. The
 fail-closed design Beta correctly credits is only auditable here by accident of which columns
 `cancel_active_stripes` leaves untouched.
+
+### 2.27 F1/F2 ACTIVE-LEASE SCHEDULER — CERTIFIED AND COMMITTED (`c4e0037`)
+
+Beta CERTIFIED 2026-08-09. **This is the fix for the gate-12 attempt-1 failure (§2.26 F-1).**
+
+**The governing invariant:** *a compute lease exists only for work the coordinator has handed to a
+worker presently able to execute it. **Undispatched backlog has NO lease.*** For the current serial
+worker: **maximum ONE compute-active claim.**
+
+- **`schedule_pending_stripes` (`:2920`) is the ONLY place a compute lease is created.**
+  `assign_stripes` still builds the whole governed geometry — **all 32 rows for gate 12** — but they
+  are born `pending / claimed_by NULL / lease_expires_at NULL`. At W=8 the stage opens **8 claimed /
+  24 pending**; at W=25, **25 claimed / 7 pending**. `pending` is now a REAL backlog state.
+- **The one-active invariant is enforced in SQL** inside `claim_stripe` and **RAISES
+  `LeaseInvariantError`** rather than silently refusing — *"a silent refusal would let a bulk-claim
+  regression look like correct behaviour."*
+- **Renewal: heartbeat OR accepted active-stripe progress**, scoped to the active attempt only.
+  **Forbidden to renew:** wrong worker · wrong stripe · stale attempt · invalid result · status
+  frame · late result from a prior attempt. The rule is *progress on THIS active attempt renews
+  THIS active attempt* — **not** "any traffic from the host keeps everything it owns alive."
+- **`StripeComplete` frees the compute slot without waiting for staging** — compute and staging
+  genuinely overlap (worker-side send, coordinator-side async staging).
+- **Abort cleanup now reaches pending backlog** — no nonterminal/runnable stripe may survive
+  termination.
+- **The frozen cohort still governs every `pending → claimed`.** Late registrants stay globally
+  connected and cannot receive work for an already-frozen trial.
+- **The dispatcher needed NO change** — `_dispatch_pending` byte-identical, worker untouched, no
+  protocol change: a stripe the scheduler has not claimed cannot be dispatched.
+- **Hybrid retry defers PLACEMENT when no alternate is compute-idle** (Alpha position, Beta
+  RATIFIED). The terminal decision is untouched; only placement waits.
+
+**R1 — two defects Beta found that the 13/13 suite did not exercise:**
+
+- **A prefix selector was used as an exact selector.** `_handle_stripe_failure_locked` passed a
+  complete `stripe_id` into a `LIKE <prefix>%` parameter, so targeting `s1` also matched
+  `s10`-`s19`; `placed[0]` could be an **unrelated sibling**, and the handler then reported
+  `action="reassigned"` naming a worker that never took the failed stripe — **a false statement in
+  the retry contract.** Now two mutually exclusive parameters: `stage_prefix` (LIKE) and keyword-only
+  `exact_stripe_id` (identity), `ValueError` if both. **Nothing infers intent from string shape.**
+  It survived because the hybrid gate used **two** stripes; the collision needs `s1`/`s10`.
+- **Terminal replay parity:** the first durable transition now owns terminal identity permanently;
+  already-aborted **and race-lost** paths re-read the durable row and rebuild identity from it,
+  including the legacy `reason` prose and the winner's `abort_event_id`.
+
+**R2 — one canonicalization:** `reason = terminal.reason` moved **before** the first/non-first
+divergence, so one `event_id` cannot carry two payloads. Previously the first delivery emitted the
+*caller's* prose beside canonical `terminal_*` fields.
+
+**Guard supersession (Beta-authorized, ORDER MATTERS):** the byte-identity guards on
+`_handle_stripe_failure_locked` were replaced by **ordered decision-semantic** guards — the four
+terminal decision tuples in order. **Beta was explicit: fix the defects FIRST, then supersede —
+re-pinning to defective source would certify the defects.** The superseding assertion is
+**self-protecting**: it asserts `exact_stripe_id=stripe_id` present AND `stripe_prefix=stripe_id`
+absent, so a guard re-pinned to defective source fails on its own terms. `admission_binding` B7
+received the same treatment (Alpha judgment call, Beta ratified).
+
+**Beta's framing, worth keeping:** **structured fields carry machine truth; prose carries
+diagnostic detail; replay changes neither.** Test assertions scraping the legacy `reason` prose for
+facts F2 moved into structured fields were re-pointed at `terminal_class`/`run_id` — Beta ratified
+that as *"replacing machine decisions inferred from prose with the structured fields F2 was
+specifically introduced to provide."*
+
+**CERTIFICATION BOUNDARY:** the one-active check is a **lock-serialized SELECT-then-UPDATE within
+one coordinator process — NOT one statement**, and **not** protection against an external writer or
+a second coordinator.
+
+### 2.28 PRE-RERUN ITEMS — GPU PROBE (CERTIFIED) AND CONCURRENCY SAMPLER (R2)
+
+**The GPU probe — Beta CERTIFIED.** Root cause, measured on all three CTs: `/opt/rocm/bin` is put on
+PATH by **`~/.bashrc:120` and nothing else**, and `~/.bashrc:5-8` is Ubuntu's stock
+**non-interactive guard** returning ~112 lines before that export. **`bash -lc` and a bare
+non-interactive command see the byte-identical PATH; only `bash -lic` reaches it** — a login shell
+was never going to fix it. **Two constructs each manufactured the zero**: `grep -c` printed `0` and
+exited 1, then `|| echo 0` printed a second. Also: `ssh` was flattening the argv so the remote shell
+re-parsed the pipeline with quoting gone — semantics survived by luck.
+
+Now **three distinguishable outcomes**: a count · **`UNAVAILABLE`** (`gpu_count None`, never `0`) ·
+`ERROR`. Binary located, stderr surfaced, render guard prevents `0/8` **or** `None/8` for an
+unavailable node. **Advisory gating preserved** (`checks_passed += 1  # Don't block on GPU
+warnings`). Measured live: **8/8 on all three rigs.**
+
+**The sampler — three Alpha errors, all corrected.** It must prove Beta's criterion:
+**≥25 DISTINCT workers simultaneously compute-active AND queued stripes still available.**
+Insufficient: "25 connected" · "25 eventually used" · "32 eventually completed."
+
+- **Semantics (post-F1):** occupancy is `state='claimed'` ONLY — **staging is excluded because
+  `StripeComplete` already freed the slot** — and `pending` is the real backlog. The pre-F1 query
+  counted `claimed + staging` and never looked at `pending`, i.e. it **overstated occupancy and
+  could not see the queue at all.**
+- **Atomicity:** a sample is TWO reads. In autocommit they are two independent read transactions and
+  **the sample that decides the verdict is the one most likely to be internally inconsistent**,
+  because the interesting window is exactly when transitions occur. Fixed with `read_snapshot`
+  (`BEGIN DEFERRED … COMMIT`, `isolation_level=None`; `IMMEDIATE` is unavailable on `mode=ro`).
+- **VIR-5 on the LEDGER read, not just ESTAB.** Alpha applied VIR-5 to ESTAB — a *context* field —
+  and missed the read the criterion is made of. A failed ledger read fell through and was appended
+  as a **definite `compute_active=0, queued_pending=0` sample**, while the comment above it claimed
+  the opposite. **Rows are now born UNOBSERVED** and become observations only if a read succeeds —
+  structurally impossible to fall through, since there is no zero to fall through to. **Gap rule:
+  break the window AND annotate** — a window is a claim of *sustained* simultaneity, and an unknown
+  interior instant destroys it; across a gap the fleet may have emptied and refilled.
+- **A second consequence of the same fall-through:** `runnable = pending + claimed + staging` summed
+  a gap to `0+0+0`, so **failed reads started the quiescence timer** and could stop the sampler with
+  "run is over" while the run was alive.
+- **Two verdicts, never collapsed:** sustained simultaneity AND turnover under full occupancy.
+  Turnover is summed **step-wise over consecutive in-window pairs**, so a drain during an occupancy
+  dip is not credited and a stage-boundary refill cannot make endpoints lie. Exit codes
+  **`0` both · `2` simultaneity failed · `3` turnover failed.**
+- **Ordering:** the sampler must arm **before the coordinator can issue the first `StripeAssign`**
+  and terminate with the run. In attempt 1 it started *after* the fleet-launch step returned — first
+  row 12:47:28 for a run that died at 12:47:17 — producing **no in-run rows at all.**
+
+**Beta's standard, quotable:** *"A saturation verdict computed from an unknown number of missing
+samples is not evidence."*
+
+### 2.29 GATE-12 ATTEMPT 2 — AUTHORIZED SHAPE (not yet run)
+
+Beta chose **32 stripes** over the 25-stripe minimum deliberately: 25 fills the fleet once; **32
+fills it and leaves seven queued**, so the run exercises scheduler turnover, completion,
+reassignment, staging and back-pressure **under full occupancy**.
+
+```
+seed_start        = 0              (explicit; certified first-gap, empty {constant,variable} namespace)
+seed_count        = 2,147,483,648  (2^31) ⇒ 32 macro-stripes per stage
+miner_stripe_size = 67,108,864     (2^26)
+worker_pool_size  = 25             ← the attempt-1 correction; manifest default 8 was never overridden
+test_both_modes   = true           prng_type = java_lcg
+window_trials     = 1              n_parallel = 1
+use_range_miner   = true           use_persistent_workers = false
+```
+
+**PARAMETER TRAPS (both verified against source):**
+1. **`max_seeds`, NOT `seed_count`.** `args_map` maps `--max-seeds` from `seed_count`, but
+   `seed_count` is **not** in `default_params`, so WATCHER's declared-key filter drops it and the
+   run silently falls back to `1,073,741,824` — **16 stripes, not 32.** `max_seeds` is declared, the
+   S145 wall reads it, and the CLI builder falls back to underscore→hyphen.
+2. **`trials`, NOT `window_trials`, for the CLI.** `args_map` maps `trials`; the underscore fallback
+   would emit a **non-existent `--window-trials`.**
+3. **Booleans are flag-only:** `true` emits the flag, `false` **omits it entirely** — that is how
+   `use_persistent_workers: false` suppresses PWC.
+
+**Standing run conditions:** no mid-run intervention of any kind · a sizing refusal at preflight is
+a **legitimate Gate-12 result**, not a reason to shrink the seed count · coordinator process death
+means **interrupted, not resumable** · **GPU completion is not completion — only successful
+canonical publication is** · fewer than 25 admitted workers ⇒ **no saturation claim.**
+
+### 2.30 THE FIVE-DEFECT PATTERN, AND BETA'S THREE FALSIFIERS
+
+Every defect in the gate-12 sequence had one shape: **an implementation that passes its own gates
+because the gate encodes the same assumption the implementation does.**
+
+| defect | untested assumption | why the fixture missed it |
+|---|---|---|
+| `staging_deferred_max = 64` | bursts stay small | never generated 116 requests |
+| `staging_high_water_files = 512` | trials stay short | never ran a whole trial's file count |
+| stage-eligibility bound | one worker set serves every stage | had one worker set |
+| compute lease at bulk claim | a worker starts work when assigned work | never queued 4 stripes on one serial worker |
+| prefix-as-exact selector | no lexical sibling exists | used 2 stripes; needs `s1`/`s10` |
+
+**Beta's correction to Alpha's framing:** the defect is not "the rules are too tight" — it is that
+**the same agent writing both the implementation and its fixtures creates correlated blind spots.**
+There are **three** independent falsifiers, not one: **independent reviewer reasoning** (Beta
+supplied the prefix collision) · **adversarial fixture generation** (needs no fleet access) ·
+**real execution.**
+
+**QUEUED WORK — adversarial fixture dimensions (Beta §8), to be briefed after Gate 12 settles.**
+The dimension list must come from **outside the implementer**: `N = 2, 9, 10, 11, 19, 20, 31, 32` ·
+`W < N`, `W = N`, `W > N` · heterogeneous eligibility by stage · queue service time > lease ·
+**lexically overlapping identifiers** · late joins · disconnect/reconnect · partial staging ·
+idempotent replay with contradictory input. **Every one of the five defects lies on that list.**
+
+**Terminology, per Beta:** an owner-authorized-per-occasion diagnostic run is **not** autonomous
+execution. If a delegated-execution amendment is ever proposed it needs Beta's eight-part contract —
+frozen hypothesis, hard resource bounds, non-certifying, no authority mutation, no self-healing
+relaunch. **Nothing changes unless Beta rules.**
 
 ## 3. SUPERSEDED — in repo, NOT current
 
