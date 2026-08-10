@@ -1403,8 +1403,32 @@ class RangeMinerWorker:
         return budget
 
     # ----- connection / handshake ------------------------------------------
-    def connect(self) -> None:
-        sock = socket.create_connection((self.host, self.port))
+    def connect(self, timeout: Optional[float] = None) -> None:
+        """[DEFECT A R2 §15-B] Establish ONE session socket.
+
+        `timeout` is the RECOVERY DEADLINE, and only the recovery caller passes
+        it. Without it `socket.create_connection` blocks in the OS connect for as
+        long as the kernel allows: a *refused* route returns immediately (which
+        is why the original A8 passed), but a BLACK-HOLED route blocks for
+        minutes, and while blocked this worker cannot inspect
+        `_recovery_spent_s`, `remaining` or `_stop`. That made the §14 budget
+        bookkeeping rather than an enforced wall-clock bound.
+
+        With `timeout` set, the OS connect is capped at what is left of the
+        recovery budget and a `socket.timeout` (an `OSError`, so already inside
+        `TRANSPORT_EXCEPTIONS`) is an ordinary failed recovery attempt: charged,
+        backed off, retried while budget remains.
+
+        The socket is returned CARRYING that timeout on purpose — `_recover_session`
+        re-uses it to bound the REGISTER send (§15-C) and clears it back to
+        blocking before the restored session is served, so the certified session
+        loop never gains a socket timeout. The first-startup path passes nothing
+        and keeps its original unbounded behaviour byte-for-byte.
+        """
+        if timeout is None:
+            sock = socket.create_connection((self.host, self.port))
+        else:
+            sock = socket.create_connection((self.host, self.port), timeout=timeout)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.conn = MinerFramedSocket(sock)
 
@@ -1778,12 +1802,47 @@ class RangeMinerWorker:
                     attempt=attempt)
                 return False
 
+            # [DEFECT A R2 §15-A] POST-BACKOFF EXHAUSTION RE-CHECK. The wait above
+            # is itself charged, so a remaining allowance that the backoff has
+            # just consumed leaves nothing to spend on another attempt. Without
+            # this the loop would proceed into a fresh `connect()` with a
+            # remaining budget of zero — a boundary violation on its own, and the
+            # first half of what made §14 accounting rather than enforcement.
+            # Gate A8-B1.
+            remaining = budget - self._recovery_spent_s
+            if remaining <= 0.0:
+                self._emit_session_event(
+                    "RECONNECT_EXHAUSTED", attempts=attempt,
+                    recovery_budget_s=budget,
+                    recovery_spent_s=round(self._recovery_spent_s, 3),
+                    reconnect_success=False)
+                return False
+
             attempt += 1
             self.reconnect_attempts_total += 1
             t0 = time.monotonic()
             try:
-                self.connect()
+                # §15-B: the recovery connect is BOUNDED by what is left of the
+                # budget, so a black-holed route cannot block past the deadline.
+                self.connect(timeout=remaining)
+                # §15-C: connection AND registration together stay inside the one
+                # allowance — the REGISTER send does not earn a fresh unlimited
+                # blocking interval just because `connect()` returned near the
+                # deadline. The residual is what the connect did not use.
+                register_allowance = remaining - (time.monotonic() - t0)
+                if register_allowance <= 0.0:
+                    raise socket.timeout(
+                        "recovery deadline reached after connect, before REGISTER")
+                assert self.conn is not None
+                self.conn.sock.settimeout(register_allowance)
                 self.register()
+                # RESTORE ORDINARY BLOCKING BEHAVIOUR before the session is
+                # served. A lingering socket timeout would make the certified read
+                # loop raise `socket.timeout` on any quiet interval, and that
+                # exception is classified as a TRANSPORT LOSS — an idle worker
+                # would reconnect in a loop. The deadline binds recovery ONLY; the
+                # restored session must behave exactly as a first session does.
+                self.conn.sock.settimeout(None)
             except WorkerIdentityChanged:
                 # §13 fail-closed. Not retryable: the identity, not the socket,
                 # is what the coordinator refused. Gate A7.

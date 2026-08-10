@@ -71,6 +71,7 @@ Run:  source ~/venvs/torch/bin/activate
 """
 import json
 import logging
+import math
 import os
 import socket
 import struct
@@ -79,6 +80,7 @@ import tempfile
 import threading
 import time
 import traceback
+import types
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -129,6 +131,7 @@ from miner.range_miner_worker import (  # noqa: E402
     GpuInfo,
     MinerFramedSocket,
     RangeMinerWorker,
+    SessionOutcome,
     SubStripeOutcome,
     VramCaps,
     WorkerIdentityChanged,
@@ -136,6 +139,7 @@ from miner.range_miner_worker import (  # noqa: E402
 )
 from miner.range_miner_protocol import (  # noqa: E402
     MinerShutdownMessage,
+    MinerStatusMessage,
     StripeAssignMessage,
 )
 from execution_set import (  # noqa: E402
@@ -514,6 +518,27 @@ def _spin(worker):
     t = threading.Thread(target=_run, name=f"w-{worker.worker_id}", daemon=True)
     t.start()
     return t, box
+
+
+def _wait_event(worker, kind, timeout=DEADLINE):
+    """Wait for a named session event to be EMITTED. The coordinator seeing a
+    REGISTER lands one statement earlier than the worker finishing its own
+    post-registration bookkeeping, so an arm that reads worker state the instant
+    the coordinator observes registration is racing it."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        if any(e["event"] == kind for e in worker.session_events):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _loss(exc_class="ConnectionError", text="peer went away"):
+    """The outcome `serve_forever` hands `_recover_session` after a bare
+    transport loss — built here so the deadline arms can drive recovery
+    directly, without a fleet."""
+    return SessionOutcome(cause=SESSION_END_TRANSPORT_LOSS, exc_class=exc_class,
+                          exc_text=text)
 
 
 def _assign(worker_id, stripe_id, family, phase, seed_start=0, seed_count=10):
@@ -1533,6 +1558,384 @@ def g_a8_mutant():
 
 
 # ===========================================================================
+# A8-B — §14 recovery-deadline ENFORCEMENT (Beta R2 §§15-16)
+#
+# What the original A8 could not see (Beta §14, the 4th correlated blind spot in
+# this arc): it kills a LOCALHOST coordinator, and localhost refuses instantly.
+# The arm therefore shares the implementation's own assumption — that a connect
+# returns promptly — so an unbounded `create_connection` looked bounded. A8-B2
+# removes exactly that assumption.
+# ===========================================================================
+def _PREFIX_connect_body(self, timeout=None):
+    """The CERTIFIED PRE-FIX body of `connect()`, copied verbatim from
+    `acd6f13:miner/range_miner_worker.py:1406-1409`. The `timeout` parameter
+    exists only so the CURRENT caller can call it at all; the body IGNORES it —
+    which is precisely what the pre-fix implementation does with a deadline it
+    has no parameter for."""
+    sock = socket.create_connection((self.host, self.port))
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    self.conn = MinerFramedSocket(sock)
+
+
+# The verbatim body must resolve `socket` and `MinerFramedSocket` where the REAL
+# pre-fix body resolved them — in the module under test — so rebind its global
+# namespace to `WORKER.__dict__`. Self-caught while writing this arm: as a plain
+# test-module function the copy read THIS module's `socket`, escaped the
+# black-hole shim A8-B2 installs, connected nowhere and returned instantly, and
+# the mutant SURVIVED. A red-first control that quietly tests the wrong module is
+# exactly the vacuous arm `_mutant_red` exists to refuse.
+_PREFIX_connect = types.FunctionType(
+    _PREFIX_connect_body.__code__, WORKER.__dict__, "_PREFIX_connect",
+    _PREFIX_connect_body.__defaults__)
+
+
+def _PREFIX_recover_session(self, outcome):
+    """The CERTIFIED PRE-FIX body of `_recover_session()`, copied verbatim from
+    `acd6f13:miner/range_miner_worker.py:1731-1821`. It re-checks exhaustion only
+    BEFORE the backoff wait, and calls `self.connect()` with no deadline — the
+    two escapes Beta §13 named. Restored only inside the mutants below."""
+    self._abandon_assignment_no_replay(outcome)
+    self._emit_session_event(
+        "TRANSPORT_LOSS", classification=SESSION_END_TRANSPORT_LOSS,
+        exc_class=outcome.exc_class, exc_text=outcome.exc_text,
+        assignment_active_at_loss=outcome.assignment_active,
+        stripe_id_at_loss=outcome.stripe_id,
+        recovery_spent_s=round(self._recovery_spent_s, 3))
+    self._close_dead_session()
+
+    if not self.reconnect_enabled:
+        self._emit_session_event("RECONNECT_DISABLED", reconnect_attempted=False)
+        return False
+
+    budget = self.recovery_budget_s()
+    attempt = 0
+    while True:
+        if self._stop.is_set():
+            self._emit_session_event(
+                "RECONNECT_ABANDONED", reason=self._stop_cause or "stop_set",
+                attempt=attempt)
+            return False
+        remaining = budget - self._recovery_spent_s
+        if remaining <= 0.0:
+            self._emit_session_event(
+                "RECONNECT_EXHAUSTED", attempts=attempt,
+                recovery_budget_s=budget,
+                recovery_spent_s=round(self._recovery_spent_s, 3),
+                reconnect_success=False)
+            return False
+
+        delay = min(self._backoff_delay(attempt + 1), remaining)
+        waited_from = time.monotonic()
+        stopped = self._stop.wait(delay)
+        self._recovery_spent_s += time.monotonic() - waited_from
+        if stopped:
+            self._emit_session_event(
+                "RECONNECT_ABANDONED", reason=self._stop_cause or "stop_set",
+                attempt=attempt)
+            return False
+
+        attempt += 1
+        self.reconnect_attempts_total += 1
+        t0 = time.monotonic()
+        try:
+            self.connect()
+            self.register()
+        except WorkerIdentityChanged:
+            self._recovery_spent_s += time.monotonic() - t0
+            self._close_dead_session()
+            self._emit_session_event(
+                "SESSION_END", classification=SESSION_END_IDENTITY_REFUSED,
+                reconnect_attempted=True, attempt=attempt,
+                reconnect_success=False)
+            return False
+        except WORKER.TRANSPORT_EXCEPTIONS as e:
+            self._recovery_spent_s += time.monotonic() - t0
+            self._close_dead_session()
+            self._emit_session_event(
+                "RECONNECT_FAILED", attempt=attempt,
+                attempts_total=self.reconnect_attempts_total,
+                exc_class=type(e).__name__, exc_text=str(e),
+                reconnect_success=False,
+                recovery_spent_s=round(self._recovery_spent_s, 3))
+            continue
+
+        self._recovery_spent_s += time.monotonic() - t0
+        self.session_generation += 1
+        self._emit_session_event(
+            "RECONNECTED", attempt=attempt,
+            attempts_total=self.reconnect_attempts_total,
+            reconnect_success=True, resumed_state="idle",
+            recovery_spent_s=round(self._recovery_spent_s, 3))
+        return True
+
+
+class _BlackHoleSocketModule:
+    """Stands in for `range_miner_worker`'s module-global `socket`, so the REAL
+    production `connect()` runs unmodified while the OS connect is replaced by a
+    controllable black hole. Everything except `create_connection` proxies to the
+    real module.
+
+    A refused localhost port — all the original A8 had — returns immediately and
+    can never model this. Here an UNBOUNDED connect (`timeout=None`) blocks for
+    `block_s`, exactly as a black-holed route does in the kernel, and a BOUNDED
+    one blocks for its deadline and then raises `socket.timeout`, exactly as the
+    OS does.
+    """
+
+    def __init__(self, block_s):
+        self.block_s = block_s
+        self.timeouts = []          # every deadline create_connection received
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name):    # everything else is the real socket module
+        return getattr(socket, name)
+
+    def create_connection(self, address, timeout=None, *a, **kw):
+        with self._lock:
+            self.timeouts.append(timeout)
+        if timeout is None:
+            time.sleep(self.block_s)
+            raise OSError("black-holed route: the unbounded OS connect gave up")
+        time.sleep(min(timeout, self.block_s))
+        raise socket.timeout("connect timed out")
+
+
+def g_a8_b1_backoff_consumes_budget():
+    """A8-B1 (§15-A) — the backoff wait consumes the LAST of the allowance, so no
+    further recovery operation may begin. `connect` must not be called even once.
+
+    The pre-fix loop re-checked exhaustion only BEFORE the wait, so a remaining
+    allowance the wait itself spent still bought another (unbounded) connect —
+    a boundary violation on its own. The connect-call counter makes "connect was
+    never called" a hard assertion rather than an inference."""
+    budget = 1.0
+    with tempfile.TemporaryDirectory() as tmp:
+        spool = os.path.join(tmp, "spool")
+        os.makedirs(spool, exist_ok=True)
+        # No coordinator and no cohort: this arm is about the clock, and the
+        # identity plays no part in it. Port 1 is never reached.
+        w = _mk_worker(1, "hostA:gpu0", spool, budget=budget)
+        calls = []
+
+        def _spy(timeout=None):
+            calls.append(timeout)
+            raise AssertionError("connect must not begin with the budget spent")
+
+        w.connect = _spy
+        # All but 0.2 s of the cumulative budget is already spent, so the next
+        # backoff (1.0 s, clamped to the remainder) consumes exactly the rest.
+        w._recovery_spent_s = budget - 0.2
+        t0 = time.monotonic()
+        resumed = w._recover_session(_loss())
+        elapsed = time.monotonic() - t0
+
+        assert resumed is False, "recovery claimed the session was restored"
+        assert calls == [], f"connect was called {len(calls)} time(s): {calls}"
+        assert w.reconnect_attempts_total == 0, w.reconnect_attempts_total
+        kinds = [e["event"] for e in w.session_events]
+        assert kinds[-1] == "RECONNECT_EXHAUSTED", kinds
+        ex = w.session_events[-1]
+        assert ex["attempts"] == 0, ex
+        assert ex["reconnect_success"] is False, ex
+        assert ex["recovery_budget_s"] == budget, ex
+        assert ex["recovery_spent_s"] >= budget - 1e-6, ex
+        assert w.conn is None, "a dead session was left open"
+        assert elapsed < 5.0, elapsed
+
+    def _prefix_loop_reds():
+        """MUTATION: the pre-fix loop, restored verbatim. Its only exhaustion
+        check runs BEFORE the wait, so it proceeds into a connect with nothing
+        left — and this arm must detect that."""
+        with tempfile.TemporaryDirectory() as tmp2:
+            spool2 = os.path.join(tmp2, "spool")
+            os.makedirs(spool2, exist_ok=True)
+            mw = _mk_worker(1, "hostA:gpu0", spool2, budget=budget)
+            seen = []
+
+            def _count(timeout=None):
+                seen.append(timeout)
+                raise ConnectionRefusedError("no coordinator")
+
+            mw.connect = _count
+            mw._recovery_spent_s = budget - 0.2
+            mw._recover_session = types.MethodType(_PREFIX_recover_session, mw)
+            mw._recover_session(_loss())
+            assert seen == [], f"connect was called {len(seen)} time(s): {seen}"
+
+    _mutant_red(_prefix_loop_reds,
+                "a missing post-backoff re-check must be detected")
+
+
+def g_a8_b2_blocking_connect_deadline():
+    """A8-B2 (§15-B, the load-bearing arm) — a BLACK-HOLED route. The connect
+    blocks far past the remaining allowance unless it is handed a finite
+    deadline; while blocked the worker cannot read `_recovery_spent_s`,
+    `remaining` or `_stop`, which is what made the §14 budget bookkeeping rather
+    than enforcement.
+
+    Proves: a finite deadline is supplied, it never exceeds what is left of the
+    budget, it reaches `socket.create_connection` itself, and the worker EXITS on
+    the deadline instead of hanging in the OS connect."""
+    budget = 2.0
+    block_s = 30.0                  # 15x the whole budget: a hole, not a refusal
+    join_window = budget + 4.0
+    with tempfile.TemporaryDirectory() as tmp:
+        spool = os.path.join(tmp, "spool")
+        os.makedirs(spool, exist_ok=True)
+        w = _mk_worker(1, "hostA:gpu0", spool, budget=budget)
+        shim = _BlackHoleSocketModule(block_s)
+        seen = []                   # (deadline supplied, remaining at that call)
+        real_connect = w.connect
+
+        def _spy(timeout=None):
+            seen.append((timeout, budget - w._recovery_spent_s))
+            # Call through EXACTLY as the caller did. A deadline of None means
+            # the unbounded startup path, which the PRE-FIX signature also
+            # accepts — so a differential run against pre-fix source reds on the
+            # OVERRUN, not on the API change.
+            return real_connect(timeout) if timeout is not None else real_connect()
+
+        w.connect = _spy
+        saved = WORKER.socket
+        WORKER.socket = shim
+        try:
+            box = {}
+
+            def _run():
+                box["resumed"] = w._recover_session(_loss())
+
+            t0 = time.monotonic()
+            th = threading.Thread(target=_run, name="a8b2", daemon=True)
+            th.start()
+            th.join(timeout=join_window)
+            elapsed = time.monotonic() - t0
+
+            assert not th.is_alive(), (
+                "the worker blocked past its recovery deadline inside the OS "
+                "connect — the §14 budget is bookkeeping, not enforcement")
+            assert box.get("resumed") is False, box
+            assert seen, "no recovery connect was attempted at all"
+            for got, remaining in seen:
+                assert got is not None, f"connect got NO deadline: {seen}"
+                assert math.isfinite(got) and got > 0.0, seen
+                assert got <= remaining + 1e-6, (
+                    f"deadline {got} exceeds the remaining budget {remaining}")
+            # the deadline reached the OS connect, not merely the wrapper
+            assert shim.timeouts == [d for d, _r in seen], (shim.timeouts, seen)
+            kinds = [e["event"] for e in w.session_events]
+            assert kinds[-1] == "RECONNECT_EXHAUSTED", kinds
+            assert w._recovery_spent_s <= budget + 1.0, w._recovery_spent_s
+            assert elapsed < budget + 2.0, elapsed
+
+            def _no_deadline_reds():
+                """MUTATION — the shipped defect: the pre-fix `connect()` body,
+                restored verbatim, which discards the deadline. This is the arm
+                that would have caught Defect A R1, so it MUST fail here."""
+                with tempfile.TemporaryDirectory() as tmp2:
+                    spool2 = os.path.join(tmp2, "spool")
+                    os.makedirs(spool2, exist_ok=True)
+                    mw = _mk_worker(1, "hostA:gpu0", spool2, budget=budget)
+                    mw.connect = types.MethodType(_PREFIX_connect, mw)
+                    mbox = {}
+
+                    def _mrun():
+                        mbox["resumed"] = mw._recover_session(_loss())
+
+                    mth = threading.Thread(target=_mrun, name="a8b2-mutant",
+                                           daemon=True)
+                    mth.start()
+                    mth.join(timeout=join_window)
+                    assert not mth.is_alive(), (
+                        "the worker blocked past its recovery deadline inside "
+                        "the OS connect")
+
+            _mutant_red(_no_deadline_reds,
+                        "an undeadlined recovery connect must be detected")
+        finally:
+            WORKER.socket = saved
+
+
+def g_a8_b3_success_before_deadline():
+    """A8-B3 (§15-B/C control) — connection AND registration complete INSIDE the
+    remaining allowance, so ordinary recovery still succeeds. The deadline must
+    not turn healthy recovery into a false failure.
+
+    And the load-bearing correctness point: the RESTORED session carries NO
+    socket timeout. A lingering timeout would make the certified read loop raise
+    `socket.timeout` on any quiet interval — classified as a TRANSPORT LOSS — so
+    an idle worker would reconnect in a loop. The restored session must behave
+    exactly as a first session does."""
+    _set, wids = frozen_cohort()
+    wid = wids[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        spool = os.path.join(tmp, "spool")
+        os.makedirs(spool, exist_ok=True)
+        coord = _coord(tmp)
+        h = _HarnessCoordinator(coord, expected_workers=1)
+        w = _mk_worker(h.port, wid, spool)
+        seen = []
+        real_connect = w.connect
+
+        def _spy(timeout=None):
+            seen.append(timeout)
+            # as in A8-B2: call through exactly as the caller did, so the
+            # pre-fix differential reds on the missing deadline, not on the API
+            return real_connect(timeout) if timeout is not None else real_connect()
+
+        w.connect = _spy
+        t, box = _spin(w)
+        try:
+            assert h.wait_registered(1)
+            # the FIRST session — the non-recovery path — is unchanged
+            assert w.conn.sock.gettimeout() is None, \
+                "the first startup session gained a socket timeout"
+
+            h.drop_transport(wid)
+            assert h.wait_registered(1, timeout=TEST_BUDGET + 10.0)
+            assert _wait_event(w, "RECONNECTED", timeout=TEST_BUDGET + 10.0), \
+                w.session_events
+            rec = [e for e in w.session_events if e["event"] == "RECONNECTED"][-1]
+            assert rec["reconnect_success"] is True, rec
+
+            # the startup connect is UNBOUNDED (unchanged); every RECOVERY
+            # connect carries a finite deadline inside the budget
+            assert seen[0] is None, seen
+            assert len(seen) >= 2, seen
+            for got in seen[1:]:
+                assert got is not None and math.isfinite(got), seen
+                assert 0.0 < got <= TEST_BUDGET, seen
+
+            # THE CONTROL: the restored session is blocking again
+            assert w.conn is not None, "no live session after recovery"
+            assert w.conn.sock.gettimeout() is None, (
+                "the restored session carries a socket timeout "
+                f"({w.conn.sock.gettimeout()}) — the certified read loop would "
+                "treat a quiet interval as a transport loss")
+            assert w._recovery_spent_s < TEST_BUDGET, w._recovery_spent_s
+            assert t.is_alive(), "the worker exited instead of resuming service"
+
+            # and it is genuinely SERVING on the restored socket: a status query
+            # round-trips, which a half-restored session could not do
+            def _status_replies():
+                with h._lock:
+                    return [m for m in h.received if m.message_type == "status"]
+
+            before = len(_status_replies())
+            h.send(wid, MinerStatusMessage())
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < DEADLINE:
+                if len(_status_replies()) > before:
+                    break
+                time.sleep(0.02)
+            replies = _status_replies()
+            assert len(replies) > before, "the restored session served nothing"
+            assert replies[-1].state == "idle", replies[-1].state
+        finally:
+            w.shutdown(cause=STOP_CAUSE_EXPLICIT_SHUTDOWN)
+            h.close()
+
+
+# ===========================================================================
 # §10/§15 structural gates
 # ===========================================================================
 def g_state_machine_three_way():
@@ -1741,6 +2144,14 @@ if __name__ == "__main__":
     _check("A8  bound derivation     positive finite, derived from 180 s anchor",
            g_a8_bound_derivation)
     _check("A8/M mutation            an infinite bound must be refused", g_a8_mutant)
+
+    print("\n-- A8-B: §14 deadline ENFORCEMENT (Beta R2 §§15-16) --")
+    _check("A8-B1 backoff spends it   no connect once the budget is gone",
+           g_a8_b1_backoff_consumes_budget)
+    _check("A8-B2 blocking connect    finite deadline <= remaining, exits on it",
+           g_a8_b2_blocking_connect_deadline)
+    _check("A8-B3 control             success inside the budget, session blocking",
+           g_a8_b3_success_before_deadline)
 
     print("=" * 70)
     ok = sum(1 for _n, p, _t in _results if p)
