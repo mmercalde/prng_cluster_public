@@ -87,6 +87,21 @@ def _unavail(name, why):
     _unavailable.append((name, why))
 
 
+def _config_gpu_total():
+    """Total declared GPUs, read from the authoritative fixture.
+
+    `distributed_config.json` is what `resolve_execution_set` itself reads for
+    per-node `gpu_count` (`execution_set.py:640`). Deriving the expectation from
+    the same declaration — rather than transcribing a literal — is what keeps a
+    certified count correction (localhost 2 -> 1) from leaving a silently stale
+    magic number behind. Independent of `ResolvedExecutionSet.gpu_count()`: this
+    sums the raw config, that sums resolved nodes.
+    """
+    with open(os.path.join(REPO, "distributed_config.json")) as fh:
+        return sum(int(n.get("gpu_count", 0))
+                   for n in json.load(fh).get("nodes", []))
+
+
 def _cli_set(**kw):
     """A set resolved the way `window_optimizer.main()` resolves one."""
     kw.setdefault("backend", "miner")
@@ -646,8 +661,18 @@ def g_partial_not_inferred_from_answers():
         f"control: the call-graph walk did not reach known callees ({len(called)} seen)"
     # unreachable declared nodes still resolve: the set is a declaration
     s = _cli_set(rig_profile="baremetal")          # .120/.154/.162 are DOWN today
-    assert len(s.nodes) == 4 and s.gpu_count() == 26
-    return "resolution performs no reachability probe; down nodes still resolve"
+    # DERIVED, not a magic literal. The authoritative per-node GPU count is
+    # `distributed_config.json` — the same file `resolve_execution_set` reads at
+    # `execution_set.py:640` (`int(cfg.get("gpu_count", 0))`). Summing it here
+    # independently means the certified localhost correction (2 -> 1) moves this
+    # expectation on its own; the previous literal `26` was the pre-correction
+    # total and went stale silently.
+    expected_gpus = _config_gpu_total()
+    assert len(s.nodes) == 4 and s.gpu_count() == expected_gpus, \
+        f"set reports {s.gpu_count()} GPUs, config declares {expected_gpus}"
+    return ("resolution performs no reachability probe; down nodes still "
+            f"resolve ({len(s.nodes)} nodes, {s.gpu_count()} GPUs derived "
+            f"from distributed_config.json)")
 
 
 # ===========================================================================
@@ -664,8 +689,19 @@ def g_consumer_legacy_test_connectivity():
         assert set(c._node_max_concurrent) == set(hosts), \
             "the concurrency map must be keyed by the SAME re-pointed hostnames"
         workers = c.create_gpu_workers()
-        assert len(workers) == 2 + 8
-    return f"MultiGPUCoordinator nodes={hosts}, {len(workers)} GPU workers"
+        # DERIVED from the authoritative set, not a fresh magic literal. The
+        # coordinator must create exactly one GPU worker per GPU declared by the
+        # nodes in THIS set; `ResolvedExecutionSet.gpu_count()`
+        # (`execution_set.py:220-221`) is that authority. The previous literal
+        # `2 + 8` baked in the pre-correction localhost count of 2 and went
+        # stale when the certified correction made it 1.
+        expected_workers = s.gpu_count()
+        assert len(workers) == expected_workers, \
+            (f"coordinator created {len(workers)} GPU workers but the resolved "
+             f"set declares {expected_workers} GPUs "
+             f"({[(n.node_id, n.gpu_count) for n in s.nodes]})")
+    return (f"MultiGPUCoordinator nodes={hosts}, {len(workers)} GPU workers "
+            f"(derived from set gpu_count={expected_workers})")
 
 
 def g_consumer_pwc_ready_gate():

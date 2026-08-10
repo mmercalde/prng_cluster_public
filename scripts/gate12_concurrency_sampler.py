@@ -117,6 +117,22 @@ TSV_COLUMNS = [
     "obs_status",         # OBSERVED | UNOBSERVED — a failed read is not a zero
     "obs_reason",         # why the ledger read did not happen, when it did not
     "compute_active",     # distinct workers with a COMPUTE-ACTIVE claim
+    # WHICH workers produced `compute_active`, durably. Encoding: a JSON array
+    # of worker-id strings, SORTED, serialized with no whitespace
+    # (`separators=(",",":")`) so the field is byte-deterministic for the same
+    # set and contains no literal tab. A reader parses it with `json.loads`; no
+    # whitespace-dependent splitting is required or implied.
+    #
+    # Without this column the identities die in-process: `sample_run` computes
+    # the set, `compute_active` keeps only its cardinality, and after the
+    # process exits nothing can answer "WHICH 25 workers were simultaneously
+    # active?" — the question that makes the count auditable against the frozen
+    # execution cohort rather than merely plausible.
+    #
+    # UNOBSERVED samples carry the UNOBSERVED marker here, NEVER `[]`. `[]` is a
+    # positive claim that an instant was observed and no worker was active; a
+    # failed read observed nothing at all. See `render_active_workers`.
+    "active_workers_json",
     "queued_pending",     # coordinator-owned backlog
     "claimed_rows",       # rows in 'claimed'; == compute_active under F1
     "staging", "done", "cancelled", "failed",   # context, NOT occupancy
@@ -386,18 +402,68 @@ def render_ledger_value(value: Optional[int]) -> str:
     return OBS_UNOBSERVED if value is None else str(value)
 
 
+def render_active_workers(row: Dict[str, Any]) -> str:
+    """Serialize the simultaneous-worker identities for one sample.
+
+    KEYED OFF `obs_status`, NOT off the set's contents — and that is the whole
+    defect this function exists to avoid. `unobserved_row` seeds
+    `active_workers: set()` (see its definition), so a renderer that serialized
+    the set unconditionally would emit `[]` on exactly the samples where `[]` is
+    a lie: it would turn "the ledger could not be read" into "the ledger was
+    read and nobody was working", which is the pre-R2 zero-fall-through defect
+    reappearing in a new column.
+
+    Three cases, and the distinction between the last two is the point:
+      OBSERVED with workers  -> sorted JSON array of the ids
+      OBSERVED, none active  -> `[]`, a real observation of nothing. Reached by
+                                the genuine no-run-yet path, which sets every
+                                ledger field to 0 and flips obs_status to
+                                OBSERVED while leaving the set empty.
+      UNOBSERVED             -> the UNOBSERVED marker, never `[]`
+
+    Sorted so the field is deterministic for a given set: an evidence file that
+    differs byte-for-byte between two renderings of the same observation cannot
+    be diffed or hashed as evidence.
+    """
+    if not is_observed(row):
+        return OBS_UNOBSERVED
+    workers = sorted(row.get("active_workers") or ())
+    # The invariant, enforced where the row is rendered — the last point at
+    # which the count and the identities are both in hand. If these two ever
+    # disagree, the count is not auditable and the file must not claim it is.
+    active = row.get("compute_active")
+    if active is not None and len(workers) != active:
+        raise AssertionError(
+            f"active_workers/compute_active disagree at {row.get('ts_iso')}: "
+            f"{len(workers)} identities {workers} vs compute_active={active}. "
+            f"The identity column must account for exactly the workers the "
+            f"count is made of.")
+    return json.dumps(workers, separators=(",", ":"))
+
+
 def format_tsv_row(row: Dict[str, Any], run_id: Optional[str],
                    satisfies: Optional[bool]) -> str:
     # `satisfies` is None for an unobserved sample and renders as '-': the
     # criterion was not evaluated. A `0` there would claim it was evaluated and
     # failed, which is the same lie one column to the left.
-    return "\t".join(str(x) for x in [
-        row["ts_iso"], f"{row['epoch']:.3f}", run_id or "-",
-        row.get("obs_status", OBS_OBSERVED), row.get("obs_reason") or "-",
-        *[render_ledger_value(row.get(f)) for f in LEDGER_FIELDS],
-        render_estab(row.get("estab")), row.get("estab_reason") or "-",
-        "-" if satisfies is None else int(satisfies),
-    ]) + "\n"
+    #
+    # Cells are keyed BY COLUMN NAME and emitted in `TSV_COLUMNS` order, so the
+    # header and the row cannot drift apart: a column added to `TSV_COLUMNS`
+    # without a value here raises `KeyError` at the first write rather than
+    # silently shifting every field to its right by one.
+    cells: Dict[str, Any] = {
+        "ts_iso": row["ts_iso"],
+        "epoch": f"{row['epoch']:.3f}",
+        "run_id": run_id or "-",
+        "obs_status": row.get("obs_status", OBS_OBSERVED),
+        "obs_reason": row.get("obs_reason") or "-",
+        "active_workers_json": render_active_workers(row),
+        "estab": render_estab(row.get("estab")),
+        "estab_reason": row.get("estab_reason") or "-",
+        "satisfies": "-" if satisfies is None else int(satisfies),
+    }
+    cells.update({f: render_ledger_value(row.get(f)) for f in LEDGER_FIELDS})
+    return "\t".join(str(cells[c]) for c in TSV_COLUMNS) + "\n"
 
 
 def summarize_estab(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -620,9 +686,26 @@ def evaluate(samples: List[Dict[str, Any]], threshold: int,
     }
 
 
+LABEL_OVERALL = "GATE-12 SATURATION VERDICT"
 LABEL_SIMULTANEITY = "VERDICT 1 — SUSTAINED SIMULTANEITY"
 LABEL_TURNOVER = "VERDICT 2 — TURNOVER UNDER FULL OCCUPANCY"
 _LABEL_WIDTH = 42
+
+
+def overall_satisfied(v: Dict[str, Any]) -> bool:
+    """The combined Gate-12 saturation authority: BOTH criteria, conjunction.
+
+    `exit_code()` already encodes these semantics, but an exit status is
+    consumed by a process, not by a reader — and `gate12_launch.sh` never reads
+    it. Carrying the authority in the artifact itself means the evidence file
+    states its own conclusion instead of leaving it to be re-derived from two
+    sub-verdicts by whoever opens the file.
+
+    The operator is AND, and that is load-bearing: `or` would let a run that
+    proved occupancy but never proved the queue was consumed present itself as
+    saturated, which is precisely the collapse Beta requires be prevented.
+    """
+    return bool(v["satisfied"] and v["turnover_satisfied"])
 
 
 def exit_code(v: Dict[str, Any]) -> int:
@@ -650,6 +733,7 @@ def render_summary(v: Dict[str, Any], run_id: Optional[str],
     """
     verdict = "SATISFIED" if v["satisfied"] else "NOT SATISFIED"
     turnover = "SATISFIED" if v["turnover_satisfied"] else "NOT SATISFIED"
+    overall = "SATISFIED" if overall_satisfied(v) else "NOT SATISFIED"
     t = v["threshold"]
     lines = [
         "=" * 74,
@@ -702,6 +786,11 @@ def render_summary(v: Dict[str, Any], run_id: Optional[str],
         "THE TWO ARE SEPARATE AND ARE NOT COLLAPSED. Criterion 1 proves the queue",
         "was non-empty; only criterion 2 proves it was consumed.",
         "",
+        f"{LABEL_OVERALL:<{_LABEL_WIDTH}}: {overall}",
+        "  ^ THE AUTHORITATIVE LINE. It is the CONJUNCTION of the two verdicts",
+        "    below (criterion 1 AND criterion 2); both must be SATISFIED. The",
+        "    two sub-verdicts are retained underneath as diagnostics — they say",
+        "    WHICH criterion failed — but this line is the Gate-12 result.",
         f"{LABEL_SIMULTANEITY:<{_LABEL_WIDTH}}: {verdict}",
         f"{LABEL_TURNOVER:<{_LABEL_WIDTH}}: {turnover}",
         f"{'EXIT CODE':<{_LABEL_WIDTH}}: {exit_code(v)}",

@@ -46,6 +46,7 @@ RUN: source ~/venvs/torch/bin/activate && python3 -u tests/test_gate12_concurren
 """
 
 import contextlib
+import json
 import os
 import shutil
 import sqlite3
@@ -956,6 +957,12 @@ def f1_summary_is_self_describing():
         "predicate 2": "pending_drained > 0  OR  transitions > 0",
         "turnover window def": "QUALIFYING SIMULTANEITY WINDOW",
         "not the whole run": "NOT the whole run",
+        # R3/S3: the combined authority line is a REQUIRED element. Without it
+        # in this list a mutant deleting the line still passes the 17-element
+        # check — the element list is what makes "self-describing" enforceable,
+        # so anything the file must carry has to be named here.
+        "combined authority": S.LABEL_OVERALL,
+        "authority is the conjunction": "CONJUNCTION of the two verdicts",
         "verdict 1": S.LABEL_SIMULTANEITY,
         "verdict 2": S.LABEL_TURNOVER,
         "exit code": "EXIT CODE",
@@ -980,6 +987,197 @@ def f2_exit_code_matches_the_legend():
               S.render_summary(turn, "r", "t0", "t1", "/x/db"),
           f"both={S.exit_code(both)} turnover-only={S.exit_code(turn)} "
           f"neither={S.exit_code(neither)}; summary prints the same code")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# S3: THE COMBINED SATURATION AUTHORITY LINE  (Beta R3)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _w25():
+    return {f"w{i}" for i in range(25)}
+
+
+def _both_and_simultaneity_only():
+    """Two verdict dicts from the REAL `evaluate`, not hand-built.
+
+    `both`: occupancy held AND the queue drained -> 1 yes, 2 yes.
+    `sim_only`: occupancy held but the queue never moved -> 1 yes, 2 no. That
+    second one is the case the authority line exists to catch: a run that looks
+    saturated on the headline number and never proved consumption.
+    """
+    w = _w25()
+    both = S.evaluate(samples_from([(w, 7), (w, 4), (w, 2)]), 25, 2)
+    sim_only = S.evaluate(samples_from([(w, 7)] * 3), 25, 2)
+    return both, sim_only
+
+
+def s3_authority_line_is_the_conjunction():
+    """The artifact carries the Gate-12 result itself.
+
+    Before this, the combined semantics lived only in `exit_code()` — and
+    `gate12_launch.sh` never reads that exit code, so the conclusion existed
+    nowhere a reader of the evidence file could see it.
+    """
+    both, sim_only = _both_and_simultaneity_only()
+    t_both = S.render_summary(both, "rB", "t0", "t1", "/x/db")
+    t_sim = S.render_summary(sim_only, "rS", "t0", "t1", "/x/db")
+
+    line_both = f"{S.LABEL_OVERALL:<42}: SATISFIED"
+    line_sim = f"{S.LABEL_OVERALL:<42}: NOT SATISFIED"
+
+    # The sub-verdicts must SURVIVE underneath, unchanged — Beta keeps them as
+    # the diagnostic that says WHICH criterion failed.
+    subs_kept = (f"{S.LABEL_SIMULTANEITY:<42}: SATISFIED" in t_sim
+                 and f"{S.LABEL_TURNOVER:<42}: NOT SATISFIED" in t_sim)
+    # ...and the authority line must sit ABOVE them, not after.
+    above = (t_sim.index(S.LABEL_OVERALL) < t_sim.index(S.LABEL_SIMULTANEITY)
+             < t_sim.index(S.LABEL_TURNOVER))
+
+    check("S3-AUTHORITY-LINE-IS-CONJUNCTION",
+          line_both in t_both and line_sim in t_sim and subs_kept and above
+          and S.overall_satisfied(both) and not S.overall_satisfied(sim_only),
+          "yes/yes -> SATISFIED; yes/no -> NOT SATISFIED; both sub-verdicts "
+          "retained beneath the authority line")
+
+
+def s3_mutant_or_instead_of_and():
+    """MUTATION: compute the authority line with `or` instead of `and`.
+
+    The mutant is the exact collapse Beta forbids — a run that proved occupancy
+    but never proved the queue was consumed would publish itself as SATISFIED.
+    """
+    _both, sim_only = _both_and_simultaneity_only()
+    fixed = S.render_summary(sim_only, "rS", "t0", "t1", "/x/db")
+    real = S.overall_satisfied
+    try:
+        S.overall_satisfied = lambda v: bool(
+            v["satisfied"] or v["turnover_satisfied"])
+        mutant = S.render_summary(sim_only, "rS", "t0", "t1", "/x/db")
+    finally:
+        S.overall_satisfied = real
+
+    line_sat = f"{S.LABEL_OVERALL:<42}: SATISFIED"
+    line_not = f"{S.LABEL_OVERALL:<42}: NOT SATISFIED"
+    check("S3-MUTANT-OR-COLLAPSES-VERDICT",
+          line_not in fixed and line_sat in mutant,
+          "`or` mutant publishes a turnover-failed run as SATISFIED; "
+          "the `and` implementation reports NOT SATISFIED")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# S4: DURABLE SIMULTANEOUS WORKER IDENTITIES IN THE TSV  (Beta R3)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def s4_identities_persist_and_gaps_are_not_empty():
+    """END TO END through main(). Two of the three rendering cases at once:
+    observed rows must carry the identities that make `compute_active`
+    auditable, and unobserved rows must NOT carry `[]`."""
+    path = _static_saturated_ledger()
+    tmp = Path(path).parent
+    out, summ = str(tmp / "s4.tsv"), str(tmp / "s4v.txt")
+    with failing_connect({3, 4}):
+        rc, _log = run_main(path, out, summ, extra=["--run-id", "runGAP"])
+
+    rows = [l.rstrip("\n").split("\t")
+            for l in open(out).read().splitlines()[1:]]
+    cols = {c: i for i, c in enumerate(S.TSV_COLUMNS)}
+    i_aw, i_ca = cols["active_workers_json"], cols["compute_active"]
+    obs = [r for r in rows if r[cols["obs_status"]] == S.OBS_OBSERVED]
+    unobs = [r for r in rows if r[cols["obs_status"]] == S.OBS_UNOBSERVED]
+
+    expected = sorted(f"w{i}" for i in range(25))
+    parsed = [json.loads(r[i_aw]) for r in obs]
+    # the identities are all 25, and SORTED as stored (not merely as a set)
+    ids_ok = all(p == expected for p in parsed)
+    # THE INVARIANT, checked from the persisted bytes rather than in-process
+    invariant_ok = all(len(p) == int(r[i_ca]) for p, r in zip(parsed, obs))
+    # the gap carries the marker and — the actual defect — never `[]`
+    gaps_marked = all(r[i_aw] == S.OBS_UNOBSERVED for r in unobs)
+    no_empty_array = all(r[i_aw] != "[]" for r in unobs)
+
+    check("S4-IDENTITIES-PERSIST-GAPS-ARE-NOT-EMPTY",
+          len(obs) >= 2 and len(unobs) == 2 and ids_ok and invariant_ok
+          and gaps_marked and no_empty_array,
+          f"{len(obs)} observed rows carry 25 sorted ids with "
+          f"len==compute_active; {len(unobs)} gaps carry "
+          f"{S.OBS_UNOBSERVED}, never '[]' (rc={rc})")
+
+
+def s4_observed_zero_is_a_real_empty_array():
+    """THE DISTINCTION THAT IS THE POINT. A ledger that was read successfully
+    and holds no run of ours is an observation OF NOTHING: `[]`. That is a
+    different claim from a read that never happened, and the file must be able
+    to say which one it is."""
+    empty = build_ledger({"someone_elses_run": [(S.ST_DONE, None, 3)]},
+                         created_at=1.0, wal=True)     # created before start
+    tmp = Path(empty).parent
+    out, summ = str(tmp / "z.tsv"), str(tmp / "zv.txt")
+    rc, _log = run_main(empty, out, summ)              # no --run-id: none latches
+
+    rows = [l.rstrip("\n").split("\t")
+            for l in open(out).read().splitlines()[1:]]
+    cols = {c: i for i, c in enumerate(S.TSV_COLUMNS)}
+    i_aw = cols["active_workers_json"]
+
+    all_observed = all(r[cols["obs_status"]] == S.OBS_OBSERVED for r in rows)
+    all_empty = all(r[i_aw] == "[]" for r in rows)
+    zero_count = all(r[cols["compute_active"]] == "0" for r in rows)
+
+    check("S4-OBSERVED-ZERO-IS-A-REAL-EMPTY-ARRAY",
+          rows and all_observed and all_empty and zero_count,
+          f"{len(rows)} no-run-yet rows: obs_status=OBSERVED, "
+          f"active_workers_json='[]', compute_active=0 — an observed zero, "
+          f"distinguishable from the {S.OBS_UNOBSERVED} marker (rc={rc})")
+
+
+def s4_mutant_unconditional_serialization():
+    """MUTATION: serialize the set unconditionally instead of keying off
+    `obs_status`.
+
+    This is not a hypothetical mutant. `unobserved_row` really does seed
+    `active_workers: set()`, so the naive renderer emits `[]` on exactly the
+    samples where `[]` is false — a failed read presented as an observed
+    zero-worker instant.
+    """
+    g = S.unobserved_row(1000.0, "T+0s", "OperationalError:database is locked")
+    fixed = S.format_tsv_row(g, "runX", None).rstrip("\n").split("\t")
+    i_aw = S.TSV_COLUMNS.index("active_workers_json")
+
+    real = S.render_active_workers
+    try:
+        S.render_active_workers = lambda row: json.dumps(
+            sorted(row.get("active_workers") or ()), separators=(",", ":"))
+        mutant = S.format_tsv_row(g, "runX", None).rstrip("\n").split("\t")
+    finally:
+        S.render_active_workers = real
+
+    check("S4-MUTANT-UNCONDITIONAL-SERIALIZATION",
+          fixed[i_aw] == S.OBS_UNOBSERVED and mutant[i_aw] == "[]",
+          f"mutant renders a failed read as '[]' (an observed zero-worker "
+          f"instant); the obs_status-keyed renderer emits {S.OBS_UNOBSERVED}")
+
+
+def s4_invariant_is_enforced_at_the_render_site():
+    """The invariant must be ENFORCED, not merely documented: a row whose count
+    and identities disagree must not be able to reach the evidence file."""
+    bad = {"epoch": 1000.0, "ts_iso": "T+0s", "obs_status": S.OBS_OBSERVED,
+           "obs_reason": None, "active_workers": {"w0", "w1"},
+           "compute_active": 25, "queued_pending": 7, "claimed_rows": 25,
+           "staging": 0, "done": 0, "cancelled": 0, "failed": 0}
+    raised = ""
+    try:
+        S.format_tsv_row(bad, "runX", True)
+    except AssertionError as e:
+        raised = str(e)
+    # control: the same row with a consistent count renders fine
+    ok_row = dict(bad, compute_active=2, claimed_rows=2)
+    rendered = S.format_tsv_row(ok_row, "runX", True)
+
+    check("S4-INVARIANT-ENFORCED-AT-RENDER",
+          "disagree" in raised and "compute_active=25" in raised
+          and '["w0","w1"]' in rendered,
+          "2 identities vs compute_active=25 is refused at the render site; "
+          "the consistent control renders")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1025,6 +1223,14 @@ def main():
     print("\n-- self-describing evidence (R2 §4) --")
     f1_summary_is_self_describing()
     f2_exit_code_matches_the_legend()
+    print("\n-- S3 (R3): the combined saturation authority line --")
+    s3_authority_line_is_the_conjunction()
+    s3_mutant_or_instead_of_and()
+    print("\n-- S4 (R3): durable simultaneous worker identities --")
+    s4_identities_persist_and_gaps_are_not_empty()
+    s4_observed_zero_is_a_real_empty_array()
+    s4_invariant_is_enforced_at_the_render_site()
+    s4_mutant_unconditional_serialization()
     print("\n-- mutation --")
     m1_legacy_query_reds_g1()
 

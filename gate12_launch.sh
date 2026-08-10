@@ -61,6 +61,37 @@ print('cursor:', d.get_certified_cursor('java_lcg', test_both_modes=True))
   echo "--- DATASET POINTER ---"; ls -la daily3.json daily3-*.json 2>/dev/null | tail -3
 } | tee "$EVID"
 
+# ---------- 0.5. GPU FAIL-CLOSE GATE (Beta R3/P2) ----------
+# Gate 12 is a saturation claim about 24 rig GPUs. Attempt 1 logged a 0/8 GPU
+# reading and launched anyway, because the generic PreflightChecker reports GPU
+# findings as WARNINGS and is non-blocking BY DESIGN — correct for WATCHER, and
+# deliberately unchanged. This is a GATE-12 HARNESS RULE ONLY.
+#
+# It runs the already-certified truthful probe (preflight_check's
+# _build_gpu_probe_script / _parse_gpu_probe, reused rather than reimplemented)
+# against the three rigs and proceeds ONLY on OK at the full expected count on
+# all three. UNAVAILABLE and ERROR both REFUSE, and UNAVAILABLE is reported as
+# UNAVAILABLE — never as a count.
+#
+# PLACEMENT IS LOAD-BEARING: this is before the clean slate, before the sampler
+# is armed, and before any coordinator process is created. A refusal therefore
+# leaves the box exactly as it found it — nothing killed, no config moved, no
+# process spawned — so a refused attempt costs nothing and can be retried once
+# the rigs are actually up.
+#
+# ${PIPESTATUS[0]}, NOT the pipeline's status: `cmd | tee` exits with TEE's
+# status, which is 0 essentially always. Writing `if ! python3 ... | tee` would
+# have made this gate decorative — it would print REFUSED and launch anyway,
+# which is the "gate result ignored" failure mode, in the very script whose
+# attempt-1 defect was a GPU reading that stopped nothing.
+python3 -u scripts/gate12_gpu_gate.py 2>&1 | tee -a "$EVID"
+GPU_GATE_RC=${PIPESTATUS[0]}
+if [ "$GPU_GATE_RC" -ne 0 ]; then
+  echo "GATE-12 ABORTED BY THE GPU FAIL-CLOSE GATE (rc=$GPU_GATE_RC) — see $EVID" \
+    | tee -a "$EVID"
+  exit 1
+fi
+
 # ---------- 1. CLEAN SLATE ----------
 pkill -f "[w]atcher_agent"; pkill -f "[w]indow_optimizer"; pkill -f "[r]ange_miner_worker"
 for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
