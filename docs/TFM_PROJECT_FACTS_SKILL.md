@@ -5,10 +5,11 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v22, 2026-08-10. **D6.2 CERTIFIED `18a2419`.** S172-BP remediation committed
-`4b1aad6` (+ cover `42bdbb1`); Beta HOLD across three rulings — round-3 fix-forward
-(exact-envelope credit token + pre-decode barrier) in progress, **production-shape (gate 12)
-and Phase-7 soak NOT AUTHORIZED** until Beta clears the F1 mechanics.
+**Currency:** v23, 2026-08-10. **D6.2 CERTIFIED `18a2419`.** **Gate-12 attempt 2 RAN and FAILED**
+(stage 3→4 `worker_admission_timeout`, 23/25 — §2.31). Both amendments Beta required are now
+**CLOSED / CERTIFIED**: Defect B sampler all-window turnover `f216475`, Defect A transport-session
+recovery + §14 deadline enforcement `2532803`. **GATE-12 ATTEMPT 3 IS AUTHORIZED** from reviewed
+commit **`2532803`** (§2.33). **Phase-7 soak remains HELD** pending the attempt-3 result.
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -1573,7 +1574,10 @@ Insufficient: "25 connected" · "25 eventually used" · "32 eventually completed
 **Beta's standard, quotable:** *"A saturation verdict computed from an unknown number of missing
 samples is not evidence."*
 
-### 2.29 GATE-12 ATTEMPT 2 — AUTHORIZED SHAPE (not yet run)
+### 2.29 GATE-12 ATTEMPT 2 — THE SHAPE (RAN 2026-08-10; SEE §2.31 FOR THE RESULT)
+
+> **HISTORICAL + STILL-BINDING.** The shape below is the one attempt 2 ran and is **unchanged for
+> attempt 3** (Beta §17). The parameter traps are permanent. The *outcome* is §2.31.
 
 Beta chose **32 stripes** over the 25-stripe minimum deliberately: 25 fills the fleet once; **32
 fills it and leaves seven queued**, so the run exercises scheduler turnover, completion,
@@ -1581,7 +1585,7 @@ reassignment, staging and back-pressure **under full occupancy**.
 
 ```
 seed_start        = 0              (explicit; certified first-gap, empty {constant,variable} namespace)
-seed_count        = 2,147,483,648  (2^31) ⇒ 32 macro-stripes per stage
+max_seeds         = 2,147,483,648  (2^31) ⇒ 32 macro-stripes per stage   ← THE KEY IS max_seeds
 miner_stripe_size = 67,108,864     (2^26)
 worker_pool_size  = 25             ← the attempt-1 correction; manifest default 8 was never overridden
 test_both_modes   = true           prng_type = java_lcg
@@ -1624,6 +1628,12 @@ supplied the prefix collision) · **adversarial fixture generation** (needs no f
 **real execution.**
 
 **QUEUED WORK — adversarial fixture dimensions (Beta §8), to be briefed after Gate 12 settles.**
+*(PARTIALLY DISCHARGED: Defect A's A1–A8 suite generated the **25-worker × four-stage** shape with
+**disconnect/reconnect**, `W < N` at a stage boundary, duplicate-socket race and late re-join —
+the dimensions attempt 2 died on. The rest of the list is still queued. Attempt 2 is the **sixth**
+instance of the pattern, and the seventh was Alpha's own §14 budget: an enforcement gate that
+shared the implementation's assumption that `connect()` returns promptly, so it could never
+exercise a blocking connect. Beta caught it; A8-B2 now gates it.)*
 The dimension list must come from **outside the implementer**: `N = 2, 9, 10, 11, 19, 20, 31, 32` ·
 `W < N`, `W = N`, `W > N` · heterogeneous eligibility by stage · queue service time > lease ·
 **lexically overlapping identifiers** · late joins · disconnect/reconnect · partial staging ·
@@ -1633,6 +1643,169 @@ idempotent replay with contradictory input. **Every one of the five defects lies
 execution. If a delegated-execution amendment is ever proposed it needs Beta's eight-part contract —
 frozen hypothesis, hard resource bounds, non-certifying, no authority mutation, no self-healing
 relaunch. **Nothing changes unless Beta rules.**
+
+### 2.31 GATE-12 ATTEMPT 2 — RAN AND FAILED (`distributed_config_t1_abc63f71`, 2026-08-10)
+
+**Result: FAILED.** First authoritative terminal event **10:44:16**, `worker_admission_timeout` at
+the phase-4 admission boundary: *stage 4 expected 25 eligible workers; **23 admitted after 180.1 s***.
+
+**What completed (measured, ledger + coordinator summary):** stages 1, 2, 3 all **32/32 stripes**,
+each over the full `[0, 2^31)` domain = **6,442,450,944 seed-evaluations**, on **25 of a planned 26
+GPUs** (Zeus's second 3080Ti unprovisioned). Stage 4 **never assigned** — no phase-4 ledger row, no
+phase-4 `derived_bound` line. Survivors: java_lcg **0** · java_lcg_reverse **0** ·
+java_lcg_hybrid **44,331**. `staging_jobs_completed=3948`, `capacity_timeout_terminations=0`,
+`capacity_invariant_terminations=0`, `pause_events=0`.
+
+**Measured cluster throughput (this run, end-to-end incl. delivery + staging):** stage 1
+2^31 seeds in 546 s ≈ **3.93 M seeds/s**; stage 2 in 796 s ≈ **2.70 M seeds/s**. Hybrid is slower
+(half batch, double retention, 44k survivors to serialize). **Per-GPU rate is NOT measurable from
+this run** — worker logs are stdout capture only (three "Compiled kernel" lines, no timing). Do not
+divide the cluster figure by 25 and present it as per-card: the fleet is heterogeneous.
+
+**Exonerated by evidence, not assertion:** NOT hardware (8/8 GPUs post-run on all three rigs, zero
+`dmesg` faults, no GCVM_L2) · NOT F1/F2 (it fail-closed correctly and refused stage 4 on 23) · NOT
+staging/back-pressure (numbers above).
+
+**The fail-closed cascade worked end to end and is the model outcome:** admission timeout → trial
+aborted → `provenance_validated` stays false → `MinerIngressError` → Optuna trial fails → no
+`optimal_window_config.json` → WATCHER hard output-validation fails, confidence 0.00, human
+escalation. **The pipeline did not reinterpret three good stages as a successful four-stage trial.**
+
+**Beta's corrections to Alpha's forensic report — all three ratified against Alpha:**
+1. **"23 proves a connection-liveness gap, not a process death" is NOT ratified.** 23 proves only
+   that **two identities were absent from the live registered set**. It cannot distinguish TCP
+   failure / worker exit / coordinator close / remote OS kill.
+2. **"The worker is per-stage one-shot by design" is FALSE.** It is a **long-lived trial transport
+   session** that exits on a transport exception because it had **no reconnect path**. That
+   distinction killed the "relaunch the fleet per stage" remedy outright.
+3. **"The fleet behaviour is sound" was withdrawn.** The accurate claim is narrower: *the scheduler
+   achieved full 25-worker simultaneity **and** real queued-work turnover during at least the early
+   qualifying window.* Defect A is itself evidence the fleet transport was **not** sound.
+
+**§23 forensics — the initiating cause of the two lost sessions is UNRESOLVED, and no cause may be
+claimed.** Local artifacts are silent (zero coordinator WARN/ERROR 09:47:29→10:44:16 — which is
+*why* §15 observability was ordered); kernel ring empty; netconsole empty **but cannot distinguish
+"no event" from "not active"**; **rig-side worker logs are UNEXAMINED, not silent.** No TCP idle
+timeout is claimed. Beta accepted this disposition and required no further forensics.
+
+**The live miner ledger is `/home/michael/miner_staging/miner_ledger.db`** — the same-named file in
+the project root is **stale** and will answer run-scoped queries with other runs' history. Schema:
+`stripes(run_id, stripe_id, seed_start, seed_count, state, claimed_by, phase, family_name,
+survivors_total, …)`.
+
+### 2.32 THE TWO CERTIFIED AMENDMENTS — DEFECT B AND DEFECT A
+
+**DEFECT B — sampler all-qualifying-window turnover. CLOSED / CERTIFIED `f216475`.**
+`evaluate()` fed `_turnover` only the **single longest** qualifying window, a false negative whenever
+a shorter qualifying window holds real turnover. Now: `_window_turnover(window)` measures each
+window (step-wise arithmetic verbatim from the certified `_turnover`, and now also the single source
+of `windows_detail`, so census and verdict cannot drift); `_turnover(measurements)` aggregates
+**existentially** — `TURNOVER_SATISFIED = EXISTS qualifying window WHERE pending_drained > 0 OR
+transitions > 0`. **Widening the aggregation does NOT widen any measured interval** — each
+measurement stays inside one window, so an occupancy dip or an UNOBSERVED gap remains uncreditable.
+Witness = **earliest qualifying window by start epoch that shows turnover**, labelled; the longest
+window is demoted to `CONTEXT ONLY`. Criterion 1 untouched. Suite 49/49 (44 certified + **DB1–DB5**,
+renamed from Beta's B1–B5 to avoid shadowing the certified ESTAB B1–B7 — Beta **ratified** the
+rename and the additive `windows_detail` schema).
+
+**§20 FORENSIC FINDING (Beta-confirmed, NON-CERTIFYING):** re-run read-only against the preserved
+attempt-2 TSV (`sha256 4f69dba7…`), the corrected evaluator finds **real turnover in qualifying
+window 1** — 09:25:10/12/14 at `active=25`, `pending 7→6→3` (**drained 4**), `done 0→1→4`
+(**transitions 4**). **Attempt 2's banked `VERDICT 2: NOT SATISFIED` was an instrumentation false
+negative caused by longest-window aggregation, not a fact about the fleet.** It does **not** rescue
+attempt 2 and **carries no credit into attempt 3.**
+
+**DEFECT A — RANGE-MINER transport-session recovery. CLOSED / CERTIFIED `2532803`** (implementation
+`acd6f13`, §14 deadline revision `2532803`).
+
+*The defect:* `serve_forever` exited at ONE point for THREE causes, so a permitted worker that lost
+its session could never re-register. **A finding Beta ratified beyond the original diagnosis:**
+`_dispatch` sat **outside** the inner `try`, so the collapse was really **two** silent exits — an
+idle (recv) loss returned 0, a loss mid-result-stream (send) propagated an **uncaught traceback**.
+
+*The certified architecture:*
+- **§10 three-way state machine.** Discriminator is `_stop.is_set()` **at the moment the transport
+  exception is caught**: set ⇒ a `shutdown` frame or signal already decided; clear ⇒ genuine
+  transport loss, recover. `_stop_cause` is **first-writer-wins** so `finally: shutdown()` cannot
+  rewrite a signal into a generic stop.
+- **§11 NO STALE-WORK REPLAY.** Reconnect is **transport** recovery, never **assignment** recovery.
+  The worker returns **idle** and re-sends nothing. F1/F2 alone decides the abandoned assignment:
+  constant-phase loss terminal · hybrid first loss = the one certified retry on an alternate ·
+  hybrid second loss terminal.
+- **§12 one live socket per identity.** A duplicate racing the eviction is a **retryable
+  session-establishment condition** — back off, retry the same identity. Never force-replace.
+- **§13 frozen cohort remains authority.** `IDENTITY_FIELDS` is an **enumerated allowlist**
+  (worker_id, hostname, gpu_id, gpu_name, backend, vram_bytes, capabilities). **NOT
+  `dataclasses.asdict()` whole** — `RegisterMessage` carries a per-message `timestamp`, so a whole
+  compare fails closed on **every** reconnect and silently re-creates the no-reconnect defect in a
+  §13 costume. *(Alpha wrote the defective version; gate **A7's** red-first caught it.)*
+- **§14 bound, and its enforcement.** Budget is **positive-finite, cumulative across all episodes**
+  (a per-episode reset re-creates the immortal orphan under duplicate-rejection ping-pong), derived
+  from `DEFAULT_WORKER_ADMISSION_TIMEOUT` — **read, never redefined.** Enforcement (the R2
+  revision): post-backoff re-check before any new attempt · `connect(timeout=remaining)` passes the
+  deadline **into `socket.create_connection`** (previously absent, so a black-holed route blocked
+  past the clock and the budget was bookkeeping, not a bound) · REGISTER bounded by the residual ·
+  **`settimeout(None)` restores blocking BEFORE the session is served**, or the certified read loop
+  would misclassify ordinary silence as TRANSPORT_LOSS and loop an idle worker forever.
+- **§15 observability.** Worker-side session events (transition-only, no heartbeat noise) and
+  coordinator-side `WORKER_DISCONNECTED{worker_id, stage_idx, stage_assigned, identity_evicted,
+  eligible_count_after_drop}` / `WORKER_REGISTERED|RECONNECTED{worker_id, registration_generation,
+  eligible_count_after_register}`. **An unmeasurable eligible count is `UNOBSERVED`, never `0`** —
+  the S4 lesson carried into the coordinator. `_registration_generation` is a **record-keeping
+  counter only**; nothing reads it for eligibility.
+
+*Ratified judgement calls:* `close()` shuts down before closing (mirrors coordinator Defect-6 C3) ·
+the **send-side** exception surface deliberately excludes `ValueError` (an oversized frame is a
+payload-contract violation, not a dead socket) · cumulative-not-per-episode budget.
+
+**Rejected remedies, on the record:** switching Gate 12 to PWC / `use_persistent_workers=true`
+(much larger certification surface) · admitting **frozen identities** while disconnected (frozen
+cohort = *who MAY work*; live registration = *who CAN work now* — both are kept) · per-stage fleet
+relaunch (wrong lifecycle model) · widening `worker_admission_timeout` (waiting longer cannot repair
+a nonexistent recovery path).
+
+Suite **29/29** (26 + A8-B1/B2/B3). `A1/RED` restores the **verbatim** pre-fix `serve_forever` body
+and reds. **A8-B2's mutant survived its first run** — the verbatim copy resolved `socket` in the
+*test module's* globals and escaped the black-hole shim; fixed by rebinding globals to the module
+under test. A vacuous gate about an unenforced deadline, caught by the mutation discipline itself.
+
+### 2.33 GATE-12 ATTEMPT 3 — AUTHORIZED (from `2532803`)
+
+**Launch tree is `2532803`. Do NOT launch from a later unreviewed production-code commit.**
+Pre-launch mechanical check **already passed** (2026-08-10): HEAD `2532803`, clean tree, phase-4
+**63/63**. Beta: if that self-clear held, **no further Beta review is required** before launch.
+
+**Shape is unchanged from §2.29** — `max_seeds = 2147483648` remains the governing key, never
+`seed_count`; 32 macro-stripes per stage; four stages java_lcg fwd → rev → hybrid fwd → hybrid rev.
+
+**Pre-launch conditions (Beta §18):** HEAD `2532803` · phase-4 63/63 · GPU truth gate **8/8 on each
+of the three remote rigs** · frozen eligible cohort **25** · `worker_pool_size = 25`. **No automatic
+downsizing. A GPU-gate refusal is a refusal, not permission to launch with fewer devices.**
+
+**A reconnect during attempt 3 is NOT automatically a failure (Beta §19)** — it is now a certified
+recovery path. The evidence must show `WORKER_DISCONNECTED` → `WORKER_RECONNECTED` for the **same**
+worker_id with the frozen identity unchanged. A reconnect authorizes **no** replay and **no**
+alteration of F1/F2 semantics.
+
+**Completion authority (Beta §21) — all seven, IN THE SAME RUN, nothing composes across attempts:**
+truthful GPU preflight PASS · 25-worker frozen admission · `GATE-12 SATURATION VERDICT : SATISFIED`
+(both verdicts, via Defect B's corrected existential evaluator) · **all four stages complete** ·
+**D3.5 canonical publication succeeds** · S145 publication-bound coverage succeeds · **certified
+cursor == 2,147,483,648**. **A successful GPU scan alone is insufficient.**
+
+**Preserve separately for the mathematics (Beta §22):** constant-forward, constant-reverse,
+hybrid-forward, hybrid-reverse survivors, and the final **`|F_hybrid ∩ R_hybrid|`** intersection —
+the new result of interest. Attempt 2's `hybrid forward = 44,331` carries **no** authority forward.
+
+**Gate 22 — Beta REJECTED permanently allowlisting the Defect-A harness.** The detector reads
+`git status --porcelain`, so a **modified tracked** non-allowlisted `.py` trips it too — not only an
+untracked one. *(Alpha's own brief wrongly assumed "committed once ⇒ clears forever"; Claude Code
+corrected it.)* The answer is never to widen the allowlist: it self-clears on a clean committed tree.
+
+**Governance:** Beta records that the evidence threshold for revisiting the diagnostic-fleet
+proposal is now met (two production failures on dimensions no fixture covered). **That does NOT
+amend Rule 3.** A separate governance amendment may be submitted if Michael wants one; nothing
+changes unless Beta rules.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
