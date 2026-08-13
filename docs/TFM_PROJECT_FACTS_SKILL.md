@@ -5,11 +5,12 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v23, 2026-08-10. **D6.2 CERTIFIED `18a2419`.** **Gate-12 attempt 2 RAN and FAILED**
-(stage 3→4 `worker_admission_timeout`, 23/25 — §2.31). Both amendments Beta required are now
-**CLOSED / CERTIFIED**: Defect B sampler all-window turnover `f216475`, Defect A transport-session
-recovery + §14 deadline enforcement `2532803`. **GATE-12 ATTEMPT 3 IS AUTHORIZED** from reviewed
-commit **`2532803`** (§2.33). **Phase-7 soak remains HELD** pending the attempt-3 result.
+**Currency:** v24, 2026-08-11. **D6.2 CERTIFIED `18a2419`.** **Attempts 3 AND 4 both RAN and
+FAILED** — attempt 3 on a dirty-tree admission defect after completing all four stages (§2.34),
+attempt 4 on a stale loop-time compute-lease origin during stage 2 (§2.36). The **clean-tree
+admission repair is CLOSED / CERTIFIED and production-observed**, committed `213bfff` (§2.35).
+**F1 is NARROWLY REOPENED on the lease-origin invariant only**; the repair is implemented and
+awaiting Beta certification (§2.36). **Gate-12 attempt 5 and Phase-7 soak are both HELD.**
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -1769,7 +1770,7 @@ and reds. **A8-B2's mutant survived its first run** — the verbatim copy resolv
 *test module's* globals and escaped the black-hole shim; fixed by rebinding globals to the module
 under test. A vacuous gate about an unenforced deadline, caught by the mutation discipline itself.
 
-### 2.33 GATE-12 ATTEMPT 3 — AUTHORIZED (from `2532803`)
+### 2.33 GATE-12 ATTEMPT 3 — AUTHORIZED (from `2532803`) — SEE §2.34 FOR THE RESULT
 
 **Launch tree is `2532803`. Do NOT launch from a later unreviewed production-code commit.**
 Pre-launch mechanical check **already passed** (2026-08-10): HEAD `2532803`, clean tree, phase-4
@@ -1806,6 +1807,209 @@ corrected it.)* The answer is never to widen the allowlist: it self-clears on a 
 proposal is now met (two production failures on dimensions no fixture covered). **That does NOT
 amend Rule 3.** A separate governance amendment may be submitted if Michael wants one; nothing
 changes unless Beta rules.
+
+### 2.34 GATE-12 ATTEMPT 3 — RAN AND FAILED (`distributed_config_t1_d606edbe`, 2026-08-10)
+
+**The compute path worked end to end. Publication refused it.** Launched 17:28:31 from HEAD
+`3254a30` (docs-only descendant of the reviewed `2532803`; Beta ratified that as no production-code
+lineage violation). Terminal at 19:48:14.
+
+**Conditions 1–4 SATISFIED, and this is the run that proved RANGE-MINER:**
+
+- GPU preflight 8/8 × 3. **25-worker frozen admission held for the entire run** — ESTAB max=25
+  **min=25** across all 3,541 samples, **0 UNOBSERVED**.
+- `GATE-12 SATURATION VERDICT : SATISFIED`, exit 0. Peak 25 compute-active with 7 queued at
+  17:29:58; 78 satisfying samples, 10 qualifying windows.
+- **All four stages, 128/128 stripes, full `[0,2^31)`.**
+- **Zero disconnects, zero reconnects.** The stage 3→4 boundary that killed attempt 2 crossed
+  cleanly — Defect A held by *prevention*, so its recovery branch is **still unexercised in
+  production**.
+- **Defect B was decisive.** The turnover witness is **window 1** (3 samples); the *longest*
+  window shows `drained=0 transitions=0`. The pre-`f216475` longest-window evaluator would have
+  false-negatived a second time.
+
+**Terminal event:** `utils.run_finalizer.RunParameterError: repository_tree_clean is False`,
+`utils/run_finalizer.py:1592`, via `window_optimizer_integration_final.py:2983`. Step 1 exit 1.
+Certified cursor stayed `OPEN` / `covered_seed_count=0`.
+
+**Beta's root-cause ruling, and it corrected Alpha:** Alpha framed this as "a predicate
+disagreement, not a defect in the run." **REJECTED.** D3.5 did not discover a new reading of
+"clean" — it enforced the already-certified one (the D3.5 prerequisite says `git status
+--porcelain` empty; suite gate **F37** rejects `repository_tree_clean=False`). The defect was
+entirely **upstream**: launch admission dispatched two hours of fleet compute from a state
+publication was predetermined to reject. Classification: **PRE-LAUNCH CLEAN-TREE ADMISSION DEFECT**.
+
+**Mathematics (forensic only — NO certified authority, non-composable, per Beta §14):**
+trial `W22_O0_evening_S7-229_FT0.47_RT0.47`. Survivors: constant fwd **0**, constant rev **0**,
+hybrid fwd **774**, hybrid rev **6**, and `raw bidirectional candidates = 0` — the
+`|F_hybrid ∩ R_hybrid|` intersection is **zero**. `[S172-BP] summary`:
+`staging_jobs_completed=5999`, `staging_jobs_per_sec=0.717`, `pause_events=0`,
+`capacity_timeout_terminations=0`, `deferred_high_water=1565` vs `bound_in_force=2201`.
+
+**Attempt 3 remains FAILED and IMMUTABLE.** Beta refused "clean the tree now and finalize after
+the fact" — that would erase the condition the finalizer correctly detected. Evidence frozen and
+hash-verified at `/home/michael/gate12_attempt3_20260810_200824` (13/13); the three residue files
+preserved separately at `/home/michael/attempt3_residue_20260811` (3/3) before removal.
+
+**Second, separate defect found in this run — WATCHER FAILURE AUTHORITY (STILL OPEN).** After
+`Step 1 failed with code 1`, WATCHER reported `file_exists`, confidence **1.00**, `Step 1 PASSED`,
+`Triggering Step 2` — because `optimal_window_config.json` had been written *before* the finalizer
+raised. **An explicit subprocess/finalization failure must dominate file-existence heuristics.**
+Only `--end-step 1` contained it. **Required before Phase-7 autonomy.** Beta: not to be folded
+into the clean-tree repair. Attempt 4 did *not* reproduce it (no stale file existed) — that is
+non-reproduction, **not** closure.
+
+### 2.35 CLEAN-TREE ADMISSION REPAIR — CLOSED / CERTIFIED / PRODUCTION-OBSERVED (`213bfff`)
+
+**Two defects, one repair.** (1) `gate12_launch.sh:54` **printed** `git status --porcelain` into
+the evidence block and **never tested it** — it printed the reason the run would fail two hours
+before it failed. (2) The clean slate renamed `optimal_window_config.json` (ignored) to
+`optimal_window_config.json.pregate12_${STAMP}` — a name **no ignore rule matches** — so the
+harness dirtied the tree by its own hand, *after* admission and *before* dispatch. Beta caught (2);
+Alpha's brief had only (1). It never fired in attempt 3 (no config existed at launch) but *would*
+have fired on the next launch.
+
+**The invariant, binding:** ONE predicate → admission (clean) → **launch preparation must preserve
+it** → last pre-dispatch assertion → compute → same predicate at D3.5. No launch-harness operation
+may create a state D3.5 will reject.
+
+**As built:** `scripts/gate12_cleantree_gate.py` imports `_repository_state` **by identity** from
+`window_optimizer_integration_final` — the producer whose boolean the finalizer receives
+(`:2972 → :2992`), not a reimplementation, because a second implementation is a second predicate.
+`decide(clean)` is **unary** (AST- and behaviourally proven), so the entry listing structurally
+cannot influence the verdict; the listing is diagnostic-only. A producer exception →
+**UNAVAILABLE, never "clean"**. Rotation destination moved into `logs/`, ignored as a whole
+directory — **no filename exception anywhere**. D3.5, the producer and `.gitignore` are
+sha256-identical to HEAD.
+
+**Gates 31/31** (C1–C5 + C5A). Beta returned it twice, both for **provenance, not architecture**:
+**R1** — RED arms read `HEAD:gate12_launch.sh`, which self-invalidates the moment the repair is
+committed; now pinned to `PRE_REPAIR_COMMIT = 3254a306…` and refusing unless both old defect
+surfaces are present **in executable lines** (the probes strip comments first, because the repaired
+script quotes both surfaces verbatim in its own header comments and a raw-text probe would match
+it). **R2** — the C1 fixture was hard-coded while claiming bundle derivation; it now parses
+`git_status_porcelain.txt` and **verifies it against the digest the bundle's own `SHA256SUMS.txt`
+records for that path**. R3 proved by scratch clone at a post-repair HEAD: 31/31 with the pin,
+27/31 with a HEAD-relative mutant.
+
+**Production-observed in attempt 4:** admission PASS, GPU 8/8×3, **pre-dispatch assertion PASS**
+(first real firing), rotation landed in ignored `logs/`, tree clean at termination.
+
+**Do not weaken D3.5.** No runtime-residue allowlist, no `.gitignore` exception, no filename
+bypass, no weakening of `_repository_state()`. Any future proposal to redefine clean-tree
+semantics is a separate contract amendment with its own adversarial evidence.
+
+### 2.36 GATE-12 ATTEMPT 4 — RAN AND FAILED (`distributed_config_t1_c8939b64`, 2026-08-11)
+
+Launched 19:04:14 from `213bfff`, terminal 19:22:53 (~18 min), during **stage 2 / constant
+reverse**.
+
+**The error message pointed at the wrong subsystem.** Step 1 saw
+`miner.step1_ingress.MinerIngressError` — "no VALIDATED threshold provenance record",
+`validated: False`, with `requested`/`payload`/`effective` all agreeing at 0.31 / 0.45. **That is a
+secondary symptom.** `provenance_validated` starts False (`:6558`) and flips True only after
+`validate_threshold_provenance()` returns; the gate sits behind `if stage_idx >=
+len(workflow_stages)` (`:7014`), which stage 2 of 4 never reached. The record is written with
+`validated=provenance_validated` on **every** terminal path (`:7132-7134`). **D6 is EXONERATED —
+do not modify it.** `validated=False` was truthful and the refusal was correct fail-closed
+behaviour.
+
+**P3 was decidable, not inferential:** the validator **NEVER RAN** — zero hits for `threshold
+provenance violation`, no `ThresholdProvenanceError`, `terminal_class ≠ TC_THRESHOLD_PROVENANCE`,
+and the observed exception was `MinerIngressError` rather than the `raise primary` at `:7062`.
+
+**PRIMARY DEFECT — STALE LOOP-TIME COMPUTE LEASE ORIGIN.** First ERROR in the log (line 151,
+19:22:52.014, *preceding* the D6 traceback): `[F1/F2] TRIAL TERMINAL … class=compute_lease_expiry`,
+stripe `st1_s30`, worker `zeus-ubuntu-vm:gpu0`, attempt 0. `st1_s30`/`st1_s31` were claimed
+19:21:45.667–19:21:47.676 but both carry `lease_expires_at = 19:22:13.373838` — **identical to the
+microsecond**, i.e. one shared origin of `19:17:13.373838 + 300.0`. **The iteration's clock was
+272.3 s old; both leases were born with ~26 s of 300 s left**, roughly 91% of the budget already
+spent, and both produced zero shard rows. `schedule_pending_stripes()` documents that the lease
+starts at handoff but accepts a caller `now` (`:2984`, `:3024`) and stamps
+`now + compute_lease_timeout` at `claim_stripe` (`:3057-3059`); the serve loop captures
+`now = time.time()` once (`:6577`) and passes it down (`:6999`) without refreshing.
+
+**F1 status: NARROWLY REOPENED — lease-origin invariant ONLY.** Attempt 4 *reconfirmed*
+one-active-claim (held across all 517 samples), pending/backlog ownership, the expiry matrix, and
+**F2 terminal observability (CLOSED / CERTIFIED / production-observed** — class, stripe, worker and
+attempt all logged *and* durably persisted).
+
+**Beta prescribed the mechanism** (withdrawing "mechanism is free" after Alpha flagged the shared
+timestamp): production stops passing `now=` into `schedule_pending_stripes`;
+`claim_now = time.time() if now is None else now` is read **immediately before each
+`claim_stripe`**, not once at function entry, so the invariant holds literally even if the
+scheduler itself becomes slow. The injected-clock seam is retained for tests. **Do NOT** move or
+recapture the serve-loop `now`, change `fail_trial(now=…)`, admission arithmetic, expiry-sweep
+timing, or remove `now` generically from shared APIs.
+
+**Six-site audit (required, computed by AST from both sources):** five `fail_trial`
+terminal-timestamp paths **unmodified**; one lease seam **modified**. Beta's correction verified
+rather than trusted: `process_lease_expiry(run_id, eligible)` takes **two positional args and no
+`now`** — Alpha had wrongly listed it as coupled. **Stop-and-report was NOT triggered**, for a
+structural reason: the lease was the only site where a *stale* clock computes a *future* deadline
+that a *different, fresh* clock later evaluates. Every other consumer compares stale `now` against
+a **past** timestamp, so staleness can only make a check fire late, never early.
+
+**Repair status: implemented, 13/13 gates (L1–L7), AWAITING BETA CERTIFICATION. Not committed.**
+`miner/range_miner_coordinator.py` +286/−7, exactly three existing defs changed.
+
+**STILL UNKNOWN — the 4.5-minute serve-loop iteration.** No per-iteration timing existed and the
+log is empty across the interval; worker logs total 90 bytes each (two kernel compiles plus
+`SESSION_END`). **Not recoverable from attempt-4 artifacts.** Beta authorized non-behavioural
+instrumentation only; `loop_now_age_max` now measures exactly the quantity that was 272.3 s and is
+deliberately kept live **after** the repair so the delay cannot hide behind the fix. The fix makes
+the delay harmless, not invisible.
+
+**Worker fault — state the bound precisely.** *Transport/session fault ruled out; no
+worker-reported exception observed.* `zeus-ubuntu-vm_gpu0.log` shows `SESSION_END
+{"classification": "explicit_shutdown", "assignment_active_at_loss": false, "exc_class": null}` —
+a clean shutdown **after** the coordinator terminal. It does **not** reconstruct what s30/s31 did
+during their ~26 s leases, or whether they received the assignment at all: **UNAVAILABLE**. Alpha
+wrote the broader "worker fault ruled out" and Beta corrected it.
+
+**Independent corroboration of P1 from an unexamined surface:** all 24 rig GPU logs and the Zeus
+worker log compiled only `java_lcg` and `java_lcg_reverse` — **no hybrid kernels ever built**,
+consistent with stages 3/4 being planned, sized and cohort-frozen at 25 but **never created**
+(zero stripe rows, no `derived_bound phase=3/4`).
+
+**Also observed:** saturation SATISFIED again (517 samples, 0 UNOBSERVED) — production evidence,
+**not** composable into a Gate-12 PASS. Staging/backpressure exonerated (derived 6528/6528, no
+pauses, no capacity timeout, no invariant termination).
+
+**SEPARATE, OPEN, NOT AN ATTEMPT-5 BLOCKER — Optuna raw→canonical quantization.** Optuna sampled
+`forward_threshold=0.3057322123717199`, `reverse_threshold=0.4517505335090883`;
+`window_optimizer_bayesian.py:560-561` applies `round(…, 2)` at `WindowConfig` construction (the
+single-process path, which is what ran — **not** the `…integration_final.py` NP2 partition site,
+since `n_parallel=1`). `threshold_provenance["requested"]` is built from the durable trial context,
+i.e. **post-quantization**, so the record proves *canonical → payload → effective* and is
+**structurally silent on raw → canonical**; `validate_threshold_provenance` never compares the raw
+suggestion. **TPE therefore associates objective values with coordinates that were never
+executed** — which bears directly on the Optuna study-continuity question. Beta named three
+candidate remedies (discrete `step=0.01`; full precision end-to-end; record both
+`optuna_suggested` and `canonical_requested`) and ruled **"do not change this yet."** Unconnected
+to the attempt-4 failure.
+
+**Evidence frozen:** `/home/michael/gate12_attempt4_20260811_193426` (11/11) and
+`…_riglogs` (29/29).
+
+### 2.37 THE FOUR ATTEMPTS, AND WHAT THE PATTERN SAYS
+
+```
+Attempt 1  FAILED — bulk lease aging (scheduler/lease architecture)
+Attempt 2  FAILED — transport-session recovery gap (stage 3→4, 23/25)
+Attempt 3  FAILED — dirty-tree admission; ALL FOUR STAGES COMPLETED FIRST
+Attempt 4  FAILED — stale loop-time lease origin, during stage 2
+```
+
+Nothing has failed twice, and the failure keeps moving *later* then *earlier* in different
+subsystems — but **two of the four are lease defects** (aging, then stamping). Beta's L5 gate
+exists precisely so the attempt-4 repair cannot reintroduce attempt 1's bulk-claiming defect.
+
+**What is now proven about RANGE-MINER itself:** 25 GPUs simultaneously compute-active with work
+queued, real turnover under full occupancy, all four stages across the full `[0,2^31)` domain, no
+transport collapse, staging controlled with zero capacity terminations, no GCVM_L2 fault. **The
+compute path works.** Every failure since has been in the governance and lifecycle machinery
+around it.
 
 ## 3. SUPERSEDED — in repo, NOT current
 

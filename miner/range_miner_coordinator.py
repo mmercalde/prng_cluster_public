@@ -2510,6 +2510,202 @@ class StagingTask:
     node_config: Optional[NodeConfig] = None
 
 
+class ServeLoopTiming:
+    """[F1 LEASE-ORIGIN REPAIR — serve-loop instrumentation, Beta-AUTHORIZED
+    2026-08-11] Duration and high-water accounting for one `serve_trial` loop.
+
+    WHY IT EXISTS, AND WHAT IT IS NOT. Gate-12 attempt 4 shows a single serve-loop
+    iteration whose captured clock was **272.3 s** old by the time it reached the
+    scheduler, and the coordinator log is empty across the whole interval
+    (19:15:42.900 -> 19:22:52.014). The initiating cause of that delay is NOT
+    recoverable from any artifact the run produced — the worker logs are 90 bytes
+    each. This exists so the NEXT occurrence is diagnosable. It is emphatically
+    NOT a redesign of the scheduler, and it does not compensate for the delay: the
+    lease-origin defect is fixed at the boundary where a lease becomes
+    authoritative, which is a correctness question, and this is an observability
+    question that happens to share a symptom.
+
+    BEHAVIOUR MUST NOT CHANGE, so:
+      * every clock read is `time.perf_counter()` — MONOTONIC, and deliberately
+        NOT `time.time()`. It can never be mistaken for a lease origin, it cannot
+        be perturbed by (or perturb) a gate that controls the wall clock, and a
+        step of the system clock cannot manufacture a spurious high-water.
+        [R1.3, Beta 2026-08-12] THAT CLAIM IS ABOUT THE INSTRUMENT AS WIRED, not
+        only about this class. The first implementation computed the iteration's
+        clock age at the CALL SITE as `time.time() - now` and passed the number
+        in, so the instrument as a whole did read the wall clock and the gate —
+        which inspected only this class — could not see it. The age is now derived
+        from the monotonic mark this object already holds (`_last_top`), and the
+        loop's `now` survives ONLY as the wall-time LABEL (`loop_now_age_at`) that
+        lets a reader find the instant in the coordinator log. No production
+        wall-clock read exists anywhere for instrumentation.
+      * nothing here is read by any decision path. It accumulates and it prints.
+      * `stop()` and `summary()` cannot raise on a caller error — an instrument
+        that can kill a trial is worse than no instrument (the §4 Alpha guard Beta
+        approved for the back-pressure summary, applied to a second summary).
+
+    Following the `[S172-BP] summary` idiom (`log_staging_backpressure_summary`):
+    ONE structured, grep-stable terminal record per trial, carrying totals and
+    MAXIMA rather than a per-iteration log that would bury the signal it exists to
+    surface — at attempt 4's 0.1 s poll a per-iteration line is ~4,300 records per
+    stage."""
+
+    # The loop's own phases, in execution order. `iteration` is measured top-of-
+    # loop to top-of-loop — PLUS an explicit terminal close, see
+    # `close_current_iteration` — so it accounts for EVERY path through the body,
+    # including the `continue`s that skip the rest of it AND the final iteration,
+    # which by construction has no next top-of-loop to close it.
+    SEGMENTS = ("iteration", "accept", "drain", "msg", "deadline",
+                "stage_setup", "schedule", "dispatch", "expiry", "advance")
+    # [R1.2, Beta 2026-08-12] SEGMENTS THAT ARE MEASURED INSIDE ANOTHER SEGMENT.
+    # `msg` is timed inside `drain`, so subtracting both from the iteration total
+    # charged message-dispatch time TWICE and `unattributed_total` was not the
+    # "loop time inside no named segment" the record claims. Attribution now
+    # subtracts the TOP-LEVEL segments only; the nested totals are still reported,
+    # they are just not part of the residual arithmetic. Declared as data rather
+    # than hardcoded into `metrics()` so that adding a nested segment is a
+    # one-line, visible decision instead of a silent double-count.
+    NESTED_SEGMENTS = ("msg",)
+
+    def __init__(self) -> None:
+        self._t0 = time.perf_counter()
+        self._last_top: Optional[float] = None
+        self._last_top_wall: Optional[float] = None
+        self.iterations = 0
+        self.total: Dict[str, float] = {k: 0.0 for k in self.SEGMENTS}
+        self.count: Dict[str, int] = {k: 0 for k in self.SEGMENTS}
+        self.maximum: Dict[str, float] = {k: 0.0 for k in self.SEGMENTS}
+        # The wall-clock instant at which the worst iteration STARTED, so a future
+        # reader can jump straight to that point in the coordinator log rather
+        # than knowing only that a bad iteration happened somewhere.
+        self.max_iteration_at: Optional[float] = None
+        # THE DIAGNOSTIC THAT NAMES THE DEFECT'S PRECONDITION: how stale the
+        # iteration's shared `now` already was when the scheduler ran. This is the
+        # quantity that was 272.3 s in attempt 4. It stays observable AFTER the
+        # repair precisely so the underlying delay cannot hide behind the fix.
+        self.loop_now_age_max = 0.0
+        self.loop_now_age_at: Optional[float] = None
+        self.exit_seconds: Optional[float] = None
+
+    # -- measurement -------------------------------------------------------
+    def tick(self, wall_now: Optional[float] = None) -> None:
+        """Top of the loop. Closes out the previous iteration's wall time."""
+        mark = time.perf_counter()
+        if self._last_top is not None:
+            self._record("iteration", mark - self._last_top,
+                         at=self._last_top_wall)
+        self._last_top = mark
+        self._last_top_wall = wall_now
+        self.iterations += 1
+
+    def close_current_iteration(self) -> None:
+        """[R1.1, Beta 2026-08-12] CLOSE THE ITERATION THAT IS CURRENTLY OPEN.
+        Idempotent, and it is the whole reason the instrument can see the event it
+        was built for.
+
+        `tick()` records an iteration only when the NEXT one begins. On terminal
+        exit there is no next `tick()`, so the iteration that ITSELF ended the
+        trial — the exact class of event this exists to diagnose — was absent from
+        `iteration_total`, `iteration_max`, `max_iteration_at` and therefore from
+        `unattributed_total`. **Attempt 4's anomalous 272.3 s iteration WAS the
+        terminal iteration**: the instrumentation as first built would have missed
+        the event it was built for, and the gate covering it encoded the same
+        wrong expectation and turned green.
+
+        Called as the FIRST statement of `serve_trial`'s `finally`, before the exit
+        timer starts, so `iteration` covers the loop and `exit_seconds` covers the
+        teardown with neither overlapping the other. Idempotency is structural —
+        the open mark is cleared — so a second call records nothing and does not
+        even read the clock. A later `tick()` simply opens a new iteration."""
+        try:
+            if self._last_top is None:
+                return
+            self._record("iteration", time.perf_counter() - self._last_top,
+                         at=self._last_top_wall)
+            self._last_top = None
+            self._last_top_wall = None
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    @staticmethod
+    def start() -> float:
+        return time.perf_counter()
+
+    def stop(self, segment: str, started: float) -> None:
+        try:
+            self._record(segment, time.perf_counter() - started)
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def note_loop_now_age(self, wall_now: Optional[float] = None) -> None:
+        """How stale the iteration's shared `now` already was when the scheduler
+        ran — the quantity that was 272.3 s in attempt 4.
+
+        [R1.3, Beta 2026-08-12] THE AGE IS DERIVED HERE, FROM THE MONOTONIC MARK
+        THIS OBJECT ALREADY TOOK AT THE TOP OF THE ITERATION. The caller no longer
+        computes it, because the only way for a caller to compute it was
+        `time.time() - now`, which put a wall-clock read into production purely to
+        feed an instrument and made the monotonic-only claim false as wired. Since
+        `now = time.time()` is the first statement of the loop body and `tick()`
+        is the second, `perf_counter() - _last_top` measures the same interval,
+        monotonically, and cannot be moved by a system-clock step.
+
+        `wall_now` is the loop's `now` retained ONLY as a LABEL, so a reader can
+        jump to that instant in the coordinator log. It is never arithmetic."""
+        try:
+            if self._last_top is None:
+                return
+            age = time.perf_counter() - self._last_top
+            if age > self.loop_now_age_max:
+                self.loop_now_age_max = float(age)
+                self.loop_now_age_at = wall_now
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def _record(self, segment: str, seconds: float,
+                at: Optional[float] = None) -> None:
+        if segment not in self.total:
+            return
+        self.total[segment] += seconds
+        self.count[segment] += 1
+        if seconds > self.maximum[segment]:
+            self.maximum[segment] = seconds
+            if segment == "iteration":
+                self.max_iteration_at = at
+
+    # -- reporting ---------------------------------------------------------
+    def metrics(self) -> Dict[str, Any]:
+        elapsed = time.perf_counter() - self._t0
+        m: Dict[str, Any] = {
+            "loop_seconds": elapsed,
+            "iterations": self.iterations,
+            "loop_now_age_max": self.loop_now_age_max,
+            "loop_now_age_at": self.loop_now_age_at,
+            "max_iteration_at": self.max_iteration_at,
+            "exit_seconds": self.exit_seconds,
+        }
+        for seg in self.SEGMENTS:
+            m[f"{seg}_total"] = self.total[seg]
+            m[f"{seg}_max"] = self.maximum[seg]
+            m[f"{seg}_count"] = self.count[seg]
+        # Whatever the loop spent OUTSIDE every measured segment. A large residual
+        # is itself the finding: it says the delay is not in any phase this
+        # instrument names, which is a different investigation from a named phase
+        # being slow, and the two must not be confusable.
+        #
+        # [R1.2, Beta 2026-08-12] THE SUBTRACTION IS OVER NON-OVERLAPPING TOP-LEVEL
+        # SEGMENTS ONLY. `msg` is timed INSIDE `drain`; subtracting both charged
+        # message dispatch twice and drove the residual toward zero exactly when
+        # the loop was busiest with messages — i.e. it under-reported unexplained
+        # time in the case the instrument exists to detect. Nested totals remain
+        # reported (`msg_total`, `msg_max`, `msg_count`); they are simply not part
+        # of the residual, because a residual is only meaningful over a partition.
+        named = sum(self.total[s] for s in self.SEGMENTS
+                    if s != "iteration" and s not in self.NESTED_SEGMENTS)
+        m["unattributed_total"] = max(0.0, self.total["iteration"] - named)
+        return m
+
+
 # ---------------------------------------------------------------------------
 # Coordinator (Stage-1 core + Stage-2 identity + Stage-3 staging)
 # ---------------------------------------------------------------------------
@@ -2907,6 +3103,17 @@ class RangeMinerCoordinator:
         selector. A complete stripe id is not a legal value."""
         if not workers:
             raise ValueError("assign_stripes requires at least one worker")
+        # [F1 LEASE-ORIGIN REPAIR] The caller's `now` is preserved AS GIVEN before
+        # it is defaulted, because the two consumers below want different things
+        # from it. `now` (defaulted) timestamps the CREATION of the stripe rows,
+        # which is what `add_stripe` has always recorded and is unchanged.
+        # `injected_now` is the LEASE seam and is forwarded to the scheduler still
+        # None when production did not supply one, so the initial handoff stamps
+        # each lease from its own claim rather than from this method's entry —
+        # which is this method's entry plus however long the whole planned
+        # geometry took to insert (all 32 rows at the gate-12 shape). A test that
+        # injects a clock still gets that clock on both paths.
+        injected_now = now
         now = time.time() if now is None else now
         prefix = stripe_prefix or run_id
         macro = partition_macro_stripes(
@@ -2957,7 +3164,7 @@ class RangeMinerCoordinator:
         # this claims min(W, N) and leaves the rest as backlog.
         placed = self.schedule_pending_stripes(
             run_id, family_name, phase, workers,
-            stage_prefix=prefix, attempt=attempt, now=now)
+            stage_prefix=prefix, attempt=attempt, now=injected_now)
         by_id = {p["stripe_id"]: p for p in placed}
         for record in assignments:
             p = by_id.get(record["stripe_id"])
@@ -2999,9 +3206,40 @@ class RangeMinerCoordinator:
 
         This is the ONLY place in the coordinator that creates a compute lease,
         and that is the whole point of the amendment. Because a lease is stamped
-        `now + compute_lease_timeout` at the instant the stripe is handed to an
-        idle worker, the lease measures the worker's service of THAT stripe — not
-        how long the stripe waited in a queue the worker could not yet reach.
+        `claim_now + compute_lease_timeout` at the instant the stripe is handed to
+        an idle worker, the lease measures the worker's service of THAT stripe —
+        not how long the stripe waited in a queue the worker could not yet reach.
+
+        [F1 LEASE-ORIGIN REPAIR, Beta ruling 2026-08-11] `claim_now` IS READ
+        IMMEDIATELY BEFORE EACH `claim_stripe`, not once at entry to this method.
+        The pre-repair body resolved `now` once here and stamped every lease of
+        the pass from that one value, and the production maintenance caller handed
+        it the enclosing serve-loop iteration's timestamp — captured once per
+        iteration and never refreshed. In gate-12 attempt 4 that iteration's clock
+        was 272.3 s old by the time the scheduler ran, so `st1_s30`/`st1_s31` were
+        claimed at ~19:21:46 carrying `lease_expires_at = 19:22:13.373838`
+        (= 19:17:13.373838 + 300.0): **~26 s of a nominal 300 s lease, ~91% of the
+        budget consumed at birth.** Both produced zero shards and the constant-mode
+        matrix correctly failed the trial — on a lease that had never actually been
+        granted.
+
+        The governing property is therefore enforced at the only place that can
+        enforce it literally: *a newly claimed compute stripe receives its full
+        configured compute lease measured from the actual claim operation,
+        regardless of how old the enclosing serve-loop iteration is* — and it keeps
+        holding even if some future operation inside this scheduler becomes slow,
+        because the read is per-claim rather than per-pass. Two late stripes placed
+        in the same pass get two different origins, which is exactly what attempt
+        4's identical-to-the-microsecond pair of leases proves did not happen.
+
+        `now` REMAINS as the injected-clock seam for tests: passing an explicit
+        timestamp still yields deterministic lease arithmetic. PRODUCTION NEVER
+        PASSES IT — the maintenance call in `serve_trial` and the initial handoff
+        in `assign_stripes` both leave it None so every lease is stamped from its
+        own claim. Nothing else about the pass changes: the cohort filter, the
+        compute-idle filter, the not-the-prior-claimer rule and the one-active
+        invariant are all untouched, and `now` never had any other consumer inside
+        this method.
 
         Three filters, in order, and each is load-bearing:
           * FROZEN COHORT (§9) — `cohort_filter` is the same predicate initial
@@ -3021,7 +3259,6 @@ class RangeMinerCoordinator:
         caller never needs to know how many: `_dispatch_pending` sends assignments
         for whatever is in `claimed`, so an empty return simply means "no capacity
         freed this pass"."""
-        now = time.time() if now is None else now
         pending = self.ledger.pending_stripes(
             run_id, stage_prefix, exact_stripe_id=exact_stripe_id)
         if not pending:
@@ -3054,9 +3291,15 @@ class RangeMinerCoordinator:
             # rather than trusting a parameter that has travelled further.
             row_attempt = (int(row["current_attempt"])
                            if row["claimed_by"] is not None else int(attempt))
+            # [F1 LEASE-ORIGIN REPAIR] THE LEASE ORIGIN IS READ HERE, one line
+            # above the claim that consumes it, and nowhere else. Deliberately
+            # inside the loop: the invariant is per-lease, so it must survive a
+            # slow pass as well as a stale caller. `now is None` is the production
+            # shape; an explicit `now` is the test seam and is honoured verbatim.
+            claim_now = time.time() if now is None else now
             claimed = self.ledger.claim_stripe(
                 run_id, row["stripe_id"], pick.worker_id, row_attempt, expected,
-                now + self.config.compute_lease_timeout,
+                claim_now + self.config.compute_lease_timeout,
             )
             if not claimed:
                 # The only ways this returns False are a concurrent state change
@@ -4879,6 +5122,68 @@ class RangeMinerCoordinator:
             m["capacity_invariant_terminations"])
         return m
 
+    def log_serve_loop_timing_summary(
+        self, run_id: str, timing: Optional["ServeLoopTiming"],
+    ) -> Optional[Dict[str, Any]]:
+        """[F1 LEASE-ORIGIN REPAIR] The trial-terminal serve-loop timing record —
+        ONE structured, grep-stable `[S172-SL] summary` line, emitted for every
+        terminal state exactly like `[S172-BP] summary`.
+
+        `_max` is the number that matters: a 4.5-minute stall shows up as one
+        outlier iteration, and a mean over ~4,300 iterations would erase it.
+        `loop_now_age_max` is the age of the iteration's shared clock at the
+        scheduling pass — the direct measurement of what made attempt 4's leases
+        stale, kept live after the repair so a recurrence of the DELAY is still
+        visible even though it can no longer corrupt a lease. [R1.3] It is
+        measured monotonically inside `ServeLoopTiming`; `loop_now_age_at` is the
+        wall-clock LABEL for the same instant and is never arithmetic.
+        `unattributed` is the loop time inside no named segment — [R1.2] a
+        residual over the NON-OVERLAPPING top-level segments, with nested `msg`
+        (timed inside `drain`) excluded from the subtraction so dispatch time is
+        not charged twice. [R1.1] `iteration` includes the TERMINAL iteration,
+        closed in `serve_trial`'s `finally` before this record is built; without
+        that, an iteration that ends the trial is invisible here.
+
+        MUST NEVER RAISE (§4 Alpha guard, Beta-approved for the back-pressure
+        summary): this runs on the terminal path of every trial, including failing
+        ones, and an instrument that masks a primary terminal reason with its own
+        traceback is a defect of exactly the kind the F2 work removed."""
+        if timing is None:
+            return None
+        try:
+            m = timing.metrics()
+            logger.info(
+                "[S172-SL] summary run=%s loop_seconds=%.3f iterations=%d "
+                "iteration_max=%.3f iteration_max_at=%s loop_now_age_max=%.3f "
+                "loop_now_age_at=%s accept_max=%.3f drain_max=%.3f msg_max=%.3f "
+                "deadline_max=%.3f stage_setup_max=%.3f schedule_max=%.3f "
+                "dispatch_max=%.3f expiry_max=%.3f advance_max=%.3f "
+                "drain_total=%.3f msg_total=%.3f schedule_total=%.3f "
+                "dispatch_total=%.3f expiry_total=%.3f advance_total=%.3f "
+                "unattributed_total=%.3f exit_seconds=%s",
+                run_id, m["loop_seconds"], m["iterations"],
+                m["iteration_max"],
+                ("%.3f" % m["max_iteration_at"])
+                if m["max_iteration_at"] is not None else "n/a",
+                m["loop_now_age_max"],
+                ("%.3f" % m["loop_now_age_at"])
+                if m["loop_now_age_at"] is not None else "n/a",
+                m["accept_max"], m["drain_max"], m["msg_max"], m["deadline_max"],
+                m["stage_setup_max"], m["schedule_max"], m["dispatch_max"],
+                m["expiry_max"], m["advance_max"],
+                m["drain_total"], m["msg_total"], m["schedule_total"],
+                m["dispatch_total"], m["expiry_total"], m["advance_total"],
+                m["unattributed_total"],
+                ("%.3f" % m["exit_seconds"])
+                if m["exit_seconds"] is not None else "n/a")
+            return m
+        except Exception:                                        # noqa: BLE001
+            logger.exception(
+                "[S172-SL] serve-loop timing summary could not be emitted for run "
+                "%s; this is instrumentation only and the trial's own terminal "
+                "reason stands unchanged", run_id)
+            return None
+
     def _defer_locked(self, entry) -> bool:
         """Defect 1c (C4): bounded add to `_deferred` — both a COUNT cap and a
         retained-BYTES cap (staging_high_water_bytes). Returns False if adding
@@ -6572,9 +6877,14 @@ class RangeMinerCoordinator:
         def _stage_prefix(i):
             return f"{run_id}__st{i}"
 
+        # [F1 LEASE-ORIGIN REPAIR] Serve-loop instrumentation. Non-behavioural:
+        # monotonic clock only, no decision path reads it, and it is emitted once
+        # at trial terminal beside the `[S172-BP] summary` it is modelled on.
+        _sl = ServeLoopTiming()
         try:
             while not _terminal():
                 now = time.time()
+                _sl.tick(now)
                 if trial_timeout is not None and now - start > trial_timeout:
                     # Defect 5: terminal abort routed OFF the dispatch loop.
                     self.fail_trial(
@@ -6606,6 +6916,7 @@ class RangeMinerCoordinator:
                     continue
 
                 # --- accept new connections (no blocking read on the loop) ---
+                _t = _sl.start()
                 try:
                     readable, _, _ = select.select([listen_sock], [], [], poll)
                 except (OSError, ValueError):
@@ -6628,10 +6939,12 @@ class RangeMinerCoordinator:
                             name="miner-conn-reader", daemon=True)
                         reader_threads[csock] = th
                         th.start()
+                _sl.stop("accept", _t)
 
                 # --- drain complete frames from the bounded inbound queue ---
                 # [S172-BP §4] inbound-queue occupancy high-water, sampled at the
                 # moment of maximum backlog (before the drain).
+                _t = _sl.start()
                 self.note_inbound_occupancy(inbound.qsize())
                 drained = 0
                 while drained < 256:
@@ -6672,10 +6985,12 @@ class RangeMinerCoordinator:
                                 rawsock, delivered=True, disposition="conn_dropped")
                         continue   # connection already dropped (reaped/closed)
                     if msg.message_type == "register":
+                        _tm = _sl.start()
                         status = self._serve_register(
                             msg, rawsock, node_allowlist, fs_by_sock, worker_by_sock,
                             wconn_by_worker, fs_by_worker, registered,
                             eligible_fn=_eligible)
+                        _sl.stop("msg", _tm)
                         meta = conn_meta.get(rawsock)
                         if status == "ok":
                             if meta is not None:
@@ -6699,13 +7014,17 @@ class RangeMinerCoordinator:
                         # [S172-BP AMENDMENT F1-R] through the disposition-bounded
                         # seam: `_serve_dispatch` runs unchanged, and the ingress
                         # reservation is released only AFTER it returns.
+                        _tm = _sl.start()
                         self.dispatch_inbound_result(
                             msg, rawsock, run_id, worker_by_sock.get(rawsock),
                             wconn_by_worker, _eligible, credit_id)
+                        _sl.stop("msg", _tm)
+                _sl.stop("drain", _t)
 
                 # --- read deadline: drop unregistered connections that never
                 # completed a frame (silent or partial), so they cannot wedge the
                 # loop or hold the timeout hostage (Defect 6 C3) ---
+                _t = _sl.start()
                 for rawsock, meta in list(conn_meta.items()):
                     if meta["registered"]:
                         continue
@@ -6720,6 +7039,7 @@ class RangeMinerCoordinator:
                                         eligible_fn=_eligible)
                         conn_meta.pop(rawsock, None)
                         reader_threads.pop(rawsock, None)
+                _sl.stop("deadline", _t)
 
                 # --- staged assignment of the workflow (Defect 6 multi-family) ---
                 # [§4.3 ADMISSION LIVENESS REPAIR — Beta Ruling 1]
@@ -6882,6 +7202,7 @@ class RangeMinerCoordinator:
                                                 f"provenance: {_prov_exc}")))
                                 continue
                             retention_preflighted = True
+                        _t = _sl.start()
                         _stage_assignments = self.assign_stripes(
                             run_id, fam, ph, total_seeds, eligible,
                             stripe_prefix=_stage_prefix(stage_idx))
@@ -6968,6 +7289,7 @@ class RangeMinerCoordinator:
                                     terminal_class=TC_STAGING_SIZING_FAILURE,
                                     reason=_sizing_reason))
                             continue
+                        _sl.stop("stage_setup", _t)
                         stage_assigned = True
                     # ---- MAINTENANCE (unbounded, threshold-free) ---------------
                     # Everything below runs for an ASSIGNED stage regardless of the
@@ -6994,20 +7316,52 @@ class RangeMinerCoordinator:
                     # and paired with `claim_stripe`'s own terminal guard (§10):
                     # a trial that aborted earlier in this iteration cannot have
                     # cancelled rows re-armed here.
+                    # [F1 LEASE-ORIGIN REPAIR, Beta ruling 2026-08-11] `now=` IS
+                    # DELIBERATELY NOT PASSED. `now` is the enclosing iteration's
+                    # clock, captured once at the top of the loop and never
+                    # refreshed; injecting it here made every lease created on this
+                    # pass age with the iteration instead of starting at the
+                    # handoff. In attempt 4 that iteration was 272.3 s old when it
+                    # reached this line and the two stripes it placed were born
+                    # with ~26 s of a 300 s lease left. The scheduler now reads its
+                    # own clock immediately before each claim. The loop's `now` is
+                    # UNCHANGED and still serves its five non-lease consumers (the
+                    # serve timeout, the capacity timeout, the connection read
+                    # deadline, the admission window and the failure-record
+                    # timestamps) — none of which is a lease origin.
+                    # [F1 LEASE-ORIGIN REPAIR] The staleness of the shared loop
+                    # clock, measured AT the scheduling pass — the exact quantity
+                    # that was 272.3 s in attempt 4. Read-only, monotonic-free of
+                    # the lease path, and kept after the repair so the underlying
+                    # delay stays visible rather than being silently absorbed.
+                    # [R1.3] `now` is passed as the wall-time LABEL ONLY. The age
+                    # itself is derived inside the instrument from its own
+                    # monotonic mark: adding `time.time()` here put a production
+                    # wall-clock read in the loop solely to feed an instrument that
+                    # claims to be monotonic-only.
+                    _sl.note_loop_now_age(now)
+                    _t = _sl.start()
                     self.schedule_pending_stripes(
                         run_id, fam, ph, eligible,
-                        stage_prefix=_stage_prefix(stage_idx), now=now)
+                        stage_prefix=_stage_prefix(stage_idx))
+                    _sl.stop("schedule", _t)
+                    _t = _sl.start()
                     self._dispatch_pending(
                         run_id, fam, ph, fs_by_worker, dispatched, dataset_path,
                         dataset_sha256, window_size, sessions, offset, residues,
                         context.get("trial_number", -1),
                         trial_ctx["forward_threshold"],
                         trial_ctx["reverse_threshold"])
+                    _sl.stop("dispatch", _t)
+                    _t = _sl.start()
                     self.process_lease_expiry(run_id, eligible)
+                    _sl.stop("expiry", _t)
                     # advance to the next stage once THIS stage's stripes are done
+                    _t = _sl.start()
                     sp = _stage_prefix(stage_idx) + "_s"
                     stage_stripes = [s for s in self.ledger.all_stripes(run_id)
                                      if s["stripe_id"].startswith(sp)]
+                    _sl.stop("advance", _t)
                     if stage_stripes and all(s["state"] == ST_DONE for s in stage_stripes):
                         stage_idx += 1
                         stage_assigned = False
@@ -7066,6 +7420,20 @@ class RangeMinerCoordinator:
                             except TrialAborted:
                                 pass
         finally:
+            # [R1.1] CLOSE THE TERMINAL ITERATION FIRST — before the exit timer,
+            # before any teardown. The iteration that ends the trial has no next
+            # top-of-loop to close it, so without this the longest iteration a run
+            # ever had could be missing from `iteration_max`/`unattributed_total`
+            # precisely when it is the one that mattered (attempt 4's 272.3 s
+            # iteration WAS the terminal one). Idempotent and non-raising.
+            _sl.close_current_iteration()
+            # [F1 LEASE-ORIGIN REPAIR] LOOP EXIT is a measured segment too: the
+            # teardown below joins reader threads and drains BOTH executors with
+            # `wait=True`, so a slow terminal is a real and separately diagnosable
+            # condition rather than something a reader has to infer from the gap
+            # between the last loop record and the summary line. It starts AFTER
+            # the close above, so `iteration` and `exit_seconds` never overlap.
+            _exit_t0 = time.perf_counter()
             for wid, cfs in list(fs_by_worker.items()):
                 try:
                     cfs.send_msg(MinerShutdownMessage(worker_id=wid))
@@ -7118,6 +7486,7 @@ class RangeMinerCoordinator:
             if self.clear_any_resume_credit(disposition="trial_terminal"):
                 logger.info("[S172-BP] resume_credit_cleared_at_terminal run=%s",
                             run_id)
+            _sl.exit_seconds = time.perf_counter() - _exit_t0
 
         trial = self.ledger.get_trial(run_id)
         stripes = {s["stripe_id"]: {
@@ -7136,6 +7505,10 @@ class RangeMinerCoordinator:
         # terminal state (committed or aborted), and returned on the result so it
         # is observable on the run rather than only in the log.
         bp_metrics = self.log_staging_backpressure_summary(run_id)
+        # [F1 LEASE-ORIGIN REPAIR] The serve-loop timing record, emitted beside the
+        # back-pressure summary for every terminal state and returned on the result
+        # so it is observable on the run and not only in the log.
+        sl_metrics = self.log_serve_loop_timing_summary(run_id, _sl)
         return {
             "run_id": run_id,
             "state": trial["state"] if trial else "unknown",
@@ -7146,6 +7519,7 @@ class RangeMinerCoordinator:
             "bound_addr": self.bound_addr,
             "threshold_provenance": provenance,
             "staging_backpressure": bp_metrics,
+            "serve_loop_timing": sl_metrics,
         }
 
     def _write_threshold_provenance(self, provenance: Dict[str, Any]) -> Optional[str]:
