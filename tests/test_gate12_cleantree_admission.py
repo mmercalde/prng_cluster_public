@@ -827,6 +827,44 @@ def c5a_pregate12_name_is_not_ignored():
 # ──────────────────────────────────────────────────────────────────────────────
 
 def w_placement_precedes_everything():
+    """The clean-tree wall's placement, and nothing beyond it.
+
+    WHAT THIS ARM OWNS:
+
+        admission < GPU gate < parity gate < clean slate < config rotation
+                  < pre-dispatch clean-tree assertion
+
+        pre-dispatch assertion < fleet dispatch
+        pre-dispatch assertion < sampler creation
+        pre-dispatch assertion < coordinator creation
+        admission refusal exit  < clean slate
+
+    That is the one predicate evaluated four times — admission, then preparation
+    must preserve it, then the last pre-dispatch assertion, then compute, then
+    D3.5 — plus the fact that nothing which commits or mutates happens before the
+    pre-dispatch assertion clears.
+
+    WHAT IT DELIBERATELY DOES NOT OWN:
+
+        the relative order of fleet dispatch, sampler creation and coordinator
+        creation. Those three are asserted as a FAN out of the pre-dispatch
+        assertion and are never compared to one another. The two-phase attempt-6
+        architecture — fleet first and parked, then sentinel verification, then
+        the coordinator, then release — is owned by its own dedicated gates.
+
+    WHY (Beta, 2026-08-14). The previous shape was a single chain ending
+    `… < sampler < coordinator < fleet`, which asserted `coordinator < fleet`:
+    the PRE-attempt-6 order, encoded incidentally by writing a fan as a chain. It
+    went red when §8.4.3 inverted that order deliberately. Beta's diagnosis is
+    that the mistake was allowing an older test to claim more ordering territory
+    than the property it actually governed — a false constraint the moment the
+    architecture moves, and green right up until then.
+
+    RED WHEN: any link of the owned chain inverts, any named step disappears from
+    the launch script, one of the three fanned steps is moved ahead of the
+    pre-dispatch assertion, or the admission refusal stops exiting before the
+    clean slate.
+    """
     lines = LAUNCH.read_text().splitlines()
 
     def first(pred, code_only=True):
@@ -840,22 +878,44 @@ def w_placement_precedes_everything():
                 return i
         return 10 ** 6
 
+    MISSING = 10 ** 6            # `first`'s not-found sentinel
+
     adm = first(lambda l: "gate12_cleantree_gate.py --phase admission" in l)
     adm_exit = first(lambda l: "CLEAN-TREE ADMISSION GATE (rc=" in l)
     pre = first(lambda l: "gate12_cleantree_gate.py --phase pre-dispatch" in l)
     gpu = first(lambda l: "gate12_gpu_gate.py" in l)
+    parity = first(lambda l: "gate12_parity_gate.py" in l)
     slate = first(lambda l: l.startswith("pkill "))
     rot = first(lambda l: "GATE12-CONFIG-ROTATION BEGIN" in l, code_only=False)
     samp = first(lambda l: "gate12_concurrency_sampler.py" in l)
     watch = first(lambda l: "watcher_agent.py --clear-halt" in l)
     fleet = first(lambda l: "launch_fleet_manual.sh" in l)
 
+    # THE OWNED CHAIN — the clean-tree wall and everything that must precede the
+    # pre-dispatch assertion.
+    chain = [("admission", adm), ("gpu", gpu), ("parity", parity),
+             ("clean-slate", slate), ("rotation", rot), ("pre-dispatch", pre)]
+    chain_ok = all(chain[i][1] < chain[i + 1][1] for i in range(len(chain) - 1))
+
+    # THE FAN — each asserted against the pre-dispatch assertion ONLY. These
+    # three are never compared to one another; their relative order belongs to
+    # the two-phase architecture and its own gates.
+    fan = {"fleet": fleet, "sampler": samp, "coordinator": watch}
+    fan_ok = all(pre < v for v in fan.values())
+
+    # A needle that no longer matches must be RED, not silently ordered by the
+    # not-found sentinel.
+    found_ok = all(v != MISSING for _n, v in chain) and \
+        all(v != MISSING for v in fan.values()) and adm_exit != MISSING
+
     check("W-ADMISSION-FIRST",
-          adm < gpu < slate < rot < pre < samp < watch < fleet
-          and adm_exit < slate,
-          f"admission({adm}) < gpu({gpu}) < clean-slate({slate}) < "
-          f"rotation({rot}) < pre-dispatch({pre}) < sampler({samp}) < "
-          f"coordinator({watch}) < fleet({fleet})")
+          found_ok and chain_ok and fan_ok and adm_exit < slate,
+          " < ".join(f"{n}({v})" for n, v in chain)
+          + "; pre-dispatch precedes "
+          + " · ".join(f"{n}({v})" for n, v in sorted(fan.items(),
+                                                      key=lambda kv: kv[1]))
+          + f"; admission-refusal-exit({adm_exit}) < clean-slate({slate})"
+          + ("" if found_ok else "  [A NEEDLE DID NOT MATCH]"))
 
 
 def w_exit_codes_are_honoured():

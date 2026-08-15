@@ -75,6 +75,30 @@
 # the admission budget — which is how a slow probe sweep would otherwise
 # manufacture attempt 2's `worker_admission_timeout` with the fix in place.
 #
+# ⚠ WHAT THIS SCRIPT'S COMPLETION MEANS — corrected by the D6 integration repair
+# (Beta, 2026-08-14). THE OLD SHAPE ENDED THE DISPATCH LOOP WITH AN
+# ARGUMENT-LESS `wait`, WHICH WAITED FOR THE LOCAL WORKER TOO:
+#
+#     launch_fleet_manual.sh completion
+#         MEANS:         all worker DISPATCH operations have been dispositioned
+#         DOES NOT MEAN: all launched worker PROCESSES have exited
+#
+# The local worker is a `nohup … &` background job OF THIS SHELL, so a bare
+# `wait` blocked on it. With RUN_NONCE set that worker parks at the release
+# barrier, and the release is written by a LATER step of the caller — which this
+# script has not returned to. Measured in the D6 dry run of 2026-08-14: the final
+# dispatch echo printed, the completion block never did, and the local worker
+# logged `SESSION_RELEASE_ABORTED waited_s=595.299` when it was killed at ten
+# minutes. A synchronous caller cannot advance to sentinel verification and
+# release while waiting for the long-lived local worker whose continuation
+# depends on that later release.
+#
+# The wait set is therefore the SHORT-LIVED REMOTE DISPATCH JOBS ONLY. The local
+# worker's PID is recorded and deliberately EXCLUDED, and it must still be ALIVE
+# AND PARKED when this script returns — which is asserted below rather than
+# assumed. Release is NOT moved earlier: sentinel verification must still precede
+# it, and that ordering is the whole point of the two-phase launch.
+#
 # Without RUN_NONCE the script behaves exactly as before (no sentinel, no
 # barrier, coordinator-first), so an existing single-worker smoke run is
 # unaffected.
@@ -173,7 +197,18 @@ echo
 # does not read stdin, so the stub deleted the exact behaviour that fails.
 # Hence the DISPATCHED counter below: it counts real dispatches, so a truncated
 # run is LOUD instead of printing a confident total it never reached.
+#
+# [D6-REPAIR §B] TWO PID SETS, AND THE DIFFERENCE BETWEEN THEM IS THE FIX.
+# REMOTE_DISPATCH_PIDS holds the short-lived `ssh` jobs — those are dispatch
+# operations and waiting for them is what "dispatched" means. LOCAL_WORKER_PIDS
+# holds the long-lived local daemon, which is NOT a dispatch operation: it is the
+# work itself, and it is excluded from the wait set. Keeping them in one
+# undifferentiated job table is exactly what the bare `wait` did.
 DISPATCHED=0
+REMOTE_DISPATCH_PIDS=()
+REMOTE_DISPATCH_LABELS=()
+LOCAL_WORKER_PIDS=()
+LOCAL_WORKER_LABELS=()
 while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
     [ -n "${WHOST:-}" ] || continue
     N=0
@@ -196,7 +231,10 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
                 --gpu-id "$N" --device-index 0 \
                 $LOCAL_SENTINEL_ARGS \
                 > "$LOCAL_LOG" 2>&1 < /dev/null &
-            echo "[launch]   pid=$!"
+            LOCAL_PID=$!
+            echo "[launch]   pid=$LOCAL_PID"
+            LOCAL_WORKER_PIDS+=("$LOCAL_PID")
+            LOCAL_WORKER_LABELS+=("$WHOST:gpu$N")
         else
             echo "[launch] $WHOST ($ENDPOINT) gpu$N"
             REMOTE_SENTINEL_ARGS=""
@@ -218,6 +256,8 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
                    $REMOTE_SENTINEL_ARGS \
                    > /tmp/minerlogs/gpu$N.log 2>&1 & \
                  echo started" >/dev/null 2>&1 &
+            REMOTE_DISPATCH_PIDS+=("$!")
+            REMOTE_DISPATCH_LABELS+=("$WHOST($ENDPOINT):gpu$N")
         fi
         DISPATCHED=$((DISPATCHED + 1))
         N=$((N + 1))
@@ -225,8 +265,59 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
     done
 done 3<<< "$FLEET"
 
-wait
+# [D6-REPAIR §B] WAIT ONLY FOR THE REMOTE DISPATCH JOBS. An argument-less `wait`
+# here is what blocked the launcher on its own parked local worker for the whole
+# release deadline. Each PID is waited individually so its status is READ rather
+# than discarded: `wait` with arguments yields the job's exit status, and an ssh
+# that could not connect or authenticate is a dispatch that DID NOT LAND. The old
+# shape counted loop iterations, so `DISPATCHED == TOTAL` could be printed over a
+# fleet no ssh ever reached.
+REMOTE_FAILURES=0
+i=0
+while [ "$i" -lt "${#REMOTE_DISPATCH_PIDS[@]}" ]; do
+    wait "${REMOTE_DISPATCH_PIDS[$i]}"
+    RC=$?
+    if [ "$RC" -ne 0 ]; then
+        echo "[launch] *** DISPATCH FAILED: ${REMOTE_DISPATCH_LABELS[$i]} — ssh exited $RC ***" >&2
+        REMOTE_FAILURES=$((REMOTE_FAILURES + 1))
+    fi
+    i=$((i + 1))
+done
+echo "[launch] remote dispatch jobs dispositioned: ${#REMOTE_DISPATCH_PIDS[@]} (failures: $REMOTE_FAILURES)"
+
+# The local worker must be ALIVE AND PARKED when this script returns. It is the
+# one worker the caller cannot re-probe by ssh, and a dead local worker is the
+# silent single-worker loss: the sentinel gate would still find its sentinel in
+# the log it already wrote, the cohort would freeze at 25 and admit 24 — attempt
+# 2's `worker_admission_timeout` shape, manufactured by the launch harness rather
+# than by the fleet. So it is asserted, not assumed.
+LOCAL_DEAD=0
+i=0
+while [ "$i" -lt "${#LOCAL_WORKER_PIDS[@]}" ]; do
+    if kill -0 "${LOCAL_WORKER_PIDS[$i]}" 2>/dev/null; then
+        echo "[launch] local worker ${LOCAL_WORKER_LABELS[$i]} pid=${LOCAL_WORKER_PIDS[$i]} ALIVE (excluded from the wait set)"
+    else
+        echo "[launch] *** LOCAL WORKER NOT ALIVE: ${LOCAL_WORKER_LABELS[$i]} pid=${LOCAL_WORKER_PIDS[$i]} ***" >&2
+        LOCAL_DEAD=$((LOCAL_DEAD + 1))
+    fi
+    i=$((i + 1))
+done
+
 echo
+if [ "$REMOTE_FAILURES" -ne 0 ]; then
+    echo "[launch] *** $REMOTE_FAILURES of ${#REMOTE_DISPATCH_PIDS[@]} REMOTE DISPATCHES FAILED ***" >&2
+    echo "[launch] The fleet is INCOMPLETE. Admission will fall short and the run" >&2
+    echo "[launch] will fail at the worker_admission_timeout. Do not treat a" >&2
+    echo "[launch] partial fleet as a production-shape trial." >&2
+    exit 1
+fi
+if [ "$LOCAL_DEAD" -ne 0 ]; then
+    echo "[launch] *** $LOCAL_DEAD LOCAL WORKER(S) DIED DURING DISPATCH ***" >&2
+    echo "[launch] The local worker's log already carries its sentinel, so the" >&2
+    echo "[launch] sentinel gate would pass on a process that no longer exists." >&2
+    echo "[launch] Refusing here instead: see $LOGDIR for its log." >&2
+    exit 1
+fi
 if [ "$DISPATCHED" -ne "$TOTAL" ]; then
     echo "[launch] *** TRUNCATED DISPATCH: $DISPATCHED of $TOTAL ***" >&2
     echo "[launch] The fleet is INCOMPLETE. Admission will fall short and the run" >&2
@@ -235,6 +326,10 @@ if [ "$DISPATCHED" -ne "$TOTAL" ]; then
     exit 1
 fi
 echo "[launch] all $DISPATCHED of $TOTAL daemons dispatched"
+echo "[launch] DISPATCH COMPLETE — this means every dispatch operation has been"
+echo "[launch] dispositioned. It does NOT mean the worker processes have exited:"
+echo "[launch] the local worker is deliberately still running and is excluded"
+echo "[launch] from the wait set."
 echo "[launch] local worker logs : $LOGDIR"
 echo "[launch] rig worker logs   : /tmp/minerlogs/gpu<N>.log on each rig"
 echo "[launch] verify admission in the coordinator log before trusting this line —"

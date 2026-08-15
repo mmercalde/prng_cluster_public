@@ -268,11 +268,40 @@ def p2_count_mismatch_refuses():
 
 
 def p2_refusal_precedes_the_sampler():
-    """The refusal must abort BEFORE the sampler is armed and BEFORE any
-    coordinator process exists — asserted on the launch script's own text.
+    """The GPU gate must abort BEFORE anything that commits or mutates.
 
-    Checked structurally rather than by launching anything: the gate's line
-    number must precede the sampler's, the coordinator's and the fleet's.
+    WHAT THIS ARM OWNS — and only this:
+
+        the GPU gate precedes, INDIVIDUALLY, each of
+            the parity gate · the clean-slate mutation · fleet dispatch ·
+            sampler creation · coordinator creation
+        and its refusal terminates the script before the FIRST of them.
+
+    WHAT IT DELIBERATELY DOES NOT OWN:
+
+        the relative order of fleet dispatch, sampler creation and coordinator
+        creation. That is the two-phase attempt-6 architecture — fleet first and
+        parked, then sentinel verification, then the coordinator, then release —
+        and it has its own dedicated gates. Nothing here may constrain it.
+
+    WHY IT IS WRITTEN AS A FAN AND NOT A CHAIN (Beta, 2026-08-14). The previous
+    shape asserted one total order,
+    `gate < clean-slate < sampler < coordinator < fleet`, which smuggled in
+    `coordinator < fleet` — the PRE-attempt-6 order — purely as a side effect of
+    expressing the property as a chain. It was green for as long as that
+    incidental relationship happened to hold, and went red the moment §8.4.3
+    inverted it DELIBERATELY. Beta's diagnosis: the mistake was letting an older
+    test claim more ordering territory than the property it actually governed.
+    An arm that asserts a total order when it owns one relationship is a false
+    constraint waiting for the architecture to move — and a green one until then.
+
+    (The arm's NAME still says "sampler" while the property is broader. The name
+    is deliberately left alone: this R1 is scoped to the assertion, and renaming
+    it would orphan two committed documents that cite it.)
+
+    RED WHEN: the GPU gate is moved after any committing step, or any of those
+    steps disappears from the script, or the refusal stops terminating before the
+    first of them.
     """
     src = (REPO / "gate12_launch.sh").read_text().splitlines()
 
@@ -283,21 +312,34 @@ def p2_refusal_precedes_the_sampler():
         return None
 
     gate = line_of("scripts/gate12_gpu_gate.py")
-    sampler = line_of("scripts/gate12_concurrency_sampler.py")
-    watcher = line_of("watcher_agent.py")
-    fleet = line_of("launch_fleet_manual.sh")
-    cleanslate = line_of("pkill -f")
+    # Each is asserted against the gate INDEPENDENTLY. They are never compared
+    # to one another.
+    successors = {
+        "parity gate": line_of("scripts/gate12_parity_gate.py"),
+        "clean-slate": line_of("pkill -f"),
+        "fleet": line_of("launch_fleet_manual.sh"),
+        "sampler": line_of("scripts/gate12_concurrency_sampler.py"),
+        "coordinator": line_of("watcher_agent.py"),
+    }
 
-    ordered = (gate is not None and sampler is not None and watcher is not None
-               and fleet is not None
-               and gate < cleanslate < sampler < watcher < fleet)
-    # and the refusal must actually terminate the script
-    aborts = any("exit 1" in l for l in src[gate:sampler])
+    absent = sorted(k for k, v in successors.items() if v is None)
+    not_after = sorted(k for k, v in successors.items()
+                       if v is not None and gate is not None and v <= gate)
+    first = (min(v for v in successors.values() if v is not None)
+             if not absent else None)
+    # The refusal must terminate the script before the FIRST committing step,
+    # not merely somewhere before the sampler.
+    aborts = (gate is not None and first is not None
+              and any("exit 1" in l for l in src[gate:first]))
 
     check("P2-REFUSAL-PRECEDES-SAMPLER",
-          ordered and aborts,
-          f"gate@{gate} < clean-slate@{cleanslate} < sampler@{sampler} < "
-          f"coordinator@{watcher} < fleet@{fleet}, and refusal exits")
+          gate is not None and not absent and not not_after and aborts,
+          f"gpu-gate@{gate} precedes "
+          + " · ".join(f"{k}@{v}" for k, v in sorted(successors.items(),
+                                                     key=lambda kv: (kv[1] is None, kv[1])))
+          + f"; refusal exits before the first of them (@{first})"
+          + (f"; ABSENT={absent}" if absent else "")
+          + (f"; NOT-AFTER-GATE={not_after}" if not_after else ""))
 
 
 def p2_launch_script_honours_the_exit_code():

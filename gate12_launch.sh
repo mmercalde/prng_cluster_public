@@ -169,6 +169,36 @@ if [ "$GPU_GATE_RC" -ne 0 ]; then
   exit 1
 fi
 
+# ---------- 0.6. RIG CODE-PARITY GATE (Beta 2026-08-14, D6 integration repair) ----------
+# The GPU gate proves the CARDS. Nothing proved the CODE — and on 2026-08-14 the
+# D6 parked-fleet dry run dispatched 25 workers into three rigs carrying a
+# `miner/range_miner_worker.py` last deployed 2026-08-02: 24 died at argparse,
+# having no attempt-6 sentinel, no Defect A recovery and no session-event
+# emitter. The fleet had been at that vintage through attempts 3, 4 and 5, and no
+# gate anywhere would have said so.
+#
+# It compares the DEPLOYED BYTES on every rig against full 64-hex SHA256 values
+# derived from this tree at run time. Acceptance authority is CONTENT IDENTITY,
+# never Git identity: two of the rigs have no git repository at all, the third's
+# worktree does not describe its deployed bytes, and the deployment is provably
+# mixed-vintage. The local commit is recorded as context and is not an input.
+#
+# PLACEMENT IS LOAD-BEARING and matches the two gates above: before the clean
+# slate, before the sampler is armed, before any coordinator process exists, and
+# BEFORE WORKER DISPATCH. A refusal leaves the box exactly as it found it.
+#
+# ${PIPESTATUS[0]}, NOT the pipeline's status — same rule, same reason.
+PARITY_EVID=logs/gate12_${STAMP}_source_digests.json
+python3 -u scripts/gate12_parity_gate.py --evidence-json "$PARITY_EVID" 2>&1 | tee -a "$EVID"
+PARITY_RC=${PIPESTATUS[0]}
+if [ "$PARITY_RC" -ne 0 ]; then
+  echo "GATE-12 ABORTED BY THE RIG CODE-PARITY GATE (rc=$PARITY_RC) — see $EVID" \
+    | tee -a "$EVID"
+  echo "source-digest evidence: $PARITY_EVID" | tee -a "$EVID"
+  exit 1
+fi
+echo "source-digest evidence bundle: $PARITY_EVID" | tee -a "$EVID"
+
 # ---------- 1. CLEAN SLATE ----------
 pkill -f "[w]atcher_agent"; pkill -f "[w]indow_optimizer"; pkill -f "[r]ange_miner_worker"
 for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
