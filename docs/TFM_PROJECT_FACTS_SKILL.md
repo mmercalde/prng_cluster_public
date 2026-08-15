@@ -5,12 +5,14 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v24, 2026-08-11. **D6.2 CERTIFIED `18a2419`.** **Attempts 3 AND 4 both RAN and
-FAILED** — attempt 3 on a dirty-tree admission defect after completing all four stages (§2.34),
-attempt 4 on a stale loop-time compute-lease origin during stage 2 (§2.36). The **clean-tree
-admission repair is CLOSED / CERTIFIED and production-observed**, committed `213bfff` (§2.35).
-**F1 is NARROWLY REOPENED on the lease-origin invariant only**; the repair is implemented and
-awaiting Beta certification (§2.36). **Gate-12 attempt 5 and Phase-7 soak are both HELD.**
+**Currency:** v25, 2026-08-14. **D6.2 CERTIFIED `18a2419`.** **Attempts 3, 4 AND 5 all RAN and
+FAILED** — attempt 3 dirty-tree admission (§2.34), attempt 4 stale lease origin (§2.36), attempt 5
+stage-3→4 `worker_admission_timeout` 23/25 (§2.38). Three repairs are CLOSED / CERTIFIED: clean-tree
+admission `213bfff` (§2.35), F1 lease-origin + serve-loop instrumentation `2b0d2dc` (§2.36),
+attempt-6 remediation `69ff222` (§2.40) and the D6 integration repair `dd03f1d` (§2.42).
+**§2.41 IS THE MOST IMPORTANT NEW SECTION: the rigs were running mixed-vintage stale code and
+several previously-recorded facts are WITHDRAWN.** Gate-12 attempt 6 is HELD until the parked-fleet
+D6 dry run passes; Phase 7 remains HELD.
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -1688,6 +1690,10 @@ claimed.** Local artifacts are silent (zero coordinator WARN/ERROR 09:47:29→10
 *why* §15 observability was ordered); kernel ring empty; netconsole empty **but cannot distinguish
 "no event" from "not active"**; **rig-side worker logs are UNEXAMINED, not silent.** No TCP idle
 timeout is claimed. Beta accepted this disposition and required no further forensics.
+**[v25 UPDATE — see §2.41]** The rig-log silence in attempts 4/5 now has a **STRONGLY SUPPORTED /
+PRESUMPTIVE** cause: the deployed worker contained no session emitter at all. *"The logging channel
+itself was broken"* is **no longer the leading explanation**. The exact historical rig source bytes
+remain **NOT PROVEN** — they were never captured — so this is presumptive, not proven.
 
 **The live miner ledger is `/home/michael/miner_staging/miner_ledger.db`** — the same-named file in
 the project root is **stale** and will answer run-scoped queries with other runs' history. Schema:
@@ -1822,8 +1828,11 @@ lineage violation). Terminal at 19:48:14.
   17:29:58; 78 satisfying samples, 10 qualifying windows.
 - **All four stages, 128/128 stripes, full `[0,2^31)`.**
 - **Zero disconnects, zero reconnects.** The stage 3→4 boundary that killed attempt 2 crossed
-  cleanly — Defect A held by *prevention*, so its recovery branch is **still unexercised in
-  production**.
+  cleanly. **[v25 CORRECTION — §2.41]** This was originally recorded as "Defect A held by
+  *prevention*." **WITHDRAWN.** The rigs had **no Defect-A recovery code deployed at all**, so
+  §19 reconnect-crediting was **unsatisfiable by construction**. A clean run is evidence that
+  reconnect **was not needed**, NOT that it works. Defect A's 29/29 VM101 certification stands;
+  its **fleet deployment was never demonstrated**.
 - **Defect B was decisive.** The turnover witness is **window 1** (3 samples); the *longest*
   window shows `drained=0 transitions=0`. The pre-`f216475` longest-window evaluator would have
   false-negatived a second time.
@@ -1992,24 +2001,264 @@ to the attempt-4 failure.
 **Evidence frozen:** `/home/michael/gate12_attempt4_20260811_193426` (11/11) and
 `…_riglogs` (29/29).
 
-### 2.37 THE FOUR ATTEMPTS, AND WHAT THE PATTERN SAYS
+### 2.37 THE FIVE ATTEMPTS, AND WHAT THE PATTERN SAYS
 
 ```
 Attempt 1  FAILED — bulk lease aging (scheduler/lease architecture)
 Attempt 2  FAILED — transport-session recovery gap (stage 3→4, 23/25)
 Attempt 3  FAILED — dirty-tree admission; ALL FOUR STAGES COMPLETED FIRST
 Attempt 4  FAILED — stale loop-time lease origin, during stage 2
+Attempt 5  FAILED — worker_admission_timeout 23/25 at stage 3→4; drain
+                    monopolization and reader-exit provenance collapse exposed
+D6 dry run STOPPED AT STEP 4 — rigs running mixed-vintage stale code (§2.41)
 ```
 
-Nothing has failed twice, and the failure keeps moving *later* then *earlier* in different
-subsystems — but **two of the four are lease defects** (aging, then stamping). Beta's L5 gate
-exists precisely so the attempt-4 repair cannot reintroduce attempt 1's bulk-claiming defect.
+Nothing has failed twice, and the failure keeps moving through different subsystems — but **two of
+the five are lease defects** (aging, then stamping). Beta's L5 gate exists precisely so the
+attempt-4 repair cannot reintroduce attempt 1's bulk-claiming defect.
 
-**What is now proven about RANGE-MINER itself:** 25 GPUs simultaneously compute-active with work
+**What is proven about RANGE-MINER's compute path:** 25 GPUs simultaneously compute-active with work
 queued, real turnover under full occupancy, all four stages across the full `[0,2^31)` domain, no
 transport collapse, staging controlled with zero capacity terminations, no GCVM_L2 fault. **The
-compute path works.** Every failure since has been in the governance and lifecycle machinery
-around it.
+compute path works.** Every failure since has been in the governance, lifecycle and **deployment**
+machinery around it.
+
+**[v25] And the deployment half was never checked at all** until the D6 dry run — see §2.41 and the
+meta-lesson in §2.44. Attempts 3/4/5 ran against a rig binary that predates several certified
+repairs, which does not invalidate their kernel results but does narrow what they are evidence *of*.
+
+### 2.38 GATE-12 ATTEMPT 5 — RAN AND FAILED (`distributed_config_t1_7e0d020b`, 2026-08-12)
+
+Launched 17:38:44 from `2b0d2dc`, terminal 18:59:53. **All three prelaunch gates passed** — clean-tree
+admission, GPU 8/8×3, and the **pre-dispatch assertion in its first production firing**.
+
+**Terminal:** `worker_admission_timeout` — *"stage 3 (family 'java_lcg_hybrid_reverse', phase 4)
+expected 25 eligible worker(s); 23 admitted after 180.0s."* Same signature as attempt 2. Phases 1–3
+completed 32 stripes each; phase 3 reported **276,439** survivors. Trial
+`W12_O49_S10-55_FT0.46_RT0.47`.
+
+**F1 lease-origin held** — no `compute_lease_expiry` anywhere in the run.
+
+**The instrumentation built two days earlier worked on first use.** `[S172-SL] summary`:
+`loop_seconds=4856.592 iterations=12300 iteration_max=940.971 drain_max=940.856
+loop_now_age_max=940.957 drain_total=3527.128 msg_total=2355.951 msg_max=5.974
+unattributed_total=15.388`. **A single iteration lasted 15 min 40.971 s, of which 940.856 s was
+inbound drain**; everything outside drain accounts for ~0.115 s of it.
+
+`msg` is nested inside `drain` (R1.2), so `msg_total` vs `drain_total` means two-thirds of drain time
+was per-message handling and **no single message blocked** — a cumulative monopolization shape, not
+one pathological message.
+
+**Forensic P0–P3 (frozen bundle `/home/michael/gate12_attempt5_20260812_190715`):**
+
+- **P0** — the two missing identities, named from the record: `rrig6600c:gpu2` and `rrig6600b:gpu3`,
+  `WORKER_DISCONNECTED` at 18:27:10.537/.539, stepping eligible 25→24→23.
+- **P2** — the stalled iteration ran **18:11:28.109 → 18:27:09.080** (START semantics confirmed from
+  source). It does **NOT** overlap the admission window — it precedes it by 29 min 44 s — but its
+  **end is 1.46 s before the disconnects**. `940-s drain starved phase-4 admission: REFUTED.` What is
+  confirmed: the drain **delayed when the serve loop could observe reader termination**.
+- **P3** — the discriminating measurement is ESTAB, sampled every 2 s independently of the stalled
+  loop: 2420/2420 OBSERVED, no gaps. Both sockets **ESTABLISHED until 18:27:09.113 and gone by
+  18:27:11.122**, never passing through 24, with `_drop_conn` logged inside that interval.
+  **Alpha wrote "the loss was coordinator-initiated on healthy sockets; worker death, network
+  partition and peer-initiated close are ruled out." Beta REJECTED that as an overclaim** — there is a
+  ~1.4 s gap between the last ESTAB sample and `_drop_conn` in which a `ConnectionError`, `OSError` or
+  decode failure is not excluded. The certified finding: **the coordinator performed the final close
+  and eviction; the antecedent cause is UNRESOLVED.**
+- **P1** — rig-side session history **UNAVAILABLE**. All 24 rig logs byte-identical, stopped at
+  18:02:12, zero session events. Buffering was **refuted by a positive control**, not assumed.
+
+**THE ATTEMPT-5 INITIATING READER-EXIT CAUSE REMAINS UNRESOLVED** and must stay labelled unknown
+until a future run reports it directly.
+
+### 2.39 THE TWO DEFECTS ATTEMPT 5 EXPOSED
+
+**SERVE-LOOP DRAIN FAIRNESS / MONOPOLIZATION — CONFIRMED.** `while drained < 256` is a **count**
+bound, not a **latency** bound. One drain owned the loop for 940.856 s while the control plane —
+deadline handling, stage/admission maintenance, `schedule_pending_stripes`, dispatch, lease expiry,
+stage advancement — could not run.
+
+**READER-EXIT CAUSE PROVENANCE COLLAPSE — CONFIRMED.** `_conn_reader_loop` had **nine** semantically
+distinct exits all funnelling into one bare `("eof", rawsock, None, None)` with **no reason field and
+no log line**. The next layer could say *worker X disappeared* but never *why reader X stopped*. Same
+architectural class as the earlier F2 failures: causal information destroyed before the authoritative
+observer receives it.
+
+**A structural hazard found during design, worse than either:** `except _queue.Full: break` fires
+*because* the queue is at maxsize — then the reader tries to put the eof on **that same full queue**
+with a shorter timeout and swallows the failure. For a registered connection nothing reaps it: reader
+gone, socket open, worker still counted eligible. **Queue saturation could masquerade not just as
+transport failure but as nothing at all.**
+
+### 2.40 ATTEMPT-6 REMEDIATION — CERTIFIED, committed `69ff222`
+
+Three design cycles (R1/R2/R3) and two implementation cycles (R1/R2) before certification. Gates
+**78/78**, ten operative gates, four pinned RED arms, seven mutants.
+
+**Part A — reader-exit provenance.** Ten reason constants with `READER_EXIT_UNCLASSIFIED` as the
+fail-closed default; `ReaderExit` + `ConnState` carrying a **run-scoped `connection_id` (never
+`fileno()`/`id()`** — both are reused in a long process); the reasoned EOF **stays on the same inbound
+FIFO** with bounded retry (a separate control queue was **rejected**: it could reap a connection ahead
+of envelopes that same reader delivered, hitting the `rawsock not in fs_by_sock` discard and
+destroying work the F1-R credit machinery exists to preserve); the silent `timeout=0.5; except: pass`
+swallow removed; `_drop_conn` emits **`CONNECTION_CLOSE_INTENT` as its first statement, bound or
+not**.
+
+**Three orthogonal facts, never fused, no causation claimed:**
+```
+CONNECTION_CLOSE_INTENT  = coordinator decision
+READER_EXIT              = reader observation
+WORKER_DISCONNECTED      = bound-worker identity eviction
+```
+Any subset may exist honestly depending on chronology. `_drop_conn` mutates identity maps and emits
+`WORKER_DISCONNECTED` **before** `shutdown()`, so a coordinator-originated drop carries
+`reader_exit_reason=UNOBSERVED` — a later reader event **cannot retroactively join an already-emitted
+record**.
+
+**Persistent ingress saturation is a whole-trial infrastructure terminal** (`TC_INBOUND_SATURATION_TIMEOUT`)
+over a SimpleQueue emergency channel — **no worker is ever shed** for a coordinator capacity problem.
+`S` is **cumulative per connection** and charged **only** from the two real `_queue.Full` paths;
+successful puts never reset it. Register-disposition waits, staging pause, the pre-decode barrier and
+admission-queue residence are **NOT** ingress saturation: *"did this wait happen because a bounded
+queue refused the item?"* Only `inbound` is bounded, so the false terminal is closed **by
+construction**.
+
+**Part B — control-plane fairness.** Monotonic drain deadline `D` with 256 retained as secondary
+guard; accept-poll folded into the same budget; **the first `get()` clamped by the remaining budget**
+(with `D=0.05`/`poll=0.10` the drain could otherwise block 0.10 s on an empty queue). First-frame
+REGISTER priority on a bounded admission channel (`D_adm` + `A_max`, deadline tested **only from the
+second disposition** so one disposition is the progress floor and `A_max` is a ceiling, never a
+guaranteed rate), per-connection fence, eligibility **consumable exactly once per connection**.
+
+**The certified claim is structural, NOT a wall-clock guarantee:**
+```
+drain contribution <= D + one in-flight message runtime
+T_cp = A + D + M_i + K_i      (M_i, K_i are MEASURED runtimes, not bounds)
+```
+**6.42 s and 6.7 s are attempt-5 counterfactual estimates, not production guarantees.**
+
+**Worker + harness:** `prepare → sentinel → BARRIER → connect → register → serve`;
+`scripts/gate12_sentinel_gate.py` verifies **25/25 same-record `SESSION_SENTINEL` + current nonce**
+before any REGISTER.
+
+### 2.41 THE STALE-RIG DISCOVERY — WITHDRAWS SEVERAL PRIOR FACTS (2026-08-14)
+
+**The D6 parked-fleet dry run stopped at step 4.** All 25 dispatch lines printed; **all 24 rig
+workers died instantly**: `range_miner_worker.py: error: unrecognized arguments: --run-nonce
+--session-release-file --release-deadline --sentinel-log-path`.
+
+**The rigs were running mixed-vintage stale code — not any single commit:**
+```
+prng_registry.py         identical      sieve_gpu_worker.py    identical
+miner/__init__.py        identical
+range_miner_worker.py    vintage 2026-08-01   (1,524 lines vs 2,178)
+range_miner_protocol.py  vintage 2026-07-29
+```
+Two files **ten days apart**. *"Which commit are the rigs on"* **has no answer** — which is itself the
+strongest argument for digest-only parity evidence. The live parity gate later found two more:
+`miner/range_miner_coordinator.py` differing on all three rigs (255 KB vs 563 KB) and
+`execution_set.py` **absent on all three** → `18 MATCH / 12 MISMATCH / 0 UNAVAILABLE → REFUSED`.
+
+**WITHDRAWN OR NARROWED — do not restate the old forms:**
+
+| claim | disposition |
+|---|---|
+| Zeus and the rigs run identical code | **WITHDRAWN** — the assumption was never justified |
+| Attempts 3/4/5 exercised Defect A in production | **WITHDRAWN** — no recovery code was deployed; 29/29 VM101 certification stands, fleet exercise **NOT ESTABLISHED** |
+| Rig `elapsed_s` from attempts 3–5 | **LEGACY / PROTOCOL-CONTAMINATED, not service-time evidence** — the rigs never got `4dd5535` (`float = 0.0` → `Optional[float] = None`), so every rig stripe reported a literal `0.0` instead of omitting the field, collapsing R4's "not reported vs measured zero" on the wire |
+| Attempts 4/5 rig-log silence "UNRESOLVED / channel broken" | **stale-deployment cause STRONGLY SUPPORTED / PRESUMPTIVE**; historical rig bytes **NOT PROVEN** |
+| Attempt 3's §21 status | **DEFINITIVELY FAILED** — four stages and saturation are valid *mechanical* evidence, but D3.5 refused publication, so **no S145 coverage, no cursor advance**. The miner trial reaching an internal `committed` state **does not override the D3.5 authority wall** |
+
+**NOT affected:** the kernel-bearing files hash identically, so **no survivor count is in question**.
+The correct wording is **"not invalidated by this finding,"** never "proven unaffected" — historical
+rig source hashes were never captured.
+
+**Attempt 4's and attempt 5's primary terminals are unaffected** — both are coordinator-side
+observations.
+
+### 2.42 THE D6 INTEGRATION REPAIR — CERTIFIED, committed `dd03f1d`
+
+**`scripts/gate12_parity_gate.py`** — a fail-closed rig source-parity wall, in `gate12_launch.sh` §0.6
+(after the GPU gate, before the clean slate) and D6 STEP 1.5. Expected values are **full 64-hex
+SHA256 derived from the local tree at run time**; the 12-char display prefixes appear nowhere as
+comparisons, enforced by an AST arm. **`local HEAD` prints as `[CONTEXT ONLY]` and `evaluate()`
+provably never reads it** — Git identity must never substitute for content identity. Any mismatch,
+missing file, malformed output or unavailable SSH is **REFUSE, never advisory**.
+
+**The governed set is a TEN-file pin — Beta REJECTED narrowing it to a call-graph closure**, because
+"does this execution happen to reach this file?" depends on arguments, branch paths, future code,
+failure handling and deferred imports, while static project-local reachability is provable. The
+correct term is **"statically reachable project-local import/deployment closure"** — `execution_set.py`
+is statically reachable but **not executed on today's normal worker path**, and is governed anyway:
+
+```
+adaptive_thresholds.py · execution_set.py · hybrid_strategy.py · miner/__init__.py
+miner/dataset_authority.py · miner/range_miner_coordinator.py · miner/range_miner_protocol.py
+miner/range_miner_worker.py · prng_registry.py · sieve_gpu_worker.py
+
+ACCEPTANCE: 30/30 MATCH · 0 MISMATCH · 0 UNAVAILABLE
+```
+
+**Launcher wait-set correction.** `launch_fleet_manual.sh` blocked on its own local worker, which was
+parked at the release barrier waiting for a token `gate12_launch.sh` only writes *after* the launcher
+returns — a wait cycle that could not complete. The invariant:
+```
+launcher completion  =  all DISPATCH operations dispositioned
+launcher completion !=  all launched worker PROCESSES exited
+```
+Remote dispatch jobs are now waited individually with status **read, not discarded**; the local worker
+is excluded and **asserted alive** before return. Release was **not** moved earlier.
+
+**Two committed ordering gates were found encoding a superseded launch order** — `P2-REFUSAL-PRECEDES-SAMPLER`
+(8/9) and `W-ADMISSION-FIRST` (30/31), both already red at `69ff222`, asserting `coordinator < fleet`
+which the attempt-6 architecture deliberately inverted. **Neither suite was in the R2 regression
+table**, which is how they went unnoticed. Rewritten as **fans rather than chains**: each arm states
+what it owns *and what it deliberately does not*.
+
+### 2.43 D6 DISCHARGE REQUIREMENTS — the parked-fleet dry run
+
+**A sentinel record and process liveness are independent facts. A dead worker with a valid sentinel
+is not a parked worker.** All of these must hold simultaneously, before cleanup:
+
+```
+GPU truth gate                    PASS
+source parity                     30/30 MATCH
+dispatch                          25 dispositioned
+launcher                          returns while the fleet remains parked
+remote processes alive + parked   24/24
+local process alive + parked       1/1
+current-nonce SESSION_SENTINEL    25/25
+REGISTER before release              0
+release tokens                       0
+coordinator / port 5700           absent / unbound
+```
+
+Then kill the parked fleet **without release**; confirm no new `run_id`, no coordinator, no token,
+zero workers. **The nonce must be fresh every time** — remote logs are truncated by the shell redirect
+on each launch *only if the dispatch lands*, so a reused nonce could let a stale log satisfy the gate.
+Burned nonces stay burned: `prelaunch-d6-20260814_191543-14495`.
+
+The D6 dry run earns **zero §21 credit**. Attempt 6 starts with a **fresh production nonce** and must
+satisfy the full seven-part completion authority **in that single run** — nothing composes from
+attempts 1–5 or from the dry run.
+
+### 2.44 META-LESSON — A PRINCIPLE WITH NO ENFORCING GATE IS NOT A CONTROL
+
+**§2.17 already said the rigs are deployment targets, not working copies, and that digest comparison —
+never `git rev-parse` — is the parity evidence.** That rule was written down, and **three full
+Gate-12 attempts ran without anyone checking.** The rule was not missing. The **enforcement** was.
+
+That is why Beta made parity a **hard prelaunch wall that refuses** rather than a documented
+expectation. Apply the same test to every other principle in this skill: *what would fail if this
+were violated?* If the answer is "someone would have to notice," it is a hope, not a control.
+
+**The companion lesson, six instances deep:** a gate that passes on a fact it does not actually check
+is worse than no gate. Recorded instances — a test asserting `iterations == 2` yields
+`iteration_count == 1`; an arm asserting only field *names*; two independent existentials standing in
+for a conjunction; `loop_now_age_max >= 0` satisfied by a constructor zero; a declared SSH outcome
+exercised only via a local file; and `_mutant_red` crediting *any* exception as detection, so
+`MUTANT NOT APPLIED` read as `MUTANT DETECTED` **inside the machinery meant to prove the arms are not
+vacuous.** Every one was green. Every one was found by reading the assertion, never the tally.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
