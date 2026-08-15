@@ -639,9 +639,61 @@ print("REGISTERED", flush=True)
 time.sleep(3600)
 '''
 
+# [D6-I1] THE PINNED ANCHOR FOR THE REMOTE-CHANNEL DEFECT. Distinct from the
+# bare-`wait` anchor above and pinned separately, because they are two defects
+# and one commit carried the first repair while still carrying the second:
+# 3e1327b is the first FLEET-PROVEN state, and it is the state D6 dry run #2 ran.
+CHANNEL_ANCHOR_COMMIT = "3e1327bddb62f9e223ca0ad8d084e3f228007271"
+CHANNEL_ANCHOR_SHA256 = (
+    "cda96d2ee3694028c6b2b94b57d765c13f4b8a74c5df1ee0e735ee5e0fdd5cae")
+
+# ---------------------------------------------------------------------------
+# THE SSH FIXTURES, AND WHY THERE ARE NOW THREE
+# ---------------------------------------------------------------------------
+# `STUB_SSH_OK` (`sleep .2; exit 0`) ENCODES THE PREMISE. It cannot fail on the
+# condition the launcher's promptness claim is about, because an ssh that always
+# returns in 0.2 s makes "the launcher returned promptly" true no matter what
+# shape the remote command has. It is the seventh recorded instance of a check
+# that could not fail on the condition it claimed to cover — and it was written
+# AFTER Beta named that pattern.
+#
+# It is RETAINED, but only for ATTRIBUTION arms: where a fast-returning ssh is
+# what isolates a different defect (WS-3 and M4 prove the bare `wait` blocks on
+# the LOCAL worker, and a slow ssh would muddy which thing did the blocking). It
+# may never again be the fixture under a green arm claiming promptness.
 STUB_SSH_OK = """#!/usr/bin/env bash
 sleep 0.2
 exit 0
+"""
+
+# THE REAL-DEFECT FIXTURE. It does not simulate an outcome; it EXECUTES the
+# remote command string and models the SSH CHANNEL, so the outcome is produced by
+# the command's own shape:
+#
+#   * `bash -c "$cmd" 2>&1 | cat` — the pipe IS the channel. `cat` returns at
+#     EOF, which is when the LAST process holding the write end exits, so any
+#     process the remote command leaves attached to stdout/stderr keeps this
+#     "ssh" open exactly as sshd keeps a real channel open.
+#   * `${PIPESTATUS[0]}` — the remote command's own status is returned, so the
+#     dispatch-status disposition R1 certified is still under test.
+#
+# Under the pre-fix shape (`mkdir && cd && worker … & echo started`) the `&`
+# binds to the whole list, the forked subshell runs the worker in ITS foreground
+# holding the pipe, and this fixture BLOCKS — the D6 dry run #2 behaviour,
+# reproduced rather than asserted. Under the repaired shape only the worker is
+# backgrounded and its three streams are detached, so the remote shell exits, the
+# pipe reaches EOF and this returns promptly with the worker still alive.
+#
+# The two `/tmp` rewrites relocate the rig-absolute log and cache paths into the
+# fixture tree. They move WHERE bytes land; they change nothing about which
+# process holds which descriptor, which is the entire property under test.
+STUB_SSH_EXEC = r"""#!/usr/bin/env bash
+# fake ssh: last argument is the remote command
+cmd="${@: -1}"
+cmd="${cmd//\/tmp\/minerlogs/$TFM_STUB_REMOTE_ROOT\/minerlogs}"
+cmd="${cmd//\/tmp\/cupy_cache_gpu/$TFM_STUB_REMOTE_ROOT\/cupy_cache_gpu}"
+TFM_STUB_DIE_NOW="${TFM_STUB_DIE_REMOTE:-}" bash -c "$cmd" 2>&1 | cat
+exit "${PIPESTATUS[0]}"
 """
 
 STUB_SSH_FAIL = """#!/usr/bin/env bash
@@ -713,12 +765,17 @@ def build_launcher_fixture(td, launcher_bytes, ssh_shim=STUB_SSH_OK,
              "endpoints": {"baremetal": "10.255.255.1",
                            "proxmox": "10.255.255.1"}},
         ]}))
+    # The remote node names a REAL interpreter and a REAL script path. Under
+    # STUB_SSH_EXEC the remote command is actually executed, so `cd $SCRIPTPATH`
+    # and the worker invocation have to be satisfiable — otherwise the fixture
+    # would exercise a `cd` failure and call it a channel test. The other two
+    # shims never run the command, so the values are inert for them.
     (root / "distributed_config.json").write_text(json.dumps({
         "nodes": [
             {"hostname": "localhost", "gpu_count": 1,
              "python_env": sys.executable, "script_path": str(root)},
             {"hostname": "10.255.255.1", "gpu_count": remote_gpus,
-             "python_env": "/nonexistent/python", "script_path": "/nonexistent"},
+             "python_env": sys.executable, "script_path": str(root)},
         ]}))
 
     binp = root / "bin"
@@ -730,8 +787,15 @@ def build_launcher_fixture(td, launcher_bytes, ssh_shim=STUB_SSH_OK,
 
 
 def run_launcher(root, listener, nonce="waitset-test", deadline=60,
-                 wait_timeout=45, die_now=False):
-    """Start the launcher; return (proc, logdir, released_path, elapsed|None)."""
+                 wait_timeout=45, die_now=False, die_remote=False,
+                 settle=None):
+    """Start the launcher; return (proc, logdir, released_path, elapsed|None).
+
+    `die_now` kills the LOCAL worker, `die_remote` the REMOTE one — two knobs,
+    because one variable would make the local-liveness refusal and the remote
+    dispatch-status refusal indistinguishable, and each arm needs the other path
+    to be the one that is quiet.
+    """
     logdir = Path(root) / "logs" / "miner_workers"
     env = dict(os.environ)
     env["PATH"] = f"{root / 'bin'}:{env.get('PATH', '')}"
@@ -739,8 +803,13 @@ def run_launcher(root, listener, nonce="waitset-test", deadline=60,
     env["RUN_NONCE"] = nonce
     env["RELEASE_DEADLINE"] = str(deadline)
     env["REMOTE_RELEASE_DIR"] = str(Path(root) / "remote_release")
+    env["TFM_STUB_REMOTE_ROOT"] = str(Path(root) / "remote")
+    if settle is not None:
+        env["REMOTE_LAUNCH_SETTLE"] = str(settle)
     if die_now:
         env["TFM_STUB_DIE_NOW"] = "1"
+    if die_remote:
+        env["TFM_STUB_DIE_REMOTE"] = "1"
     out = open(Path(root) / "launcher.log", "wb")
     t0 = time.time()
     proc = subprocess.Popen(
@@ -780,6 +849,51 @@ def alive(pid):
     except (ProcessLookupError, PermissionError):
         return False
     return True
+
+
+def remote_worker_pids(logdir):
+    """[D6-I1] The PIDs the REMOTE side acked, read from the per-dispatch logs.
+
+    These come from the launch ACK itself — `printf 'started pid=%s'` executed by
+    the remote shell — so the test learns the worker's identity the same way the
+    launcher does. There is no other way to know it: the worker is detached by
+    design and is nobody's child by the time ssh returns, which is the property
+    being proved.
+    """
+    pids = []
+    for p in sorted(Path(logdir).glob("dispatch_*.log")):
+        m = re.search(r"started pid=(\d+)", p.read_text(errors="replace"))
+        if m:
+            pids.append(int(m.group(1)))
+    return pids
+
+
+def reap(pids):
+    for p in pids:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def teardown(proc, root=None, logdir=None):
+    """Kill the launcher's group AND the workers it left behind.
+
+    `kill_tree` alone is NOT sufficient, and the reason is worth keeping: on the
+    arms where the launcher REFUSES (WS-4, WS-5, LCH-6) it has already exited and
+    been reaped by `run_launcher`, so `os.getpgid(proc.pid)` raises and the group
+    kill silently does nothing — while the local stub worker, orphaned to PID 1,
+    keeps running until its release deadline. Found by the liveness suite's own
+    leak check: a stub from THIS suite was still alive minutes later, which is
+    exactly the cross-suite contamination that makes a later run's /proc reads
+    answer about the wrong process.
+    """
+    if proc is not None:
+        kill_tree(proc)
+    if root is not None:
+        reap(local_worker_pids(root))
+    if logdir is not None:
+        reap(remote_worker_pids(logdir))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -822,12 +936,23 @@ def part_b():
     text = live_bytes.decode()
     no_bare_wait = re.search(r"(?m)^\s*wait\s*$", text) is None
     waits_remote = 'wait "${REMOTE_DISPATCH_PIDS[$i]}"' in text
+    # [D6-I1] TWO SHELLS NOW WAIT, AND ONLY ONE OF THEM IS THIS ONE. The remote
+    # dispatch script contains `wait \$worker_pid` — escaped, because it is
+    # expanded and executed on the RIG, where waiting on the just-launched worker
+    # is how its immediate death becomes a nonzero dispatch. Counting it here
+    # would make this arm red for the repair it is supposed to admit, so the two
+    # are separated by the escaping that already distinguishes them.
     wait_lines = [ln for ln in text.splitlines()
-                  if re.match(r"^\s*wait\b", ln)]
-    no_local_in_wait = all("LOCAL_WORKER_PIDS" not in ln for ln in wait_lines)
+                  if re.match(r"^\s*wait\b", ln) and "\\$" not in ln]
+    remote_wait_lines = [ln for ln in text.splitlines()
+                         if re.match(r"^\s*wait\b", ln) and "\\$" in ln]
+    no_local_in_wait = all("LOCAL_WORKER_PIDS" not in ln
+                           for ln in wait_lines + remote_wait_lines)
     check("WS-1  live launcher has NO argument-less `wait`", no_bare_wait)
     check("WS-1b live launcher waits on the remote dispatch PIDs",
-          waits_remote and len(wait_lines) == 1, f"{len(wait_lines)} wait stmts")
+          waits_remote and len(wait_lines) == 1,
+          f"{len(wait_lines)} local wait stmt(s), "
+          f"{len(remote_wait_lines)} remote (escaped) wait stmt(s)")
     check("WS-1c no local worker PID is ever passed to `wait`",
           no_local_in_wait)
 
@@ -850,11 +975,18 @@ def part_b():
     # RED WHEN: the launcher blocks on its own parked local worker (the D6
     # measurement), or the local worker is dead when it returns, or anything
     # connected to the coordinator before release, or a token appeared.
+    # [D6-I1] NOW RUN UNDER THE REAL-DEFECT FIXTURE, not `STUB_SSH_OK`. Under a
+    # fake ssh that always returns in 0.2 s, "the launcher returned" was true by
+    # construction and WS-2a could not fail on a remote channel that never
+    # closed — which is precisely how the launcher shipped with the second half
+    # of the defect intact. STUB_SSH_EXEC executes the real remote command and
+    # models the channel, so promptness here is now a property of the launcher.
     listener = Listener()
     proc = None
     try:
         with tempfile.TemporaryDirectory() as td:
-            root = build_launcher_fixture(td, live_bytes)
+            root = build_launcher_fixture(td, live_bytes,
+                                          ssh_shim=STUB_SSH_EXEC)
             proc, rc, elapsed, logdir = run_launcher(root, listener,
                                                      deadline=60,
                                                      wait_timeout=45)
@@ -887,8 +1019,7 @@ def part_b():
                   and "does NOT mean the worker processes have exited"
                       .lower() in out.lower()
                   and "excluded from the wait set" in out)
-            if proc:
-                kill_tree(proc)
+            teardown(proc, root, logdir)
     finally:
         listener.close()
 
@@ -921,8 +1052,7 @@ def part_b():
                       and not list((Path(root) / "logs" / "miner_workers")
                                    .glob("gate12_release_*")),
                       "the block is not a side effect of release")
-                if proc:
-                    kill_tree(proc)
+                teardown(proc, root, logdir)
         finally:
             listener.close()
 
@@ -945,8 +1075,7 @@ def part_b():
                   and "REMOTE DISPATCHES FAILED" in out, f"rc={rc}")
             check("WS-4b the refusal names the worker that did not land",
                   "stubrig(10.255.255.1):gpu0" in out)
-            if proc:
-                kill_tree(proc)
+            teardown(proc, root, logdir)
     finally:
         listener.close()
 
@@ -958,19 +1087,23 @@ def part_b():
     proc = None
     try:
         with tempfile.TemporaryDirectory() as td:
-            root = build_launcher_fixture(td, live_bytes)
+            # Real-defect fixture here too, and `die_now` is the LOCAL knob only:
+            # the remote dispatches must genuinely SUCCEED, so the refusal can
+            # only be the local one. An arm where both paths fail proves neither.
+            root = build_launcher_fixture(td, live_bytes,
+                                          ssh_shim=STUB_SSH_EXEC)
             proc, rc, elapsed, logdir = run_launcher(root, listener,
                                                      deadline=30,
                                                      wait_timeout=45,
                                                      die_now=True)
             out = (Path(root) / "launcher.log").read_text(errors="replace")
             check("WS-5  a dead local worker makes the launcher REFUSE",
-                  rc == 1 and "LOCAL WORKER NOT ALIVE" in out, f"rc={rc}")
+                  rc == 1 and "LOCAL WORKER NOT ALIVE" in out
+                  and "REMOTE DISPATCHES FAILED" not in out, f"rc={rc}")
             check("WS-5b the refusal explains the sentinel-gate consequence",
                   "sentinel gate would pass on a process that no longer exists"
                   in out)
-            if proc:
-                kill_tree(proc)
+            teardown(proc, root, logdir)
     finally:
         listener.close()
 
@@ -1002,6 +1135,191 @@ def part_b():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# PART E — [D6-I1] REMOTE DISPATCH DETACHMENT, under the real-defect fixture
+# ═══════════════════════════════════════════════════════════════════════════
+
+def part_e():
+    section("PART E — REMOTE DISPATCH DETACHMENT (D6-I1, long-lived channel)")
+    live_path = REPO / "scripts" / "launch_fleet_manual.sh"
+    live_bytes = live_path.read_bytes()
+    text = live_bytes.decode()
+
+    # ---- LCH-0 the channel anchor is authentic --------------------------
+    # VIR-2: every RED arm below is worthless if the pinned commit does not
+    # actually carry the defect. An anchor that has drifted is UNAVAILABLE.
+    try:
+        pinned = subprocess.run(
+            ["git", "-C", str(REPO), "show",
+             f"{CHANNEL_ANCHOR_COMMIT}:scripts/launch_fleet_manual.sh"],
+            capture_output=True, check=True).stdout
+    except Exception as exc:                                        # noqa: BLE001
+        pinned = None
+        unavailable("LCH-0 channel anchor is readable", f"{exc}")
+    channel_anchor_ok = False
+    if pinned is not None:
+        got = sha256_bytes(pinned)
+        ptext = pinned.decode()
+        # The defect surface, stated as the shape and not as a hash: the worker
+        # redirection ends the `&&` list with `&`, and the very next statement is
+        # the `echo started` that supplied the success status.
+        trap = re.search(r"2>&1 &\s*\\\s*\n\s*echo started", ptext) is not None
+        if got != CHANNEL_ANCHOR_SHA256:
+            unavailable("LCH-0 anchor sha256 matches the pin",
+                        f"{got} != {CHANNEL_ANCHOR_SHA256}")
+        elif not ("echo started" in ptext and trap):
+            unavailable("LCH-0 anchor still carries the defect surface",
+                        "the `… & echo started` precedence trap is absent")
+        else:
+            channel_anchor_ok = True
+            check("LCH-0 RED anchor authentic: full SHA + `& echo started` trap",
+                  True, f"{CHANNEL_ANCHOR_COMMIT[:7]} sha={got[:16]}…")
+
+    # ---- LCH-1 THE RED ARM: the pinned remote command holds the channel --
+    # RED WHEN (what this proves): with an ssh that models the channel, the
+    # PINNED launcher does NOT return while its remote worker is parked. Bounded
+    # observation — "still blocked at T", never a prediction about 900 s.
+    if not channel_anchor_ok:
+        unavailable("LCH-1 pinned remote command BLOCKS the launcher",
+                    "anchor unavailable — no pass may be reported")
+    else:
+        listener = Listener()
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = build_launcher_fixture(td, pinned,
+                                              ssh_shim=STUB_SSH_EXEC,
+                                              remote_gpus=1)
+                proc, rc, elapsed, logdir = run_launcher(
+                    root, listener, deadline=60, wait_timeout=20)
+                rlog = Path(root) / "remote" / "minerlogs" / "gpu0.log"
+                parked = (rlog.exists()
+                          and "SESSION_RELEASE_WAIT" in rlog.read_text(errors="replace")
+                          and "SESSION_RELEASED" not in rlog.read_text(errors="replace"))
+                check("LCH-1 RED: pinned remote command leaves the launcher "
+                      "BLOCKED while the remote worker is parked",
+                      rc is None and parked,
+                      "the forked subshell runs the worker in its foreground "
+                      "and holds the channel"
+                      if rc is None else f"returned rc={rc} in {elapsed}s")
+                teardown(proc, root, logdir)
+        finally:
+            listener.close()
+
+    # ---- LCH-2..5, LCH-7 one repaired run, five properties --------------
+    # RED WHEN: the worker is not detached (the launcher blocks, LCH-2), or the
+    # detachment killed the worker (LCH-3), or anything registered before
+    # release (LCH-4), or a token appeared (LCH-5), or success was declared
+    # before every dispatch was dispositioned (LCH-7).
+    listener = Listener()
+    proc = None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = build_launcher_fixture(td, live_bytes,
+                                          ssh_shim=STUB_SSH_EXEC,
+                                          remote_gpus=3)
+            proc, rc, elapsed, logdir = run_launcher(root, listener,
+                                                     deadline=60,
+                                                     wait_timeout=45)
+            out = (Path(root) / "launcher.log").read_text(errors="replace")
+            rpids = remote_worker_pids(logdir)
+            check("LCH-2 repaired: ssh dispatch RETURNS PROMPTLY while the "
+                  "remote worker stays alive",
+                  rc == 0 and elapsed is not None and elapsed < 15,
+                  f"rc={rc} elapsed="
+                  f"{'n/a' if elapsed is None else round(elapsed, 2)}s "
+                  f"(release deadline 60s)")
+            check("LCH-3 remote worker is STILL PARKED after ssh returned",
+                  len(rpids) == 3 and all(alive(p) for p in rpids)
+                  and all(
+                      "SESSION_RELEASE_WAIT" in (Path(root) / "remote" /
+                                                 "minerlogs" / f"gpu{i}.log"
+                                                 ).read_text(errors="replace")
+                      and "SESSION_RELEASED" not in
+                      (Path(root) / "remote" / "minerlogs" / f"gpu{i}.log"
+                       ).read_text(errors="replace")
+                      for i in range(3)),
+                  f"acked pids={rpids}")
+            check("LCH-4 zero REGISTER", listener.accepts == [],
+                  f"accepts={len(listener.accepts)}")
+            tokens = list((Path(root) / "logs" / "miner_workers")
+                          .glob("gate12_release_*"))
+            if (Path(root) / "remote_release").exists():
+                tokens += list((Path(root) / "remote_release")
+                               .glob("gate12_release_*"))
+            check("LCH-5 zero release token", tokens == [], f"tokens={tokens}")
+            # LCH-7: ORDER, not just presence. Success may not be announced
+            # before every dispatch is dispositioned and the local worker is
+            # asserted alive.
+            i_disp = out.find("remote dispatch jobs dispositioned: 3 (failures: 0)")
+            i_local = out.find("ALIVE (excluded from the wait set)")
+            i_done = out.find("DISPATCH COMPLETE")
+            acks = len(re.findall(r"started pid=\d+", out))
+            check("LCH-7 every remote dispatch dispositioned AND the local "
+                  "worker asserted alive BEFORE success is announced",
+                  -1 < i_disp < i_done and -1 < i_local < i_done and acks == 3,
+                  f"disposition@{i_disp} local@{i_local} complete@{i_done} "
+                  f"acks={acks}")
+            teardown(proc, root, logdir)
+    finally:
+        listener.close()
+
+    # ---- LCH-6 immediate remote startup failure -> NONZERO -> REFUSE ----
+    # The fault-injection control, and the one Candidate A would have failed:
+    # backgrounding the group and ending with `echo started` returns 0 here,
+    # because the echo succeeded.
+    listener = Listener()
+    proc = None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = build_launcher_fixture(td, live_bytes,
+                                          ssh_shim=STUB_SSH_EXEC,
+                                          remote_gpus=2)
+            proc, rc, elapsed, logdir = run_launcher(root, listener,
+                                                     deadline=30,
+                                                     wait_timeout=45,
+                                                     die_remote=True)
+            out = (Path(root) / "launcher.log").read_text(errors="replace")
+            check("LCH-6 immediate remote worker startup failure -> ssh returns "
+                  "NONZERO and the launcher REFUSES",
+                  rc == 1 and "DISPATCH FAILED" in out
+                  and "REMOTE DISPATCHES FAILED" in out
+                  and "LOCAL WORKER NOT ALIVE" not in out,
+                  f"rc={rc}")
+            check("LCH-6b the worker's own exit status survives the dispatch",
+                  "ssh exited 9" in out,
+                  "the stub worker exits 9; ssh must not launder it to 0")
+            teardown(proc, root, logdir)
+    finally:
+        listener.close()
+
+    # ---- LCH-8 structural: the precedence trap is gone ------------------
+    # RED WHEN: `… & echo started` reappears in any form, or the worker line
+    # stops being the only backgrounded unit.
+    # Comment lines are stripped first: the repair's own comment quotes the trap
+    # verbatim so a future reader knows what not to restore, and an assertion
+    # that cannot tell code from the warning about it is not measuring the code.
+    code_only = "\n".join(ln for ln in text.splitlines()
+                          if not ln.lstrip().startswith("#"))
+    check("LCH-8 the `& echo started` precedence trap is ABSENT from live source",
+          "echo started" not in code_only
+          and re.search(r"2>&1 &\s*\\\s*\n\s*echo started", code_only) is None)
+    check("LCH-8b mkdir and cd are SYNCHRONOUS with their own exits",
+          "|| exit $RC_REMOTE_MKDIR" in text and "|| exit $RC_REMOTE_CD" in text)
+    check("LCH-8c the worker's three streams are detached from the channel",
+          "< /dev/null > /tmp/minerlogs/gpu$N.log 2>&1 &" in text)
+    check("LCH-8d a worker that exits 0 during settle is NOT a success",
+          "RC_REMOTE_WORKER_EXITED_ZERO" in text
+          and r'if [ \"\$rc\" -eq 0 ]; then rc=$RC_REMOTE_WORKER_EXITED_ZERO; fi'
+          in text)
+    check("LCH-8e the dispatch status is JOINED to a positive launch ACK",
+          "sent NO launch ACK" in text
+          # at least ONE digit: `[0-9]*` would also match an ACK printed with an
+          # unset pid, which is a positive check that can be positive about
+          # nothing. M6 is what found this.
+          and "grep -o 'started pid=[0-9][0-9]*'" in text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # PART C — the harness's own integrity
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1023,6 +1341,19 @@ def part_c():
     # Nothing in this suite may have written into the repository. Measured as a
     # DELTA against the porcelain captured before the first arm ran, so the arm
     # states what it means: this suite changed nothing.
+    # HI-2b — NO STUB WORKER MAY OUTLIVE THIS SUITE.
+    # It did. On every arm where the launcher REFUSES, `run_launcher` reaps it
+    # before `kill_tree` runs, so the group kill silently no-ops and the local
+    # stub worker is orphaned to PID 1 for the rest of its release deadline. The
+    # liveness suite's own leak check found one alive minutes later. A leaked
+    # worker is not cosmetic here: the next suite's /proc reads would answer
+    # about the wrong process, and these suites already have to run sequentially.
+    leaked = subprocess.run(
+        ["pgrep", "-af", "miner/range_miner_worker.py --host 127.0.0.1"],
+        capture_output=True, text=True).stdout.strip().splitlines()
+    check("HI-2b no stub worker outlived the suite", not leaked,
+          f"leaked={[ln.split()[0] for ln in leaked]}")
+
     now = _porcelain()
     appeared = [ln for ln in now if ln not in _PORCELAIN_AT_START]
     vanished = [ln for ln in _PORCELAIN_AT_START if ln not in now]
@@ -1119,15 +1450,88 @@ def part_d():
         try:
             with tempfile.TemporaryDirectory() as td:
                 root = build_launcher_fixture(td, mutated)
-                proc, rc, elapsed, _ = run_launcher(root, listener,
-                                                    deadline=60,
-                                                    wait_timeout=15)
+                proc, rc, elapsed, logdir = run_launcher(root, listener,
+                                                         deadline=60,
+                                                         wait_timeout=15)
                 check("M4 bare-`wait` regression -> DETECTED",
                       rc is None,
                       "WS-2a's assertion fails on the mutant (still blocked "
                       "at 15 s)" if rc is None else f"mutant returned rc={rc}")
-                if proc:
-                    kill_tree(proc)
+                teardown(proc, root, logdir)
+        finally:
+            listener.close()
+
+    # ---- M5: the remote launch detachment is REMOVED --------------------
+    # The mutant Beta required: drop the `&` that backgrounds the worker, so the
+    # worker runs in the REMOTE SHELL'S foreground and holds the channel — the
+    # same end state the precedence trap produced by a different route. It must
+    # be caught BY THE LONG-LIVED-CHANNEL FIXTURE; under STUB_SSH_OK it would
+    # survive, which is the whole reason that fixture exists.
+    mutated = live_bytes.replace(
+        b"  < /dev/null > /tmp/minerlogs/gpu$N.log 2>&1 &\n",
+        b"  < /dev/null > /tmp/minerlogs/gpu$N.log 2>&1\n", 1)
+    if mutated == live_bytes:
+        unavailable("M5 remote launch detachment removed -> DETECTED",
+                    "mutation site not found in the live launcher")
+    else:
+        listener = Listener()
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = build_launcher_fixture(td, mutated,
+                                              ssh_shim=STUB_SSH_EXEC,
+                                              remote_gpus=1)
+                proc, rc, elapsed, logdir = run_launcher(root, listener,
+                                                         deadline=60,
+                                                         wait_timeout=20)
+                check("M5 remote launch detachment removed -> DETECTED",
+                      rc is None,
+                      "LCH-2's assertion fails on the mutant (still blocked at "
+                      "20 s)" if rc is None else f"mutant returned rc={rc}")
+                teardown(proc, root, logdir)
+        finally:
+            listener.close()
+
+    # ---- M6: the truthful status is replaced by Candidate A's `echo` -----
+    # Beta REJECTED Candidate A because `echo started` supplies the success
+    # status even when the worker died at once. Encoded as a mutant so the
+    # rejection is enforced rather than remembered: with the settle check and the
+    # ACK replaced by a bare `echo started`, a worker that dies immediately still
+    # produces rc=0 — and LCH-6's refusal disappears.
+    src_text = live_bytes.decode()
+    start = src_text.find("worker_pid=\\$!")
+    ack = src_text.find("printf '[dispatch] started pid=")
+    mutated6 = None
+    if start >= 0 and ack > start:
+        # Candidate A exactly: the settle check is deleted and the ACK is
+        # printed unconditionally from `$!`. It still carries a real pid, so the
+        # ACK join alone does not kill it — only the settle-status check does,
+        # which is the property Beta's rejection turns on.
+        cand = src_text[:start] + src_text[ack:]
+        cand = cand.replace(r'\"\$worker_pid\"', r'\"\$!\"', 1)
+        if cand != src_text and r'\"\$!\"' in cand:
+            mutated6 = cand.encode()
+    if mutated6 is None:
+        unavailable("M6 Candidate-A success-by-echo -> DETECTED",
+                    "mutation site not found in the live launcher")
+    else:
+        listener = Listener()
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = build_launcher_fixture(td, mutated6,
+                                              ssh_shim=STUB_SSH_EXEC,
+                                              remote_gpus=1)
+                proc, rc, elapsed, logdir = run_launcher(root, listener,
+                                                         deadline=30,
+                                                         wait_timeout=45,
+                                                         die_remote=True)
+                out = (Path(root) / "launcher.log").read_text(errors="replace")
+                check("M6 Candidate-A success-by-echo -> DETECTED",
+                      not (rc == 1 and "REMOTE DISPATCHES FAILED" in out),
+                      f"the mutant reports rc={rc} for a worker that died at "
+                      f"once — LCH-6 REFUSES on live source")
+                teardown(proc, root, logdir)
         finally:
             listener.close()
 
@@ -1138,6 +1542,7 @@ def main():
     print("=" * 78)
     part_a()
     part_b()
+    part_e()
     part_d()
     part_c()
 

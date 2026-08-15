@@ -99,6 +99,39 @@
 # assumed. Release is NOT moved earlier: sentinel verification must still precede
 # it, and that ordering is the whole point of the two-phase launch.
 #
+# ⚠ AND THAT REPAIR WAS INCOMPLETE — CORRECTED BY D6-I1 (Beta, 2026-08-15). It
+# fixed WHICH jobs are waited for and left untouched the reason those jobs were
+# not short-lived. The remote command was
+#
+#     ssh … "mkdir … && cd … && nohup worker … > log 2>&1 & echo started"
+#
+# and `&` binds to the WHOLE `&&` list, not to the worker: the remote shell forks
+# a subshell for `mkdir && cd && nohup worker`, inside which the worker runs in
+# the subshell's FOREGROUND. The subshell therefore lives as long as the worker
+# does, and its stdout/stderr ARE the SSH channel — so ssh could not return until
+# the worker exited. Measured in D6 dry run #2: every dispatch echo printed, and
+# the launcher was still blocked ~325 s later with 24 rig workers parked. On the
+# rigs it also showed up as `pgrep -c -f range_miner_worker` reporting 16 for 8
+# workers — eight wrapper subshells and eight Python workers.
+#
+# The two binding requirements of the repair:
+#
+#     1. worker lifetime is DETACHED from the SSH channel
+#     2. SSH's exit status TRUTHFULLY dispositions the launch operation
+#
+# and (2) is why the obvious fix is wrong. Backgrounding the redirected group and
+# ending with `echo started` returns 0 because the ECHO succeeded — it would
+# report a launch that died at argparse as a successful dispatch, destroying the
+# per-dispatch status disposition immediately above. `ssh -f` is rejected for the
+# same reason: it deliberately severs the caller from remote-command status.
+#
+# So the asynchronous unit is made SYNTACTICALLY OBVIOUS — only the worker is
+# backgrounded, its three streams are detached from the channel, and the remote
+# shell then performs a bounded launch-settle check and EXITS. rc=0 means the
+# worker survived the settle point AND said so; an immediate argparse/import
+# failure is a NONZERO dispatch; after the ACK the worker's life is independent
+# of the channel's.
+#
 # Without RUN_NONCE the script behaves exactly as before (no sentinel, no
 # barrier, coordinator-first), so an existing single-worker smoke run is
 # unaffected.
@@ -120,6 +153,20 @@ STAGGER="${STAGGER:-3}"
 RUN_NONCE="${RUN_NONCE:-}"
 RELEASE_DEADLINE="${RELEASE_DEADLINE:-900}"
 REMOTE_RELEASE_DIR="${REMOTE_RELEASE_DIR:-/tmp/minerlogs}"
+# [D6-I1] The bounded launch-settle interval. It is NOT a readiness wait and must
+# not grow into one: the worker still has a GPU to warm and a sentinel to emit
+# after this point. It exists only to make an IMMEDIATE death — argparse, a
+# missing module, a bad interpreter path — observable to the dispatching ssh,
+# which is the class that killed D6 dry run #2's first attempt (24 workers dead
+# at argparse, every dispatch reported success).
+REMOTE_LAUNCH_SETTLE="${REMOTE_LAUNCH_SETTLE:-2}"
+# [D6-I1] Remote dispatch exit codes. Named, and deliberately NOT 255: the
+# sentinel and liveness gates reserve 255 as ssh's own transport-failure
+# classification, so a remote script that could produce it would make a rig
+# look unreachable when it was merely unable to mkdir.
+RC_REMOTE_MKDIR=11
+RC_REMOTE_CD=12
+RC_REMOTE_WORKER_EXITED_ZERO=13
 
 if [ -z "$COORD_HOST" ]; then
     echo "usage: bash scripts/launch_fleet_manual.sh <coordinator_host> [port] [logdir]" >&2
@@ -207,6 +254,7 @@ echo
 DISPATCHED=0
 REMOTE_DISPATCH_PIDS=()
 REMOTE_DISPATCH_LABELS=()
+REMOTE_DISPATCH_LOGS=()
 LOCAL_WORKER_PIDS=()
 LOCAL_WORKER_LABELS=()
 while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
@@ -244,20 +292,48 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
                     --release-deadline $RELEASE_DEADLINE \
                     --sentinel-log-path /tmp/minerlogs/gpu$N.log"
             fi
+            # [D6-I1] THE ASYNCHRONOUS UNIT IS THE WORKER, AND NOTHING ELSE.
+            # `mkdir` and `cd` are SYNCHRONOUS statements of the remote shell —
+            # each with its own exit — so a failure is a nonzero dispatch rather
+            # than a silently skipped launch. Only the `nohup … &` line is
+            # backgrounded, and its three streams go to the log and /dev/null, so
+            # nothing the worker owns is attached to the SSH channel. The remote
+            # shell then checks that the worker survived the settle point and
+            # EXITS, which closes the channel and returns ssh. Do NOT re-collapse
+            # this into `mkdir && cd && worker & echo started`: that is the
+            # precedence trap this replaces, and an outer redirect does not fix it
+            # (the subshell still waits on the worker, and `echo` still supplies
+            # the success status).
+            #
+            # `\$!`, `\$rc` and `\$worker_pid` are escaped so they are expanded by
+            # the REMOTE shell. Everything unescaped is expanded here, at dispatch
+            # time, which is how the per-worker paths and the settle interval
+            # reach the far side.
+            DISPATCH_LOG="$LOGDIR/dispatch_${WHOST}_gpu$N.log"
             ssh -n -o BatchMode=yes -o ConnectTimeout=10 "michael@$ENDPOINT" \
-                "mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR /tmp/cupy_cache_gpu$N && \
-                 cd $SCRIPTPATH && \
-                 ROCR_VISIBLE_DEVICES=$N \
-                 CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N \
-                 PYTHONPATH=$SCRIPTPATH \
-                 nohup $PYBIN $SCRIPTPATH/miner/range_miner_worker.py \
-                   --host $COORD_HOST --port $PORT \
-                   --gpu-id $N --device-index 0 \
-                   $REMOTE_SENTINEL_ARGS \
-                   > /tmp/minerlogs/gpu$N.log 2>&1 & \
-                 echo started" >/dev/null 2>&1 &
+"mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR /tmp/cupy_cache_gpu$N || exit $RC_REMOTE_MKDIR
+cd $SCRIPTPATH || exit $RC_REMOTE_CD
+ROCR_VISIBLE_DEVICES=$N \
+CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N \
+PYTHONPATH=$SCRIPTPATH \
+nohup $PYBIN $SCRIPTPATH/miner/range_miner_worker.py \
+  --host $COORD_HOST --port $PORT \
+  --gpu-id $N --device-index 0 \
+  $REMOTE_SENTINEL_ARGS \
+  < /dev/null > /tmp/minerlogs/gpu$N.log 2>&1 &
+worker_pid=\$!
+sleep $REMOTE_LAUNCH_SETTLE
+if ! kill -0 \$worker_pid 2>/dev/null; then
+    wait \$worker_pid; rc=\$?
+    echo \"[dispatch] worker failed during dispatch: exited \$rc\" >&2
+    if [ \"\$rc\" -eq 0 ]; then rc=$RC_REMOTE_WORKER_EXITED_ZERO; fi
+    exit \$rc
+fi
+printf '[dispatch] started pid=%s gpu=%s\n' \"\$worker_pid\" '$N'
+exit 0" > "$DISPATCH_LOG" 2>&1 &
             REMOTE_DISPATCH_PIDS+=("$!")
             REMOTE_DISPATCH_LABELS+=("$WHOST($ENDPOINT):gpu$N")
+            REMOTE_DISPATCH_LOGS+=("$DISPATCH_LOG")
         fi
         DISPATCHED=$((DISPATCHED + 1))
         N=$((N + 1))
@@ -272,14 +348,35 @@ done 3<<< "$FLEET"
 # that could not connect or authenticate is a dispatch that DID NOT LAND. The old
 # shape counted loop iterations, so `DISPATCHED == TOTAL` could be printed over a
 # fleet no ssh ever reached.
+#
+# [D6-I1] AND THE STATUS IS NOW JOINED TO A POSITIVE ACK. `rc=0` alone says the
+# remote shell reached its exit; the ACK says WHICH worker it left running. A
+# dispatch that returns 0 without printing `started pid=` is a remote script that
+# did not run the shape this launcher sent — the same "success reported by
+# something other than the thing under test" class as the `echo started` the
+# repair removed — so it is a FAILURE here, not a pass with a missing line.
 REMOTE_FAILURES=0
 i=0
 while [ "$i" -lt "${#REMOTE_DISPATCH_PIDS[@]}" ]; do
     wait "${REMOTE_DISPATCH_PIDS[$i]}"
     RC=$?
+    ACK=""
+    if [ -r "${REMOTE_DISPATCH_LOGS[$i]}" ]; then
+        # [0-9][0-9]* — at least ONE digit. `[0-9]*` also matches the empty
+        # string, so an ACK printed with an unset pid would satisfy it: a
+        # positive ACK that can be positive about nothing is not a check.
+        ACK="$(grep -o 'started pid=[0-9][0-9]*' "${REMOTE_DISPATCH_LOGS[$i]}" | head -1)"
+    fi
     if [ "$RC" -ne 0 ]; then
         echo "[launch] *** DISPATCH FAILED: ${REMOTE_DISPATCH_LABELS[$i]} — ssh exited $RC ***" >&2
+        echo "[launch]     see ${REMOTE_DISPATCH_LOGS[$i]}" >&2
         REMOTE_FAILURES=$((REMOTE_FAILURES + 1))
+    elif [ -z "$ACK" ]; then
+        echo "[launch] *** DISPATCH FAILED: ${REMOTE_DISPATCH_LABELS[$i]} — ssh exited 0 but sent NO launch ACK ***" >&2
+        echo "[launch]     see ${REMOTE_DISPATCH_LOGS[$i]}" >&2
+        REMOTE_FAILURES=$((REMOTE_FAILURES + 1))
+    else
+        echo "[launch] dispatched ${REMOTE_DISPATCH_LABELS[$i]} — $ACK (worker detached from the ssh channel)"
     fi
     i=$((i + 1))
 done
@@ -331,9 +428,15 @@ echo "[launch] dispositioned. It does NOT mean the worker processes have exited:
 echo "[launch] the local worker is deliberately still running and is excluded"
 echo "[launch] from the wait set."
 echo "[launch] local worker logs : $LOGDIR"
+echo "[launch] dispatch records  : $LOGDIR/dispatch_<host>_gpu<N>.log (the ACK)"
 echo "[launch] rig worker logs   : /tmp/minerlogs/gpu<N>.log on each rig"
-echo "[launch] verify admission in the coordinator log before trusting this line —"
-echo "[launch] 'dispatched' means ssh returned, NOT that a daemon registered."
+echo "[launch] verify admission in the coordinator log before trusting this line."
+echo "[launch] [D6-I1] 'dispatched' now means: ssh returned 0, the remote worker"
+echo "[launch] was still alive at the bounded settle point, and it acked its own"
+echo "[launch] pid. It does NOT mean the daemon registered, and it does NOT mean"
+echo "[launch] the daemon is still alive now — liveness at the last pre-coordinator"
+echo "[launch] observation is the LIVENESS GATE's claim, not this script's:"
+echo "[launch]   python3 scripts/gate12_worker_liveness_gate.py --run-nonce ..."
 if [ -n "$RUN_NONCE" ]; then
   echo "[launch] run nonce         : $RUN_NONCE"
   echo "[launch] release token     : <logdir>/gate12_release_$RUN_NONCE (per host)"

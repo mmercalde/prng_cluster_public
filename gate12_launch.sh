@@ -302,6 +302,54 @@ if [ "$SENTINEL_RC" -ne 0 ]; then
   exit 1
 fi
 
+# ---------- 2.6. WORKER LIVENESS GATE — THE LAST WORKER-STATE WALL ----------
+# [D6-I2, Beta 2026-08-15] THE SENTINEL GATE ABOVE PROVES LOG DELIVERY, AND THAT
+# IS ALL IT PROVES. In D6 dry run #2 it returned PASS 25/25 over a fleet whose
+# local worker was already dead: the record it accepted was true when it was
+# written, and the process that wrote it no longer existed. The sentinel gate was
+# not widened to cover that — its contract is correct and stays as it is. The
+# defect was the launch authority treating delivery as though it implied
+# liveness, so the missing wall is added here instead.
+#
+# Per identity it JOINS the two facts neither of which is sufficient alone: this
+# run's SESSION_SENTINEL names a PID, that exact PID is running now, and its
+# /proc argv is range_miner_worker.py carrying this nonce, this gpu and this
+# run's barrier file — and the log shows neither SESSION_RELEASED nor
+# SESSION_RELEASE_ABORTED, so the worker is still PARKED and not merely running.
+#
+# PLACEMENT IS LOAD-BEARING, and it is the whole ruling: IMMEDIATELY after the
+# sentinel gate and BEFORE the sampler and the coordinator. Both must pass before
+# any coordinator process is created; a refusal here still costs nothing, because
+# the fleet has contacted no coordinator and no cohort has been frozen.
+#
+# `pgrep -c -f` is deliberately NOT used and may not be reintroduced: on the rigs
+# it counted 16 for 8 workers (wrapper subshells plus Python workers) and it
+# cannot see identity at all. Beta retired it from acceptance authority; raw ps
+# output is diagnostic context only.
+#
+# ${PIPESTATUS[0]}, NOT the pipeline's status — the same rule as every gate above.
+LIVENESS_EVID=logs/gate12_${STAMP}_liveness.json
+python3 -u scripts/gate12_worker_liveness_gate.py \
+  --run-nonce "$RUN_NONCE" --local-log-dir "$PWD/logs/miner_workers" \
+  --evidence-json "$LIVENESS_EVID" 2>&1 | tee -a "$EVID"
+LIVENESS_RC=${PIPESTATUS[0]}
+if [ "$LIVENESS_RC" -ne 0 ]; then
+  echo "GATE-12 ABORTED BY THE WORKER LIVENESS GATE (rc=$LIVENESS_RC) — see $EVID" \
+    | tee -a "$EVID"
+  echo "SENTINEL PASSED AND LIVENESS DID NOT. That combination is the D6 dry" \
+    | tee -a "$EVID"
+  echo "run #2 condition: delivery proven, the process gone. Not a launch." \
+    | tee -a "$EVID"
+  echo "liveness evidence: $LIVENESS_EVID" | tee -a "$EVID"
+  echo "killing the parked fleet; it never contacted a coordinator" | tee -a "$EVID"
+  pkill -f "[r]ange_miner_worker"
+  for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+    ssh -n michael@$ip 'pkill -f "[r]ange_miner_worker"' 2>/dev/null
+  done
+  exit 1
+fi
+echo "liveness evidence bundle: $LIVENESS_EVID" | tee -a "$EVID"
+
 # ---------- 3. CONCURRENCY SAMPLER — ARMED BEFORE THE COORDINATOR ----------
 # Ordering is the whole point: the sampler is running before the coordinator
 # process is created, so it cannot miss the first StripeAssign. It latches onto

@@ -447,8 +447,17 @@ def main(argv=None):
     print("")
     allowed, refusals = evaluate(results)
     if allowed:
+        # [G, Beta 2026-08-15] OPERATOR SEMANTICS ONLY — no behavioural change.
+        # "Launch may proceed" overstated what this gate alone authorizes, and D6
+        # dry run #2 is the demonstration: this gate passed 25/25 over a worker
+        # that had delivered its sentinel and then died. The gate was right; the
+        # sentence was wrong. Delivery is a necessary condition, never the launch
+        # decision, and no caller may treat SENTINEL_RC=0 alone as authority —
+        # the liveness gate and the remaining prelaunch gates must also pass.
         print(f"GATE-12 SENTINEL  : PASS — {len(results)}/{len(results)} "
-              f"identities proved log delivery. Launch may proceed.")
+              f"identities proved current-run session-log delivery.")
+        print("Sentinel condition satisfied; remaining prelaunch gates must "
+              "also pass.")
         return EXIT_PROCEED
 
     print(f"GATE-12 SENTINEL  : REFUSED — {len(refusals)} identity(ies) did not "
