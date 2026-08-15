@@ -162,6 +162,11 @@ TC_THRESHOLD_PROVENANCE = "threshold_provenance_violation"
 TC_SERVE_TIMEOUT = "serve_trial_timeout"
 TC_EXPLICIT_ABORT = "explicit_abort"
 TC_COORDINATOR_ERROR = "coordinator_error"
+# [ATTEMPT-6 §8.2.1 — R1.2, Beta-certified] PERSISTENT LOCAL INGRESS SATURATION.
+# A coordinator/INFRASTRUCTURE capacity failure, not a worker transport fault, so
+# it terminates the TRIAL and never sheds a worker (§8.2.2). Named in the existing
+# `TC_<UPPER_SNAKE> = "<lower_snake>"` convention above — read, not invented.
+TC_INBOUND_SATURATION_TIMEOUT = "inbound_saturation_timeout"
 
 
 @dataclass(frozen=True)
@@ -211,6 +216,180 @@ class LeaseInvariantError(RuntimeError):
     caller asks for a claim solely for a worker it has just established is
     compute-idle."""
 
+# ---------------------------------------------------------------------------
+# [ATTEMPT-6 PART A §1.3 / §8.3.2 — Beta-certified] READER-EXIT CAUSE PROVENANCE
+#
+# Every termination of `_conn_reader_loop` retains a machine-readable cause FROM
+# THE BRANCH THAT ACTUALLY TERMINATED THAT READER, and that cause survives into
+# the coordinator-side records. Before this amendment all nine exits were
+# indistinguishable at the point of drop and none logged anything, so attempt 5's
+# two lost sessions could only be described as "the coordinator performed the
+# final close; the antecedent is UNRESOLVED".
+#
+# THESE ARE CONSTANTS, NOT PROSE. Beta's F2 framing is binding: structured fields
+# carry machine truth, prose carries diagnostic detail. A gate asserts on the
+# constant, never on a sentence.
+#
+# `READER_EXIT_UNCLASSIFIED` IS THE FAIL-CLOSED DEFAULT and must stay that way. A
+# default of TRANSPORT_ERROR would re-create today's defect wearing a reason
+# field — the R1.1 lesson in its purest form: a gate that encodes the defect as
+# expected behaviour turns green and proves nothing.
+# ---------------------------------------------------------------------------
+RX_SHUTDOWN_STOP = "SHUTDOWN_STOP"
+RX_SHUTDOWN_STOP_WHILE_PAUSED = "SHUTDOWN_STOP_WHILE_PAUSED"
+RX_TRANSPORT_ERROR = "TRANSPORT_ERROR"
+RX_PROTOCOL_FRAME_INVALID = "PROTOCOL_FRAME_INVALID"
+RX_DECODE_ERROR = "DECODE_ERROR"
+RX_CAPACITY_TIMEOUT_BARRIER = "CAPACITY_TIMEOUT_BARRIER"
+RX_CAPACITY_TIMEOUT_PAUSED = "CAPACITY_TIMEOUT_PAUSED"
+RX_INFRASTRUCTURE_TERMINAL_EXIT = "INFRASTRUCTURE_TERMINAL_EXIT"
+RX_READER_INTERNAL_ERROR = "READER_INTERNAL_ERROR"
+RX_READER_EXIT_UNCLASSIFIED = "READER_EXIT_UNCLASSIFIED"
+# Defect A §15's own rule, applied to a second field: an unmeasured value is
+# UNOBSERVED and never a plausible-looking zero or a synthesized reason.
+RX_UNOBSERVED = "UNOBSERVED"
+
+# The complete taxonomy. RXP-1 arm 5 enumerates the `RX_*` constants from LIVE
+# source by AST and fails if any declared class has no injection arm, so adding a
+# class without gating it reds immediately.
+READER_EXIT_REASONS = frozenset({
+    RX_SHUTDOWN_STOP, RX_SHUTDOWN_STOP_WHILE_PAUSED, RX_TRANSPORT_ERROR,
+    RX_PROTOCOL_FRAME_INVALID, RX_DECODE_ERROR, RX_CAPACITY_TIMEOUT_BARRIER,
+    RX_CAPACITY_TIMEOUT_PAUSED, RX_INFRASTRUCTURE_TERMINAL_EXIT,
+    RX_READER_INTERNAL_ERROR, RX_READER_EXIT_UNCLASSIFIED, RX_UNOBSERVED,
+})
+
+# ---------------------------------------------------------------------------
+# [ATTEMPT-6 §8.3 — R1.3, three ORTHOGONAL provenance facts]
+#
+# `drop_origin` — who decided the session ends.
+# `coordinator_close_intent` — WHY the coordinator closed, when it did.
+# `reader_exit_reason` — what the reader OBSERVED.
+#
+# They are never collapsed into one another (`CLOSED_BY_COORDINATOR:<intent>` is
+# withdrawn) and no record asserts causation between them: a marker proves the
+# coordinator INTENDED to close, never that its `shutdown()` produced the
+# exception the reader observed.
+#
+# `eof_reap` IS DELIBERATELY ABSENT (R2.2). An EOF-triggered `_drop_conn` is
+# mechanical socket cleanup BECAUSE the reader already terminated — the
+# consequence of a reader exit, not an independent coordinator decision — and
+# giving it an intent value contradicts the canonical reader-originated shape.
+# RXP-1 arm 9 asserts its absence from live source.
+#
+# `shutdown` is RESERVED AND UNWRITTEN AT HEAD (§8.3.2b): the teardown path does
+# not call `_drop_conn` at all (it sets `reader_stop` then shuts the sockets down
+# directly), so no site writes it. Beta's "explicit shutdown — coordinator
+# intent, where applicable" is satisfied by the `reader_stop` discriminator,
+# which is stronger than a marker because it is set BEFORE the shutdown rather
+# than beside it.
+# ---------------------------------------------------------------------------
+DROP_ORIGIN_COORDINATOR = "coordinator"
+DROP_ORIGIN_READER = "reader"
+CLOSE_INTENT_READ_DEADLINE = "read_deadline"
+CLOSE_INTENT_DUP_REJECT = "dup_reject"
+CLOSE_INTENT_SHUTDOWN = "shutdown"          # reserved; no site writes it (§8.3.2b)
+# The intents a live site may actually write today.
+COORDINATOR_CLOSE_INTENTS = frozenset({
+    CLOSE_INTENT_READ_DEADLINE, CLOSE_INTENT_DUP_REJECT,
+})
+
+
+@dataclass(frozen=True)
+class ReaderExit:
+    """[ATTEMPT-6 §1.4 hop 1] ONE reader termination, as a value.
+
+    Immutable for the same reason `TerminalRecord` is: the object the reader
+    logs, the object that rides the eof tuple and the object `_drop_conn` folds
+    into `WORKER_DISCONNECTED` are provably the same value on all three
+    surfaces.
+
+    `coordinator_close_intent` is the intent AS OBSERVED AT THE INSTANT OF THE
+    EXIT — it is emphatically not back-filled later, and a `None` here is
+    evidence of ordering (the coordinator had not decided yet), never a lost
+    fact: §8.3.2c's race is covered by `CONNECTION_CLOSE_INTENT`, which
+    `_drop_conn` emits on its own account."""
+    reason: str
+    connection_id: Optional[str] = None
+    exc_class: Optional[str] = None
+    at: Optional[float] = None
+    held_envelope_discarded: bool = False
+    drop_origin: str = DROP_ORIGIN_READER
+    coordinator_close_intent: Optional[str] = None
+    saturation_spent_s: Optional[float] = None
+
+    def as_fields(self) -> Dict[str, Any]:
+        """The additive projection carried on every surface (same keys, one
+        construction), so a grep or a parser sees one vocabulary."""
+        return {
+            "connection_id": self.connection_id,
+            "reader_exit_reason": self.reason,
+            "reader_exit_exc_class": self.exc_class,
+            "reader_exit_at": self.at,
+            "held_envelope_discarded": self.held_envelope_discarded,
+            "drop_origin": self.drop_origin,
+            "coordinator_close_intent": self.coordinator_close_intent,
+        }
+
+
+class ConnState:
+    """[ATTEMPT-6 §8.3.3] Per-connection state owned jointly by the serve loop
+    and that connection's reader thread.
+
+    NOT a process-global map keyed by socket — that is the shape that leaks. The
+    lifetime is (the serve loop's dict entry) UNION (the reader thread's own
+    reference): the dict entry is popped on exactly the three lines that already
+    pop `conn_meta`/`reader_threads`, and because the reader holds its own
+    reference, popping does not race the reader's read. There is no sweep, no
+    TTL, and no socket-keyed residue that can outlive a connection.
+
+    `connection_id` IS A GENUINELY RUN-SCOPED TOKEN assigned when the connection
+    is accepted — deliberately NOT `rawsock.fileno()` and NOT `id(rawsock)`, both
+    of which are reused during a long process. Correlation across
+    `READER_EXIT` / `CONNECTION_CLOSE_INTENT` / `WORKER_DISCONNECTED` is the
+    whole point of the R3.4 evidence model, and a reused identity silently
+    destroys it.
+
+    `inbound_saturation_spent_s` IS THE ONE SATURATION-ACCOUNTING AUTHORITY for
+    this connection (R2.1). It is created here at 0.0 and NOWHERE ELSE, written
+    only by `charge_inbound_saturation`, and is MONOTONICALLY NON-DECREASING for
+    the life of the connection: a successful delivery neither resets nor reduces
+    it, because `S` was accepted as cumulative rather than per-episode and "the
+    last put succeeded" is not evidence that ingress has recovered."""
+
+    __slots__ = ("connection_id", "close_intent", "close_intent_at",
+                 "inbound_saturation_spent_s", "lock")
+
+    def __init__(self, connection_id: str) -> None:
+        self.connection_id = connection_id
+        self.close_intent: Optional[str] = None
+        self.close_intent_at: Optional[float] = None
+        self.inbound_saturation_spent_s = 0.0
+        self.lock = threading.Lock()
+
+    # -- close intent, FIRST-WRITER-WINS ------------------------------------
+    def record_close_intent(self, intent: Optional[str],
+                            at: Optional[float] = None) -> bool:
+        """Record why the coordinator is closing this socket. Returns True iff
+        THIS call was the writer.
+
+        First-writer-wins is the same rule and the same reason as Defect A's
+        `_stop_cause`: a second `_drop_conn` on the same socket (an eof arriving
+        after a coordinator drop) must not rewrite the original intent."""
+        if intent is None:
+            return False
+        with self.lock:
+            if self.close_intent is not None:
+                return False
+            self.close_intent = intent
+            self.close_intent_at = at
+            return True
+
+    def observed_close_intent(self) -> Tuple[Optional[str], Optional[float]]:
+        with self.lock:
+            return self.close_intent, self.close_intent_at
+
+
 # Shard staging lifecycle (Stage 3 completes the transitions).
 SH_PENDING = "pending"     # result recorded; local file not yet materialized
 SH_STAGED = "staged"       # local file written, not yet hash-verified
@@ -235,6 +414,47 @@ SH_FAILED = "failed"
 # agree on how long a fleet may take to come up.
 # ---------------------------------------------------------------------------
 DEFAULT_WORKER_ADMISSION_TIMEOUT = 180.0
+
+
+# ---------------------------------------------------------------------------
+# [ATTEMPT-6 PART B] THE FOUR BOUNDED-SERVICE CONFIG TERMS AND THEIR QUANTA.
+#
+# Every one of them is validated FAIL-CLOSED at entry to `serve_trial`, in the
+# same place and the same shape as `worker_admission_timeout` above — the values
+# that would restore the defect (None / 0 / negative / inf, and for `A_max`
+# anything that is not an integer >= 1) are refused there rather than honoured
+# into an unbounded drain or a starved admission queue.
+# ---------------------------------------------------------------------------
+# `D` — the monotonic drain budget (M-1). The certified structural claim is
+# `drain contribution <= D + one in-flight message runtime`: the deadline is
+# tested BEFORE each message is taken, so at most one message can start just
+# under it and overrun. 0.25 s is the design's declared default (§2.4 / §8.5.1).
+DEFAULT_DRAIN_BUDGET_SECONDS = 0.25
+# The retained SECONDARY ceiling (§2.4 M-1). THE BOUND IS THE DEADLINE; THE COUNT
+# IS A GUARD — it keeps a pathological zero-cost-message flood from spinning the
+# drain without ever crossing the deadline. It is neither lowered (a bare
+# lowering of the 256 is explicitly forbidden) nor deleted.
+DRAIN_COUNT_GUARD = 256
+# `D_adm` — the admission-service budget (§8.6.3). One tenth of `D`: the control
+# plane concedes at most ~10% of a drain budget to registration service per
+# iteration.
+DEFAULT_ADMISSION_DRAIN_BUDGET_SECONDS = DEFAULT_DRAIN_BUDGET_SECONDS / 10.0
+# `A_max` — a count cap on dispositions per iteration. NOT redundant with
+# `D_adm`: `D_adm` bounds wall time, `A_max` bounds LEDGER WRITES, and a warm
+# SQLite page cache would otherwise let one iteration perform an unbounded number
+# of them inside a small `D_adm`. It is a MAXIMUM, never a guaranteed service
+# rate (R3.2): the deadline is tested only from the SECOND disposition, so one
+# disposition per turn is the progress FLOOR.
+DEFAULT_ADMISSION_MAX_DISPOSITIONS = 8
+# `S` — the CUMULATIVE per-connection inbound-saturation budget (§8.2.4).
+# DERIVED from the admission window immediately above, exactly as Defect A §14's
+# recovery budget is derived from it — read here, never redefined.
+DEFAULT_INBOUND_SATURATION_BUDGET_SECONDS = DEFAULT_WORKER_ADMISSION_TIMEOUT
+# Retry GRANULARITY, not a bound. The bound is `S`. A quantum exists only so
+# `reader_stop` and the terminal state are re-inspected between attempts — the
+# same reason the pause loop waits in 50 ms slices rather than unboundedly.
+INBOUND_PUT_QUANTUM_S = 0.25
+EOF_PUT_QUANTUM_S = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -2555,8 +2775,13 @@ class ServeLoopTiming:
     # `close_current_iteration` — so it accounts for EVERY path through the body,
     # including the `continue`s that skip the rest of it AND the final iteration,
     # which by construction has no next top-of-loop to close it.
+    # [ATTEMPT-6 §8.6.3] `admission` is the bounded registration-service turn. It
+    # is TOP-LEVEL, not nested inside `drain`: it happens outside the inbound
+    # drain entirely, and charging it to `msg` (which IS nested in `drain`) would
+    # break the partition `unattributed_total` is a residual over.
     SEGMENTS = ("iteration", "accept", "drain", "msg", "deadline",
-                "stage_setup", "schedule", "dispatch", "expiry", "advance")
+                "stage_setup", "schedule", "dispatch", "expiry", "advance",
+                "admission")
     # [R1.2, Beta 2026-08-12] SEGMENTS THAT ARE MEASURED INSIDE ANOTHER SEGMENT.
     # `msg` is timed inside `drain`, so subtracting both from the iteration total
     # charged message-dispatch time TWICE and `unattributed_total` was not the
@@ -2586,6 +2811,37 @@ class ServeLoopTiming:
         self.loop_now_age_max = 0.0
         self.loop_now_age_at: Optional[float] = None
         self.exit_seconds: Optional[float] = None
+        # ------------------------------------------------------------------
+        # [ATTEMPT-6 §8.5.2 / M-4] THE TWO RESIDUALS, MADE NAMEABLE.
+        #
+        # `K_i` — the COMPOSITE control block for one iteration (deadline +
+        # stage_setup + schedule + dispatch + expiry + advance). A composite
+        # maximum is NOT derivable from six independent per-segment maxima, and
+        # the composite is the quantity the recurrence actually names: without it
+        # a single 200-second expiry pass appears only as `expiry_max=200.0`, with
+        # no instant, no stage and no counts.
+        #
+        # `drain_stop_*` — WHY each drain ended. A drain that stops on the deadline
+        # in normal operation says `D` is too small for the geometry; a drain that
+        # NEVER stops on the deadline says FAIR-1/FAIR-2 are not exercising
+        # anything. Without these counters both failure modes are invisible and a
+        # gate can go green on an untouched code path.
+        #
+        # NO NEW CLOCK READ IS INTRODUCED ANYWHERE IN THIS CLASS: `stop()` already
+        # takes exactly one `perf_counter()` reading and now RETURNS the elapsed
+        # value, so the serve loop composes `K_i` from readings that were already
+        # being taken. The monotonic-only property and the scripted-clock gates
+        # that pin it are therefore untouched.
+        # ------------------------------------------------------------------
+        self.control_block_max = 0.0
+        self.control_block_at: Optional[float] = None
+        self.control_block_total = 0.0
+        self.control_block_count = 0
+        self.slow_control_events = 0
+        self.slow_msg_events = 0
+        self.drain_stop_counts: Dict[str, int] = {
+            "empty": 0, "deadline": 0, "count_guard": 0}
+        self.admission_dispositions_max = 0
 
     # -- measurement -------------------------------------------------------
     def tick(self, wall_now: Optional[float] = None) -> None:
@@ -2631,9 +2887,42 @@ class ServeLoopTiming:
     def start() -> float:
         return time.perf_counter()
 
-    def stop(self, segment: str, started: float) -> None:
+    def stop(self, segment: str, started: float) -> Optional[float]:
+        """[ATTEMPT-6] Now RETURNS the elapsed seconds it just recorded (or None
+        on a caller error), so the serve loop can compose the per-iteration
+        control-block total and detect a slow message WITHOUT taking a second
+        clock reading. Additive: every existing caller ignores the value."""
         try:
-            self._record(segment, time.perf_counter() - started)
+            elapsed = time.perf_counter() - started
+            self._record(segment, elapsed)
+            return elapsed
+        except Exception:                                        # noqa: BLE001
+            return None
+
+    def note_control_block(self, seconds: float,
+                           at: Optional[float] = None) -> None:
+        """Record one iteration's COMPOSITE `K_i`. `seconds` is summed by the
+        caller from values `stop()` already returned — no clock read here."""
+        try:
+            self.control_block_total += float(seconds)
+            self.control_block_count += 1
+            if seconds > self.control_block_max:
+                self.control_block_max = float(seconds)
+                self.control_block_at = at
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def note_drain_stop(self, reason: str) -> None:
+        try:
+            if reason in self.drain_stop_counts:
+                self.drain_stop_counts[reason] += 1
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def note_admission_dispositions(self, n: int) -> None:
+        try:
+            if n > self.admission_dispositions_max:
+                self.admission_dispositions_max = int(n)
         except Exception:                                        # noqa: BLE001
             pass
 
@@ -2703,6 +2992,21 @@ class ServeLoopTiming:
         named = sum(self.total[s] for s in self.SEGMENTS
                     if s != "iteration" and s not in self.NESTED_SEGMENTS)
         m["unattributed_total"] = max(0.0, self.total["iteration"] - named)
+        # [ATTEMPT-6 §8.5.2 / M-4] additive series; nothing above is altered.
+        m["control_block_max"] = self.control_block_max
+        m["control_block_at"] = self.control_block_at
+        m["control_block_total"] = self.control_block_total
+        m["control_block_count"] = self.control_block_count
+        m["slow_control_events"] = self.slow_control_events
+        m["slow_msg_events"] = self.slow_msg_events
+        m["drain_stop_empty"] = self.drain_stop_counts["empty"]
+        m["drain_stop_deadline"] = self.drain_stop_counts["deadline"]
+        m["drain_stop_count_guard"] = self.drain_stop_counts["count_guard"]
+        # The vacuity signal FAIR-1/FAIR-2 assert on: a drain that never reached
+        # its budget proves nothing about a budget.
+        m["drain_deadline_hits"] = self.drain_stop_counts["deadline"]
+        m["admission_dispositions_max_per_iteration"] = (
+            self.admission_dispositions_max)
         return m
 
 
@@ -2924,7 +3228,35 @@ class RangeMinerCoordinator:
             "capacity_timeout_terminations": 0,
             "capacity_invariant_terminations": 0,
             "trial_started_at": None,
+            # [ATTEMPT-6 Q-4 / §8.2.3 / §8.6] Additive series, same `[S172-BP]`
+            # idiom and the same grep-stable line. Saturation is measured
+            # READER-SIDE — where it is felt — rather than sampled once per
+            # iteration where it is not.
+            "inbound_saturation_seconds_total": 0.0,
+            "inbound_saturation_events": 0,
+            "emergency_events_total": 0,
+            "emergency_events_acted_on": 0,
+            "admission_queue_high_water": 0,
+            "admission_dispositions_total": 0,
+            "admission_dispositions_max_per_iteration": 0,
         }
+        # [ATTEMPT-6 binding detail 1] RUN-SCOPED CONNECTION CORRELATION TOKEN.
+        # A monotonically increasing counter, never a file descriptor and never
+        # `id(sock)`: both are reused during a long process, and a reused identity
+        # silently destroys the correlation the three-record evidence model is
+        # made of.
+        self._conn_seq_lock = threading.Lock()
+        self._conn_seq = 0
+        # [§8.6.3] the REGISTER disposition fence's token registry. Bounded by the
+        # connections accepted during one trial and cleared at trial teardown;
+        # a waiter removes its own token when it observes the disposition.
+        self._admission_token_seq = 0
+        self._admission_disp_lock = threading.Lock()
+        self._admission_disposed: set = set()
+        # `S`, resolved and fail-closed validated ONCE at entry to `serve_trial`.
+        # None here means "no serve_trial has run yet", in which case the accessor
+        # returns the derived default rather than a fabricated zero.
+        self._inbound_saturation_budget_s: Optional[float] = None
         # Defect 4 (C4): tracked registry of timed-out ('abandoned') fetch daemon
         # threads whose TransferAdapter did not honor cancellation, so permanent
         # network hangs cannot accumulate untracked threads across a 50-trial soak.
@@ -5048,6 +5380,176 @@ class RangeMinerCoordinator:
             self._bp["inbound_qsize_high_water"] = max(
                 self._bp["inbound_qsize_high_water"], int(qsize))
 
+    def note_admission_queue_occupancy(self, qsize: int) -> None:
+        """[ATTEMPT-6 §8.6.6] Admission-channel depth high-water. The channel is a
+        `SimpleQueue` and has no full state, so this is an observability series
+        and never a bound."""
+        with self._bp_lock:
+            self._bp["admission_queue_high_water"] = max(
+                self._bp["admission_queue_high_water"], int(qsize))
+
+    # ----- [ATTEMPT-6 §8.2] inbound saturation: ONE accumulator, one writer ----
+    def next_connection_id(self, run_id: Optional[str] = None) -> str:
+        """[binding detail 1] A genuinely RUN-SCOPED correlation token, assigned
+        when a connection is accepted.
+
+        Deliberately NOT `rawsock.fileno()` and NOT `id(rawsock)`. Both are reused
+        during a long process, and correlation across `READER_EXIT`,
+        `CONNECTION_CLOSE_INTENT` and `WORKER_DISCONNECTED` is the whole point of
+        the §8.3.2d evidence model — a reused identity destroys it silently, which
+        is the failure mode this design exists to remove rather than reproduce in
+        a new field."""
+        with self._conn_seq_lock:
+            self._conn_seq += 1
+            seq = self._conn_seq
+        return f"{run_id or 'run'}:conn{seq}"
+
+    def charge_inbound_saturation(self, state: Optional["ConnState"],
+                                  seconds: float, *, kind: str,
+                                  conn: Any = None) -> float:
+        """THE ONE WRITER of `ConnState.inbound_saturation_spent_s`, and the ONE
+        charging seam for `S` (§8.2.4a).
+
+        `S` measures exactly one thing: HOW LONG THIS CONNECTION HAS BEEN UNABLE
+        TO HAND WORK TO A FULL BOUNDED `inbound`. The test that classifies any
+        future waiter is *did this wait happen because a bounded queue refused the
+        item?* Only `inbound` is bounded — the admission channel is a
+        `SimpleQueue` and cannot refuse — so nothing downstream of a successful
+        `admission.put` is ingress saturation BY CONSTRUCTION. The staging pause,
+        the pre-decode credit barrier, the REGISTER disposition fence,
+        admission-queue residence and registration ledger time are therefore all
+        EXCLUDED: charging a SERVICE delay to an INGRESS budget would manufacture
+        an `inbound_saturation_timeout` on a coordinator whose `inbound` was never
+        full, inverting the very classification the terminal exists to establish.
+
+        `seconds` IS MEASURED MONOTONIC ELAPSED WAIT, not the configured quantum
+        (binding detail 3): a scheduler-delayed `put` really does wait longer than
+        its timeout argument, and a budget accounted in nominal quanta would
+        under-count exactly when the coordinator is most loaded.
+
+        MONOTONICALLY NON-DECREASING. A successful delivery neither resets nor
+        reduces the accumulator — `S` is cumulative, not per-episode, and "the
+        last put succeeded" is not evidence that ingress has recovered. There is
+        exactly one creation site (`ConnState.__init__`, at 0.0) and exactly one
+        assignment site (here)."""
+        charged = max(0.0, float(seconds))
+        spent = charged
+        if state is not None:
+            with state.lock:
+                state.inbound_saturation_spent_s = (
+                    state.inbound_saturation_spent_s + charged)
+                spent = state.inbound_saturation_spent_s
+        with self._bp_lock:
+            self._bp["inbound_saturation_seconds_total"] += charged
+            self._bp["inbound_saturation_events"] += 1
+        # TRANSITION-ONLY at WARNING, exactly as Defect A §15 emits session
+        # events: the FIRST charge on a connection is the fact an operator needs
+        # ("this connection has begun waiting on a full ingress queue"), and at a
+        # 0.25 s quantum against a 180 s budget a per-charge warning would be up
+        # to ~720 lines per connection — the high-rate noise the `[S172-BP]`/
+        # `[S172-SL]` idiom exists to avoid. `spent == charged` IS the first
+        # charge, derived from the accumulator rather than from a new flag. Every
+        # subsequent charge is still recorded, at DEBUG and in the two counters.
+        record = {
+            "event": "INBOUND_SATURATION",
+            "kind": kind,
+            "connection_id": (state.connection_id if state is not None
+                              else RX_UNOBSERVED),
+            "charged_s": round(charged, 6),
+            "spent_s": round(spent, 6),
+        }
+        if spent == charged:
+            logger.warning("[S172-BP] inbound_saturation_begin %s",
+                           json.dumps(record, default=str, sort_keys=True))
+        else:
+            logger.debug("[S172-BP] inbound_saturation %s",
+                         json.dumps(record, default=str, sort_keys=True))
+        return spent
+
+    def inbound_saturation_budget_s(self, configured: Optional[float] = None) -> float:
+        """`S`, validated POSITIVE FINITE in the same shape as
+        `worker_admission_timeout`. `serve_trial` resolves it once at entry and
+        stores it; a bare-API caller (a gate, a direct reader) gets the derived
+        default."""
+        raw = (self._inbound_saturation_budget_s if configured is None
+               else configured)
+        if raw is None:
+            raw = DEFAULT_INBOUND_SATURATION_BUDGET_SECONDS
+        budget = float(raw)
+        if not (budget > 0.0 and math.isfinite(budget)):
+            raise ValueError(
+                "inbound_saturation_budget_seconds must be a POSITIVE FINITE "
+                f"number of seconds (got {raw!r})")
+        return budget
+
+    def inbound_saturation_terminal_reason(self, event: Dict[str, Any]) -> str:
+        """The §8.2.1 terminal reason string. Leads with the ROOT CAUSE in the
+        Part-B convention `staging_capacity_timeout_reason` already uses, and
+        names the blocked SITE — a reader blocked delivering a result, a reader
+        blocked delivering its own reasoned EOF, and a bare terminal that names
+        neither are three different diagnostics."""
+        return (
+            f"coordinator_inbound_saturation_timeout: local ingress did not "
+            f"drain within {event.get('budget_s')}s; blocked_site="
+            f"{event.get('where')}; connection_id={event.get('connection_id')}; "
+            f"worker_id={event.get('worker_id')}; "
+            f"spent={event.get('spent_s')}s; "
+            f"inbound_qsize={event.get('inbound_qsize')}/"
+            f"{event.get('inbound_maxsize')}; "
+            f"reader_exit_reason={event.get('reader_exit_reason')}")
+
+    def raise_infrastructure_terminal(
+        self, emergency, terminal_class: str, *, where: str,
+        state: Optional["ConnState"] = None, spent: Optional[float] = None,
+        exit_record: Optional["ReaderExit"] = None, budget_s: Optional[float] = None,
+        worker_id: Optional[str] = None, inbound=None,
+    ) -> Dict[str, Any]:
+        """[§8.2.3] Request a TRIAL-LEVEL infrastructure terminal from a reader
+        thread, over the emergency control channel.
+
+        The channel is a `queue.SimpleQueue`: `put` is unbounded and NEVER BLOCKS,
+        so there is no `Full` to handle and no second saturation to reason about.
+        This is deliberately not "a bounded queue that cannot be full for a
+        legitimate reason" — that argument was withdrawn once already and is not
+        re-used; the structure simply has no full state, and CARD-1/2/3 bound how
+        many events can ever exist:
+
+          CARD-1  each emit site is immediately followed by `return` from the
+                  reader's exit path -> AT MOST ONE EVENT PER READER THREAD;
+          CARD-2  reader threads are 1:1 with accepted connections;
+          CARD-3  the serve loop consumes the channel first and the FIRST event
+                  fail-closes the trial, so at most ONE event is ever acted on.
+
+        THIS METHOD DOES NOT TERMINATE ANYTHING ITSELF. It touches no ledger
+        state, calls no matrix path and calls no `fail_trial` — the reader rule
+        ("it touches NO ledger state; all dispatch stays single-threaded on the
+        serve loop") is preserved exactly. The serve loop is what fail-closes."""
+        event = {
+            "event": "EMERGENCY_TERMINAL_REQUEST",
+            "terminal_class": terminal_class,
+            "where": where,
+            "connection_id": (state.connection_id if state is not None
+                              else RX_UNOBSERVED),
+            "worker_id": worker_id if worker_id is not None else RX_UNOBSERVED,
+            "spent_s": (None if spent is None else round(float(spent), 6)),
+            "budget_s": budget_s,
+            "at": time.time(),
+            "inbound_qsize": (None if inbound is None else inbound.qsize()),
+            "inbound_maxsize": (None if inbound is None
+                                else getattr(inbound, "maxsize", None)),
+            "reader_exit_reason": (None if exit_record is None
+                                   else exit_record.reason),
+            "reader_exit": (None if exit_record is None
+                            else exit_record.as_fields()),
+        }
+        with self._bp_lock:
+            self._bp["emergency_events_total"] += 1
+        logger.error("[MINER-SESSION] EMERGENCY_TERMINAL_REQUEST %s",
+                     json.dumps(event, default=str, sort_keys=True))
+        if emergency is not None:
+            emergency.put(event)
+        return event
+
     def staging_backpressure_metrics(self, now: Optional[float] = None) -> Dict[str, Any]:
         now = time.time() if now is None else now
         with self._bp_lock:
@@ -5111,7 +5613,11 @@ class RangeMinerCoordinator:
             "paused_high_water=%d pause_events=%d pause_seconds_total=%.3f "
             "pause_seconds_max=%.3f staging_jobs_completed=%d "
             "staging_jobs_per_sec=%s capacity_timeout_terminations=%d "
-            "capacity_invariant_terminations=%d",
+            "capacity_invariant_terminations=%d "
+            "inbound_saturation_seconds_total=%.3f inbound_saturation_events=%d "
+            "emergency_events_total=%d emergency_events_acted_on=%d "
+            "admission_queue_high_water=%d admission_dispositions_total=%d "
+            "admission_dispositions_max_per_iteration=%d",
             run_id, m["inbound_qsize_high_water"], m["deferred_high_water"],
             m["derived_bound"], m["bound_in_force"], m["paused_high_water"],
             m["pause_events"], m["pause_seconds_total"], m["pause_seconds_max"],
@@ -5119,7 +5625,13 @@ class RangeMinerCoordinator:
             ("%.3f" % m["staging_jobs_per_sec"]) if m["staging_jobs_per_sec"]
             is not None else "n/a",
             m["capacity_timeout_terminations"],
-            m["capacity_invariant_terminations"])
+            m["capacity_invariant_terminations"],
+            # [ATTEMPT-6] additive series, same grep-stable line.
+            m["inbound_saturation_seconds_total"],
+            m["inbound_saturation_events"],
+            m["emergency_events_total"], m["emergency_events_acted_on"],
+            m["admission_queue_high_water"], m["admission_dispositions_total"],
+            m["admission_dispositions_max_per_iteration"])
         return m
 
     def log_serve_loop_timing_summary(
@@ -5160,7 +5672,13 @@ class RangeMinerCoordinator:
                 "dispatch_max=%.3f expiry_max=%.3f advance_max=%.3f "
                 "drain_total=%.3f msg_total=%.3f schedule_total=%.3f "
                 "dispatch_total=%.3f expiry_total=%.3f advance_total=%.3f "
-                "unattributed_total=%.3f exit_seconds=%s",
+                "unattributed_total=%.3f exit_seconds=%s "
+                "admission_max=%.3f admission_total=%.3f "
+                "control_block_max=%.3f control_block_at=%s "
+                "drain_stop_empty=%d drain_stop_deadline=%d "
+                "drain_stop_count_guard=%d drain_deadline_hits=%d "
+                "slow_msg_events=%d slow_control_events=%d "
+                "admission_dispositions_max_per_iteration=%d",
                 run_id, m["loop_seconds"], m["iterations"],
                 m["iteration_max"],
                 ("%.3f" % m["max_iteration_at"])
@@ -5175,7 +5693,16 @@ class RangeMinerCoordinator:
                 m["dispatch_total"], m["expiry_total"], m["advance_total"],
                 m["unattributed_total"],
                 ("%.3f" % m["exit_seconds"])
-                if m["exit_seconds"] is not None else "n/a")
+                if m["exit_seconds"] is not None else "n/a",
+                # [ATTEMPT-6 §8.5.2 / M-4] additive series on the same line.
+                m["admission_max"], m["admission_total"],
+                m["control_block_max"],
+                ("%.3f" % m["control_block_at"])
+                if m["control_block_at"] is not None else "n/a",
+                m["drain_stop_empty"], m["drain_stop_deadline"],
+                m["drain_stop_count_guard"], m["drain_deadline_hits"],
+                m["slow_msg_events"], m["slow_control_events"],
+                m["admission_dispositions_max_per_iteration"])
             return m
         except Exception:                                        # noqa: BLE001
             logger.exception(
@@ -6742,6 +7269,71 @@ class RangeMinerCoordinator:
                 "dispatch and no terminal failure. Bound the ADMISSION wait; "
                 "execution stays unbounded via serve_timeout=None."
             )
+        # [ATTEMPT-6 PART B] THE FOUR BOUNDED-SERVICE TERMS, RESOLVED AND
+        # FAIL-CLOSED VALIDATED IN THE SAME PLACE AND THE SAME SHAPE AS THE
+        # ADMISSION WINDOW ABOVE — before the dataset digest, before the trial
+        # context, before the listening socket. R3 declares them fail-closed
+        # validated; this is where that becomes true in code rather than in prose.
+        def _positive_finite(name, raw, why):
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = float("nan")            # notably None
+            if not (value > 0.0 and math.isfinite(value)):
+                raise ValueError(
+                    f"{name} must be a POSITIVE FINITE number of seconds (got "
+                    f"{raw!r}) for run {run_id!r}. {why}")
+            return value
+
+        drain_budget = _positive_finite(
+            "drain_budget_seconds",
+            context.get("drain_budget_seconds", DEFAULT_DRAIN_BUDGET_SECONDS),
+            "None/0/negative/inf are exactly the values that restore the "
+            "unbounded cumulative drain: attempt 5 spent 940.9 s inside ONE "
+            "iteration with no time term anywhere, so the control plane — lease "
+            "expiry, admission, dispatch, stage advance — did not run.")
+        admission_drain_budget = _positive_finite(
+            "admission_drain_budget_seconds",
+            context.get("admission_drain_budget_seconds",
+                        DEFAULT_ADMISSION_DRAIN_BUDGET_SECONDS),
+            "An unbudgeted priority drain moves monopolization one queue upward: "
+            "the registration channel would then be able to starve the control "
+            "plane, and a reconnect storm is a legal input.")
+        inbound_saturation_budget = _positive_finite(
+            "inbound_saturation_budget_seconds",
+            context.get("inbound_saturation_budget_seconds",
+                        DEFAULT_INBOUND_SATURATION_BUDGET_SECONDS),
+            "`S` bounds how long a reader may wait on a full bounded `inbound`. "
+            "Unbounded, a wedged coordinator grows memory without limit; zero "
+            "restores the ungoverned single-shot shed this repair removes.")
+        self._inbound_saturation_budget_s = inbound_saturation_budget
+        # `A_max` — [binding detail 2] AN INTEGER >= 1, OR FAIL CLOSED. The
+        # progress proof requires AT LEAST ONE eligible disposition attempt per
+        # admission turn; `A_max = 0` would silently restore admission starvation
+        # while every other term still looked correctly configured.
+        _amax_raw = context.get("admission_max_dispositions",
+                                DEFAULT_ADMISSION_MAX_DISPOSITIONS)
+        if isinstance(_amax_raw, bool) or not isinstance(_amax_raw, int):
+            _amax_ok = False
+        else:
+            _amax_ok = _amax_raw >= 1
+        if not _amax_ok:
+            raise ValueError(
+                f"admission_max_dispositions must be an INTEGER >= 1 (got "
+                f"{_amax_raw!r}) for run {run_id!r}. The progress floor of the "
+                f"admission service is ONE disposition per turn whenever the "
+                f"channel is non-empty; a value below 1 — or a float, or None — "
+                f"silently restores admission starvation, which is the condition "
+                f"the whole registration-priority mechanism exists to remove.")
+        admission_max_dispositions = int(_amax_raw)
+        # Attribution thresholds for the two residuals the recurrence names. They
+        # default to `D`, so an event that could plausibly breach the bound names
+        # itself the first time it happens rather than becoming the next
+        # 940-second mystery.
+        msg_slow_threshold = float(
+            context.get("msg_slow_threshold", drain_budget))
+        k_slow_threshold = float(
+            context.get("k_slow_threshold", drain_budget))
         family_name = context.get("family_name") or context.get("prng_base") or ""
         phase = int(context.get("phase", context.get("workflow_phase", 1)))
         total_seeds = int(context["total_seeds"])
@@ -6835,9 +7427,24 @@ class RangeMinerCoordinator:
         # logic, or the timeout loop. conn_meta tracks liveness for the read deadline.
         import queue as _queue
         inbound: "_queue.Queue" = _queue.Queue(maxsize=1024)
+        # [ATTEMPT-6 §8.2.3] THE EMERGENCY CONTROL CHANNEL. `SimpleQueue`, not
+        # `Queue`: `put` is unbounded and never blocks, so there is no `Full` to
+        # handle and no second saturation to reason about. Consumed at the TOP of
+        # the loop, in the same band as the other trial-terminal tests.
+        emergency: "_queue.SimpleQueue" = _queue.SimpleQueue()
+        # [ATTEMPT-6 §8.6.3] THE ADMISSION CHANNEL. Also a `SimpleQueue`, and for
+        # the same reason: bounding it would reintroduce a `Full` case on the
+        # control path. Nothing is ever dropped — an undrained REGISTER simply
+        # waits for the next iteration's bounded service turn.
+        admission: "_queue.SimpleQueue" = _queue.SimpleQueue()
         reader_stop = threading.Event()
         reader_threads: Dict[Any, threading.Thread] = {}
         conn_meta: Dict[Any, Dict[str, Any]] = {}   # rawsock -> {connect, registered}
+        # [ATTEMPT-6 §8.3.3] rawsock -> ConnState. Created on the same line as
+        # `conn_meta[csock]` and popped on the same three lines, so
+        # `|conn_state| == |conn_meta|` holds by construction and a forgotten pop
+        # reds a gate instead of leaking.
+        conn_state: Dict[Any, "ConnState"] = {}
         # Defect 6: the workflow's family/phase STAGES. `family_name`/`phase`
         # overrides (used by the gate) collapse to one stage; otherwise the trial
         # runs all stages resolved from prng_base + test_both_modes.
@@ -6861,6 +7468,10 @@ class RangeMinerCoordinator:
         # Default False: a run that never reached the gate is NOT validated,
         # and downstream refuses it. Absence is never neutral.
         provenance_validated = False
+        # [ATTEMPT-6 M-2] Did the PREVIOUS drain end knowing more inbound was
+        # waiting? False at entry — an unstarted loop knows of no backlog, so the
+        # first iteration takes the ordinary idle poll.
+        backlog_known = False
         start = time.time()
         # [S172-BP §4] the trial clock the staging-throughput series is measured
         # against (jobs completed / elapsed).
@@ -6881,10 +7492,93 @@ class RangeMinerCoordinator:
         # monotonic clock only, no decision path reads it, and it is emitted once
         # at trial terminal beside the `[S172-BP] summary` it is modelled on.
         _sl = ServeLoopTiming()
+        # [ATTEMPT-6 §8.5.2] the per-iteration control-block parts. Every value is
+        # one that `stop()` ALREADY measured and now returns, so the composite adds
+        # no clock read of its own and the instrument stays monotonic-only.
+        _k_parts: Dict[str, float] = {}
+        _k_at: Optional[float] = None
+
+        def _emit_control_block():
+            """Record one iteration's composite `K_i`, and — on a crossing — ONE
+            structured record naming the DOMINANT segment.
+
+            `K_i` must not become the next invisible residual: the design bounds
+            `D` and `D_adm` by construction and leaves `M_i`, `K_i` and `m_i` as
+            measured runtimes, so the honest treatment of an unbounded term is to
+            make every breach name itself. Same idiom as the slow-message record —
+            loud once, never per-iteration."""
+            if not _k_parts:
+                return
+            composite = sum(_k_parts.values())
+            _sl.note_control_block(composite, at=_k_at)
+            if composite > k_slow_threshold:
+                _sl.slow_control_events += 1
+                dominant = max(_k_parts.items(), key=lambda kv: kv[1])
+                logger.warning(
+                    "[S172-SL] slow_control %s",
+                    json.dumps({
+                        "event": "SLOW_CONTROL",
+                        "run_id": run_id,
+                        "composite_s": round(composite, 6),
+                        "threshold_s": k_slow_threshold,
+                        "dominant_segment": dominant[0],
+                        "dominant_s": round(dominant[1], 6),
+                        "parts": {k: round(v, 6) for k, v in _k_parts.items()},
+                        "stage_idx": stage_idx,
+                        "stage_assigned": stage_assigned,
+                        "at": _k_at,
+                    }, default=str, sort_keys=True))
+
         try:
             while not _terminal():
                 now = time.time()
                 _sl.tick(now)
+                # [ATTEMPT-6 §8.5.2] CLOSE THE PREVIOUS ITERATION'S COMPOSITE
+                # `K_i` — for exactly the reason `tick()` closes the previous
+                # iteration here rather than at the bottom: the body has many
+                # `continue`s, and a composite recorded at the bottom would be
+                # missing from precisely the iterations that took an early exit.
+                # A composite maximum is NOT derivable from six independent
+                # per-segment maxima, and the composite is the term the recurrence
+                # names, so without it a single 200-second expiry pass would appear
+                # only as `expiry_max=200.0` with no instant and no counts.
+                _emit_control_block()
+                _k_parts = {}
+                _k_at = now
+                # [ATTEMPT-6 §8.2.3] THE EMERGENCY CHANNEL, FIRST — in the same
+                # band as the other trial-terminal tests and before the capacity
+                # timeout below. CARD-3: the FIRST event fail-closes the trial, so
+                # `_terminal()` is true on the next pass and at most ONE event is
+                # ever ACTED ON; residual events are drained and counted at
+                # teardown, never discarded silently.
+                #
+                # `fail_trial` is called WITHOUT `now=` deliberately: the six
+                # shared-clock consumers of this loop's `now` are an audited set
+                # (the F1 lease-origin repair computes them from source), and a
+                # terminal raised by a reader thread is timestamped by
+                # `fail_trial`'s own clock rather than by an iteration clock that
+                # may be older than the event it is describing.
+                try:
+                    _emerg = emergency.get_nowait()
+                except _queue.Empty:
+                    _emerg = None
+                if _emerg is not None:
+                    with self._bp_lock:
+                        self._bp["emergency_events_acted_on"] += 1
+                    _emerg_reason = self.inbound_saturation_terminal_reason(_emerg)
+                    logger.error("[S172-BP] emergency_terminal run=%s %s",
+                                 run_id, _emerg_reason)
+                    self.fail_trial(
+                        run_id, reason=_emerg_reason,
+                        terminal=TerminalRecord(
+                            terminal_class=_emerg.get(
+                                "terminal_class", TC_INBOUND_SATURATION_TIMEOUT),
+                            reason=_emerg_reason,
+                            worker_id=(_emerg.get("worker_id")
+                                       if _emerg.get("worker_id") != RX_UNOBSERVED
+                                       else None)))
+                    continue
+
                 if trial_timeout is not None and now - start > trial_timeout:
                     # Defect 5: terminal abort routed OFF the dispatch loop.
                     self.fail_trial(
@@ -6916,9 +7610,22 @@ class RangeMinerCoordinator:
                     continue
 
                 # --- accept new connections (no blocking read on the loop) ---
+                # [ATTEMPT-6 M-2] THE ACCEPT POLL IS FOLDED INTO THE SAME BUDGET.
+                # The accept `select` blocked the FULL poll on essentially every
+                # iteration of attempt 5 (accept_total ~= 1230 s / 12,300
+                # iterations ~= 100.0 ms, which is `serve_poll` exactly), so
+                # cutting the drain short without this multiplies a fixed ~100 ms
+                # cost across many more iterations — ~30% of ingestion throughput,
+                # which is how an operator ends up raising `D` until the bound
+                # stops being a bound. The loop now blocks for `poll` exactly when
+                # it has nothing to do, which is the only time blocking was ever
+                # the point: when the PREVIOUS drain ended on its deadline (or on
+                # the count guard) the loop already knows more inbound is waiting.
                 _t = _sl.start()
+                _accept_timeout = 0.0 if backlog_known else poll
                 try:
-                    readable, _, _ = select.select([listen_sock], [], [], poll)
+                    readable, _, _ = select.select([listen_sock], [], [],
+                                                   _accept_timeout)
                 except (OSError, ValueError):
                     readable = []
                 if readable:
@@ -6930,33 +7637,144 @@ class RangeMinerCoordinator:
                         cfs = MinerFramedSocket(csock)
                         fs_by_sock[csock] = cfs
                         conn_meta[csock] = {"connect": now, "registered": False}
+                        # [ATTEMPT-6 binding detail 1] The run-scoped correlation
+                        # token is assigned HERE, when the connection is accepted,
+                        # and is carried by every record this connection produces.
+                        _cstate = ConnState(self.next_connection_id(run_id))
+                        conn_state[csock] = _cstate
                         th = threading.Thread(
                             target=self._conn_reader_loop,
                             # [S172-BP §1.2] worker_by_sock lets the reader name
                             # the identity it is pausing, which is what the §1.4
                             # lease exemption keys on. Read-only from the reader.
                             args=(cfs, csock, inbound, reader_stop, worker_by_sock),
+                            # [ATTEMPT-6] The ConnState is passed BY REFERENCE,
+                            # exactly as `worker_by_sock` already is, so the
+                            # reader's lifetime holds its own reference and
+                            # popping the dict cannot race the reader's read.
+                            kwargs={"conn_state": _cstate,
+                                    "emergency": emergency,
+                                    "admission": admission,
+                                    "run_id": run_id,
+                                    "saturation_budget_s":
+                                        inbound_saturation_budget},
                             name="miner-conn-reader", daemon=True)
                         reader_threads[csock] = th
                         th.start()
                 _sl.stop("accept", _t)
 
+                # --- bounded ADMISSION service (§8.6.3) -----------------------
+                # Drained AFTER the emergency channel and BEFORE the budgeted
+                # inbound drain, with its OWN bounded service discipline of
+                # exactly the same structural shape — so the property is proved
+                # once and reused rather than invented twice.
+                #
+                # BOTH DIRECTIONS ARE BOUNDED, and that is the whole point:
+                #   REGISTER cannot be starved by result backlog  <- P-1 + channel
+                #   REGISTER priority cannot starve the control plane <- D_adm+A_max
+                #
+                # THE DEADLINE IS TESTED ONLY FROM THE SECOND DISPOSITION (R3.2).
+                # Testing it first guarantees no progress at all: one registration
+                # whose ledger write exceeds `D_adm` leaves the deadline already
+                # expired at the next turn's first test, and the channel would be
+                # serviced at FEWER than one disposition per turn. `A_max` is a
+                # MAXIMUM, never a guaranteed service rate; ONE disposition is the
+                # progress FLOOR, and the turn's contribution is
+                # `<= D_adm + at most one overrun registration` — deliberately the
+                # same shape as the data drain's `D + one in-flight message`.
+                _t = _sl.start()
+                _adm_deadline = time.perf_counter() + admission_drain_budget
+                _adm_done = 0
+                while _adm_done < admission_max_dispositions:
+                    if _adm_done > 0 and time.perf_counter() >= _adm_deadline:
+                        break
+                    try:
+                        _adm_token, _adm_sock, _adm_msg = admission.get_nowait()
+                    except _queue.Empty:
+                        break
+                    try:
+                        if _adm_sock in fs_by_sock:
+                            self._serve_register_frame(
+                                _adm_msg, _adm_sock, node_allowlist, fs_by_sock,
+                                worker_by_sock, wconn_by_worker, fs_by_worker,
+                                registered, conn_meta, reader_threads,
+                                stage_idx=stage_idx, stage_assigned=stage_assigned,
+                                eligible_fn=_eligible, conn_state_by_sock=conn_state)
+                    finally:
+                        # The fence releases on DISPOSITION — including the
+                        # already-reaped case, which is a disposition too. A
+                        # reader parked on a token nobody will ever dispose of is
+                        # the wedge this `finally` exists to make impossible.
+                        self.note_register_disposition(_adm_token)
+                    _adm_done += 1
+                if _adm_done:
+                    with self._bp_lock:
+                        self._bp["admission_dispositions_total"] += _adm_done
+                        self._bp["admission_dispositions_max_per_iteration"] = max(
+                            self._bp["admission_dispositions_max_per_iteration"],
+                            _adm_done)
+                    _sl.note_admission_dispositions(_adm_done)
+                _sl.stop("admission", _t)
+
                 # --- drain complete frames from the bounded inbound queue ---
                 # [S172-BP §4] inbound-queue occupancy high-water, sampled at the
                 # moment of maximum backlog (before the drain).
+                # [ATTEMPT-6 Q-4] …and AGAIN inside the drain, per message. During
+                # attempt 5's 940.971 s iteration this sample was taken exactly
+                # ONCE: the reported 979 was the depth at that top-of-loop instant
+                # and the gap to the hard 1024 was unmeasured for 940 seconds.
                 _t = _sl.start()
                 self.note_inbound_occupancy(inbound.qsize())
+                # [ATTEMPT-6 M-1] THE MONOTONIC DRAIN DEADLINE replaces the pure
+                # count bound. `perf_counter`, never `time.time()`: a system-clock
+                # step must not be able to manufacture or destroy a turn. The 256
+                # count is RETAINED as a secondary ceiling — it costs nothing, it
+                # keeps a pathological zero-cost-message flood from spinning the
+                # drain without ever crossing the deadline, and deleting it would
+                # be gratuitous. THE BOUND IS THE DEADLINE; THE COUNT IS A GUARD.
+                _drain_deadline = time.perf_counter() + drain_budget
                 drained = 0
-                while drained < 256:
+                _drain_stop = "empty"
+                while True:
+                    if drained >= DRAIN_COUNT_GUARD:
+                        _drain_stop = "count_guard"
+                        break
+                    _remaining = _drain_deadline - time.perf_counter()
+                    if _remaining <= 0.0:
+                        _drain_stop = "deadline"
+                        break
                     try:
-                        # [S172-BP AMENDMENT F1-R2a] FOUR fields: the credit token
-                        # rides with the envelope. `None` for every ordinary
-                        # message and for every 'eof'.
-                        kind, rawsock, msg, credit_id = inbound.get(
-                            timeout=poll if drained == 0 else 0)
+                        # [S172-BP AMENDMENT F1-R2a] the credit token rides with
+                        # the envelope; `None` for every ordinary message.
+                        # [ATTEMPT-6 §1.4 hop 1] FIVE fields: the fifth is the
+                        # reader-exit record, `None` on every ordinary message
+                        # exactly as the credit token is on every non-credited one.
+                        #
+                        # [R2.3] THE FIRST GET RESPECTS THE REMAINING BUDGET. With
+                        # `D` below `poll` and an empty queue the old
+                        # `timeout=poll if drained == 0 else 0` blocked ~0.10 s
+                        # having handled NO message at all — a wait that is neither
+                        # `D` nor "one in-flight message", so the structural claim
+                        # was false for every `D < poll`. The CLOCK enforces the
+                        # property now; a `D >= poll` config relationship was
+                        # rejected because a relationship holds by inference and
+                        # needs a validator a future edit can weaken, whereas a
+                        # monotonic read holds by construction.
+                        # `max(0.0, …)` because `Queue.get` rejects a negative
+                        # timeout and the deadline can be fractionally past by the
+                        # time this line runs.
+                        if drained == 0:
+                            _get_timeout = (0.0 if backlog_known
+                                            else min(poll, max(0.0, _remaining)))
+                        else:
+                            _get_timeout = 0.0
+                        kind, rawsock, msg, credit_id, reader_exit = inbound.get(
+                            timeout=_get_timeout)
                     except _queue.Empty:
+                        _drain_stop = "empty"
                         break
                     drained += 1
+                    self.note_inbound_occupancy(inbound.qsize())
                     if kind == "eof":
                         # [S172-BP AMENDMENT F1-R] disposition (iv): the connection
                         # terminated. `inbound` is FIFO, so a credited envelope that
@@ -6968,13 +7786,23 @@ class RangeMinerCoordinator:
                                                     disposition="eof")
                         # Defect 3 (C5): a disconnected worker is evicted from the
                         # eligible pool (wconn_by_worker / connections / registered).
+                        # [ATTEMPT-6] `reader_exit` is the record the reader built
+                        # AT ITS OWN EXIT and put on this eof — so
+                        # `WORKER_DISCONNECTED` states the cause instead of leaving
+                        # it to be reconstructed 12 hours later from ledger row
+                        # shapes. No close intent is passed: an eof-triggered drop
+                        # is the CONSEQUENCE of a reader exit, never an independent
+                        # coordinator decision to terminate the session.
                         self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
                                         fs_by_worker, wconn_by_worker, registered,
                                         stage_idx=stage_idx,
                                         stage_assigned=stage_assigned,
-                                        eligible_fn=_eligible)
+                                        eligible_fn=_eligible,
+                                        conn_state=conn_state.get(rawsock),
+                                        reader_exit=reader_exit)
                         conn_meta.pop(rawsock, None)
                         reader_threads.pop(rawsock, None)
+                        conn_state.pop(rawsock, None)
                         continue
                     if rawsock not in fs_by_sock:
                         # [S172-BP AMENDMENT F1-R] disposition (iv) again: the
@@ -6985,29 +7813,18 @@ class RangeMinerCoordinator:
                                 rawsock, delivered=True, disposition="conn_dropped")
                         continue   # connection already dropped (reaped/closed)
                     if msg.message_type == "register":
-                        _tm = _sl.start()
-                        status = self._serve_register(
-                            msg, rawsock, node_allowlist, fs_by_sock, worker_by_sock,
-                            wconn_by_worker, fs_by_worker, registered,
-                            eligible_fn=_eligible)
-                        _sl.stop("msg", _tm)
-                        meta = conn_meta.get(rawsock)
-                        if status == "ok":
-                            if meta is not None:
-                                meta["registered"] = True
-                        elif status == "reject_dup_worker":
-                            # a second socket for an already-live worker_id — drop it.
-                            # It was never bound, so the guard leaves the ORIGINAL
-                            # worker's identity intact (Defect 3 C4/C5).
-                            self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
-                                            fs_by_worker, wconn_by_worker, registered,
-                                            stage_idx=stage_idx,
-                                            stage_assigned=stage_assigned,
-                                            eligible_fn=_eligible)
-                            conn_meta.pop(rawsock, None)
-                            reader_threads.pop(rawsock, None)
-                        # reject_rebind: leave the socket bound to its ORIGINAL id
-                        # (already registered); ignore the stray REGISTER frame.
+                        # [ATTEMPT-6 §8.6.5] ONE CODE PATH, NOT TWO. The block that
+                        # used to be inline here is EXTRACTED — not copied — into
+                        # `_serve_register_frame`, so the drain path and the
+                        # admission path cannot develop a divergence. A gate asserts
+                        # `_serve_register` has exactly one caller.
+                        self._serve_register_frame(
+                            msg, rawsock, node_allowlist, fs_by_sock,
+                            worker_by_sock, wconn_by_worker, fs_by_worker,
+                            registered, conn_meta, reader_threads,
+                            stage_idx=stage_idx, stage_assigned=stage_assigned,
+                            eligible_fn=_eligible, conn_state_by_sock=conn_state,
+                            timing=_sl, segment="msg")
                     else:
                         # Defect 3: the RECEIVING socket's bound identity is
                         # authoritative — pass it, never trust msg.worker_id alone.
@@ -7018,8 +7835,40 @@ class RangeMinerCoordinator:
                         self.dispatch_inbound_result(
                             msg, rawsock, run_id, worker_by_sock.get(rawsock),
                             wconn_by_worker, _eligible, credit_id)
-                        _sl.stop("msg", _tm)
+                        _m_elapsed = _sl.stop("msg", _tm)
+                        # [ATTEMPT-6 M-3] `M_max` BECOMES ATTRIBUTABLE. Before this,
+                        # the terminal summary said a message somewhere took 5.974 s
+                        # and nothing else — the recurrence's third term was a number
+                        # with no identity. One structured record per crossing, loud
+                        # once and never per-iteration, so THE NEXT TIME THE BOUND IS
+                        # BREACHED, THE BREACH NAMES ITSELF.
+                        if (_m_elapsed is not None
+                                and _m_elapsed > msg_slow_threshold):
+                            _sl.slow_msg_events += 1
+                            logger.warning(
+                                "[S172-SL] slow_msg %s",
+                                json.dumps({
+                                    "event": "SLOW_MSG",
+                                    "run_id": run_id,
+                                    "seconds": round(_m_elapsed, 6),
+                                    "threshold_s": msg_slow_threshold,
+                                    "message_type": getattr(
+                                        msg, "message_type", None),
+                                    "worker_id": worker_by_sock.get(rawsock),
+                                    "stripe_id": getattr(msg, "stripe_id", None),
+                                    "sub_index": getattr(msg, "sub_index", None),
+                                    "inbound_qsize": inbound.qsize(),
+                                    "stage_idx": stage_idx,
+                                }, default=str, sort_keys=True))
                 _sl.stop("drain", _t)
+                # [ATTEMPT-6 M-4] WHY THE DRAIN STOPPED, counted. A drain that stops
+                # on the deadline in normal operation says `D` is too small for the
+                # geometry; a drain that NEVER stops on the deadline says the
+                # fairness gates are not exercising anything.
+                _sl.note_drain_stop(_drain_stop)
+                # [M-2] The loop knows there is more inbound waiting iff this drain
+                # ended on a bound rather than on an empty queue.
+                backlog_known = _drain_stop in ("deadline", "count_guard")
 
                 # --- read deadline: drop unregistered connections that never
                 # completed a frame (silent or partial), so they cannot wedge the
@@ -7032,14 +7881,23 @@ class RangeMinerCoordinator:
                         logger.warning(
                             "dropping connection that never completed a frame "
                             "within %.1fs read deadline (Defect 6)", read_deadline)
+                        # [ATTEMPT-6 §8.3] A COORDINATOR DECISION, and it now says
+                        # so. `_drop_conn` records the intent and emits
+                        # `CONNECTION_CLOSE_INTENT` before it touches an identity
+                        # map — which is what keeps the fact alive in the ordering
+                        # where the reader failed independently first and
+                        # `WORKER_DISCONNECTED` is never emitted at all.
                         self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
                                         fs_by_worker, wconn_by_worker, registered,
                                         stage_idx=stage_idx,
                                         stage_assigned=stage_assigned,
-                                        eligible_fn=_eligible)
+                                        eligible_fn=_eligible,
+                                        conn_state=conn_state.get(rawsock),
+                                        close_intent=CLOSE_INTENT_READ_DEADLINE)
                         conn_meta.pop(rawsock, None)
                         reader_threads.pop(rawsock, None)
-                _sl.stop("deadline", _t)
+                        conn_state.pop(rawsock, None)
+                _k_parts["deadline"] = _sl.stop("deadline", _t) or 0.0
 
                 # --- staged assignment of the workflow (Defect 6 multi-family) ---
                 # [§4.3 ADMISSION LIVENESS REPAIR — Beta Ruling 1]
@@ -7289,7 +8147,7 @@ class RangeMinerCoordinator:
                                     terminal_class=TC_STAGING_SIZING_FAILURE,
                                     reason=_sizing_reason))
                             continue
-                        _sl.stop("stage_setup", _t)
+                        _k_parts["stage_setup"] = _sl.stop("stage_setup", _t) or 0.0
                         stage_assigned = True
                     # ---- MAINTENANCE (unbounded, threshold-free) ---------------
                     # Everything below runs for an ASSIGNED stage regardless of the
@@ -7344,7 +8202,7 @@ class RangeMinerCoordinator:
                     self.schedule_pending_stripes(
                         run_id, fam, ph, eligible,
                         stage_prefix=_stage_prefix(stage_idx))
-                    _sl.stop("schedule", _t)
+                    _k_parts["schedule"] = _sl.stop("schedule", _t) or 0.0
                     _t = _sl.start()
                     self._dispatch_pending(
                         run_id, fam, ph, fs_by_worker, dispatched, dataset_path,
@@ -7352,16 +8210,16 @@ class RangeMinerCoordinator:
                         context.get("trial_number", -1),
                         trial_ctx["forward_threshold"],
                         trial_ctx["reverse_threshold"])
-                    _sl.stop("dispatch", _t)
+                    _k_parts["dispatch"] = _sl.stop("dispatch", _t) or 0.0
                     _t = _sl.start()
                     self.process_lease_expiry(run_id, eligible)
-                    _sl.stop("expiry", _t)
+                    _k_parts["expiry"] = _sl.stop("expiry", _t) or 0.0
                     # advance to the next stage once THIS stage's stripes are done
                     _t = _sl.start()
                     sp = _stage_prefix(stage_idx) + "_s"
                     stage_stripes = [s for s in self.ledger.all_stripes(run_id)
                                      if s["stripe_id"].startswith(sp)]
-                    _sl.stop("advance", _t)
+                    _k_parts["advance"] = _sl.stop("advance", _t) or 0.0
                     if stage_stripes and all(s["state"] == ST_DONE for s in stage_stripes):
                         stage_idx += 1
                         stage_assigned = False
@@ -7427,6 +8285,11 @@ class RangeMinerCoordinator:
             # precisely when it is the one that mattered (attempt 4's 272.3 s
             # iteration WAS the terminal one). Idempotent and non-raising.
             _sl.close_current_iteration()
+            # [ATTEMPT-6 §8.5.2] …and the terminal iteration's composite `K_i`,
+            # for the same reason and in the same place: the iteration that ENDS
+            # the trial has no next top-of-loop to close it, and that is exactly
+            # the iteration a forensic reader opens first.
+            _emit_control_block()
             # [F1 LEASE-ORIGIN REPAIR] LOOP EXIT is a measured segment too: the
             # teardown below joins reader threads and drains BOTH executors with
             # `wait=True`, so a slow terminal is a real and separately diagnosable
@@ -7486,6 +8349,33 @@ class RangeMinerCoordinator:
             if self.clear_any_resume_credit(disposition="trial_terminal"):
                 logger.info("[S172-BP] resume_credit_cleared_at_terminal run=%s",
                             run_id)
+            # [ATTEMPT-6 §8.2.3 CARD-3] RESIDUAL EMERGENCY EVENTS ARE DRAINED AND
+            # COUNTED, NEVER DISCARDED SILENTLY. At most one is ever ACTED ON (the
+            # first one fail-closes the trial); the rest are real observations by
+            # other readers of the same condition and are reported as such.
+            _residual_emergency = []
+            while True:
+                try:
+                    _residual_emergency.append(emergency.get_nowait())
+                except _queue.Empty:
+                    break
+                except Exception:                                # noqa: BLE001
+                    break
+            if _residual_emergency:
+                logger.warning(
+                    "[S172-BP] emergency_residual run=%s count=%d classes=%s",
+                    run_id, len(_residual_emergency),
+                    sorted({e.get("terminal_class") for e in _residual_emergency}))
+            # The reader threads have been joined above, so no fence can still be
+            # waiting on a token; the registry is per-trial and is cleared here
+            # rather than being allowed to accumulate across trials.
+            with self._admission_disp_lock:
+                self._admission_disposed.clear()
+            # [§8.3.3] `|conn_state| == |conn_meta|` holds through the run because
+            # the two are created and popped on the same lines; the whole-dict
+            # clear happens AFTER the reader join, so no reader's reference is
+            # pulled out from under it.
+            conn_state.clear()
             _sl.exit_seconds = time.perf_counter() - _exit_t0
 
         trial = self.ledger.get_trial(run_id)
@@ -7539,8 +8429,162 @@ class RangeMinerCoordinator:
             logger.warning("could not write threshold provenance to %s: %s", path, e)
             return None
 
+    def _emit_reader_exit(self, state: Optional["ConnState"], reason: str, *,
+                          exc_class: Optional[str] = None,
+                          held_envelope_discarded: bool = False,
+                          worker_id: Optional[str] = None) -> "ReaderExit":
+        """[ATTEMPT-6 §1.4 / §11.1] THE READER_EXIT RECORD, emitted AT THE EXIT
+        ITSELF — at the instant it happens, before any queueing.
+
+        This is deliberately not left to `WORKER_DISCONNECTED`. That record is
+        emitted by the SERVE LOOP, up to a full drain later — in attempt 5 the gap
+        was 940 seconds plus 1.46 — and F-2's standing lesson from the attempt-1
+        forensics is that a terminal decision leaving no execution record is not
+        observable. The reason therefore exists at the moment of the decision,
+        independently of whether the eof survives its journey.
+
+        The close intent is read HERE, as observed at this instant, and is never
+        back-filled later: a `None` is evidence of ordering, not a lost fact
+        (§8.3.2c's race is carried by `CONNECTION_CLOSE_INTENT` instead)."""
+        intent, _intent_at = (state.observed_close_intent() if state is not None
+                              else (None, None))
+        record = ReaderExit(
+            reason=reason,
+            connection_id=(state.connection_id if state is not None
+                           else RX_UNOBSERVED),
+            exc_class=exc_class,
+            at=time.time(),
+            held_envelope_discarded=bool(held_envelope_discarded),
+            drop_origin=(DROP_ORIGIN_COORDINATOR if intent is not None
+                         else DROP_ORIGIN_READER),
+            coordinator_close_intent=intent,
+            saturation_spent_s=(None if state is None
+                                else state.inbound_saturation_spent_s),
+        )
+        payload = {"event": "READER_EXIT", "worker_id": (
+            worker_id if worker_id is not None else RX_UNOBSERVED)}
+        payload.update(record.as_fields())
+        payload["inbound_saturation_spent_s"] = record.saturation_spent_s
+        logger.warning("[MINER-SESSION] READER_EXIT %s",
+                       json.dumps(payload, default=str, sort_keys=True))
+        return record
+
+    def _deliver_reader_eof(self, inbound, rawsock, state, exit_record,
+                            reader_stop, *, emergency=None, budget_s=None,
+                            worker_id=None) -> bool:
+        """[ATTEMPT-6 §8.1.3 — E-1] THE REASONED EOF, ON THE SAME FIFO, WITH
+        BOUNDED RETRY. Replaces `inbound.put(("eof", …), timeout=0.5)` guarded by
+        `except Exception: pass`, which held three separate defects:
+
+          1. a 0.5 s timeout on a queue the reader had just been unable to write
+             to with a 1.0 s one;
+          2. a bare `except Exception: pass` — the reasoned EOF disappeared with
+             no record of its disappearance;
+          3. the eof is the ONLY thing that reaps a REGISTERED connection (the
+             read-deadline branch `continue`s on `meta["registered"]`), so a lost
+             eof left a zombie: reader gone, socket open, identity still counted
+             by `_eligible()`, and nothing anywhere connecting the later failure
+             to local queue saturation.
+
+        THE EOF STAYS ON `inbound`, and a separate control queue is REJECTED
+        (Q-3). `_drop_conn` pops `fs_by_sock`, so a control queue drained ahead of
+        `inbound` would reap the socket first and every envelope this reader had
+        already delivered — and the coordinator had already credited — would fall
+        into the `rawsock not in fs_by_sock` discard. The FIFO property is relied
+        upon by the drain and says so in its own comment.
+
+        NO LOCAL BUDGET IS INITIALISED (R2.1). `state.inbound_saturation_spent_s`
+        is THE accumulator and already carries whatever this connection spent
+        delivering ordinary envelopes; a fresh `spent = 0.0` here would be exactly
+        the per-episode reset this design says it avoids.
+
+        Returns True iff the eof was delivered."""
+        import queue as _queue
+        budget = (self.inbound_saturation_budget_s() if budget_s is None
+                  else float(budget_s))
+        entry = ("eof", rawsock, None, None, exit_record)
+        while True:
+            if reader_stop.is_set():
+                # E0 semantics, unchanged: at shutdown the eof is SUPPRESSED by
+                # design — the serve loop is tearing every connection down anyway.
+                return False
+            put_t0 = time.perf_counter()
+            try:
+                inbound.put(entry, timeout=EOF_PUT_QUANTUM_S)
+                return True
+            except _queue.Full:
+                spent = self.charge_inbound_saturation(
+                    state, time.perf_counter() - put_t0, kind="eof", conn=rawsock)
+                if spent >= budget:
+                    self.raise_infrastructure_terminal(
+                        emergency, TC_INBOUND_SATURATION_TIMEOUT,
+                        where="reader_eof", state=state, spent=spent,
+                        exit_record=exit_record, budget_s=budget,
+                        worker_id=worker_id, inbound=inbound)
+                    return False
+            except Exception as exc:                              # noqa: BLE001
+                # NEVER `pass`. A non-`Full` failure here is a genuine bug and
+                # must reach `threading.excepthook` rather than vanishing.
+                logger.error(
+                    "[MINER-SESSION] READER_EOF_UNDELIVERABLE %s",
+                    json.dumps({
+                        "event": "READER_EOF_UNDELIVERABLE",
+                        "connection_id": (state.connection_id if state is not None
+                                          else RX_UNOBSERVED),
+                        "exc_class": type(exc).__name__,
+                        "exc": str(exc),
+                        "reader_exit_reason": getattr(exit_record, "reason", None),
+                    }, default=str, sort_keys=True))
+                raise
+
+    def _admission_token(self) -> str:
+        """[§8.6.3] One opaque token per REGISTER handed to the admission channel.
+        The per-connection fence waits on THIS token — identity, never socket:
+        a socket test cannot tell one disposition from a later one, which is the
+        F1-R2a lesson applied to the registration path."""
+        with self._conn_seq_lock:
+            self._admission_token_seq += 1
+            return f"adm{self._admission_token_seq}"
+
+    def note_register_disposition(self, token: Optional[str]) -> None:
+        """Serve-loop side of the fence: this REGISTER has been disposed of."""
+        if token is None:
+            return
+        with self._admission_disp_lock:
+            self._admission_disposed.add(token)
+
+    def _await_register_disposition(self, token: str, reader_stop) -> bool:
+        """[§8.6.3] THE PER-CONNECTION REGISTER FENCE.
+
+        Structurally identical to `_await_exact_credit_clear`: same token idiom,
+        same `reader_stop` honouring, same capacity/terminal escape, same 50 ms
+        cadence, and it touches NO ledger state. After putting its REGISTER on the
+        admission channel the reader decodes nothing else until the serve loop has
+        disposed of it — which is what makes P-REG's "no later frame of this
+        connection is even decoded" true rather than asserted.
+
+        IT IS NOT CHARGED TO `S` (R3.1), and that exclusion is structural rather
+        than a rule someone has to remember: once a REGISTER has entered the
+        admission `SimpleQueue` the frame is ACCEPTED, so waiting for
+        `_serve_register_frame` to dispose of it is a DISPOSITION wait, not an
+        INGRESS wait. Charging it would let a slow registration ledger write
+        manufacture an `inbound_saturation_timeout` on a coordinator whose
+        `inbound` was never full — inverting the classification that terminal
+        exists to establish."""
+        while not reader_stop.is_set():
+            with self._admission_disp_lock:
+                if token in self._admission_disposed:
+                    self._admission_disposed.discard(token)
+                    return True
+            if self.staging_capacity_timeout_expired():
+                return False
+            time.sleep(0.05)
+        return False
+
     def _conn_reader_loop(self, cfs, rawsock, inbound, reader_stop,
-                          worker_by_sock=None) -> None:
+                          worker_by_sock=None, *, conn_state=None,
+                          emergency=None, admission=None, run_id=None,
+                          saturation_budget_s=None) -> None:
         """Defect 6 (C3): per-connection reader. Does BLOCKING full-frame reads (so
         a legitimately slow but complete frame is never corrupted) and feeds each
         complete message to the bounded coordinator queue. It touches NO ledger
@@ -7572,6 +8616,57 @@ class RangeMinerCoordinator:
         *"retaining at most one bounded pending envelope per connection is
         acceptable"*), and it is held in this thread's local — never in
         `_deferred`, never in a second queue.
+
+        [ATTEMPT-6 PART A — EVERY EXIT NOW CARRIES ITS OWN CAUSE]
+        The nine ways control leaves the loop below were previously
+        indistinguishable: eight `break` statements and the loop condition, none
+        of which recorded anything, so a disconnect could only ever be described
+        as "the coordinator performed the final close; the antecedent is
+        UNRESOLVED". Each exit now assigns `exit_reason` from the branch that
+        ACTUALLY terminated this reader, and the classes are module constants so a
+        gate asserts on the constant rather than on a sentence:
+
+          E0 loop condition, `reader_stop` set between iterations SHUTDOWN_STOP
+          E1 credit barrier aborted by `reader_stop`                SHUTDOWN_STOP
+          E2 credit barrier aborted by the capacity timeout   CAPACITY_TIMEOUT_BARRIER
+          E3 `recv_msg` transport failure                          TRANSPORT_ERROR
+          E4 `recv_msg` frame/length/type violation          PROTOCOL_FRAME_INVALID
+          E5 `recv_msg` body decode failure                            DECODE_ERROR
+          E6 `reader_stop` set while PAUSED           SHUTDOWN_STOP_WHILE_PAUSED
+          E7 capacity timeout while PAUSED               CAPACITY_TIMEOUT_PAUSED
+          E8 `inbound` saturated past `S`         INFRASTRUCTURE_TERMINAL_EXIT
+
+        `READER_EXIT_UNCLASSIFIED` IS THE INITIAL VALUE, and it is fail-closed on
+        purpose: a tenth exit added without a label reports it and RXP-1 reds on
+        the very next run, where a default of TRANSPORT_ERROR would re-create
+        today's defect wearing a reason field.
+
+        [E3 UNDER STOP IS SHUTDOWN_STOP] A reader woken by the teardown's
+        `cfs.sock.shutdown()` arrives in the transport handler with an `OSError`
+        and would otherwise report a transport fault for an ORDERLY shutdown. The
+        discriminator is `reader_stop.is_set()` AT THE MOMENT THE EXCEPTION IS
+        CAUGHT — Defect A §10's certified rule, applied here.
+
+        [E8 IS NOT A SHED] Persistent local ingress saturation is a coordinator
+        capacity failure, not a worker transport fault. The reader charges the
+        wait to `S`, and on exhaustion requests a TRIAL terminal over the
+        emergency channel; it never evicts an identity and never routes anything
+        to the matrix. Shedding one legitimate worker would leave the run alive
+        with 24 of 25 identities and kill it minutes later as a lease expiry or an
+        admission shortfall — which is attempt 5's and attempt 2's shape, an
+        outcome whose reported terminal names a consequence rather than a cause.
+
+        [P-1, §8.6.3 — FIRST-FRAME REGISTER PRIORITY, D2 RULED] A connection's
+        FIRST DECODED APPLICATION FRAME, when it is a REGISTER, takes the
+        admission channel instead of `inbound`, then parks at the register fence
+        until the serve loop has disposed of it. The condition is READER-LOCAL
+        (`is_first_frame`, snapshot-then-cleared unconditionally at the decode),
+        which is strictly stronger than reading `worker_by_sock` — the serve loop
+        mutates that, so a reconnect could race the eviction and be
+        misclassified. The admission route is therefore reachable AT MOST ONCE
+        per connection and only on frame 1; no earlier frame exists to overtake,
+        and the fence prevents any later frame overtaking it. Everything else
+        goes to the inbound FIFO.
         """
         import queue as _queue
         pending_envelope = None
@@ -7586,6 +8681,29 @@ class RangeMinerCoordinator:
         # BARRIER at the top of the loop waits on. None whenever this connection
         # owes the serve loop nothing.
         delivered_credit_id = None
+        # [ATTEMPT-6 §1.3] THE FAIL-CLOSED DEFAULT. Never a plausible-looking one.
+        exit_reason = RX_READER_EXIT_UNCLASSIFIED
+        exit_exc_class = None
+        held_envelope_discarded = False
+        internal_exc = None
+        # [§8.2.2] set only when `S` is exhausted delivering an ordinary envelope;
+        # the emergency request is raised once, at the tail, with the real record.
+        saturation_exhausted_where = None
+        saturation_spent = None
+        # [§8.3.3] ONE ConnState per connection. A bare-API caller (a gate, a
+        # direct reader) that supplies none gets one here, so "one saturation
+        # accumulator per connection" holds for every caller rather than only for
+        # the serve loop's.
+        state = (conn_state if conn_state is not None
+                 else ConnState(self.next_connection_id(run_id)))
+        saturation_budget = self.inbound_saturation_budget_s(saturation_budget_s)
+        # [§8.6.3 / D2 RULED] P-1 condition (2): FIRST FRAME, reader-local and
+        # therefore race-free. Consumed unconditionally by the first decoded
+        # application frame of this connection, whatever that frame turns out to
+        # be, so the admission route is reachable AT MOST ONCE per connection.
+        # It is never reset to True anywhere in this function — there is no
+        # second first frame.
+        first_frame = True
         try:
             while not reader_stop.is_set():
                 # ---- PRE-DECODE BARRIER (Beta F1-R2b §4.2) -------------------
@@ -7608,6 +8726,12 @@ class RangeMinerCoordinator:
                         # shutdown or the latched §1.5 capacity timeout. Nothing is
                         # held here — the credited envelope is already delivered —
                         # so this exit discards nothing and routes nothing.
+                        # [ATTEMPT-6 E1/E2] The barrier has exactly TWO outcomes and
+                        # both are named: which one it was is decided by
+                        # `reader_stop`, the same discriminator Defect A §10
+                        # certified, so the two are never collapsed into one class.
+                        exit_reason = (RX_SHUTDOWN_STOP if reader_stop.is_set()
+                                       else RX_CAPACITY_TIMEOUT_BARRIER)
                         break
                     delivered_credit_id = None
 
@@ -7616,10 +8740,37 @@ class RangeMinerCoordinator:
                 put_credit_id = None
                 try:
                     msg = cfs.recv_msg()
-                except (ConnectionError, ValueError, OSError):
+                except (ConnectionError, ValueError, OSError) as _exc:
+                    # [ATTEMPT-6 E3/E4/E5] ONE handler, THREE worlds, and they are
+                    # now told apart. `reader_stop` first (an orderly teardown is
+                    # not a transport fault, §11.1 arm 10); then the two ValueError
+                    # sub-worlds, because `json.JSONDecodeError` and
+                    # `UnicodeDecodeError` are both ValueErrors and a body that
+                    # fails to decode is a DIFFERENT fact from a frame whose length
+                    # prefix or message_type violates the protocol.
+                    exit_exc_class = type(_exc).__name__
+                    if reader_stop.is_set():
+                        exit_reason = RX_SHUTDOWN_STOP
+                    elif isinstance(_exc, (json.JSONDecodeError, UnicodeDecodeError)):
+                        exit_reason = RX_DECODE_ERROR
+                    elif isinstance(_exc, ValueError):
+                        exit_reason = RX_PROTOCOL_FRAME_INVALID
+                    else:
+                        exit_reason = RX_TRANSPORT_ERROR
                     break
-                except Exception:  # noqa: BLE001 — any decode error drops the conn
+                except Exception as _exc:  # noqa: BLE001 — decode drops the conn
+                    exit_exc_class = type(_exc).__name__
+                    exit_reason = RX_DECODE_ERROR
                     break
+
+                # [P-1 / D2 RULED] ELIGIBILITY IS CONSUMED BY THE DECODE, NOT BY
+                # THE ADMISSION ROUTE. Snapshot-then-clear, unconditionally, the
+                # instant a frame exists — before any branch can decide what to
+                # do with it. Every subsequent frame of this connection therefore
+                # sees `is_first_frame` false no matter which path the first one
+                # took, and the admission route is consumable exactly once.
+                is_first_frame = first_frame
+                first_frame = False
 
                 # [S172-BP AMENDMENT F4] REGISTERED WORKERS ONLY. The pause
                 # condition tested message type + capacity but not IDENTITY, so an
@@ -7656,11 +8807,17 @@ class RangeMinerCoordinator:
                     resume_event = self.register_paused_connection(
                         rawsock, bound_worker_id)
                     released = False
+                    # [ATTEMPT-6 E6/E7] TWO materially different antecedents reach
+                    # the one outer exit below — `reader_stop` during the pause and
+                    # the latched capacity timeout — and before this amendment they
+                    # were indistinguishable there. The inner loop records which.
+                    pause_abort_reason = None
                     while not reader_stop.is_set():
                         if resume_event.wait(0.05):
                             released = True
                             break
                         if self.staging_capacity_timeout_expired():
+                            pause_abort_reason = RX_CAPACITY_TIMEOUT_PAUSED
                             # §1.5: the trial is (being) terminated by the serve
                             # loop with a coordinator/infrastructure reason. This
                             # reader observes it, DISCARDS the held envelope and
@@ -7685,6 +8842,9 @@ class RangeMinerCoordinator:
                         reason="resume" if released else "pause_aborted")
                     if not released:
                         pending_envelope = None
+                        held_envelope_discarded = True
+                        exit_reason = (pause_abort_reason
+                                       or RX_SHUTDOWN_STOP_WHILE_PAUSED)
                         break
                     # [S172-BP AMENDMENT F1-R2a] READ BACK OUR OWN TOKEN. It was
                     # minted into this connection's pause record before the event
@@ -7706,13 +8866,102 @@ class RangeMinerCoordinator:
                     msg = pending_envelope
                     pending_envelope = None
 
-                try:
-                    # [S172-BP AMENDMENT F1-R2a] THE TOKEN RIDES ON THE ENVELOPE.
-                    # One producer, one place the stamp can be forgotten: ordinary
-                    # frames carry `None` (reset at the top of every iteration),
-                    # the credited envelope carries the token read back above.
-                    inbound.put(("msg", rawsock, msg, put_credit_id), timeout=1.0)
-                except _queue.Full:
+                # ---- P-1: FIRST-FRAME REGISTER PRIORITY (§8.6.3) -------------
+                # M-1/M-2 guarantee the serve loop gets TURNS; they say nothing
+                # about a frame's POSITION. A REGISTER behind a full result FIFO
+                # waits `maxsize x M_i` — ~34x the admission timeout at attempt 5's
+                # observed `msg_max` — so a reconnecting worker could exhaust its
+                # §14 recovery budget with Defect A's repair working perfectly.
+                #
+                # The fast path is taken ONLY on a connection's FIRST FRAME, and
+                # every condition is reader-local: no earlier frame of this
+                # connection was ever decoded, so nothing can be overtaken
+                # (P-REG), and a LATER register gets no priority at all — it goes
+                # on `inbound` and reaches `_serve_register`'s existing
+                # reject_rebind / idempotent-"ok" branches unchanged.
+                #
+                # [D2 RULED — Beta, 2026-08-13] The predicate was
+                # `envelopes_delivered == 0`, a LITERAL reading of R3 condition
+                # (2) ("this reader has delivered zero envelopes to `inbound`").
+                # R3's own adjacent proof says admission route (a) occurs AT MOST
+                # ONCE PER CONNECTION, and its binding explanatory text calls it a
+                # first REGISTER on a new/unbound socket. The architectural
+                # invariant controls over the defective proxy wording: P-1 is
+                # FIRST-FRAME REGISTER PRIORITY, not "REGISTER priority until the
+                # connection happens to deliver something to inbound." Under the
+                # delivery counter, REGISTER #2 sent back-to-back with NO
+                # intervening result still read zero and took the admission
+                # channel a second time. FAIR-6 arm 7 could not detect this — its
+                # `REGISTER -> result -> REGISTER` sequence necessarily increments
+                # the counter before the second REGISTER — so arm 13 exists.
+                #
+                # NOT keyed on `worker_by_sock`: the serve loop mutates that, so a
+                # reconnect could race the eviction and be misclassified. The
+                # original race-avoidance reason for reader-local state stands.
+                if (admission is not None
+                        and is_first_frame
+                        and getattr(msg, "message_type", None) == "register"
+                        and put_credit_id is None
+                        and delivered_credit_id is None):
+                    _adm_token = self._admission_token()
+                    # `SimpleQueue.put` is unbounded and never blocks: there is no
+                    # `Full` case on the control path, by construction.
+                    admission.put((_adm_token, rawsock, msg))
+                    self.note_admission_queue_occupancy(admission.qsize())
+                    if not self._await_register_disposition(_adm_token,
+                                                            reader_stop):
+                        exit_reason = (RX_SHUTDOWN_STOP if reader_stop.is_set()
+                                       else RX_CAPACITY_TIMEOUT_BARRIER)
+                        break
+                    continue
+
+                # ---- INBOUND DELIVERY, RETRIED WITHIN `S` (§8.2.2) -----------
+                # The pre-amendment policy was a SINGLE-SHOT SHED: one 1.0 s
+                # timeout and the connection was dropped. That policy was never
+                # chosen — it fell out of a `timeout=` argument — and it makes a
+                # legitimate worker disappear because local ingress was
+                # transiently saturated. The wait is now declared, bounded and
+                # CUMULATIVE, and its exhaustion terminates the TRIAL rather than
+                # shedding the worker.
+                _delivered_ok = False
+                while not _delivered_ok:
+                    _put_t0 = time.perf_counter()
+                    try:
+                        # [S172-BP AMENDMENT F1-R2a] THE TOKEN RIDES ON THE
+                        # ENVELOPE. One producer, one place the stamp can be
+                        # forgotten: ordinary frames carry `None` (reset at the top
+                        # of every iteration), the credited envelope carries the
+                        # token read back above.
+                        # [ATTEMPT-6 §1.4 hop 1] The fifth field is the reader-exit
+                        # record and is `None` on every ordinary message, exactly as
+                        # the credit token is.
+                        inbound.put(("msg", rawsock, msg, put_credit_id, None),
+                                    timeout=INBOUND_PUT_QUANTUM_S)
+                        _delivered_ok = True
+                    except _queue.Full:
+                        # MEASURED elapsed wait, not the nominal quantum: a
+                        # scheduler-delayed put really does wait longer than its
+                        # timeout argument, and a budget accounted in nominal
+                        # quanta under-counts exactly when the coordinator is most
+                        # loaded (binding detail 3).
+                        _spent = self.charge_inbound_saturation(
+                            state, time.perf_counter() - _put_t0,
+                            kind="result", conn=rawsock)
+                        if reader_stop.is_set():
+                            exit_reason = RX_SHUTDOWN_STOP
+                            break
+                        if _spent >= saturation_budget:
+                            # The emergency REQUEST is raised once, at the tail of
+                            # this method, so it carries THE reader-exit record
+                            # rather than a second construction of the same fact —
+                            # the `TerminalRecord` discipline (one object, three
+                            # surfaces) applied to the reader's own exit.
+                            exit_reason = RX_INFRASTRUCTURE_TERMINAL_EXIT
+                            saturation_exhausted_where = "reader_result"
+                            saturation_spent = _spent
+                            break
+                if not _delivered_ok:
+                    held_envelope_discarded = True
                     break
                 if put_credit_id is not None:
                     # From here the barrier owes this token a disposition before
@@ -7727,6 +8976,24 @@ class RangeMinerCoordinator:
                 # belongs to the serve loop's disposition (F1-R §4 i-iv); all this
                 # thread records is that the hand-off has happened.
                 credit_delivered = True
+            else:
+                # [ATTEMPT-6 E0] THE LOOP CONDITION ITSELF. A reader whose global
+                # stop was set between iterations leaves with no `break` at all,
+                # and — uniquely — its eof is suppressed below. That is correct at
+                # shutdown, and it is exactly why the path is named as its own
+                # class rather than left as an unlabelled fall-through.
+                exit_reason = RX_SHUTDOWN_STOP
+        except Exception as _exc:                                # noqa: BLE001
+            # The catch-all for a raise from the reader's OWN body. It is recorded
+            # and re-raised below — after the exit record and the reasoned EOF — so
+            # the connection is still reaped AND a genuine bug still reaches
+            # `threading.excepthook` instead of vanishing.
+            internal_exc = _exc
+            exit_reason = RX_READER_INTERNAL_ERROR
+            exit_exc_class = type(_exc).__name__
+            logger.exception(
+                "[MINER-SESSION] READER_INTERNAL_ERROR connection_id=%s",
+                state.connection_id)
         finally:
             # A held envelope belongs to a trial that is terminal or a connection
             # that is going away; dropping it is the documented disposition (§1.5).
@@ -7749,15 +9016,43 @@ class RangeMinerCoordinator:
             if not credit_delivered:
                 self._release_resume_credit(rawsock, delivered=False,
                                             disposition="reader_exit_undelivered")
-        if not reader_stop.is_set():
-            try:
-                inbound.put(("eof", rawsock, None, None), timeout=0.5)
-            except Exception:  # noqa: BLE001
-                pass
+        # ---- THE EXIT RECORD, AT THE EXIT (§1.4) -----------------------------
+        _worker_id = (worker_by_sock.get(rawsock)
+                      if worker_by_sock is not None else None)
+        exit_record = self._emit_reader_exit(
+            state, exit_reason, exc_class=exit_exc_class,
+            held_envelope_discarded=held_envelope_discarded,
+            worker_id=_worker_id)
+        # ---- THE INFRASTRUCTURE TERMINAL, IF `S` WAS EXHAUSTED (§8.2.2) ------
+        # Raised HERE, outside every loop and immediately before this thread ends,
+        # so CARD-1 holds structurally: at most ONE emergency event per reader
+        # thread, for the lifetime of that thread.
+        if saturation_exhausted_where is not None:
+            self.raise_infrastructure_terminal(
+                emergency, TC_INBOUND_SATURATION_TIMEOUT,
+                where=saturation_exhausted_where, state=state,
+                spent=saturation_spent, exit_record=exit_record,
+                budget_s=saturation_budget, worker_id=_worker_id,
+                inbound=inbound)
+        elif not reader_stop.is_set():
+            # ---- THE REASONED EOF, ORDERED BEHIND OUR OWN ENVELOPES ----------
+            # P-ORD: this thread is the sole producer of this connection's
+            # envelopes, it issued every `inbound.put` sequentially from one thread
+            # of control, `queue.Queue` is FIFO and the drain consumes strictly in
+            # `get` order — so `_drop_conn` (reached only from the eof branch) runs
+            # after every one of this connection's envelopes has been dispatched.
+            self._deliver_reader_eof(
+                inbound, rawsock, state, exit_record, reader_stop,
+                emergency=emergency, budget_s=saturation_budget,
+                worker_id=_worker_id)
+        if internal_exc is not None:
+            raise internal_exc
 
     def _drop_conn(self, rawsock, fs_by_sock, worker_by_sock, fs_by_worker,
                    wconn_by_worker=None, registered=None, *,
-                   stage_idx=None, stage_assigned=None, eligible_fn=None) -> None:
+                   stage_idx=None, stage_assigned=None, eligible_fn=None,
+                   conn_state=None, close_intent=None,
+                   reader_exit=None) -> None:
         """Drop a connection and EVICT its worker identity from every structure the
         eligible pool is built from (Defect 3 C5): fs_by_worker, wconn_by_worker,
         self.connections, registered — so a worker whose socket is gone is never
@@ -7774,7 +9069,53 @@ class RangeMinerCoordinator:
         indirectly. `stage_idx`/`stage_assigned`/`eligible_fn` come from the serve
         loop that owns them; where a caller cannot supply one it is reported as
         UNOBSERVED and never as a zero (a zero eligible pool is a real and very
-        different fact from an unmeasured one)."""
+        different fact from an unmeasured one).
+
+        [ATTEMPT-6 §8.3.1 / §8.3.2c] THE CLOSE INTENT IS RECORDED **AND EMITTED**
+        AS THE FIRST STATEMENT, BEFORE THE FIRST IDENTITY-MAP MUTATION.
+
+        Before `shutdown()` would not have been enough. The chronology is:
+        `fs_by_sock.pop` (:first) -> eviction -> `WORKER_DISCONNECTED` -> only THEN
+        `rawsock.shutdown(SHUT_RDWR)`, which is the earliest instant the reader can
+        wake. So on a coordinator-initiated drop the disconnect record is emitted
+        BEFORE the reader can observe anything, and a later reader log cannot
+        retroactively become part of an already-emitted event.
+
+        And a marker alone is not enough either (R3.4). The read-deadline scan runs
+        AFTER the inbound drain in the same iteration, so this ordering is
+        reachable: a reader takes an INDEPENDENT transport error, emits its
+        `READER_EXIT` with a null intent (the marker does not exist yet), the serve
+        loop then reaches the scan and calls `_drop_conn` — where `wid is None`,
+        so no `WORKER_DISCONNECTED` is emitted at all. The coordinator would have
+        known something and written it nowhere: attempt 5's condition in miniature.
+        `CONNECTION_CLOSE_INTENT` is therefore emitted on its own account, on ANY
+        non-null intent, WHETHER OR NOT A WORKER IS BOUND.
+
+        It is NOT merged with `READER_EXIT` and it claims NO causation: a marker
+        proves the coordinator INTENDED to close, never that its `shutdown()`
+        produced the exception the reader observed. Three records, correlated by
+        `connection_id`; any subset may exist, and which subset exists is itself
+        the chronology."""
+        # ---- STEP 0: the coordinator's own decision, before anything else ----
+        _conn_id = (conn_state.connection_id if conn_state is not None
+                    else RX_UNOBSERVED)
+        if close_intent is not None:
+            if conn_state is not None:
+                # FIRST-WRITER-WINS, the same rule and reason as Defect A's
+                # `_stop_cause`: a second `_drop_conn` on the same socket must not
+                # rewrite the original intent.
+                conn_state.record_close_intent(close_intent, time.time())
+            logger.warning(
+                "[MINER-SESSION] CONNECTION_CLOSE_INTENT %s",
+                json.dumps({
+                    "event": "CONNECTION_CLOSE_INTENT",
+                    "connection_id": _conn_id,
+                    "coordinator_close_intent": close_intent,
+                    "at": time.time(),
+                    # `<known>` or UNOBSERVED — NEVER a fabricated null identity.
+                    "worker_id": worker_by_sock.get(rawsock, RX_UNOBSERVED),
+                    "stage_idx": stage_idx,
+                }, default=str, sort_keys=True))
         fs = fs_by_sock.pop(rawsock, None)
         wid = worker_by_sock.pop(rawsock, None)
         identity_evicted = False
@@ -7803,17 +9144,38 @@ class RangeMinerCoordinator:
                 eligible_after, obs_status = None, "UNOBSERVED"
             else:
                 eligible_after, obs_status = len(eligible_fn()), "OBSERVED"
+            # [ATTEMPT-6 §1.4 hop 3] The provenance fields are ADDITIVE — same
+            # logger, same `[MINER-SESSION]` prefix, same sorted-JSON shape — so
+            # every existing grep and parser keeps working. Where the drop was not
+            # reader-initiated the reader's fields read UNOBSERVED and NEVER a
+            # synthesized transport reason: Defect A §15's own rule, applied to a
+            # second field.
+            _record = {
+                "event": "WORKER_DISCONNECTED",
+                "worker_id": wid,
+                "stage_idx": stage_idx,
+                "stage_assigned": stage_assigned,
+                "identity_evicted": identity_evicted,
+                "obs_status": obs_status,
+                "eligible_count_after_drop": eligible_after,
+            }
+            if reader_exit is not None:
+                _record.update(reader_exit.as_fields())
+            else:
+                _record.update({
+                    "connection_id": _conn_id,
+                    "reader_exit_reason": RX_UNOBSERVED,
+                    "reader_exit_exc_class": None,
+                    "reader_exit_at": None,
+                    "held_envelope_discarded": RX_UNOBSERVED,
+                    "drop_origin": (DROP_ORIGIN_COORDINATOR
+                                    if close_intent is not None
+                                    else RX_UNOBSERVED),
+                    "coordinator_close_intent": close_intent,
+                })
             logger.warning(
                 "[MINER-SESSION] WORKER_DISCONNECTED %s",
-                json.dumps({
-                    "event": "WORKER_DISCONNECTED",
-                    "worker_id": wid,
-                    "stage_idx": stage_idx,
-                    "stage_assigned": stage_assigned,
-                    "identity_evicted": identity_evicted,
-                    "obs_status": obs_status,
-                    "eligible_count_after_drop": eligible_after,
-                }, default=str, sort_keys=True))
+                json.dumps(_record, default=str, sort_keys=True))
         # Defect 6 (C3): shutdown BEFORE close so a reader thread blocked in recv on
         # this socket is woken (recv returns EOF) AND the peer promptly sees the FIN
         # — a bare close() on a socket with a concurrent blocked recv may defer both.
@@ -7826,6 +9188,59 @@ class RangeMinerCoordinator:
                 fs.close()
             except Exception:
                 pass
+
+    def _serve_register_frame(self, msg, rawsock, node_allowlist, fs_by_sock,
+                              worker_by_sock, wconn_by_worker, fs_by_worker,
+                              registered, conn_meta, reader_threads, *,
+                              stage_idx=None, stage_assigned=None,
+                              eligible_fn=None, conn_state_by_sock=None,
+                              timing=None, segment=None) -> str:
+        """[ATTEMPT-6 §8.6.5] THE ONE REGISTER-HANDLING PATH.
+
+        This block used to live inline in the serve loop's drain. P-1 gives a
+        connection's FIRST REGISTER a second route in (the admission channel), and
+        two copies of a registration handler are two things that can diverge — so
+        the block is EXTRACTED, not copied, and both routes call this. A gate
+        asserts by AST that `_serve_register` has exactly ONE caller in the
+        module, which is this method.
+
+        `_serve_register` itself is BYTE-UNCHANGED: only its call site moved."""
+        _tm = None if (timing is None or segment is None) else timing.start()
+        status = self._serve_register(
+            msg, rawsock, node_allowlist, fs_by_sock, worker_by_sock,
+            wconn_by_worker, fs_by_worker, registered, eligible_fn=eligible_fn)
+        if _tm is not None:
+            timing.stop(segment, _tm)
+        meta = conn_meta.get(rawsock)
+        if status == "ok":
+            if meta is not None:
+                meta["registered"] = True
+        elif status == "reject_dup_worker":
+            # a second socket for an already-live worker_id — drop it.
+            # It was never bound, so the guard leaves the ORIGINAL
+            # worker's identity intact (Defect 3 C4/C5).
+            # [ATTEMPT-6 §8.3] A COORDINATOR DECISION: the intent is recorded and
+            # emitted before the first identity-map mutation. Note that this
+            # socket is UNBOUND by construction (`_serve_register` returns this
+            # status before the binding), so no `WORKER_DISCONNECTED` can be
+            # emitted for it — which is precisely why `CONNECTION_CLOSE_INTENT`
+            # has to be a record of its own rather than a field on that one.
+            _cs = (None if conn_state_by_sock is None
+                   else conn_state_by_sock.get(rawsock))
+            self._drop_conn(rawsock, fs_by_sock, worker_by_sock,
+                            fs_by_worker, wconn_by_worker, registered,
+                            stage_idx=stage_idx,
+                            stage_assigned=stage_assigned,
+                            eligible_fn=eligible_fn,
+                            conn_state=_cs,
+                            close_intent=CLOSE_INTENT_DUP_REJECT)
+            conn_meta.pop(rawsock, None)
+            reader_threads.pop(rawsock, None)
+            if conn_state_by_sock is not None:
+                conn_state_by_sock.pop(rawsock, None)
+        # reject_rebind: leave the socket bound to its ORIGINAL id
+        # (already registered); ignore the stray REGISTER frame.
+        return status
 
     def _serve_register(self, msg, rawsock, node_allowlist, fs_by_sock,
                         worker_by_sock, wconn_by_worker, fs_by_worker,
@@ -8683,7 +10098,28 @@ def run_trial_miner(
         # readiness window).
         "worker_admission_timeout": kwargs.get(
             "worker_admission_timeout", DEFAULT_WORKER_ADMISSION_TIMEOUT),
+        # [ATTEMPT-6 PART B] The four bounded-service terms, threaded on the SAME
+        # `kwargs.get(..., DEFAULT_*)` route `worker_admission_timeout` uses and
+        # validated FAIL-CLOSED at entry to `serve_trial`. They are deliberately
+        # NOT added to the WATCHER manifest: the declared defaults govern
+        # production, and a manifest key added without hops 1-2 of the three-hop
+        # route would be a parameter that exists, accepts a value and never
+        # receives one — the dead-chain shape this project already has four
+        # instances of.
+        "drain_budget_seconds": kwargs.get(
+            "drain_budget_seconds", DEFAULT_DRAIN_BUDGET_SECONDS),
+        "admission_drain_budget_seconds": kwargs.get(
+            "admission_drain_budget_seconds",
+            DEFAULT_ADMISSION_DRAIN_BUDGET_SECONDS),
+        "admission_max_dispositions": kwargs.get(
+            "admission_max_dispositions", DEFAULT_ADMISSION_MAX_DISPOSITIONS),
+        "inbound_saturation_budget_seconds": kwargs.get(
+            "inbound_saturation_budget_seconds",
+            DEFAULT_INBOUND_SATURATION_BUDGET_SECONDS),
     }
+    for _attr_key in ("msg_slow_threshold", "k_slow_threshold"):
+        if _attr_key in kwargs:
+            context[_attr_key] = kwargs[_attr_key]
     # Default: the REAL serve loop (bound method, takes context). Injected test
     # serve keeps the (coordinator, context) shape.
     if _serve is None:

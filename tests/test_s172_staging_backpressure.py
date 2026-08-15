@@ -334,7 +334,7 @@ class _Bench:
         with `None`, which is the whole point of the identity.
         """
         eligible = eligible or (lambda: list(self.wconn_by_worker.values()))
-        for kind, rawsock, msg, credit_id in entries:
+        for kind, rawsock, msg, credit_id, _reader_exit in entries:
             if kind != "msg":
                 continue
             self.coord.dispatch_inbound_result(
@@ -518,7 +518,7 @@ def gate1_saturation_on_phase1_fails_nothing():
                 b.coord._release_capacity()
                 assert b.wait_unpaused(), "the reader never resumed"
                 after = b.drain(0.6)
-                msgs = [m for (k, _s, m, _c) in after if k == "msg"]
+                msgs = [m for (k, _s, m, _c, _rx) in after if k == "msg"]
                 assert len(msgs) == 1 and msgs[0].message_type == "sub_stripe_result"
                 b.dispatch(after, run_id)
                 assert spy.calls == [], (
@@ -610,9 +610,9 @@ def gate3_paused_peer_stalls_while_second_connection_flows():
                 substripes_done=1, survivors_total=1))
 
             got = b.drain(0.8)
-            from_a = [m for (k, s, m, _c) in got
+            from_a = [m for (k, s, m, _c, _rx) in got
                       if k == "msg" and b.worker_by_sock.get(s) == "hostA:gpu0"]
-            from_b = [m for (k, s, m, _c) in got
+            from_b = [m for (k, s, m, _c, _rx) in got
                       if k == "msg" and b.worker_by_sock.get(s) == "hostB:gpu0"]
             assert from_a == [], (
                 f"the paused connection delivered {len(from_a)} frame(s): "
@@ -640,7 +640,7 @@ def gate3_paused_peer_stalls_while_second_connection_flows():
                 rest.extend(b.drain(0.3))
                 b.dispose(sockA)
             seq = [(m.message_type, getattr(m, "sub_index", None))
-                   for (k, s, m, _c) in rest
+                   for (k, s, m, _c, _rx) in rest
                    if k == "msg" and b.worker_by_sock.get(s) == "hostA:gpu0"]
             assert seq == [("sub_stripe_result", 0), ("sub_stripe_result", 1),
                            ("stripe_complete", None)], (
@@ -712,7 +712,7 @@ def gate4_capacity_release_resumes_without_operator_action():
                 "released its slot — resume is not wired to the capacity-release "
                 "path")
             got = b.drain(1.0)
-            msgs = [m for (k, _s, m, _c) in got if k == "msg"]
+            msgs = [m for (k, _s, m, _c, _rx) in got if k == "msg"]
             assert [m.message_type for m in msgs] == ["sub_stripe_result"], (
                 f"the held envelope was not delivered on resume: {msgs}")
             m = b.coord.staging_backpressure_metrics()
@@ -779,7 +779,7 @@ def gate6_no_duplicate_rows_no_stale_acceptance():
             # [S172-BP AMENDMENT F1-R] interleaved, per §4 tail — the duplicate is
             # released by the FIRST frame's disposition, not by draining harder.
             entries = b.pump(run_id, timeout=3.0)
-            got = [m for (k, _s, m, _c) in entries if k == "msg"]
+            got = [m for (k, _s, m, _c, _rx) in entries if k == "msg"]
             assert len(got) == 2, f"both frames should reach the serve loop: {got}"
             rows = b.coord.ledger.get_shards(run_id, sid, 0)
             assert len(rows) == 1, (
@@ -835,7 +835,7 @@ def gate7_superseded_attempt_cannot_resume_and_publish():
             b.coord._release_capacity()
             assert b.wait_unpaused()
             entries = b.drain(1.2)
-            assert [m.message_type for (k, _s, m, _c) in entries if k == "msg"] == \
+            assert [m.message_type for (k, _s, m, _c, _rx) in entries if k == "msg"] == \
                 ["sub_stripe_result"], "the held envelope was not re-delivered"
             b.dispatch(entries, run_id)
             # the fence dropped it: no shard row for the DEAD attempt 0, nothing
@@ -1504,7 +1504,7 @@ def gate_pause_mutant():
             assert executed["n"] >= 1, (
                 "the mutant was never called — the reader does not consult the "
                 "capacity gate, so the pause gates prove nothing")
-            delivered = [m for (k, _s, m, _c) in got if k == "msg"]
+            delivered = [m for (k, _s, m, _c, _rx) in got if k == "msg"]
             assert len(delivered) == 1, (
                 "with the gate removed the envelope should be delivered "
                 "IMMEDIATELY into coordinator RAM — it was not, so the pause gates "
@@ -2013,7 +2013,7 @@ def gate_resume_credit_real_readers_fifo():
                 f"{depth_at_reclaim}; a nonzero depth means the woken reader beat "
                 f"the reclaim and the gate lost its capacity race)")
             entries = b.drain(0.5)
-            first = [m for (k, s, m, _c) in entries
+            first = [m for (k, s, m, _c, _rx) in entries
                      if k == "msg" and b.worker_by_sock.get(s) == "hostA:gpu0"]
             assert len(first) == 1, (
                 f"the FIFO-first reader did not deliver its held envelope: {first}")
@@ -2043,7 +2043,7 @@ def gate_resume_credit_real_readers_fifo():
             sem.release()
             b.coord._release_capacity()
             assert b.wait_unpaused(), "the second reader never resumed"
-            second = [m for (k, s, m, _c) in b.drain(0.8)
+            second = [m for (k, s, m, _c, _rx) in b.drain(0.8)
                       if k == "msg" and b.worker_by_sock.get(s) == "hostB:gpu0"]
             assert len(second) == 1, (
                 f"the second reader did not deliver its held envelope: {second}")
@@ -2162,7 +2162,7 @@ class _Round1ClearQueue(_queue.Queue):
     def put(self, item, *a, **kw):
         out = super().put(item, *a, **kw)
         try:
-            kind, sock, msg, _credit_id = item
+            kind, sock, msg, _credit_id, _reader_exit = item
         except (TypeError, ValueError):
             return out
         if (kind == "msg" and self.coord is not None
@@ -2253,7 +2253,7 @@ def gate_resume_handoff_survives_until_disposition():
                     break
                 time.sleep(0.02)
             assert entry is not None, "A never delivered its held envelope"
-            kind, esock, emsg, ecid = entry
+            kind, esock, emsg, ecid, _erx = entry
             assert kind == "msg" and esock is sockA, (kind, entry)
             assert ecid is not None, (
                 "A's resumed envelope arrived with no credit token — the "
@@ -2329,7 +2329,7 @@ def gate_resume_handoff_survives_until_disposition():
             deadline = time.time() + 5.0
             got_b = []
             while time.time() < deadline and not got_b:
-                got_b = [m for (k, s, m, _c) in b.drain(0.2)
+                got_b = [m for (k, s, m, _c, _rx) in b.drain(0.2)
                          if k == "msg"
                          and b.worker_by_sock.get(s) == "hostB:gpu0"]
             assert len(got_b) == 1, (
@@ -2547,7 +2547,7 @@ def gate_lease_handoff_grace():
             b.coord._release_capacity()
             assert b.wait_unpaused(), "the reader never resumed"
             entries = b.drain(1.0)
-            kinds = [m.message_type for (k, _s, m, _c) in entries if k == "msg"]
+            kinds = [m.message_type for (k, _s, m, _c, _rx) in entries if k == "msg"]
             # [S172-BP AMENDMENT F1-R2b] The heartbeat queued behind the held result
             # no longer reaches `inbound` on the same drain: the PRE-DECODE BARRIER
             # holds it ON THE WIRE until the credited envelope is disposed of, which
@@ -2777,7 +2777,7 @@ def gate_unbound_result_is_never_paused():
 
             stray.send(_inline_result("stray:gpu0", sid, 0, 0, 30))
             got = b.drain(0.8)
-            from_stray = [m for (k, s, m, _c) in got if k == "msg" and s is stray.srv]
+            from_stray = [m for (k, s, m, _c, _rx) in got if k == "msg" and s is stray.srv]
             assert len(from_stray) == 1, (
                 f"an UNBOUND sub_stripe_result was intercepted by the capacity "
                 f"gate instead of flowing to the existing identity check: "

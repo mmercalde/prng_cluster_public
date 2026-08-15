@@ -49,15 +49,40 @@
 #                           the daemon dies at once with
 #                           `ModuleNotFoundError: No module named 'miner'`.
 #
-# Stagger defaults to 3 s: 25 x 3 s = 75 s of dispatch against a 180 s
-# worker_admission_timeout, so the whole fleet lands inside the admission window.
+# Stagger defaults to 3 s. With the ATTEMPT-6 release barrier it paces SENTINEL
+# EMISSION, not registration: registration is paced by the release token, so the
+# 75 s of dispatch no longer competes with the 180 s admission window at all and
+# the launch gets strictly more margin than attempts 2 and 5 had.
 #
-# ORDER MATTERS: start the coordinator (the WATCHER/optimizer run) FIRST, then
-# this script. Workers connect out; nothing here waits for a coordinator to
-# appear.
+# ⚠ ORDER — CORRECTED BY THE ATTEMPT-6 REMEDIATION (§8.4.3). THE OLD COMMENT HERE
+# SAID "start the coordinator FIRST, then this script", AND THAT IS NOW WRONG.
+# An operator following it would launch into an UNRELEASED fleet: with
+# RUN_NONCE set, every worker emits its startup sentinel and then PARKS on the
+# per-host release file, so nothing connects out until the harness has verified
+# 25/25 sentinel delivery and written the tokens. The order is:
+#
+#   1. launch the fleet          (this script; workers warm GPUs, emit the
+#                                 sentinel and park — the coordinator need not
+#                                 exist yet, because nothing connects out)
+#   2. verify 25/25 sentinels    scripts/gate12_sentinel_gate.py --phase verify
+#                                 ANY shortfall/UNAVAILABLE/ERROR -> REFUSAL
+#   3. launch the pipeline       the coordinator binds and listens
+#   4. wait for the listener
+#   5. write the release tokens  scripts/gate12_sentinel_gate.py --phase release
+#   6. workers connect + REGISTER
+#
+# Steps 1-2 sit OUTSIDE the run, so verification time is free and cannot spend
+# the admission budget — which is how a slow probe sweep would otherwise
+# manufacture attempt 2's `worker_admission_timeout` with the fix in place.
+#
+# Without RUN_NONCE the script behaves exactly as before (no sentinel, no
+# barrier, coordinator-first), so an existing single-worker smoke run is
+# unaffected.
 #
 # Usage:  bash scripts/launch_fleet_manual.sh <coordinator_host> [port] [logdir]
 #   env:  RIG_PROFILE=baremetal|proxmox   STAGGER=<seconds>
+#         RUN_NONCE=<token>               RELEASE_DEADLINE=<seconds>
+#         REMOTE_RELEASE_DIR=<dir>
 # =============================================================================
 set -u
 
@@ -66,6 +91,11 @@ COORD_HOST="${1:-}"
 PORT="${2:-5700}"
 LOGDIR="${3:-$REPO_ROOT/logs/miner_workers}"
 STAGGER="${STAGGER:-3}"
+# [ATTEMPT-6 §8.4.2] the startup sentinel + pre-REGISTER barrier. Empty RUN_NONCE
+# = pre-amendment behaviour, so every existing use of this stopgap is unaffected.
+RUN_NONCE="${RUN_NONCE:-}"
+RELEASE_DEADLINE="${RELEASE_DEADLINE:-900}"
+REMOTE_RELEASE_DIR="${REMOTE_RELEASE_DIR:-/tmp/minerlogs}"
 
 if [ -z "$COORD_HOST" ]; then
     echo "usage: bash scripts/launch_fleet_manual.sh <coordinator_host> [port] [logdir]" >&2
@@ -150,18 +180,34 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
     while [ "$N" -lt "$NGPU" ]; do
         if [ "$KIND" = "local" ]; then
             echo "[launch] $WHOST gpu$N (local)"
+            LOCAL_LOG="$LOGDIR/${WHOST}_gpu$N.log"
+            LOCAL_SENTINEL_ARGS=""
+            if [ -n "$RUN_NONCE" ]; then
+                LOCAL_SENTINEL_ARGS="--run-nonce $RUN_NONCE \
+                    --session-release-file $LOGDIR/gate12_release_$RUN_NONCE \
+                    --release-deadline $RELEASE_DEADLINE \
+                    --sentinel-log-path $LOCAL_LOG"
+            fi
             CUDA_VISIBLE_DEVICES="$N" \
             CUPY_CACHE_DIR="/tmp/cupy_cache_local_gpu$N" \
             PYTHONPATH="$SCRIPTPATH" \
             nohup "$PYBIN" "$SCRIPTPATH/miner/range_miner_worker.py" \
                 --host "$COORD_HOST" --port "$PORT" \
                 --gpu-id "$N" --device-index 0 \
-                > "$LOGDIR/${WHOST}_gpu$N.log" 2>&1 < /dev/null &
+                $LOCAL_SENTINEL_ARGS \
+                > "$LOCAL_LOG" 2>&1 < /dev/null &
             echo "[launch]   pid=$!"
         else
             echo "[launch] $WHOST ($ENDPOINT) gpu$N"
+            REMOTE_SENTINEL_ARGS=""
+            if [ -n "$RUN_NONCE" ]; then
+                REMOTE_SENTINEL_ARGS="--run-nonce $RUN_NONCE \
+                    --session-release-file $REMOTE_RELEASE_DIR/gate12_release_$RUN_NONCE \
+                    --release-deadline $RELEASE_DEADLINE \
+                    --sentinel-log-path /tmp/minerlogs/gpu$N.log"
+            fi
             ssh -n -o BatchMode=yes -o ConnectTimeout=10 "michael@$ENDPOINT" \
-                "mkdir -p /tmp/minerlogs /tmp/cupy_cache_gpu$N && \
+                "mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR /tmp/cupy_cache_gpu$N && \
                  cd $SCRIPTPATH && \
                  ROCR_VISIBLE_DEVICES=$N \
                  CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N \
@@ -169,6 +215,7 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
                  nohup $PYBIN $SCRIPTPATH/miner/range_miner_worker.py \
                    --host $COORD_HOST --port $PORT \
                    --gpu-id $N --device-index 0 \
+                   $REMOTE_SENTINEL_ARGS \
                    > /tmp/minerlogs/gpu$N.log 2>&1 & \
                  echo started" >/dev/null 2>&1 &
         fi
@@ -192,3 +239,11 @@ echo "[launch] local worker logs : $LOGDIR"
 echo "[launch] rig worker logs   : /tmp/minerlogs/gpu<N>.log on each rig"
 echo "[launch] verify admission in the coordinator log before trusting this line —"
 echo "[launch] 'dispatched' means ssh returned, NOT that a daemon registered."
+if [ -n "$RUN_NONCE" ]; then
+  echo "[launch] run nonce         : $RUN_NONCE"
+  echo "[launch] release token     : <logdir>/gate12_release_$RUN_NONCE (per host)"
+  echo "[launch] THE FLEET IS PARKED AT THE RELEASE BARRIER and has sent nothing"
+  echo "[launch] to any coordinator. Verify the sentinels, then write the tokens:"
+  echo "[launch]   python3 scripts/gate12_sentinel_gate.py --phase verify \\"
+  echo "[launch]       --run-nonce $RUN_NONCE --local-log-dir $LOGDIR"
+fi

@@ -52,6 +52,18 @@
 #     and coordinator are created. ONE predicate: admission -> preparation must
 #     preserve it -> last pre-dispatch assertion -> compute -> D3.5.
 #
+#  ─── CHANGES vs the 2026-08-12 attempt-5 script (ATTEMPT-6 remediation) ─────
+#  6. THE LAUNCH IS NOW TWO-PHASE, AND THE FLEET STARTS FIRST. Attempts 4 and 5
+#     produced NO observable rig-worker session event at all — 24 byte-identical
+#     138-byte logs — and the cause is still UNRESOLVED. A sentinel verified
+#     after REGISTER would prove the channel was alive for a run that had
+#     already committed GPU-seconds, so the workers now emit a startup sentinel
+#     and PARK on a per-host release token; the harness verifies 25/25 delivery
+#     BEFORE the coordinator exists, and writes the tokens only after the
+#     coordinator is listening. Verification therefore happens OUTSIDE the 180 s
+#     admission window and cannot spend the admission budget.
+#     A shortfall is a REFUSAL: no reduced cohort, no automatic downsizing.
+#
 #  ⚠ PARAMETER TRAPS (§2.25) — do not "tidy" these:
 #     * the key is `max_seeds`, NOT `seed_count`. `seed_count` is not in the
 #       manifest's default_params, so WATCHER's declared-key filter drops it
@@ -68,6 +80,12 @@ cd ~/distributed_prng_analysis || exit 1
 source ~/venvs/torch/bin/activate
 
 STAMP=$(date +%Y%m%d_%H%M%S)
+# [ATTEMPT-6 §8.4.2] THE RUN NONCE. Opaque, run-scoped, and it must be UNIQUE per
+# attempt: it is what makes a leftover /tmp/minerlogs/gpuN.log from an earlier
+# launch — or a leftover release token — unable to satisfy this run's gate. The
+# timestamp alone is already unique per attempt; the pid suffix removes even the
+# same-second case.
+RUN_NONCE="gate12-${STAMP}-$$"
 LOG=logs/gate12_${STAMP}.log
 CONC=logs/gate12_${STAMP}_concurrency.tsv
 VERDICT=logs/gate12_${STAMP}_verdict.txt
@@ -155,7 +173,12 @@ fi
 pkill -f "[w]atcher_agent"; pkill -f "[w]indow_optimizer"; pkill -f "[r]ange_miner_worker"
 for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
   ssh -n michael@$ip 'pkill -f "[r]ange_miner_worker"' 2>/dev/null
+  # [ATTEMPT-6] Old release tokens are removed for tidiness ONLY. They can never
+  # release this run — the nonce is in both the filename and the content and the
+  # worker compares the content — so this is housekeeping, not the mechanism.
+  ssh -n michael@$ip 'rm -f /tmp/minerlogs/gate12_release_*' 2>/dev/null
 done
+rm -f logs/miner_workers/gate12_release_* 2>/dev/null
 sleep 3
 # Step 1's previous output is moved aside so this run's output is unambiguously
 # new. The destination is `logs/`, NOT a sibling in the repository root.
@@ -198,7 +221,58 @@ if [ "$CLEANTREE_PREDISPATCH_RC" -ne 0 ]; then
   exit 1
 fi
 
-# ---------- 2. CONCURRENCY SAMPLER — ARMED BEFORE ANYTHING ELSE ----------
+# ---------- 2. LAUNCH THE FLEET — PARKED AT THE RELEASE BARRIER ----------
+# [ATTEMPT-6 §8.4.3] THE FLEET NOW STARTS BEFORE THE COORDINATOR, and that is the
+# whole point of the barrier: with RUN_NONCE set every worker warms its GPU,
+# emits SESSION_SENTINEL through the same `_emit_session_event` path the session
+# events use, and then PARKS on its per-host release token. Nothing connects out,
+# so the coordinator need not exist yet and no GPU-second and no cohort freeze is
+# committed by anything below until §2.5 has passed.
+FLEETLOG=logs/gate12_${STAMP}_fleet.log
+RUN_NONCE="$RUN_NONCE" RELEASE_DEADLINE=900 \
+  ./scripts/launch_fleet_manual.sh 192.168.3.177 5700 "$PWD/logs/miner_workers" \
+  > "$FLEETLOG" 2>&1
+FLEET_RC=$?
+tail -6 "$FLEETLOG" | tee -a "$EVID"
+if [ "$FLEET_RC" -ne 0 ]; then
+  echo "GATE-12 ABORTED: fleet dispatch was TRUNCATED (rc=$FLEET_RC) — see $FLEETLOG" \
+    | tee -a "$EVID"
+  pkill -f "[r]ange_miner_worker"
+  for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+    ssh -n michael@$ip 'pkill -f "[r]ange_miner_worker"' 2>/dev/null
+  done
+  exit 1
+fi
+
+# ---------- 2.5. WORKER-LOG SENTINEL GATE — 25/25 OR REFUSE ----------
+# Attempts 4 and 5 produced NO observable rig-worker session event: 24
+# byte-identical 138-byte logs, cause UNRESOLVED. This proves, before the run
+# commits anything, that a record written through the production session-event
+# path arrives where the operator can read it.
+#
+# PLACEMENT IS LOAD-BEARING, twice over. It is before the coordinator exists, so
+# verification time is FREE — it cannot spend the 180 s admission budget and
+# manufacture attempt 2's terminal with the fix. And it is before the sampler is
+# armed, so a refusal costs nothing.
+#
+# ${PIPESTATUS[0]}, NOT the pipeline's status — the same rule as the two gates
+# above, and for the same reason: `cmd | tee` exits with tee's status and would
+# make this gate decorative.
+python3 -u scripts/gate12_sentinel_gate.py --phase verify \
+  --run-nonce "$RUN_NONCE" --local-log-dir "$PWD/logs/miner_workers" 2>&1 | tee -a "$EVID"
+SENTINEL_RC=${PIPESTATUS[0]}
+if [ "$SENTINEL_RC" -ne 0 ]; then
+  echo "GATE-12 ABORTED BY THE WORKER-LOG SENTINEL GATE (rc=$SENTINEL_RC) — see $EVID" \
+    | tee -a "$EVID"
+  echo "killing the parked fleet; it never contacted a coordinator" | tee -a "$EVID"
+  pkill -f "[r]ange_miner_worker"
+  for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+    ssh -n michael@$ip 'pkill -f "[r]ange_miner_worker"' 2>/dev/null
+  done
+  exit 1
+fi
+
+# ---------- 3. CONCURRENCY SAMPLER — ARMED BEFORE THE COORDINATOR ----------
 # Ordering is the whole point: the sampler is running before the coordinator
 # process is created, so it cannot miss the first StripeAssign. It latches onto
 # the first run whose stripe rows are created AFTER this moment, which is also
@@ -221,7 +295,7 @@ if ! kill -0 "$SAMPLER" 2>/dev/null; then
 fi
 echo "concurrency sampler pid=$SAMPLER -> $CONC" | tee -a "$EVID"
 
-# ---------- 3. COORDINATOR UP (halt cleared, miner on, PWC off) ----------
+# ---------- 4. COORDINATOR UP (halt cleared, miner on, PWC off) ----------
 nohup env PYTHONPATH=. python3 agents/watcher_agent.py --clear-halt --run-pipeline \
   --start-step 1 --end-step 1 \
   --params '{"use_persistent_workers": false, "use_range_miner": true,
@@ -233,7 +307,7 @@ nohup env PYTHONPATH=. python3 agents/watcher_agent.py --clear-halt --run-pipeli
 WATCHER=$!
 echo "watcher pid=$WATCHER -> $LOG" | tee -a "$EVID"
 
-# ---------- 4. SAMPLER TERMINATES WITH THE RUN ----------
+# ---------- 4.5. SAMPLER TERMINATES WITH THE RUN ----------
 # A supervisor, not a wall clock: when the run's own process exits, the sampler
 # is asked to stop and writes its verdict. Attempt 1's sampler had no such link
 # and looped for two hours against a dead trial.
@@ -243,13 +317,31 @@ setsid nohup bash -c '
   kill -TERM '"$SAMPLER"' 2>/dev/null
 ' > /dev/null 2>&1 &
 
-# ---------- 5. WAIT FOR BIND, THEN LAUNCH THE FLEET ----------
+# ---------- 5. WAIT FOR BIND, THEN RELEASE THE PARKED FLEET ----------
+# [ATTEMPT-6 §8.4.3] steps 4-6 of the launch order. The fleet is already up and
+# already proved its log channel; what happens here is only the RELEASE, and it
+# happens only once the coordinator is actually listening — so registration lands
+# inside a freshly armed admission window instead of racing it.
 for i in $(seq 1 40); do ss -ltn | grep -q 5700 && break; sleep 1; done
 if ss -ltn | grep -q 5700; then
-  ./scripts/launch_fleet_manual.sh 192.168.3.177 5700 2>&1 | tail -4
+  python3 -u scripts/gate12_sentinel_gate.py --phase release \
+    --run-nonce "$RUN_NONCE" --local-log-dir "$PWD/logs/miner_workers" 2>&1 \
+    | tee -a "$EVID"
+  RELEASE_RC=${PIPESTATUS[0]}
+  if [ "$RELEASE_RC" -ne 0 ]; then
+    echo "RELEASE WRITE FAILED (rc=$RELEASE_RC) — the parked workers will fail" \
+      | tee -a "$EVID"
+    echo "closed at their release deadline rather than registering." | tee -a "$EVID"
+    kill -TERM "$SAMPLER" 2>/dev/null
+    exit 1
+  fi
 else
-  echo "COORDINATOR NEVER BOUND — aborting fleet launch"
+  echo "COORDINATOR NEVER BOUND — not releasing the fleet"
   kill -TERM "$SAMPLER" 2>/dev/null
+  pkill -f "[r]ange_miner_worker"
+  for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+    ssh -n michael@$ip 'pkill -f "[r]ange_miner_worker"' 2>/dev/null
+  done
   tail -30 "$LOG"; exit 1
 fi
 

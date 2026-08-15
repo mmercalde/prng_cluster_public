@@ -1286,6 +1286,17 @@ class WorkerIdentityChanged(RuntimeError):
     byte-identical to the one the cohort was frozen against. Fail closed."""
 
 
+class SessionReleaseTimeout(RuntimeError):
+    """[ATTEMPT-6 §8.4.2] The per-host release token for THIS run's nonce did not
+    appear within the declared deadline.
+
+    A distinct type, because "the barrier expired" and "the identity drifted" are
+    different operator problems: this one means the 25/25 sentinel gate has not
+    passed (or the harness never got as far as writing the token), and the correct
+    response is to look at the gate's own refusal, never to start the worker
+    without the barrier."""
+
+
 # §13 IDENTITY = exactly the fields the frozen cohort was admitted on. Enumerated
 # rather than taken as "every field of RegisterMessage", because the envelope also
 # carries PER-MESSAGE metadata: `timestamp` necessarily differs between the first
@@ -1389,6 +1400,141 @@ class RangeMinerWorker:
         logger.warning("[MINER-SESSION] %s %s", kind, json.dumps(event, default=str,
                                                                  sort_keys=True))
         return event
+
+    # ----- [ATTEMPT-6 §1.6 / §8.4] startup sentinel + release barrier ---------
+    def prepare(self) -> None:
+        """Resolve the GPU and warm it, idempotently.
+
+        A HOIST, NOT A CHANGE. `register()`'s existing lazy initialisation stays
+        exactly where it is and stays idempotent, so every existing caller and
+        gate that calls `register()` directly is byte-unaffected. The hoist exists
+        because the startup sentinel must be emitted AFTER executor construction
+        and kernel-module import — i.e. with the process's streams in the state a
+        real session event will find them in. A sentinel emitted before the
+        imports that might perturb the streams proves nothing about the channel
+        that was silent."""
+        if self.gpu_info is None:
+            self.gpu_info = detect_gpu(self.device_index)
+            warm_gpu(self.device_index)
+
+    def emit_startup_sentinel(self, run_nonce: str,
+                              log_path: Optional[str] = None) -> Dict[str, Any]:
+        """[ATTEMPT-6 A2] PROVE THE SESSION-LOG CHANNEL, THROUGH THE CHANNEL.
+
+        Across attempts 4 and 5 NO rig-worker session event was observably emitted
+        on the production logging surface: all 24 rig logs in the attempt-5 bundle
+        are byte-identical 138-byte files carrying only three
+        `[sieve_worker] Compiled kernel:` lines, while the identical code emitted
+        correctly on the Zeus-local worker in the same run. Buffering was REFUTED
+        by a positive control. THE CAUSE REMAINS UNRESOLVED — this is not a claim
+        that the code never executed.
+
+        A sentinel does not need to know why the channel was silent. It needs to
+        prove, BEFORE the run commits any GPU-seconds or freezes a cohort, that a
+        record written through THE SAME CALL PATH the session events use arrives
+        somewhere the operator can read. Whatever broke it — an environment
+        difference, a stream replacement, a redirect that did not survive, a
+        launch that produced a different file than the one collected — a sentinel
+        that fails closed catches all of them without naming any of them.
+
+        IT ROUTES THROUGH `_emit_session_event`, and that is the whole point: a
+        sentinel that `print()`s, or that uses a different logger, exercises a
+        channel that was never in question. Note the inverse is equally wrong —
+        the generic emitter stays GENERIC; nothing sentinel-specific is pushed
+        into it.
+
+        THE RESIDUAL, STATED PLAINLY: this proves the channel was live at startup.
+        It does NOT prove the channel stays live for the next four hours. What it
+        converts is "unobserved, cause unknown" into "observed at T0, so any later
+        silence is a CHANGE rather than a permanent condition" — which is what a
+        diagnosis needs, and it is the honest limit of what a preflight asserts."""
+        info = self.gpu_info
+        return self._emit_session_event(
+            "SESSION_SENTINEL",
+            run_nonce=run_nonce,
+            pid=os.getpid(),
+            hostname=self.hostname,
+            log_path=log_path,
+            python=sys.executable,
+            backend=(None if info is None else info.backend),
+            gpu_name=(None if info is None else info.gpu_name),
+            device_index=self.device_index,
+            gpu_id=self.gpu_id,
+        )
+
+    def await_session_release(self, release_path: str, run_nonce: str,
+                              deadline_s: float, poll_s: float = 0.5) -> None:
+        """[ATTEMPT-6 §8.4.2] THE BARRIER: no REGISTER until the harness has
+        certified 25/25 sentinel delivery.
+
+        A sentinel VERIFIED AFTER REGISTER proves the channel was alive for a run
+        that has already committed GPU-seconds — an intention, not an enforced
+        ordering property. Before this there was no gate of any kind between
+        process start and REGISTER: `main()` was `connect(); register();
+        serve_forever()`, `register()` ends in a bare send, and the coordinator
+        sends no registration acknowledgement, so nothing worker-side was waiting
+        on anything.
+
+        The release token is PER HOST — the four hosts share no filesystem — and
+        its CONTENT is the run nonce, so a stale file from an earlier run cannot
+        release this one. That is the same failure mode the stale-nonce arm of the
+        sentinel probe exists for, and it applies to the release file too.
+
+        FAILS CLOSED: on deadline expiry it emits `SESSION_RELEASE_TIMEOUT` and
+        raises. It NEVER proceeds unreleased and it never falls back to "assume
+        released".
+
+        Delivering the release over the miner protocol instead was REJECTED: it
+        needs a protocol change, it puts the worker on the coordinator's socket
+        BEFORE the gate has passed — weakening the very property being enforced —
+        and it re-opens the `IDENTITY_FIELDS` hazard the `RegisterMessage`-echo
+        rejection already records."""
+        if not (deadline_s > 0.0 and math.isfinite(deadline_s)):
+            raise ValueError(
+                "release_deadline must be a POSITIVE FINITE number of seconds "
+                f"(got {deadline_s!r}); an absent or infinite deadline turns the "
+                "barrier into an unbounded park with no terminal state")
+        started = time.time()
+        self._emit_session_event(
+            "SESSION_RELEASE_WAIT", run_nonce=run_nonce,
+            release_path=release_path, deadline_s=deadline_s)
+        while True:
+            try:
+                with open(release_path, "r", encoding="utf-8") as fh:
+                    content = fh.read().strip()
+            except OSError:
+                content = None
+            if content is not None:
+                if content == run_nonce:
+                    self._emit_session_event(
+                        "SESSION_RELEASED", run_nonce=run_nonce,
+                        release_path=release_path,
+                        waited_s=round(time.time() - started, 3))
+                    return
+                # A file whose content is some OTHER run's nonce is a stale
+                # release and is NOT a release. Reported once per poll would be
+                # noise; it is reported when the deadline expires, below.
+            waited = time.time() - started
+            if waited >= deadline_s:
+                self._emit_session_event(
+                    "SESSION_RELEASE_TIMEOUT", run_nonce=run_nonce,
+                    release_path=release_path, waited_s=round(waited, 3),
+                    observed=content)
+                raise SessionReleaseTimeout(
+                    f"no release token for run nonce {run_nonce!r} appeared at "
+                    f"{release_path!r} within {deadline_s}s (observed "
+                    f"{content!r}); refusing to REGISTER — the 25/25 worker-log "
+                    f"sentinel gate has not passed, and a worker that registers "
+                    f"anyway destroys the ordering property the gate exists to "
+                    f"enforce")
+            if self._stop.wait(min(poll_s, max(0.0, deadline_s - waited))):
+                self._emit_session_event(
+                    "SESSION_RELEASE_ABORTED", run_nonce=run_nonce,
+                    release_path=release_path,
+                    waited_s=round(time.time() - started, 3))
+                raise SessionReleaseTimeout(
+                    "worker was stopped while waiting for the session release "
+                    f"token at {release_path!r}")
 
     def recovery_budget_s(self) -> float:
         """§14 bound, validated POSITIVE FINITE exactly as the coordinator
@@ -1946,6 +2092,24 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--seed-cap-amd", type=int, default=2_000_000)
     p.add_argument("--seed-cap-nvidia-hybrid", type=int, default=2_500_000)
     p.add_argument("--seed-cap-amd-hybrid", type=int, default=1_000_000)
+    # [ATTEMPT-6 §8.4.2] the startup sentinel and the pre-REGISTER barrier.
+    # All three are OPTIONAL so every existing invocation — the gates, a manual
+    # single-worker smoke run — is byte-unaffected; the gate-12 launch harness
+    # supplies all three, and RXP-3's ordering arms are what make the harness's
+    # use of them enforced rather than advisory.
+    p.add_argument("--run-nonce", default=None,
+                   help="opaque run-scoped token emitted in SESSION_SENTINEL and "
+                        "required as the CONTENT of the session-release file")
+    p.add_argument("--session-release-file", default=None,
+                   help="per-host path the launch harness writes AFTER the 25/25 "
+                        "sentinel gate passes; the worker parks here and will not "
+                        "REGISTER until it contains this run's nonce")
+    p.add_argument("--release-deadline", type=float, default=900.0,
+                   help="fail-closed bound on the release wait, in seconds")
+    p.add_argument("--sentinel-log-path", default=None,
+                   help="the worker's own resolved log destination, recorded in "
+                        "SESSION_SENTINEL so the harness probe and the daemon "
+                        "agree on WHICH file was supposed to receive it")
     return p.parse_args(argv)
 
 
@@ -1978,6 +2142,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGTERM, _handle_sig)
     signal.signal(signal.SIGINT, _handle_sig)
 
+    # [ATTEMPT-6 §8.4.2] ORDER IS THE PROPERTY, AND IT IS ENFORCED HERE.
+    #   prepare -> sentinel -> BARRIER -> connect -> register -> serve
+    # The GPU is resolved and warmed FIRST so the sentinel exercises the streams
+    # in the state a real session event will find them in; the barrier sits
+    # BETWEEN the sentinel and the first byte sent to the coordinator, so a run
+    # cannot freeze a cohort, admit and dispatch while the harness is still
+    # reading logs. With no nonce supplied the sequence degrades to exactly the
+    # pre-amendment behaviour, which is what keeps every existing gate valid.
+    # The two barrier arguments are a PAIR, and a half-supplied pair fails closed
+    # rather than degrading silently into "sentinel emitted, barrier skipped" —
+    # which would look correct in the log and enforce nothing.
+    if bool(args.run_nonce) != bool(args.session_release_file):
+        raise SystemExit(
+            "--run-nonce and --session-release-file must be supplied TOGETHER: "
+            "the nonce identifies this run in the sentinel AND is the required "
+            "content of the release token, so supplying one without the other "
+            "would emit an unverifiable sentinel or park on an unidentifiable "
+            "release")
+    if args.run_nonce:
+        worker.prepare()
+        worker.emit_startup_sentinel(args.run_nonce,
+                                     log_path=args.sentinel_log_path)
+        if args.session_release_file:
+            worker.await_session_release(
+                args.session_release_file, args.run_nonce,
+                args.release_deadline)
     worker.connect()
     worker.register()
     worker.serve_forever()
