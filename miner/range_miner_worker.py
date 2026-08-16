@@ -1099,11 +1099,107 @@ class MinerFramedSocket:
         self.sock = sock
         self._send_lock = threading.Lock()
         self._recv_lock = threading.Lock()
+        # ----- [H1/H2 §A · R1-A] PER-THREAD SEND ACCOUNTING ------------------
+        # THE R1-A REPAIR, AND THE DEFECT IT REPLACES IS WORTH STATING.
+        #
+        # The first revision kept ONE socket-wide cumulative counter and had
+        # `handle_stripe` subtract a snapshot taken at STRIPE_BEGIN. That delta
+        # isolates a TIME INTERVAL, not this stripe's sends — and the heartbeat
+        # thread shares this socket and this lock. Beta's counter-example:
+        #
+        #     mining thread     executing a GPU kernel for 250 s
+        #     heartbeat thread  takes the send lock, coordinator stops reading,
+        #                       heartbeat blocks in _sendall for 200 s
+        #     reported          compute_s ~250 s · send_block_s ~200 s
+        #                       ...which was the HEARTBEAT's send time, attributed
+        #                       to a stripe that had not sent a single byte.
+        #
+        # Accounting is therefore keyed by THREAD IDENTITY. The stripe reads the
+        # slot of the thread that is executing it; the heartbeat's syscall time
+        # lands in its own slot and is reported SEPARATELY, never folded in.
+        #
+        # TWO COMPONENTS, KEPT SEPARATELY VISIBLE (Beta R1-A, second half):
+        #   send_syscall_s    time inside the `_sendall` loop — blocked on the WIRE
+        #   send_lock_wait_s  time waiting to ACQUIRE `_send_lock` — blocked behind
+        #                     another thread that is itself blocked on the wire
+        # Both are coordinator-side send-path obstruction; a discriminator built
+        # on syscall time alone would miss the second entirely, which is why the
+        # stripe reports their SUM as `stripe_send_stall_s` and both parts too.
+        #
+        # Nothing is emitted from this class: it accumulates, the stripe
+        # instrument reads deltas, and the §15 no-high-rate-noise bar is
+        # untouched.
+        self._acct_lock = threading.Lock()
+        self._acct_by_thread: Dict[int, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _new_acct_slot() -> Dict[str, Any]:
+        return {
+            "send_calls": 0,
+            "send_syscall_s": 0.0,
+            "send_syscall_max_s": 0.0,
+            "send_lock_wait_s": 0.0,
+            "send_lock_wait_max_s": 0.0,
+            "bytes_sent": 0,
+        }
+
+    def send_accounting(self, thread_id: Optional[int] = None) -> Dict[str, Any]:
+        """A snapshot of ONE thread's send accounting — the calling thread by
+        default, or the named thread.
+
+        Copied under the lock so a reader can never observe a half-updated tuple
+        of counters. A thread that has never sent returns a zeroed slot, which is
+        a true statement about that thread rather than an absence."""
+        tid = threading.get_ident() if thread_id is None else int(thread_id)
+        with self._acct_lock:
+            slot = self._acct_by_thread.get(tid)
+            return dict(slot) if slot is not None else self._new_acct_slot()
+
+    def send_accounting_all(self) -> Dict[str, Any]:
+        """The socket-wide roll-up plus the per-thread breakdown. Context only —
+        no stripe figure is ever derived from the roll-up, which is precisely the
+        R1-A defect."""
+        with self._acct_lock:
+            per = {tid: dict(s) for tid, s in self._acct_by_thread.items()}
+        total = self._new_acct_slot()
+        for s in per.values():
+            for k in ("send_calls", "send_syscall_s", "send_lock_wait_s",
+                      "bytes_sent"):
+                total[k] += s[k]
+            total["send_syscall_max_s"] = max(total["send_syscall_max_s"],
+                                              s["send_syscall_max_s"])
+            total["send_lock_wait_max_s"] = max(total["send_lock_wait_max_s"],
+                                                s["send_lock_wait_max_s"])
+        return {"total": total, "by_thread": per, "thread_count": len(per)}
 
     def send_msg(self, msg: MinerBaseMessage) -> None:
         data = message_to_bytes(msg)
+        _tid = threading.get_ident()
+        _wait_t0 = time.perf_counter()
         with self._send_lock:
-            self._sendall(data)
+            _wait = time.perf_counter() - _wait_t0
+            _send_t0 = time.perf_counter()
+            try:
+                self._sendall(data)
+            finally:
+                # In the `finally` deliberately: a send that dies mid-frame on a
+                # dead peer BLOCKED for however long it blocked, and that time is
+                # exactly what a transport-loss forensic needs. Charging it only
+                # on success would erase the measurement in the failure case.
+                _syscall = time.perf_counter() - _send_t0
+                with self._acct_lock:
+                    a = self._acct_by_thread.get(_tid)
+                    if a is None:
+                        a = self._new_acct_slot()
+                        self._acct_by_thread[_tid] = a
+                    a["send_calls"] += 1
+                    a["send_syscall_s"] += _syscall
+                    a["send_lock_wait_s"] += _wait
+                    a["bytes_sent"] += len(data)
+                    if _syscall > a["send_syscall_max_s"]:
+                        a["send_syscall_max_s"] = _syscall
+                    if _wait > a["send_lock_wait_max_s"]:
+                        a["send_lock_wait_max_s"] = _wait
 
     def recv_msg(self) -> MinerBaseMessage:
         with self._recv_lock:
@@ -1219,6 +1315,11 @@ STOP_CAUSE_EXPLICIT_SHUTDOWN = "explicit_shutdown"   # `shutdown` frame
 STOP_CAUSE_SIGNAL = "signal"                         # SIGTERM / SIGINT
 SESSION_END_TRANSPORT_LOSS = "transport_loss"        # recoverable
 SESSION_END_IDENTITY_REFUSED = "identity_refused"    # §13 fail-closed
+
+# [H1/H2 §A] How many stripe-lifecycle events the worker keeps IN PROCESS. The
+# log is the record of authority; this list only serves in-process gates, and an
+# unbounded one over a 50-trial soak is a leak inside an instrument.
+STRIPE_EVENT_RETENTION = 4096
 
 # The RECEIVE-side transport surface. Identical to the tuple the certified loop
 # already caught, so classification does not widen what counts as a transport
@@ -1380,6 +1481,22 @@ class RangeMinerWorker:
         self.reconnect_attempts_total = 0
         self.session_generation = 1
         self.session_events: List[Dict[str, Any]] = []
+        # ----- [H1/H2 §A] stripe-lifecycle accounting ------------------------
+        # A SECOND emission class, at STRIPE granularity (32 stripes per stage,
+        # not 34 frames each), sibling to `_emit_session_event` and deliberately
+        # NOT an extension of it: §15 was scoped to session transitions and did
+        # exactly what it was scoped to do (forensic §4.1).
+        #
+        # `_stripe_acct` is the LIVE accounting for the stripe currently inside
+        # `handle_stripe`; `_last_stripe_acct` retains the most recent finished
+        # one. BOTH are carried on the session-end record, and that is the point:
+        # on the `explicit_shutdown` path `assignment_active_at_loss` is
+        # structurally always False (forensic §4.2, VIR-2 vacuous), so the
+        # session end needs a field that can actually vary. `_last_stripe_acct`
+        # is that field — it carries the terminal stripe's compute/send split.
+        self.stripe_events: List[Dict[str, Any]] = []
+        self._stripe_acct: Optional[Dict[str, Any]] = None
+        self._last_stripe_acct: Optional[Dict[str, Any]] = None
         # §13: the identity the cohort was frozen against, captured at the FIRST
         # registration and re-sent verbatim on every reconnect.
         self._identity_frame: Optional[Dict[str, Any]] = None
@@ -1400,6 +1517,152 @@ class RangeMinerWorker:
         logger.warning("[MINER-SESSION] %s %s", kind, json.dumps(event, default=str,
                                                                  sort_keys=True))
         return event
+
+    # ----- [H1/H2 §A] stripe-lifecycle observability ------------------------
+    def _emit_stripe_event(self, kind: str, **fields: Any) -> Dict[str, Any]:
+        """Record one STRIPE-lifecycle fact. Four records per stripe, never one
+        per sub-stripe and never one per frame — the rate is 4 x (stripes this
+        worker is handed), which for the gate-12 geometry is 4 x 4 per stage.
+
+        The tag is `[MINER-STRIPE]`, deliberately NOT `[MINER-SESSION]`: the
+        sentinel and liveness gates locate their records by substring, and a
+        stripe record must never be mistakable for a session record by a `grep`.
+        For the same reason no field here ever carries the run nonce."""
+        event = {
+            "event": kind,
+            "worker_id": self.worker_id,
+            "session_generation": self.session_generation,
+            **fields,
+        }
+        self.stripe_events.append(event)
+        # Bounded retention: the log is the record of authority, this list is a
+        # convenience for in-process gates. An unbounded list over a 50-trial
+        # soak is a leak, and a leak inside an instrument is the instrument
+        # becoming the defect.
+        if len(self.stripe_events) > STRIPE_EVENT_RETENTION:
+            del self.stripe_events[:-STRIPE_EVENT_RETENTION]
+        logger.warning("[MINER-STRIPE] %s %s", kind, json.dumps(event, default=str,
+                                                                sort_keys=True))
+        return event
+
+    def _heartbeat_thread_id(self) -> Optional[int]:
+        """The heartbeat thread's identity, or `None` if it has not started.
+
+        `None` means UNOBSERVED — the heartbeat's send time cannot be read — and
+        must never be reported as a heartbeat that sent nothing."""
+        th = self._hb_thread
+        if th is None:
+            return None
+        return th.ident
+
+    def _charge_stripe_send(self) -> None:
+        """[R1-A] Fold THE STRIPE'S OWN EXECUTION THREAD's send counters into the
+        live stripe's totals, as a delta against the baseline taken at
+        STRIPE_BEGIN.
+
+        The thread identity is captured at STRIPE_BEGIN and read back from the
+        accounting rather than re-derived from `threading.get_ident()` here: a
+        snapshot taken on the session-end path must charge the thread that
+        EXECUTED the stripe, not whichever thread happens to be asking.
+
+        Reading DELTAS rather than resetting the socket's counters is what lets
+        the heartbeat thread share one socket with the mining thread without
+        either instrument corrupting the other — a reset would silently discard
+        whatever the other thread had accumulated but not yet read.
+
+        The heartbeat's own syscall time is charged too, into its OWN field, so
+        it is visible and provably NOT part of the stripe's number."""
+        acct = self._stripe_acct
+        if acct is None:
+            return
+        base = acct.get("_send_base")
+        tid = acct.get("_send_tid")
+        if base is None or tid is None or self.conn is None:
+            return
+        now = self.conn.send_accounting(thread_id=tid)
+        syscall = round(now["send_syscall_s"] - base["send_syscall_s"], 6)
+        lock_wait = round(now["send_lock_wait_s"] - base["send_lock_wait_s"], 6)
+        acct["stripe_send_syscall_s"] = syscall
+        acct["stripe_send_lock_wait_s"] = lock_wait
+        # Beta R1-A: BOTH components stay visible AND their sum is the quantity
+        # the H1/H2 verdict reasons over. Waiting for a lock held by a thread
+        # that is itself blocked on the wire is coordinator-side send-path
+        # obstruction just as much as blocking in the syscall is, and a
+        # discriminator built on syscall time alone would miss it entirely.
+        acct["stripe_send_stall_s"] = round(syscall + lock_wait, 6)
+        acct["stripe_send_syscall_max_s"] = round(now["send_syscall_max_s"], 6)
+        acct["stripe_send_lock_wait_max_s"] = round(
+            now["send_lock_wait_max_s"], 6)
+        acct["stripe_send_calls"] = now["send_calls"] - base["send_calls"]
+        # The heartbeat thread's syscall time over the same interval — reported,
+        # and NOT charged to the stripe. This is the field that makes the R1-A
+        # separation checkable from the record itself rather than trusted.
+        hb_tid = self._heartbeat_thread_id()
+        hb_base = acct.get("_hb_base")
+        if hb_tid is None:
+            acct["heartbeat_send_syscall_s"] = None
+        else:
+            hb_now = self.conn.send_accounting(thread_id=hb_tid)
+            _b = hb_base or self.conn._new_acct_slot()
+            acct["heartbeat_send_syscall_s"] = round(
+                hb_now["send_syscall_s"] - _b["send_syscall_s"], 6)
+
+    def _close_stripe(self, outcome: str, **extra: Any) -> None:
+        """Retire the live stripe accounting and emit `STRIPE_END`.
+
+        Called on EVERY exit path out of `handle_stripe` — normal completion and
+        both failure classes — so a stripe that produced records but no
+        `STRIPE_END` is itself a finding rather than an ambiguity."""
+        acct = self._stripe_acct
+        if acct is None:
+            return
+        self._charge_stripe_send()
+        acct["outcome"] = outcome
+        acct["total_s"] = round(time.perf_counter() - acct["began_mono"], 6)
+        # The residual the two decision rules do NOT explain: elapsed time that
+        # is neither kernel execution nor send-path stall. A large residual is a
+        # THIRD finding — neither H1 nor H2 — and it must stay visible rather
+        # than being absorbed into whichever term happens to be bigger.
+        # [R1-A] Subtracts the STALL (syscall + lock wait), not the syscall term
+        # alone: charging lock-wait time to the residual would report
+        # coordinator-side obstruction as "unexplained".
+        _stall = acct.get("stripe_send_stall_s")
+        acct["unattributed_s"] = (
+            None if _stall is None
+            else round(max(0.0, acct["total_s"] - acct["compute_s"] - _stall), 6))
+        for _k in ("_send_base", "_send_tid", "_hb_base"):
+            acct.pop(_k, None)
+        self._last_stripe_acct = dict(acct)
+        self._stripe_acct = None
+        fields = {k: v for k, v in acct.items() if k != "began_mono"}
+        # `extra` last, so a caller-supplied fact always wins over the
+        # accumulator's value for the same name rather than raising on a
+        # duplicate keyword and taking the stripe path down with it.
+        fields.update(extra)
+        fields["mono"] = time.perf_counter()
+        self._emit_stripe_event("STRIPE_END", **fields)
+
+    def stripe_accounting_snapshot(self) -> Dict[str, Any]:
+        """What the worker can say about stripe work at THIS instant.
+
+        `inflight` is non-null only while `handle_stripe` has not returned;
+        `last` is the most recently finished stripe. Both are `None` before the
+        worker has ever been assigned anything — `None` meaning UNOBSERVED, never
+        a zero that would read as a measurement (VIR-5)."""
+        def _public(d: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            return None if d is None else {k: v for k, v in d.items()
+                                           if not k.startswith("_")}
+        if self._stripe_acct is not None:
+            # Refresh the live stripe's send charge so a snapshot taken WHILE a
+            # worker is blocked reports the blockage as it stands, not as it was
+            # at the last completed send. This is the read that matters: it is
+            # taken on the session-end path, i.e. exactly when a worker has just
+            # stopped being blocked.
+            self._charge_stripe_send()
+        return {
+            "inflight": _public(self._stripe_acct),
+            "last": _public(self._last_stripe_acct),
+        }
 
     # ----- [ATTEMPT-6 §1.6 / §8.4] startup sentinel + release barrier ---------
     def prepare(self) -> None:
@@ -1666,6 +1929,63 @@ class RangeMinerWorker:
         subs = partition_stripe(assign.seed_start, seed_count, cap)
         executor = self._executor_for()
 
+        # ---- [H1/H2 §A] STRIPE LIFECYCLE, OPENED --------------------------
+        # `perf_counter` for every duration and `time.time()` only as a WALL
+        # LABEL: a clock step must not be able to manufacture or destroy a
+        # measured interval, and every decision rule below is a duration.
+        _mono0 = time.perf_counter()
+        # [R1-A] THE STRIPE IS OWNED BY THE THREAD EXECUTING IT. The baseline is
+        # this thread's slot, and the identity is stored so every later charge —
+        # including one taken from the session-end path — reads the same slot.
+        _send_tid = threading.get_ident()
+        _send_base = (self.conn.send_accounting(thread_id=_send_tid)
+                      if self.conn is not None else None)
+        _hb_tid = self._heartbeat_thread_id()
+        _hb_base = (self.conn.send_accounting(thread_id=_hb_tid)
+                    if (self.conn is not None and _hb_tid is not None) else None)
+        acct: Dict[str, Any] = {
+            "stripe_id": assign.stripe_id,
+            "family_name": assign.family_name,
+            "sub_count": len(subs),
+            "began_wall": t0,
+            "began_mono": _mono0,
+            # Cumulative, in-loop. `compute_s` is time inside the executor;
+            # `send_s` is wall time inside `_send`. Under H1 `compute_s` grows;
+            # under H2 `stripe_send_stall_s` does. They cannot both be small
+            # while the stripe takes 300 s — a third outcome, named in the
+            # report and reported as `unattributed_s`.
+            "compute_s": 0.0,
+            "send_s": 0.0,
+            "subs_computed": 0,
+            "subs_sent": 0,
+            "compute_done": False,
+            "send_done": False,
+            "outcome": None,
+            # [R1-A] THREAD-OWNED SEND-PATH STALL, in its two components and
+            # their sum. `None` = no socket to read a baseline from, so this is
+            # UNOBSERVED for this stripe. Never 0.0 (VIR-5).
+            "stripe_send_syscall_s": (None if _send_base is None else 0.0),
+            "stripe_send_lock_wait_s": (None if _send_base is None else 0.0),
+            "stripe_send_stall_s": (None if _send_base is None else 0.0),
+            "stripe_send_syscall_max_s": (None if _send_base is None else 0.0),
+            "stripe_send_lock_wait_max_s": (None if _send_base is None else 0.0),
+            "stripe_send_calls": (None if _send_base is None else 0),
+            # The heartbeat thread's syscall time over this stripe's interval —
+            # REPORTED so the separation is checkable, and NEVER added in.
+            # `None` = the heartbeat thread has not started, i.e. UNOBSERVED.
+            "heartbeat_send_syscall_s": (None if _hb_base is None else 0.0),
+            "_send_base": _send_base,
+            "_send_tid": _send_tid,
+            "_hb_base": _hb_base,
+        }
+        self._stripe_acct = acct
+        _charge_send = self._charge_stripe_send
+        self._emit_stripe_event(
+            "STRIPE_BEGIN", stripe_id=assign.stripe_id,
+            family_name=assign.family_name, sub_count=len(subs),
+            seed_start=assign.seed_start, seed_count=seed_count,
+            wall=t0, mono=_mono0)
+
         survivors_total = 0
         # [S172 D6] Effective-threshold provenance for the stripe roll-up. Every
         # sub-stripe of one stripe runs the same kernel with the same threshold,
@@ -1674,21 +1994,77 @@ class RangeMinerWorker:
         effective_seen: List[float] = []
         for sub in subs:
             self.current_sub_index = sub.sub_index
+            _c0 = time.perf_counter()
             try:
                 outcome = executor(assign, sub.seed_start, sub.seed_count)
             except (NotImplementedError, ResidueError, ThresholdContractError) as e:
                 # Non-retryable: uncovered family, or unresolved/mismatched window.
+                acct["compute_s"] = round(
+                    acct["compute_s"] + (time.perf_counter() - _c0), 6)
                 self._fail_stripe(assign, sub, e, retryable=False)
                 return
             except Exception as e:
+                acct["compute_s"] = round(
+                    acct["compute_s"] + (time.perf_counter() - _c0), 6)
                 self._fail_stripe(assign, sub, e, retryable=True)
                 return
+            acct["compute_s"] = round(
+                acct["compute_s"] + (time.perf_counter() - _c0), 6)
+            acct["subs_computed"] += 1
+            if acct["subs_computed"] >= len(subs) and not acct["compute_done"]:
+                # [H1/H2 §A decision rule] EVERY KERNEL FOR THIS STRIPE HAS
+                # RETURNED. Emitted from inside the loop, after the LAST
+                # executor call, because compute and send interleave per
+                # sub-stripe — there is no separate compute phase to sit after.
+                acct["compute_done"] = True
+                _charge_send()
+                self._emit_stripe_event(
+                    "STRIPE_COMPUTE_DONE", stripe_id=assign.stripe_id,
+                    compute_s=acct["compute_s"],
+                    subs_computed=acct["subs_computed"],
+                    sub_count=len(subs),
+                    send_s=acct["send_s"],
+                    stripe_send_stall_s=acct["stripe_send_stall_s"],
+                    mono=time.perf_counter())
 
             survivors_total += outcome.count
             eff = getattr(outcome, "effective_threshold", None)
             if eff is not None:
                 effective_seen.append(float(eff))
-            self._send(self._build_sub_result(assign, sub, outcome))
+            _s0 = time.perf_counter()
+            try:
+                self._send(self._build_sub_result(assign, sub, outcome))
+            finally:
+                # In the `finally`: a send that dies mid-frame blocked for
+                # however long it blocked, and erasing that on the failure path
+                # would remove the measurement exactly when it matters most.
+                acct["send_s"] = round(
+                    acct["send_s"] + (time.perf_counter() - _s0), 6)
+                _charge_send()
+            acct["subs_sent"] += 1
+            if acct["subs_sent"] >= len(subs) and not acct["send_done"]:
+                # [H1/H2 §A decision rule · R1-A] THE LAST SUB-STRIPE RESULT IS
+                # OFF THE WORKER. `stripe_send_stall_s` is the cumulative
+                # seconds THIS STRIPE'S EXECUTION THREAD spent unable to make
+                # send progress — inside the syscall, or waiting for the lock
+                # behind a thread that is itself inside the syscall. It is the
+                # field that separates "still computing" from "blocked writing
+                # to a coordinator that is not reading", and the heartbeat's own
+                # syscall time is reported beside it rather than inside it.
+                acct["send_done"] = True
+                self._emit_stripe_event(
+                    "STRIPE_SEND_DONE", stripe_id=assign.stripe_id,
+                    substripes_sent=acct["subs_sent"],
+                    send_s=acct["send_s"],
+                    stripe_send_stall_s=acct["stripe_send_stall_s"],
+                    stripe_send_syscall_s=acct["stripe_send_syscall_s"],
+                    stripe_send_lock_wait_s=acct["stripe_send_lock_wait_s"],
+                    stripe_send_syscall_max_s=acct["stripe_send_syscall_max_s"],
+                    stripe_send_lock_wait_max_s=acct[
+                        "stripe_send_lock_wait_max_s"],
+                    heartbeat_send_syscall_s=acct["heartbeat_send_syscall_s"],
+                    compute_s=acct["compute_s"],
+                    mono=time.perf_counter())
             self.progress = (sub.sub_index + 1) / len(subs) if subs else 1.0
 
         self.stripes_done += 1
@@ -1703,32 +2079,47 @@ class RangeMinerWorker:
                 "stripe %s sub-stripes filtered at DIFFERENT thresholds %r — "
                 "reporting no single effective value (S172 D6 provenance)",
                 assign.stripe_id, distinct_eff)
-        self._send(
-            StripeCompleteMessage(
-                worker_id=self.worker_id,
-                stripe_id=assign.stripe_id,
-                substripes_done=len(subs),
-                survivors_total=survivors_total,
-                elapsed_s=round(time.time() - t0, 3),
-                effective_threshold=(distinct_eff[0]
-                                     if len(distinct_eff) == 1 else None),
+        try:
+            self._send(
+                StripeCompleteMessage(
+                    worker_id=self.worker_id,
+                    stripe_id=assign.stripe_id,
+                    substripes_done=len(subs),
+                    survivors_total=survivors_total,
+                    elapsed_s=round(time.time() - t0, 3),
+                    effective_threshold=(distinct_eff[0]
+                                         if len(distinct_eff) == 1 else None),
+                )
             )
-        )
+        finally:
+            # [H1/H2 §A] STRIPE_END on the completion path, in a `finally` so a
+            # StripeComplete that dies on a dead socket still retires the
+            # accounting — that failure is precisely the case whose send-block
+            # figure a forensic needs.
+            self._close_stripe("complete", survivors_total=survivors_total,
+                               elapsed_s=round(time.time() - t0, 3))
 
     def _fail_stripe(self, assign, sub, exc, *, retryable: bool) -> None:
         self.stripes_error += 1
         self.state = "idle"
         self.current_sub_index = -1
-        self._send(
-            StripeErrorMessage(
-                worker_id=self.worker_id,
-                stripe_id=assign.stripe_id,
-                sub_index=sub.sub_index,
-                error=str(exc),
-                traceback=traceback.format_exc(),
-                retryable=retryable,
+        try:
+            self._send(
+                StripeErrorMessage(
+                    worker_id=self.worker_id,
+                    stripe_id=assign.stripe_id,
+                    sub_index=sub.sub_index,
+                    error=str(exc),
+                    traceback=traceback.format_exc(),
+                    retryable=retryable,
+                )
             )
-        )
+        finally:
+            # [H1/H2 §A] Same discipline on the failure path: the accounting is
+            # retired whether or not the error frame reached the coordinator.
+            self._close_stripe("failed", retryable=retryable,
+                               failed_sub_index=sub.sub_index,
+                               exc_class=type(exc).__name__)
 
     def _build_sub_result(
         self, assign: StripeAssignMessage, sub: SubStripe, outcome: SubStripeOutcome
@@ -1800,7 +2191,16 @@ class RangeMinerWorker:
                         "SESSION_END", classification=outcome.cause,
                         exc_class=outcome.exc_class,
                         reconnect_attempted=False,
-                        assignment_active_at_loss=outcome.assignment_active)
+                        assignment_active_at_loss=outcome.assignment_active,
+                        # [H1/H2 §A] THE FIELD THAT CAN ACTUALLY VARY HERE.
+                        # `assignment_active_at_loss` is structurally always
+                        # False on this path (forensic §4.2): `_run_session` is
+                        # serial, so a `shutdown` frame is dequeued only after
+                        # `handle_stripe` has returned and set `idle`. The stripe
+                        # accounting is not subject to that constraint — `last`
+                        # carries the terminal stripe's compute/send split, which
+                        # is exactly the quantity attempt 6 could not recover.
+                        stripe_accounting=self.stripe_accounting_snapshot())
                     return
                 if not self._recover_session(outcome):
                     return
@@ -1908,6 +2308,11 @@ class RangeMinerWorker:
             exc_class=outcome.exc_class, exc_text=outcome.exc_text,
             assignment_active_at_loss=outcome.assignment_active,
             stripe_id_at_loss=outcome.stripe_id,
+            # [H1/H2 §A] On the TRANSPORT_LOSS path `assignment_active_at_loss`
+            # is genuinely informative (the loss can surface mid-`_dispatch`),
+            # and `inflight` is non-null here — so this record carries both the
+            # live stripe's accumulated block time and the last finished one.
+            stripe_accounting=self.stripe_accounting_snapshot(),
             recovery_spent_s=round(self._recovery_spent_s, 3))
         self._close_dead_session()
 
@@ -2113,7 +2518,53 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def configure_worker_logging(stream=None) -> logging.Handler:
+    """[H1/H2 §B] PUT A TIMESTAMP ON EVERY WORKER LOG LINE.
+
+    THIS IS A PRECONDITION, NOT A NICETY. The worker configures no logging at
+    all today, so `logger.warning` falls through to `logging.lastResort` — a
+    bare `StreamHandler` on stderr with NO formatter — and every record it
+    writes is the message and nothing else. That is why all 24 attempt-6 rig
+    logs carry no timestamps of any kind, why the only wall-clock anchors in the
+    bundle were a `waited_s` duration and a release-token mtime, and why the
+    forensic could bound the blind window only to '≈13:26:48 → ≈13:32:16'
+    (forensic §3.4). Every §A record is unanchorable without this, and so are
+    the four session events that already exist.
+
+    UTC, ISO-8601, milliseconds — not local time. The coordinator log, the
+    ledger and the sampler TSV are correlated against these lines across four
+    machines, and a local-time rig log cannot be joined to any of them without a
+    zone assumption nobody records.
+
+    The format PREFIXES; it does not restructure. `gate12_sentinel_gate.py` and
+    `gate12_worker_liveness_gate.py` locate records by substring `grep` and
+    extract the payload with `line.find('{')` — a prefix carrying no brace
+    leaves both intact, which is why the timestamp is added in front of the
+    existing message rather than folded into the JSON.
+
+    Idempotent, and it never displaces an existing configuration: a caller that
+    has already installed handlers on the root logger (a harness, a gate, an
+    embedding process) keeps them."""
+    root = logging.getLogger()
+    if root.handlers:
+        return root.handlers[0]
+    handler = logging.StreamHandler(sys.stderr if stream is None else stream)
+    fmt = logging.Formatter(
+        fmt="%(asctime)s.%(msecs)03dZ %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S")
+    # UTC, explicitly. `logging.Formatter.converter` defaults to localtime.
+    fmt.converter = time.gmtime
+    handler.setFormatter(fmt)
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    return handler
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    # FIRST statement, before the executor is constructed and before any module
+    # in the closure can install a handler of its own — `basicConfig`-style
+    # configuration is first-writer-wins, so ordering is the property.
+    configure_worker_logging()
     args = _parse_args(argv)
     caps = VramCaps(
         amd=args.seed_cap_amd,

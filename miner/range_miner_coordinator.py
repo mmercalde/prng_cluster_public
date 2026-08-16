@@ -29,6 +29,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import inspect
+import itertools
 import json
 import logging
 import math
@@ -455,6 +456,68 @@ DEFAULT_INBOUND_SATURATION_BUDGET_SECONDS = DEFAULT_WORKER_ADMISSION_TIMEOUT
 # same reason the pause loop waits in 50 ms slices rather than unboundedly.
 INBOUND_PUT_QUANTUM_S = 0.25
 EOF_PUT_QUANTUM_S = 0.25
+
+# ---------------------------------------------------------------------------
+# [H1/H2 §§C-E] frame-arrival instrumentation
+# ---------------------------------------------------------------------------
+# The attribute a decoded frame carries from its reader thread to the drain. It
+# is set with `object.__setattr__` on the message instance and is NEVER
+# serialised: `message_to_bytes` builds its payload from `dataclasses.fields()`,
+# which does not see an attribute that is not a declared field, so the wire
+# format and every sha256 over it are untouched. The leading underscore keeps it
+# out of any `vars()`-style projection that filters private names.
+#
+# ⚠ DELIBERATELY NOT NAMED `RX_*`. That prefix is a RESERVED NAMESPACE in this
+# module: `test_s172_attempt6_remediation.py`'s RXP-1 arm 5 enumerates every
+# module-scope `RX_*` assignment from the live AST and requires each to be a
+# declared reader-exit reason class with its own fault-injection arm. The first
+# draft of this constant was `RX_ARRIVAL_ATTR` and that certified gate caught it
+# immediately — correctly, since an attribute name is not an exit class. The
+# gate is right; the name was wrong. Do not rename this back.
+FRAME_ARRIVAL_ATTR = "_h1h2_rx_monotonic"
+
+# [R2-1] The frame's RECONCILIATION IDENTITY. Enqueue is recorded by the reader
+# thread and dequeue by the serve thread; once `Queue.put()` returns, the two
+# bookkeeping calls can execute in EITHER order, and the consumer routinely wins
+# when occupancy is low. A token lets each side record its own half against a
+# stable identity, so the pair commutes and the inventory is exactly-once
+# regardless of which thread gets there first.
+FRAME_TOKEN_ATTR = "_h1h2_rx_token"
+
+# Process-unique, monotonic, and taken under an explicit lock. `next()` on an
+# `itertools.count` happens to be atomic in CPython today, but "a comment
+# asserting a concurrency property is a claim, not a proof" — one uncontended
+# lock acquire per frame is free next to a socket decode, and it holds by
+# construction rather than by interpreter accident.
+_FRAME_TOKEN_LOCK = threading.Lock()
+_FRAME_TOKEN_SEQ = itertools.count(1)
+
+
+def _next_frame_token() -> int:
+    with _FRAME_TOKEN_LOCK:
+        return next(_FRAME_TOKEN_SEQ)
+
+# §7 D's period for the active-stripe accounting. ONE record per tick carrying
+# every active stripe — not one record per stripe, which at 25 workers would be
+# 2.5 lines/second for the whole run and would breach the very bar §15 set.
+ACTIVE_STRIPE_REPORT_INTERVAL_S = 10.0
+
+# [R1-C] THE OBSERVATION-STATUS VOCABULARY FOR THIS INSTRUMENT, and it is
+# load-bearing in exactly the way §2.10's `UNAVAILABLE` / `NOT_APPLICABLE` split
+# is. Every accounting record carries one of these, and the rule is absolute:
+#
+#     OK              the read succeeded; counts are measurements
+#     UNAVAILABLE     the read was ATTEMPTED and could not complete; every
+#                     count-shaped field is None, never 0
+#     NO_OBSERVATION  the read succeeded but this instrument has never seen the
+#                     subject at all — a real and different fact from "seen, and
+#                     the counters are zero"
+#
+# "We could not measure it" is not "we measured nothing", and a zero is a
+# measurement. NO UNAVAILABLE PATH MAY RENDER COUNT-SHAPED.
+OBS_OK = "OK"
+OBS_UNAVAILABLE = "UNAVAILABLE"
+OBS_NO_OBSERVATION = "NO_OBSERVATION"
 
 
 # ---------------------------------------------------------------------------
@@ -3240,6 +3303,18 @@ class RangeMinerCoordinator:
             "admission_dispositions_total": 0,
             "admission_dispositions_max_per_iteration": 0,
         }
+        # ----- [H1/H2 §§C-E] per-stripe receive accounting --------------------
+        # Its OWN lock, deliberately not `_bp_lock`: this map is written from the
+        # serve loop (dispatch, scheduling) AND from staging-completion callbacks
+        # off the dispatch thread, and folding it into the back-pressure lock
+        # would put an instrument in the path of a certified concurrency
+        # property for no reason.
+        self._stripe_rx_lock = threading.Lock()
+        self._stripe_rx: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._deferred_since: Dict[Tuple[str, str, int, int], float] = {}
+        self._active_acct_last: Optional[float] = None
+        # §7 D's suggested period. One record per tick, not one per stripe.
+        self.active_stripe_report_interval_s = ACTIVE_STRIPE_REPORT_INTERVAL_S
         # [ATTEMPT-6 binding detail 1] RUN-SCOPED CONNECTION CORRELATION TOKEN.
         # A monotonically increasing counter, never a file descriptor and never
         # `id(sock)`: both are reused during a long process, and a reused identity
@@ -5388,6 +5463,734 @@ class RangeMinerCoordinator:
             self._bp["admission_queue_high_water"] = max(
                 self._bp["admission_queue_high_water"], int(qsize))
 
+    # ======================================================================
+    # [H1/H2 §§C-E] FRAME ARRIVAL, QUEUE RESIDENCY AND PER-STRIPE ATTRIBUTION
+    # ======================================================================
+    # THE OTHER HALF OF THE DECISION. The worker-side instrument (§A) says what
+    # the worker did; this says what happened to its output. Neither alone
+    # decides H1 vs H2 — under H2 the worker is inside `handle_stripe` and not
+    # computing, and the coordinator must be able to say whether frames from that
+    # stripe ARRIVED. Today it cannot: `SLOW_MSG` is threshold-gated at 0.25 s and
+    # per-frame, so it is a sample of slow processing, never an inventory of
+    # arrivals — which is why `st1_s29/s30/s31` appear ZERO times in the
+    # attempt-6 coordinator log and why that zero means nothing (forensic §5.1,
+    # VIR-5: an absence of measurement is not an absence of traffic).
+    #
+    # NOTHING HERE EMITS PER FRAME. Residency is ACCUMULATED per stripe and
+    # emitted once at a stripe lifecycle boundary; the periodic accounting emits
+    # ONE record per tick carrying every active stripe, not one record per
+    # stripe. Control flow, lease, scheduling and acceptance semantics are
+    # untouched — every method below is a pure accumulator or a pure reader.
+
+    @staticmethod
+    def stamp_frame_arrival(msg, at: Optional[float] = None) -> None:
+        """[§C] Stamp ONE decoded frame with the monotonic instant it was decoded
+        by its reader thread, AND with a process-unique frame token.
+
+        The stamp RIDES ON THE ENVELOPE, exactly as the F1-R2a credit token does,
+        and for the same reason: one producer, one place it can be forgotten. The
+        `inbound` tuple keeps its five fields — widening it would change a shape
+        that certified gates in two suites unpack positionally, for no gain, and
+        the envelope is already the established carrier.
+
+        `perf_counter`, never `time.time()`: residency is a DURATION, and a
+        system-clock step must not be able to manufacture or destroy one.
+
+        [R2-1] THE TOKEN IS WHAT MAKES THE QUEUE INVENTORY ORDER-INDEPENDENT.
+        Enqueue is recorded by the reader thread and dequeue by the serve thread,
+        and after `Queue.put()` returns there is NO ordering guarantee between
+        the producer's bookkeeping and the consumer's. The token gives each frame
+        an identity both sides can reconcile against, so the pair commutes."""
+        if msg is None:
+            return
+        try:
+            object.__setattr__(msg, FRAME_ARRIVAL_ATTR,
+                               time.perf_counter() if at is None else float(at))
+            object.__setattr__(msg, FRAME_TOKEN_ATTR, _next_frame_token())
+        except (AttributeError, TypeError):
+            # A message type that refuses attributes leaves the frame UNSTAMPED,
+            # and an unstamped frame reports residency `None` below. It never
+            # reports 0.0 — an unmeasurable residency is UNOBSERVED, and a zero
+            # would read as "processed instantly", inverting the finding.
+            pass
+
+    @staticmethod
+    def frame_token(msg) -> Optional[int]:
+        """The frame's reconciliation identity, or `None` if it was never
+        stamped. An untokened frame cannot participate in the exactly-once
+        inventory and is counted separately rather than being allowed to distort
+        it — the same UNOBSERVED discipline, applied to a count."""
+        return getattr(msg, FRAME_TOKEN_ATTR, None)
+
+    @staticmethod
+    def frame_queue_residency(msg, at: Optional[float] = None) -> Optional[float]:
+        """[§C] `processed_at - arrived_at` for one frame, or `None` if the frame
+        was never stamped.
+
+        `None` is the load-bearing return. Benches that inject envelopes straight
+        into the drain never pass through a reader, so they have no arrival
+        instant and must report UNOBSERVED rather than a fabricated zero (VIR-5;
+        the same lesson the concurrency sampler was corrected for in §2.28)."""
+        t0 = getattr(msg, FRAME_ARRIVAL_ATTR, None)
+        if t0 is None:
+            return None
+        return max(0.0, (time.perf_counter() if at is None else float(at)) - t0)
+
+    def _stripe_rx_slot(self, run_id: str, stripe_id: str) -> Dict[str, Any]:
+        """The per-stripe receive accumulator, created on first touch.
+
+        Keyed `(run_id, stripe_id)` and NOT by attempt: a retried stripe's
+        deferral and residency history is the same diagnostic question, and the
+        attempt is recorded on each observation instead."""
+        key = (run_id, stripe_id)
+        slot = self._stripe_rx.get(key)
+        if slot is None:
+            slot = {
+                "run_id": run_id,
+                "stripe_id": stripe_id,
+                "worker_id": None,
+                "claimed_at": None,
+                # How the claim instant was obtained. `exact` = read from the
+                # scheduler's own handoff record. `reconciled` = this stripe was
+                # already `claimed` the first time the accounting saw it, so the
+                # instant is WHEN IT WAS FIRST OBSERVED, not when it was
+                # claimed. The retry placement inside
+                # `_handle_stripe_failure_locked` — a NO-TOUCH surface — is the
+                # path that produces the reconciled case. Recording the
+                # difference is the point: a reconciled age is a LOWER BOUND and
+                # must never be read as a measurement of the same quality.
+                "claim_precision": None,
+                # ---- [R1-B] ARRIVED vs ACCEPTED, and they are DIFFERENT -----
+                # The first revision counted only acceptance. Beta's
+                # counter-example: the reader receives, decodes and enqueues 34
+                # frames in milliseconds; the serve loop is 500+ frames behind
+                # and never dequeues them within 300 s; the lease expires with no
+                # accepted progress. The frames ARRIVED. Nothing accepted them.
+                # Under the acceptance-only counter that reads identically to
+                # "the worker sent nothing" — i.e. H2 wearing H1's clothes — and
+                # the worker does not rescue it either, because a socket that
+                # absorbs all 34 frames quickly leaves the worker's own send
+                # stall SMALL. The enqueue inventory is what separates them.
+                "frames_enqueued": 0,
+                "frames_dequeued": 0,
+                # [R2-1] Token -> arrival stamp, for frames whose ENQUEUE was
+                # recorded and whose DEQUEUE was not. Keyed by token rather than
+                # held as a FIFO of bare stamps: the two recorders are different
+                # threads in an unordered race, and a positional structure cannot
+                # reconcile a consumer that arrived first.
+                "pending": {},
+                # [R2-1] Tokens whose DEQUEUE was recorded before their enqueue
+                # bookkeeping ran. Cleared by the matching enqueue. A token never
+                # sits in both maps.
+                "early_dequeued": set(),
+                # How often the consumer's dequeue bookkeeping actually beat the
+                # producer's enqueue bookkeeping. Diagnostic in its own right —
+                # it measures how often the R2-1 race fires in production — and
+                # it is what stops the inversion gate from being vacuous: an arm
+                # that claims to drive the race must be able to prove it did.
+                "early_dequeue_events": 0,
+                # Frames that reached the inventory with no token — unreconcilable
+                # by construction, so counted where they can be SEEN rather than
+                # distorting an inventory that claims to be exactly-once.
+                "frames_untokened": 0,
+                "last_enqueued_at": None,
+                # ---- [R1-D] ACCEPTANCE BY MESSAGE CLASS --------------------
+                # A single `frames_received` is too coarse: heartbeat and
+                # sub_stripe_result BOTH renew the lease but mean different
+                # things, and the forensic must be able to ask independently
+                # whether actual RESULT PAYLOAD progress reached acceptance.
+                "frames_received": 0,
+                "heartbeats_accepted": 0,
+                "heartbeats_renewed": 0,
+                "subresults_accepted": 0,
+                "terminal_frames_accepted": 0,
+                # ---- [R2-2] THREE CLOCKS, AND THEY MEAN DIFFERENT THINGS ----
+                # The first revision drove the public lease-progress age from a
+                # single clock touched by EVERY accepted frame — including a
+                # heartbeat the ledger REFUSED to renew, and including terminal
+                # frames. That states "the lease was renewed just now" on the
+                # strength of a frame that renewed nothing, which is the very
+                # error R1-E exists to stop: inferring lease history from
+                # evidence that did not measure renewal.
+                #
+                #   last_accepted_frame_at      ANY accepted frame
+                #   last_renewing_progress_at   ONLY a renewal the LEDGER granted
+                #   last_subresult_at           accepted sub-result payload
+                #
+                # The public `age_since_last_accepted_progress_s` keeps the §7 D
+                # name and is driven from the SECOND clock.
+                "last_accepted_frame_at": None,
+                "last_renewing_progress_at": None,
+                "last_subresult_at": None,
+                # `None` until a STAMPED frame is seen. A stripe whose frames all
+                # arrived unstamped reports UNOBSERVED residency, never zero.
+                "residency_count": 0,
+                "residency_sum_s": None,
+                "residency_max_s": None,
+                "residency_last_s": None,
+                # [§E] per-stripe deferral attribution. `deferred_high_water` is a
+                # single run-scoped scalar with no attribution at all, so "its
+                # frames were deferred" is unfalsifiable for any named stripe.
+                "frames_deferred": 0,
+                "deferred_seconds_total": 0.0,
+                "deferred_open": 0,
+            }
+            self._stripe_rx[key] = slot
+        return slot
+
+    def expired_claimed_stripes_for_report(
+            self, run_id: str, now: Optional[float] = None) -> Dict[str, Any]:
+        """[§C · R1-C] The stripe ids whose compute lease has expired, READ-ONLY,
+        WITH AN EXPLICIT STATUS.
+
+        A pure read of the same ledger query `process_lease_expiry` makes, so the
+        serve loop can emit a summary for each BEFORE the matrix runs without
+        editing that method — it is a NO-TOUCH surface (FAIR-3/2), and an
+        instrument does not get to supersede a certified pin.
+
+        ⚠ THE R1-C REPAIR. The first revision returned `[]` on a failed read.
+        Operationally that is harmless — nothing is emitted either way — but
+        diagnostically it is indistinguishable from a SUCCESSFUL query that found
+        nothing expired, which is the exact class this whole battery exists to
+        eliminate. The two outcomes are now named:
+
+            successful query, none expired -> OK          expired_count = 0
+            failed query                   -> UNAVAILABLE expired_count = None
+
+        NO UNAVAILABLE PATH MAY RENDER COUNT-SHAPED."""
+        try:
+            ids = [st["stripe_id"] for st in
+                   self.ledger.expired_claimed_stripes(
+                       run_id, time.time() if now is None else now)]
+        except Exception as exc:                                 # noqa: BLE001
+            return {"status": OBS_UNAVAILABLE, "expired_count": None,
+                    "stripe_ids": None, "error": f"{type(exc).__name__}: {exc}"}
+        return {"status": OBS_OK, "expired_count": len(ids),
+                "stripe_ids": ids, "error": None}
+
+    def note_stripe_claimed(self, run_id: str, stripe_id: str,
+                            worker_id: Optional[str],
+                            precision: str = "exact") -> None:
+        """[§D] A compute lease was created for this stripe. Recorded so
+        `age_since_claim` is a measured quantity rather than one reconstructed
+        from `lease_expires_at - compute_lease_timeout`, which is
+        `max(claim, last accepted progress)` and therefore cannot separate the
+        two (forensic §2)."""
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            slot["worker_id"] = worker_id
+            slot["claimed_at"] = time.monotonic()
+            slot["claim_precision"] = precision
+            slot["frames_received"] = 0
+            slot["heartbeats_accepted"] = 0
+            slot["heartbeats_renewed"] = 0
+            slot["subresults_accepted"] = 0
+            slot["terminal_frames_accepted"] = 0
+            slot["last_accepted_frame_at"] = None
+            slot["last_renewing_progress_at"] = None
+            slot["last_subresult_at"] = None
+            slot["residency_count"] = 0
+            slot["residency_sum_s"] = None
+            slot["residency_max_s"] = None
+            slot["residency_last_s"] = None
+            # `frames_enqueued`/`frames_dequeued`/`pending` are NOT reset:
+            # a frame that arrived before this claim is still a frame the
+            # coordinator is holding, and zeroing the inventory at claim would
+            # erase exactly the backlog the §C instrument exists to see.
+
+    @staticmethod
+    def frame_stripe_id(msg) -> Optional[str]:
+        """The stripe a frame CLAIMS to belong to, for arrival accounting only.
+
+        ⚠ THIS IS AN OBSERVATION, NEVER AN AUTHORITY. Defect 3's rule stands
+        unchanged: the receiving socket's BOUND identity decides what a frame is
+        allowed to do, and that decision is made in `_serve_dispatch` exactly as
+        before. This helper is used only to say *which stripe's mailbox a frame
+        appeared to be addressed to* on the arrival side, where the bound
+        identity is not yet resolved. A spoofed frame can therefore inflate one
+        stripe's `frames_enqueued`; it can never inflate an ACCEPTED counter, and
+        the two are reported separately so the difference is visible."""
+        if msg is None:
+            return None
+        mt = getattr(msg, "message_type", None)
+        if mt == "heartbeat":
+            sid = getattr(msg, "current_stripe_id", None)
+        else:
+            sid = getattr(msg, "stripe_id", None)
+        return sid or None
+
+    def note_stripe_frame_enqueued(self, run_id: str, stripe_id: Optional[str],
+                                   arrived_mono: Optional[float] = None,
+                                   token: Optional[int] = None) -> None:
+        """[R1-B · R2-1] A frame for this stripe was DECODED AND ACCEPTED ONTO
+        `inbound`. This is ARRIVAL, a different event from acceptance, and the
+        gap against `frames_dequeued` IS the coordinator-side backlog.
+
+        ⚠ R2-1: THIS CALL AND ITS DEQUEUE PARTNER RUN ON DIFFERENT THREADS AND
+        MAY EXECUTE IN EITHER ORDER. The reader records enqueue *after*
+        `inbound.put()` returns, and from that instant the serve thread may
+        already have taken the envelope and recorded its dequeue. The previous
+        implementation appended to a FIFO of stamps and popped the head, so a
+        consumer that won the race popped an empty list, recorded nothing, and
+        the producer then appended — leaving
+
+            enqueued=1 · dequeued=0 · pending=1
+
+        for a frame that had already been processed. **That manufactures the
+        exact H2b signature this instrument exists to prove**, and it is MOST
+        likely at LOW occupancy, when the serve thread can take a newly inserted
+        envelope immediately — so the phantom could persist indefinitely.
+
+        The repair is a per-frame TOKEN with idempotent, order-independent
+        reconciliation. Each side records its own half against the token:
+
+            E arrives first  -> token parked in `pending`; D later removes it
+            D arrives first  -> token parked in `early_dequeued`; E later clears it
+
+        Either interleaving converges on `enqueued=1 · dequeued=1 · pending=0`.
+        Nothing depends on scheduling order after `Queue.put()` returns.
+
+        ⚠ [R3-2] NO GENERAL IDEMPOTENCE IS CLAIMED, and the R2 report was wrong
+        to claim it. The parked-token checks below suppress a duplicate ONLY
+        WHILE THE TOKEN IS STILL PARKED ON ONE SIDE. After a token has fully
+        reconciled it is in neither collection, so a duplicate would be treated
+        as a fresh event:
+
+            E -> D -> duplicate D   =>  enqueued=1 dequeued=2 early={token}
+            D -> E -> duplicate E   =>  enqueued=2 dequeued=1 pending={token}
+
+        The correctness of the inventory therefore rests on SINGLE-CALL
+        DISCIPLINE, not on idempotence: exactly one enqueue-accounting call per
+        successful `put()` and exactly one dequeue-accounting call per `get()`.
+        That is a structural property of the two call sites and it is PROVEN by
+        gate `R3-2` over the live AST — not asserted here."""
+        if not stripe_id:
+            return
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            if token is None:
+                # UNTOKENED: cannot be reconciled, so it is counted where it can
+                # be SEEN rather than being allowed to distort an inventory that
+                # claims to be exactly-once. In production every frame is stamped
+                # by the reader, so a non-zero value here is itself a finding.
+                slot["frames_untokened"] += 1
+                return
+            if token in slot["early_dequeued"]:
+                # The consumer got here first. Reconcile now: the frame is
+                # accounted at both ends and is NOT pending.
+                slot["early_dequeued"].discard(token)
+                slot["frames_enqueued"] += 1
+                slot["last_enqueued_at"] = time.monotonic()
+                return
+            if token in slot["pending"]:
+                # Suppresses a duplicate ONLY while the token is still parked.
+                # This is NOT general idempotence — see the docstring and the
+                # structural single-call proof in gate R3-2.
+                return
+            slot["pending"][token] = (
+                time.monotonic() if arrived_mono is None else arrived_mono)
+            slot["frames_enqueued"] += 1
+            slot["last_enqueued_at"] = time.monotonic()
+
+    def note_stripe_frame_dequeued(self, run_id: str, stripe_id: Optional[str],
+                                   token: Optional[int] = None) -> None:
+        """[R1-B · R2-1] A frame for this stripe left `inbound` and reached the
+        drain. Order-independent against its enqueue partner — see
+        `note_stripe_frame_enqueued` for why that is load-bearing."""
+        if not stripe_id:
+            return
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            if token is None:
+                return                      # untokened: counted at enqueue only
+            if token in slot["pending"]:
+                del slot["pending"][token]
+                slot["frames_dequeued"] += 1
+                return
+            if token in slot["early_dequeued"]:
+                # Parked-case duplicate suppression only; NOT idempotence.
+                return
+            # THE CONSUMER WON THE RACE. Record the dequeue now and park the
+            # token so the producer's later enqueue reconciles against it instead
+            # of creating a pending frame that has already been processed.
+            slot["early_dequeued"].add(token)
+            slot["early_dequeue_events"] += 1
+            slot["frames_dequeued"] += 1
+
+    def note_stripe_frame_accepted(self, run_id: str, stripe_id: str,
+                                   worker_id: Optional[str],
+                                   residency_s: Optional[float],
+                                   kind: str = "subresult",
+                                   renewed: Optional[bool] = None) -> None:
+        """[§C · R1-D] One frame for this stripe reached processing AND passed the
+        identity/fence checks. Accumulated, never emitted here — the emission is
+        once, at the stripe's lifecycle boundary.
+
+        `kind` splits the classes that R1-D requires be answerable separately:
+        heartbeat and sub_stripe_result BOTH renew the lease, so a combined
+        counter cannot answer *"did actual result payload progress reach
+        acceptance?"* — which is the question that decides whether a stripe was
+        alive or merely being kept alive.
+
+        ⚠ [R2-2] THIS METHOD NEVER TOUCHES THE LEASE-PROGRESS CLOCK. Acceptance
+        is not renewal: a heartbeat can pass the identity fence and still be
+        refused by `renew_lease`'s own WHERE clause, and a terminal frame renews
+        nothing by construction. Only `note_stripe_renewing_progress` — called
+        from the one place that has the LEDGER's answer — moves that clock."""
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            if worker_id is not None:
+                slot["worker_id"] = worker_id
+            slot["frames_received"] += 1
+            now = time.monotonic()
+            if kind == "heartbeat":
+                slot["heartbeats_accepted"] += 1
+                if renewed:
+                    slot["heartbeats_renewed"] += 1
+            elif kind == "terminal":
+                slot["terminal_frames_accepted"] += 1
+            else:
+                slot["subresults_accepted"] += 1
+                slot["last_subresult_at"] = now
+            # ANY accepted frame moves THIS clock, and only this one.
+            slot["last_accepted_frame_at"] = now
+            if residency_s is None:
+                return
+            slot["residency_count"] += 1
+            slot["residency_last_s"] = round(residency_s, 6)
+            slot["residency_sum_s"] = round(
+                (slot["residency_sum_s"] or 0.0) + residency_s, 6)
+            if residency_s > (slot["residency_max_s"] or 0.0):
+                slot["residency_max_s"] = round(residency_s, 6)
+
+    def note_stripe_renewing_progress(self, run_id: str,
+                                      stripe_id: Optional[str]) -> None:
+        """[R2-2] THE LEASE-PROGRESS CLOCK, AND THE ONLY THING THAT MOVES IT.
+
+        Called from exactly the two places that hold the LEDGER'S OWN ANSWER —
+        `_renew_active_lease` returned True, meaning `renew_lease`'s WHERE clause
+        matched and a new expiry was written. Nothing else may call it.
+
+        The distinction is the whole of R2-2, and it is the same error R1-E was
+        raised for, one level in:
+
+            heartbeat accepted   YES        -> `last_accepted_frame_at` moves
+            lease renewed        NO         -> `last_renewing_progress_at` does NOT
+
+        "Passed the identity fence" is NOT synonymous with "renewed the lease".
+        A stripe whose heartbeats are all being refused — wrong attempt, wrong
+        state, a `staging` stripe with no compute lease — would otherwise report
+        a lease-progress age of ~0 while its lease burned down untouched, which
+        is precisely the false statement the instrument exists to prevent."""
+        if not stripe_id:
+            return
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            slot["last_renewing_progress_at"] = time.monotonic()
+
+    def note_stripe_frame_deferred(self, run_id: str, stripe_id: str,
+                                   attempt: int, sub_index: int) -> None:
+        """[§E] One frame for this stripe entered `_deferred`."""
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            slot["frames_deferred"] += 1
+            slot["deferred_open"] += 1
+            self._deferred_since[(run_id, stripe_id, attempt, sub_index)] = (
+                time.monotonic())
+
+    def note_stripe_frame_released(self, run_id: str, stripe_id: str,
+                                   attempt: int, sub_index: int) -> None:
+        """[§E] A deferred frame left `_deferred` — resumed or dropped. Charged
+        against the stripe so `deferred_seconds_total` is attributable, which the
+        run-scoped `deferred_high_water` scalar can never be."""
+        key = (run_id, stripe_id, attempt, sub_index)
+        with self._stripe_rx_lock:
+            since = self._deferred_since.pop(key, None)
+            if since is None:
+                return
+            slot = self._stripe_rx_slot(run_id, stripe_id)
+            slot["deferred_seconds_total"] = round(
+                slot["deferred_seconds_total"] + (time.monotonic() - since), 6)
+            slot["deferred_open"] = max(0, slot["deferred_open"] - 1)
+
+    def stripe_rx_snapshot(self, run_id: str,
+                           stripe_id: str) -> Optional[Dict[str, Any]]:
+        """A DETACHED copy of one stripe's receive accounting, or `None` if the
+        coordinator has never observed anything for it.
+
+        ⚠ [R3-1] `dict(slot)` ALONE IS NOT A SNAPSHOT. It copies the outer
+        mapping only, so the two mutable concurrency structures came back as
+        SHARED REFERENCES:
+
+            snap["pending"]        is slot["pending"]         # same dict
+            snap["early_dequeued"] is slot["early_dequeued"]  # same set
+
+        The lock was then released and `emit_stripe_rx_summary` /
+        `active_stripe_accounting` called `len()` and `min(...values())` on live
+        objects while the reader and serve threads added and removed tokens.
+        Two consequences, both real: a record could mix scalar counters read at
+        T0 with pending state read at T1 — an "atomic" record that never existed
+        — and `min(dict.values())` could raise `RuntimeError: dictionary changed
+        size during iteration`.
+
+        **The lock protected mutation and not the read.** That is the same class
+        as a gate whose falsifier exceeds its reach, and it is especially bad
+        here: this diagnostic exists SPECIFICALLY to observe a concurrent
+        producer/consumer path, so the one structure it must report faithfully is
+        the one it was handing out live.
+
+        Every mutable member is now detached while the lock is still held."""
+        with self._stripe_rx_lock:
+            slot = self._stripe_rx.get((run_id, stripe_id))
+            if slot is None:
+                return None
+            snap = dict(slot)
+            snap["pending"] = dict(slot["pending"])
+            snap["early_dequeued"] = set(slot["early_dequeued"])
+            return snap
+
+    def emit_stripe_rx_summary(self, run_id: str, stripe_id: str,
+                               disposition: str) -> Optional[Dict[str, Any]]:
+        """[§C/§E] THE ONE EMISSION PER STRIPE. Called at a stripe lifecycle
+        boundary — accepted completion, or a terminal decision — never per frame.
+
+        `age_since_last_accepted_progress` is reported as `None` when no frame was
+        ever accepted, and the caller must read that as "no progress was ever
+        accepted for this stripe", which is a materially different fact from an
+        age of zero.
+
+        [R1-C] A stripe this instrument has NEVER SEEN emits a record with
+        `status = NO_OBSERVATION` and every count `None`, rather than emitting
+        nothing. Silence would be indistinguishable from a stripe that was
+        observed and had zero of everything — and for a stripe that just expired,
+        "the coordinator never recorded a claim for it" is itself a finding."""
+        now = time.monotonic()
+        snap = self.stripe_rx_snapshot(run_id, stripe_id)
+        if snap is None:
+            record = {
+                "event": "STRIPE_RX_SUMMARY",
+                "status": OBS_NO_OBSERVATION,
+                "run_id": run_id,
+                "stripe_id": stripe_id,
+                "worker_id": None,
+                "disposition": disposition,
+                "frames_enqueued": None,
+                "frames_dequeued": None,
+                "frames_pending": None,
+                "frames_untokened": None,
+                "early_dequeue_events": None,
+                "frames_received": None,
+                "heartbeats_accepted": None,
+                "heartbeats_renewed": None,
+                "subresults_accepted": None,
+                "terminal_frames_accepted": None,
+                "residency_count": None,
+                "residency_sum_s": None,
+                "residency_max_s": None,
+                "residency_mean_s": None,
+                "oldest_pending_age_s": None,
+                "frames_deferred": None,
+                "deferred_seconds_total": None,
+                "age_since_claim_s": None,
+                "claim_precision": None,
+                "age_since_last_accepted_progress_s": None,
+                "age_since_last_accepted_frame_s": None,
+                "age_since_last_subresult_s": None,
+            }
+            logger.warning("[H1H2] stripe_rx %s",
+                           json.dumps(record, default=str, sort_keys=True))
+            return record
+        pending = snap["pending"]
+        record = {
+            "event": "STRIPE_RX_SUMMARY",
+            "status": OBS_OK,
+            "run_id": run_id,
+            "stripe_id": stripe_id,
+            "worker_id": snap["worker_id"],
+            "disposition": disposition,
+            # [R1-B] ARRIVAL, separately from acceptance. `frames_enqueued > 0`
+            # with `subresults_accepted == 0` is the coordinator-side backlog,
+            # stated rather than inferred.
+            "frames_enqueued": snap["frames_enqueued"],
+            "frames_dequeued": snap["frames_dequeued"],
+            "frames_pending": len(pending),
+            "frames_untokened": snap["frames_untokened"],
+            "early_dequeue_events": snap["early_dequeue_events"],
+            "oldest_pending_age_s": (
+                None if not pending else round(now - min(pending.values()), 3)),
+            # [R1-D] acceptance, by class.
+            "frames_received": snap["frames_received"],
+            "heartbeats_accepted": snap["heartbeats_accepted"],
+            "heartbeats_renewed": snap["heartbeats_renewed"],
+            "subresults_accepted": snap["subresults_accepted"],
+            "terminal_frames_accepted": snap["terminal_frames_accepted"],
+            "residency_count": snap["residency_count"],
+            "residency_sum_s": snap["residency_sum_s"],
+            "residency_max_s": snap["residency_max_s"],
+            "residency_mean_s": (
+                None if not snap["residency_count"] or snap["residency_sum_s"] is None
+                else round(snap["residency_sum_s"] / snap["residency_count"], 6)),
+            "frames_deferred": snap["frames_deferred"],
+            "deferred_seconds_total": snap["deferred_seconds_total"],
+            "age_since_claim_s": (
+                None if snap["claimed_at"] is None
+                else round(now - snap["claimed_at"], 3)),
+            "claim_precision": snap.get("claim_precision"),
+            # [R2-2] KEEPS THE §7 D NAME, DRIVEN FROM THE RENEWING CLOCK.
+            # `None` here with a live `age_since_last_accepted_frame_s` is a real
+            # and important state: frames are being accepted and NONE of them is
+            # renewing the lease.
+            "age_since_last_accepted_progress_s": (
+                None if snap["last_renewing_progress_at"] is None
+                else round(now - snap["last_renewing_progress_at"], 3)),
+            "age_since_last_accepted_frame_s": (
+                None if snap["last_accepted_frame_at"] is None
+                else round(now - snap["last_accepted_frame_at"], 3)),
+            # [R1-D] the payload question, answerable on its own: a stripe kept
+            # alive by heartbeats alone has a live progress age and NO subresult
+            # age, and those are different states.
+            "age_since_last_subresult_s": (
+                None if snap["last_subresult_at"] is None
+                else round(now - snap["last_subresult_at"], 3)),
+        }
+        logger.warning("[H1H2] stripe_rx %s",
+                       json.dumps(record, default=str, sort_keys=True))
+        return record
+
+    def active_stripe_accounting(self, run_id: str) -> Dict[str, Any]:
+        """[§D · R1-C] The stripes holding a live compute lease, built from the
+        LEDGER (the authority on which stripes are claimed) joined to this
+        coordinator's receive accounting — WITH AN EXPLICIT STATUS.
+
+        ⚠ THE R1-C REPAIR, AND ALPHA'S OWN GATE WAS COMPLICIT IN THE DEFECT.
+        The first revision caught the ledger exception and returned `[]`, so the
+        tick computed `active_count = len([]) = 0` and published a count-shaped
+        record asserting an empty fleet from a read that never completed. The
+        gate that claimed to prove otherwise (`D3`) asserted `bad == []` — it
+        checked the collapse instead of catching it. **That was the eleventh
+        recorded instance of a check passing on a fact it does not verify, and
+        it was inside the battery written to eliminate that class.**
+
+            successful read, no active stripes -> OK          active_count = 0
+            failed read                        -> UNAVAILABLE active_count = None
+
+        NO UNAVAILABLE PATH MAY RENDER COUNT-SHAPED."""
+        try:
+            rows = [s for s in self.ledger.all_stripes(run_id)
+                    if s["state"] == ST_CLAIMED]
+        except Exception as exc:                                 # noqa: BLE001
+            return {"status": OBS_UNAVAILABLE, "active_count": None,
+                    "stripes": None,
+                    "error": f"{type(exc).__name__}: {exc}"}
+        # RECONCILE FIRST. A stripe claimed by the retry placement inside
+        # `_handle_stripe_failure_locked` (NO-TOUCH, FAIR-3/2) never passes the
+        # scheduler's return value, so it would otherwise appear here with a
+        # null claim age forever — an instrument with a permanent blind spot on
+        # exactly the retried stripes. It is adopted on first sighting and
+        # LABELLED `reconciled`, so its age reads as the lower bound it is
+        # rather than as a measurement it is not.
+        for s in rows:
+            if self.stripe_rx_snapshot(run_id, s["stripe_id"]) is None:
+                self.note_stripe_claimed(run_id, s["stripe_id"],
+                                         s["claimed_by"], precision="reconciled")
+        now = time.monotonic()
+        wall = time.time()
+        out: List[Dict[str, Any]] = []
+        for s in rows:
+            snap = self.stripe_rx_snapshot(run_id, s["stripe_id"])
+            lease = s["lease_expires_at"]
+            out.append({
+                "stripe_id": s["stripe_id"],
+                "worker_id": s["claimed_by"],
+                "attempt": s["current_attempt"],
+                "age_since_claim_s": (
+                    None if (snap is None or snap["claimed_at"] is None)
+                    else round(now - snap["claimed_at"], 3)),
+                "claim_precision": (None if snap is None
+                                    else snap.get("claim_precision")),
+                "age_since_last_accepted_progress_s": (
+                    None if (snap is None
+                             or snap["last_renewing_progress_at"] is None)
+                    else round(now - snap["last_renewing_progress_at"], 3)),
+                "age_since_last_accepted_frame_s": (
+                    None if (snap is None
+                             or snap["last_accepted_frame_at"] is None)
+                    else round(now - snap["last_accepted_frame_at"], 3)),
+                # The quantity that was invisibly decaying for five minutes in
+                # attempt 6. Derived from the ledger's own durable field against
+                # wall time, because that is the clock the expiry itself uses.
+                "lease_remaining_s": (
+                    None if lease is None else round(lease - wall, 3)),
+                # [R1-B] arrival and acceptance, side by side, per tick. A row
+                # whose `frames_enqueued` climbs while `subresults_accepted`
+                # stays put IS the coordinator-side backlog, visible as it
+                # happens rather than reconstructed afterwards.
+                "frames_enqueued": (None if snap is None
+                                    else snap["frames_enqueued"]),
+                "frames_dequeued": (None if snap is None
+                                    else snap["frames_dequeued"]),
+                "frames_pending": (None if snap is None
+                                   else len(snap["pending"])),
+                "oldest_pending_age_s": (
+                    None if (snap is None or not snap["pending"])
+                    else round(now - min(snap["pending"].values()), 3)),
+                "frames_received": (None if snap is None
+                                    else snap["frames_received"]),
+                # [R1-D] the classes kept apart.
+                "heartbeats_accepted": (None if snap is None
+                                        else snap["heartbeats_accepted"]),
+                "subresults_accepted": (None if snap is None
+                                        else snap["subresults_accepted"]),
+                "age_since_last_subresult_s": (
+                    None if (snap is None or snap["last_subresult_at"] is None)
+                    else round(now - snap["last_subresult_at"], 3)),
+                "frames_deferred": (None if snap is None
+                                    else snap["frames_deferred"]),
+                "residency_max_s": (None if snap is None
+                                    else snap["residency_max_s"]),
+            })
+        out.sort(key=lambda r: r["stripe_id"])
+        return {"status": OBS_OK, "active_count": len(out), "stripes": out,
+                "error": None}
+
+    def maybe_emit_active_stripe_accounting(
+            self, run_id: str, *, stage_idx: Optional[int] = None,
+            now: Optional[float] = None, force: bool = False) -> Optional[Dict[str, Any]]:
+        """[§D] THE PERIODIC RECORD, ONE LINE PER TICK.
+
+        §7's specification says "one line per active stripe"; this emits ONE
+        record per tick carrying ALL active stripes as an array. That is the same
+        information at a twenty-fifth of the line rate, and it keeps a 25-worker
+        fleet inside the no-high-rate-noise bar instead of adding 2.5 lines/second
+        for the whole run.
+
+        Monotonic interval, so a clock step cannot suppress or duplicate a tick.
+        Returns the record, or `None` if the interval has not elapsed.
+
+        [R1-C] The status and the counts come STRAIGHT FROM the accounting call
+        and are never recomputed here. `active_count` is not `len(...)` of
+        anything: on an UNAVAILABLE read there is no list to take a length of,
+        and computing one is precisely how a failed read became an empty
+        fleet."""
+        mono = time.monotonic() if now is None else float(now)
+        if not force and self._active_acct_last is not None:
+            if mono - self._active_acct_last < self.active_stripe_report_interval_s:
+                return None
+        self._active_acct_last = mono
+        acct = self.active_stripe_accounting(run_id)
+        record = {
+            "event": "ACTIVE_STRIPES",
+            "status": acct["status"],
+            "run_id": run_id,
+            "stage_idx": stage_idx,
+            "active_count": acct["active_count"],
+            "stripes": acct["stripes"],
+            "error": acct.get("error"),
+        }
+        logger.warning("[H1H2] active_stripes %s",
+                       json.dumps(record, default=str, sort_keys=True))
+        return record
+
     # ----- [ATTEMPT-6 §8.2] inbound saturation: ONE accumulator, one writer ----
     def next_connection_id(self, run_id: Optional[str] = None) -> str:
         """[binding detail 1] A genuinely RUN-SCOPED correlation token, assigned
@@ -5804,6 +6607,17 @@ class RangeMinerCoordinator:
                     entry = (kind, wconn, run_id, stripe_id, attempt, sub_index,
                              msg, eligible_provider, fut)
                     action = "deferred" if self._defer_locked(entry) else "backpressure"
+                    if action == "deferred":
+                        # [H1/H2 §E] PER-STRIPE DEFERRAL ATTRIBUTION.
+                        # `deferred_high_water` is one run-scoped scalar, so
+                        # "its frames were deferred" is unfalsifiable for any
+                        # NAMED stripe. Counted here and charged on release, so
+                        # a specific stripe's deferral history is a measurement.
+                        # The entry tuple keeps its nine fields — the timing map
+                        # is keyed alongside it rather than widening a shape a
+                        # certified gate unpacks positionally.
+                        self.note_stripe_frame_deferred(
+                            run_id, stripe_id, attempt, sub_index)
         # Act OUTSIDE the admission lock; still nonblocking on the dispatch thread.
         if action == "submit":
             return self._submit_with_slot(kind, wconn, run_id, stripe_id, attempt,
@@ -5939,18 +6753,27 @@ class RangeMinerCoordinator:
                 if not self._deferred:
                     return
                 still: List[tuple] = []
+                released: List[tuple] = []
                 for entry in self._deferred:
                     (_k, _w, run_id, stripe_id, attempt, _s, _m, _e, fut) = entry
                     if not self._attempt_live_locked(run_id, stripe_id, attempt):
                         if not fut.done():
                             fut.set_result(None)
+                        released.append((run_id, stripe_id, attempt, _s))
                         continue
                     if (self._try_admit_locked(run_id, stripe_id, attempt)
                             and self._staging_slots().acquire(blocking=False)):
                         ready.append(entry)   # slot held for this entry
+                        released.append((run_id, stripe_id, attempt, _s))
                     else:
                         still.append(entry)
                 self._deferred = still
+            # [H1/H2 §E] Charged OUTSIDE `_admission_lock` and BOTH classes of
+            # departure — resumed and dropped-as-dead — because a frame that left
+            # `_deferred` by dying still spent that time deferred, and omitting
+            # the drop case would under-report exactly the pathological runs.
+            for _r, _s_id, _att, _sub in released:
+                self.note_stripe_frame_released(_r, _s_id, _att, _sub)
             for entry in ready:
                 (kind, wconn, run_id, stripe_id, attempt, sub_index, msg, elig,
                  fut) = entry
@@ -7775,6 +8598,16 @@ class RangeMinerCoordinator:
                         break
                     drained += 1
                     self.note_inbound_occupancy(inbound.qsize())
+                    # [R1-B] DEQUEUE, counted the instant the envelope leaves
+                    # `inbound` — BEFORE the identity fence, the already-reaped
+                    # check and the dispatch, because all three are dispositions
+                    # of a frame that has demonstrably left the queue. Counting
+                    # it only on the accepted path would leave a fenced frame
+                    # permanently "pending" and manufacture a backlog.
+                    if kind == "msg":
+                        self.note_stripe_frame_dequeued(
+                            run_id, self.frame_stripe_id(msg),
+                            token=self.frame_token(msg))
                     if kind == "eof":
                         # [S172-BP AMENDMENT F1-R] disposition (iv): the connection
                         # terminated. `inbound` is FIFO, so a credited envelope that
@@ -8199,10 +9032,27 @@ class RangeMinerCoordinator:
                     # claims to be monotonic-only.
                     _sl.note_loop_now_age(now)
                     _t = _sl.start()
-                    self.schedule_pending_stripes(
+                    _placed = self.schedule_pending_stripes(
                         run_id, fam, ph, eligible,
                         stage_prefix=_stage_prefix(stage_idx))
                     _k_parts["schedule"] = _sl.stop("schedule", _t) or 0.0
+                    # [H1/H2 §D] THE CLAIM INSTANT, RECORDED AS ITSELF.
+                    # Read from the scheduler's OWN RETURN VALUE, which is one
+                    # record per stripe actually handed off. `schedule_pending_
+                    # stripes` is a NO-TOUCH surface pinned by the attempt-6
+                    # remediation's FAIR-3/2 AST proof, and an instrument is not
+                    # a reason to supersede a certified pin — the return value
+                    # already carries exactly the fact this needs.
+                    #
+                    # WHY A DEDICATED RECORD AT ALL: the ledger's
+                    # `lease_expires_at - compute_lease_timeout` is
+                    # `max(claim, last accepted progress)` (forensic §2), so it
+                    # cannot separate "claimed 300 s ago and never spoke" from
+                    # "spoke 300 s ago". Those are the two different questions
+                    # attempt 6 needed answered and could answer neither.
+                    for _p in (_placed or ()):
+                        self.note_stripe_claimed(
+                            run_id, _p["stripe_id"], _p["worker_id"])
                     _t = _sl.start()
                     self._dispatch_pending(
                         run_id, fam, ph, fs_by_worker, dispatched, dataset_path,
@@ -8211,9 +9061,56 @@ class RangeMinerCoordinator:
                         trial_ctx["forward_threshold"],
                         trial_ctx["reverse_threshold"])
                     _k_parts["dispatch"] = _sl.stop("dispatch", _t) or 0.0
+                    # [H1/H2 §C/§E] THE RECORD ATTEMPT 6 DID NOT HAVE, and it is
+                    # emitted BEFORE the matrix can act. In a constant phase
+                    # `handle_stripe_failure` fails the trial and cancels every
+                    # remaining stripe, so a summary emitted afterwards would be
+                    # describing a trial that is already over.
+                    #
+                    # Placed HERE rather than inside `process_lease_expiry`,
+                    # which is a NO-TOUCH surface pinned by FAIR-3/2. The read
+                    # is the same one the expiry pass makes and it mutates
+                    # nothing. Note the disposition wording: these stripes are
+                    # OFFERED to the matrix, which may still exempt them under
+                    # the §1.4 pause exemption or the F2 resume grace — so the
+                    # record states an observed expiry, never a decision.
+                    # [R1-C] The status is READ, not inferred from an empty list.
+                    # An UNAVAILABLE expiry query emits its own record rather
+                    # than silently behaving like "nothing expired" — those are
+                    # different facts and only one of them is a measurement.
+                    _exp = self.expired_claimed_stripes_for_report(run_id, now)
+                    if _exp["status"] != OBS_OK:
+                        logger.warning(
+                            "[H1H2] expiry_query %s",
+                            json.dumps({"event": "EXPIRY_QUERY",
+                                        "status": _exp["status"],
+                                        "run_id": run_id,
+                                        "stage_idx": stage_idx,
+                                        "expired_count": _exp["expired_count"],
+                                        "error": _exp.get("error")},
+                                       default=str, sort_keys=True))
+                    else:
+                        for _ex in _exp["stripe_ids"]:
+                            self.emit_stripe_rx_summary(
+                                run_id, _ex, "lease_expired_offered_to_matrix")
                     _t = _sl.start()
                     self.process_lease_expiry(run_id, eligible)
                     _k_parts["expiry"] = _sl.stop("expiry", _t) or 0.0
+                    # [H1/H2 §D] PERIODIC ACTIVE-STRIPE ACCOUNTING, 10 s.
+                    # Placed AFTER expiry so a tick reports the pool the matrix
+                    # has already acted on, never a stripe that was expired
+                    # microseconds earlier. Self-rate-limited on a monotonic
+                    # interval, so the serve loop's iteration rate — 12,300
+                    # iterations in attempt 5 — cannot turn this into a flood.
+                    #
+                    # THIS IS WHAT MAKES THE FAILURE APPROACH OBSERVABLE. Attempt
+                    # 6 emitted NOTHING between 13:27:14 and 13:32:15; under this
+                    # record `lease_remaining_s` on `st1_s29/s30/s31` would have
+                    # been visibly decaying through ~30 consecutive ticks, and
+                    # `frames_received` would have said whether anything at all
+                    # arrived from them while it decayed.
+                    self.maybe_emit_active_stripe_accounting(
+                        run_id, stage_idx=stage_idx)
                     # advance to the next stage once THIS stage's stripes are done
                     _t = _sl.start()
                     sp = _stage_prefix(stage_idx) + "_s"
@@ -8763,6 +9660,14 @@ class RangeMinerCoordinator:
                     exit_reason = RX_DECODE_ERROR
                     break
 
+                # [H1/H2 §C] ARRIVAL, STAMPED THE INSTANT THE FRAME EXISTS.
+                # Immediately after the decode and before ANY branch can hold,
+                # pause, route or discard it, so the stamp measures time in the
+                # coordinator rather than time in whichever path was taken. A
+                # frame held at the pause below therefore accrues residency, and
+                # that is correct: the worker is blocked on the wire behind it.
+                self.stamp_frame_arrival(msg)
+
                 # [P-1 / D2 RULED] ELIGIBILITY IS CONSUMED BY THE DECODE, NOT BY
                 # THE ADMISSION ROUTE. Snapshot-then-clear, unconditionally, the
                 # instant a frame exists — before any branch can decide what to
@@ -8938,6 +9843,20 @@ class RangeMinerCoordinator:
                         inbound.put(("msg", rawsock, msg, put_credit_id, None),
                                     timeout=INBOUND_PUT_QUANTUM_S)
                         _delivered_ok = True
+                        # [R1-B] ARRIVAL, COUNTED AT THE PUT THAT SUCCEEDED.
+                        # Not before the try (a `Full` retry would double-count)
+                        # and not at decode (a frame held at the pause has not
+                        # entered the queue yet). This is the counter whose gap
+                        # against `frames_dequeued` IS the coordinator-side
+                        # backlog — the thing that looked identical to "the
+                        # worker sent nothing" until R1.
+                        # [R2-1] the TOKEN travels with the frame, so this
+                        # call and the drain's dequeue can execute in either
+                        # order and still reconcile exactly once.
+                        self.note_stripe_frame_enqueued(
+                            run_id, self.frame_stripe_id(msg),
+                            getattr(msg, FRAME_ARRIVAL_ATTR, None),
+                            token=self.frame_token(msg))
                     except _queue.Full:
                         # MEASURED elapsed wait, not the nominal quantum: a
                         # scheduler-delayed put really does wait longer than its
@@ -9383,9 +10302,27 @@ class RangeMinerCoordinator:
         if mt == "heartbeat":
             # [F1 §6] Heartbeat remains valid, and is now ONE OF TWO liveness
             # sources rather than the only one. Same predicate as progress.
-            self._renew_active_lease(
+            _hb_renewed = self._renew_active_lease(
                 wconn, run_id, getattr(msg, "current_stripe_id", None),
                 bound_worker_id, source="heartbeat")
+            # [R1-D] A HEARTBEAT IS AN ACCEPTED, LEASE-RENEWING FRAME, and it is
+            # counted as its own class. This is the counter that would have
+            # settled the question R1-E withdrew: a heartbeat renews the lease
+            # WITHOUT producing a shard row, so `lease_expires_at - timeout` is
+            # only a claim time if no heartbeat was accepted after the claim —
+            # which nothing in attempt 6 recorded either way.
+            _hb_stripe = getattr(msg, "current_stripe_id", None)
+            if _hb_stripe:
+                self.note_stripe_frame_accepted(
+                    run_id, _hb_stripe, bound_worker_id,
+                    self.frame_queue_residency(msg),
+                    kind="heartbeat", renewed=bool(_hb_renewed))
+                # [R2-2] THE CLOCK MOVES ONLY IF THE LEDGER SAID YES. A
+                # heartbeat that passed the identity fence and was then refused
+                # by `renew_lease`'s WHERE clause renewed NOTHING, and must not
+                # refresh the lease-progress age.
+                if _hb_renewed:
+                    self.note_stripe_renewing_progress(run_id, _hb_stripe)
             return
         if mt not in ("sub_stripe_result", "stripe_complete", "stripe_error"):
             return
@@ -9395,6 +10332,19 @@ class RangeMinerCoordinator:
         if not ok:
             logger.warning("L1 fence dropped %s for %s: %s", mt, msg.stripe_id, reason)
             return
+        # [H1/H2 §C] QUEUE RESIDENCY, ATTRIBUTED TO A NAMED STRIPE. Measured
+        # here — after the L1 fence, so a spoofed or fenced frame cannot pollute
+        # a legitimate stripe's ACCEPTED series, and before any staging work, so
+        # the figure is arrival-to-processing and not arrival-to-completion.
+        # Accumulated only; the emission is once, at the stripe boundary below.
+        # [R1-D] the class is carried: `stripe_complete` and `stripe_error` are
+        # terminal frames, not payload progress, and conflating them with
+        # sub-results would make a stripe that delivered nothing but its own
+        # completion look like it had progressed.
+        self.note_stripe_frame_accepted(
+            run_id, msg.stripe_id, bound_worker_id,
+            self.frame_queue_residency(msg),
+            kind=("subresult" if mt == "sub_stripe_result" else "terminal"))
         stripe = self.ledger.get_stripe(run_id, msg.stripe_id)
         attempt = stripe["current_attempt"]
 
@@ -9430,9 +10380,15 @@ class RangeMinerCoordinator:
             # active attempt — renew. Placed AFTER `inserted` deliberately: a
             # replayed sub-stripe is not progress, and letting a duplicate renew
             # would make a stuck worker look alive by retransmitting.
-            self._renew_active_lease(
+            _sr_renewed = self._renew_active_lease(
                 wconn, run_id, msg.stripe_id, bound_worker_id,
                 source="sub_stripe_result")
+            # [R2-2] Bound to the ACTUAL certified renewal RESULT, not to having
+            # reached this line. The insert succeeded and the fence passed, but
+            # `renew_lease` re-tests `state='claimed' AND claimed_by=worker` in
+            # the same statement that writes the expiry — and it can still say no.
+            if _sr_renewed:
+                self.note_stripe_renewing_progress(run_id, msg.stripe_id)
             # Defect 4: stage OFF the dispatch loop (fetch/verify/rename/fsync in
             # the bounded staging executor).
             if msg.inline is not None:
@@ -9463,10 +10419,17 @@ class RangeMinerCoordinator:
                 run_id, msg.stripe_id, attempt, bound_worker_id,
                 msg.substripes_done, msg.survivors_total,
                 elapsed_s=getattr(msg, "elapsed_s", None))
+            # [H1/H2 §C/§E] THE STRIPE LIFECYCLE BOUNDARY — one emission, here.
+            # Everything accumulated for this stripe since its claim is reported
+            # exactly once: how many frames were accepted, how long each waited
+            # between arrival and processing, and how much of that was deferral.
+            # Emitted BEFORE `finalize_stripe`, which may terminate the trial.
+            self.emit_stripe_rx_summary(run_id, msg.stripe_id, "stripe_complete")
             # Defect 4 (C3): a StripeComplete whose totals do not reconcile is a
             # definitive failure routed through the matrix, not a park in staging.
             self.finalize_stripe(run_id, msg.stripe_id, eligible_provider=eligible_provider)
         elif mt == "stripe_error":
+            self.emit_stripe_rx_summary(run_id, msg.stripe_id, "stripe_error")
             self.handle_stripe_failure(
                 run_id, msg.stripe_id, retryable=msg.retryable,
                 eligible_workers=eligible_provider())
