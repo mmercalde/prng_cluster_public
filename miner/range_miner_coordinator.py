@@ -502,6 +502,27 @@ def _next_frame_token() -> int:
 # 2.5 lines/second for the whole run and would breach the very bar §15 set.
 ACTIVE_STRIPE_REPORT_INTERVAL_S = 10.0
 
+# [MP-1 DRAIN ATTRIBUTION] The periodic serve-loop attribution window. Same
+# period, same reasoning and the SAME no-high-rate-noise bar as the tick above:
+# ONE record per window carrying every phase delta and every connection row, not
+# one record per phase or per connection.
+#
+# WHY A WINDOW AT ALL, WHEN A TERMINAL SUMMARY ALREADY EXISTS. The `[S172-SL]
+# summary` line reports TOTALS AND MAXIMA over a whole trial. Attempt 7's second
+# question — "what GREW over the run" — is not answerable from either: a total
+# hides the trajectory and a maximum names one instant. A build-up is a
+# derivative, and a derivative needs a series. This is that series, at 0.1
+# lines/second.
+SERVE_LOOP_WINDOW_INTERVAL_S = 10.0
+
+# [MP-1] The serve-loop SUB-PHASES measured through the thread-keyed phase
+# stack rather than through a `_sl.start()/stop()` pair at a serve-loop call
+# site — because both of them are entered from INSIDE `_serve_dispatch`, several
+# frames below the loop, and both can also run on threads that are not the serve
+# loop at all (`_pump_deferred` is called from the staging executor's completion
+# callback). Declared here as data so that adding one is a visible decision.
+SERVE_LOOP_SUBPHASES = ("staging", "pump")
+
 # [R1-C] THE OBSERVATION-STATUS VOCABULARY FOR THIS INSTRUMENT, and it is
 # load-bearing in exactly the way §2.10's `UNAVAILABLE` / `NOT_APPLICABLE` split
 # is. Every accounting record carries one of these, and the rule is absolute:
@@ -2844,7 +2865,7 @@ class ServeLoopTiming:
     # break the partition `unattributed_total` is a residual over.
     SEGMENTS = ("iteration", "accept", "drain", "msg", "deadline",
                 "stage_setup", "schedule", "dispatch", "expiry", "advance",
-                "admission")
+                "admission", "staging", "pump")
     # [R1.2, Beta 2026-08-12] SEGMENTS THAT ARE MEASURED INSIDE ANOTHER SEGMENT.
     # `msg` is timed inside `drain`, so subtracting both from the iteration total
     # charged message-dispatch time TWICE and `unattributed_total` was not the
@@ -2853,7 +2874,39 @@ class ServeLoopTiming:
     # they are just not part of the residual arithmetic. Declared as data rather
     # than hardcoded into `metrics()` so that adding a nested segment is a
     # one-line, visible decision instead of a silent double-count.
-    NESTED_SEGMENTS = ("msg",)
+    NESTED_SEGMENTS = ("msg", "staging", "pump")
+
+    # ----------------------------------------------------------------------
+    # [MP-1 DRAIN ATTRIBUTION] THE ATTRIBUTION IS THREE LEVELS DEEP, AND EVERY
+    # LEVEL SUMS TO ITS PARENT WITH A NAMED REMAINDER. There is no level at
+    # which time simply goes missing.
+    #
+    #   L1  iteration = accept + admission + drain + deadline + stage_setup
+    #                 + schedule + dispatch + expiry + advance + LOOP_REMAINDER
+    #   L2  drain     = msg + DRAIN_REMAINDER
+    #   L3  msg       = staging + pump + MSG_REMAINDER
+    #
+    # `staging` and `pump` are EXCLUSIVE (self) times taken from the coordinator's
+    # thread-keyed phase stack, which is why L3 partitions exactly even though
+    # `_pump_deferred` is reachable from INSIDE `enqueue_staging` on the same
+    # thread: the nested pump's time is already removed from `staging`'s
+    # exclusive figure, so subtracting both cannot double-count. Inclusive
+    # figures are reported separately by the coordinator and are never used in
+    # this arithmetic.
+    #
+    # THE REMAINDER IS A BUCKET WITH A NAME, NEVER A SILENT GAP (R1.2's lesson,
+    # applied per iteration instead of once per run): the pre-MP-1 instrument
+    # computed ONE residual over the WHOLE trial, so a single iteration that
+    # spent all its time outside every named phase was averaged into ~4,300
+    # others and disappeared. Each level now carries its own per-iteration
+    # residual TOTAL, MAXIMUM and the wall-clock instant of that maximum.
+    LEVEL1_SEGMENTS = ("accept", "admission", "drain", "deadline",
+                       "stage_setup", "schedule", "dispatch", "expiry",
+                       "advance")
+    LEVEL2_PARENT = "drain"
+    LEVEL2_CHILDREN = ("msg",)
+    LEVEL3_PARENT = "msg"
+    LEVEL3_CHILDREN = ("staging", "pump")
 
     def __init__(self) -> None:
         self._t0 = time.perf_counter()
@@ -2905,17 +2958,219 @@ class ServeLoopTiming:
         self.drain_stop_counts: Dict[str, int] = {
             "empty": 0, "deadline": 0, "count_guard": 0}
         self.admission_dispositions_max = 0
+        # ------------------------------------------------------------------
+        # [MP-1] PER-ITERATION ATTRIBUTION STATE.
+        #
+        # `_iter` is the CURRENT iteration's per-segment accumulator, reset at
+        # every `tick()` and read once when that iteration is closed. It exists
+        # because the run-scoped residual cannot answer "which iteration lost
+        # the time" — and `_close_iteration` reads it with NO CLOCK READ OF ITS
+        # OWN, which is load-bearing: `test_s172_f1_lease_origin` drives this
+        # class through a scripted monotonic clock and asserts the script is
+        # consumed exactly, so an extra read here would red a certified gate
+        # while changing nothing about the measurement.
+        self._iter: Dict[str, float] = {k: 0.0 for k in self.SEGMENTS}
+        self.remainder_total: Dict[str, float] = {
+            "loop": 0.0, "drain": 0.0, "msg": 0.0}
+        self.remainder_max: Dict[str, float] = {
+            "loop": 0.0, "drain": 0.0, "msg": 0.0}
+        self.remainder_max_at: Dict[str, Optional[float]] = {
+            "loop": None, "drain": None, "msg": None}
+        # A NEGATIVE REMAINDER IS A MEASUREMENT DEFECT, NOT A ZERO. It means the
+        # children summed to MORE than the parent, i.e. the nesting declaration
+        # above no longer matches the wiring. Clamping alone would hide exactly
+        # that, so every clamp is counted and reported; a non-zero value here
+        # invalidates the level it belongs to and must be read as such.
+        self.remainder_negative: Dict[str, int] = {
+            "loop": 0, "drain": 0, "msg": 0}
+        # The FULL per-segment breakdown of the single worst iteration — the one
+        # artifact that answers "where did that iteration's time go" without
+        # requiring the reader to correlate nine independent maxima that may
+        # each come from a different iteration.
+        self.iteration_max_parts: Dict[str, float] = {}
+        # ---- drain-pass census (the servicing-order evidence) --------------
+        # Per drain pass: how many frames it took, how many DISTINCT connections
+        # it serviced, and how many connections were live at the time. The
+        # primary hypothesis — "each pass could service only the head of the
+        # connection set" — is exactly the statement
+        # `distinct_conns_serviced << connections_live`, sustained. Without
+        # these three numbers that hypothesis is not falsifiable from any record
+        # the coordinator emits.
+        self.drain_passes = 0
+        self.drain_frames_total = 0
+        self.drain_pass_frames_max = 0
+        self.drain_pass_conns_max = 0
+        self.drain_pass_conns_min: Optional[int] = None
+        self.drain_pass_live_max = 0
+        # Passes that serviced FEWER distinct connections than were live. A
+        # count, not a ratio: a ratio of two maxima taken at different instants
+        # is not a measurement of anything.
+        self.drain_passes_partial = 0
+        # ---- window accumulators (the build-up series) ---------------------
+        # Deltas since the last window, reset by `take_window()`. Kept as their
+        # own dict rather than derived by differencing the cumulative totals,
+        # because differencing requires the reader to hold the previous record
+        # and a dropped log line would then silently corrupt the series.
+        self._win: Dict[str, Any] = {}
+        self._reset_window()
 
     # -- measurement -------------------------------------------------------
+    def _reset_window(self) -> None:
+        """[MP-1] Zero the window accumulators. Never reads a clock — the window
+        CLOCK belongs to the coordinator's rate limiter (`time.monotonic`), and
+        this class is pinned to `perf_counter` only."""
+        self._win = {
+            "iterations": 0,
+            "segments": {k: 0.0 for k in self.SEGMENTS},
+            "segment_max": {k: 0.0 for k in self.SEGMENTS},
+            "remainder": {"loop": 0.0, "drain": 0.0, "msg": 0.0},
+            "remainder_max": {"loop": 0.0, "drain": 0.0, "msg": 0.0},
+            "drain_passes": 0,
+            "drain_frames": 0,
+            "drain_pass_conns_max": 0,
+            "drain_pass_conns_min": None,
+            "drain_pass_live_max": 0,
+            "drain_passes_partial": 0,
+            "drain_stop": {"empty": 0, "deadline": 0, "count_guard": 0},
+        }
+
+    def take_window(self) -> Dict[str, Any]:
+        """[MP-1] Hand out the accumulated window and start a fresh one.
+
+        Returns a DETACHED copy (R3-1: `dict(x)` alone is not a snapshot — the
+        nested per-segment maps would come back as shared references and the
+        caller would serialize live objects while the next window mutated them).
+        The reset is part of the same call precisely so the series cannot
+        double-count a window that was emitted twice."""
+        try:
+            out = {
+                "iterations": self._win["iterations"],
+                "segments": dict(self._win["segments"]),
+                "segment_max": dict(self._win["segment_max"]),
+                "remainder": dict(self._win["remainder"]),
+                "remainder_max": dict(self._win["remainder_max"]),
+                "drain_passes": self._win["drain_passes"],
+                "drain_frames": self._win["drain_frames"],
+                "drain_pass_conns_max": self._win["drain_pass_conns_max"],
+                "drain_pass_conns_min": self._win["drain_pass_conns_min"],
+                "drain_pass_live_max": self._win["drain_pass_live_max"],
+                "drain_passes_partial": self._win["drain_passes_partial"],
+                "drain_stop": dict(self._win["drain_stop"]),
+            }
+            self._reset_window()
+            return out
+        except Exception:                                        # noqa: BLE001
+            return {}
+
     def tick(self, wall_now: Optional[float] = None) -> None:
         """Top of the loop. Closes out the previous iteration's wall time."""
         mark = time.perf_counter()
         if self._last_top is not None:
-            self._record("iteration", mark - self._last_top,
-                         at=self._last_top_wall)
+            self._close_iteration(mark - self._last_top,
+                                  at=self._last_top_wall)
+        self._reset_iteration()
         self._last_top = mark
         self._last_top_wall = wall_now
         self.iterations += 1
+
+    def _reset_iteration(self) -> None:
+        for k in self._iter:
+            self._iter[k] = 0.0
+
+    def _close_iteration(self, seconds: float,
+                         at: Optional[float] = None) -> None:
+        """[MP-1] Record one closed iteration AND reconcile its three levels.
+
+        NO CLOCK READ. Every input is a value `_record` already accumulated for
+        this iteration, so this is pure arithmetic over numbers that were
+        measured when they happened. That property is what lets the scripted-
+        clock gates keep asserting an exact read count."""
+        self._record("iteration", seconds, at=at)
+        try:
+            l1_named = sum(self._iter[s] for s in self.LEVEL1_SEGMENTS)
+            self._reconcile("loop", seconds, l1_named, at)
+            self._reconcile(
+                "drain", self._iter[self.LEVEL2_PARENT],
+                sum(self._iter[s] for s in self.LEVEL2_CHILDREN), at)
+            self._reconcile(
+                "msg", self._iter[self.LEVEL3_PARENT],
+                sum(self._iter[s] for s in self.LEVEL3_CHILDREN), at)
+            self._win["iterations"] += 1
+            for k in self.SEGMENTS:
+                v = self._iter[k]
+                self._win["segments"][k] += v
+                if v > self._win["segment_max"][k]:
+                    self._win["segment_max"][k] = v
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def _reconcile(self, level: str, parent: float, children: float,
+                   at: Optional[float]) -> None:
+        """One level's named remainder for ONE iteration."""
+        residual = parent - children
+        if residual < 0.0:
+            self.remainder_negative[level] += 1
+            residual = 0.0
+        self.remainder_total[level] += residual
+        self._win["remainder"][level] += residual
+        if residual > self.remainder_max[level]:
+            self.remainder_max[level] = residual
+            self.remainder_max_at[level] = at
+        if residual > self._win["remainder_max"][level]:
+            self._win["remainder_max"][level] = residual
+
+    def note_subphase(self, segment: str, seconds: float) -> None:
+        """[MP-1] Record an already-measured EXCLUSIVE sub-phase delta taken from
+        the coordinator's thread-keyed phase stack.
+
+        Separate from `stop()` because the measurement did not happen here and
+        there is no start mark to subtract: the serve loop reads the delta of
+        its OWN thread's exclusive accumulator across one `dispatch_inbound_
+        result` call. A negative delta is impossible for a monotonically
+        accumulating counter and is clamped rather than trusted."""
+        try:
+            self._record(segment, max(0.0, float(seconds)))
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def note_drain_pass(self, frames: int, distinct_connections: int,
+                        connections_live: Optional[int]) -> None:
+        """[MP-1 §B] ONE drain pass's servicing census.
+
+        `connections_live` is `None` when the live set could not be read — and
+        it stays `None`, because a pass that serviced 3 of an UNKNOWN number of
+        connections is not evidence of anything and must never be counted as a
+        partial pass (VIR-5: unobservable is not clean)."""
+        try:
+            self.drain_passes += 1
+            self._win["drain_passes"] += 1
+            f = int(frames)
+            self.drain_frames_total += f
+            self._win["drain_frames"] += f
+            if f > self.drain_pass_frames_max:
+                self.drain_pass_frames_max = f
+            c = int(distinct_connections)
+            if c > self.drain_pass_conns_max:
+                self.drain_pass_conns_max = c
+            if (self.drain_pass_conns_min is None
+                    or c < self.drain_pass_conns_min):
+                self.drain_pass_conns_min = c
+            if c > self._win["drain_pass_conns_max"]:
+                self._win["drain_pass_conns_max"] = c
+            if (self._win["drain_pass_conns_min"] is None
+                    or c < self._win["drain_pass_conns_min"]):
+                self._win["drain_pass_conns_min"] = c
+            if connections_live is not None:
+                live = int(connections_live)
+                if live > self.drain_pass_live_max:
+                    self.drain_pass_live_max = live
+                if live > self._win["drain_pass_live_max"]:
+                    self._win["drain_pass_live_max"] = live
+                if c < live:
+                    self.drain_passes_partial += 1
+                    self._win["drain_passes_partial"] += 1
+        except Exception:                                        # noqa: BLE001
+            pass
 
     def close_current_iteration(self) -> None:
         """[R1.1, Beta 2026-08-12] CLOSE THE ITERATION THAT IS CURRENTLY OPEN.
@@ -2939,8 +3194,9 @@ class ServeLoopTiming:
         try:
             if self._last_top is None:
                 return
-            self._record("iteration", time.perf_counter() - self._last_top,
-                         at=self._last_top_wall)
+            self._close_iteration(time.perf_counter() - self._last_top,
+                                  at=self._last_top_wall)
+            self._reset_iteration()
             self._last_top = None
             self._last_top_wall = None
         except Exception:                                        # noqa: BLE001
@@ -2979,6 +3235,10 @@ class ServeLoopTiming:
         try:
             if reason in self.drain_stop_counts:
                 self.drain_stop_counts[reason] += 1
+                # [MP-1] the same fact, windowed, so "the drain started ending
+                # on its deadline halfway through the run" is readable as a
+                # series instead of only as a run total.
+                self._win["drain_stop"][reason] += 1
         except Exception:                                        # noqa: BLE001
             pass
 
@@ -3020,10 +3280,27 @@ class ServeLoopTiming:
             return
         self.total[segment] += seconds
         self.count[segment] += 1
+        # [MP-1] the SAME value into the current iteration's accumulator, so the
+        # per-iteration reconciliation reads exactly the numbers the run totals
+        # are built from. One recording site, two scopes — never two sites.
+        if segment in self._iter:
+            self._iter[segment] += seconds
         if seconds > self.maximum[segment]:
             self.maximum[segment] = seconds
             if segment == "iteration":
                 self.max_iteration_at = at
+                # [MP-1] THE WORST ITERATION'S FULL BREAKDOWN, captured at the
+                # moment it becomes the worst. Nine independent per-segment
+                # maxima can each come from a DIFFERENT iteration, so they
+                # cannot be added up and read as a profile of any single one —
+                # which is precisely the mistake a reader makes when the profile
+                # is the thing they want.
+                parts = dict(self._iter)
+                parts["iteration"] = seconds
+                parts["remainder_loop"] = max(
+                    0.0, seconds - sum(self._iter[s]
+                                       for s in self.LEVEL1_SEGMENTS))
+                self.iteration_max_parts = parts
 
     # -- reporting ---------------------------------------------------------
     def metrics(self) -> Dict[str, Any]:
@@ -3070,7 +3347,120 @@ class ServeLoopTiming:
         m["drain_deadline_hits"] = self.drain_stop_counts["deadline"]
         m["admission_dispositions_max_per_iteration"] = (
             self.admission_dispositions_max)
+        # ------------------------------------------------------------------
+        # [MP-1] THE THREE-LEVEL RECONCILIATION, and the drain-pass census.
+        # Additive: nothing above is altered, and `unattributed_total` keeps its
+        # certified definition and its certified value.
+        #
+        # `loop_remainder_total` and `unattributed_total` are the SAME quantity
+        # computed two different ways — one as a per-iteration sum, one as a
+        # run-total subtraction — and their agreement is a cross-check a gate
+        # asserts. They can differ ONLY by clamped negative residuals, which is
+        # why `remainder_negative_loop` is reported beside them rather than
+        # being quietly absorbed.
+        for level in ("loop", "drain", "msg"):
+            m[f"{level}_remainder_total"] = self.remainder_total[level]
+            m[f"{level}_remainder_max"] = self.remainder_max[level]
+            m[f"{level}_remainder_max_at"] = self.remainder_max_at[level]
+            m[f"remainder_negative_{level}"] = self.remainder_negative[level]
+        m["iteration_max_parts"] = dict(self.iteration_max_parts)
+        m["drain_passes"] = self.drain_passes
+        m["drain_frames_total"] = self.drain_frames_total
+        m["drain_pass_frames_max"] = self.drain_pass_frames_max
+        m["drain_pass_conns_max"] = self.drain_pass_conns_max
+        m["drain_pass_conns_min"] = self.drain_pass_conns_min
+        m["drain_pass_live_max"] = self.drain_pass_live_max
+        m["drain_passes_partial"] = self.drain_passes_partial
+        # THE PER-FRAME COST OF THE DRAIN, which is the quantity the 2.5x
+        # question is actually about. `None` when no frame was drained — a rate
+        # with no denominator is UNOBSERVED, never zero (VIR-5), and a zero here
+        # would read as "the drain was free" on a run where it never ran.
+        m["drain_seconds_per_frame"] = (
+            None if not self.drain_frames_total
+            else self.total["drain"] / self.drain_frames_total)
+        m["msg_seconds_per_frame"] = (
+            None if not self.count["msg"]
+            else self.total["msg"] / self.count["msg"])
         return m
+
+
+class PhaseCharge:
+    """[MP-1 DRAIN ATTRIBUTION] ONE re-entrant, THREAD-KEYED phase charge.
+
+    WHY THIS EXISTS RATHER THAN A `_sl.start()/stop()` PAIR. The two sub-phases
+    MP-1 must name — `staging` (the serve loop's synchronous turn inside
+    `enqueue_staging`) and `pump` (`_pump_deferred`) — are entered from inside
+    `_serve_dispatch`, several frames below the loop that owns the
+    `ServeLoopTiming` object, and `pump` additionally runs on the STAGING
+    EXECUTOR's completion callback thread, which has no serve-loop object at
+    all. A start/stop pair at a serve-loop call site cannot reach either.
+
+    THREAD ATTRIBUTION IS THE POINT (design constraint 5, R1-A's rule). The same
+    phase name is charged by more than one thread, and summing them would
+    manufacture a serve-loop cost out of work the serve loop never did — the
+    worker-side mirror of that error is exactly what R1-A fixed when a
+    heartbeat thread's 200 s send was being charged to a mining thread's stripe.
+    Every charge is keyed by `threading.get_ident()` and labelled with the
+    thread's name, so the serve loop's share is READ, never inferred.
+
+    EXCLUSIVE TIME IS WHAT MAKES THE PARTITION SUM. `_pump_deferred` is
+    reachable from inside `enqueue_staging` on the same thread (failfast ->
+    `_on_staging_failed` -> `_pump_deferred`), so charging both INCLUSIVELY and
+    then subtracting both from `msg` would double-count the nested pump and
+    drive the residual negative — the R1.2 defect, one level down. Each frame
+    therefore reports:
+
+        inclusive  = wall time between enter and exit
+        exclusive  = inclusive - (time spent in phases nested INSIDE it)
+
+    and `msg = staging_exclusive + pump_exclusive + msg_remainder` holds by
+    construction under every nesting.
+
+    IT CANNOT PERTURB WHAT IT OBSERVES. It touches no ledger state, calls no
+    decision path, and every method is wrapped so that a caller error, a missing
+    thread-local or a clock anomaly degrades to "no charge" instead of raising
+    into a production path. `__exit__` always returns False, so it never
+    swallows the exception of the block it wraps."""
+
+    __slots__ = ("_coord", "_name", "_frame")
+
+    def __init__(self, coord: Any, name: str) -> None:
+        self._coord = coord
+        self._name = name
+        self._frame: Optional[list] = None
+
+    def __enter__(self) -> "PhaseCharge":
+        try:
+            stack = self._coord._phase_stack()
+            # [name, started_perf, seconds_charged_by_nested_children]
+            self._frame = [self._name, time.perf_counter(), 0.0]
+            stack.append(self._frame)
+        except Exception:                                        # noqa: BLE001
+            self._frame = None
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        try:
+            frame = self._frame
+            self._frame = None
+            if frame is None:
+                return False
+            stack = self._coord._phase_stack()
+            # Pop OUR frame by identity, not by position: a nested charge that
+            # failed to push (the degraded path above) must not cause this exit
+            # to pop somebody else's frame and corrupt the parent's child total.
+            if stack and stack[-1] is frame:
+                stack.pop()
+            elif frame in stack:
+                stack.remove(frame)
+            inclusive = time.perf_counter() - frame[1]
+            exclusive = inclusive - frame[2]
+            if stack:
+                stack[-1][2] += inclusive
+            self._coord._charge_phase(self._name, inclusive, exclusive)
+        except Exception:                                        # noqa: BLE001
+            pass
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -3315,6 +3705,35 @@ class RangeMinerCoordinator:
         self._active_acct_last: Optional[float] = None
         # §7 D's suggested period. One record per tick, not one per stripe.
         self.active_stripe_report_interval_s = ACTIVE_STRIPE_REPORT_INTERVAL_S
+        # ----- [MP-1 DRAIN ATTRIBUTION] ---------------------------------------
+        # (a) THE THREAD-KEYED PHASE STACK. Its own lock for the same reason
+        #     `_stripe_rx_lock` has one: the accumulator is written from the
+        #     serve loop AND from the staging executor's completion callback,
+        #     and folding an instrument into `_bp_lock` would put it inside a
+        #     certified concurrency property for no reason. The STACK itself is
+        #     thread-local and needs no lock at all — only the shared totals do.
+        self._phase_lock = threading.Lock()
+        self._phase_local = threading.local()
+        self._phase_totals: Dict[Tuple[int, str], Dict[str, Any]] = {}
+        # (b) THE PER-CONNECTION DRAIN SERVICE REGISTRY. Written ONLY by the
+        #     serve thread inside the drain (single writer by construction), but
+        #     locked anyway so `drain_service_census` can hand out a DETACHED
+        #     snapshot under the R3-1 rule rather than serializing live rows.
+        self._drain_conn_lock = threading.Lock()
+        self._drain_conn: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._drain_pass_seq = 0
+        # (c) THE DRAIN'S MESSAGE-CLASS CENSUS — under the SAME lock and the
+        #     same single-writer discipline, because it is the same event.
+        #     It exists to close the ONE question Beta left explicitly open on
+        #     the attempt-7 forensic: `heartbeats_accepted = 0` run-wide.
+        self._drain_class_total: Dict[str, int] = {}
+        self._drain_class_window: Dict[str, int] = {}
+        self._serve_window_last: Optional[float] = None
+        self.serve_loop_window_interval_s = SERVE_LOOP_WINDOW_INTERVAL_S
+        # The staging-job counter as of the previous window, so the window can
+        # report a DELTA. `None` = no window has been taken yet, which is not
+        # the same fact as "zero jobs completed since the last one".
+        self._serve_window_staging_jobs: Optional[int] = None
         # [ATTEMPT-6 binding detail 1] RUN-SCOPED CONNECTION CORRELATION TOKEN.
         # A monotonically increasing counter, never a file descriptor and never
         # `id(sock)`: both are reused during a long process, and a reused identity
@@ -6191,6 +6610,431 @@ class RangeMinerCoordinator:
                        json.dumps(record, default=str, sort_keys=True))
         return record
 
+    # =====================================================================
+    # [MP-1 DRAIN ATTRIBUTION] — READ-ONLY OBSERVATION OF THE SERVE LOOP
+    #
+    # Nothing below is read by any decision path. Every method accumulates or
+    # reports; none of them touches the ledger, the matrix, the lease, the
+    # scheduler or a queue. The attempt-7 forensic established WHAT happened
+    # (45 frames enqueued, 0 dequeued, for 296 s) and could not establish WHY,
+    # because the coordinator emits no record of how a serve-loop iteration
+    # spends its time or of which connections a drain pass actually reaches.
+    # =====================================================================
+    def _phase_stack(self) -> list:
+        """This thread's phase stack. Thread-local, so no lock: a stack is only
+        ever pushed and popped by the thread that owns it, and sharing one
+        across threads is the bug rather than the feature."""
+        stack = getattr(self._phase_local, "stack", None)
+        if stack is None:
+            stack = []
+            self._phase_local.stack = stack
+        return stack
+
+    def _charge_phase(self, name: str, inclusive: float,
+                      exclusive: float) -> None:
+        """THE ONE WRITER of `_phase_totals`, keyed `(thread_ident, phase)`.
+
+        The thread NAME is stored beside the counters because a bare ident is
+        an opaque integer in a log line, and a forensic reader has to be able to
+        say "this pump time was the staging executor's, not the serve loop's"
+        without correlating against anything."""
+        try:
+            tid = threading.get_ident()
+            key = (tid, name)
+            with self._phase_lock:
+                slot = self._phase_totals.get(key)
+                if slot is None:
+                    slot = {"thread_id": tid,
+                            "thread_name": threading.current_thread().name,
+                            "phase": name, "inclusive_s": 0.0,
+                            "exclusive_s": 0.0, "calls": 0}
+                    self._phase_totals[key] = slot
+                slot["inclusive_s"] += float(inclusive)
+                slot["exclusive_s"] += float(exclusive)
+                slot["calls"] += 1
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def phase_charge(self, name: str) -> "PhaseCharge":
+        """The instrumentation seam. `with self.phase_charge('staging'): ...`"""
+        return PhaseCharge(self, name)
+
+    def phase_exclusive_snapshot(
+        self, names: Tuple[str, ...], thread_id: Optional[int] = None,
+    ) -> Dict[str, float]:
+        """The EXCLUSIVE cumulative seconds this thread has charged to each of
+        `names`, in ONE lock acquisition.
+
+        One acquisition, not one per name: the serve loop reads this twice per
+        drained frame, and two independent reads of a two-name pair would be two
+        transactions whose values could straddle a charge — the §2.28 sampler
+        lesson (a sample is not a measurement if its parts come from different
+        instants), applied before it can repeat here."""
+        tid = threading.get_ident() if thread_id is None else thread_id
+        try:
+            with self._phase_lock:
+                return {n: float((self._phase_totals.get((tid, n))
+                                  or {}).get("exclusive_s", 0.0))
+                        for n in names}
+        except Exception:                                        # noqa: BLE001
+            return {n: 0.0 for n in names}
+
+    def phase_attribution(self) -> List[Dict[str, Any]]:
+        """Every (thread, phase) charge, DETACHED, sorted for a stable record.
+
+        [R3-1] `list(self._phase_totals.values())` alone is not a snapshot — the
+        rows would come back as live dicts and the caller would serialize them
+        while another thread was still adding to them."""
+        try:
+            with self._phase_lock:
+                rows = [dict(v) for v in self._phase_totals.values()]
+        except Exception as exc:                                 # noqa: BLE001
+            return [{"status": OBS_UNAVAILABLE,
+                     "error": f"{type(exc).__name__}: {exc}"}]
+        for r in rows:
+            r["status"] = OBS_OK
+        rows.sort(key=lambda r: (r.get("phase") or "", r.get("thread_id") or 0))
+        return rows
+
+    # ----- per-connection drain service (the servicing-order evidence) -----
+    def note_drain_service(self, connection_id: Optional[str],
+                           worker_id: Optional[str], *, position: int,
+                           pass_seq: int) -> None:
+        """[MP-1 §B] ONE frame left `inbound` and was serviced by the drain.
+
+        `position` is the frame's 1-based index WITHIN ITS DRAIN PASS. That is
+        the field the late-index question turns on: `inbound` is one FIFO shared
+        by every connection, so a connection that is only ever reached at high
+        positions is a connection the pass runs out of budget before it gets to,
+        and a connection whose positions are uniformly distributed is not being
+        starved by ORDER at all — it is being starved by RATE. Those are
+        different defects with different remedies, and no record the coordinator
+        emitted before this one could tell them apart.
+
+        AN UNRESOLVABLE CONNECTION IS A NAMED BUCKET, NEVER A DROPPED FRAME. A
+        frame whose socket has already been popped from `conn_state` has no
+        connection id; it is charged to `UNOBSERVED` so the per-connection
+        counts still sum to the pass's frame count. A silently discarded frame
+        would make the census under-report exactly during a disconnect, which is
+        when it matters."""
+        try:
+            key = connection_id or RX_UNOBSERVED
+            with self._drain_conn_lock:
+                slot = self._drain_conn.get(key)
+                if slot is None:
+                    slot = {
+                        "connection_id": key,
+                        "resolved": bool(connection_id),
+                        "worker_id": worker_id,
+                        "first_pass": pass_seq,
+                        "last_pass": None,
+                        "frames_total": 0, "frames_window": 0,
+                        "passes_total": 0, "passes_window": 0,
+                        "position_sum": 0, "position_count": 0,
+                        "position_min": None, "position_max": None,
+                        "position_min_total": None,
+                        "position_max_total": None,
+                        "last_position": None,
+                    }
+                    self._drain_conn[key] = slot
+                if worker_id is not None:
+                    slot["worker_id"] = worker_id
+                slot["frames_total"] += 1
+                slot["frames_window"] += 1
+                if slot["last_pass"] != pass_seq:
+                    slot["passes_total"] += 1
+                    slot["passes_window"] += 1
+                    slot["last_pass"] = pass_seq
+                p = int(position)
+                slot["last_position"] = p
+                slot["position_sum"] += p
+                slot["position_count"] += 1
+                for lo, hi in (("position_min", "position_max"),
+                               ("position_min_total", "position_max_total")):
+                    if slot[lo] is None or p < slot[lo]:
+                        slot[lo] = p
+                    if slot[hi] is None or p > slot[hi]:
+                        slot[hi] = p
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def note_drain_frame_class(self, message_type: Optional[str], *,
+                               stripe_id: Optional[str]) -> None:
+        """[MP-1] THE DRAIN'S MESSAGE-CLASS CENSUS — the instrument that closes
+        (or explicitly re-opens) `heartbeats_accepted = 0` run-wide.
+
+        WHY IT IS NOT ALREADY ANSWERABLE. Every existing heartbeat counter is
+        keyed by STRIPE, and a heartbeat reaches a stripe's counters only if it
+        carries a `current_stripe_id`:
+
+          * `frame_stripe_id()` returns the heartbeat's `current_stripe_id`, so
+            an EMPTY one makes `note_stripe_frame_enqueued` return before it
+            counts anything;
+          * `note_stripe_frame_dequeued` returns on the same condition;
+          * `_serve_dispatch`'s heartbeat branch guards its accounting with
+            `if _hb_stripe:`.
+
+        A HEARTBEAT WITH NO STRIPE ID IS THEREFORE INVISIBLE TO THE ENTIRE H1/H2
+        INVENTORY — arrival, dequeue and acceptance alike — and reads exactly
+        like a heartbeat that was never sent. That is the third instance in this
+        arc of an absence and a zero being indistinguishable, and it is why the
+        attempt-7 forensic could state the zero and not explain it.
+
+        This census is taken at DEQUEUE, keyed only by message class, so it is
+        independent of stripe identity by construction. The three candidate
+        readings it separates:
+
+          heartbeat == 0 at the drain          -> heartbeats never reached the
+                                                  drain: the SAME starvation,
+                                                  no second defect
+          heartbeat > 0, all without a stripe  -> a SECOND, independent
+                                                  measurement defect, unrelated
+                                                  to the drain
+          heartbeat > 0 with stripe ids, and
+          `heartbeats_accepted` still 0        -> the identity fence in
+                                                  `_serve_dispatch` dropped
+                                                  them (it logs a WARNING per
+                                                  drop, so the count is already
+                                                  recoverable from the log)
+
+        Counts only. It reads nothing, decides nothing and is not consulted by
+        the heartbeat path it observes."""
+        try:
+            mt = message_type or "unknown"
+            keys = [mt]
+            if mt == "heartbeat":
+                keys.append("heartbeat_with_stripe" if stripe_id
+                            else "heartbeat_without_stripe")
+            with self._drain_conn_lock:
+                for k in keys:
+                    self._drain_class_total[k] = (
+                        self._drain_class_total.get(k, 0) + 1)
+                    self._drain_class_window[k] = (
+                        self._drain_class_window.get(k, 0) + 1)
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def drain_frame_class_census(self, *, window: bool = True) -> Dict[str, Any]:
+        """A DETACHED copy of the class census. `window=True` returns the
+        window-scoped counts (reset by `reset_drain_service_window`), `False`
+        the run totals."""
+        try:
+            with self._drain_conn_lock:
+                counts = dict(self._drain_class_window if window
+                              else self._drain_class_total)
+        except Exception as exc:                                 # noqa: BLE001
+            return {"status": OBS_UNAVAILABLE, "counts": None,
+                    "error": f"{type(exc).__name__}: {exc}"}
+        return {"status": OBS_OK, "counts": counts, "error": None}
+
+    def next_drain_pass(self) -> int:
+        """The monotonically increasing drain-pass ordinal. Serve-thread only."""
+        self._drain_pass_seq += 1
+        return self._drain_pass_seq
+
+    def drain_service_census(
+        self, live_connection_ids: Optional[List[str]] = None, *,
+        window: bool = True,
+    ) -> Dict[str, Any]:
+        """[MP-1 §B] THE CENSUS, AND ITS ZEROES ARE MEASURED ZEROES.
+
+        The whole content of the late-index finding is a claim of the form
+        *"connection X was never serviced"*, and an instrument that reports only
+        the connections it saw can never state that — the claim would rest on an
+        ABSENCE, which is the class this arc has sixteen recorded instances of.
+        The census is therefore built from the LIVE CONNECTION SET and not from
+        the service registry: a live connection with no service record emits a
+        row with `frames_window = 0`, status `OK`. That zero is a measurement.
+
+        THE THREE-VALUED CONTRACT (§2.10's vocabulary, this instrument's copy):
+
+            OK              this connection was enumerated and its counters are
+                            measurements — INCLUDING when they are zero
+            UNAVAILABLE     the live set could not be read; `live_count` is
+                            `None`, never 0, and rows carry `live = None`
+            NO_OBSERVATION  frames were serviced whose connection identity could
+                            not be resolved at all (the `UNOBSERVED` bucket)
+
+        Positions on a never-serviced connection are `None`, not 0: position 0
+        would read as "serviced first in the pass", the exact inverse of the
+        truth."""
+        status = OBS_OK if live_connection_ids is not None else OBS_UNAVAILABLE
+        live = (None if live_connection_ids is None
+                else list(dict.fromkeys(live_connection_ids)))
+        try:
+            with self._drain_conn_lock:
+                observed = {k: dict(v) for k, v in self._drain_conn.items()}
+        except Exception as exc:                                 # noqa: BLE001
+            return {"status": OBS_UNAVAILABLE, "live_count": None,
+                    "serviced_count": None, "unserviced_count": None,
+                    "connections": None,
+                    "error": f"{type(exc).__name__}: {exc}"}
+        rows: List[Dict[str, Any]] = []
+        for cid in (live or []):
+            slot = observed.pop(cid, None)
+            rows.append(self._census_row(cid, slot, live=True, window=window))
+        # Rows for connections the registry knows about but the live set no
+        # longer holds. They are kept and LABELLED `live=False` rather than
+        # dropped: a connection that was serviced and then disconnected is part
+        # of the pass history the window is describing.
+        for cid, slot in observed.items():
+            rows.append(self._census_row(
+                cid, slot, live=(None if live is None else False),
+                window=window))
+        rows.sort(key=lambda r: r["connection_id"])
+        serviced = sum(1 for r in rows
+                       if (r["frames_window"] if window else r["frames_total"]))
+        return {
+            "status": status,
+            "live_count": (None if live is None else len(live)),
+            "serviced_count": serviced,
+            "unserviced_count": (None if live is None
+                                 else max(0, len(live) - serviced)),
+            "connections": rows,
+            "error": None,
+        }
+
+    @staticmethod
+    def _census_row(connection_id: str, slot: Optional[Dict[str, Any]], *,
+                    live: Optional[bool], window: bool) -> Dict[str, Any]:
+        if slot is None:
+            # ENUMERATED, NEVER SERVICED. This is the row the late-index claim
+            # is made of, and it is an observation with zeroes — not a silence.
+            return {"connection_id": connection_id, "status": OBS_OK,
+                    "live": live, "worker_id": None,
+                    "frames_window": 0, "frames_total": 0,
+                    "passes_window": 0, "passes_total": 0,
+                    "position_min": None, "position_max": None,
+                    "position_mean": None, "last_position": None,
+                    "last_pass": None}
+        n = slot["position_count"]
+        return {
+            "connection_id": connection_id,
+            "status": (OBS_OK if slot.get("resolved", True)
+                       else OBS_NO_OBSERVATION),
+            "live": live,
+            "worker_id": slot["worker_id"],
+            "frames_window": slot["frames_window"],
+            "frames_total": slot["frames_total"],
+            "passes_window": slot["passes_window"],
+            "passes_total": slot["passes_total"],
+            "position_min": (slot["position_min"] if window
+                             else slot["position_min_total"]),
+            "position_max": (slot["position_max"] if window
+                             else slot["position_max_total"]),
+            "position_mean": (None if not n
+                              else round(slot["position_sum"] / n, 3)),
+            "last_position": slot["last_position"],
+            "last_pass": slot["last_pass"],
+        }
+
+    def reset_drain_service_window(self) -> None:
+        """Zero the window-scoped counters. Called by the window emitter AFTER
+        the census has been built, never before — otherwise the record would
+        describe a window it had already erased."""
+        try:
+            with self._drain_conn_lock:
+                for slot in self._drain_conn.values():
+                    slot["frames_window"] = 0
+                    slot["passes_window"] = 0
+                    slot["position_sum"] = 0
+                    slot["position_count"] = 0
+                    slot["position_min"] = None
+                    slot["position_max"] = None
+                self._drain_class_window = {}
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    def maybe_emit_serve_loop_window(
+        self, run_id: str, timing: Optional["ServeLoopTiming"], *,
+        stage_idx: Optional[int] = None,
+        live_connection_ids: Optional[List[str]] = None,
+        inbound_qsize: Optional[int] = None,
+        now: Optional[float] = None, force: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """[MP-1] THE PERIODIC ATTRIBUTION RECORD — one line per window.
+
+        Rate-limited on a MONOTONIC interval, exactly like the active-stripe
+        tick, so a clock step cannot suppress or duplicate a window and the
+        serve loop's iteration rate (12,300 iterations in one attempt-5 stage)
+        cannot turn this into a flood. At 25 connections this is ONE record per
+        10 s carrying ~25 rows: inside §15's no-high-rate-noise bar, and the
+        only shape in which a BUILD-UP is visible at all.
+
+        MUST NEVER RAISE — same standing guard as the two summaries. An
+        instrument that can kill a trial is worse than no instrument."""
+        try:
+            mono = time.monotonic() if now is None else float(now)
+            if not force and self._serve_window_last is not None:
+                if (mono - self._serve_window_last
+                        < self.serve_loop_window_interval_s):
+                    return None
+            elapsed = (None if self._serve_window_last is None
+                       else mono - self._serve_window_last)
+            self._serve_window_last = mono
+            win = timing.take_window() if timing is not None else {}
+            census = self.drain_service_census(live_connection_ids)
+            classes = self.drain_frame_class_census(window=True)
+            classes_run = self.drain_frame_class_census(window=False)
+            self.reset_drain_service_window()
+            with self._bp_lock:
+                jobs = int(self._bp["staging_jobs_completed"])
+                qhw = int(self._bp["inbound_qsize_high_water"])
+            jobs_delta = (None if self._serve_window_staging_jobs is None
+                          else jobs - self._serve_window_staging_jobs)
+            self._serve_window_staging_jobs = jobs
+            record = {
+                "event": "SERVE_LOOP_WINDOW",
+                "run_id": run_id,
+                "stage_idx": stage_idx,
+                # `None` on the FIRST window: there is no previous mark to
+                # measure from, and a fabricated 0.0 would make every rate in
+                # the first record infinite.
+                "window_seconds": (None if elapsed is None
+                                   else round(elapsed, 3)),
+                "iterations": win.get("iterations"),
+                "phases": {k: round(v, 6)
+                           for k, v in (win.get("segments") or {}).items()},
+                "phase_max": {k: round(v, 6)
+                              for k, v in (win.get("segment_max")
+                                           or {}).items()},
+                "remainder": {k: round(v, 6)
+                              for k, v in (win.get("remainder") or {}).items()},
+                "remainder_max": {k: round(v, 6) for k, v
+                                  in (win.get("remainder_max") or {}).items()},
+                "drain": {
+                    "passes": win.get("drain_passes"),
+                    "frames": win.get("drain_frames"),
+                    "passes_partial": win.get("drain_passes_partial"),
+                    "conns_serviced_max": win.get("drain_pass_conns_max"),
+                    "conns_serviced_min": win.get("drain_pass_conns_min"),
+                    "conns_live_max": win.get("drain_pass_live_max"),
+                    "stop": win.get("drain_stop"),
+                },
+                "connections": census,
+                # [MP-1] the message-class census, WINDOW and RUN side by side.
+                # The run total is carried on every record deliberately: a
+                # forensic reader who has one window line must be able to answer
+                # "did any heartbeat reach the drain at ANY point in this run"
+                # without holding every earlier line.
+                "frame_classes": classes,
+                "frame_classes_run": classes_run,
+                "staging_jobs_delta": jobs_delta,
+                "staging_jobs_total": jobs,
+                "inbound_qsize": inbound_qsize,
+                "inbound_qsize_high_water": qhw,
+                "phase_attribution": self.phase_attribution(),
+            }
+            logger.warning("[S172-SL] window %s",
+                           json.dumps(record, default=str, sort_keys=True))
+            return record
+        except Exception:                                        # noqa: BLE001
+            logger.exception(
+                "[S172-SL] the serve-loop attribution window could not be "
+                "emitted for run %s; this is instrumentation only and the "
+                "trial's own state is unchanged", run_id)
+            return None
+
     # ----- [ATTEMPT-6 §8.2] inbound saturation: ONE accumulator, one writer ----
     def next_connection_id(self, run_id: Optional[str] = None) -> str:
         """[binding detail 1] A genuinely RUN-SCOPED correlation token, assigned
@@ -6481,7 +7325,17 @@ class RangeMinerCoordinator:
                 "drain_stop_empty=%d drain_stop_deadline=%d "
                 "drain_stop_count_guard=%d drain_deadline_hits=%d "
                 "slow_msg_events=%d slow_control_events=%d "
-                "admission_dispositions_max_per_iteration=%d",
+                "admission_dispositions_max_per_iteration=%d "
+                "staging_total=%.3f staging_max=%.3f pump_total=%.3f "
+                "pump_max=%.3f loop_remainder_total=%.3f "
+                "loop_remainder_max=%.3f drain_remainder_total=%.3f "
+                "msg_remainder_total=%.3f remainder_negative_loop=%d "
+                "remainder_negative_drain=%d remainder_negative_msg=%d "
+                "drain_passes=%d drain_frames_total=%d "
+                "drain_pass_frames_max=%d drain_pass_conns_max=%d "
+                "drain_pass_conns_min=%s drain_pass_live_max=%d "
+                "drain_passes_partial=%d drain_seconds_per_frame=%s "
+                "msg_seconds_per_frame=%s",
                 run_id, m["loop_seconds"], m["iterations"],
                 m["iteration_max"],
                 ("%.3f" % m["max_iteration_at"])
@@ -6505,7 +7359,48 @@ class RangeMinerCoordinator:
                 m["drain_stop_empty"], m["drain_stop_deadline"],
                 m["drain_stop_count_guard"], m["drain_deadline_hits"],
                 m["slow_msg_events"], m["slow_control_events"],
-                m["admission_dispositions_max_per_iteration"])
+                m["admission_dispositions_max_per_iteration"],
+                # [MP-1] additive series, same grep-stable line, appended at the
+                # end exactly as the attempt-6 series was — the certified
+                # parsers read by field name and are unaffected.
+                m["staging_total"], m["staging_max"],
+                m["pump_total"], m["pump_max"],
+                m["loop_remainder_total"], m["loop_remainder_max"],
+                m["drain_remainder_total"], m["msg_remainder_total"],
+                m["remainder_negative_loop"], m["remainder_negative_drain"],
+                m["remainder_negative_msg"],
+                m["drain_passes"], m["drain_frames_total"],
+                m["drain_pass_frames_max"], m["drain_pass_conns_max"],
+                ("%d" % m["drain_pass_conns_min"])
+                if m["drain_pass_conns_min"] is not None else "n/a",
+                m["drain_pass_live_max"], m["drain_passes_partial"],
+                ("%.6f" % m["drain_seconds_per_frame"])
+                if m["drain_seconds_per_frame"] is not None else "n/a",
+                ("%.6f" % m["msg_seconds_per_frame"])
+                if m["msg_seconds_per_frame"] is not None else "n/a")
+            # [MP-1] THE WORST ITERATION'S PROFILE, as its own structured
+            # record. It does not go on the summary line because it is a MAP,
+            # and flattening a map into a `k=v` line is how a reader ends up
+            # adding nine maxima that came from nine different iterations.
+            logger.warning(
+                "[S172-SL] iteration_profile %s",
+                json.dumps({
+                    "event": "SERVE_LOOP_ITERATION_PROFILE",
+                    "run_id": run_id,
+                    "iteration_max": round(m["iteration_max"], 6),
+                    "iteration_max_at": m["max_iteration_at"],
+                    "parts": {k: round(v, 6)
+                              for k, v in m["iteration_max_parts"].items()},
+                    "remainder_max": {
+                        lvl: round(m[f"{lvl}_remainder_max"], 6)
+                        for lvl in ("loop", "drain", "msg")},
+                    "remainder_max_at": {
+                        lvl: m[f"{lvl}_remainder_max_at"]
+                        for lvl in ("loop", "drain", "msg")},
+                    "phase_attribution": self.phase_attribution(),
+                    "frame_classes_run": self.drain_frame_class_census(
+                        window=False),
+                }, default=str, sort_keys=True))
             return m
         except Exception:                                        # noqa: BLE001
             logger.exception(
@@ -6745,7 +7640,22 @@ class RangeMinerCoordinator:
         therefore also resumes paused readers — WITHOUT any of those out-of-scope
         methods being edited. Ordering is what Beta asked for: already-retained
         deferred payloads claim a freed slot FIRST, and only then is a paused
-        reader allowed to add another."""
+        reader allowed to add another.
+
+        [MP-1 DRAIN ATTRIBUTION] Charged to `pump`, KEYED BY THE THREAD THAT DID
+        THE WORK. This method runs on the staging executor's completion callback
+        for most of a run, on the matrix/ack paths for some of it, and on the
+        SERVE LOOP itself when it is reached from `enqueue_staging`'s failfast
+        branch — and it holds `_admission_lock` across a full scan of
+        `_deferred` with a ledger liveness query per entry. Summing the three
+        threads' contributions would manufacture a serve-loop cost out of work
+        the serve loop never did; only the serve thread's own charge belongs in
+        the `msg` partition, and the executor's is reported separately in
+        `phase_attribution`. The charge rides the EXISTING `finally`, so no
+        control flow, no ordering and no `_resume_paused_connections` guarantee
+        is touched."""
+        _mp1 = PhaseCharge(self, "pump")
+        _mp1.__enter__()
         try:
             ready: List[tuple] = []
             with self._admission_lock:
@@ -6787,6 +7697,9 @@ class RangeMinerCoordinator:
                 self._chain_future(real, fut)
         finally:
             self._resume_paused_connections()
+            # [MP-1] AFTER the certified resume, so `pump` covers everything the
+            # pump actually does — including the resume it exists to trigger.
+            _mp1.__exit__(None, None, None)
 
     @staticmethod
     def _chain_future(src: "concurrent.futures.Future",
@@ -8558,6 +9471,18 @@ class RangeMinerCoordinator:
                 _drain_deadline = time.perf_counter() + drain_budget
                 drained = 0
                 _drain_stop = "empty"
+                # [MP-1 §B] THIS PASS'S SERVICING CENSUS. `_pass_seq` is the
+                # pass ordinal a per-connection row records so "serviced in 3 of
+                # the last 100 passes" is a measurement rather than a guess;
+                # `_pass_conns` is the set of DISTINCT connections this pass
+                # reached, which is the direct test of the primary hypothesis
+                # (a pass that services only the head of the connection set).
+                # `len(conn_state)` is the live set at the START of the pass —
+                # read once, so a connection accepted mid-pass cannot make the
+                # denominator move underneath the numerator.
+                _pass_seq = self.next_drain_pass()
+                _pass_conns: set = set()
+                _pass_live = len(conn_state)
                 while True:
                     if drained >= DRAIN_COUNT_GUARD:
                         _drain_stop = "count_guard"
@@ -8598,6 +9523,34 @@ class RangeMinerCoordinator:
                         break
                     drained += 1
                     self.note_inbound_occupancy(inbound.qsize())
+                    # [MP-1 §B] PER-CONNECTION DRAIN SERVICE, recorded on the
+                    # SAME line band as the dequeue counter and for the same
+                    # reason: the envelope has demonstrably left `inbound`, and
+                    # every disposition below — fence, already-reaped, dispatch
+                    # — is a disposition of a frame this connection's slot WAS
+                    # serviced for. Counting it only on the accepted path would
+                    # make a connection whose frames are all fenced look
+                    # unserviced, which is the opposite of the truth.
+                    _mp1_cs = conn_state.get(rawsock)
+                    _mp1_cid = (None if _mp1_cs is None
+                                else _mp1_cs.connection_id)
+                    _pass_conns.add(_mp1_cid or RX_UNOBSERVED)
+                    self.note_drain_service(
+                        _mp1_cid, worker_by_sock.get(rawsock),
+                        position=drained, pass_seq=_pass_seq)
+                    # [MP-1] …and the frame's CLASS, keyed by nothing but the
+                    # class. `kind == "eof"` is a reader-generated envelope, not
+                    # a protocol message, and is counted as its own class so it
+                    # cannot inflate any message count. This is the census that
+                    # closes `heartbeats_accepted = 0`: a heartbeat carrying no
+                    # `current_stripe_id` is invisible to every stripe-keyed
+                    # counter in the H1/H2 inventory, and reads exactly like a
+                    # heartbeat that was never sent.
+                    self.note_drain_frame_class(
+                        "eof" if kind == "eof"
+                        else getattr(msg, "message_type", None),
+                        stripe_id=(None if kind == "eof"
+                                   else self.frame_stripe_id(msg)))
                     # [R1-B] DEQUEUE, counted the instant the envelope leaves
                     # `inbound` — BEFORE the identity fence, the already-reaped
                     # check and the dispatch, because all three are dispositions
@@ -8664,11 +9617,25 @@ class RangeMinerCoordinator:
                         # [S172-BP AMENDMENT F1-R] through the disposition-bounded
                         # seam: `_serve_dispatch` runs unchanged, and the ingress
                         # reservation is released only AFTER it returns.
+                        # [MP-1] THE SUB-PHASE DELTAS, read off THIS THREAD'S
+                        # exclusive accumulators across the dispatch. The charge
+                        # itself happens far below (`_serve_dispatch` ->
+                        # `enqueue_staging`, `_pump_deferred`), so the loop
+                        # cannot time it directly; it reads what its own thread
+                        # spent there and records it as a nested segment of
+                        # `msg`. Exclusive, so a pump nested inside staging is
+                        # counted once and `msg` still partitions exactly.
+                        _ph0 = self.phase_exclusive_snapshot(
+                            SERVE_LOOP_SUBPHASES)
                         _tm = _sl.start()
                         self.dispatch_inbound_result(
                             msg, rawsock, run_id, worker_by_sock.get(rawsock),
                             wconn_by_worker, _eligible, credit_id)
                         _m_elapsed = _sl.stop("msg", _tm)
+                        _ph1 = self.phase_exclusive_snapshot(
+                            SERVE_LOOP_SUBPHASES)
+                        for _pn in SERVE_LOOP_SUBPHASES:
+                            _sl.note_subphase(_pn, _ph1[_pn] - _ph0[_pn])
                         # [ATTEMPT-6 M-3] `M_max` BECOMES ATTRIBUTABLE. Before this,
                         # the terminal summary said a message somewhere took 5.974 s
                         # and nothing else — the recurrence's third term was a number
@@ -8699,9 +9666,32 @@ class RangeMinerCoordinator:
                 # geometry; a drain that NEVER stops on the deadline says the
                 # fairness gates are not exercising anything.
                 _sl.note_drain_stop(_drain_stop)
+                # [MP-1 §B] …AND HOW FAR THAT PASS REACHED. `_pass_live` is the
+                # denominator; `RX_UNOBSERVED` is excluded from the numerator
+                # because an unresolvable frame is not evidence that a NAMED
+                # connection was reached.
+                _sl.note_drain_pass(
+                    drained,
+                    len(_pass_conns - {RX_UNOBSERVED}),
+                    _pass_live)
                 # [M-2] The loop knows there is more inbound waiting iff this drain
                 # ended on a bound rather than on an empty queue.
                 backlog_known = _drain_stop in ("deadline", "count_guard")
+                # [MP-1] THE PERIODIC ATTRIBUTION WINDOW. Emitted HERE — after
+                # the drain, on the main path of every iteration that reaches
+                # it — rather than inside the MAINTENANCE block, so the series
+                # does not develop a hole in exactly the states where a stage is
+                # not assigned and the loop is doing something else. Self
+                # rate-limited on a monotonic interval; the call is cheap and
+                # returns None on every iteration but one in a hundred.
+                # The live connection ids are read from `conn_state`, which the
+                # serve thread owns, and are what makes an UNSERVICED connection
+                # a measured zero instead of an absence.
+                self.maybe_emit_serve_loop_window(
+                    run_id, _sl, stage_idx=stage_idx,
+                    live_connection_ids=[cs.connection_id
+                                         for cs in conn_state.values()],
+                    inbound_qsize=inbound.qsize())
 
                 # --- read deadline: drop unregistered connections that never
                 # completed a frame (silent or partial), so they cannot wedge the
@@ -9194,6 +10184,19 @@ class RangeMinerCoordinator:
             # between the last loop record and the summary line. It starts AFTER
             # the close above, so `iteration` and `exit_seconds` never overlap.
             _exit_t0 = time.perf_counter()
+            # [MP-1] THE FINAL WINDOW, FORCED. Without it the last partial
+            # window — which on a failing trial is the one containing the
+            # terminal event — is discarded, and the series would end silently
+            # before the thing it exists to describe. Placed INSIDE the exit
+            # timer, so its own cost is attributed to teardown rather than
+            # becoming unmeasured time between two segments that are certified
+            # not to overlap; and BEFORE `conn_state.clear()`, so the live set
+            # is still readable and the census can still show a measured zero.
+            self.maybe_emit_serve_loop_window(
+                run_id, _sl, stage_idx=stage_idx,
+                live_connection_ids=[cs.connection_id
+                                     for cs in conn_state.values()],
+                inbound_qsize=inbound.qsize(), force=True)
             for wid, cfs in list(fs_by_worker.items()):
                 try:
                     cfs.send_msg(MinerShutdownMessage(worker_id=wid))
@@ -10391,9 +11394,19 @@ class RangeMinerCoordinator:
                 self.note_stripe_renewing_progress(run_id, msg.stripe_id)
             # Defect 4: stage OFF the dispatch loop (fetch/verify/rename/fsync in
             # the bounded staging executor).
+            # [MP-1 DRAIN ATTRIBUTION] `enqueue_staging` runs SYNCHRONOUSLY ON
+            # THE SERVE LOOP and takes `_admission_lock`, which the staging
+            # executor's `_pump_deferred` also holds while it iterates the whole
+            # deferred list. That makes this call the one place inside `msg`
+            # where the drain can be blocked by work another thread is doing,
+            # and it was previously invisible: it lived inside `msg_total` with
+            # no sub-attribution at all. Charged, never altered — the call and
+            # its arguments are unchanged.
             if msg.inline is not None:
-                self.enqueue_staging("inline", wconn, run_id, msg.stripe_id,
-                                     attempt, msg.sub_index, msg, eligible_provider)
+                with self.phase_charge("staging"):
+                    self.enqueue_staging("inline", wconn, run_id, msg.stripe_id,
+                                         attempt, msg.sub_index, msg,
+                                         eligible_provider)
             elif msg.spool_path:
                 if self.transfer is None:
                     # Defect 4: a spooled result with no transfer adapter is a
@@ -10404,8 +11417,10 @@ class RangeMinerCoordinator:
                         run_id, msg.stripe_id, retryable=False,
                         eligible_workers=eligible_provider())
                     return
-                self.enqueue_staging("remote", wconn, run_id, msg.stripe_id,
-                                     attempt, msg.sub_index, msg, eligible_provider)
+                with self.phase_charge("staging"):
+                    self.enqueue_staging("remote", wconn, run_id, msg.stripe_id,
+                                         attempt, msg.sub_index, msg,
+                                         eligible_provider)
             else:
                 logger.error("malformed result (neither inline nor spool) %s/%s "
                              "— failing stripe", msg.stripe_id, msg.sub_index)
