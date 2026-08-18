@@ -415,3 +415,35 @@ TB-prohibited converter and `mv`s a regular file onto the D3.5 finalizer-owned s
 **Standing operational rule: no Chapter-13 retrain approval and no learning-loop invocation while a
 soak is running.** Not a code defect and nothing to fix — an operational constraint that has to be
 written down somewhere a soak operator will look. Line numbers re-verified at HEAD `d99923b`.
+
+---
+
+## 19. `.s172_accumulator/generations/` is durable data plane with no backup policy
+
+*Added 2026-08-17 from the Gate-12 Attempt-9 acceptance ruling
+(`docs/TB_RULING_GATE12_ATTEMPT9_ACCEPTANCE.md`). Ruled real, ruled non-blocking.*
+
+Since the publication-path change, `bidirectional_survivors_binary.npz` and its siblings are
+**symlinks into a per-generation accumulator**, not tracked regular files. Beta's ruling makes
+the consequence explicit:
+
+> `.s172_accumulator/generations/` is now part of the durable data plane. It needs
+> backup/recovery policy appropriate to an authenticated generation store. **Git is no longer
+> that backup.**
+
+Two dispositions, both Beta-ruled:
+
+- **Do NOT put the NPZ payloads back into git** merely to satisfy the historical rule that
+  applied when `binary.npz` was a tracked regular file. The clean-tree gates passed; the
+  post-run untracked paths are the run's own outputs, written after publication.
+- The **stale `.gitignore` negation** left over from the tracked-file era can be removed as
+  hygiene when convenient. Not a Gate-12 issue, not urgent.
+
+What needs designing (unowned, unscheduled): retention count per generation, off-VM101 copy
+target (the ser8 `~/Downloads/` forensic-archive convention is the existing precedent — the
+Attempt-9 bundle `gate12_attempt9_forensic_bundle_20260817.tar.gz`,
+sha256 `583fbab3f4f7772f5405f302dbea596e8303a71420a0b2445149025470743fa2`, lives there),
+integrity verification on restore (the accumulator is an *authenticated* store — a backup
+that can't prove generation identity on restore is not a backup of it), and what "recovery"
+means for a partially-restored generation directory. Until that exists, the only copies of
+certified survivor generations are the live VM101 filesystem.
