@@ -2372,15 +2372,211 @@ def gate_e1_deferral_is_attributed_and_varies():
             f"clean: n=0 t=0.0s")
 
 
-def gate_e2_release_charges_both_departure_classes():
-    """A deferred frame leaves `_deferred` either resumed or dropped-as-dead, and
-    BOTH spent that time deferred. Charging only the resume path would
-    under-report exactly the pathological runs. Read off the live source: the
-    release list is appended on both branches."""
+# ===========================================================================
+# [R-4 PAIRED AMENDMENT, Beta-authorized 2026-08-16]
+#
+# `gate_e2_release_charges_both_departure_classes` asserted
+# `src.count("released.append(") == 2`. THAT GATE WAS CORRECT FOR ITS CERTIFIED
+# SOURCE ANCHOR — `_pump_deferred` then had exactly two departure classes — and
+# it remains historically correct for that anchor. R-3's end-of-pass capacity
+# sweep legitimately introduces a THIRD, so the literal cardinality 2 is
+# superseded.
+#
+# ⚠ IT IS NOT REPLACED BY `== 3`. Beta agreed with Alpha that bumping the count
+# is the wrong long-term amendment: it preserves the same brittle detector shape
+# and fails again on the next legitimate departure class, while proving nothing
+# about whether the charge is CORRECT. The INVARIANT is what survives:
+#
+#     Every frame leaving `_deferred` is charged exactly once through
+#     `note_stripe_frame_released`, after the admission lock is released and
+#     before staging submission.
+#
+# The amended gate is BEHAVIOURAL and is strictly harder to satisfy than either
+# count: a count cannot see a double charge, a charge for a RETAINED entry, or a
+# departure that is silently uncharged. This one drives all three currently
+# reachable departure classes and requires each charge site to be load-bearing.
+# ===========================================================================
+_E2_CLASSES = ("dead-in-main-scan", "resumed-into-ready", "dead-in-r3-sweep")
+
+
+def _e2_probe(tmp, tag, pump, klass):
+    """Drive ONE departure class through `pump` and return the observed
+    departures, the charges, and what stayed retained.
+
+    Nothing here reads production source: departures are computed by diffing
+    `_deferred` across the pass, and charges are recorded at the real
+    `note_stripe_frame_released` seam."""
+    import concurrent.futures as _cf
+    import types as _types
+
+    coord = _coord(tmp, dbname=f"{tag}.db")
+    charges = []
+    coord.note_stripe_frame_released = (
+        lambda r, s, a, i: charges.append((r, s, a, i)))
+    submitted = []
+
+    def _submit(kind, wconn, run_id, stripe_id, attempt, sub_index, msg, elig):
+        submitted.append((stripe_id, attempt, sub_index))
+        f = _cf.Future()
+        f.set_result(True)
+        return f
+
+    coord._submit_with_slot = _submit
+    coord._resume_paused_connections = lambda: None
+
+    run = "e2run"
+
+    def _stripe(sid, attempt, state):
+        coord.ledger.add_stripe(run, sid, 0, 1000, "java_lcg", 1, now=1.0)
+        # one worker per stripe: F1 refuses two concurrent compute claims
+        assert coord.ledger.claim_stripe(run, sid, f"w-{sid}", attempt, 8, 9e18)
+        if state != ST_CLAIMED:
+            coord.ledger.set_stripe_state(run, sid, state)
+
+    class _M:
+        size_bytes = 0
+        sha256 = "0" * 64
+
+    def _defer(sid, attempt, sub):
+        coord._deferred.append(("inline", None, run, sid, attempt, sub,
+                                _M(), None, _cf.Future()))
+
+    sem = coord._staging_slots()
+    if klass == "dead-in-main-scan":
+        _stripe("s0", 0, "done")
+        for j in range(5):
+            _defer("s0", 0, j)
+    elif klass == "resumed-into-ready":
+        _stripe("s0", 0, ST_CLAIMED)
+        for j in range(4):
+            _defer("s0", 0, j)
+    else:                                     # dead-in-r3-sweep
+        while sem.acquire(blocking=False):    # starve slots: nothing may stage
+            pass
+        _stripe("s0", 0, ST_CLAIMED)          # A — owns admission
+        _stripe("s1", 0, ST_CLAIMED)          # B — memoized live, then killed
+        coord._admitted[(run, "s0", 0)] = True
+        _defer("s0", 0, 0)
+        for j in range(5):
+            _defer("s1", 0, j)
+        real = coord._try_admit_locked
+        state = {"n": 0}
+
+        def _hook(r, sid, att):
+            ok = real(r, sid, att)
+            if not ok and sid == "s1" and not state["n"]:
+                state["n"] = 1
+                coord.ledger.set_stripe_state(r, "s1", "done")
+            return ok
+
+        coord._try_admit_locked = _hook
+
+    before = [(e[3], e[4], e[5]) for e in coord._deferred]
+    _types.MethodType(pump, coord)()
+    after = [(e[3], e[4], e[5]) for e in coord._deferred]
+    departed = [k for k in before if k not in after]
+    return {"before": before, "after": after, "departed": departed,
+            "charged": [(s, a, i) for (_r, s, a, i) in charges],
+            "submitted": submitted}
+
+
+def _e2_violations(pump):
+    """THE INVARIANT, evaluated over all three departure classes."""
+    bad = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for klass in _E2_CLASSES:
+            o = _e2_probe(tmp, f"e2-{klass}", pump, klass)
+            dep, chg = o["departed"], o["charged"]
+            if not dep:
+                bad.append(f"{klass}: NO departure occurred — arm is vacuous")
+                continue
+            for k in dep:
+                if chg.count(k) != 1:
+                    bad.append(f"{klass}: {k} departed but was charged "
+                               f"{chg.count(k)} times (expected exactly 1)")
+            for k in o["after"]:
+                if k in chg:
+                    bad.append(f"{klass}: {k} is RETAINED but was charged")
+            extra = [k for k in chg if k not in dep]
+            if extra:
+                bad.append(f"{klass}: charged without departing: {extra}")
+    return bad
+
+
+def _pump_without_charge_site(index):
+    """The live `_pump_deferred` with its `index`-th `released.append(...)`
+    statement DELETED, compiled against the PRODUCTION module's globals.
+
+    [A8-B2 LESSON] `exec` is given `COORD.__dict__` so `PhaseCharge` and every
+    other name resolves in the module under test, not in this test module — the
+    exact way Beta's Defect-A mutant first survived."""
+    import ast as _ast
+    import textwrap as _tw
+    import miner.range_miner_coordinator as _CO
+
+    tree = _ast.parse(_tw.dedent(
+        inspect.getsource(RangeMinerCoordinator._pump_deferred)))
+    seen = []
+
+    class _Cut(_ast.NodeTransformer):
+        def visit_Expr(self, node):
+            if (isinstance(node.value, _ast.Call)
+                    and _ast.unparse(node.value).startswith(
+                        "released.append(")):
+                seen.append(node)
+                if len(seen) - 1 == index:
+                    return None
+            return node
+
+    _Cut().visit(tree)
+    _ast.fix_missing_locations(tree)
+    assert len(seen) == 3, (
+        f"expected 3 `released.append(` sites in the live pump, found "
+        f"{len(seen)} — the amendment's falisfier set is out of date")
+    ns = {}
+    exec(compile(tree, "<pump minus charge site>", "exec"), _CO.__dict__, ns)
+    fn = ns["_pump_deferred"]
+    assert fn.__globals__ is _CO.__dict__
+    return fn
+
+
+def gate_e2_every_departure_is_charged_exactly_once():
+    """[R-4 AMENDMENT — supersedes `E2-BOTH-DEPARTURE-CLASSES`]
+
+    THE INVARIANT: every frame leaving `_deferred` is charged exactly once
+    through `note_stripe_frame_released`, after the admission lock is released
+    and before staging submission.
+
+    Behavioural, not a text count. Departures are computed by diffing
+    `_deferred` across a real pass; charges are recorded at the real seam. All
+    three currently reachable departure classes are driven:
+
+        dead during the main scan · admitted/resumed into `ready` ·
+        dead in R-3's end-of-pass capacity sweep
+
+    NON-VACUITY IS NOT ASSERTED, IT IS EARNED. Each of the three
+    `released.append(...)` sites is deleted from the LIVE source in turn and the
+    same property is re-evaluated; every deletion must produce a violation.
+    A site that is never exercised could not red, so the falsifier sweep proves
+    coverage of all three classes at the same time as it proves each charge is
+    load-bearing.
+
+    WRONG INPUT THAT REDS IT: any uncharged departure, any double charge, any
+    charge for a retained entry, the charge loop moved inside
+    `_admission_lock`, or the charge moved after the submit loop."""
+    live = _e2_violations(RangeMinerCoordinator._pump_deferred)
+    assert not live, "; ".join(live[:6])
+
+    survivors = []
+    for i in range(3):
+        if not _e2_violations(_pump_without_charge_site(i)):
+            survivors.append(i)
+    assert not survivors, (
+        f"deleting charge site(s) {survivors} changed nothing — those sites are "
+        f"unexercised or the property does not detect a missing charge")
+
+    # structural half, unchanged in intent from the superseded gate
     src = inspect.getsource(RangeMinerCoordinator._pump_deferred)
-    assert src.count("released.append(") == 2, (
-        f"expected the dead-attempt branch AND the resume branch to charge; "
-        f"found {src.count('released.append(')}")
     assert "note_stripe_frame_released" in src, "nothing is charged at all"
     i_lock_block = src.find("with self._admission_lock:")
     i_charge = src.find("self.note_stripe_frame_released(")
@@ -2388,7 +2584,17 @@ def gate_e2_release_charges_both_departure_classes():
     assert i_lock_block < i_charge < i_ready, (
         "the charge is not outside the admission lock and before the submit "
         "loop")
-    return "both branches charged, outside _admission_lock"
+    import ast as _ast
+    import textwrap as _tw
+    tree = _ast.parse(_tw.dedent(src))
+    lock = [n for n in _ast.walk(tree) if isinstance(n, _ast.With)
+            and "_admission_lock" in _ast.unparse(n.items[0])][0]
+    assert not [n for n in _ast.walk(lock) if isinstance(n, _ast.Call)
+                and getattr(n.func, "attr", None)
+                == "note_stripe_frame_released"], (
+        "a charge call is INSIDE `_admission_lock`")
+    return (f"{len(_E2_CLASSES)} departure classes, every frame charged exactly "
+            f"once; 3/3 charge-site deletions red the property")
 
 
 def gate_e3_an_unmatched_release_is_a_no_op():
@@ -3436,7 +3642,8 @@ def main():
 
     print("\n-- §E  per-stripe deferral attribution --")
     check("E1-DEFERRAL-ATTRIBUTED", gate_e1_deferral_is_attributed_and_varies)
-    check("E2-BOTH-DEPARTURE-CLASSES", gate_e2_release_charges_both_departure_classes)
+    check("E2-EVERY-DEPARTURE-CHARGED-ONCE",
+          gate_e2_every_departure_is_charged_exactly_once)
     check("E3-UNMATCHED-RELEASE-NOOP", gate_e3_an_unmatched_release_is_a_no_op)
     check("E4-DEFER-ORDER-LOCK-HELD", gate_e4_defer_precedes_release_by_lock_construction)
 

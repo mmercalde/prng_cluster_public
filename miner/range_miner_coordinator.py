@@ -3692,6 +3692,32 @@ class RangeMinerCoordinator:
             "admission_queue_high_water": 0,
             "admission_dispositions_total": 0,
             "admission_dispositions_max_per_iteration": 0,
+            # [R-1 DRAIN REMEDY] THE FALSIFIER FOR R-1'S COMPLEXITY GUARANTEE.
+            # The claim is that the pump's lock-held ledger cost is driven by
+            # LIVE DISTINCT ATTEMPTS (+ admitted-attempt frames + dead entries
+            # examined) rather than by the deferred population, which grows with
+            # the backlog. It is NOT "bounded by distinct attempts <= 25" —
+            # R2-2; see `_pump_deferred`'s docstring for the truthful bound.
+            # `deferred_high_water` reports the POPULATION and cannot test the
+            # claim at all. Without these two the acceptance run could show
+            # every timing field improving and still not say whether the
+            # guarantee held or the workload simply never stressed it.
+            #
+            #   deferred_distinct_attempts_high_water — the K in the bound
+            #   pump_liveness_probes_high_water       — the fresh
+            #       `_attempt_live_locked` calls one pass made, i.e. LITERALLY
+            #       half the liveness ledger reads (each call is get_stripe +
+            #       get_trial). The pre-patch pump probed once per ENTRY; R-1
+            #       probes once per distinct LIVE key plus once per dead entry.
+            #
+            # Both are HIGH-WATERS OVER PUMP PASSES and are therefore LOWER
+            # BOUNDS on the true resident maxima: `enqueue_staging` can add
+            # entries between passes, and nothing observes the population at
+            # that instant. A lower bound REFUTES the guarantee outright if it
+            # exceeds the cohort; it corroborates rather than proves when small.
+            # Stated here so the acceptance report cannot over-read a low value.
+            "deferred_distinct_attempts_high_water": 0,
+            "pump_liveness_probes_high_water": 0,
         }
         # ----- [H1/H2 §§C-E] per-stripe receive accounting --------------------
         # Its OWN lock, deliberately not `_bp_lock`: this map is written from the
@@ -7653,7 +7679,129 @@ class RangeMinerCoordinator:
         the `msg` partition, and the executor's is reported separately in
         `phase_attribution`. The charge rides the EXISTING `finally`, so no
         control flow, no ordering and no `_resume_paused_connections` guarantee
-        is touched."""
+        is touched.
+
+        [R-1 DRAIN REMEDY] THE ONE CHANGE: `_attempt_live_locked` is evaluated
+        ONCE PER DISTINCT `(run_id, stripe_id, attempt)` KEY per pass instead of
+        once per ENTRY. Nothing else moves — the iteration order, the selection
+        policy, the `_try_admit_locked` call per live entry, the nonblocking slot
+        acquire, the `still`/`released` bookkeeping, the charge outside the lock
+        and the `finally` resume are all unchanged.
+
+        ⚠ THE COST BOUND, STATED TRUTHFULLY (R2-2, updated for R-3). This is
+        NOT "bounded by distinct attempts". Dead entries are deliberately
+        re-probed, the admitted attempt's frames re-probe after each grant, and
+        R-3's end-of-pass capacity sweep re-probes each retained key once:
+
+            probes per pass = frames of the ONE admitted attempt
+                            + 2 x (live NON-ADMITTED attempts with retained
+                                   frames)              <- 1 in the loop,
+                                                           1 in the R-3 sweep
+                            + dead entries examined in that pass
+
+        measured as an exact identity by gate G8b.
+
+        ⚠ DO NOT SAY EVERY TERM IS INDEPENDENT OF THE DEFERRED POPULATION —
+        dead entries plainly are a population term, and G8g exists to
+        demonstrate it. The accurate statement is narrower and stronger,
+        because it says exactly what was and was not optimized:
+
+            THE PATHOLOGICAL GROWTH TERM — REPEATED FRAMES OF LIVE
+            NON-ADMITTED ATTEMPTS — IS REMOVED. Admitted-attempt frames and the
+            dead-entry purge REMAIN POPULATION-SENSITIVE BY DELIBERATE
+            CORRECTNESS DESIGN.
+
+        That removed term is what the MP-1 runaway overwhelmingly was.
+
+        WHY THIS IS THE CAUSE AND NOT A SYMPTOM (the MP-1 run, `c403a37`).
+        `_deferred` holds SUB-STRIPE frames; a stripe attempt contributes
+        `expected_substripes` of them (34-68 at the gate-12 geometry). Liveness
+        is a property of the ATTEMPT, so the old loop asked the ledger the same
+        question up to 68 times per attempt per pass — and `MinerLedger._conn`
+        OPENS A NEW SQLITE CONNECTION AND RUNS THREE PRAGMAS PER QUERY
+        (`:1207-1213`), so each ask is a database open, not a cached cursor.
+        `_attempt_live_locked` makes UP TO two of them — `get_stripe`, then
+        `get_trial` ONLY IF the stripe row is non-terminal, because it returns
+        at its first read when the row is already done/failed/cancelled. So a
+        probe costs 1 read on a terminal stripe and 2 otherwise, and the pass
+        cost was up to 2 x len(_deferred) connection opens WITH
+        `_admission_lock` HELD, while the serve loop needed that same lock once
+        per sub-result. The backlog the pump exists to drain is therefore what
+        made the pump slow: 3,640 thread-seconds of `pump` exclusive across four
+        staging threads over a 969 s wall clock, per-frame message cost 0.005 s
+        -> 2.14 s. Positive feedback.
+
+        The distinct-key count is bounded by the number of stripe attempts with
+        frames in flight — at most the frozen cohort size — while the entry count
+        grows with the backlog. Keying the observation to the attempt therefore
+        removes the term that grows, and leaves a term bounded by the topology.
+
+        WHY THE MEMO IS ONE-DIRECTIONAL, AND WHY THAT IS THE WHOLE SAFETY
+        ARGUMENT. Only a LIVE observation is reused. A key observed DEAD is never
+        recorded, so every entry that is DROPPED is dropped on its own fresh,
+        under-lock `_attempt_live_locked` call — byte-identical to the old loop.
+        That is what makes "no deferred entry is lost" hold by construction
+        rather than by an argument about whether liveness can un-terminal itself
+        (`claim_stripe` admits `failed -> claimed`, so it can; this design does
+        not depend on it not happening).
+
+        WHY NO ATTEMPT GAINS STAGING AUTHORITY FROM A REUSED OBSERVATION.
+        Authority is `self._admitted[key] = True`, written at exactly one place —
+        `_try_admit_locked`, which is BYTE-IDENTICAL after this change, is still
+        called for every live entry, still runs under this lock, and still
+        guards the grant with its OWN fresh `self.ledger.get_stripe(...)`.
+        Within one lock hold `_admitted` can only grow (it shrinks in
+        `_prune_admitted_locked`, called once at pass start, and in
+        `_release_admission`, which needs this lock), so for any key the grant
+        can only occur at its FIRST examination in the pass — and the first
+        examination is always the fresh one.
+
+        [R-2] AND WHY NO FRAME STAGES ON A REUSED OBSERVATION EITHER — the
+        stronger property, which the first cut of this patch did NOT have.
+        Granting authority to K discards K from the memo (see the loop), giving:
+
+            INVARIANT.  At the top of any iteration, `_key in live_keys`
+                        implies `_try_admit_locked(_key)` has not returned True
+                        anywhere earlier in this pass.
+
+        because the only `add` sits immediately after a fresh live probe and the
+        only `discard` sits immediately after a True from `_try_admit_locked`.
+
+            COROLLARY.  A memo hit can NEVER reach `ready`.
+                        A memo hit means some earlier entry of K probed live and
+                        then called `_try_admit_locked(K)`; had that returned
+                        True, K would have been discarded, so it returned False;
+                        it returns False only while `_admitted` holds a
+                        DIFFERENT key; `_admitted` never shrinks and never gains
+                        a second key inside one lock hold; so it returns False
+                        for this entry too, and the entry goes to `still`.
+
+        THEREFORE EVERY FRAME THAT STAGES IS DECIDED BY A FRESH, UNDER-LOCK
+        `_attempt_live_locked` IN ITS OWN ITERATION — byte-identically to the
+        predecessor. The memo now only ever spares a probe for a frame that was
+        going to be RETAINED regardless.
+
+        THE ONE REMAINING DIVERGENCE, STATED RATHER THAN GLOSSED. A memo-hit
+        frame of a NON-admitted attempt that dies mid-pass is RETAINED here and
+        DROPPED by the predecessor; the next pump re-probes it fresh and drops
+        it. No frame stages, no authority is granted, no entry is lost — it is
+        one pass of garbage-collection latency, in the conservative direction.
+        Closing it as well would require probing every entry, which is the
+        predecessor.
+
+        WHAT THIS DELIBERATELY DOES NOT DO. It does not release
+        `_admission_lock` mid-pass to move the remaining ledger reads outside it:
+        that would make the pump two critical sections instead of one, and the
+        re-validation needed to close the resulting TOCTOU is itself a lock-held
+        ledger read, so the cost is traded, not removed — while the F1 resume
+        credit, the `_admitted` serialization and the certified single-pass
+        disposition would all have to be re-argued across a window that does not
+        exist today. It does not stop the scan at the first admissible entry: the
+        scan admits EVERY frame of the ONE admitted attempt that a free slot can
+        take, and it garbage-collects dead entries past that point, so first-fit
+        would both under-submit and leak. It does not coalesce pump calls: the
+        `finally` here is the F1 capacity-release point and a dropped pump is a
+        dropped resume credit."""
         _mp1 = PhaseCharge(self, "pump")
         _mp1.__enter__()
         try:
@@ -7664,20 +7812,177 @@ class RangeMinerCoordinator:
                     return
                 still: List[tuple] = []
                 released: List[tuple] = []
+                # Keys OBSERVED LIVE in THIS pass. Positive observations only —
+                # see the one-directional argument above. Pass-scoped: it is
+                # created here and dies with the lock hold, so there is no cache
+                # to invalidate and no state that outlives the critical section.
+                live_keys: set = set()
+                # [R-1] MEASUREMENT ONLY, and structurally so: `seen_keys` and
+                # `probes` are written here and READ NOWHERE INSIDE THIS LOCK.
+                # They appear in no condition, so no disposition can depend on
+                # them; they leave the critical section as two plain integers.
+                seen_keys: set = set()
+                probes = 0
                 for entry in self._deferred:
                     (_k, _w, run_id, stripe_id, attempt, _s, _m, _e, fut) = entry
-                    if not self._attempt_live_locked(run_id, stripe_id, attempt):
-                        if not fut.done():
-                            fut.set_result(None)
-                        released.append((run_id, stripe_id, attempt, _s))
-                        continue
-                    if (self._try_admit_locked(run_id, stripe_id, attempt)
-                            and self._staging_slots().acquire(blocking=False)):
-                        ready.append(entry)   # slot held for this entry
-                        released.append((run_id, stripe_id, attempt, _s))
+                    _key = (run_id, stripe_id, attempt)
+                    seen_keys.add(_key)
+                    if _key not in live_keys:
+                        probes += 1
+                        if not self._attempt_live_locked(run_id, stripe_id,
+                                                         attempt):
+                            if not fut.done():
+                                fut.set_result(None)
+                            released.append((run_id, stripe_id, attempt, _s))
+                            continue
+                        live_keys.add(_key)
+                    if self._try_admit_locked(run_id, stripe_id, attempt):
+                        # [R-2] AUTHORITY INVALIDATES THE MEMO. THE MOMENT
+                        # `_try_admit_locked` says True, NOTHING ELSE WILL EVER
+                        # RE-READ THE LEDGER FOR THIS KEY IN THIS PASS: its
+                        # `if key in self._admitted: return True` fast path
+                        # makes no query, so from here on the memo would be the
+                        # ONLY liveness evidence behind every later frame of the
+                        # same attempt. Dropping the key forces the next frame
+                        # to probe fresh — which is exactly what the predecessor
+                        # does — so the staging decision matches by
+                        # construction rather than by argument.
+                        #
+                        # ⚠ IT IS DISCARDED HERE, NOT AFTER A SUCCESSFUL
+                        # SUBMISSION, AND THE DIFFERENCE IS LOAD-BEARING.
+                        # `_submit_with_slot`'s `_on_done` callback calls
+                        # `self._staging_slots().release()` WITHOUT
+                        # `_admission_lock`, on another staging-executor thread,
+                        # so a slot can free WHILE THIS PASS IS RUNNING. Under a
+                        # discard-on-submission rule the history below stages a
+                        # dead attempt with zero fresh reads:
+                        #     E1: probe LIVE, memo; admit -> True; slot BUSY
+                        #         -> still     (no submission, so no discard)
+                        #         <<< another thread releases a slot >>>
+                        #         <<< a concurrent writer marks the attempt dead >>>
+                        #     E2: memo hit -> probe SKIPPED; admit -> fast-path
+                        #         True, no read; slot now FREE -> STAGES
+                        # The predecessor re-probes at E2 and drops it.
+                        live_keys.discard(_key)
+                        if self._staging_slots().acquire(blocking=False):
+                            ready.append(entry)   # slot held for this entry
+                            released.append((run_id, stripe_id, attempt, _s))
+                        else:
+                            still.append(entry)
                     else:
                         still.append(entry)
+                # [R-3] END-OF-PASS CAPACITY RE-PROBE — ONE PROBE PER RETAINED
+                # KEY, NOT PER RETAINED ENTRY.
+                #
+                # WHY IT EXISTS. R-2 left one divergence and called it "GC
+                # latency in the conservative direction". It is not harmless,
+                # because `_deferred` is a BOUNDED CAPACITY SURFACE. Measured:
+                # with the store at its derived bound of 69, an attempt that
+                # dies after its first frame was memoized leaves R-2 holding 69
+                # entries where the predecessor holds 62 — and the very next
+                # `_defer_locked` REFUSES with `derived_count_bound`, which is
+                # the `coordinator_staging_capacity_invariant:` path and FAILS
+                # THE TRIAL. The predecessor accepts the same frame. That is a
+                # trial-fatal disposition change on the exact bounded-storage
+                # surface this work was required to preserve.
+                #
+                # WHAT IT DOES. Every key still in `live_keys` is a key whose
+                # positive was reused and which therefore has retained frames
+                # (a key that granted was discarded at the grant). Re-probe each
+                # ONCE — O(distinct retained attempts), never O(entries) — and
+                # release the frames of any that died during the pass.
+                #
+                # IT IS A NO-OP UNDER QUIESCENCE, which is why every existing
+                # differential gate is unaffected: with no concurrent ledger
+                # writer the memo was exact, so nothing here is stale and
+                # `stale` is empty. It bites only in the interleaving it exists
+                # for.
+                #
+                # IT CANNOT DROP A FRAME THAT WOULD LATER STAGE. A key this
+                # sweep finds dead cannot revive at the same attempt: the
+                # scheduler claims only from `pending_stripes`, which selects
+                # `state = ST_PENDING` alone, so a terminal stripe is never
+                # re-claimed, and a requeued one carries an ADVANCED attempt,
+                # which leaves this key dead by `current_attempt != attempt`.
+                # The predecessor reaches the identical terminal disposition on
+                # its next pass; this reaches it before the lock is released,
+                # which is what the capacity surface requires.
+                #
+                # THE RESIDUAL, STATED: the predecessor RETAINS the frame it
+                # examined before the death and drops the rest; this drops all
+                # of them. It therefore retains <= the predecessor, never more —
+                # the direction that cannot manufacture a capacity refusal.
+                if live_keys:
+                    probes += len(live_keys)
+                    stale = {k for k in live_keys
+                             if not self._attempt_live_locked(*k)}
+                    if stale:
+                        kept: List[tuple] = []
+                        for entry in still:
+                            (_k2, _w2, _r2, _s2, _a2, _sub2, _m2, _e2,
+                             fut2) = entry
+                            if (_r2, _s2, _a2) in stale:
+                                if not fut2.done():
+                                    fut2.set_result(None)
+                                released.append((_r2, _s2, _a2, _sub2))
+                            else:
+                                kept.append(entry)
+                        still = kept
                 self._deferred = still
+            # [R-1] THE FALSIFIER FOR THIS PATCH'S COMPLEXITY GUARANTEE.
+            #
+            # The guarantee is that the pump's lock-held ledger cost is bounded
+            # by the number of DISTINCT ATTEMPTS with deferred frames — at most
+            # the frozen cohort, because F1 permits one compute-active claim per
+            # worker — rather than by the deferred POPULATION, which grows with
+            # the backlog. `deferred_high_water` reports the population and
+            # cannot test that claim at all, so before this the guarantee was
+            # unfalsifiable on a production run, which is not an acceptance
+            # criterion. The two numbers it is actually made of are emitted:
+            #
+            #   probes <= liveness reads <= 2*probes + grant-read contribution
+            #       (`_attempt_live_locked` short-circuits after `get_stripe`
+            #        when the stripe row is already terminal, so a probe is 1
+            #        read there and 2 otherwise; `_try_admit_locked` adds its
+            #        own guard read on the pass that grants. G8e drives BOTH
+            #        endpoints — the all-dead arm reaches `reads == probes`.)
+            #
+            # The pre-patch pump probed once per ENTRY. This one probes once per
+            # distinct LIVE key, PLUS once per dead entry (a negative is never
+            # reused — that is what would let a revived attempt's frames be
+            # dropped), PLUS once per frame of the admitted attempt after each
+            # grant (R-2: authority invalidates the memo). So the truthful bound
+            # is `live distinct attempts + admitted-attempt frames + dead
+            # entries examined`, NOT "distinct attempts <= cohort": a purge pass
+            # over hundreds of dead entries is O(N) by deliberate safety design.
+            #
+            # ⚠ BOTH ARE LOWER BOUNDS and a report must not round that off: they
+            # are maxima over PUMP PASSES, and `enqueue_staging` can grow
+            # `_deferred` between passes with nothing sampling it there. A value
+            # ABOVE the cohort size REFUTES the bound outright; a small value
+            # CORROBORATES it rather than proving it.
+            #
+            # OUTSIDE `_admission_lock`, on two plain locals: the instrument
+            # adds no callee, no lock and no ledger read to the critical section
+            # this patch exists to shorten, and `_bp_lock` is never nested
+            # inside `_admission_lock` on an instrument's account. Wrapped,
+            # because an instrument may never raise into a production path —
+            # the same rule `_charge_phase` follows.
+            #
+            # INLINE RATHER THAN A NAMED METHOD, deliberately: MP-1's certified
+            # `gate_e2_ast_scope_proof` asserts the module's ADDED-definition
+            # set exactly, so any new `def` here reds a certified gate. See the
+            # R-1 report's note on that constraint.
+            try:
+                with self._bp_lock:
+                    self._bp["deferred_distinct_attempts_high_water"] = max(
+                        int(self._bp["deferred_distinct_attempts_high_water"]),
+                        len(seen_keys))
+                    self._bp["pump_liveness_probes_high_water"] = max(
+                        int(self._bp["pump_liveness_probes_high_water"]),
+                        int(probes))
+            except Exception:                                    # noqa: BLE001
+                pass
             # [H1/H2 §E] Charged OUTSIDE `_admission_lock` and BOTH classes of
             # departure — resumed and dropped-as-dead — because a frame that left
             # `_deferred` by dying still spent that time deferred, and omitting
