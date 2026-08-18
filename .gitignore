@@ -42,13 +42,36 @@ window_candidates/
 !config_*.json        # Keep config JSONs (safe & important)
 !*_config.json
 !schema_*.json
-!bidirectional_survivors_all.npz    # [S145-R1 v2] persistent NPZ accumulator (replaces JSON)
 
 # [S172 Phase-5 D6.1] the incremental flush CHECKPOINT namespace. Run-local
 # crash-recovery state, rewritten every PRNG_FLUSH_EVERY survivors — never an
 # artifact, never committed. Deliberately separate from the finalizer's
 # `.s172_accumulator/`, whose root aliases this checkpoint must not touch.
 .s172_checkpoint/
+
+# [S172 Phase-5 D3.5] the finalizer-owned PUBLICATION store — the sibling the
+# comment above names. `generations/` holds the immutable chain-authenticated
+# generations (each directory named <generation_id>--<sidecar_sha256>, validating
+# recursively to a clean-start root); `current` is the atomic pointer swapped at
+# publication. The two repo-root NPZ entries are SYMLINKS into it, retargeted on
+# every run, so they are POINTERS AND NOT ARTIFACTS: committing one stores a path
+# that is stale as soon as the next run swaps `current`, re-dirtying the tree
+# every run and meaning nothing in a fresh clone. Under D3.5 the system of record
+# for survivor data is the generation chain, not git.
+#
+# This SUPERSEDES 006623c ("restore bidirectional_survivors_binary.npz to
+# tracking — real survivor data, must stay in git"). That ruling was correct for
+# what the path was THEN: mode 100644, a regular data file. 46a3828 (D3.5) changed
+# what these paths ARE and untracked both in the same commit; .gitignore was never
+# updated to match, which is the gap this block closes.
+#
+# The stale `!bidirectional_survivors_all.npz` negation removed from the block
+# above dated from ad5ab8d (2026-03-15), four months before D3.5, and was doubly
+# inert: it sat under `*.json`, which cannot match a `.npz`, and it carried a
+# trailing `#` comment, which .gitignore treats as part of the pattern.
+.s172_accumulator/
+bidirectional_survivors_all.npz
+bidirectional_survivors_binary.npz
 
 # --- Syncthing Temp Files ---
 .syncthing*

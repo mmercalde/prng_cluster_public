@@ -5,14 +5,17 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v25, 2026-08-14. **D6.2 CERTIFIED `18a2419`.** **Attempts 3, 4 AND 5 all RAN and
-FAILED** — attempt 3 dirty-tree admission (§2.34), attempt 4 stale lease origin (§2.36), attempt 5
-stage-3→4 `worker_admission_timeout` 23/25 (§2.38). Three repairs are CLOSED / CERTIFIED: clean-tree
-admission `213bfff` (§2.35), F1 lease-origin + serve-loop instrumentation `2b0d2dc` (§2.36),
-attempt-6 remediation `69ff222` (§2.40) and the D6 integration repair `dd03f1d` (§2.42).
-**§2.41 IS THE MOST IMPORTANT NEW SECTION: the rigs were running mixed-vintage stale code and
-several previously-recorded facts are WITHDRAWN.** Gate-12 attempt 6 is HELD until the parked-fleet
-D6 dry run passes; Phase 7 remains HELD.
+**Currency:** v26, 2026-08-17. **GATE-12 IS PASSED — attempt 9, run
+`distributed_config_t1_554463d3`, nonce `gate12-20260817_181819-46500` (§2.49).** 128/128 stripes
+over four stages, saturation SATISFIED, coverage certified `[0, 2147483648]`, `coverage_id
+c6f28aedf7af12cd`, post-run cursor `covered_seed_count=2147483648`,
+`certified_interval_count=1`, **zero lease expiries**. Attempts 1–8 all failed; nothing composed.
+Certified chain: clean-tree admission `213bfff` · F1 lease-origin `2b0d2dc` · attempt-6 remediation
+`69ff222` · D6 integration `dd03f1d` · skill v25 `3e1327b` · H1/H2 instrumentation `ae4bf85` ·
+attempt-7 forensic `2c38f8c` · MP-1 drain attribution `168b6f1` · MP-1 run forensic `c403a37` ·
+**R-1..R-4 drain remedy `e9ca800` (§2.48)**. **§2.41 remains the most consequential correction
+section** — the rigs were mixed-vintage and several prior facts are WITHDRAWN. Phase 7 and the
+window-anchor production merge were held behind Gate-12 and are now unblocked pending Beta.
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -2259,6 +2262,236 @@ for a conjunction; `loop_now_age_max >= 0` satisfied by a constructor zero; a de
 exercised only via a local file; and `_mutant_red` crediting *any* exception as detection, so
 `MUTANT NOT APPLIED` read as `MUTANT DETECTED` **inside the machinery meant to prove the arms are not
 vacuous.** Every one was green. Every one was found by reading the assertion, never the tally.
+
+### 2.45 ATTEMPTS 6, 7 AND 8 — THE SAME WALL, PROGRESSIVELY LEGIBLE
+
+All three died at **stage 2 on `compute_lease_expiry`**, and the arc is the point:
+
+```
+attempt 6  cause UNKNOWN — rig logs reduce to one skeleton; §15 emits only on
+           session transitions, so the three long-holders are shape-identical to
+           the 22 completers. BOUNDED-UNRESOLVED.
+attempt 7  H1 REFUTED, H2 CONFIRMED by measurement (§2.46)
+attempt 8  cause NAMED to the line (§2.47)
+```
+
+**Attempt 6's two corrections, both recorded:** `lease_expires_at − 300` is **last accepted
+progress, not claim** (`renew_lease` writes `now + timeout` when the coordinator *processes* an
+accepted frame, `:9519-9521`); and `assignment_active_at_loss=false` is **VACUOUS on the
+`explicit_shutdown` path** — `_run_session` is strictly serial, a shutdown frame can only be dequeued
+after `handle_stripe` returned and set `state='idle'` at `:1695`. It appears 25 times and reads like
+a discriminator. **It is not.**
+
+### 2.46 ATTEMPT 7 — H1 REFUTED, H2 CONFIRMED BY MEASUREMENT
+
+The H1/H2 instrumentation (`ae4bf85`) answered on its first production use.
+
+```
+H1 REFUTED  rrig6600b:gpu2 finished st1_s30 ENTIRELY in 2.64 s — outcome=complete,
+            34/34 subs sent, stripe_send_stall_s=0.001078, lock wait 22 us —
+            then sat IDLE 298 s before the lease was declared expired.
+            Clean explicit_shutdown. Zero disconnects run-wide.
+
+H2 CONFIRMED  4.6 s before expiry: frames_enqueued 45 · frames_dequeued 0 ·
+              frames_pending 45 · oldest_pending_age_s 296.396 · lease_remaining_s 3.522.
+              45 frames arrived and the drain took NONE for 296 s.
+              frames_untokened = 0 — not the enqueue/dequeue race phantom.
+```
+
+Both F1/F2 renewal paths sit **downstream of that drain**: renewal needs acceptance, acceptance needs
+dequeue, dequeue was zero. **The lease worked exactly as specified; what it measures had become
+invisible to it.** Not back-pressure — queue peaked 547/1113, `pause_events=0`.
+
+**Heartbeat sub-branch:** attempt 7's run-wide `heartbeats_accepted = 0` was **uninterpretable** (a
+heartbeat with no `current_stripe_id` is invisible to arrival, dequeue AND acceptance). MP-1's census
+settled it: **550 heartbeats reached the drain, ALL 550 carrying stripe ids, `heartbeat_without_stripe = 0`.**
+The stripeless-heartbeat hypothesis is **measured false**. The zero itself narrowed to three candidates
+and resolved in attempt 9 as the drain recovered.
+
+### 2.47 MP-1 — THE DRAIN ATTRIBUTION, AND THE CAUSE (committed `168b6f1`, forensic `c403a37`)
+
+Beta ruled **measurement before remedy**. MP-1 extends the certified `[S172-SL]` seam with three-level
+attribution (every level summing to a **named remainder**), thread-keyed `PhaseCharge` with
+inclusive+exclusive time, a per-connection drain-service census built from the **live** connection set,
+and a dequeue-side frame-class census. It named the cause on its first run:
+
+```
+staging executors x4   ~3,640 s exclusive in _pump_deferred   2,492 calls
+serve loop               681.2 s blocked in staging           0.366 s per sub-result
+per-frame msg cost      0.005 s -> 2.14 s   (~400x)
+staging share of window 0.6% -> 100%
+```
+
+**RATE starvation, not ORDER starvation** — the order branch is **REFUTED**:
+`drain_passes_partial = 1762/1771`, final window 25 live / 3 serviced / 22 measured zero, but the
+three serviced sit at **`pos_min = pos_max = 1`** — *first, not late*. Each pass serviced one frame at
+position 1 and the ~2 s that frame cost consumed the pass.
+
+**The instrument did not cause what it measured:** 1.285 jobs/s vs attempt 7's 1.225, queue peak 553
+vs 547, `pause_events` 0 both. `loop_remainder_total` and the certified `unattributed_total` both read
+4.209 — two independent computations agreeing — and 0.43% of the run lay outside a named phase.
+
+**The mechanism, from source:** `MinerLedger._conn` (`:1207-1213`) opens a **new SQLite connection plus
+three PRAGMAs per query** (~0.54 ms/read). `_deferred` holds **sub-stripe frames** (34–68 per attempt)
+but liveness is a property of the **attempt**, so the old pump paid **up to 68 database opens for one
+answer, lock-held, on every staging-job completion** — while the serve loop needed that same
+`_admission_lock` per sub-result inside the drain. Cost grew with the backlog it existed to drain.
+
+### 2.48 THE R-1..R-4 REMEDY — CERTIFIED, committed `e9ca800`
+
+Four rounds. **The code change is four lines plus a sweep; the proof took the other three rounds.**
+
+```
+R-1  evaluate _attempt_live_locked ONCE PER DISTINCT (run_id, stripe_id, attempt)
+     key per pass, not once per entry.
+R-2  discard the positive the moment _try_admit_locked returns True, BEFORE the
+     slot acquire — not at submission. _submit_with_slot's _on_done releases a slot
+     on another thread with NO _admission_lock, so a grant that stages nothing still
+     ends the window in which the ledger is read.
+R-3  re-probe each still-memoized key ONCE at end of pass and release the dead ones'
+     frames. Retention is NOT free: _deferred is a bounded capacity surface, and at
+     the derived bound R-2 turned an accepted enqueue into
+     coordinator_staging_capacity_invariant — a TERMINAL, not GC latency.
+R-4  pin the two assumptions R-3 made load-bearing (property gate + irreversibility).
+```
+
+**Result: 3,401 → 233 ledger reads at the pathological 1,700-entry shape (14.6×), 1,975 ms → 136 ms.**
+G8a holds reads flat while the live non-admitted population grows **67×** — the positive-feedback term
+is gone. R-1's 51 reads and R-2's 185 are **kept in the record: the faster forms were blocked on
+correctness, not passed over.**
+
+**The memo is ONE-DIRECTIONAL — negatives are never cached** — because `claim_stripe` accepts
+`failed → claimed`, so **liveness is not monotone**. Authority is written at exactly one self-guarded
+site, and **a memo hit can never reach `ready`**: every frame that stages is decided by a fresh,
+under-lock probe in its own iteration.
+
+**NOT changed to buy it:** the one-attempt-at-a-time staging invariant (Beta's Correction-6 design —
+MP-1 implicates the **cost of enforcing** serialization, not the policy) · the 300 s compute lease ·
+F1/F2 renewal semantics · back-pressure bounds · resume-credit · worker admission · stripe geometry ·
+constant-mode terminal policy · `_defer_locked` · the capacity bound · the pump call rate.
+
+**The declined shortcut, and why it matters:** the sweep's charge was **NOT** routed through
+`released.extend(...)` to keep a certified count gate green — that would have left a third departure
+class the gate no longer counts. Beta called leaving H1/H2 red the correct governance decision and
+superseded the gate with a **property** gate: every departure diffed from `_deferred` across a real
+pass, charged at the real seam, with each of the three `released.append` sites deleted from live
+source in turn — **each deletion reds a different class, one-to-one.**
+
+**Two mutants now encode the arc as executable tests:** **M10** = R-1's shape, which reds the three
+behavioural R2 gates and none of R-1's own — *"which is how it passed 31/32 carrying the defect."*
+**M11** = R-2's shape, which reds only the capacity-boundary gate — *"which is how it reached
+certification as 'GC latency'."*
+
+**R3-4 is certified as a CURRENT-SOURCE-BOUND production invariant**, not a detector of every future
+mechanism for writing `ST_CLAIMED`. **Future changes to scheduler, requeue or claim authority must be
+re-evaluated against it.** G4b is untouched and complementary: it keeps the primitive's
+non-monotonicity on the record while R3-4 proves the production scheduler does not exercise it for a
+swept key.
+
+### 2.49 GATE-12 ATTEMPT 9 — PASSED (2026-08-17)
+
+```
+run       distributed_config_t1_554463d3   nonce gate12-20260817_181819-46500
+outcome   Step 1 PASSED, exit 0 · 128/128 stripes over 4 stages · 738 s loop
+stages    java_lcg · java_lcg_reverse · java_lcg_hybrid · java_lcg_hybrid_reverse
+coverage  certified [0, 2147483648] for {constant,variable}, coverage_id c6f28aedf7af12cd
+cursor    covered_seed_count=2147483648 · certified_interval_count=1
+verdict   SATURATION SATISFIED — peak 25 simultaneous compute-active,
+                                 4/4 qualifying windows showing turnover
+          ZERO lease expiries · fleet exited clean, 0 workers on all three rigs
+```
+
+Six pre-coordinator gates green before a GPU-second: clean-tree admission, GPU 24/24, **rig parity
+30/30**, pre-dispatch clean-tree, sentinel, liveness.
+
+**Acceptance against the MP-1 baseline** — four fields met outright:
+
+```
+per-frame msg cost   MP-1 0.0047 -> 1.958 s (peak 2.499)  |  A9 0.0055 -> 0.0013 s (peak 0.323)
+                     BUILD-UP GONE — ends BELOW where it started
+drain frames/pass    MP-1 1.395 (2471f/1771p)             |  A9 1.956 (6421f/3283p)
+zero-service         MP-1 terminal 25 live / 3 serviced,  |  A9 final window 25/25 serviced, q=0
+                     queue pinned 340->869 RISING            GONE
+starved windows      MP-1 1                                  A9 0
+```
+
+**Idle windows were separated from starved ones rather than scored alike** — counting only windows
+where work arrived or was queued. Attempt 9's 28 zero-service windows all had nothing to service.
+
+**Two fields left open for Beta's ruling — which normalization the criterion binds to:** pump exclusive
+fell **34% absolute** (3640.5 → 2394.1 s) but **−85.6% per call** across 4.6× more, much shorter passes
+— *a reduction, not a collapse, in absolute terms*. Serve-thread staging fell **77% absolute** and from
+70% to 22% of the loop, but the **staging/msg ratio moved only 0.988 → 0.880.**
+
+**One field is unobservable and diagnosed:** `deferred_distinct_attempts_high_water` and
+`pump_liveness_probes_high_water` are initialized in `_bp`, updated in the pump (`:7978-7982`) and
+returned by `staging_backpressure_metrics()` — but `log_staging_backpressure_summary`'s format string
+(`:7284`) **omits both keys**, and the returned dict reaches only an in-memory object that is never
+persisted. **Computed during the run and unobservable after it.** Code untouched.
+
+**The abort signal did not fire:** *"Triggering Step 2"* is the evaluator's message; `--end-step 1`
+stopped the pipeline and `run_scorer_meta_optimizer.sh` was never invoked. The executing form
+`STEP 2: Scorer Meta-Optimizer (run #N)` is absent.
+
+**Post-run the tree is dirty by design** — `.s172_accumulator/`, `bidirectional_survivors_all.npz`,
+`bidirectional_survivors_binary.npz` are attempt 9's own outputs, produced **after** publication.
+**The clean-tree admission gate refuses on exactly this state — it is what refused attempt 3 — so they
+must be committed or ignored before any future launch.**
+
+### 2.50 OPERATE LIKE CRYPTO MINERS — A FORWARD CONSTRAINT, NOT HISTORY
+
+**Persistent daemons that pull work. Never launch-per-unit.**
+
+PWC's `GCVM_L2_PROTECTION_FAULT` tracked the launch storm (~17K kernel launches/trial) across **every
+transport** (SSH → TCP → ZMQ), a code revert and a package rollback. Three transports eliminated, one
+variable left standing. RANGE-MINER's **~52 launches/trial is the design target, not an incidental
+property.**
+
+**Any change that raises per-trial launch count is a change to this constraint and must be treated as
+one.** The fault was avoided, not eliminated — the rigs still run ROCm, and a future workload that
+recreates the launch-storm shape presumably recreates the fault. *"Let's batch smaller for better GPU
+utilization"* is the sentence that walks straight into it.
+
+**Historical note on how this rule was applied:** Michael stated it repeatedly from March 2026. It was
+agreed in principle and deferred as "a future refactor, not what's crashing us right now" — while
+S162–S170 band-aided dispatch cadence (jitter, pacing, cooldown, transport swaps) without touching the
+dispatch model. RANGE-MINER did not begin until ~July. **Roughly four months between the instruction
+and the architecture that implemented it.** When the owner names an architectural constraint
+repeatedly, treat the repetition itself as evidence that the current plan is wrong.
+
+### 2.51 OPEN ITEMS CARRIED PAST GATE-12
+
+```
+1  rrig6600c runs Python 3.10.12 against 3.10.4 on the other two.
+   Does NOT gate the byte-parity contract (that governs deployed .py bytes) and
+   cupy is 13.5.1 everywhere — but the rigs are documented as IDENTICAL FROZEN
+   CLONES, so this is a live divergence from a stated invariant, first recorded at
+   the MP-1 deploy and STILL NOT DIAGNOSED. A pip freeze diff across the three CTs
+   is the measurement that would settle it.
+
+2  _pump_deferred's docstring at range_miner_coordinator.py:7741 still says every
+   dropped entry is dropped on its own fresh probe — R-3's sweep makes that false.
+   Recommended wording is in the R-1..R-4 report; it rides the next commit that
+   legitimately touches that definition. Documentation debt, non-executable.
+
+3  The two _bp falsifier fields are unobservable after a run (§2.49). Diagnosed to
+   :7284 and :7978-7982; not fixed.
+
+4  attempt-6 RXP-1/4 is a disclosed PRE-EXISTING flake — _inject_E7 producing
+   SHUTDOWN_STOP already produced by SHUTDOWN_STOP. One 77/78 in five runs on an
+   unchanged tree. Recorded, not patched.
+
+5  test_s172_phase5_d6_production_adapter is 0/9 AND 0/9 at the base — a stale
+   fixture red since F1 (expected_substripes stopped being populated for unplaced
+   stripes when claiming moved to schedule_pending_stripes). Not chargeable to any
+   recent work; a separate repair.
+
+6  The attempt-5 initiating reader-exit cause remains UNRESOLVED.
+
+7  Heartbeat disposition: the stripeless hypothesis is measured false; the run-wide
+   zero resolved as the drain recovered in attempt 9, but Beta has NOT certified
+   F1/F2's heartbeat renewal path on the strength of that alone.
+```
 
 ## 3. SUPERSEDED — in repo, NOT current
 
