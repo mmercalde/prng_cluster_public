@@ -1413,6 +1413,10 @@ DECLARED_CHANGED = {
     "ServeLoopTiming.metrics",
     "RangeMinerCoordinator.__init__",
     "RangeMinerCoordinator.log_serve_loop_timing_summary",
+    # [FIELD-6 OBSERVABILITY REPAIR, TB ruling sequencing item 3] NOT MP-1's
+    # change. The proof compares LIVE source against the pinned anchor, so a
+    # later authorized commit touching this module must be declared here.
+    "RangeMinerCoordinator.log_staging_backpressure_summary",
     "RangeMinerCoordinator._serve_dispatch",
     "RangeMinerCoordinator._pump_deferred",
     "RangeMinerCoordinator.serve_trial",

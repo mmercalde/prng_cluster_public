@@ -3716,8 +3716,20 @@ class RangeMinerCoordinator:
             # that instant. A lower bound REFUTES the guarantee outright if it
             # exceeds the cohort; it corroborates rather than proves when small.
             # Stated here so the acceptance report cannot over-read a low value.
-            "deferred_distinct_attempts_high_water": 0,
-            "pump_liveness_probes_high_water": 0,
+            #
+            # [FIELD-6 OBSERVABILITY REPAIR — Beta constraint 3] THE SENTINEL IS
+            # `None`, NOT `0`. `None` means NO PUMP PASS HAS REACHED THE
+            # INSTRUMENT — pinned UNOBSERVED — and it is emitted on the
+            # `[S172-BP] summary` line as the literal `UNOBSERVED`. A `0`
+            # default conflates "never measured" with "measured a maximum of
+            # zero", and Gate-12 attempt 9 proved that ambiguity matters: the
+            # fields were never persisted, so a reader could not tell whether
+            # the pump had been exercised at all. The dict keeps `None`
+            # (JSON-safe null); only the log line substitutes the literal.
+            # See `_pump_deferred`'s update block for the None-aware max, and
+            # `log_staging_backpressure_summary` for the dict<->line mapping.
+            "deferred_distinct_attempts_high_water": None,
+            "pump_liveness_probes_high_water": None,
         }
         # ----- [H1/H2 §§C-E] per-stripe receive accounting --------------------
         # Its OWN lock, deliberately not `_bp_lock`: this map is written from the
@@ -7278,7 +7290,16 @@ class RangeMinerCoordinator:
         self, run_id: str, now: Optional[float] = None,
     ) -> Dict[str, Any]:
         """The trial-terminal summary line (§4). One structured, grep-stable
-        `[S172-BP] summary` record carrying every required series."""
+        `[S172-BP] summary` record carrying every required series.
+
+        [FIELD-6 OBSERVABILITY REPAIR] THE DICT<->LINE MAPPING FOR THE TWO R-1
+        FALSIFIER FIELDS: the returned dict carries the raw value — an `int`
+        when a pump pass was observed, JSON-safe `None` when none was — while
+        the LOG LINE carries the integer or the literal string `UNOBSERVED`
+        (the `staging_jobs_per_sec=n/a` precedent for non-numeric emission in
+        this same record). The line is the artifact a production run persists;
+        the dict rides the in-memory result only, which is exactly why Gate-12
+        attempt 9 left both fields unobserved."""
         m = self.staging_backpressure_metrics(now)
         logger.info(
             "[S172-BP] summary run=%s inbound_qsize_high_water=%d "
@@ -7290,7 +7311,9 @@ class RangeMinerCoordinator:
             "inbound_saturation_seconds_total=%.3f inbound_saturation_events=%d "
             "emergency_events_total=%d emergency_events_acted_on=%d "
             "admission_queue_high_water=%d admission_dispositions_total=%d "
-            "admission_dispositions_max_per_iteration=%d",
+            "admission_dispositions_max_per_iteration=%d "
+            "deferred_distinct_attempts_high_water=%s "
+            "pump_liveness_probes_high_water=%s",
             run_id, m["inbound_qsize_high_water"], m["deferred_high_water"],
             m["derived_bound"], m["bound_in_force"], m["paused_high_water"],
             m["pause_events"], m["pause_seconds_total"], m["pause_seconds_max"],
@@ -7304,7 +7327,20 @@ class RangeMinerCoordinator:
             m["inbound_saturation_events"],
             m["emergency_events_total"], m["emergency_events_acted_on"],
             m["admission_queue_high_water"], m["admission_dispositions_total"],
-            m["admission_dispositions_max_per_iteration"])
+            m["admission_dispositions_max_per_iteration"],
+            # [FIELD-6 OBSERVABILITY REPAIR] additive, at the END of the same
+            # grep-stable line — the `[ATTEMPT-6] additive series` precedent
+            # directly above. `UNOBSERVED` is emitted for the `None` sentinel;
+            # an integer (including a legitimate observed 0) is emitted as
+            # itself. `deferred_high_water=` does NOT match
+            # `deferred_distinct_attempts_high_water=`, so every existing grep
+            # over this line keeps its meaning.
+            ("UNOBSERVED"
+             if m["deferred_distinct_attempts_high_water"] is None
+             else m["deferred_distinct_attempts_high_water"]),
+            ("UNOBSERVED"
+             if m["pump_liveness_probes_high_water"] is None
+             else m["pump_liveness_probes_high_water"]))
         return m
 
     def log_serve_loop_timing_summary(
@@ -7738,8 +7774,10 @@ class RangeMinerCoordinator:
 
         WHY THE MEMO IS ONE-DIRECTIONAL, AND WHY THAT IS THE WHOLE SAFETY
         ARGUMENT. Only a LIVE observation is reused. A key observed DEAD is never
-        recorded, so every entry that is DROPPED is dropped on its own fresh,
-        under-lock `_attempt_live_locked` call — byte-identical to the old loop.
+        recorded, so no drop ever rests on a REUSED observation. R-3's
+        end-of-pass sweep deliberately retires every retained frame of a key on
+        ONE fresh negative probe; what holds per-entry is that the observation
+        behind it is never reused.
         That is what makes "no deferred entry is lost" hold by construction
         rather than by an argument about whether liveness can un-terminal itself
         (`claim_stripe` admits `failed -> claimed`, so it can; this design does
@@ -7973,14 +8011,34 @@ class RangeMinerCoordinator:
             # `gate_e2_ast_scope_proof` asserts the module's ADDED-definition
             # set exactly, so any new `def` here reds a certified gate. See the
             # R-1 report's note on that constraint.
+            # [FIELD-6 OBSERVABILITY REPAIR — Beta constraint 3, and THE TRAP]
+            # The seeds are now `None` (the UNOBSERVED sentinel), so the former
+            # `int(self._bp[...])` before `max()` would raise `TypeError` on the
+            # FIRST pass of every run — and the blanket `except` below would
+            # swallow it silently, leaving both fields `None` forever so that
+            # every future run falsely reported UNOBSERVED. The update is
+            # therefore None-aware: a `None` current value is REPLACED by the
+            # observation; otherwise it is `max`ed. It stays under `_bp_lock`,
+            # stays wrapped (an instrument may never raise into a production
+            # path), and stays INLINE — no new `def` in this module, per MP-1's
+            # certified `gate_e2_ast_scope_proof`.
+            #
+            # A pass that reaches here always carries `len(seen_keys) >= 1` and
+            # `probes >= 1`: the early `return` above fires when `_deferred` is
+            # empty, so the instrument is never reached with nothing to measure.
+            # A recorded `0` is consequently unreachable from this call site —
+            # but the None-aware form does not special-case zero away, because
+            # zero would be an OBSERVATION and `None` is the absence of one.
             try:
                 with self._bp_lock:
-                    self._bp["deferred_distinct_attempts_high_water"] = max(
-                        int(self._bp["deferred_distinct_attempts_high_water"]),
-                        len(seen_keys))
-                    self._bp["pump_liveness_probes_high_water"] = max(
-                        int(self._bp["pump_liveness_probes_high_water"]),
-                        int(probes))
+                    _prev_k = self._bp["deferred_distinct_attempts_high_water"]
+                    _obs_k = len(seen_keys)
+                    self._bp["deferred_distinct_attempts_high_water"] = (
+                        _obs_k if _prev_k is None else max(int(_prev_k), _obs_k))
+                    _prev_p = self._bp["pump_liveness_probes_high_water"]
+                    _obs_p = int(probes)
+                    self._bp["pump_liveness_probes_high_water"] = (
+                        _obs_p if _prev_p is None else max(int(_prev_p), _obs_p))
             except Exception:                                    # noqa: BLE001
                 pass
             # [H1/H2 §E] Charged OUTSIDE `_admission_lock` and BOTH classes of

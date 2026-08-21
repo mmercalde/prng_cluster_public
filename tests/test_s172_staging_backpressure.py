@@ -43,6 +43,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import traceback
@@ -66,6 +67,7 @@ def _check(name, fn):
         print(f"  [{_FAIL}] {name}: {e}")
 
 
+import miner.range_miner_coordinator as COORD_MOD  # noqa: E402
 from miner.range_miner_coordinator import (  # noqa: E402
     ST_CANCELLED,
     ST_CLAIMED,
@@ -1853,12 +1855,20 @@ def gate_metrics_are_grep_stable_and_complete():
                 "paused_high_water", "pause_events", "pause_seconds_total",
                 "pause_seconds_max", "staging_jobs_completed",
                 "capacity_timeout_terminations", "bound_in_force",
-                "derived_bound", "staging_jobs_per_sec"):
+                "derived_bound", "staging_jobs_per_sec",
+                # [FIELD-6 OBSERVABILITY REPAIR] the two R-1 falsifier fields.
+                # KEY PRESENCE ONLY here — `key=UNOBSERVED` satisfies it, and
+                # that is deliberately insufficient as evidence: G-FIELD6 below
+                # is the gate that proves the values are measurements.
+                "deferred_distinct_attempts_high_water",
+                "pump_liveness_probes_high_water"):
         assert key in m, f"the metrics record lacks {key}"
     summary = [r for r in bp if r.startswith("[S172-BP] summary")][0]
     for key in ("inbound_qsize_high_water=", "deferred_high_water=",
                 "paused_high_water=", "pause_seconds_total=",
-                "staging_jobs_completed=", "capacity_timeout_terminations="):
+                "staging_jobs_completed=", "capacity_timeout_terminations=",
+                "deferred_distinct_attempts_high_water=",
+                "pump_liveness_probes_high_water="):
         assert key in summary, f"the summary line lacks {key}: {summary}"
     assert m["pause_events"] >= 1 and m["pause_seconds_total"] > 0.0
 
@@ -4932,6 +4942,346 @@ def gate_sequential_trial_reuse():
         assert len(sink.commits) == 2, sink.commits
 
 
+# ===========================================================================
+# FIELD-6 OBSERVABILITY REPAIR (TB ruling `TB_RULING_GATE12_ATTEMPT9_ACCEPTANCE
+# .md`, sequencing item 3 — Field 6 ruled UNOBSERVED, instrumentation-output
+# defect)
+#
+# THE DEFECT WAS THE EMITTER, NOT THE MEASUREMENT. R-1's two falsifier fields
+# reached `staging_backpressure_metrics()` correctly and had done since
+# `e9ca800`; the trial-terminal `[S172-BP] summary` LINE — the only artifact a
+# production run persists — omitted exactly those two keys, so Gate-12 attempt
+# 9 ran the instrument and threw the reading away.
+#
+# BETA'S STANDARD, VERBATIM: "key presence is explicitly insufficient". A gate
+# that only asserts `...high_water=` appears in the line passes just as happily
+# against a hardcoded constant. These three arms therefore assert VALUES, and
+# assert them against a relation DERIVED from `_pump_deferred` as read, not
+# transcribed from a docstring.
+# ===========================================================================
+def _parse_bp_summary(records):
+    """The LAST `[S172-BP] summary` line, split into a `key -> raw string` map.
+
+    Parsed off the EMITTED LOG RECORD, never off the returned dict: the dict is
+    not the defect and proving things about it proves nothing about what a
+    production run persists."""
+    lines = [r for r in records if r.startswith("[S172-BP] summary")]
+    assert lines, "no [S172-BP] summary line was emitted at all"
+    line = lines[-1]
+    kv = {}
+    for tok in line.split():
+        key, sep, val = tok.partition("=")
+        if sep:
+            kv[key] = val
+    return line, kv
+
+
+def _hold_every_staging_slot(b):
+    """`_Bench.saturate()` minus its `staging_can_accept()` assertion.
+
+    That assertion is only true at `staging_deferred_max=1` (see
+    `_saturating_cfg`'s docstring); these arms need a deferred bound large
+    enough to hold K x F frames, where the hysteresis low-water is nowhere near
+    tripped. The SEMAPHORE is the same one `enqueue_staging` acquires — the
+    real capacity condition, exactly as in G4 — and the slots are handed to
+    `_held` so `_Bench.close()` returns them."""
+    sem = b.coord._staging_slots()
+    while sem.acquire(blocking=False):
+        b._held.append(True)
+    assert b._held, "no staging slots existed to hold"
+
+
+def _field6_observed_run(tmp, tag, keys, frames):
+    """Drive ONE pump pass over `keys` distinct attempts x `frames` sub-stripe
+    frames each, then emit the trial-terminal summary and return
+    `(kv-from-the-LINE, returned-dict)`.
+
+    The population is built through the REAL `enqueue_staging` with every
+    staging slot genuinely held, so every frame takes the production
+    `action == "deferred"` branch — the same route G4 uses to occupy staging.
+    Frames are enqueued GROUPED BY ATTEMPT, which is what makes the probe count
+    below derivable rather than incidental.
+
+    ONE WORKER PER ATTEMPT, and not for convenience: F1's `claim_stripe`
+    invariant permits exactly ONE compute-active claim per worker and RAISES
+    `LeaseInvariantError` otherwise, so `K` concurrently-deferred attempts is
+    `K` distinct workers by construction — which is precisely why R-1 argues
+    the distinct-attempt count is bounded by the frozen cohort."""
+    wids = tuple(f"hostF6{tag}{k}:gpu0" for k in range(keys))
+    b = _Bench(tmp, worker_ids=wids, **_saturating_cfg(staging_deferred_max=256))
+    try:
+        run_id = f"runF6{tag}"
+        b.coord.ledger.create_trial(run_id, 0, now=100.0)
+        _hold_every_staging_slot(b)
+        conns = [b.wconn_by_worker[w] for w in wids]
+        for k, wid in enumerate(wids):
+            sid = f"{run_id}_s{k}"
+            conn = b.wconn_by_worker[wid]
+            _claim(b.coord, run_id, sid, wid, conn, seed_count=10 * frames,
+                   expected=frames)
+            for i in range(frames):
+                b.coord.enqueue_staging(
+                    "inline", conn, run_id, sid, 0, i,
+                    _inline_result(wid, sid, i, i * 10, 10),
+                    lambda _c=conns: list(_c))
+        # NON-VACUITY: the fixture is only evidence if the frames really are
+        # deferred. A silent fail-fast or back-pressure branch would leave this
+        # short and the arithmetic below would be measuring nothing.
+        assert len(b.coord._deferred) == keys * frames, (
+            f"{len(b.coord._deferred)} frames deferred, expected "
+            f"{keys * frames} — the fixture did not exercise the defer branch")
+        records = []
+        _lg, _h, restore = _capture_bp(records)
+        try:
+            b.coord._pump_deferred()
+            # Nothing may have staged: every slot is still held, so the whole
+            # population is retained and the pass measured all of it.
+            assert len(b.coord._deferred) == keys * frames, (
+                f"the pump released frames while every slot was held: "
+                f"{len(b.coord._deferred)}")
+            m = b.coord.log_staging_backpressure_summary(run_id)
+        finally:
+            restore()
+        line, kv = _parse_bp_summary(records)
+        return line, kv, m
+    finally:
+        b.close()
+
+
+def gate_field6_falsifier_fields_are_emitted():
+    """G-FIELD6. The falsifiable question, in three arms.
+
+    ARM 1 — POPULATION VARIANCE, against a DERIVED relation. Two runs whose
+    pump populations differ ONLY in the distinct-attempt count K. Reading
+    `_pump_deferred` live, with frames grouped by attempt and every slot held:
+
+      * the FIRST attempt is admitted (`_try_admit_locked` -> True) and R-2
+        DISCARDS its key from `live_keys` at every grant, so each of its
+        `frames` entries costs one fresh probe;
+      * each of the other `K-1` attempts probes ONCE in the main scan (the
+        memo covers its remaining frames) and is refused admission, so it is
+        RETAINED in `live_keys`;
+      * R-3's end-of-pass sweep re-probes each of those `K-1` retained keys
+        exactly once.
+
+        =>  deferred_distinct_attempts_high_water == K
+            pump_liveness_probes_high_water      == frames + 2 * (K - 1)
+
+    Both are asserted EXACTLY, and both are read out of the EMITTED LINE. The
+    two quantities are unequal in both scenarios, which is what makes an
+    argument swap (M2) detectable rather than vacuous — enumerated in the
+    report.
+
+    ARM 2 — THE UNOBSERVED PIN. A coordinator over which no pump pass has run
+    emits the literal `UNOBSERVED` for both keys, and returns `None` for both
+    in the dict. This is the arm that makes key presence insufficient: `0`
+    would have been indistinguishable from a measured maximum of zero.
+
+    ARM 3 — DICT<->LINE COHERENCE. In an observed run the integers ON THE LINE
+    equal the values IN THE DICT, so the persisted artifact and the in-memory
+    result cannot drift apart.
+
+    WRONG INPUT THAT REDS IT: an emitter wired to a constant (M1); an emitter
+    whose two arguments are transposed (M2); an update path that restores the
+    `int()` cast over the `None` sentinel, whose `TypeError` the blanket
+    `except` swallows so the fields stay `None` forever (M3).
+    """
+    K1, K2, FRAMES = 3, 6, 4
+    with tempfile.TemporaryDirectory() as tmp:
+        line1, kv1, m1 = _field6_observed_run(tmp, "a", K1, FRAMES)
+        line2, kv2, m2 = _field6_observed_run(tmp, "b", K2, FRAMES)
+
+    # ---- arm 1: both are emitted, both are integers, both VARY -------------
+    for lbl, kv, line in (("K1", kv1, line1), ("K2", kv2, line2)):
+        for key in ("deferred_distinct_attempts_high_water",
+                    "pump_liveness_probes_high_water"):
+            assert key in kv, f"[{lbl}] the summary line lacks {key}: {line}"
+            assert kv[key].lstrip("-").isdigit(), (
+                f"[{lbl}] {key}={kv[key]!r} is not an integer on an OBSERVED "
+                f"run: {line}")
+    d1 = int(kv1["deferred_distinct_attempts_high_water"])
+    d2 = int(kv2["deferred_distinct_attempts_high_water"])
+    p1 = int(kv1["pump_liveness_probes_high_water"])
+    p2 = int(kv2["pump_liveness_probes_high_water"])
+
+    assert d1 == K1, f"distinct attempts on the K1 run: {d1} != {K1}\n{line1}"
+    assert d2 == K2, f"distinct attempts on the K2 run: {d2} != {K2}\n{line2}"
+    assert d2 > d1, (
+        f"the distinct-attempt high-water did not move with the driven "
+        f"population ({d1} -> {d2}) — the emitted value is not a measurement")
+
+    # the DERIVED probe relation, both endpoints
+    assert p1 == FRAMES + 2 * (K1 - 1), (
+        f"probes on the K1 run: {p1} != {FRAMES + 2 * (K1 - 1)}\n{line1}")
+    assert p2 == FRAMES + 2 * (K2 - 1), (
+        f"probes on the K2 run: {p2} != {FRAMES + 2 * (K2 - 1)}\n{line2}")
+    assert p2 > p1, (f"the probe high-water did not move with K: {p1} -> {p2}")
+
+    # the two fields are DIFFERENT quantities, on both runs — the property M2
+    # depends on. Asserted rather than assumed, so the M2 enumeration in the
+    # report is grounded in the fixture and not in prose.
+    assert d1 != p1 and d2 != p2, (
+        f"distinct == probes on a run ({d1}/{p1}, {d2}/{p2}) — an argument "
+        f"swap would be undetectable at this population")
+
+    # the POPULATION was not what moved: both runs deferred a different total,
+    # so state what did — K. `deferred_high_water` is reported for contrast
+    # exactly as R-1 argued: it cannot test the guarantee at all.
+    assert int(kv1["deferred_high_water"]) == K1 * FRAMES, kv1
+    assert int(kv2["deferred_high_water"]) == K2 * FRAMES, kv2
+
+    # ---- arm 3: dict <-> line coherence (on the SAME observed runs) --------
+    for lbl, kv, m in (("K1", kv1, m1), ("K2", kv2, m2)):
+        for key in ("deferred_distinct_attempts_high_water",
+                    "pump_liveness_probes_high_water"):
+            assert m[key] is not None, f"[{lbl}] the dict lost {key}"
+            assert int(kv[key]) == int(m[key]), (
+                f"[{lbl}] the LINE says {key}={kv[key]} but the returned dict "
+                f"says {m[key]} — the persisted artifact and the in-memory "
+                f"result disagree")
+
+    # ---- arm 2: the UNOBSERVED pin ----------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        b = _Bench(tmp, **_saturating_cfg())
+        records = []
+        _lg, _h, restore = _capture_bp(records)
+        try:
+            run_id = "runF6none"
+            b.coord.ledger.create_trial(run_id, 0, now=100.0)
+            # NO pump pass, no staging, no deferral: the terminal summary fires
+            # for EVERY terminal state, including a trial that never staged.
+            m0 = b.coord.log_staging_backpressure_summary(run_id)
+        finally:
+            restore()
+            b.close()
+    line0, kv0 = _parse_bp_summary(records)
+    for key in ("deferred_distinct_attempts_high_water",
+                "pump_liveness_probes_high_water"):
+        assert kv0.get(key) == "UNOBSERVED", (
+            f"a run with NO pump pass emitted {key}={kv0.get(key)!r}, not the "
+            f"literal UNOBSERVED: {line0}")
+        assert m0[key] is None, (
+            f"a run with NO pump pass returned {key}={m0[key]!r} in the dict, "
+            f"not None — a fabricated observation")
+    assert "=UNOBSERVED pump_liveness_probes_high_water=UNOBSERVED" in line0, (
+        f"the two UNOBSERVED fields are not adjacent at the end of the "
+        f"grep-stable line: {line0}")
+
+
+def gate_field6_mutants():
+    """G-MUT-FIELD6. Each mutant APPLIED to live production source, EXECUTED on
+    the mutated path, and DETECTED by a named arm of G-FIELD6.
+
+    M1 — the emitter hardcodes 0 for both values.
+    M2 — the emitter transposes the two arguments.
+    M3 — the update path restores the original `int()` cast over the `None`
+         sentinel. The `TypeError` is swallowed by the blanket `except`, both
+         fields stay `None` forever, and an OBSERVED run reports UNOBSERVED.
+         This mutant exists because it is the exact silent-failure mode the
+         sentinel change creates if the update is not made None-aware.
+
+    WRONG INPUT THAT REDS IT: a mutant that raises before it is applied, or one
+    the gate happens to pass — both are reported as SURVIVED, never hidden."""
+    emit_src = inspect.getsource(
+        RangeMinerCoordinator.log_staging_backpressure_summary)
+    pump_src = inspect.getsource(RangeMinerCoordinator._pump_deferred)
+
+    def _rebind(src, name):
+        """Compile a mutated method against the PRODUCTION module globals — the
+        A8-B2 lesson: a verbatim copy exec'd in the test module's globals
+        resolves its callees here and escapes the mutation."""
+        ns = {}
+        exec(compile(ast.parse(textwrap.dedent(src)), f"<mutant {name}>",
+                     "exec"), COORD_MOD.__dict__, ns)
+        return ns[name]
+
+    def _run_with(attr, fn):
+        orig = getattr(RangeMinerCoordinator, attr)
+        setattr(RangeMinerCoordinator, attr, fn)
+        try:
+            gate_field6_falsifier_fields_are_emitted()
+            return None                      # SURVIVED — the gate passed
+        except AssertionError as e:
+            return str(e).split("\n")[0]     # DETECTED
+        finally:
+            setattr(RangeMinerCoordinator, attr, orig)
+
+    verdicts = {}
+
+    # ---- M1: hardcode both emitted values to 0 ----------------------------
+    m1_src = emit_src.replace(
+        '            ("UNOBSERVED"\n'
+        '             if m["deferred_distinct_attempts_high_water"] is None\n'
+        '             else m["deferred_distinct_attempts_high_water"]),\n'
+        '            ("UNOBSERVED"\n'
+        '             if m["pump_liveness_probes_high_water"] is None\n'
+        '             else m["pump_liveness_probes_high_water"]))',
+        '            0,\n            0)')
+    assert m1_src != emit_src, "M1 was NOT APPLIED — the anchor moved"
+    verdicts["M1 emitter hardcodes 0"] = _run_with(
+        "log_staging_backpressure_summary",
+        _rebind(m1_src, "log_staging_backpressure_summary"))
+
+    # ---- M2: transpose the two emitted arguments --------------------------
+    m2_src = emit_src.replace(
+        '            ("UNOBSERVED"\n'
+        '             if m["deferred_distinct_attempts_high_water"] is None\n'
+        '             else m["deferred_distinct_attempts_high_water"]),\n'
+        '            ("UNOBSERVED"\n'
+        '             if m["pump_liveness_probes_high_water"] is None\n'
+        '             else m["pump_liveness_probes_high_water"]))',
+        '            ("UNOBSERVED"\n'
+        '             if m["pump_liveness_probes_high_water"] is None\n'
+        '             else m["pump_liveness_probes_high_water"]),\n'
+        '            ("UNOBSERVED"\n'
+        '             if m["deferred_distinct_attempts_high_water"] is None\n'
+        '             else m["deferred_distinct_attempts_high_water"]))')
+    assert m2_src != emit_src, "M2 was NOT APPLIED — the anchor moved"
+    verdicts["M2 emitter transposes the two values"] = _run_with(
+        "log_staging_backpressure_summary",
+        _rebind(m2_src, "log_staging_backpressure_summary"))
+
+    # ---- M3: restore the int() cast over the None sentinel ----------------
+    m3_src = pump_src.replace(
+        '                    _prev_k = self._bp["deferred_distinct_attempts_high_water"]\n'
+        '                    _obs_k = len(seen_keys)\n'
+        '                    self._bp["deferred_distinct_attempts_high_water"] = (\n'
+        '                        _obs_k if _prev_k is None else max(int(_prev_k), _obs_k))\n'
+        '                    _prev_p = self._bp["pump_liveness_probes_high_water"]\n'
+        '                    _obs_p = int(probes)\n'
+        '                    self._bp["pump_liveness_probes_high_water"] = (\n'
+        '                        _obs_p if _prev_p is None else max(int(_prev_p), _obs_p))',
+        '                    self._bp["deferred_distinct_attempts_high_water"] = max(\n'
+        '                        int(self._bp["deferred_distinct_attempts_high_water"]),\n'
+        '                        len(seen_keys))\n'
+        '                    self._bp["pump_liveness_probes_high_water"] = max(\n'
+        '                        int(self._bp["pump_liveness_probes_high_water"]),\n'
+        '                        int(probes))')
+    assert m3_src != pump_src, "M3 was NOT APPLIED — the anchor moved"
+    m3_fn = _rebind(m3_src, "_pump_deferred")
+
+    # EXECUTION PROOF for M3, independent of the gate's verdict: the mutated
+    # update really does leave both fields `None` after a real pump pass.
+    orig_pump = RangeMinerCoordinator._pump_deferred
+    RangeMinerCoordinator._pump_deferred = m3_fn
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            _l, _k, m3_metrics = _field6_observed_run(tmp, "m3", 3, 4)
+        assert m3_metrics["deferred_distinct_attempts_high_water"] is None, (
+            "M3 did not EXECUTE on the mutated path — the field is "
+            f"{m3_metrics['deferred_distinct_attempts_high_water']!r}, so the "
+            "TypeError never happened")
+        assert m3_metrics["pump_liveness_probes_high_water"] is None, m3_metrics
+    finally:
+        RangeMinerCoordinator._pump_deferred = orig_pump
+    verdicts["M3 restores int() over the None sentinel"] = _run_with(
+        "_pump_deferred", m3_fn)
+
+    survived = [k for k, v in verdicts.items() if v is None]
+    assert not survived, f"MUTANT(S) SURVIVED G-FIELD6: {survived}"
+    return "; ".join(f"{k} -> DETECTED" for k in verdicts)
+
+
 def main():
     print("=" * 74)
     print("S172 STAGING BACK-PRESSURE — acceptance gates (CPU-only)")
@@ -5070,6 +5420,12 @@ def main():
            gate_late_worker_excluded_from_frozen_cohort)
     _check("G-PREFLIGHT-PROVENANCE-FAIL-CLOSED: admission fails closed; refusal stays primary",
            gate_preflight_provenance_fail_closed)
+
+    print("\n-- FIELD-6 OBSERVABILITY REPAIR (TB ruling, sequencing item 3) --")
+    _check("G-FIELD6: the two R-1 falsifier fields are EMITTED, vary, and pin UNOBSERVED",
+           gate_field6_falsifier_fields_are_emitted)
+    _check("G-MUT-FIELD6: hardcode / transpose / restored-int() execute and RED it",
+           gate_field6_mutants)
 
     print("\n" + "=" * 74)
     passed = sum(1 for _, ok, _ in _results if ok)

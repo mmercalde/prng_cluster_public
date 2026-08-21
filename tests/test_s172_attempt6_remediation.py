@@ -71,6 +71,7 @@ import logging
 import math
 import os
 import queue as _queue
+import re
 import socket
 import struct
 import subprocess
@@ -4362,7 +4363,8 @@ def fair3_arm1_certified_suites_are_green():
     lease semantics this amendment must not disturb, and the two that are fast
     enough to be part of a gate rather than a separate battery. The
     admission-liveness (16/16), execution-set (34/34), phase-4 (63/63),
-    back-pressure (50/50) and Part-B suites are run in the REGRESSION BATTERY at
+    back-pressure (>= 50, and green) and Part-B suites are run in the REGRESSION
+    BATTERY at
     final state and reported there; that division is stated rather than left for
     a reader to infer.
 
@@ -4537,8 +4539,28 @@ def fair4_arm0_the_full_bp_battery():
                        cwd=_ROOT, capture_output=True, text=True, timeout=2400)
     assert p.returncode == 0, (
         f"the back-pressure battery exited {p.returncode}\n{p.stdout[-4000:]}")
-    assert "50/50 checks green" in p.stdout, (
-        f"the battery did not report 50/50:\n{p.stdout[-2000:]}")
+    # [FIELD-6 OBSERVABILITY REPAIR, TB ruling sequencing item 3] The pin here
+    # was the TRANSCRIBED tally `50/50`. The back-pressure suite legitimately
+    # grew to 52 when field 6's gate and its mutant arm landed, and a
+    # transcribed count reds on every authorized growth while proving nothing a
+    # green run does not already prove — `main()` returns 0 only when
+    # `passed == total`, which `returncode == 0` above already asserts. It is
+    # replaced by the two properties the pin was standing in for, neither of
+    # which a growing suite can trip:
+    #   * the suite's OWN completion sentinel, printed only on a full pass, and
+    #   * a FLOOR on the gate count, so gates being DELETED still reds this.
+    # This is the same brittle-count shape Beta ruled on at R4-1; `50 -> 52` is
+    # the amendment Beta called wrong there, so it is not the one taken here.
+    _tally = re.search(r"(\d+)/(\d+) checks green", p.stdout)
+    assert _tally, f"the battery printed no tally at all:\n{p.stdout[-2000:]}"
+    _passed, _total = int(_tally.group(1)), int(_tally.group(2))
+    assert _passed == _total, (
+        f"the battery reported {_passed}/{_total}:\n{p.stdout[-2000:]}")
+    assert _total >= 50, (
+        f"the back-pressure battery shrank to {_total} gates (was 50 at the "
+        f"attempt-6 anchor) — gates were REMOVED, not added:\n{p.stdout[-2000:]}")
+    assert "COMPLETION SENTINEL: PASS" in p.stdout, (
+        f"the battery printed no PASS sentinel:\n{p.stdout[-2000:]}")
 
 
 def fair4_arm1_the_one_envelope_bound_survives():

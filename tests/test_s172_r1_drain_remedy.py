@@ -2126,9 +2126,17 @@ def gate_g8f_the_fields_are_high_waters_and_decision_free():
 # ===========================================================================
 # scope proof
 # ===========================================================================
-DECLARED_CHANGED = {"RangeMinerCoordinator._pump_deferred",
-                    # the two `_bp` seed values for the complexity falsifier
-                    "RangeMinerCoordinator.__init__"}
+DECLARED_CHANGED = {
+    # [FIELD-6 OBSERVABILITY REPAIR, TB ruling sequencing item 3] NOT R-1's
+    # change. The scope proof compares LIVE source against the pinned anchor,
+    # so every later authorized commit that touches this module must be
+    # declared here or the proof reds forever. Field 6's repair appends the two
+    # falsifier keys to the `[S172-BP] summary` format string — the emitter was
+    # the defect; the metrics dict was not.
+    "RangeMinerCoordinator.log_staging_backpressure_summary",
+    "RangeMinerCoordinator._pump_deferred",
+    # the two `_bp` seed values for the complexity falsifier
+    "RangeMinerCoordinator.__init__"}
 # EMPTY, AND NOT BY ACCIDENT. MP-1's certified `gate_e2_ast_scope_proof`
 # asserts this module's ADDED-definition set EXACTLY against its own pinned
 # anchor, so any new `def` here — including a well-named recorder method — reds
@@ -2338,13 +2346,22 @@ def _metric_mutant(record):
                     else:
                         still.append(entry)
                 self._deferred = still
+            # [FIELD-6 OBSERVABILITY REPAIR] The seeds are now the `None`
+            # UNOBSERVED sentinel, so this hand-copied update tracks
+            # production's None-aware max. The MUTATION under test — `record()`
+            # substituting the population for the distinct count — is
+            # untouched; without this the mutant dies on `TypeError` before it
+            # can be measured, which is a fixture failure, not a surviving
+            # mutant.
             with self._bp_lock:
-                self._bp["deferred_distinct_attempts_high_water"] = max(
-                    int(self._bp["deferred_distinct_attempts_high_water"]),
-                    int(record(n_deferred, seen_keys, probes)))
-                self._bp["pump_liveness_probes_high_water"] = max(
-                    int(self._bp["pump_liveness_probes_high_water"]),
-                    int(probes))
+                _pk = self._bp["deferred_distinct_attempts_high_water"]
+                _ok = int(record(n_deferred, seen_keys, probes))
+                self._bp["deferred_distinct_attempts_high_water"] = (
+                    _ok if _pk is None else max(int(_pk), _ok))
+                _pp = self._bp["pump_liveness_probes_high_water"]
+                _op = int(probes)
+                self._bp["pump_liveness_probes_high_water"] = (
+                    _op if _pp is None else max(int(_pp), _op))
             for _r, _s_id, _att, _sub in released:
                 self.note_stripe_frame_released(_r, _s_id, _att, _sub)
             for entry in ready:
