@@ -5,17 +5,20 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v26, 2026-08-17. **GATE-12 IS PASSED — attempt 9, run
-`distributed_config_t1_554463d3`, nonce `gate12-20260817_181819-46500` (§2.49).** 128/128 stripes
-over four stages, saturation SATISFIED, coverage certified `[0, 2147483648]`, `coverage_id
-c6f28aedf7af12cd`, post-run cursor `covered_seed_count=2147483648`,
-`certified_interval_count=1`, **zero lease expiries**. Attempts 1–8 all failed; nothing composed.
-Certified chain: clean-tree admission `213bfff` · F1 lease-origin `2b0d2dc` · attempt-6 remediation
-`69ff222` · D6 integration `dd03f1d` · skill v25 `3e1327b` · H1/H2 instrumentation `ae4bf85` ·
-attempt-7 forensic `2c38f8c` · MP-1 drain attribution `168b6f1` · MP-1 run forensic `c403a37` ·
-**R-1..R-4 drain remedy `e9ca800` (§2.48)**. **§2.41 remains the most consequential correction
-section** — the rigs were mixed-vintage and several prior facts are WITHDRAWN. Phase 7 and the
-window-anchor production merge were held behind Gate-12 and are now unblocked pending Beta.
+**Currency:** v27, 2026-08-20. **GATE-12 IS PASSED AND BETA-ACCEPTED** — attempt 9, run
+`distributed_config_t1_554463d3`, nonce `gate12-20260817_181819-46500`, launch commit `e9ca800`,
+tag **`gate12-passed-attempt9`** (§2.49). 128/128 stripes over four stages, saturation SATISFIED,
+coverage certified `[0, 2147483648]`, `coverage_id c6f28aedf7af12cd`, cursor
+`covered_seed_count=2147483648`, `certified_interval_count=1`, **zero lease expiries**. Attempts
+1–8 all failed; nothing composed. **MP-1 drain starvation is CLOSED — do not reopen R-1.**
+**The field-6 observability repair is CLOSED at `d8b21e3`** (§2.52) — it was the last precondition
+on the Phase-7 soak. **Phase 7 is UNBLOCKED**, and its certifying verifier **`G-PROD-SHAPE` is
+built, proven red, and has NEVER RUN** (§2.54 — Michael-initiated only). **The window-anchor /
+generator-phase design gate CLOSED at proposal v1.1** (§2.53); the next artifact is
+**Implementation Brief I, which does not exist yet.** **Two STANDING RULES are now binding —
+SR-1 `DECLARED_CHANGED` maintenance and SR-2 changelog naming (§1.3).** §2.41 remains the most
+consequential correction section — the rigs were mixed-vintage and several prior facts are
+WITHDRAWN.
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
@@ -24,7 +27,7 @@ artifact.)*
 
 | document | authority on |
 |---|---|
-| `docs/PROJECT_FILE_CATALOG.md` (`1fc05bb`, 803L) | **what documents exist and what question each answers** — the index |
+| `docs/PROJECT_FILE_CATALOG.md` (`0a4cef1`, 1,085L) | **what documents exist and what question each answers** — the index. **Regenerated 2026-08-20**: 699 files accounted for, 139 new since `9e79a26`. **§1.0 = the two standing rules · §1.3 = the whole nine-attempt Gate-12 campaign · §6.5 = what was true on 2026-08-03 and is false now · §7 = thirteen open gaps** |
 | `docs/PIPELINE_BEHAVIOUR_MODEL.md` (1,603L) | **how the pipeline works and why** — every claim carries a WHY anchor and a WHAT anchor |
 | `docs/PHASE6_PREREQS.md` REV5 | **operational fleet state as launched** — measured, and it expires |
 
@@ -244,7 +247,7 @@ mid-task:
 | `TEAM_ALPHA_*` | what was submitted, and what it was answered with |
 | `CLAUDE_CODE_INSTRUCTIONS_*` | what was asked for, and its constraints |
 | `SESSION_CHANGELOG_*` | what happened when |
-| `PROJECT_FILE_CATALOG.md` | **THE INDEX — READ IT FIRST.** Regenerated `1fc05bb` 2026-08-03: 803 lines, **intent-indexed** (what question each document answers, not what it is called), 562 files accounted for. **§1.1 is the governance trail** with each ruling request paired to its ruling and implementation commit. It carries ★ markers on documents previously misreported — e.g. `TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`: *"read this before reporting any Step-2 objective blindness."* |
+| `PROJECT_FILE_CATALOG.md` | **THE INDEX — READ IT FIRST.** Regenerated `0a4cef1` **2026-08-20**: 1,085 lines, **intent-indexed** (what question each document answers, not what it is called), **699 files accounted for** — 517 indexed individually, 181 committed changelogs summarised as a group, 1 untracked changelog excluded and recorded as a gap. **§1.0 carries SR-1 and SR-2** (§1.3 here). **§1.1 is the governance trail** with each ruling request paired to its ruling and implementation commit; **§1.3 is the nine-attempt Gate-12 campaign in order**. It carries ★ markers on documents previously misreported — e.g. `TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`: *"read this before reporting any Step-2 objective blindness."* |
 | `PIPELINE_BEHAVIOUR_MODEL.md` | **HOW THE PIPELINE WORKS AND WHY — the second mandatory first read.** 1,603 lines. **Every claim carries two anchors: a WHY** (chapter / whitepaper / proposal / TB ruling, cited `file:§`) **and a WHAT** (`file:line`, read live). Three markers are load-bearing: **`INCOMPLETE`** (only a code anchor was found — *a statement about that search, never about the repository*), **`DIVERGENT`** (doc and code disagree; **both recorded, neither adjudicated** — §16 is the register), **`GOVERNED`** (already diagnosed or ruled on — **re-reporting one as a new finding is a governance error**). |
 | **`apply_s*.py` / `verify_s*.py` (repo root)** | **THE ONE-SHOT PATCH CORPUS — governance lives in code here.** 123 `apply_s*.py` + 4 `verify_s*.py` at HEAD, session-scoped and already applied. **Their docstrings quote TB rulings verbatim.** `apply_s142_partition_runid.py:5-24` records the TB-confirmed root cause of the partition `run_id` collision (*"~50% of COMPLETE trial rows missing, no exception, no print"*); `apply_s142c_remove_worker_writes.py:6-22` records **TB Option A superseding it**. Indexed at catalog §4.8. **Forensic only — never re-execute them.** |
 | `docs/BACKLOG.md` | the tracked non-blocking register |
@@ -284,6 +287,54 @@ that Chapter 2 was restored and closed. The contradiction was internal and went 
 **An audit performed without the governance trail produces false findings at a high rate.** Before
 relaying ANY audit's findings, **re-derive each against the trail.** The audit's anchors prove the
 code says what it says; they do **not** prove nobody knew.
+
+---
+
+### 1.3 ⚑ STANDING RULES — binding today, and they live only inside ruling bodies
+
+**Two rules have no home outside the ruling that created them. A session that misses either will
+red a certified gate or violate a naming ruling without knowing why.** Both are carried in
+`docs/PROJECT_FILE_CATALOG.md` **§1.0**; they are repeated here because a session may load this
+skill and not the catalog.
+
+#### SR-1 — historical live-vs-anchor `DECLARED_CHANGED` maintenance
+*(`TB_RULING_FIELD6_IMPLEMENTATION.md` §2, 2026-08-20 — adopted, no per-commit ruling needed)*
+
+> **Any authorized commit that changes a definition in `miner/range_miner_coordinator.py` covered
+> by a historical exact live-vs-anchor scope gate MUST update every affected historical
+> `DECLARED_CHANGED` set before that commit is accepted.**
+
+**Four binding constraints:**
+1. **Do not move the historical anchor forward.**
+2. **Do not relax `changed == DECLARED_CHANGED`** to subset/superset logic.
+3. Add **only** definitions actually changed by the newly authorized work.
+4. Every added entry carries **provenance** naming the later change that owns it — so an R-1 or
+   MP-1 suite never falsely claims authorship of a subsequent change.
+
+**Reverse protection is deliberate and retained:** if a production definition is later reverted,
+the declaration must red the old suite with **declared-but-unchanged** rather than silently stay
+green. *Why this exists:* once a live-vs-anchor gate's anchor is frozen, every later authorized
+coordinator change legitimately enlarges the observed changed-definition set. Field 6 is simply the
+first commit where the coincidence stopped hiding that. Beta's preferred eventual housekeeping —
+an immutable **original owned set** plus a provenance-tagged **authorized post-anchor delta set**,
+the assertion staying exact over their union — is **recorded, NOT authorised**, and was explicitly
+not to be built in Field 6.
+
+#### SR-2 — session-changelog naming
+*(`TB_RULING_CHANGELOG_NUMBERING.md`, 2026-08-18 — Option A APPROVED, governs immediately)*
+
+**`SESSION_CHANGELOG_YYYYMMDD_<TOPIC>.md` is canonical. No new S-numbers.** No retro-numbering of
+the three existing topic-named sessions. At SER8-backlog import, **one** deliberate reconciliation
+pass with a single explicit Beta ruling: restore the S-sequence (retro-numbering where
+determinable) **or** formally retire it. **Date+topic is canonical until then — not a temporary
+exception.**
+
+*The reason is load-bearing:* `S185` is only the **highest visible** number while ~20 SER8-only
+changelogs await backfill, so assigning `S186` converts unknown history into asserted governance
+state and creates collision/renumbering risk. **A changelog written after 2026-08-18 that carries
+an S-number violates this ruling** — `docs/SESSION_CHANGELOG_20260819_S1.md` is exactly that, is
+untracked and unattributed, and is excluded from every commit pending Michael's disposition
+(catalog §7 gap 1).
 
 ---
 
@@ -885,7 +936,9 @@ cases.** **It is not extra filtering power**, and §6 says the original emphasis
 
 ### 2.17c Catalog findings — corrections and threads neither party was tracking
 
-From `docs/PROJECT_FILE_CATALOG.md` (`1fc05bb`), which indexed 562 files in one pass.
+From the 2026-08-03 catalog (`1fc05bb`, 562 files). **The catalog has since been regenerated at
+`0a4cef1` (2026-08-20, 699 files) — cite that one; §6.5 there lists what this era's statements got
+wrong.**
 
 **⚠ "PHASE 7" IS OVERLOADED — two unrelated milestones share the name.**
 
@@ -2438,6 +2491,41 @@ stopped the pipeline and `run_scorer_meta_optimizer.sh` was never invoked. The e
 **The clean-tree admission gate refuses on exactly this state — it is what refused attempt 3 — so they
 must be committed or ignored before any future launch.**
 
+
+**⚑ BETA'S ACCEPTANCE RULING (`TB_RULING_GATE12_ATTEMPT9_ACCEPTANCE.md`, 2026-08-17) — BINDING.**
+
+| item | disposition |
+|---|---|
+| Gate-12 Attempt 9 | **PASSED** — the first successful production-class Gate-12 run |
+| coverage / cursor certification | **ACCEPTED** |
+| MP-1 drain-starvation defect (R-1…R-4) | **CLOSED — do not reopen R-1** |
+| Field 1 (pump exclusive `<100 s`) | **MISSED AS WRITTEN** |
+| Field 2 (serve-thread staging `<60 s`) | **MISSED AS WRITTEN** |
+| Field 6 (both `_bp` falsifiers) | **UNOBSERVED — instrumentation-output defect.** Bounded repair required; **NO Gate-12 rerun** |
+| publication symlinks / accumulator | no Gate-12 blocker; NPZ payloads stay **OUT** of git; `.s172_accumulator/generations/` is **durable data plane** needing its own backup policy — git is not that backup |
+| Phase 7 · window-anchor merge | **UNBLOCKED** |
+
+**Beta refused to renormalize the two missed fields into passes, and the reasoning is the durable
+part.** Field 1's `<100 s` prediction rested on a precondition — roughly stable pump-call
+population — that **failed spectacularly**: attempt 9 executed ~**4.6× more** pump calls while
+actually completing the workload MP-1 died partway through, so the cumulative thread-second total
+is a poor cross-run comparator. The per-call collapse `1.463 → 0.210 s/call` (−85.6%), landing near
+R-3's pathological-shape prediction of 0.1364 s at 1,700 entries, is admissible as **diagnostic
+corroboration, not a rewritten gate**. Field 2 likewise: `681.2 → 159.9 s` (−76.5% absolute, 70.3%
+→ 21.7% of serve-loop wall) missed `<60 s`, and the `staging/msg` ratio `0.988 → 0.880` was ruled
+**non-binding** — most sub-result handling legitimately passes through staging, so that ratio stays
+high even when the operation becomes much cheaper. **Prediction miss, causal mechanism supported;
+no additional drain remedy is authorized.**
+
+**MANDATED PHRASING — still in force until the falsifiers are first observed in production (which
+is the Phase-7 soak). Use it verbatim; do not paraphrase a governance sentence:**
+
+> **R-3's scaling model is gate- and benchmark-certified and strongly corroborated by Attempt 9's
+> per-call cost, but its two dedicated production falsifier fields were not persisted and therefore
+> were not observed in Attempt 9.**
+
+**The `d8b21e3` repair makes them OBSERVABLE (§2.52). It does NOT claim they were observed.**
+
 ### 2.50 OPERATE LIKE CRYPTO MINERS — A FORWARD CONSTRAINT, NOT HISTORY
 
 **Persistent daemons that pull work. Never launch-per-unit.**
@@ -2469,13 +2557,14 @@ repeatedly, treat the repetition itself as evidence that the current plan is wro
    the MP-1 deploy and STILL NOT DIAGNOSED. A pip freeze diff across the three CTs
    is the measurement that would settle it.
 
-2  _pump_deferred's docstring at range_miner_coordinator.py:7741 still says every
-   dropped entry is dropped on its own fresh probe — R-3's sweep makes that false.
-   Recommended wording is in the R-1..R-4 report; it rides the next commit that
-   legitimately touches that definition. Documentation debt, non-executable.
+2  DISCHARGED at d8b21e3. _pump_deferred's docstring was corrected to the
+   R-1..R-4 report's recommended wording, riding the first commit that
+   legitimately touched that definition — exactly as the debt rule specifies.
 
-3  The two _bp falsifier fields are unobservable after a run (§2.49). Diagnosed to
-   :7284 and :7978-7982; not fixed.
+3  CLOSED at d8b21e3 (§2.52). Both _bp falsifier fields are now persisted on the
+   [S172-BP] summary line with an UNOBSERVED sentinel. THE OBSERVATION IS STILL
+   OWED — the first production reading comes from the Phase-7 soak, and until it
+   lands the §2.49 mandated phrasing governs every statement about R-3.
 
 4  attempt-6 RXP-1/4 is a disclosed PRE-EXISTING flake — _inject_E7 producing
    SHUTDOWN_STOP already produced by SHUTDOWN_STOP. One 77/78 in five runs on an
@@ -2491,14 +2580,278 @@ repeatedly, treat the repetition itself as evidence that the current plan is wro
 7  Heartbeat disposition: the stripeless hypothesis is measured false; the run-wide
    zero resolved as the drain recovered in attempt 9, but Beta has NOT certified
    F1/F2's heartbeat renewal path on the strength of that alone.
+
+8  .s172_accumulator/generations/ is durable data plane with NO backup policy
+   (Beta-ruled real, ruled non-blocking, BACKLOG §19, unowned). Git is explicitly
+   not that backup, and the NPZ payloads must NOT be put back into git to fake one.
+
+9  The WATCHER failure-authority defect is still open and was untouched through
+   both the field-6 and window-anchor sessions.
 ```
+
+**And the catalog's own register — `docs/PROJECT_FILE_CATALOG.md` §7, THIRTEEN OPEN GAPS,
+repo-scoped, each one naming the search that establishes it.** Read §7 before claiming any of
+these is closed; **do not re-derive them from this list**, which is a pointer, not the evidence:
+
+| # | gap |
+|---|---|
+| 1 | ★ `docs/SESSION_CHANGELOG_20260819_S1.md` — **untracked, unattributed, and carries an S-number SR-2 forbids.** Excluded from every commit pending Michael's disposition; the catalog indexes it as **nothing** |
+| 2 | the `STEP_SCRIPTS[3]` ↔ `full_scoring.json` divergence has a brief but **no committed answer** — `run_step3_full_scoring.sh` still has no artifact describing what it does |
+| 3 | **Step 0 has no documenting chapter** — TRSE's authority is a spec + an integration plan, neither of which is a chapter |
+| 4 | `agent_manifests/definitions.json` is **untracked and gitignored** — a fresh clone does not have it, and **its role is described in none of the 517 indexed documents** |
+| 5 | `daily3_scraper.py` is now tracked (`334dacf`) but **has no design document**; 6-P2 REV4 is still a draft pending Beta |
+| 6 | **eleven chapters have never been audited** — 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, ~11,000 lines, against a measured base rate of 9/41 (Ch 1) and 17/55 (Ch 3). **Wider than BACKLOG §1's "3, 5, 6, 8, 13"** |
+| 7 | **three binaries in `docs/` were not read** — two PDFs and `TEAM_BETA_REVIEW_kfolds_S100.docx`. *If the k-folds review contains a binding ruling, no catalog carries it* |
+| 8 | whether the **S179-authorised KPI governance implementation landed** is still unestablished — no changelog in the entire Gate-12 window mentions KPI. **Not a claim that it did not land** |
+| 9 | ★ **the Gate-12 brief corpus is not in the repository** — from 2026-08-11 the operative briefs and reports were written to **`~/dashboard_work/`**. The changelogs name them precisely, so the trail is traversable, but the artifacts are **host state** |
+| 10 | the skill was stale by its own record — **this revision (v27) is that gap being closed**; it stays open until all three copies are current (§7) |
+| 11 | **window-anchor Implementation Brief I does not exist.** Expected next artifact, **not a defect** |
+| 12 | **fallback parity is UNRESOLVED and pass 2 has never run** — it needs `.127` booted, and Zeus runs one OS at a time |
+| 13 | **the ser8 pre-repository archive has never been inventoried** — completion sentinel `UNAVAILABLE`, VM101 holds no credential ser8 accepts. **This blocks the ~20-changelog backfill that SR-2 defers the numbering decision to** |
+
+### 2.52 FIELD-6 OBSERVABILITY REPAIR — CLOSED / ACCEPTED / COMMITTED (`d8b21e3`)
+
+Beta ACCEPTED 2026-08-20 (`TB_RULING_FIELD6_IMPLEMENTATION.md`). Sequencing item 3 of the Gate-12
+acceptance ruling, and **the last precondition on the Phase-7 soak**. Six files, 967 insertions,
+dual-pushed; **clean-tree battery 52/52, `COMPLETION SENTINEL: PASS`.**
+
+**The diagnosis was narrower than the ruling's wording, and the correction is the useful part.**
+`staging_backpressure_metrics()` had exported both fields via `dict(self._bp)` since `e9ca800`.
+**The metrics dict was never the defect; the emitter was.** Only the `[S172-BP] summary` format
+string — the artifact a production run actually persists — omitted them. *Gate-12 attempt 9 ran the
+instrument and threw the reading away.*
+
+**What shipped** (`miner/range_miner_coordinator.py`, **3 definitions changed, ZERO added** — AST
+proof 289/289; the brief forbade any new `def` in the coordinator):
+
+- **`_bp` seeds `0` → `None`** (`:3731-3732`) — the UNOBSERVED sentinel. `0` conflated *"never
+  measured"* with *"measured a maximum of zero"*.
+- **`_pump_deferred` update made None-aware** (`:8034-8040`) — `obs if prev is None else
+  max(int(prev), obs)`, inline, under `_bp_lock`, still wrapped. **This closes a trap the brief
+  predicted in advance:** the old `int()` cast over a `None` seed raises `TypeError` into a blanket
+  `except`, which would have left both fields `None` forever **while looking like a working
+  feature**.
+- **`log_staging_backpressure_summary`** (`:7315-7316`, `:7336-7343`) — appends both keys to the END
+  of the grep-stable line; integer when observed, literal **`UNOBSERVED`** when `None`
+  (`staging_jobs_per_sec=n/a` precedent). The dict keeps `None` (JSON-safe). Verified
+  non-colliding: `deferred_high_water=` does not match `deferred_distinct_attempts_high_water=`.
+- **Rider (pre-authorized debt):** the `_pump_deferred` docstring corrected to the R-1..R-4 report's
+  recommended wording, riding the first commit that legitimately touched the definition.
+
+**Brief correction found at source, and it is a VIR-style lesson:** the brief's edge case *"a pump
+pass over an empty `_deferred` legitimately records 0"* is **wrong** — `_pump_deferred`
+early-returns under `_admission_lock` before the instrument, so a recorded `0` is unreachable from
+that call site. **Verified, not reasoned.** The None-aware form still does not special-case zero
+away.
+
+**New gates** (`tests/test_s172_staging_backpressure.py`, suite 50 → **52**):
+- **`G-FIELD6`**, three arms, **all values parsed off the EMITTED LINE, never the dict.** Arm 1
+  drives two populations (K=3 and K=6 distinct attempts × 4 frames) and asserts **exactly**
+  `distinct == K` and `probes == frames + 2·(K−1)` — a relation **derived from `_pump_deferred` as
+  read** (R-2 discard-at-grant + R-3 end-of-pass sweep), then corroborated against `gate_g8e`'s
+  existing measurements. Emitted `3/8` and `6/14`. Non-vacuity asserted; `distinct != probes`
+  asserted so M2's detectability is a **fixture fact**. Arm 2: a no-pump run emits literal
+  `UNOBSERVED` on both, dict `None`, adjacency at line end asserted. Arm 3: dict↔line coherence.
+- **`G-MUT-FIELD6`** — M1 hardcoded zeros · M2 transposed arguments · M3 restored `int()` cast. All
+  **APPLIED, EXECUTED, DETECTED**; M3 carries an execution proof independent of the gate's verdict.
+  Mutants rebound against **production module globals** (the A8-B2 escape closed).
+- **Key presence is explicitly insufficient as evidence** — `G-FIELD6` is the gate that proves the
+  values are measurements.
+
+**Three CERTIFIED suites edited outside the brief's enumerated scope — all forced, all RATIFIED:**
+
+| suite | change | result |
+|---|---|---|
+| `test_s172_r1_drain_remedy.py` | `DECLARED_CHANGED` += `log_staging_backpressure_summary` (**provenance: FIELD-6, not R-1**); M9 fixture made None-aware so the mutant stops dying on `TypeError` **before exercising its mutation** | 42/44 → **44/44** |
+| `test_s172_mp1_drain_attribution.py` | same declaration addition, same provenance comment | 37/38 → **38/38** |
+| `test_s172_attempt6_remediation.py` | FAIR-4/0's transcribed `50/50` pin replaced | 77/78 → **78/78** |
+
+**⚑ FAIR-4/0 — RATIFIED AS IMPLEMENTED. DO NOT REVERT TO `50/50`.** The new contract is: subprocess
+succeeds · tally parsed · `passed == total` · the suite's own pass-only completion sentinel present
+· `total >= 50`. **Beta's reasoning goes further than Alpha's and is the durable rule: an exact
+count was NEVER a sound authorization proof.** It detects *cardinality* changes, not *unauthorized*
+changes — an unauthorized swap of one gate for another still reads `50/50`, and two legitimate
+additions falsely red at `52/52`. It conflated **suite health with suite membership/governance**.
+FAIR-4/0's ruled job is:
+
+> **prove the full S172-BP battery ran to its own successful completion, all enumerated checks
+> passed, and the battery has not suffered gross deletion below its certified historical floor.**
+
+**It is NOT the authority on whether newly added checks were authorized** — that comes from the
+governing brief, the diff, scope review, and exact structural gates where those apply. **No
+compensating gate is required.**
+
+**Gate 22 was a transitional red from the dirty tree** (three legitimately modified *tracked* test
+files — the detector reads `git status --porcelain`, so **modified-tracked trips it too, not only
+untracked**). It self-cleared on commit exactly as Beta predicted. **DO NOT WIDEN THE ALLOWLIST** —
+the answer is the same every time this arises.
+
+**The claim boundary is explicit and must be preserved:** *the repair makes the falsifiers
+observable; it does not claim they were observed in Attempt 9.* **First production observation =
+the Phase-7 soak.** Also binding: **no decision logic consumes the new instrumentation.**
+
+**This commit is SR-1's origin case (§1.3)** — the `DECLARED_CHANGED` updates it forced are exactly
+what the standing rule now requires of every future coordinator commit, without a new ruling.
+
+### 2.53 WINDOW-ANCHOR / GENERATOR-PHASE SEPARATION — DESIGN GATE CLOSED AT v1.1
+
+**The repair for Chapter 2's F-4 and the only route out of the §2.21 150-draw confound.** Two Beta
+rulings, two proposal rounds, **design gate CLOSED**; the live design is
+`docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md`. Certified pre-change reference:
+**`gate12-passed-attempt9` = `e9ca800`.**
+
+**⚠ IT STARTED WITH A BETA SEQUENCING ERROR, AND THAT IS WORTH KEEPING.** The Gate-12 acceptance
+ruling said *"perform the window-anchor production merge"* — presupposing a design artifact.
+**Alpha searched both remotes (all refs, unshallowed, including a GitHub-only branch), VM101
+branches/worktrees/stash plus a date-keyed name-agnostic `find`, ser8 `~/Downloads`, and prior chat
+sessions: negative on every surface.** Beta accepted the finding against itself: *"I conflated the
+already-reviewed problem characterization with a completed design."* **What existed was the problem
+(Chapter 2 F-4 CONFIRMED-not-repaired, `AUDIT_STEP1_OFFSET_REACH.md`, §2.21, attack-plan D.1 —
+'described only, not implemented'), never a design.** *Contesting a ruling with evidence is Alpha's
+job (§7); this is the second time it produced a Beta correction.*
+
+**⚑ THE BINDING SEMANTIC CONTRACT — memorize both halves:**
+
+| name | means ONLY | lives |
+|---|---|---|
+| **`window_anchor`** | which observed records form the residue window: `filtered_data[anchor : anchor+window_size]` | **host**, residue construction |
+| **`generator_phase`** | how many generator-state advances occur before the first comparison | **device**, the existing kernel `offset` argument *where one exists* |
+
+**Never reconstructed from one another. Never emulated** — on a variant with no phase input,
+`generator_phase` is **0 / UNSUPPORTED**, and may **not** be faked by changing the anchor, the skip,
+the seed, or the residue slice.
+
+**⚑ THE TERMINOLOGY LAW — and the category error that produced it.** An **anchor** is a window
+*start index*. A **record envelope** is the *union of records* a set of anchors+windows can reach.
+**100 is the historical ANCHOR ceiling; 149 is the historical RECORD-ENVELOPE ceiling** (= 100 + 50
+− 1). They are different categories and are never interchanged — in the design, its configs, its
+tests, or its artifacts.
+
+> **v1.0 wrote `[0,149]` as an anchor range and Beta REJECTED it — "the important semantic
+> correction."** Anchor 149 with window 50 reaches record **198, outside history**. The corrected
+> control domain is **`control_anchor = [0, min(100, N_filtered − window_size)]`.** *Alpha committed
+> the exact anchor/extent category error the design exists to eliminate*, so v1.1 encodes it as a
+> **permanent regression test** (AC3 asserts anchor 149 with window 50 is **NOT** in `control_era`).
+> Any statement of the form *"the sieve can reach index 149"* is about the **envelope** and must
+> never be restated as an anchor bound.
+
+**The rest of the binding design:**
+- **Per-variant generator-phase capability matrix, verified at the worker builders.** *"Forward
+  hybrids receive no offset"* is **TOO BROAD** — `lcg32_hybrid` (inline) and `pcg32_hybrid`
+  (trailing) **do** carry a phase argument; `java_lcg_hybrid`, `minstd_hybrid`,
+  `xorshift32_hybrid`, `xorshift128_hybrid` do **not**; **all covered reverse hybrids carry a
+  trailing `int32(offset)`**, as do all forward and reverse constant variants.
+- **Kernel ABI FROZEN, byte-for-byte, for v1.** The split lives **above** the ABI: residue
+  construction takes `window_anchor`; an existing kernel `offset` arg, where one exists, receives
+  `generator_phase`. If independent phase is ever required for the four no-phase forward hybrids,
+  that is **DEP-ABI-V2** — a separate kernel/parity certification cycle behind its own ruling,
+  **not** an expansion of this proposal, and it must not contaminate the certified 30/30 surface.
+- **`generator_phase = 0` for v1 and for D.1. NOT an Optuna dimension, not WATCHER-tunable** — D.1
+  tests moving the observed-data window into the governed era, and varying phase in the same
+  experiment introduces a second variable. **The old `[0,100]` is neither inherited as a phase
+  bound nor raised to ~7,000.**
+- **Anchor domain is DERIVED from the data**, `0 ≤ window_anchor ≤ N_filtered − window_size`, with
+  an exact machine representation: `{"window_anchor": {"min": 0, "max_cap": null}}` and
+  `effective_max = derived_max if max_cap is null else min(max_cap, derived_max)`. **Widening is
+  impossible by construction, not by policy.** The silent clamp is REMOVED — an out-of-domain
+  anchor raises, naming anchor, domain, session set and dataset sha256.
+- **`search_bounds.offset` is REMOVED from `distributed_config.json` OUTRIGHT** — no shim, no
+  mapping, **no "tombstone comment" (strict JSON has none)**. New-schema inputs containing `offset`
+  **fail loud before assignment or GPU work**; old schema versions fail by version.
+- **The 22-array wall STAYS CLOSED.** `window_anchor` / `generator_phase` / `anchor_era` are
+  **metadata only** — no array added, removed, reordered, retyped or reshaped. **`anchor_era` is
+  PROVENANCE, NOT AUTHORITY**: derived from the resolved dataset/session/anchor relationship and
+  recorded beside the facts that justify it. **An arbitrary `anchor_era="governed"` string is never
+  proof** that the slice is governed.
+- **The Step-3 consumer law is FIREWALLED.** `offset = train_history_len` is a **consumer
+  continuation law** — derived, non-configurable, *not* repealed, parameterized or renamed by this
+  work. It is called **`continuation_phase`** in the design narrative precisely so the historical
+  name collision cannot re-import the ambiguity. Changing it needs its own ruling.
+- **Legacy-engine closure is EXECUTABLE, not a comment.** Header-only freezing of
+  `reverse_sieve_filter.py` was ruled **not sufficient** — infrastructure docs still describe a
+  `reverse_sieve` coordinator job targeting it, so **deadness may not be assumed**. Brief I must
+  determine the route at source, remove/hard-disable it or align the engine, add a **fail-loud
+  historical-only entry guard regardless**, and produce call-graph evidence (AC5).
+- **AC1 proves independence ACTIVELY** — an internal builder/arg-capture test with a **synthetic
+  nonzero phase on a supported ABI**, while the public v1 schema stays fail-closed against nonzero
+  production phase. *Zero-observed-on-both-paths is not independence evidence.*
+- **Comparability caveat, accepted as written:** historical `offset` moved **both** the data window
+  and (on phase-capable kernels) generator state, so **post-separation phase-zero populations are
+  NOT legitimate regression comparators to historical populations.**
+- **D.1 scientific run:** **midday OR evening, never combined**; window size, skip geometry,
+  thresholds, seed domain and trial budget held **constant** between governed and control arms.
+- **`skip_min`/`skip_max` hybrid-search semantics are explicitly OUT of scope** — they stay on the
+  sampler-comparison chain (§8).
+
+**Sequence and current position:** design → **Beta review ✅** → **v1.1 = design gate CLOSED** →
+**Implementation Brief I (worker + schema + capability validation + legacy closure + semantic
+tests) — DOES NOT EXIST YET** → Brief II (optimizer + registry + metadata/provenance + repo-wide
+`offset` consumer audit + D.1 reach demo), which **must start from the accepted Brief-I commit, not
+independently from `e9ca800`** → post-change semantic/parity acceptance → merge → D.1 differential.
+The final acceptance report shows the sequential lineage **and** the full pre/post diff back to
+`e9ca800`.
+
+### 2.54 PHASE 7 IS UNBLOCKED — AND `G-PROD-SHAPE` HAS NEVER RUN
+
+**Phase 7 (S172) is UNBLOCKED as of 2026-08-17**, and its last precondition — the field-6 repair —
+landed at `d8b21e3`. **"Phase 7" is still overloaded** (§2.17c): the Phase 7 marked COMPLETE in
+Chapters 10/12/13 is **WATCHER dispatch integration, Feb 2026**. **S172 Phase 7 is the 25-GPU
+saturation + WATCHER soak.**
+
+**⚠ GATE 12 AND THE PHASE-7 SOAK ARE DIFFERENT RUNS.** Gate 12 is the production-class Step-1
+acceptance run (`--end-step 1`) and it **PASSED at attempt 9**. The soak is the 50-trial WATCHER
+run, and it has **not** happened.
+
+**`tests/gate_s172_prod_shape.py` (336L) — `G-PROD-SHAPE` — is Phase 7's certifying verifier, and
+it is the gate whose ABSENCE caused the defect that produced it.** It verifies that a **real**
+production call shape ran end to end: real WATCHER execution → **manifest defaults** →
+`window_optimizer.py` → real `MultiGPUCoordinator` → RANGE-MINER backend → coordinator staging →
+all required trial phases → committed 22-array NPZ → Step-2 load-back with `fallback_used=False`.
+
+- **It is a VERIFIER, not a driver** — it reads the artifacts and ledger a completed run leaves
+  behind. It cannot launch anything, and nothing about it makes a launch autonomous.
+- **Three anti-fabrication checks:** no `self.staging_dir = …` substitute coordinator · no CLI-only
+  `--miner-output-dir` standing in for the manifest · the canonical staging value **originated from
+  the manifest**. **Every previously-certified miner run failed exactly those three checks** — which
+  is how a defect that killed every production run survived Phase-6 certification.
+- **Status: BUILT · proven red against the failed 2026-08-04 soak log (9 pass / 5 fail) · NOT RUN ·
+  Michael-initiated only (`CLAUDE.md` rule 3) · requires a live 25-daemon fleet.** Report it as
+  **NOT RUN, never PASS** (VIR-1/VIR-5).
+
+**The soak's classification is itself a Beta ruling and it constrains what may be claimed
+afterwards.** It provides:
+1. **the FIRST production observation of both `_bp` falsifier fields** (§2.52) — until then the
+   §2.49 mandated phrasing governs every statement about R-3's scaling model;
+2. observability / autonomy evidence: WATCHER behaviour, fleet stability, operational telemetry;
+3. **the first execution at scale of the S166 in-memory clear — the RAM series across the trials IS
+   the headline result, not throughput** (§2.9).
+
+> **⚠ THE SOAK IS NON-CERTIFYING FOR WINDOW-ANCHOR SEMANTICS.** It is **pre-separation** evidence.
+> It cannot certify F-4 as repaired, governed-era reachability, the new anchor semantics, or the
+> scientific validity of Step-1 results under the future geometry, **and it must not later be cited
+> as acceptance evidence for the window-anchor merge** (§2.53). That merge gets its own targeted
+> acceptance after it lands.
+
+**Launch conditions that have not changed** (§8): `--start-step 1 --end-step 1` MANDATORY ·
+`n_parallel = 1` BINDING · 25 frozen identities (`bea580e76490`) · `> log 2>&1` · the abort signal
+is `STEP 2: Scorer Meta-Optimizer (run #N)`, **not** *"Triggering Step 2"* which is benign and
+expected · no Chapter-13 retrain approval during the soak · the **GCVM_L2 criterion reports
+`UNAVAILABLE`, never `PASS`** (§2.17) · **RANGE-MINER still has no worker-launch mechanism** — the
+fleet is hand-started via `scripts/launch_fleet_manual.sh`.
 
 ## 3. SUPERSEDED — in repo, NOT current
 
 > **The full register is `docs/PROJECT_FILE_CATALOG.md` §6.** §6.1 superseded facts and targets —
 > **with a *cite-instead* column and a source per row, which v12's bare list here did not have**;
 > §6.2 the v1 catalog's Runtime Data table (**wrong in every row**); §6.3 superseded document
-> **versions** — 17 lineages, *read the last one only*; §6.4 whole-document staleness warnings.
+> **versions** — 17 lineages, *read the last one only*; §6.4 whole-document staleness warnings;
+> **§6.5 — ★ statements that were true on 2026-08-03 and are FALSE NOW.** Read §6.5 before citing
+> any status from the pre-Gate-12 era: *Gate 12 pending/held/failing* · *the Phase-7 soak is
+> blocked* · *MP-1 is open* · *a window-anchor design exists* · *`tests/` has 33 entries* (it has
+> 51) · *the CA draw-procedures PDF exists only as a citation* (it is committed at
+> `docs/reference/CA_DAILY_SLP_DRAW_PROCEDURES_20210609.pdf`) · *`daily3_scraper.py` has never been
+> in git history* (tracked at `334dacf`; its **design document** still does not exist) — **every one
+> of those is now wrong.**
 > **Verified this session: §6.1 carries 11 of v12's 14 entries with equal or better anchoring, and
 > four more v12 never had.**
 
@@ -2636,6 +2989,13 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
   - **Each was caught by the owner, not by Alpha.** If the owner is performing the verification,
     the rule is not being followed.
 - **Stage explicitly, never `git add -a`.**
+- **⚑ SR-1 IS AN OPERATIONAL STEP, NOT JUST A RULE (§1.3).** Before any commit that changes a
+  definition in `miner/range_miner_coordinator.py`, check whether a historical exact live-vs-anchor
+  scope gate covers it, and update **every** affected `DECLARED_CHANGED` set **in the same commit**,
+  each new entry carrying provenance naming the change that owns it. **Do not move the anchor. Do
+  not relax the exact comparison.** Field-6 (`d8b21e3`) forced three certified suites this way and
+  Beta ratified all three — **no per-commit ruling is needed any more, but the maintenance is not
+  optional.**
 - **OWNER RULE (2026-08-06, binding): when Beta offers multiple acceptable mechanisms,
   Alpha takes the structurally STRONGER one — the one whose properties hold by construction
   rather than by inference. Diff size is NEVER a tiebreaker against correctness-by-
@@ -2669,7 +3029,8 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
   before the cause was found. Give every upload a unique name. `.diff` and `.png` were 100%
   reliable; repeated `.txt`/`.md` names were not. **The repository is the fallback channel**:
   commit and push, then the reader clones — that path has never failed.
-- Session changelog to `docs/`; dual-push `origin` (private) + `public` (mirror) —
+- **Session changelog to `docs/`, named `SESSION_CHANGELOG_YYYYMMDD_<TOPIC>.md` — SR-2 (§1.3),
+  binding since 2026-08-18. NO new S-numbers.** Dual-push `origin` (private) + `public` (mirror) —
   **everything pushed is effectively public.**
 - **⚠ A SKILL REVISION LIVES IN THREE PLACES. Committing it updates ONE.**
 
@@ -2694,6 +3055,14 @@ Proxmox host (`root@.121`). `daily3.json` is **gitignored** — clone alone can'
 
   **A running chat session cannot be updated at all** — its copy is fixed at session start. **Start
   a fresh session after any revision that matters.**
+
+  **⚠ IT HAPPENED AGAIN — measured 2026-08-20 at the start of the v27 pass.** The tracked copy was
+  **v26**; `~/.claude/skills/tfm-project-facts/SKILL.md` was still **v23, 2026-08-10** (2,124 lines
+  against the tracked 2,810). **Three revisions and ten days of Gate-12 history — attempts 3
+  through 9, the pass itself, the clean-tree admission repair, the stale-rig discovery — had never
+  reached the copy Claude Code actually loads.** A session invoking the skill that morning was
+  reading a world in which Gate 12 had failed twice and Phase 7 was held. **The currency line is
+  the only signal there is; step 2 of the four-step procedure is the one that gets skipped.**
 - Prefer **Claude Code on VM101** for as-built questions — live source **and** live host. A
   clone is repo-only (VIR-6); chat-side reasoning is provisional.
 - Briefs: one falsifiable question, a defined deliverable, "write the report to
@@ -2722,10 +3091,22 @@ Resolved Execution Set ✅ 63e627f · admission binding ✅ eff6616
 process_sharded import gate ✅ e0513ba — D5 25/25
 D6.2 ✅ CERTIFIED 18a2419 — n_parallel == 1 ONLY
 Phase 7 prerequisites ✅ closed on measurement; item 1 WAIVED by owner (25 GPUs)
-now    S172-BP F1 round-3 fix-forward (token + pre-decode barrier) → Beta delta
-       review → commit+dual-push → gate-12 production shape (4-stripe/25-daemon,
-       MICHAEL-INITIATED) → then Phase 7 SOAK. Beta HOLDS gate 12 and the soak.
-       Soak spec when authorized: 50 trials, ≥5 high + ≥5 low
+GATE 12 ✅ PASSED attempt 9, launch e9ca800, tag gate12-passed-attempt9,
+        Beta-ACCEPTED 2026-08-17 (§2.49). MP-1 drain starvation CLOSED.
+field-6 observability repair ✅ CLOSED d8b21e3 — 52/52 clean tree (§2.52)
+window-anchor design gate ✅ CLOSED at proposal v1.1 (§2.53)
+now    TWO PARALLEL TRACKS, both open, neither started:
+       (a) PHASE 7 SOAK — UNBLOCKED, MICHAEL-INITIATED, needs a live 25-daemon
+           fleet (launch_fleet_manual.sh; RANGE-MINER has no launch mechanism).
+           Certifying verifier G-PROD-SHAPE: built, proven red, NOT RUN (§2.54).
+           Delivers the FIRST production observation of both _bp falsifiers —
+           until then the §2.49 mandated phrasing governs every R-3 statement.
+           NON-CERTIFYING for window-anchor semantics; never cite it as merge
+           acceptance evidence.
+       (b) WINDOW-ANCHOR Implementation Brief I — the next artifact, and it
+           DOES NOT EXIST YET. Brief II starts from the accepted Brief-I commit,
+           not independently from e9ca800.
+       Soak spec: 50 trials, ≥5 high + ≥5 low
        survivor, mixed const/hybrid, 25 frozen identities (bea580e76490),
        n_parallel=1 BINDING, serial_reference. FIRST execution ever with the
        S166 clear enabled — the RAM series across 50 trials IS the result.
@@ -2743,6 +3124,12 @@ next   D3.0-B — OPEN, TB requires completion; blocks legacy-writer use only
        6-P2 (scraper — REV4 with Beta; option (a) BINDING)
        D6.3 (retention — non-blocking, ~10.7 KB/run measured)
        NP2 checkpoint transaction design (NEW, separate)
+       .s172_accumulator/generations/ backup policy — BACKLOG §19, ruled real,
+         ruled non-blocking, UNOWNED. Git is explicitly not that backup and the
+         NPZ payloads must not go back into git to fake one.
+       WATCHER failure-authority defect — still open, untouched
+       ser8 archive inventory — UNAVAILABLE, and it BLOCKS the ~20-changelog
+         backfill that SR-2 defers the S-numbering decision to (§1.3)
 ```
 
 **⚠ Sampler-comparison sequencing — a correction TB issued against Alpha.** The certifying
@@ -2760,8 +3147,10 @@ datapoint and useful directional evidence, **not** a certification of superiorit
 authority for autonomous sampler selection.
 
 **Open backlog → `docs/BACKLOG.md` is the register.** It is maintained; this paragraph is not.
-*(Chapter 2 restore-and-audit is CLOSED — `ef4b1c6` + content gate `09bbfbf`. The unaudited
-chapters are **3, 5, 6, 8, 13**, not "3–7".)* The `java_lcg_cpu` non-zero-skip mismatch
+*(Chapter 2 restore-and-audit is CLOSED — `ef4b1c6` + content gate `09bbfbf`.* **⚠ CORRECTED
+2026-08-20: the unaudited set is WIDER than BACKLOG §1's "3, 5, 6, 8, 13" — catalog §7 gap 6
+enumerates ELEVEN never-audited chapters: 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 and 14, ~11,000 lines,
+against a measured base rate of 9/41 accurate claims in Chapter 1 and 17/55 in Chapter 3.**) The `java_lcg_cpu` non-zero-skip mismatch
 (`survivor_scorer.py:124` / `full_scoring_worker.py:305`) remains a **separate bounded audit, no
 fix authorized** — see the Wall C caution below.
 **Wall C caution:** `java_lcg_cpu` (`prng_registry.py:170-183`) applies skip **once before
@@ -2774,8 +3163,12 @@ variable-skip. An inventory is establishing what exists before anything is scope
 **Hard Phase-7 prerequisites — SATISFIED.** 6-P0 ✅ · 6-P0.5 ✅ · D6.2 ✅ CERTIFIED `18a2419`.
 **D6.3 and 6-P2 are NOT Phase-7 blockers** (TB): D6.3's growth is ~10.7 KB/run measured, and the
 miner-backed soak does not invoke the scraper. **D3.0-B is OPEN but blocks only legacy-writer use**
-(§2.18). **The soak is HELD by Beta pending the S172-BP F1 round-3 delta (§2.19)** — the earlier
-"authorized and launching" state was interrupted by the 2026-08-05 staging incident.
+(§2.18). **⚠ CORRECTED 2026-08-20 — the soak is NO LONGER HELD.** Beta released it in the Gate-12
+acceptance ruling; its last precondition, the field-6 repair, landed at `d8b21e3`. **It is now
+gated only on Michael initiating it against a live 25-daemon fleet, and on `G-PROD-SHAPE`, which
+has never run (§2.54).** *(v26 still carried the pre-Gate-12 "Beta HOLDS gate 12 and the soak"
+wording here — a live example of §1.2: a document that was right when written is the least reliable
+source on whether the thing it describes has since happened.)*
 **Optuna:** constant-skip **may resume**; hybrid exploration **non-certifying only**; hybrid
 certification **blocked** until skip bounds are live; authoritative studies need provenance
 binding.
@@ -2805,6 +3198,16 @@ binding.
 15. **A ruling that says "decide X" is decided in THAT revision, not the next one.** *(Twice in
     D6.2.)*
 16. Long thread? Verification discipline degrades — suggest a fresh session.
-17. **Target: any brief closes in ≤3 review rounds.** D6.2 took five, 6-P2 took four, and **every
+17. **Did I touch a coordinator definition without updating its `DECLARED_CHANGED` set?** (SR-1,
+    §1.3) *And did every added entry carry provenance naming the change that owns it?*
+18. **Naming a new changelog? `SESSION_CHANGELOG_YYYYMMDD_<TOPIC>.md`, no S-number.** (SR-2, §1.3)
+19. **Did I write `[0,149]` — or any record-envelope figure — as if it were an ANCHOR range?**
+    (§2.53) *100 is the anchor ceiling; 149 is the record-envelope ceiling. Alpha committed exactly
+    this category error inside the design written to eliminate it, and Beta caught it.*
+20. **Am I citing the Phase-7 soak as evidence for something it is non-certifying for?** (§2.54)
+    *It cannot certify window-anchor semantics, F-4 repair, or governed-era reachability.*
+21. **Am I about to state R-3's complexity result in my own words?** Use the §2.49 mandated
+    phrasing verbatim until the falsifiers are observed in production.
+22. **Target: any brief closes in ≤3 review rounds.** D6.2 took five, 6-P2 took four, and **every
     round was an Alpha defect, not reviewer padding.** The import gate closed in one — because the
     existing gate was read in full before the brief was written. **Read first, then draft.**
