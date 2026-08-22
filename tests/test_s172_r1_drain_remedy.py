@@ -2136,7 +2136,27 @@ DECLARED_CHANGED = {
     "RangeMinerCoordinator.log_staging_backpressure_summary",
     "RangeMinerCoordinator._pump_deferred",
     # the two `_bp` seed values for the complexity falsifier
-    "RangeMinerCoordinator.__init__"}
+    "RangeMinerCoordinator.__init__",
+    # [WINDOW-ANCHOR BRIEF I] NOT R-1's change. SR-1: the proof compares LIVE
+    # source against the pinned anchor, so every later authorized commit that
+    # touches this module must be declared here or the proof reds forever. These
+    # nine carry the `offset` -> `window_anchor` + `generator_phase` separation
+    # (TB ruling 2026-08-20 design gate; scope items ruled 2026-08-21). The
+    # anchor does NOT move and `changed == DECLARED_CHANGED` stays EXACT.
+    "MinerLedger._init_db",
+    "MinerLedger.set_trial_context",
+    "_trial_context_row_to_ctx",
+    "_canonicalize_trial_context",
+    "build_trial_context_from_serve",
+    "derive_trial_metadata",
+    "RangeMinerCoordinator.build_stripe_assign_payload",
+    "RangeMinerCoordinator._dispatch_pending",
+    "run_trial_miner",
+    # serve_trial is ALREADY in MP-1's declaration from the FIELD-6 pass but was
+    # never in R-1's, because R-1's anchor predates that change and R-1 did not
+    # touch it. Brief I does, so it is declared here for the first time.
+    "RangeMinerCoordinator.serve_trial",
+}
 # EMPTY, AND NOT BY ACCIDENT. MP-1's certified `gate_e2_ast_scope_proof`
 # asserts this module's ADDED-definition set EXACTLY against its own pinned
 # anchor, so any new `def` here — including a well-named recorder method — reds

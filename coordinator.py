@@ -830,7 +830,15 @@ class MultiGPUCoordinator:
                     f"python -u sieve_filter.py --job-file {job_file} --gpu-id 0"
                 ).strip()
             elif job.search_type == 'reverse_sieve':
-                # Direct call to reverse_sieve_filter.py
+                # [WINDOW-ANCHOR BRIEF I §2.4] Route CLOSED.
+                raise RuntimeError(
+                    "LEGACY_FUSED_ENGINE_CLOSED: refusing to dispatch the legacy "
+                    "fused reverse sieve (reverse_sieve_filter.py). Closed by the "
+                    "window-anchor / generator-phase separation; see "
+                    "docs/S172_WINDOW_ANCHOR_BRIEF_I.md §2.4. This route is "
+                    "hard-disabled, not skipped — a silent skip would look like a "
+                    "job that ran and found nothing.")
+                # Unreachable, retained so the historical dispatch is auditable:
                 cmd_str = (
                     f"source {activate_path} && "
                     f"CUDA_VISIBLE_DEVICES={worker.gpu_id} "

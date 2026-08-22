@@ -1464,7 +1464,8 @@ def rxp2_arm3_exhaustion_is_a_trial_terminal_not_a_shed():
                     result["out"] = run_trial_miner(
                         "cfgSAT", None, 1, "java_lcg", [1, 2, 3], 100,
                         0.25, 0.25, False, ds,
-                        skip_min=0, skip_max=0, window_size=3, offset=0,
+                        skip_min=0, skip_max=0, window_size=3,
+                        window_anchor=0, generator_phase=0,
                         worker_pool_size=1, miner_stripe_size=100,
                         staging_dir=os.path.join(tmp, "staging"),
                         listen_sock=lsock, family_name="java_lcg",
@@ -3188,7 +3189,8 @@ def _fairness_run(tmp, m_seconds, n_workers=2, serve_timeout=25.0,
         try:
             holder["out"] = run_trial_miner(
                 "cfgFAIR", None, 1, "java_lcg", [1, 2, 3], 200, 0.25, 0.25,
-                False, ds, skip_min=0, skip_max=0, window_size=3, offset=0,
+                False, ds, skip_min=0, skip_max=0, window_size=3,
+                window_anchor=0, generator_phase=0,
                 worker_pool_size=n_workers, miner_stripe_size=100,
                 seed_cap_nvidia=10, seed_cap_nvidia_hybrid=10,
                 staging_dir=os.path.join(tmp, "staging"),
@@ -3401,6 +3403,32 @@ def fair12_arm7_red_count_bound_admits_the_violation():
                      f"<pinned {PINNED_COMMIT} {name}>", "exec"), g)  # noqa: S102
     pinned_serve, pinned_reader = g["serve_trial"], g["_conn_reader_loop"]
 
+    # [WINDOW-ANCHOR BRIEF I] PINNED-SOURCE ADAPTER — TEST-LOCAL, NEVER PRODUCTION.
+    #
+    # This arm executes control-plane source pinned at 2b0d2dc against the LIVE
+    # helper functions. The window-anchor separation changed one of those helpers:
+    # `build_trial_context_from_serve` now projects `window_anchor` +
+    # `generator_phase` and no longer emits `offset`, while the PINNED serve_trial
+    # still reads `trial_ctx["offset"]`. Without this bridge the pinned thread dies
+    # on KeyError before the probe records a mark, and the arm reports "the pinned
+    # control plane never ran" — an infrastructure failure that reads exactly like
+    # the timing regression the arm exists to detect.
+    #
+    # THE BRIDGE LIVES IN THE PINNED EXECUTION'S OWN GLOBALS (`g`), so it is visible
+    # ONLY to the exec'd historical functions. Production is untouched, no other
+    # test sees it, and the hard-reject on the legacy key is unaffected: this is not
+    # a compatibility shim on any live path, it is a translation layer for running
+    # frozen source. The pinned code's semantics are unchanged — at this arm's
+    # `window_anchor=0` the historical scalar and the anchor are the same number,
+    # which is exactly the pre-separation coincidence, reproduced deliberately.
+    _live_build_ctx = COORD.build_trial_context_from_serve
+
+    def _pinned_trial_context(context, dataset_sha256, residue_sha256):
+        ctx = _live_build_ctx(context, dataset_sha256, residue_sha256)
+        return {**ctx, "offset": ctx["window_anchor"]}
+
+    g["build_trial_context_from_serve"] = _pinned_trial_context
+
     N, m = 24, 0.05        # N x m = 1.2 s of drain the count bound cannot stop
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         ds = os.path.join(tmp, "dataset.json")
@@ -3414,6 +3442,36 @@ def fair12_arm7_red_count_bound_admits_the_violation():
                               seed_cap_nvidia_hybrid=10), ledger)
         # the PINNED reader, so the tuple widths on both ends agree
         coord._conn_reader_loop = types.MethodType(pinned_reader, coord)
+
+        # [WINDOW-ANCHOR BRIEF I] SECOND AND LAST PINNED-SOURCE BRIDGE.
+        #
+        # The coupling surface was ENUMERATED, not discovered one failure at a
+        # time: pinned serve_trial calls exactly three names Brief I touched —
+        #   build_trial_context_from_serve(3 pos)  -> bridged in `g` above (schema)
+        #   self.set_trial_context(2 pos)          -> NO bridge needed; Brief I
+        #                                             changed its body, not its arity
+        #   self._dispatch_pending(14 pos)         -> bridged here (signature)
+        # Brief I inserted `generator_phase` into _dispatch_pending's positional
+        # list, so the pinned 14-argument call is one short and dies on TypeError
+        # before a stripe is ever assigned.
+        #
+        # INSTANCE-SCOPED: this shadows the bound method on THIS coordinator only.
+        # Production and every other test see the real signature. The inserted
+        # value is the v1 pin, which is what the pinned code would have carried
+        # had the field existed.
+        _live_dispatch = coord._dispatch_pending
+
+        def _pinned_dispatch(run_id, family_name, phase, fs_by_worker, dispatched,
+                             dataset_path, dataset_sha256, window_size, sessions,
+                             window_anchor, residues, trial_number,
+                             forward_threshold, reverse_threshold):
+            return _live_dispatch(
+                run_id, family_name, phase, fs_by_worker, dispatched, dataset_path,
+                dataset_sha256, window_size, sessions, window_anchor,
+                0,                      # generator_phase — the v1 pin
+                residues, trial_number, forward_threshold, reverse_threshold)
+
+        coord._dispatch_pending = _pinned_dispatch
         lsock = socket.socket()
         lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         lsock.bind(("127.0.0.1", 0))
@@ -3428,7 +3486,8 @@ def fair12_arm7_red_count_bound_admits_the_violation():
             "residues": [1, 2, 3], "total_seeds": 200, "dataset_path": ds,
             "forward_threshold": 0.25, "reverse_threshold": 0.25,
             "skip_min": 0, "skip_max": 0, "test_both_modes": False,
-            "worker_pool_size": 1, "window_size": 3, "offset": 0,
+            "worker_pool_size": 1, "window_size": 3,
+            "window_anchor": 0, "generator_phase": 0,
             "sessions": None, "staging_dir": os.path.join(tmp, "staging"),
             "listen_sock": lsock, "serve_poll": 0.1, "serve_timeout": 30.0,
             "serve_read_deadline": 15.0,
@@ -3488,7 +3547,8 @@ def fair12_arm8_config_terms_fail_closed():
         family_name="java_lcg", phase=1, workflow_stages=[("java_lcg", 1)],
         residues=[1, 2, 3], total_seeds=10, dataset_path="/nonexistent",
         forward_threshold=0.25, reverse_threshold=0.25, skip_min=0, skip_max=0,
-        test_both_modes=False, worker_pool_size=1, window_size=3, offset=0,
+        test_both_modes=False, worker_pool_size=1, window_size=3,
+        window_anchor=0, generator_phase=0,
         sessions=None, serve_poll=0.1, serve_timeout=1.0,
         serve_read_deadline=15.0,
         worker_admission_timeout=COORD.DEFAULT_WORKER_ADMISSION_TIMEOUT,

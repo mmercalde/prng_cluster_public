@@ -569,13 +569,38 @@ def gate_source_anchors(chapter=None):
     assert ":1004" not in text or "closing" in text, \
         "the withdrawn :1004 default-params anchor is back without its correction"
 
-    # --- §7.2's two offset consumers still exist ---------------------------
+    # --- §7.2.1's two SEPARATED consumers exist ----------------------------
+    #
+    # REPOINTED, not relaxed. These two assertions previously required the FUSED
+    # consumers (`def _offset_tail`, `min(int(offset), n - window_size)`) to be
+    # present in worker source — a tripwire on the F-4 defect. Window-Anchor
+    # Brief I repaired F-4, so the tripwire fired exactly as designed and its own
+    # message asked for the finding to be re-verified. It was: the fused pair is
+    # gone and the SEPARATED pair is what must now be asserted.
+    #
+    # Self-exclusion: the probe reads WORKER, never this file, which contains both
+    # search strings in its own source. Asserted rather than assumed, because a
+    # probe that reads its own file is green on a fact it does not check.
     wsrc = _read(WORKER)
-    assert "def _offset_tail" in wsrc, \
-        "§7.2's device-side offset consumer (_offset_tail) is gone from source"
-    assert "min(int(offset), n - window_size)" in wsrc, (
-        "§7.2's host-side offset consumer (the residue-window slice) changed — "
-        "the F-4 dual-consumer finding must be re-verified")
+    assert os.path.abspath(os.path.join(_ROOT, WORKER)) != os.path.abspath(__file__), \
+        "the source probe is pointed at this gate file, not at the worker"
+
+    # device side: the phase reaches the kernel through the frozen slot
+    assert "def _generator_phase_tail" in wsrc, (
+        "§7.2.1's device-side consumer (_generator_phase_tail) is gone from source "
+        "— the generator phase no longer has a named delivery surface")
+    # host side: the anchor is VALIDATED against a derived domain, never clamped
+    assert "if anchor < 0 or anchor > derived_max:" in wsrc, (
+        "§7.2.1's host-side anchor validation is gone from source — if the clamp "
+        "returned, F-4 returned with it")
+    assert "min(int(offset), n - window_size)" not in wsrc, (
+        "the FUSED clamp is back in worker source — §7.2.1 describes a separation "
+        "that no longer exists")
+
+    # :578 — RETAINED. F-4 must stay in the chapter; the finding is re-disposed,
+    # never deleted. (Known weak: keyword presence over a 1,463-line document.
+    # Recorded as follow-up debt, deliberately NOT repaired here — see the Brief I
+    # report; this gate is not being redesigned.)
     assert "F-4" in text and "offset" in text, "§7 lost the F-4 offset finding"
 
 

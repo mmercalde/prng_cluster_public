@@ -1178,7 +1178,8 @@ def gate11_capacity_timeout_terminates_outside_the_matrix():
                     transfer=transfer, listen_sock=lsock,
                     family_name="java_lcg", workflow_phase=1,
                     miner_stripe_size=80, seed_cap_nvidia=10,
-                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
+                    window_size=3,
                     # 2 staging slots, both held forever by the gated fetch; an
                     # explicit override of 1 closes the hysteresis low-water.
                     staging_workers=2, staging_queue_depth=0,
@@ -2460,7 +2461,8 @@ def gate_summary_never_masks_the_sizing_terminal():
                     transfer=transfer, listen_sock=lsock,
                     family_name="java_lcg", workflow_phase=1,
                     miner_stripe_size=80, seed_cap_nvidia=10,
-                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
+                    window_size=3,
                     staging_workers=2, staging_queue_depth=0,
                     staging_high_water_bytes=64 * 1024 * 1024,
                     serve_timeout=45.0)
@@ -2912,7 +2914,8 @@ def _bound_derivation_failure_arm(label, exc_name, mangle):
                     transfer=transfer, listen_sock=lsock,
                     family_name="java_lcg", workflow_phase=1,
                     miner_stripe_size=80, seed_cap_nvidia=10,
-                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
+                    window_size=3,
                     staging_workers=2, staging_queue_depth=0,
                     staging_high_water_bytes=64 * 1024 * 1024,
                     serve_timeout=45.0)
@@ -4188,7 +4191,8 @@ def _prov_serve_fail_closed(tmp):
                 staging_dir=os.path.join(tmp, "prov_stg"), phase5_sink=sink,
                 listen_sock=lsock, family_name="java_lcg", workflow_phase=1,
                 miner_stripe_size=20, seed_cap_nvidia=10,
-                skip_min=0, skip_max=0, offset=0, window_size=3,
+                skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
+                window_size=3,
                 staging_high_water_files=None,          # would be ADMITTED
                 staging_high_water_bytes=64 * 1024 * 1024,
                 serve_timeout=45.0)
@@ -4627,7 +4631,8 @@ def gate_trial_retention_preflight_dispatches_nothing():
                     staging_dir=os.path.join(tmp, "stg"), phase5_sink=sink,
                     listen_sock=lsock, family_name="java_lcg", workflow_phase=1,
                     miner_stripe_size=20, seed_cap_nvidia=10,
-                    skip_min=0, skip_max=0, offset=0, window_size=3,
+                    skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
+                    window_size=3,
                     # 80 seeds / 20 = 4 stripes, each ceil(20/10)=2 sub-stripes
                     # => 8 files required for the one planned stage. A ceiling of
                     # 1 cannot retain it.

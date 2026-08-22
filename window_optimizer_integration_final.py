@@ -1504,7 +1504,25 @@ def run_bidirectional_test(coordinator,
             # 1/0/None and letting present-but-wrong metadata reach Phase 5.
             window_size            = config.window_size,
             sessions               = config.sessions,
-            offset                 = config.offset,
+            # [WINDOW-ANCHOR BRIEF I §2.2 — MINER INGRESS, SCOPE DISCLOSED]
+            # `run_trial_miner` carries a `**kwargs` tail, so after the rename an
+            # `offset=` here would be SILENTLY SWALLOWED — the §2.7 instance-7
+            # shape (the four staging controls accepted and never applied). The
+            # run then fails closed downstream on a missing window_anchor, which
+            # is safe but leaves the miner path undriveable, so the two kwargs
+            # move here with the coordinator.
+            #
+            # BOUNDED DELIBERATELY: `WindowConfig.offset` is NOT renamed and the
+            # Optuna surface is NOT touched — both are Brief II (§3 firewall).
+            # At THIS call site `config.offset` has always meant the residue
+            # window's start index, so it is the window_anchor; the name catches
+            # up in Brief II.
+            window_anchor          = config.offset,
+            # v1 policy pin, stated EXPLICITLY by the caller. The parameter
+            # defaults to None precisely so production has to say 0 rather than
+            # inherit it — a pinned field that defaults silently records a phase
+            # nobody chose. build_stripe_assign_payload re-checks it.
+            generator_phase        = 0,
             # D0 seam: the skip bounds were the one WindowConfig pair still dropped
             # here (window_size/offset/sessions were wired, skip_min/skip_max were
             # not) — thread them from the resolved WindowConfig so every published

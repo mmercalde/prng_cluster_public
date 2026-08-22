@@ -1420,6 +1420,21 @@ DECLARED_CHANGED = {
     "RangeMinerCoordinator._serve_dispatch",
     "RangeMinerCoordinator._pump_deferred",
     "RangeMinerCoordinator.serve_trial",
+    # [WINDOW-ANCHOR BRIEF I] NOT MP-1's change. SR-1: the proof compares LIVE
+    # source against the pinned anchor, so every later authorized commit that
+    # touches this module must be declared here or the proof reds forever. These
+    # nine carry the `offset` -> `window_anchor` + `generator_phase` separation
+    # (TB ruling 2026-08-20 design gate; scope items ruled 2026-08-21). The
+    # anchor does NOT move and `changed == DECLARED_CHANGED` stays EXACT.
+    "MinerLedger._init_db",
+    "MinerLedger.set_trial_context",
+    "_trial_context_row_to_ctx",
+    "_canonicalize_trial_context",
+    "build_trial_context_from_serve",
+    "derive_trial_metadata",
+    "RangeMinerCoordinator.build_stripe_assign_payload",
+    "RangeMinerCoordinator._dispatch_pending",
+    "run_trial_miner",
 }
 DECLARED_ADDED = {
     "ServeLoopTiming._reset_window",

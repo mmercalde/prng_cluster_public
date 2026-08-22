@@ -287,6 +287,14 @@ def execute_analysis_job(job_data: Dict[str, Any], args) -> Dict[str, Any]:
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
                 json.dump(job_data, f, indent=2)
                 job_file = f.name
+            # [WINDOW-ANCHOR BRIEF I §2.4] Route CLOSED.
+            raise RuntimeError(
+                "LEGACY_FUSED_ENGINE_CLOSED: refusing to dispatch the legacy "
+                "fused reverse sieve (reverse_sieve_filter.py). Closed by the "
+                "window-anchor / generator-phase separation; see "
+                "docs/S172_WINDOW_ANCHOR_BRIEF_I.md §2.4. Hard-disabled, not "
+                "skipped — a silent skip would look like a job that ran and "
+                "found nothing.")
             try:
                 cmd = f"python3 reverse_sieve_filter.py --job-file {job_file} --gpu-id {args.gpu_id}"
                 proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)

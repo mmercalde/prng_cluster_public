@@ -743,7 +743,7 @@ def _ctx(**over):
     reconstruct a complete trial_metadata. Blocker 1 now FAILS CLOSED when the
     durable trial_context row is absent, so every gate that PUBLISHES must persist
     this first — production always does via serve_trial/build_trial_context_from_serve."""
-    c = dict(trial_number=7, window_size=5, offset=2,
+    c = dict(trial_number=7, window_size=5, window_anchor=2, generator_phase=0,
              sessions=["midday", "evening"], skip_min=1, skip_max=9,
              prng_base="java_lcg", forward_threshold=0.40, reverse_threshold=0.45,
              dataset_sha256="d" * 64, residue_sha256="r" * 64)
@@ -1560,7 +1560,8 @@ def gate20_resolver_end_to_end():
 
             # payload carries BOTH mandatory hashes; dataset_sha256 is deliberately WRONG
             payload = coord.build_stripe_assign_payload(
-                dataset_path=ds, window_size=3, sessions=None, offset=0,
+                dataset_path=ds, window_size=3, sessions=None, window_anchor=0,
+                generator_phase=0,
                 residues=[1, 2, 3], dataset_sha256="deadbeef_wrong",
                 # [S172 D6] phase + both directional thresholds are REQUIRED
                 # keyword-only args — a payload can no longer be built without
@@ -2667,10 +2668,10 @@ def gate37_serve_path_two_workers():
                     # the entry point; a serve-path gate that legitimately runs with
                     # zero skip must pass skip_min/skip_max=0 explicitly.
                     skip_min=0, skip_max=0,
-                    # D0 Blocker (REV4): window_size/offset are now fail-closed too;
-                    # this serve-path gate must supply offset explicitly (window_size
-                    # already passed).
-                    offset=0,
+                    # D0 Blocker (REV4): window_size/window_anchor/generator_phase
+                    # are fail-closed too; this serve-path gate must supply them
+                    # explicitly (window_size already passed).
+                    window_anchor=0, generator_phase=0,
                     workflow_phase=3, window_size=3, serve_timeout=20.0)
             except Exception:
                 holder["err"] = traceback.format_exc()
@@ -3220,7 +3221,7 @@ def gate47_production_call_shape_two_trials():
     class _Cfg:
         window_size = 5
         sessions = ["evening", "midday"]
-        offset = 3
+        window_anchor = 3
 
     captured = []
 
@@ -3236,7 +3237,8 @@ def gate47_production_call_shape_two_trials():
         captured.append({
             "run_id": ctx["run_id"], "config": coord.config,
             "workflow_stages": ctx["workflow_stages"], "window_size": ctx["window_size"],
-            "sessions": ctx["sessions"], "offset": ctx["offset"],
+            "sessions": ctx["sessions"], "window_anchor": ctx["window_anchor"],
+            "generator_phase": ctx["generator_phase"],
             "staging_dir": ctx["staging_dir"],
             "stripe_ids": [x["stripe_id"] for x in a],
         })
@@ -3257,7 +3259,8 @@ def gate47_production_call_shape_two_trials():
                 staging_high_water_bytes=123, staging_high_water_files=9,
                 compute_lease_timeout=42.0, staging_timeout=99.0,
                 miner_host="0.0.0.0", miner_port=5700, node_allowlist=None,
-                window_size=_Cfg.window_size, sessions=_Cfg.sessions, offset=_Cfg.offset,
+                window_size=_Cfg.window_size, sessions=_Cfg.sessions,
+                window_anchor=_Cfg.window_anchor, generator_phase=0,
                 _serve=_capture)
         c0, c1 = captured
         assert c0["run_id"] != c1["run_id"]                       # distinct run_ids
@@ -3265,7 +3268,7 @@ def gate47_production_call_shape_two_trials():
         assert c0["workflow_stages"] == workflow_stages_for("java_lcg", True)
         assert len(c0["workflow_stages"]) == 4                    # four families driven
         assert c0["window_size"] == 5 and c0["sessions"] == ["evening", "midday"]
-        assert c0["offset"] == 3                                  # window params not dropped
+        assert c0["window_anchor"] == 3                           # window params not dropped
         assert c0["config"].miner_host == "0.0.0.0"              # remote-reachable bind
         assert c0["config"].staging_high_water_bytes == 123
         assert c0["staging_dir"] == stg                           # defaulted from miner_output_dir
@@ -3509,8 +3512,8 @@ def _run_serve_thread(tmp, ds, sink, lsock, **kw):
                 listen_sock=lsock, family_name="java_lcg_hybrid", workflow_phase=3,
                 # D0 Blocker 2 (REV3): explicit zero skip on the serve-path gate.
                 skip_min=0, skip_max=0,
-                # D0 Blocker (REV4): explicit offset on the serve-path gate.
-                offset=0,
+                # D0 Blocker (REV4): explicit window params on the serve-path gate.
+                window_anchor=0, generator_phase=0,
                 window_size=3, **kw)
         except Exception:
             holder["err"] = traceback.format_exc()
@@ -3851,8 +3854,8 @@ def gate57_variant_filtered_scheduling():
                     family_name="mt19937", workflow_phase=1,   # NO worker supports it
                     # D0 Blocker 2 (REV3): explicit zero skip on the serve-path gate.
                     skip_min=0, skip_max=0,
-                    # D0 Blocker (REV4): explicit offset on the serve-path gate.
-                    offset=0,
+                    # D0 Blocker (REV4): explicit window params on the serve-path gate.
+                    window_anchor=0, generator_phase=0,
                     window_size=3, serve_timeout=20.0, serve_read_deadline=10.0)
             except Exception:
                 holder["err"] = traceback.format_exc()

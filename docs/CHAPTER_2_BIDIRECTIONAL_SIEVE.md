@@ -794,20 +794,53 @@ picks the implemented meaning and states it.
 | `docs/instructions.txt:1181` | "temporal alignment (**PRNG steps** to skip before sequence)" |
 | `config_manifests/parameter_registry.json:38-43` | advance seeds by **`offset*(skip+1)`** before testing |
 
-### 7.2 What the code does — both of them, from one value
+### 7.2 What the code did — both of them, from one value
 
-The certifying path uses the **same scalar for two different jobs**, verified at HEAD:
+**AS AT THE CHAPTER-2 AUDIT ANCHOR** the certifying path used the **same scalar for two
+different jobs**, verified at that HEAD. This is the historical finding and it is recorded
+here unchanged:
 
 - **Host, as a data index:** `start = max(0, min(int(offset), n - window_size)); window =
-  data[start:start + window_size]` (`miner/range_miner_worker.py:648-649`), read from
-  `payload.get("offset", 0)` at `:694`.
-- **Device, as a generator pre-advance:** `ScalarArg(ctx.offset, "int32")`
-  (`miner/range_miner_worker.py:196-197`), read from the same `payload.get("offset", 0)` at
-  `:874`, consumed by the kernel as `for (o = 0; o < offset; o++) state = step(state)`
+  data[start:start + window_size]` (`miner/range_miner_worker.py`, `load_residue_window`),
+  read from `payload.get("offset", 0)` in `ResidueResolver.resolve`.
+- **Device, as a generator pre-advance:** `ScalarArg(ctx.offset, "int32")` (`_offset_tail`),
+  read from the same `payload.get("offset", 0)` in the sub-stripe path, consumed by the
+  kernel as `for (o = 0; o < offset; o++) state = step(state)`
   (`prng_registry.py:974-976`).
 
-**So `offset` simultaneously shifts which records are observed and how far the generator is
-pre-advanced.**
+**So `offset` simultaneously shifted which records were observed and how far the generator
+was pre-advanced.** That is the defect this chapter recorded, and the verdict at the audit
+anchor stands as written: **F-4 CONFIRMED, NOT REPAIRED.**
+
+#### 7.2.1 What the code does now — the approved separation
+
+**Status: repair implemented by Window-Anchor Brief I; acceptance pending.** The disposition
+above is HISTORICAL and is not rewritten; this subsection records the subsequent authorized
+change, and it does not claim acceptance.
+
+Governing artifacts: `docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md`
+(design gate CLOSED) · `docs/TB_RULING_WINDOW_ANCHOR_V1_1_DESIGN_GATE_CLOSED.md` ·
+`docs/S172_WINDOW_ANCHOR_BRIEF_I.md`.
+
+The one scalar is split into two, and neither is reconstructed from the other:
+
+| name | means ONLY | lives |
+|---|---|---|
+| `window_anchor` | which observed records form the residue window — `filtered_data[anchor : anchor+window_size]` | **host**, residue construction |
+| `generator_phase` | how many generator-state advances precede the first comparison | **device**, the existing kernel `offset` argument where one exists |
+
+- **Host:** `load_residue_window(path, window_size, sessions, window_anchor)` validates the
+  anchor against a derived domain and **raises** — the silent clamp is gone. `derived_max` is
+  computed on the POST-session-filter count, so a single-session trial cannot address past the
+  end of its own sequence.
+- **Device:** `_generator_phase_tail` emits `ScalarArg(ctx.generator_phase, "int32")` in the
+  **unchanged position and dtype** — the kernel ABI is frozen byte-for-byte for all 44
+  registry entries. The anchor reaches **no** kernel argument on any variant.
+- The retired `offset` key is **hard-rejected**, never mapped to either successor: which of
+  the two roles a historical value meant is not recoverable from the value.
+- `generator_phase` is **pinned to 0 in v1** at both the coordinator's public assign-payload
+  validation and the worker execution seam, and is carried explicitly so every artifact
+  records the phase that ran rather than leaving it to be inferred.
 
 ### 7.3 The consequence, described
 
@@ -832,6 +865,12 @@ particular stride sequence, which is an *output* of the search, not an input to 
 arithmetic patch.** Applying a flat `offset*(skip+1)` in isolation would harden constant-skip
 semantics into a path whose hybrid half still has no defined input-bound meaning (§5.4, §5.7).
 The two must be decided together.
+
+> **SUBSEQUENT DISPOSITION — repair implemented by Window-Anchor Brief I; acceptance
+> pending.** That design is the window-anchor / generator-phase separation, and it resolved
+> F-4 by SPLITTING the scalar rather than by multiplying it: no `offset*(skip+1)` was applied
+> anywhere. The paragraph above is the analysis as written at the audit anchor and is not
+> revised. See §7.2.1.
 
 **Additionally, forward hybrid kernels take no `offset` at all** — the `java_lcg` forward hybrid
 signature ends `float threshold, unsigned long long a, unsigned long long c` with no offset
@@ -1130,7 +1169,7 @@ and repairs are out of scope by the brief.
 | **F-1** | **§6.4's triple-validation claim is wrong by ~4 orders of magnitude.** The three-lane test is CRT-redundant with mod 1000; per-draw FP is 1/1000, not 1e-7, and it does not require a full 32-bit state match | `prng_registry.py:984-986`, `:1042-1044`, `:3146-3148`; corroborated `tests/phase6/known_answer_reference.py:66-70` | **corrected in §6.4.** Lanes **not** to be removed (§6.5) |
 | **F-2** | **§4.3's "survivors are NOT false positives" is false** in the loose-threshold regime the system requires, and contradicts whitepaper §7 | whitepaper `:116-131`; skill §0.3 | **corrected in §4.3** |
 | **F-3** | The lane redundancy may be the residue of an intended lane-parallel CRT architecture that was never built; not determinable from available surfaces | — | **open question**, §6.5 |
-| **F-4** | **`offset` drives a host data-slice and a device pre-advance from one scalar**; coherent only at `skip = 0`. `parameter_registry.json`'s `offset*(skip+1)` is the alignment the kernel does not implement | `miner/range_miner_worker.py:648-649`, `:694`, `:874`, `:196-197`; `prng_registry.py:974-976` | **CONFIRMED.** Settles Chapter 1 audit C-2 as an **observed inconsistency — NOT the repair.** No single `offset*(skip+1)` multiplier exists under variable skip. **Belongs in the future hybrid input-semantics design, not a standalone arithmetic patch.** Described, §7.3 |
+| **F-4** | **`offset` drives a host data-slice and a device pre-advance from one scalar**; coherent only at `skip = 0`. `parameter_registry.json`'s `offset*(skip+1)` is the alignment the kernel does not implement | `miner/range_miner_worker.py:648-649`, `:694`, `:874`, `:196-197`; `prng_registry.py:974-976` | **CONFIRMED** at the audit anchor. Settles Chapter 1 audit C-2 as an **observed inconsistency — NOT the repair.** No single `offset*(skip+1)` multiplier exists under variable skip. **Belonged in the future hybrid input-semantics design, not a standalone arithmetic patch** — that design is the window-anchor / generator-phase separation. **SUBSEQUENT: repair implemented by Window-Anchor Brief I; acceptance pending** (§7.2.1). The CONFIRMED verdict above is historical and is not rewritten. Described, §7.3 |
 | **F-5** | **The ROCm prelude hostname guard is dead on every live rig** — tuple says `rig-6600*`, live hostnames are `rrig6600*`. `DOCUMENTATION_AUDIT_20260131.md:93-99`'s proposed one-line fix used the same wrong convention | `sieve_filter.py:23-35`; live `hostname` from all three CT100s this session | **CONFIRMED dead legacy branch; NOT a Phase-7 blocker.** Harmless today (no overrides needed). **Do not rename the hosts** — that activates obsolete overrides. A later repair must first decide whether the prelude is supported, and if retained **key it from an explicit platform/profile property, never another hostname tuple.** §9.5 |
 | **F-6** | §1.1's "32-bit internal state" is wrong for `java_lcg` — the state is 48-bit; 32 bits is the extracted output | `prng_registry.py:969`, `:983` | **corrected in §1.1** |
 | **F-7** | Whitepaper §4's `G(s,−i)` assumes a backward step; the implementation is forward-against-reversed-residues, so forward and reverse generate identical sequences for one seed | whitepaper `:57-62`, `:79`; `prng_registry.py:3143`; `miner/range_miner_worker.py:888` | **named, not resolved**, §3.5 — Beta's side of the boundary |
@@ -1343,7 +1382,7 @@ governance item** (§14.3), not a clean result.
 | Open item | Where tracked | Disposition |
 |---|---|---|
 | **F-3** — the lane redundancy may be residue of an unbuilt lane-parallel CRT architecture | §6.5 | **open question**, not determinable from available surfaces |
-| **F-4** — `offset` drives host slice and device pre-advance from one scalar | §7.3; Chapter 1 §3.1.2 | **CONFIRMED, not repaired.** Settles Chapter 1 audit C-2 as an **observed inconsistency, not the repair.** No single `offset*(skip+1)` multiplier exists under variable skip; belongs in the future **hybrid input-semantics design**, not a standalone arithmetic patch |
+| **F-4** — `offset` drives host slice and device pre-advance from one scalar | §7.3; Chapter 1 §3.1.2 | **CONFIRMED, not repaired AT THIS ANCHOR.** Settles Chapter 1 audit C-2 as an **observed inconsistency, not the repair.** No single `offset*(skip+1)` multiplier exists under variable skip; belonged in the future **hybrid input-semantics design**, not a standalone arithmetic patch. **SUBSEQUENT: repair implemented by Window-Anchor Brief I; acceptance pending** — see §7.2.1. The anchor verdict is preserved as recorded |
 | **F-5** — ROCm prelude hostname guard dead on every live rig | §9.5 | **CONFIRMED dead legacy branch, NOT a Phase-7 blocker.** Harmless today. **Do not rename the hosts** — that activates obsolete overrides. Any repair must key from an explicit platform/profile property, never another hostname tuple |
 | **F-7** — whitepaper `G(s,−i)` vs forward-against-reversed-residues | §3.5 | **named, not resolved** — Beta's side of the boundary |
 | The six §12.1 inherited items | §12.1 | inherited, **not owned** by this chapter: the missing CA PDF, the absent `TB_RULING_*` for the 2026-07-30/31 stream, the untracked descriptive trace, the `java_lcg_cpu` non-zero-skip mismatch (**no fix authorized**), the 44-entry registry vs 4 compiled variants, and `forward_matches`/`reverse_matches` absent from the Step-3 merge list |

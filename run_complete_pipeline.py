@@ -71,7 +71,13 @@ def main():
         '--threshold', str(args.threshold)
     ], "STEP 2: Forward Sieve")
     
-    # STEP 3: Reverse Sieve
+    # STEP 3: Reverse Sieve — [WINDOW-ANCHOR BRIEF I §2.4] Route CLOSED.
+    raise RuntimeError(
+        "LEGACY_FUSED_ENGINE_CLOSED: refusing to dispatch the legacy fused "
+        "reverse sieve (reverse_sieve_filter.py). Closed by the window-anchor / "
+        "generator-phase separation; see docs/S172_WINDOW_ANCHOR_BRIEF_I.md "
+        "§2.4. Hard-disabled, not skipped — a silent skip would leave this "
+        "pipeline reporting a completed STEP 3 that never ran.")
     run_command([
         'python3', 'reverse_sieve_filter.py',
         '--lottery-data', args.lottery_file,

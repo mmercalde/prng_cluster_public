@@ -135,10 +135,25 @@ def _ctx(family, **over):
         reverse=is_reverse_family(family),
         seed_dtype=SEED_DTYPE[base],
         n_seeds=1000, k=10, skip_min=0, skip_max=16,
-        threshold=0.25, offset=3, params={}, n_strategies=4, hybrid_threshold=0.3,
+        threshold=0.25, generator_phase=3, params={}, n_strategies=4,
+        hybrid_threshold=0.3,
     )
     d.update(over)
     return BuildContext(**d)
+
+
+def _schema_valid(**over):
+    """A payload that is COMPLETE on the window-anchor schema.
+
+    [WINDOW-ANCHOR BRIEF I §3B, TB-ruled 2026-08-21] The B6 integrity gates below
+    exist to prove INTEGRITY rejection. After the separation, schema validation runs
+    first, so a payload that is also schema-incomplete never reaches the integrity
+    check and the gate would pass on a fact it does not test. Each gate therefore
+    starts from this complete payload and mutates ONLY the integrity property it
+    owns. The integrity assertions themselves are UNCHANGED."""
+    p = {"dataset": "x", "window_size": 3, "window_anchor": 0, "generator_phase": 0}
+    p.update(over)
+    return p
 
 
 def _dummy_resolver(residues):
@@ -427,6 +442,7 @@ def gate7_gpu_smoke():
         stripe_id="smoke", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=256,
         payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10,
+                 "window_anchor": 0, "generator_phase": 0,
                  "skip_range": [0, 16], "min_match_threshold": 0.25})
     outcome = ex.execute(assign, 0, 256)
     assert isinstance(outcome, SubStripeOutcome)
@@ -444,6 +460,7 @@ def gate7_gpu_smoke():
         stripe_id="smoke_rev", prng_type="java_lcg", family_name="java_lcg_reverse",
         seed_start=0, seed_count=256,
         payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10,
+                 "window_anchor": 0, "generator_phase": 0,
                  "skip_range": [0, 16], "min_match_threshold": 0.25})
     out_r = ex_r.execute(assign_r, 0, 256)
     assert isinstance(out_r, SubStripeOutcome)
@@ -479,10 +496,10 @@ def gate8_phase012_still_green():
 def gate9_per_assignment_window():
     calls = []
 
-    def fake_loader(dataset, window_size, sessions, offset):
-        calls.append((dataset, window_size, tuple(sessions or ()), offset))
+    def fake_loader(dataset, window_size, sessions, window_anchor):
+        calls.append((dataset, window_size, tuple(sessions or ()), window_anchor))
         # Distinct residues per window identity so we can prove the right set is used.
-        return [offset * 1000 + i for i in range(window_size)]
+        return [window_anchor * 1000 + i for i in range(window_size)]
 
     resolver = ResidueResolver(loader=fake_loader, file_hasher=lambda p: "sha-" + p)
 
@@ -490,10 +507,12 @@ def gate9_per_assignment_window():
     # fake file_hasher's digest ("sha-" + dataset).
     r1 = resolver.resolve({"dataset": "ds.json", "dataset_sha256": "sha-ds.json",
                            "window_size": 5,
-                           "sessions": ["evening", "midday"], "offset": 0})
+                           "sessions": ["evening", "midday"],
+                           "window_anchor": 0, "generator_phase": 0})
     r2 = resolver.resolve({"dataset": "ds.json", "dataset_sha256": "sha-ds.json",
                            "window_size": 7,
-                           "sessions": ["evening", "midday"], "offset": 3})
+                           "sessions": ["evening", "midday"],
+                           "window_anchor": 3, "generator_phase": 0})
     assert r1 == [0, 1, 2, 3, 4]
     assert r2 == [3000, 3001, 3002, 3003, 3004, 3005, 3006]
     assert r1 != r2, "two windows must yield different residues"
@@ -504,19 +523,22 @@ def gate9_per_assignment_window():
     before = len(calls)
     r1b = resolver.resolve({"dataset": "ds.json", "dataset_sha256": "sha-ds.json",
                             "window_size": 5,
-                            "sessions": ["midday", "evening"], "offset": 0})
+                            "sessions": ["midday", "evening"],
+                            "window_anchor": 0, "generator_phase": 0})
     assert r1b == r1 and len(calls) == before, "cache miss on identical window"
 
     # residue_sha256 verification: mismatch is non-retryable
     good = sha256_residues([10, 20, 30])
     ok = ResidueResolver(loader=lambda *a: [10, 20, 30], file_hasher=lambda p: "h")
     assert ok.resolve({"dataset": "d", "dataset_sha256": "h",
-                       "window_size": 3, "residue_sha256": good}) \
+                       "window_size": 3, "window_anchor": 0, "generator_phase": 0,
+                       "residue_sha256": good}) \
         == [10, 20, 30]
     bad = ResidueResolver(loader=lambda *a: [1, 2, 3], file_hasher=lambda p: "h")
     try:
         bad.resolve({"dataset": "d", "dataset_sha256": "h",
-                     "window_size": 3, "residue_sha256": good})
+                     "window_size": 3, "window_anchor": 0, "generator_phase": 0,
+                     "residue_sha256": good})
     except Exception as e:
         from miner.range_miner_worker import ResidueVerificationError
         assert isinstance(e, ResidueVerificationError)
@@ -538,9 +560,9 @@ def gate9_per_assignment_window():
     cp = _cupy_device_or_skip()
     recorded = []
 
-    def rec_loader(dataset, window_size, sessions, offset):
-        residues = [offset * 1000 + i for i in range(window_size)]
-        recorded.append((dataset, window_size, tuple(sessions or ()), offset,
+    def rec_loader(dataset, window_size, sessions, window_anchor):
+        residues = [window_anchor * 1000 + i for i in range(window_size)]
+        recorded.append((dataset, window_size, tuple(sessions or ()), window_anchor,
                          tuple(residues)))
         return residues
 
@@ -551,13 +573,15 @@ def gate9_per_assignment_window():
         stripe_id="w1", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=128,
         payload={"dataset": "ds", "dataset_sha256": "sha-ds",
-                 "window_size": 5, "offset": 0,
+                 "window_size": 5, "window_anchor": 0,
+                 "generator_phase": 0,
                  "sessions": ["evening", "midday"], "min_match_threshold": 0.25})
     a2 = StripeAssignMessage(
         stripe_id="w2", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=128,
         payload={"dataset": "ds", "dataset_sha256": "sha-ds",
-                 "window_size": 7, "offset": 3,
+                 "window_size": 7, "window_anchor": 3,
+                 "generator_phase": 0,
                  "sessions": ["evening", "midday"], "min_match_threshold": 0.25})
     if cp is None:
         for a in (a1, a2):
@@ -699,7 +723,8 @@ def gate12_cleanup_after_exception():
     assign = StripeAssignMessage(
         stripe_id="x", prng_type="java_lcg", family_name="java_lcg",
         seed_start=0, seed_count=128,
-        payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10})
+        payload={"dataset": "x", "dataset_sha256": "deadbeef", "window_size": 10,
+                 "window_anchor": 0, "generator_phase": 0})
 
     spy = mock.Mock(wraps=W._best_effort_gpu_cleanup)
     with mock.patch.object(W, "_best_effort_gpu_cleanup", spy):
@@ -820,7 +845,7 @@ def gate15_missing_dataset_sha_non_retryable():
     # dataset/window guard but BEFORE cache/load.
     r = _dummy_resolver([1, 2, 3])   # file_hasher -> "deadbeef"
     try:
-        r.resolve({"dataset": "x", "window_size": 3})
+        r.resolve(_schema_valid())          # complete EXCEPT dataset_sha256
     except ResidueResolutionError as e:
         assert isinstance(e, ResidueError)
         assert "dataset_sha256" in str(e)
@@ -829,17 +854,49 @@ def gate15_missing_dataset_sha_non_retryable():
 
     # behavioral: real SieveExecutor over loopback -> stripe_error, retryable=False
     msg = _drive_one_assign(
-        "java_lcg", {"dataset": "x", "window_size": 3}, _dummy_resolver([1, 2, 3]))
+        "java_lcg", _schema_valid(), _dummy_resolver([1, 2, 3]))
     assert msg.message_type == "stripe_error", msg.message_type
     assert msg.retryable is False, "missing dataset_sha256 must be NON-retryable"
     assert "dataset_sha256" in msg.error
+
+
+def gate15b_schema_precedes_integrity():
+    """[§3B companion] The ordering itself, asserted rather than assumed.
+
+    A payload that is BOTH schema-incomplete and integrity-broken reports the SCHEMA
+    error. Containment, not preference: schema validation only ADDS a rejection —
+    a schema-valid payload still reaches the dataset_sha256 check unchanged (gates
+    15/16/17 above prove exactly that), so no payload that was rejected before is
+    accepted now.
+
+    *Reds on:* the two checks being reordered, or either being dropped."""
+    r = _dummy_resolver([1, 2, 3])
+    # schema-incomplete AND wrong sha -> SCHEMA error names the missing key
+    try:
+        r.resolve({"dataset": "x", "window_size": 3, "dataset_sha256": "wrongsha"})
+    except ResidueResolutionError as e:
+        assert "window_anchor" in str(e), f"schema error did not name the key: {e}"
+        assert not isinstance(e, ResidueVerificationError), \
+            "integrity check ran before schema validation"
+    else:
+        raise AssertionError("schema-incomplete payload was accepted")
+    # schema-complete AND wrong sha -> INTEGRITY error, unchanged from before
+    try:
+        r.resolve(_schema_valid(dataset_sha256="wrongsha"))
+    except ResidueVerificationError as e:
+        assert "mismatch" in str(e)
+    else:
+        raise AssertionError("integrity check did not fire on a schema-valid payload")
+    # both are ResidueError -> identical non-retryable classification
+    assert issubclass(ResidueResolutionError, ResidueError)
+    assert issubclass(ResidueVerificationError, ResidueError)
 
 
 def gate16_mismatched_dataset_sha_non_retryable():
     # resolver level: computed hash ("deadbeef") != payload's -> ResidueVerificationError
     r = _dummy_resolver([1, 2, 3])   # file_hasher -> "deadbeef"
     try:
-        r.resolve({"dataset": "x", "window_size": 3, "dataset_sha256": "wrongsha"})
+        r.resolve(_schema_valid(dataset_sha256="wrongsha"))
     except ResidueVerificationError as e:
         assert isinstance(e, ResidueError)
         assert "mismatch" in str(e)
@@ -848,7 +905,7 @@ def gate16_mismatched_dataset_sha_non_retryable():
 
     # behavioral: real SieveExecutor over loopback -> stripe_error, retryable=False
     msg = _drive_one_assign(
-        "java_lcg", {"dataset": "x", "window_size": 3, "dataset_sha256": "wrongsha"},
+        "java_lcg", _schema_valid(dataset_sha256="wrongsha"),
         _dummy_resolver([1, 2, 3]))
     assert msg.message_type == "stripe_error", msg.message_type
     assert msg.retryable is False, "mismatched dataset_sha256 must be NON-retryable"
@@ -862,12 +919,12 @@ def gate17_cache_cannot_bypass_mismatch():
     # hit the same cached entry if the check ran after the cache lookup.
     loads = []
 
-    def loader(dataset, window_size, sessions, offset):
+    def loader(dataset, window_size, sessions, window_anchor):
         loads.append(dataset)
         return [10, 20, 30]
 
     r = ResidueResolver(loader=loader, file_hasher=lambda p: "goodsha")
-    ok_payload = {"dataset": "d", "dataset_sha256": "goodsha", "window_size": 3}
+    ok_payload = _schema_valid(dataset="d", dataset_sha256="goodsha")
     assert r.resolve(dict(ok_payload)) == [10, 20, 30]
     # cache is warm: a repeat with the SAME good sha does not reload
     n = len(loads)
@@ -876,7 +933,7 @@ def gate17_cache_cannot_bypass_mismatch():
 
     # tampered coordinator sha with the same underlying content/window -> still raises
     try:
-        r.resolve({"dataset": "d", "dataset_sha256": "tampered", "window_size": 3})
+        r.resolve(_schema_valid(dataset="d", dataset_sha256="tampered"))
     except ResidueVerificationError:
         pass
     else:
@@ -902,6 +959,7 @@ def main():
     _check("Gate 13: [B4] exact capability advertisement",         gate13_capability_advertisement)
     _check("Gate 14: [B4/§11.I] non-Java full-mode dispatch",      gate14_non_java_full_mode)
     _check("Gate 15: [B6] missing dataset_sha256 -> non-retryable", gate15_missing_dataset_sha_non_retryable)
+    _check("Gate 15b: [§3B] schema validation precedes integrity",  gate15b_schema_precedes_integrity)
     _check("Gate 16: [B6] mismatched dataset_sha256 -> non-retryable", gate16_mismatched_dataset_sha_non_retryable)
     _check("Gate 17: [B6] warm cache cannot bypass sha mismatch",   gate17_cache_cannot_bypass_mismatch)
     print("=" * 70)

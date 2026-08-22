@@ -328,15 +328,22 @@ could not settle the collision from Chapter 1's surfaces, and deferred it to Cha
 | `docs/instructions.txt:1181` | *"temporal alignment (**PRNG steps** to skip before sequence)"* |
 | `config_manifests/parameter_registry.json:38-43` | advance seeds by **`offset*(skip+1)`** before testing |
 
-**What the code does — both jobs, from one payload scalar.** On the certifying miner route the
-same `offset` is read twice out of `payload.get("offset", 0)`:
+**What the code did — both jobs, from one payload scalar.** AS AT THIS AUDIT'S ANCHOR, on the
+certifying miner route the same `offset` was read twice out of `payload.get("offset", 0)`:
 
 - **Host, as a data index** — `start = max(0, min(int(offset), n - window_size)); window =
-  data[start:start + window_size]` in `load_residue_window` (`miner/range_miner_worker.py:648-649`,
-  read at `:694`).
-- **Device, as a generator pre-advance** — `_offset_tail` emits `ScalarArg(ctx.offset, "int32")`
-  (`miner/range_miner_worker.py:196-197`, read at `:874`), consumed by the kernel as
-  `for (o = 0; o < offset; o++) state = step(state)` (`prng_registry.py:974-976`).
+  data[start:start + window_size]` in `load_residue_window` (`miner/range_miner_worker.py`).
+- **Device, as a generator pre-advance** — `_offset_tail` emitted `ScalarArg(ctx.offset,
+  "int32")`, consumed by the kernel as `for (o = 0; o < offset; o++) state = step(state)`
+  (`prng_registry.py:974-976`).
+
+> **SUBSEQUENT DISPOSITION — repair implemented by Window-Anchor Brief I; acceptance
+> pending.** The scalar is split into `window_anchor` (host, record selection, validated
+> against a derived domain and never clamped) and `generator_phase` (device, the existing
+> kernel argument, pinned to 0 in v1). The kernel ABI is unchanged byte-for-byte and the
+> retired key is hard-rejected, never mapped. Full description:
+> `docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` §7.2.1. **The finding above is the state at this
+> audit's anchor and is not rewritten.**
 
 **The coupling is self-consistent only at `skip = 0`.** When each observed draw consumes one PRNG
 output, shifting the window by one record and pre-advancing by one step stay aligned. At

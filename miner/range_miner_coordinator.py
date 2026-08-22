@@ -1385,7 +1385,8 @@ class MinerLedger:
                         run_id             TEXT PRIMARY KEY,
                         trial_number       INTEGER,
                         window_size        INTEGER,
-                        offset_val         INTEGER,
+                        window_anchor_val  INTEGER,
+                        generator_phase    INTEGER,
                         sessions_json      TEXT,
                         skip_min           INTEGER,
                         skip_max           INTEGER,
@@ -1397,6 +1398,44 @@ class MinerLedger:
                         created_at         REAL NOT NULL
                     )
                 """)
+                # [WINDOW-ANCHOR BRIEF I §2.2 / G-MIGRATE] DELIBERATELY NOT the
+                # additive idiom used immediately below. An ALTER TABLE ADD COLUMN
+                # is right when a column is genuinely NEW and NULL is a truthful
+                # value for old rows. It is WRONG here: `offset_val` holds a
+                # historical value that drove BOTH the host record slice AND the
+                # device pre-advance, so which successor it meant is not
+                # recoverable from it. Re-keying it to either field would fabricate
+                # provenance for a trial nobody re-ran.
+                #
+                # CREATE TABLE IF NOT EXISTS above is a no-op against a
+                # pre-separation ledger, so without this wall a resumed run_id
+                # would either die on a bare KeyError inside a projection or —
+                # worse — INSERT OR IGNORE against the old shape and then fail the
+                # canonical comparison with the generic "conflicting immutable
+                # trial context" message, sending the next reader hunting a config
+                # conflict that does not exist. Fail loud, naming the change.
+                tc_cols = {
+                    r["name"] for r in
+                    conn.execute("PRAGMA table_info(trial_context)").fetchall()
+                }
+                _legacy = "offset_val" in tc_cols
+                _absent = [c for c in ("window_anchor_val", "generator_phase")
+                           if c not in tc_cols]
+                if tc_cols and (_legacy or _absent):
+                    raise MinerMetadataError(
+                        f"trial_context ledger at {self.db_path!r} predates the "
+                        f"window-anchor / generator-phase separation "
+                        f"(legacy 'offset_val' present: {_legacy}; missing "
+                        f"{_absent!r}). The single scalar `offset` was SPLIT into "
+                        f"`window_anchor` (host-side: which observed records form "
+                        f"the residue window) and `generator_phase` (device-side: "
+                        f"advances before the first comparison). The retired column "
+                        f"is NOT migrated, NOT re-keyed and NOT reinterpreted, "
+                        f"because which of the two a historical value meant cannot "
+                        f"be recovered from the value. Use a new ledger, or resume "
+                        f"against one written after the separation. See "
+                        f"docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION"
+                        f"_v1_1.md §4.1.")
                 # [S172 elapsed_s persistence, Beta R4] ADDITIVE migration for a
                 # ledger created before the column existed. `CREATE TABLE IF NOT
                 # EXISTS` is a no-op on an existing DB, so a pre-R4 miner_ledger.db
@@ -1828,12 +1867,14 @@ class MinerLedger:
                     # caught by the re-read + compare below (never assume our row won).
                     conn.execute(
                         """INSERT OR IGNORE INTO trial_context
-                           (run_id, trial_number, window_size, offset_val, sessions_json,
+                           (run_id, trial_number, window_size, window_anchor_val,
+                            generator_phase, sessions_json,
                             skip_min, skip_max, prng_base, forward_threshold,
                             reverse_threshold, dataset_sha256, residue_sha256, created_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (run_id, int(ctx["trial_number"]), int(ctx["window_size"]),
-                         int(ctx["offset"]), sessions_json,
+                         int(ctx["window_anchor"]), int(ctx["generator_phase"]),
+                         sessions_json,
                          int(ctx["skip_min"]), int(ctx["skip_max"]), str(ctx["prng_base"]),
                          float(ctx["forward_threshold"]), float(ctx["reverse_threshold"]),
                          str(ctx["dataset_sha256"]), str(ctx["residue_sha256"]), now),
@@ -1848,7 +1889,8 @@ class MinerLedger:
                     # no-op when a row exists) and fail closed BEFORE any stripe work.
                     raise MinerMetadataError(
                         f"conflicting immutable trial context for run_id={run_id!r}: a "
-                        f"different window_size/offset/skip/prng_base/threshold/provenance "
+                        f"different window_size/window_anchor/generator_phase/skip/prng_base/"
+                        f"threshold/provenance "
                         f"was already persisted; refusing to mutate (fail-closed)."
                     )
                 conn.commit()
@@ -2562,7 +2604,7 @@ class MinerMetadataError(Exception):
 # D0 — trial-metadata seam (Phase-4 correction, [TB-R3, TB-R1 seam])
 #
 # Every ShardReadyManifest published to Phase 5 must carry a complete, immutable
-# trial_metadata projection so Phase 5 can populate the NPZ window/offset/skip/
+# trial_metadata projection so Phase 5 can populate the NPZ window/anchor/skip/
 # trial/prng fields WITHOUT re-deriving identity from spool contents. The projection
 # is reconstructed durably from the ledger (trial_context row + the stripe's own
 # persisted phase/family_name), so it survives a coordinator restart and is
@@ -2571,7 +2613,8 @@ class MinerMetadataError(Exception):
 
 # Trial-GLOBAL immutable fields (identical across every manifest of one run_id).
 _TRIAL_GLOBAL_FIELDS = (
-    "trial_number", "window_size", "offset", "sessions", "skip_min", "skip_max",
+    "trial_number", "window_size", "window_anchor", "generator_phase",
+    "sessions", "skip_min", "skip_max",
     "prng_base", "forward_threshold", "reverse_threshold",
 )
 # Provenance (non-NPZ) fields carried for auditability, also trial-global.
@@ -2585,7 +2628,8 @@ _PHASE_SPECIFIC_FIELDS = (
 # The minimum mandatory manifest metadata (§ "Mandatory manifest metadata"). Every
 # published shard MUST carry all of these (non-empty) or publication fails closed.
 MANDATORY_MANIFEST_METADATA = (
-    "trial_number", "window_size", "offset", "sessions", "skip_min", "skip_max",
+    "trial_number", "window_size", "window_anchor", "generator_phase",
+    "sessions", "skip_min", "skip_max",
     "prng_base", "prng_type", "family_name", "direction", "skip_mode",
     "workflow_phase", "forward_threshold", "reverse_threshold",
 )
@@ -2602,20 +2646,22 @@ _NON_EMPTY_STRING_FIELDS = frozenset({
 # context (Blocker 2: no numeric/family fallback may substitute for a missing field).
 # sessions is intentionally excluded — it is optional and normalized None -> [].
 _SERVE_CONTEXT_REQUIRED = (
-    "trial_number", "window_size", "offset", "skip_min", "skip_max",
+    "trial_number", "window_size", "window_anchor", "generator_phase",
+    "skip_min", "skip_max",
     "prng_base", "forward_threshold", "reverse_threshold",
 )
 
 
 def _trial_context_row_to_ctx(row: Any) -> Dict[str, Any]:
     """Map a durable `trial_context` row to the SAME semantic dict get_trial_context
-    returns (11 trial-global + provenance), so an existing row and a fresh ctx can be
+    returns (12 trial-global + provenance), so an existing row and a fresh ctx can be
     canonicalized and compared field-for-field (Blocker 1)."""
     d = dict(row)
     return {
         "trial_number":      d["trial_number"],
         "window_size":       d["window_size"],
-        "offset":            d["offset_val"],
+        "window_anchor":     d["window_anchor_val"],
+        "generator_phase":   d["generator_phase"],
         "sessions":          json.loads(d["sessions_json"]),
         "skip_min":          d["skip_min"],
         "skip_max":          d["skip_max"],
@@ -2639,7 +2685,8 @@ def _canonicalize_trial_context(ctx: Dict[str, Any]) -> str:
         {
             "trial_number":      int(ctx["trial_number"]),
             "window_size":       int(ctx["window_size"]),
-            "offset":            int(ctx["offset"]),
+            "window_anchor":     int(ctx["window_anchor"]),
+            "generator_phase":   int(ctx["generator_phase"]),
             "sessions":          sessions if sessions is not None else [],
             "skip_min":          int(ctx["skip_min"]),
             "skip_max":          int(ctx["skip_max"]),
@@ -2681,7 +2728,8 @@ def build_trial_context_from_serve(
     return {
         "trial_number":      int(context["trial_number"]),
         "window_size":       int(context["window_size"]),
-        "offset":            int(context["offset"]),
+        "window_anchor":     int(context["window_anchor"]),
+        "generator_phase":   int(context["generator_phase"]),
         "sessions":          context.get("sessions"),
         "skip_min":          int(context["skip_min"]),
         "skip_max":          int(context["skip_max"]),
@@ -2748,7 +2796,8 @@ def derive_trial_metadata(
         # trial-global (identical across the run's manifests)
         "trial_number":      trial_ctx.get("trial_number"),
         "window_size":       trial_ctx.get("window_size"),
-        "offset":            trial_ctx.get("offset"),
+        "window_anchor":     trial_ctx.get("window_anchor"),
+        "generator_phase":   trial_ctx.get("generator_phase"),
         "sessions":          trial_ctx.get("sessions"),
         "skip_min":          trial_ctx.get("skip_min"),
         "skip_max":          trial_ctx.get("skip_max"),
@@ -2775,7 +2824,8 @@ def validate_trial_metadata(meta: Dict[str, Any]) -> None:
     value, or an empty string in an identity/provenance field RAISES
     MinerMetadataError before publication — the coordinator never emits a `{}` (or
     partially-populated) trial_metadata to the sink. Numeric 0 / -1 are legitimate
-    values (offset 0, skip_min 0, trial_number -1) and pass."""
+    values (window_anchor 0, generator_phase 0, skip_min 0, trial_number -1)
+    and pass."""
     required = list(MANDATORY_MANIFEST_METADATA) + list(_MANDATORY_PROVENANCE)
     missing = [k for k in required if k not in meta or meta[k] is None]
     if missing:
@@ -9164,12 +9214,14 @@ class RangeMinerCoordinator:
 
     # ----- assignment payload contract (ties Blocker 6 / Stage 0) ----------
     def build_stripe_assign_payload(
-        self, dataset_path: str, window_size: int, sessions, offset: int,
+        self, dataset_path: str, window_size: int, sessions, window_anchor: int,
         residues, dataset_sha256: Optional[str] = None,
         *, phase: int, forward_threshold: float, reverse_threshold: float,
+        generator_phase: int,
     ) -> Dict[str, Any]:
         """Every StripeAssignMessage.payload MUST carry `dataset`, `dataset_sha256`
-        (coordinator-computed), `window_size`, `sessions`, `offset`,
+        (coordinator-computed), `window_size`, `sessions`, `window_anchor`,
+        `generator_phase`,
         `residue_sha256` (computed via the SAME sha256_residues the worker uses),
         and — since the D6 correction — the RESOLVED directional sieve threshold.
         dataset_sha256 and residue_sha256 are NEVER optional — the worker's
@@ -9258,12 +9310,31 @@ class RangeMinerCoordinator:
         else:  # pragma: no cover — workflow_phase_semantics already fails closed
             raise MinerMetadataError(
                 f"unresolvable sieve direction {direction!r} for phase {phase!r}")
+        # [WINDOW-ANCHOR BRIEF I — v1 POLICY PIN, TB ruling 2026-08-21]
+        # THE PUBLIC ASSIGN-PAYLOAD VALIDATION. `generator_phase` is mandatory
+        # (keyword-only, no default — the signature enforces presence) AND
+        # pinned to exactly 0 for v1. This is a POLICY pin and is deliberately
+        # SEPARATE from the worker's per-variant CAPABILITY table: capability
+        # says whether an ABI COULD carry a phase, policy says whether v1
+        # PERMITS a value. A variant can be fully capable and still refused
+        # here. Keeping them separate is what lets each gate exercise its own
+        # guard instead of one masking the other.
+        if int(generator_phase) != 0:
+            raise MinerMetadataError(
+                f"generator_phase={generator_phase!r} refused: v1 pins the "
+                f"device-side generator phase to exactly 0 on the public "
+                f"assignment path. It is not an Optuna dimension and is not "
+                f"WATCHER-tunable. It is nonetheless MANDATORY, not defaulted, "
+                f"so every payload and artifact RECORDS the phase that ran "
+                f"rather than leaving it to be inferred. Independent nonzero "
+                f"phase is DEP-ABI-V2: recorded, NOT built.")
         payload = {
             "dataset": dataset_path,
             "dataset_sha256": dataset_sha256,
             "window_size": window_size,
             "sessions": sessions,
-            "offset": offset,
+            "window_anchor": window_anchor,
+            "generator_phase": int(generator_phase),
             "residue_sha256": sha256_residues(residues),
             # ---------------------------------------------------------------
             # SINGLE THRESHOLD CHOKEPOINT (S172 D6). forward_threshold/
@@ -9449,10 +9520,12 @@ class RangeMinerCoordinator:
         dataset_sha256 = resolve_dataset_sha256(dataset_path)
 
         # D0 (Blocker 2 + REV4): persist the trial-GLOBAL immutable context ONCE per
-        # run_id — BEFORE any window_size/offset coercion, stripe assignment, or
+        # run_id — BEFORE any window_size/window_anchor coercion, stripe
+        # assignment, or
         # dispatch. build_trial_context_from_serve projects it with NO fallback
         # substitution: a missing mandatory field (prng_base / skip_min / skip_max /
-        # window_size / offset / thresholds) fails closed HERE with MinerMetadataError,
+        # window_size / window_anchor / generator_phase / thresholds) fails
+        # closed HERE with MinerMetadataError,
         # never as a fabricated 1/0/family_name AND never as a raw int(None) TypeError
         # in the window-param coercions below (REV4: those coercions previously ran
         # first and crashed on an omitted value instead of failing closed cleanly).
@@ -9471,7 +9544,8 @@ class RangeMinerCoordinator:
         # from raw context via int(context.get(..., 1/0)).
         window_size = trial_ctx["window_size"]
         sessions = trial_ctx["sessions"]
-        offset = trial_ctx["offset"]
+        window_anchor = trial_ctx["window_anchor"]
+        generator_phase = trial_ctx["generator_phase"]
         # [ADMISSION BINDING] Still ONE binding of expected_workers, still never
         # reduced dynamically, still derived from the pool size the caller
         # requested — but the frozen execution set, when one exists, is now the
@@ -10409,7 +10483,8 @@ class RangeMinerCoordinator:
                     _t = _sl.start()
                     self._dispatch_pending(
                         run_id, fam, ph, fs_by_worker, dispatched, dataset_path,
-                        dataset_sha256, window_size, sessions, offset, residues,
+                        dataset_sha256, window_size, sessions, window_anchor,
+                        generator_phase, residues,
                         context.get("trial_number", -1),
                         trial_ctx["forward_threshold"],
                         trial_ctx["reverse_threshold"])
@@ -11875,7 +11950,8 @@ class RangeMinerCoordinator:
 
     def _dispatch_pending(self, run_id, family_name, phase, fs_by_worker,
                           dispatched, dataset_path, dataset_sha256, window_size,
-                          sessions, offset, residues, trial_number,
+                          sessions, window_anchor, generator_phase, residues,
+                          trial_number,
                           forward_threshold, reverse_threshold) -> None:
         """Send a StripeAssignMessage for every CLAIMED stripe not yet dispatched
         for its current (worker, attempt) — covers initial assignment AND matrix
@@ -11897,10 +11973,11 @@ class RangeMinerCoordinator:
             if fs is None:
                 continue
             payload = self.build_stripe_assign_payload(
-                dataset_path, window_size, sessions, offset, residues,
+                dataset_path, window_size, sessions, window_anchor, residues,
                 dataset_sha256=dataset_sha256, phase=phase,
                 forward_threshold=forward_threshold,
-                reverse_threshold=reverse_threshold)
+                reverse_threshold=reverse_threshold,
+                generator_phase=generator_phase)
             # Provenance leg 2 of 3: what the payload ACTUALLY carried, recorded
             # per (stripe, attempt) and marked D6-generated EXPLICITLY — this
             # assignment now owes the parent an effective-threshold report, and
@@ -12278,17 +12355,26 @@ def run_trial_miner(
     # config.skip_min/config.skip_max, so production is unaffected).
     skip_min: Optional[int] = None,
     skip_max: Optional[int] = None,
-    # D0 (Blocker, REV4): window_size/offset are ALSO mandatory
+    # D0 (Blocker, REV4): window_size/window_anchor are ALSO mandatory
     # _SERVE_CONTEXT_REQUIRED metadata (REV3 fixed skip_min/skip_max; these two
     # still fabricated 1/0 from kwargs.get). Same fail-closed shape as skip: an
     # Optional=None passthrough so an OMITTED value reaches
     # build_trial_context_from_serve's missing-field guard as None (rejected)
     # instead of a fabricated 1/0. The real _use_miner call site passes
-    # config.window_size/config.offset, so production is unchanged. (sessions stays
+    # config.window_size/config.offset (the latter now passed as window_anchor;
+    # WindowConfig's own field is renamed in Brief II), so production is
+    # unchanged. (sessions stays
     # kwargs-optional below: it is NOT in _SERVE_CONTEXT_REQUIRED and normalizes
     # None -> [].)
     window_size: Optional[int] = None,
-    offset: Optional[int] = None,
+    window_anchor: Optional[int] = None,
+    # [WINDOW-ANCHOR BRIEF I] Same REV4 fail-closed shape, same reason:
+    # Optional=None so an OMITTED value reaches
+    # build_trial_context_from_serve's missing-field guard as None and is
+    # REJECTED, instead of being fabricated as a plausible 0. v1 pins the
+    # value to 0, but the caller must SAY 0 — a pinned field that DEFAULTS
+    # silently records a phase nobody chose.
+    generator_phase: Optional[int] = None,
     worker_pool_size: int = 8,
     seed_cap_nvidia: int = 5_000_000,
     seed_cap_amd: int = 2_000_000,
@@ -12417,7 +12503,8 @@ def run_trial_miner(
         "node_allowlist": node_allowlist,
         "window_size": window_size,          # REV4: fail-closed passthrough (no `or 1`)
         "sessions": kwargs.get("sessions"),  # intentionally optional (None -> [])
-        "offset": offset,                    # REV4: fail-closed passthrough (no `or 0`)
+        "window_anchor": window_anchor,      # REV4 shape: fail-closed (no `or 0`)
+        "generator_phase": generator_phase,  # pinned 0, but never DEFAULTED to 0
         "staging_dir": staging_dir_resolved,
         # [Part B §1.3] Measured startup-validation evidence, carried on the
         # context so the resolved path, filesystem type, capacity and the

@@ -844,7 +844,8 @@ def l7_non_lease_consumers_behaviour():
                 False, ds, worker_pool_size=2,
                 staging_dir=os.path.join(tmp, "stg"), listen_sock=lsock,
                 family_name="java_lcg", workflow_phase=1,
-                skip_min=0, skip_max=0, offset=0, window_size=3,
+                skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
+                window_size=3,
                 # PRODUCTION DEFAULT: nothing but the code's own admission
                 # decision may end this run.
                 serve_timeout=None, worker_admission_timeout=2.0)

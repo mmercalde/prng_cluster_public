@@ -19,6 +19,15 @@ rev-3 addresses Team Beta's five release-blockers:
       variant-aware handshake capability advertisement + a STOP condition.
   B5  Blocking tests for every dangerous path (in the harness).
 
+TERMINOLOGY (WINDOW-ANCHOR BRIEF I) — the kernels' trailing `int32 offset`
+argument carries `generator_phase`: the DEVICE-side count of generator-state
+advances before the first comparison. It is NOT the residue window's start
+index. That is `window_anchor`, it lives on the HOST in `load_residue_window`,
+and it reaches no kernel argument on any variant. The kernel parameter is still
+spelled `offset` below because the kernel ABI is frozen byte-for-byte and these
+are verbatim signature transcriptions; "NO phase arg" marks a variant that
+cannot carry a generator_phase at all.
+
 AUDITED ABIs — every hybrid kernel signature below was read from the LIVE
 `prng_registry.py` (kernel_source strings), NOT extrapolated:
 
@@ -27,14 +36,27 @@ AUDITED ABIs — every hybrid kernel signature below was read from the LIVE
     survivor_count, int32(n_seeds), int32(k), strategy_max_misses,
     strategy_tolerances, int32(n_strategies), float32(threshold)
   Family-specific FORWARD tails (verified):
-    java_lcg_hybrid     : uint64 a, uint64 c                       -> 15, NO offset
+    java_lcg_hybrid     : uint64 a, uint64 c                       -> 15, NO phase arg
     lcg32_hybrid        : uint32 a, uint32 c, uint32 m, int32 off  -> 17
-    minstd_hybrid       : uint32 a, uint32 m_val                   -> 15, NO offset
+    minstd_hybrid       : uint32 a, uint32 m_val                   -> 15, NO phase arg
     pcg32_hybrid        : uint64 increment, int32 offset           -> 15
-    xorshift32_hybrid   : int32 shift_a, shift_b, shift_c          -> 16, NO offset
-    xorshift128_hybrid  : int32 dummy1, dummy2, dummy3             -> 16, NO offset
+    xorshift32_hybrid   : int32 shift_a, shift_b, shift_c          -> 16, NO phase arg
+    xorshift128_hybrid  : int32 dummy1, dummy2, dummy3             -> 16, NO phase arg
   REVERSE hybrids (ALL families identical — constants hardcoded in-kernel):
     <13-prefix>, int32(offset)                                     -> 14
+  CONSTANT-skip ABIs (11-element `_constant_prefix`, then the family tail, then
+  the trailing int32 that carries generator_phase). Counted from the builders
+  below and cross-checked against prng_registry.py — these arities CORRECT
+  v1.1 §3, which claims "13 (lcg32: 16)" for all six forward-constant variants
+  and is wrong for five of them (Brief I §0 C-1):
+    pcg32       : uint64 increment                     + int32 -> 13  (:466)
+    java_lcg    : uint64 a, uint64 c                   + int32 -> 14  (:959)
+    minstd      : uint32 a, uint32 m_val               + int32 -> 14  (:1086)
+    lcg32       : uint32 a, uint32 c, uint32 m         + int32 -> 15  (:518)
+    xorshift32  : int32 shift_a, shift_b, shift_c      + int32 -> 15  (:409)
+    xorshift128 : int32 dummy1, dummy2, dummy3         + int32 -> 15  (:1219)
+  REVERSE constant (ALL six identical — generator params hardcoded in-kernel):
+    <11-prefix>, int32(offset)                                     -> 12
   seed_type is uint64 ONLY for java_lcg; the other five are uint32 (read from
   each family's registry config — never assumed).
 
@@ -102,6 +124,82 @@ SUPPORTED_VARIANTS: Dict[str, frozenset] = {
 }
 
 
+# ===========================================================================
+# WINDOW-ANCHOR BRIEF I §2.1(c) — per-variant generator-phase capability matrix
+# ===========================================================================
+# `generator_phase` is the DEVICE-side generator pre-advance. It is delivered
+# through the trailing int32 the kernel calls `offset`, on every variant whose
+# ABI has one. Four forward hybrids have NO such argument, so a nonzero phase is
+# not merely unused there — it is undeliverable, and pretending otherwise would
+# silently run a different experiment than the one requested.
+#
+# ENUMERATED DELIBERATELY, NEVER COMPUTED FROM A SUFFIX RULE. The set is
+# irregular: `lcg32_hybrid` and `pcg32_hybrid` carry a phase argument while the
+# other four forward hybrids do not. Any rule that reproduces this membership
+# today would mis-generalize the moment ABI-v2 lands (DEP-ABI-V2, recorded and
+# NOT built). Verified against the live builders above and the kernel signatures
+# in prng_registry.py.
+PHASE_CAPABLE_VARIANTS: frozenset = frozenset({
+    # forward constant — all 6 families, trailing int32
+    "java_lcg", "lcg32", "minstd", "pcg32", "xorshift32", "xorshift128",
+    # reverse constant — all 6, params hardcoded in-kernel, trailing int32
+    "java_lcg_reverse", "lcg32_reverse", "minstd_reverse",
+    "pcg32_reverse", "xorshift32_reverse", "xorshift128_reverse",
+    # the two phase-capable forward hybrids
+    "lcg32_hybrid",            # inline int32, position 17 of 17
+    "pcg32_hybrid",            # trailing int32, position 15 of 15
+    # reverse hybrid — all 6, trailing int32
+    "java_lcg_hybrid_reverse", "lcg32_hybrid_reverse", "minstd_hybrid_reverse",
+    "pcg32_hybrid_reverse", "xorshift32_hybrid_reverse", "xorshift128_hybrid_reverse",
+})
+
+# The four covered variants with NO phase input. Stated as data rather than
+# derived as a complement, so a variant added to neither set is a loud KeyError
+# in the consistency check below instead of a silent demotion.
+PHASE_INCAPABLE_VARIANTS: frozenset = frozenset({
+    "java_lcg_hybrid", "minstd_hybrid", "xorshift32_hybrid", "xorshift128_hybrid",
+})
+
+# Expected kernel-arg ARITY per concrete variant, measured from the builders and
+# cross-checked against prng_registry.py kernel signatures. Consumed by G-CAP-1.
+#
+# NOTE — this table corrects the design of record. PROPOSAL_WINDOW_ANCHOR_
+# GENERATOR_PHASE_SEPARATION_v1_1.md §3 states "forward constant, all 6 families
+# | 13 (lcg32: 16)". That is wrong for five of the six: the forward-constant
+# arity is 11 (_constant_prefix) + the family tail + 1 (trailing int32), and the
+# family tails differ in length. Brief I §0 C-1 carries the correction.
+EXPECTED_KERNEL_ARITY: Dict[str, int] = {
+    # forward constant: 11 + family tail + 1
+    "java_lcg": 14, "lcg32": 15, "minstd": 14,
+    "pcg32": 13, "xorshift32": 15, "xorshift128": 15,
+    # reverse constant: 11 + 1 (no family tail — constants live in the kernel)
+    "java_lcg_reverse": 12, "lcg32_reverse": 12, "minstd_reverse": 12,
+    "pcg32_reverse": 12, "xorshift32_reverse": 12, "xorshift128_reverse": 12,
+    # forward hybrid: 13 + family tail (+1 where a phase arg exists)
+    "java_lcg_hybrid": 15, "lcg32_hybrid": 17, "minstd_hybrid": 15,
+    "pcg32_hybrid": 15, "xorshift32_hybrid": 16, "xorshift128_hybrid": 16,
+    # reverse hybrid: 13 + 1
+    "java_lcg_hybrid_reverse": 14, "lcg32_hybrid_reverse": 14,
+    "minstd_hybrid_reverse": 14, "pcg32_hybrid_reverse": 14,
+    "xorshift32_hybrid_reverse": 14, "xorshift128_hybrid_reverse": 14,
+}
+
+# Structural consistency, asserted at import: the two capability sets partition
+# exactly the 24 covered variants, and the arity table covers the same 24.
+_ALL_COVERED_VARIANTS: frozenset = frozenset(
+    v for vs in SUPPORTED_VARIANTS.values() for v in vs
+)
+assert PHASE_CAPABLE_VARIANTS | PHASE_INCAPABLE_VARIANTS == _ALL_COVERED_VARIANTS, (
+    "phase capability sets do not partition the covered variants"
+)
+assert not (PHASE_CAPABLE_VARIANTS & PHASE_INCAPABLE_VARIANTS), (
+    "a variant is declared both phase-capable and phase-incapable"
+)
+assert frozenset(EXPECTED_KERNEL_ARITY) == _ALL_COVERED_VARIANTS, (
+    "EXPECTED_KERNEL_ARITY does not cover exactly the 24 covered variants"
+)
+
+
 def base_family(family_name: str) -> str:
     """Map a resolved variant name to its base family (longest suffix first)."""
     for suffix in _VARIANT_SUFFIXES:
@@ -148,7 +246,7 @@ class BuildContext:
     skip_min: int
     skip_max: int
     threshold: float
-    offset: int
+    generator_phase: int
     params: Dict[str, Any]
     n_strategies: int = 0
     hybrid_threshold: float = 0.0
@@ -194,13 +292,22 @@ def _hybrid_prefix(ctx: BuildContext) -> List[KernelArg]:
     ]
 
 
-def _offset_tail(ctx: BuildContext) -> List[KernelArg]:
-    return [ScalarArg(ctx.offset, "int32")]
+def _generator_phase_tail(ctx: BuildContext) -> List[KernelArg]:
+    """The trailing int32 the KERNEL calls `offset` and this design calls
+    `generator_phase` — UNCHANGED position, UNCHANGED dtype.
+
+    [WINDOW-ANCHOR BRIEF I §2.1(b)] The kernel ABI is frozen byte-for-byte for
+    all 44 registry entries; only the host-side NAME of the value moved. This
+    tail carries the device-side generator pre-advance and never the residue
+    window's start index — that is `window_anchor`, which lives on the host and
+    reaches no kernel argument at all."""
+    return [ScalarArg(ctx.generator_phase, "int32")]
 
 
 def _reverse_hybrid_tail(ctx: BuildContext) -> List[KernelArg]:
-    """ALL reverse hybrids: 13-prefix + int32(offset) = 14 args (constants in-kernel)."""
-    return [ScalarArg(ctx.offset, "int32")]
+    """ALL reverse hybrids: 13-prefix + int32(generator_phase) = 14 args
+    (constants hardcoded in-kernel). Same frozen slot as _generator_phase_tail."""
+    return [ScalarArg(ctx.generator_phase, "int32")]
 
 
 # ---------------------------------------------------------------------------
@@ -224,15 +331,15 @@ def build_java_lcg(ctx: BuildContext) -> List[KernelArg]:
         ]                                                       # 15
     if ctx.reverse:
         # java_lcg_reverse_sieve: params hardcoded in-kernel -> 12 args (verified)
-        return _constant_prefix(ctx) + _offset_tail(ctx)
-    # forward constant: uint64 a, c + offset
+        return _constant_prefix(ctx) + _generator_phase_tail(ctx)
+    # forward constant: uint64 a, c + generator_phase
     return (
         _constant_prefix(ctx)
         + [
             ScalarArg(ctx.params.get("a", 25214903917), "uint64"),
             ScalarArg(ctx.params.get("c", 11), "uint64"),
         ]
-        + _offset_tail(ctx)
+        + _generator_phase_tail(ctx)
     )
 
 
@@ -246,12 +353,12 @@ def build_lcg32(ctx: BuildContext) -> List[KernelArg]:
             ScalarArg(ctx.params.get("a", 1664525), "uint32"),
             ScalarArg(ctx.params.get("c", 1013904223), "uint32"),
             ScalarArg(ctx.params.get("m", 0xFFFFFFFF), "uint32"),
-            ScalarArg(ctx.offset, "int32"),
+            ScalarArg(ctx.generator_phase, "int32"),
         ]
     if ctx.reverse:
         # lcg32_reverse_sieve: a,c,m hardcoded in-kernel -> 12 args (verified)
-        return _constant_prefix(ctx) + _offset_tail(ctx)
-    # forward constant: uint32 a, c, m + offset
+        return _constant_prefix(ctx) + _generator_phase_tail(ctx)
+    # forward constant: uint32 a, c, m + generator_phase
     return (
         _constant_prefix(ctx)
         + [
@@ -259,7 +366,7 @@ def build_lcg32(ctx: BuildContext) -> List[KernelArg]:
             ScalarArg(ctx.params.get("c", 1013904223), "uint32"),
             ScalarArg(ctx.params.get("m", 0xFFFFFFFF), "uint32"),
         ]
-        + _offset_tail(ctx)
+        + _generator_phase_tail(ctx)
     )
 
 
@@ -275,15 +382,15 @@ def build_minstd(ctx: BuildContext) -> List[KernelArg]:
         ]
     if ctx.reverse:
         # minstd_reverse_sieve: a,m hardcoded in-kernel -> 12 args (verified)
-        return _constant_prefix(ctx) + _offset_tail(ctx)
-    # forward constant: uint32 a, m + offset
+        return _constant_prefix(ctx) + _generator_phase_tail(ctx)
+    # forward constant: uint32 a, m + generator_phase
     return (
         _constant_prefix(ctx)
         + [
             ScalarArg(ctx.params.get("a", 48271), "uint32"),
             ScalarArg(ctx.params.get("m", 2147483647), "uint32"),
         ]
-        + _offset_tail(ctx)
+        + _generator_phase_tail(ctx)
     )
 
 
@@ -295,16 +402,16 @@ def build_pcg32(ctx: BuildContext) -> List[KernelArg]:
         # forward: uint64 increment, int32 offset (:2095) -> 15
         return args + [
             ScalarArg(ctx.params.get("increment", 1442695040888963407), "uint64"),
-            ScalarArg(ctx.offset, "int32"),
+            ScalarArg(ctx.generator_phase, "int32"),
         ]
     if ctx.reverse:
         # pcg32_reverse_sieve: increment hardcoded in-kernel -> 12 args (verified)
-        return _constant_prefix(ctx) + _offset_tail(ctx)
-    # forward constant: uint64 increment + offset
+        return _constant_prefix(ctx) + _generator_phase_tail(ctx)
+    # forward constant: uint64 increment + generator_phase
     return (
         _constant_prefix(ctx)
         + [ScalarArg(ctx.params.get("increment", 1442695040888963407), "uint64")]
-        + _offset_tail(ctx)
+        + _generator_phase_tail(ctx)
     )
 
 
@@ -321,8 +428,8 @@ def build_xorshift32(ctx: BuildContext) -> List[KernelArg]:
         ]
     if ctx.reverse:
         # xorshift32_reverse_sieve: shifts hardcoded in-kernel -> 12 args (verified)
-        return _constant_prefix(ctx) + _offset_tail(ctx)
-    # forward constant: int32 shift_a, b, c + offset
+        return _constant_prefix(ctx) + _generator_phase_tail(ctx)
+    # forward constant: int32 shift_a, b, c + generator_phase
     return (
         _constant_prefix(ctx)
         + [
@@ -330,7 +437,7 @@ def build_xorshift32(ctx: BuildContext) -> List[KernelArg]:
             ScalarArg(ctx.params.get("shift_b", 17), "int32"),
             ScalarArg(ctx.params.get("shift_c", 5), "int32"),
         ]
-        + _offset_tail(ctx)
+        + _generator_phase_tail(ctx)
     )
 
 
@@ -345,12 +452,12 @@ def build_xorshift128(ctx: BuildContext) -> List[KernelArg]:
         ]
     if ctx.reverse:
         # xorshift128_reverse_sieve: dummies hardcoded in-kernel -> 12 args (verified)
-        return _constant_prefix(ctx) + _offset_tail(ctx)
-    # forward constant: int32 dummy1, dummy2, dummy3 + offset
+        return _constant_prefix(ctx) + _generator_phase_tail(ctx)
+    # forward constant: int32 dummy1, dummy2, dummy3 + generator_phase
     return (
         _constant_prefix(ctx)
         + [ScalarArg(0, "int32"), ScalarArg(0, "int32"), ScalarArg(0, "int32")]
-        + _offset_tail(ctx)
+        + _generator_phase_tail(ctx)
     )
 
 
@@ -419,6 +526,25 @@ class VariantStopCondition(Exception):
     proposed Route-A erratum rather than silently narrowing capability."""
 
 
+class GeneratorPhaseUnsupportedError(Exception):
+    """[WINDOW-ANCHOR BRIEF I §2.1(d)] A nonzero `generator_phase` was requested
+    on a variant whose kernel ABI has no phase argument.
+
+    DELIBERATELY NOT `VariantStopCondition`. That exception means *the variant
+    itself is broken* — absent from KERNEL_REGISTRY, malformed, or missing a
+    builder — and its remedy is a Route-A erratum from Beta. Here the variant is
+    healthy and correctly registered; the REQUEST is unsatisfiable. Reusing the
+    type would (i) prescribe the wrong remedy, and (ii) make G-CAP-2 and G-CAP-3
+    indistinguishable by exception type, since G-CAP-2 asserts
+    VariantStopCondition for uncovered variants.
+
+    DELIBERATELY NOT a `ResidueError` either: nothing about the residue window is
+    at fault. It is instead wired explicitly into the worker's non-retryable
+    tuple, because the default classification is retryable and a capability
+    mismatch is deterministic — retrying it on another worker fails identically
+    while burning the one certified hybrid retry."""
+
+
 def _validate_variant(variant: str, registry: Dict[str, Any]) -> None:
     """A concrete variant is valid iff it exists in KERNEL_REGISTRY with a
     kernel_name + kernel_source AND its base family has a working builder branch.
@@ -439,6 +565,66 @@ def _validate_variant(variant: str, registry: Dict[str, Any]) -> None:
         raise VariantStopCondition(
             f"STOP: variant {variant!r} has no builder branch for base {base!r}."
         )
+
+
+def assert_generator_phase_supported(variant: str, generator_phase: int) -> None:
+    """Fail loud if `generator_phase` cannot be delivered to `variant`'s kernel.
+
+    [WINDOW-ANCHOR BRIEF I §2.1(d)] Sits on the same seam as `resolve_builder`
+    and `_validate_variant`: called BEFORE the lazy cupy import, before kernel
+    compilation, before device acquisition and before any allocation. It RAISES;
+    it never clamps to 0, because a clamp would run a different experiment than
+    the one requested and record it as the requested one.
+
+    Phase 0 is always deliverable — it is the ABI-frozen v1 pin, and on a variant
+    with no phase argument it is also the only physically truthful value."""
+    phase = int(generator_phase)
+    if phase == 0:
+        return
+    if variant in PHASE_CAPABLE_VARIANTS:
+        return
+    incapable = variant in PHASE_INCAPABLE_VARIANTS
+    raise GeneratorPhaseUnsupportedError(
+        f"generator_phase={phase} requested for variant {variant!r}, which has "
+        f"NO generator-phase argument in its kernel ABI"
+        + (" (one of the four no-phase forward hybrids: "
+           f"{sorted(PHASE_INCAPABLE_VARIANTS)})" if incapable
+           else " (variant is not in the phase-capable set)")
+        + ". The value cannot be delivered to the device, and it is NOT emulated "
+          "by altering the window_anchor, the skip range, the seed or the residue "
+          "slice — those are different quantities. Independent phase on these "
+          "variants is recorded as DEP-ABI-V2 and is NOT built. No kernel was "
+          "launched."
+    )
+
+
+# The v1 release pin. `generator_phase` is carried explicitly everywhere so the
+# phase that ran is RECORDED rather than inferred, and in v1 the only permitted
+# value is 0. Not an Optuna dimension, not WATCHER-registered. Raising this is
+# DEP-ABI-V2 and is a ruling, not an edit.
+GENERATOR_PHASE_V1_PIN = 0
+
+
+def assert_generator_phase_permitted(variant: str, generator_phase: int) -> None:
+    """v1 POLICY pin at the worker execution seam. Runs AFTER
+    `assert_generator_phase_supported` — see GeneratorPhaseNotPermittedError for
+    why the order is load-bearing.
+
+    This is the worker-side half of a two-layer pin; the coordinator enforces the
+    same value at its public assign-payload validation. Both layers exist because
+    the seams have different reach: the coordinator's covers everything that goes
+    out as an assignment, the worker's covers anything that arrives by any route."""
+    phase = int(generator_phase)
+    if phase != GENERATOR_PHASE_V1_PIN:
+        raise GeneratorPhaseNotPermittedError(
+            f"generator_phase={phase} refused for variant {variant!r}: v1 pins the "
+            f"device-side generator phase to exactly {GENERATOR_PHASE_V1_PIN}. This "
+            f"variant's kernel ABI CAN carry a phase — capability is not the "
+            f"objection — but v1 policy permits only the pinned value on the "
+            f"production path. Nonzero phase is reachable in-process through the "
+            f"builder for arg-capture testing (AC1/G-SEP-2); it is not reachable "
+            f"through an assignment. Independent nonzero phase is DEP-ABI-V2: "
+            f"recorded, NOT built.")
 
 
 def supported_variants() -> List[str]:
@@ -508,6 +694,27 @@ def partition_stripe(seed_start: int, seed_count: int, cap: int) -> List[SubStri
 # ===========================================================================
 # B1 — per-assignment residue window resolution (content-identity keyed)
 # ===========================================================================
+
+class GeneratorPhaseNotPermittedError(Exception):
+    """[WINDOW-ANCHOR BRIEF I — v1 POLICY PIN, TB ruling 2026-08-21] A
+    `generator_phase` other than the v1 pin reached the worker execution seam.
+
+    DISTINCT FROM `GeneratorPhaseUnsupportedError`, and the distinction is
+    load-bearing, not cosmetic:
+
+        capability  — CAN this variant's kernel ABI carry a phase at all?
+                      A property of the ABI. Answered by PHASE_CAPABLE_VARIANTS.
+        policy      — DOES v1 permit a nonzero value on the production path?
+                      A property of the release. Answered by GENERATOR_PHASE_V1_PIN.
+
+    A variant can be fully phase-capable and still refused here. The two guards
+    are ORDERED capability-then-policy at the seam so each is exercised by its own
+    gate: a nonzero phase on `java_lcg_hybrid` stops at capability (G-CAP-3), and a
+    nonzero phase on `lcg32_hybrid` clears capability and stops here (G-SEP-3). If
+    policy ran first it would reject nonzero on EVERY variant, G-CAP-3 would go
+    green without the capability guard ever executing, and the gate would be
+    passing on a fact it does not check."""
+
 
 class ResidueError(Exception):
     """Base for non-retryable residue-window failures -> stripe_error(retryable=False)."""
@@ -600,8 +807,65 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+_LEGACY_OFFSET_KEY = "offset"
+
+
+def reject_legacy_offset_key(payload: Dict[str, Any], *, where: str) -> None:
+    """[WINDOW-ANCHOR BRIEF I §2.1(f)] HARD REJECT of the retired `offset` key.
+
+    Called before any hashing, loading, assignment or GPU work. There is NO
+    mapping to either successor field and there never will be one on this path:
+    the historical scalar drove BOTH the host-side record slice AND the
+    device-side generator pre-advance, so which of the two a sender meant is not
+    recoverable from the value. Guessing would silently pick one and record the
+    run as though the operator had chosen it."""
+    if _LEGACY_OFFSET_KEY in (payload or {}):
+        raise ResidueResolutionError(
+            f"{where}: payload carries the RETIRED key 'offset'. The "
+            f"window-anchor / generator-phase separation replaced it with two "
+            f"independent REQUIRED keys — 'window_anchor' (which observed records "
+            f"form the residue window; host-side) and 'generator_phase' (how many "
+            f"generator advances precede the first comparison; device-side). "
+            f"'offset' is NOT mapped to either, not read as a fallback, and not "
+            f"accepted alongside them. See "
+            f"docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §4.1."
+        )
+
+
+def _require_int_key(payload: Dict[str, Any], key: str, *, where: str) -> int:
+    """Required-key read with NO default. A `.get(key, 0)` here is precisely the
+    defect class this brief extinguishes: it turned an omitted field into a
+    silent, plausible-looking zero that no artifact could distinguish from a
+    deliberate zero."""
+    payload = payload or {}
+    if key not in payload:
+        raise ResidueResolutionError(
+            f"{where}: payload lacks REQUIRED key {key!r}. Refusing to substitute "
+            f"a default — under the window-anchor separation every trial records "
+            f"the anchor and the phase that actually ran, so an omitted field is "
+            f"a caller defect, not a zero."
+        )
+    value = payload[key]
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ResidueResolutionError(
+            f"{where}: required key {key!r} is not an integer (got {value!r})."
+        ) from exc
+
+
+def require_window_anchor(payload: Dict[str, Any], *, where: str) -> int:
+    """THE reader for `window_anchor` — the host-side residue-window start index."""
+    return _require_int_key(payload, "window_anchor", where=where)
+
+
+def require_generator_phase(payload: Dict[str, Any], *, where: str) -> int:
+    """THE reader for `generator_phase` — the device-side generator pre-advance."""
+    return _require_int_key(payload, "generator_phase", where=where)
+
+
 def load_residue_window(
-    path: str, window_size: int, sessions: Optional[list], offset: int
+    path: str, window_size: int, sessions: Optional[list], window_anchor: int
 ) -> List[int]:
     """THE canonical residue-window derivation for the RANGE-MINER path.
 
@@ -646,7 +910,24 @@ def load_residue_window(
         raise ResidueResolutionError(
             f"dataset {path!r} has only {n} entries, need window_size {window_size}"
         )
-    start = max(0, min(int(offset), n - window_size))
+    # [WINDOW-ANCHOR BRIEF I §2.1(e)] THE SILENT CLAMP IS REMOVED.
+    # `window_anchor` says which observed records form the window and nothing
+    # else. An anchor outside the derived domain is a caller defect; saturating
+    # it produced a window the caller never asked for and recorded it as though
+    # they had. `derived_max` is computed on the POST-session-filter count, so a
+    # single-session trial can never address past the end of its own sequence.
+    derived_max = n - window_size
+    anchor = int(window_anchor)
+    if anchor < 0 or anchor > derived_max:
+        raise ResidueResolutionError(
+            f"window_anchor {anchor} is outside the derived domain "
+            f"[0, {derived_max}] — dataset={path!r}, "
+            f"sessions={sorted(sessions) if sessions else 'ALL'}, "
+            f"N_filtered={n}, window_size={window_size}. "
+            f"derived_max = N_filtered - window_size, computed AFTER the session "
+            f"filter. The anchor is validated, never clamped."
+        )
+    start = anchor
     window = data[start:start + window_size]
     return [int(entry.get("full_state", entry["draw"])) for entry in window]
 
@@ -659,14 +940,17 @@ _load_window_fresh = load_residue_window
 class ResidueResolver:
     """Resolves the residue window per ASSIGNMENT, keyed by dataset CONTENT
     identity — never process-lifetime `self.draws` (B1). Cache key:
-      (dataset_reference, dataset_sha256, window_size, canonical_sessions, offset)
+      (dataset_reference, dataset_sha256, window_size, canonical_sessions,
+       window_anchor, generator_phase)
     A coordinator-provided `residue_sha256` takes precedence for keying AND is
     verified against the loaded sequence (mismatch -> ResidueVerificationError).
 
     ASSIGNMENT CONTRACT (v3 clarification — resolution (a), Beta-approved choice):
     Phase 4's `stripe_assign.payload` ALWAYS supplies the window-defining fields
-    (`dataset`/`dataset_path`/`dataset_reference` + `window_size`, plus optional
-    `sessions`/`offset`/`residue_sha256`). There is intentionally NO bare
+    (`dataset`/`dataset_path`/`dataset_reference` + `window_size` + the two
+    REQUIRED window-anchor fields `window_anchor` and `generator_phase`, plus
+    optional `sessions`/`residue_sha256`). The retired key `offset` is HARD
+    REJECTED, never mapped. There is intentionally NO bare
     residue-reference path (no `residue_path` / inline residues) — the current
     coordinator direction sends the dataset+window, so an alternate path would be
     dead code. `resolve()` fails CLEARLY with `ResidueResolutionError` if those
@@ -674,6 +958,9 @@ class ResidueResolver:
 
     def __init__(
         self,
+        # Positional contract: (path, window_size, sessions, window_anchor).
+        # The 4th positional is the HOST-side residue-window start index; it is
+        # NOT generator_phase, which never reaches this loader at all.
         loader: Optional[Callable[[str, int, Optional[list], int], List[int]]] = None,
         file_hasher: Optional[Callable[[str], str]] = None,
     ) -> None:
@@ -692,8 +979,17 @@ class ResidueResolver:
         )
         window_size = payload.get("window_size")
         sessions = payload.get("sessions")
-        offset = payload.get("offset", 0)
         residue_sha = payload.get("residue_sha256")
+
+        # [WINDOW-ANCHOR BRIEF I §2.1(f)] Schema wall FIRST — before the dataset
+        # guard, before hashing, before loading. A payload on the retired schema
+        # must not reach any later stage where its rejection could be mistaken
+        # for a different fault.
+        reject_legacy_offset_key(payload, where="ResidueResolver.resolve")
+        window_anchor = require_window_anchor(
+            payload, where="ResidueResolver.resolve")
+        generator_phase = require_generator_phase(
+            payload, where="ResidueResolver.resolve")
 
         if not dataset or window_size is None:
             raise ResidueResolutionError(
@@ -727,15 +1023,16 @@ class ResidueResolver:
 
         if residue_sha:
             key: tuple = ("residue_sha256", residue_sha, window_size,
-                          canonical_sessions, offset)
+                          canonical_sessions, window_anchor, generator_phase)
         else:
-            key = (dataset, dataset_sha, window_size, canonical_sessions, offset)
+            key = (dataset, dataset_sha, window_size, canonical_sessions,
+                   window_anchor, generator_phase)
 
         if key in self._cache:
             return self._cache[key]
 
         residues = self._loader(
-            dataset, window_size, list(canonical_sessions) or None, offset
+            dataset, window_size, list(canonical_sessions) or None, window_anchor
         )
         if residue_sha is not None:
             got = sha256_residues(residues)
@@ -830,6 +1127,21 @@ class SieveExecutor:
     ) -> SubStripeOutcome:
         # (1) Coverage guard FIRST — uncovered families raise here, no GPU/residue.
         builder = resolve_builder(assign.family_name)
+        # (1b) [WINDOW-ANCHOR BRIEF I §2.1(d)/(g)] Generator-phase capability
+        # guard, on the SAME seam as the coverage guard: before the lazy cupy
+        # import, before _get_kernel compiles anything, before device
+        # acquisition, before any allocation. Read ONCE here against the resolved
+        # concrete variant and reused for BuildContext below, so this path has
+        # exactly one canonical read of the field and no downstream
+        # reinterpretation.
+        reject_legacy_offset_key(assign.payload, where="SieveExecutor.execute")
+        generator_phase = require_generator_phase(
+            assign.payload, where="SieveExecutor.execute")
+        # ORDER IS LOAD-BEARING (TB ruling 2026-08-21): capability FIRST, then
+        # policy. Reversed, the policy pin would reject nonzero on every variant
+        # and G-CAP-3 would never exercise the capability guard at all.
+        assert_generator_phase_supported(assign.family_name, generator_phase)
+        assert_generator_phase_permitted(assign.family_name, generator_phase)
         # (2) Per-assignment residue window (B1) — raises ResidueError (non-retryable).
         residues = self.resolver.resolve(assign.payload)
 
@@ -872,7 +1184,7 @@ class SieveExecutor:
                     f"{_p2t_raw!r}. A miner stripe runs ONE kernel with ONE "
                     f"threshold; refusing to filter at a value the parent did "
                     f"not unambiguously request.")
-        offset = payload.get("offset", 0)
+        # generator_phase was read and capability-checked at (1b) above.
         hybrid = is_hybrid_family(family)
         reverse = is_reverse_family(family)
 
@@ -945,7 +1257,7 @@ class SieveExecutor:
                     family_name=family, hybrid=hybrid, reverse=reverse,
                     seed_dtype=seed_dtype, n_seeds=n_seeds, k=k,
                     skip_min=skip_min, skip_max=skip_max, threshold=threshold,
-                    offset=offset, params=default_params,
+                    generator_phase=generator_phase, params=default_params,
                     n_strategies=n_strategies, hybrid_threshold=hybrid_threshold,
                 )
                 arg_list = builder(ctx)
@@ -1997,8 +2309,14 @@ class RangeMinerWorker:
             _c0 = time.perf_counter()
             try:
                 outcome = executor(assign, sub.seed_start, sub.seed_count)
-            except (NotImplementedError, ResidueError, ThresholdContractError) as e:
-                # Non-retryable: uncovered family, or unresolved/mismatched window.
+            except (NotImplementedError, ResidueError, ThresholdContractError,
+                    GeneratorPhaseUnsupportedError,
+                    GeneratorPhaseNotPermittedError) as e:
+                # Non-retryable: uncovered family, unresolved/mismatched window,
+                # or [BRIEF I] a generator_phase the variant's ABI cannot carry.
+                # The last is deterministic — another worker would fail
+                # identically — so it must never consume the one certified
+                # hybrid retry.
                 acct["compute_s"] = round(
                     acct["compute_s"] + (time.perf_counter() - _c0), 6)
                 self._fail_stripe(assign, sub, e, retryable=False)

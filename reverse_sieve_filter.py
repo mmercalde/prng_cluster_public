@@ -101,6 +101,29 @@ except ImportError:
     print("WARNING: hybrid_strategy.py not available - hybrid mode disabled", file=sys.stderr)
 
 # ============================================================================
+# [WINDOW-ANCHOR BRIEF I §2.4] HISTORICAL-ONLY CLOSURE
+# ============================================================================
+class LegacyFusedEngineClosed(RuntimeError):
+    """Raised on every EXECUTION path of the legacy fused reverse sieve.
+
+    THE BOUNDARY, and why it sits here:
+      * IMPORT is free. Eight diagnostic scripts import `GPUReverseSieve` and
+        `load_draws_from_daily3` to inspect historical behaviour; making the
+        module unimportable would break reading the archive, which is the one
+        thing archival code is FOR.
+      * `load_draws_from_daily3` is free. It loads and slices data; it runs no
+        generator and fuses nothing. Its clamp is C-2 site 4 and is left
+        exactly as it was — this engine is CLOSED, not aligned.
+      * EXECUTION raises. `run_reverse_sieve`, `run_hybrid_reverse_sieve`,
+        `execute_reverse_job` and `main()` are the four surfaces on which
+        fused semantics actually run, so a future re-wired route cannot run
+        them silently."""
+
+
+_CLOSED_MSG = ('LEGACY_FUSED_ENGINE_CLOSED: reverse_sieve_filter.py is the pre-separation FUSED engine — one scalar `offset` drove BOTH the host residue slice AND the device generator pre-advance, coherent only at skip=0 (Chapter 2 F-4). It is CLOSED under the window-anchor / generator-phase separation and is retained as archival code only. It was deliberately NOT aligned to the new semantics: aligning frozen code invites drift. See docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §4.8 and docs/S172_WINDOW_ANCHOR_BRIEF_I.md §2.4.')
+
+
+# ============================================================================
 # DATASET LOADING
 # ============================================================================
 def load_draws_from_daily3(path: str, window_size: int = 30, sessions=None, offset: int = 0):
@@ -148,6 +171,7 @@ class GPUReverseSieve:
                           skip_range: Tuple[int, int] = (0, 20),
                           min_match_threshold: float = 0.01,
                           offset: int = 0) -> Dict[str, Any]:
+        raise LegacyFusedEngineClosed(f"{_CLOSED_MSG} (GPUReverseSieve.run_reverse_sieve)")
         start_time = time.time()
         with self.device:
             seeds_array = [c["seed"] if isinstance(c, dict) else c for c in candidate_seeds]
@@ -198,6 +222,7 @@ class GPUReverseSieve:
             }
 
     def run_hybrid_reverse_sieve(self, *args, **kwargs):
+        raise LegacyFusedEngineClosed(f"{_CLOSED_MSG} (GPUReverseSieve.run_hybrid_reverse_sieve)")
         # Keep as-is — not used
         pass
 
@@ -205,6 +230,7 @@ class GPUReverseSieve:
 # JOB EXECUTION
 # ============================================================================
 def execute_reverse_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+    raise LegacyFusedEngineClosed(f"{_CLOSED_MSG} (execute_reverse_job)")
     job_id = job.get('job_id', 'unknown')
     try:
         dataset_path = job.get('dataset_path') or job.get('target_file')
@@ -269,6 +295,7 @@ def execute_reverse_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
 # MAIN
 # ============================================================================
 def main():
+    raise LegacyFusedEngineClosed(f"{_CLOSED_MSG} (CLI entry)")
     parser = argparse.ArgumentParser()
     parser.add_argument('--job-file', required=True)
     parser.add_argument('--gpu-id', type=int, default=0)

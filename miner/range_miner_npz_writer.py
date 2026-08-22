@@ -181,11 +181,23 @@ class AssemblyStateError(Exception):
 # test oracle.
 # ---------------------------------------------------------------------------
 
-# The 11-field canonical trial context (9 trial-global + 2 provenance) every
+# The 12-field canonical trial context (10 trial-global + 2 provenance) every
 # manifest of one run must agree on (§5.2), canonicalized through the
 # coordinator's own `_canonicalize_trial_context` — never a second canonicalizer.
+#
+# [WINDOW-ANCHOR BRIEF I §2.3 — required-key change ONLY, TB-bounded 2026-08-21]
+# This tuple is a CROSS-PHASE CONSISTENCY contract, not NPZ metadata. It must
+# move in the same commit as the coordinator's own field tuples: `:1026` reads it
+# as a REQUIRED-KEY comprehension over the manifest metadata, so if the
+# coordinator emits `window_anchor` while this still asks for `offset`, assembly
+# dies with KeyError on the first real trial.
+#
+# EXPLICITLY NOT the §4.5 NPZ generation-metadata work, which stays in Brief II:
+# no array is added, removed, reordered, retyped or reshaped, no `savez` call
+# changes, `anchor_era` is NOT introduced here, and the 22-array wall stays shut.
 _CONTEXT_FIELDS: Tuple[str, ...] = (
-    "trial_number", "window_size", "offset", "sessions", "skip_min", "skip_max",
+    "trial_number", "window_size", "window_anchor", "generator_phase",
+    "sessions", "skip_min", "skip_max",
     "prng_base", "forward_threshold", "reverse_threshold",
     "dataset_sha256", "residue_sha256",
 )
@@ -979,7 +991,7 @@ def prepare_trial_assembly(
 
     Returns `(metas, ctx, order)`:
       * `metas`  — per-manifest trial_metadata, in ORIGINAL manifest-list order;
-      * `ctx`    — the 11-field trial context, read from `metas[0]`;
+      * `ctx`    — the 12-field trial context, read from `metas[0]`;
       * `order`  — indices into `manifests`, sorted by
                    `(workflow_phase, stripe_id, sub_index, attempt, event_id)`.
 
@@ -1009,7 +1021,7 @@ def prepare_trial_assembly(
         elif ctx_key != canon_ctx:
             raise AssemblyConsistencyError(
                 f"{run_id}: manifest {manifest.get('event_id')!r} disagrees on the "
-                f"11-field canonical trial context:\n  {ctx_key}\n!=\n  {canon_ctx}")
+                f"12-field canonical trial context:\n  {ctx_key}\n!=\n  {canon_ctx}")
 
     # ---- §5.2 phase-set completeness [TB-D1-B1] ----------------------------
     # Every executed pass yields >= 1 manifest (each completed stripe publishes
