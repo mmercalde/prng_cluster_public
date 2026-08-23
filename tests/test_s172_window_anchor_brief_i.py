@@ -1153,6 +1153,130 @@ def gate_phase5_seam():
     return f"manifest -> {len(proj)}-field projection -> shared canonicalizer, no KeyError"
 
 
+def gate_phase5_assembly():
+    """G-PHASE5-ASSEMBLY — a schema-valid trial context survives the WHOLE
+    publish -> assemble -> canonical-record-build path, and canonical array 4
+    `offset` carries the WINDOW ANCHOR.
+
+    DISTINCT FROM G-PHASE5-SEAM, which is unchanged and deliberately NOT widened.
+    The seam gate proves the manifest -> _CONTEXT_FIELDS projection -> shared
+    canonicalizer chain. It stops one layer short of `assemble_trial`, which is
+    where `utils.canonical_records.build_mode_records` read the retired
+    `ctx["offset"]` and raised KeyError in production at 48a8705. This gate
+    reaches the REAL assemble_trial / build_mode_records surface.
+
+    [TB ruling, Brief-I production-shape failure] Canonical array 4 `offset` is a
+    LEGACY WIRE NAME with exactly ONE post-F-4 meaning: it IS the window anchor.
+    It is NEVER the generator phase, at ANY phase value. Phase stays
+    independently represented in versioned generation metadata.
+
+    FIXTURE VALUES ARE LOAD-BEARING: window_anchor=58 and generator_phase=0 are
+    DELIBERATELY UNEQUAL, and the assertion is `== 58`, never `== 0`. A 0/0
+    fixture would let the exact semantic mistake this gate exists to catch pass
+    invisibly."""
+    import hashlib, json, os, tempfile, ast, textwrap
+    import miner.range_miner_coordinator as c
+    import miner.range_miner_npz_writer as n
+    import utils.canonical_records as cr
+
+    ANCHOR, PHASE = 58, 0
+    assert ANCHOR != PHASE, "fixture must keep anchor and phase distinguishable"
+
+    ctx = c.build_trial_context_from_serve(
+        dict(trial_number=1, window_size=20, window_anchor=ANCHOR,
+             generator_phase=PHASE, sessions=["evening"], skip_min=5, skip_max=175,
+             prng_base="java_lcg", forward_threshold=0.64, reverse_threshold=0.57),
+        "d" * 64, "r" * 64)
+    assert "offset" not in ctx, "legacy 'offset' key resurrected in the trial context"
+    assert ctx["window_anchor"] == ANCHOR and ctx["generator_phase"] == PHASE
+
+    def _run(build_fn):
+        """Publish a forward+reverse constant pair through the REAL sink and
+        assemble. `build_fn` is installed as canonical_records.build_mode_records
+        so the fault-injection arms exercise the true call site."""
+        orig_cr, orig_alias = cr.build_mode_records, n._mode_records
+        cr.build_mode_records = build_fn
+        n._mode_records = build_fn
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                sink = n.AssemblingPhase5Sink()
+                stages = c.workflow_stages_for("java_lcg", True)
+                for family, phase in stages[:2]:      # forward+reverse CONSTANT
+                    stripe = f"st{phase - 1}_s0"
+                    payload = {"schema_version": "s172_substripe_v1",
+                               "stripe_id": stripe, "sub_index": 0,
+                               "seed_start": 1000, "seed_count": 10,
+                               "survivors": [[1000, 0.9, 0, []]]}
+                    raw = json.dumps(payload).encode()
+                    fp = os.path.join(d, f"{stripe}.json")
+                    with open(fp, "wb") as fh:
+                        fh.write(raw)
+                    meta = c.derive_trial_metadata(
+                        ctx, {"phase": phase, "family_name": family})
+                    sink.publish_shard({
+                        "event_id": f"e{phase}", "run_id": "R", "stripe_id": stripe,
+                        "workflow_phase": phase, "attempt": 0, "sub_index": 0,
+                        "local_spool_path": fp, "expected_size": len(raw),
+                        "expected_sha256": hashlib.sha256(raw).hexdigest(),
+                        "trial_metadata": meta,
+                        "dataset_sha256": meta["dataset_sha256"],
+                        "residue_sha256": meta["residue_sha256"]})
+                sink.commit_trial({"event_type": "trial_commit", "run_id": "R",
+                                   "event_id": "R:commit"})
+                return sink.get_assembly("R")
+        finally:
+            cr.build_mode_records, n._mode_records = orig_cr, orig_alias
+
+    # ---- the property, through the real production function -----------------
+    asm = _run(cr.build_mode_records)
+    recs = asm.canonical_records_constant
+    assert recs, "no canonical constant records were built — the gate would be vacuous"
+    offsets = sorted({r["offset"] for r in recs})
+    assert offsets == [ANCHOR], (
+        f"canonical 'offset' == {offsets}, expected [{ANCHOR}] (the window anchor)")
+    assert offsets != [PHASE], "canonical 'offset' carries the GENERATOR PHASE"
+    assert "window_anchor" not in recs[0] and "generator_phase" not in recs[0], (
+        "a 23rd field leaked into the canonical record")
+
+    # ---- non-vacuity: BOTH mutations must be detected ------------------------
+    src = textwrap.dedent(_read("utils/canonical_records.py"))
+    tree = ast.parse(src)
+    fn = next(x for x in tree.body
+              if isinstance(x, ast.FunctionDef) and x.name == "build_mode_records")
+
+    def _mutate(new_key):
+        t = ast.parse(src)
+        f = next(x for x in t.body
+                 if isinstance(x, ast.FunctionDef) and x.name == "build_mode_records")
+        hits = 0
+        for node in ast.walk(f):
+            if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                    and node.value.id == "ctx"
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value == "window_anchor"):
+                node.slice = ast.Constant(value=new_key)
+                hits += 1
+        assert hits == 1, f"mutation targeted {hits} sites, expected exactly 1"
+        g = dict(cr.__dict__)
+        exec(compile(ast.fix_missing_locations(t), "<mutant>", "exec"), g)
+        return g["build_mode_records"]
+
+    # (a) restoration of the retired key -> the production KeyError returns
+    try:
+        _run(_mutate("offset"))
+        raise AssertionError("MUTANT A SURVIVED: ctx['offset'] restored and nothing red")
+    except KeyError as e:
+        assert "offset" in str(e), e
+    # (b) sourcing array 4 from the generator phase -> wrong value, must be caught
+    asm_b = _run(_mutate("generator_phase"))
+    bad = sorted({r["offset"] for r in asm_b.canonical_records_constant})
+    assert bad == [PHASE], f"mutant B did not take effect (got {bad})"
+    assert bad != [ANCHOR], "MUTANT B SURVIVED: phase-sourced offset read as the anchor"
+
+    return (f"anchor={ANCHOR} phase={PHASE} -> canonical 'offset'={offsets[0]} "
+            f"over {len(recs)} record(s); mutants A(offset)/B(generator_phase) both DETECTED")
+
+
 def gate_migrate():
     """G-MIGRATE — a pre-separation ledger fails LOUD, naming the schema change.
 
@@ -1290,6 +1414,7 @@ def main() -> int:
 
     print("\n-- ledger & cross-phase --")
     check("G-TUPLE      4 module-level tuples, exact contents", gate_tuple)
+    check("G-PHASE5-ASSEMBLY  ctx -> assemble -> record: offset==anchor", gate_phase5_assembly)
     check("G-PHASE5-SEAM coordinator manifest -> Phase 5", gate_phase5_seam)
     check("G-MIGRATE    legacy ledger fails loud", gate_migrate)
 

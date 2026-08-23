@@ -782,7 +782,13 @@ def g9_canonical_oracle():
     # REGRESSION check, explicitly NOT independent proof: D1 and PWC/ZMQ now
     # call the same extracted helper, so this can only catch a rewiring
     # accident. The oracle equality above is what carries the weight.
+    # [WINDOW-ANCHOR BRIEF I] `base` is the ORACLE's kwargs and must keep its
+    # exact shape. The trial CONTEXT is a separate object: its key is
+    # `window_anchor`, while the emitted RECORD field stays `offset` (frozen
+    # canonical array 4, TB wire-name ruling). Fixture-only; no assertion changed.
     ctx = dict(base)
+    ctx["window_anchor"] = ctx.pop("offset")
+    ctx["generator_phase"] = 0
     _, d1_style = NPZW._mode_records(FMC, RMC, ctx, "constant", "java_lcg")
     assert d1_style == [r for r in recs if r["skip_mode"] == "constant"], \
         "D1's helper and the D3.25 wrapper diverged (rewiring regression)"

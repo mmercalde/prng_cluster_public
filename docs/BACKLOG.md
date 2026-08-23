@@ -447,3 +447,45 @@ integrity verification on restore (the accumulator is an *authenticated* store �
 that can't prove generation identity on restore is not a backup of it), and what "recovery"
 means for a partially-restored generation directory. Until that exists, the only copies of
 certified survivor generations are the live VM101 filesystem.
+
+---
+
+## DEP-ABI-V2-NPZ-SEMANTICS — audit dependency, recorded by TB ruling (Brief-I production-shape failure, 2026-08-22)
+
+**Status: RECORDED AS A DEPENDENCY. No 22-array amendment is pre-authorized.**
+
+**The settled v1 semantics.** Canonical array 4 `offset` is a **legacy wire name with exactly
+one post-F-4 meaning: it IS the window anchor.** It is **never** the generator phase, at any
+phase value. Generator phase is independently represented in versioned generation metadata and
+never enters array 4. The name is frozen by the 22-array contract and does not change; only the
+source of its value was corrected (`utils/canonical_records.py:217`).
+
+**The dependency.** `DEP-ABI-V2` (§2.53) is the separate kernel/parity certification cycle that
+would make a nonzero `generator_phase` production-permissible on the four no-phase forward
+hybrids.
+
+> **Before nonzero phase becomes production-permissible, re-audit EVERY consumer of canonical
+> `offset` and prove each reads that field EXCLUSIVELY as the window anchor, while
+> `generator_phase` remains independently available from versioned generation metadata.**
+
+**Why this is not optional — and note the correction.** Alpha originally argued that array 4 is
+coherent *only* because `generator_phase == 0`. **Beta overruled that rationale.** Array 4 has a
+deliberately legacy **wire name** but a single post-F-4 meaning at every phase value; the
+misleading token does not fuse the two quantities **so long as no consumer treats it as both
+concepts**. Phase is independently and durably available from versioned generation metadata.
+
+**Therefore ABI-v2 does not automatically resurrect F-4.** It would resurrect F-4 only if some
+consumer again interprets array 4 as *both* anchor and phase — which is exactly what this audit
+exists to rule out. If every downstream consumer can correctly obtain phase from metadata, the
+existing 22 arrays may remain unchanged even under nonzero phase. Only a governed downstream
+contract that genuinely requires phase *inside* the canonical array body would trigger a separate
+array-contract amendment, and **no such amendment is pre-authorized.**
+
+**Known consumers to start from (not a complete census — the audit must derive its own):**
+`utils/canonical_records.py` · `utils/canonical_arrays.py` (deliberate duplicate field list) ·
+`utils/run_finalizer.py` `CANONICAL_ARRAY_CONTRACT` · `utils/checkpoint_d6_2.py` ·
+`survivor_scorer.py` merge list · Step-3 / Step-6 readers.
+
+**Precedent for how it is found:** the Brief-I defect was a single unmigrated consumer of the
+retired context key, on the production path, in a file the brief never opened, behind 25 green
+gates. **A gate proving one consumer migrated is not evidence that every consumer did.**

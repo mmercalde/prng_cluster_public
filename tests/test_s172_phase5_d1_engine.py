@@ -125,7 +125,12 @@ PHASE_POP = {
     4: {2: 0.55, 7: 0.65, 15: 0.45, 38: 0.35},
 }
 
-CTX = dict(trial_number=7, window_size=5, offset=2,
+# [WINDOW-ANCHOR BRIEF I] Context gains `window_anchor` + `generator_phase`.
+# `offset` is retained because the RECORD field keeps that name (frozen canonical
+# array 4, TB wire-name ruling) and this dict doubles as the expected-record
+# source at :386. Fixture-only: no assertion changed.
+CTX = dict(trial_number=7, window_size=5, offset=2, window_anchor=2,
+           generator_phase=0,
            sessions=["midday", "evening"], skip_min=1, skip_max=9,
            prng_base=PRNG_BASE, forward_threshold=0.40, reverse_threshold=0.45,
            dataset_sha256="d" * 64, residue_sha256="r" * 64)

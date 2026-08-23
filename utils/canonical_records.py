@@ -214,7 +214,15 @@ def build_mode_records(
     union = len(fwd_set | rev_set)
     metadata_base = {
         "window_size":               ctx["window_size"],
-        "offset":                    ctx["offset"],
+        # [WINDOW-ANCHOR BRIEF I — TB ruling, production-shape failure at 48a8705]
+        # Canonical array 4 `offset` is a LEGACY WIRE NAME with exactly ONE
+        # post-F-4 meaning: it IS the window anchor. It is NEVER the generator
+        # phase, at any phase value — not merely while v1 pins the phase to 0.
+        # Generator phase remains independently represented in versioned
+        # generation metadata and never enters this array.
+        # The name is frozen by the 22-array contract (index 4) and does not
+        # change; only the source of its value is corrected here.
+        "offset":                    ctx["window_anchor"],
         "skip_min":                  ctx["skip_min"],
         "skip_max":                  ctx["skip_max"],
         "skip_range":                ctx["skip_max"] - ctx["skip_min"],
@@ -356,7 +364,14 @@ def normalize_trial_populations(
     # original list is never referenced again.
     ctx: Dict[str, Any] = {
         "window_size":  _require_int(window_size, "window_size"),
-        "offset":       _require_int(offset, "offset"),
+        # [WINDOW-ANCHOR BRIEF I — TB ruling, production-shape failure at 48a8705]
+        # The CONTEXT key is `window_anchor`; the CALLER'S KEYWORD stays `offset`
+        # and the emitted RECORD FIELD stays `offset` (frozen canonical array 4).
+        # Beta: array 4 `offset` is a legacy WIRE NAME whose one post-F-4 meaning
+        # IS the window anchor — never the generator phase, at any phase value.
+        # This is the PWC/ZMQ wrapper's own context; `build_mode_records` reads
+        # `window_anchor` from it, exactly as the miner assembly path does.
+        "window_anchor": _require_int(offset, "offset"),
         "skip_min":     skip_min_i,
         "skip_max":     skip_max_i,
         "sessions":     canonical_sessions(sessions),
