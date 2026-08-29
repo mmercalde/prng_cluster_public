@@ -5,7 +5,7 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v27, 2026-08-20. **GATE-12 IS PASSED AND BETA-ACCEPTED** — attempt 9, run
+**Currency:** v27.1, 2026-08-23. **§6 BOOT-SELECTOR RECOVERY RULE ADDED** — a rebooted rig returns as Ubuntu, not Proxmox; `boot-proxmox` is required and no agent reboots a host unasked. **GATE-12 IS PASSED AND BETA-ACCEPTED** — attempt 9, run
 `distributed_config_t1_554463d3`, nonce `gate12-20260817_181819-46500`, launch commit `e9ca800`,
 tag **`gate12-passed-attempt9`** (§2.49). 128/128 stripes over four stages, saturation SATISFIED,
 coverage certified `[0, 2147483648]`, `coverage_id c6f28aedf7af12cd`, cursor
@@ -2937,9 +2937,23 @@ Verification-integrity controls (VIR-1…6):
 - governance trail searched (TB_RULING*, PROPOSAL*, TEAM_ALPHA*):  - chapters searched:
 ```
 
-## 6. TOPOLOGY (verified 2026-08-01)
-Rigs boot **bare-metal by default**; currently in **Proxmox**. `host = rig+1`,
-`CT100 worker = host+1`.
+## 6. TOPOLOGY (verified 2026-08-01; boot-selector rule added 2026-08-23)
+Rigs are **BOOT-SELECTOR machines. All three DEFAULT-BOOT into Ubuntu** (bare-metal,
+`.120`/`.154`/`.162` — this is why `distributed_config.json` carries those addresses; per
+`CLAUDE.md` §3 that is **deliberate, not a bug**). From Ubuntu, **`boot-proxmox`** promotes the
+host to the Proxmox hypervisor (`.121`/`.155`/`.163`), which starts CT100 and the GPU workers
+(`.122`/`.156`/`.164`). `host = rig+1`, `CT100 worker = host+1`.
+
+**⚑ CONSEQUENCES (binding):**
+- **A rebooted rig returns as UBUNTU, not as a Proxmox host** — reachable as a machine but with
+  **no CT, no GPUs, invisible to hypervisor-level tooling. A plain reboot is NOT a recovery;
+  `boot-proxmox` must follow.**
+- **This is INDISTINGUISHABLE from a host hang in telemetry** and must be ruled out before
+  diagnosing a fault. *(2026-08-22: a rig rebooted into Ubuntu was nearly diagnosed as a wedge;
+  the 18:32:06 hang, by contrast, was hosts freezing **while running as Proxmox** — never conflate
+  the two signatures.)*
+- **NO agent reboots a Proxmox host without Michael's authorization:** recovery requires the
+  `boot-proxmox` step no agent can perform, and a stranded host can sit unreachable indefinitely.
 
 | rig | bare-metal | Proxmox host | **CT100 worker (use this)** |
 |---|---|---|---|

@@ -194,3 +194,9 @@ mt19937, philox4x32, sfc64, xorshift64, xoshiro256pp — must raise a clean
 `NotImplementedError` naming the family and launch **no kernel**. TFM sieve
 targets java_lcg only. Hybrid kernels have a different signature (extra
 `skip_sequences`, and `a,c` vs `offset`) — replicate verbatim.
+
+## Lead handling (read before closing any result)
+Read ~/.claude/skills/lead-handling/SKILL.md before concluding any result is
+chance, coincidence, or unremarkable, and before deciding what runs next after a
+non-null result. A background model never closes a lead — only a failed
+follow-up experiment does. Maintain docs/LEADS.md.
