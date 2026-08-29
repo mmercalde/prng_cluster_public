@@ -474,6 +474,259 @@ def resolve_repo_path(p: str) -> str:
 _P05_DATASET_PARAM_KEYS = ("lottery_file", "lottery_data", "lottery_history")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# [S172 RUN-4 ROUTE-A] EXPLICIT OPERATOR WARM-START PIN
+# ═══════════════════════════════════════════════════════════════════════════
+# TB_RULING_RUN4_ROUTING_AND_PINNED_GEOMETRY.md §1/§3 and
+# TB_RULING_RUN4_ROUTING_PATCH_BRIEF_REVIEW.md Blocker 1.
+#
+# The seven warm-start keys become routable through the real WATCHER path ONLY
+# when an operator explicitly supplies ALL SEVEN for that pipeline invocation.
+# Never defaults, never resume state, never WATCHER/LLM-generated, never
+# carry-forward.
+#
+# LITERAL, NEVER DERIVED FROM THE MANIFEST. `args_map` declares ELEVEN entries
+# with no `default_params` counterpart; deriving authorization from it would
+# also authorize `forward_threshold` and `reverse_threshold` (whose downstream
+# CLI aborts the run by design), `search_strategy` and `seed_count`. Ruling §8
+# forbids exactly that. Mutant M3 pins this.
+STEP1_EXPLICIT_PIN_KEYS = frozenset({
+    'warm_start_window',
+    'warm_start_offset',
+    'warm_start_skip_min',
+    'warm_start_skip_max',
+    'warm_start_fwd_thresh',
+    'warm_start_rev_thresh',
+    'warm_start_session_idx',
+})
+
+# `warm_start_session` is the EIGHTH internal-only key. It has no `args_map`
+# entry and appears nowhere in window_optimizer.py, so routing it would emit
+# `--warm-start-session` via the underscore->hyphen fallback -- an argument the
+# optimizer's parser does not define. It stays stripped unconditionally, on
+# every path, pinned or not.
+
+STEP1_PIN_SOURCE_MARKER = 'explicit_operator_warm_start'
+
+# The two provenance keys, named once so the gate binds to the production
+# names and cannot drift from them (no-hardcoding rule).
+STEP1_PIN_PROVENANCE_KEY = 'step1_pin_source'
+STEP1_PIN_ARGV_KEY = 'step1_pin_argv'
+
+
+class Step1PinBundleError(ValueError):
+    """The explicit warm-start pin is malformed. All seven, all usable, or none."""
+
+
+class Step1PinAuthorityError(ValueError):
+    """The seven appeared on an invocation that carries no operator authority."""
+
+
+def _step1_pin_value_defect(value):
+    """Return why the step-1 command builder could not route `value`, else None.
+
+    R1 Blocker 2. Presence is not usability. These are the builder's OWN
+    semantics, read off `run_step` at :2009-2018, not a second opinion:
+
+      * `None`  -> `:2017` skips it; the flag never reaches argv.
+      * `''`    -> `:2017` skips it; same.
+      * `False` -> `:2010-2014` treats a bool as flag-only and omits it when
+                   falsey; the flag never reaches argv.
+      * `True`  -> `:2011` emits a VALUELESS `--warm-start-window`, and every
+                   one of the seven is declared `type=int`/`type=float` in
+                   `window_optimizer.py:1514-1526`, so argparse either consumes
+                   the next token as this flag's value or aborts the dispatched
+                   step -- which of the two depends on what follows in argv.
+                   The command is corrupted either way.
+
+    All four are "present but non-routable". Beta's ruling names `None` and
+    `''`; the two bool cases are the identical defect class reached through the
+    builder's other branch, so they are rejected here too rather than left as a
+    known hole. Anything else the builder stringifies is out of this check's
+    scope -- this is about builder-skip semantics, not general value sanity.
+    """
+    if value is None:
+        return "None (builder :2017 skips it)"
+    if isinstance(value, bool):
+        return (f"{value!r} (builder :2010-2014 treats bools as flag-only: "
+                "True emits a valueless flag that either consumes the next "
+                "token or aborts the dispatched step -- corrupted either way; "
+                "False omits it entirely)")
+    if value == '':
+        return "'' (builder :2017 skips it)"
+    return None
+
+
+def capture_step1_pin_bundle(operator_pin_params):
+    """Capture the operator's explicit seven-key pin, once, at invocation entry.
+
+    CONSUMES THE OPERATOR-AUTHORITY CHANNEL ONLY, NEVER ORDINARY `params`
+    (R1 Blocker 1). Ordinary `params` reaching `run_pipeline` proves a bundle
+    EXISTED, not who supplied it: `chapter_13_triggers.py:616` is a live
+    programmatic caller that passes `params`, so authority inferred from
+    `params` would misclassify an agent-triggered run as an explicit operator.
+    Authority therefore travels in its own channel, populated only by the real
+    CLI `--run-pipeline --params` seam (`split_operator_pin_params`, called at
+    the `--run-pipeline` branch). Every other caller defaults to no authority.
+
+    INVOCATION-LOCAL BY CONSTRUCTION. The returned mapping is owned by ONE
+    `run_pipeline` invocation and threaded explicitly to that invocation's
+    Step-1 `run_step` calls. It is never stored on the `WatcherAgent` instance,
+    in module state, in `retry_params`, or in persisted state -- WATCHER is
+    long-lived in daemon mode and instance state would silently hand a later
+    pipeline this pipeline's pin authority.
+
+    Captured BEFORE the retry/LLM loop can mutate anything, so a value WATCHER
+    later manufactures cannot enter the bundle.
+
+    PRESENCE IS SEPARATE FROM USABILITY (R1 Blocker 2). `present` is computed
+    by key membership, so an explicit `None` or `''` member is a MALFORMED pin
+    that fails loud -- not a key that quietly vanishes and collapses the
+    request to "unpinned". Without this split, seven empty strings produced a
+    complete "authorized" bundle that logged `pin accepted, 7 keys` while the
+    builder routed zero.
+
+    Returns an immutable mapping of all seven in SORTED key order (Beta
+    non-blocking item: `step1_pin_argv` is audit evidence, so cross-run
+    comparisons must not differ by dict insertion order), or None when the
+    channel carries none of the seven.
+    """
+    from types import MappingProxyType
+
+    if not operator_pin_params:
+        return None
+    present = STEP1_EXPLICIT_PIN_KEYS & set(operator_pin_params.keys())
+    if not present:
+        return None
+
+    missing = STEP1_EXPLICIT_PIN_KEYS - present
+    if missing:
+        raise Step1PinBundleError(
+            "PARTIAL explicit warm-start pin rejected (all-seven-or-none is "
+            "binding, TB Run-4 routing ruling §5). present="
+            f"{sorted(present)} missing={sorted(missing)}. Supply all seven "
+            "explicitly, or none. A partial pin would mix operator-pinned and "
+            "Optuna-sampled geometry while looking pinned, and cannot be "
+            "delegated downstream: window_optimizer_bayesian.py:781 checks "
+            "only SIX values and defaults session_idx to 0."
+        )
+
+    defects = {k: _step1_pin_value_defect(operator_pin_params[k])
+               for k in sorted(STEP1_EXPLICIT_PIN_KEYS)}
+    unusable = {k: why for k, why in defects.items() if why}
+    if unusable:
+        raise Step1PinBundleError(
+            "EXPLICIT warm-start pin rejected: all seven keys are present but "
+            f"{len(unusable)} carry a value the step-1 command builder treats "
+            "as absent, so the run would log a seven-key pin and route fewer. "
+            "Presence is not usability (TB patch review R1, Blocker 2). "
+            + "; ".join(f"{k}={why}" for k, why in sorted(unusable.items()))
+        )
+
+    return MappingProxyType(
+        {k: operator_pin_params[k] for k in sorted(STEP1_EXPLICIT_PIN_KEYS)})
+
+
+def split_operator_pin_params(params):
+    """CLI-ONLY SEAM: MOVE the seven out of ordinary params into the authority
+    channel. Returns `(ordinary_params, operator_pin_params_or_None)`.
+
+    THE SEAM DECISION, MADE DELIBERATELY (R1 Blocker 1). The seven are MOVED,
+    not duplicated. Tracing both paths:
+
+      MOVE (chosen). After the split the seven exist in exactly one place --
+      the authority channel -- on every path. That makes the fail-loud check on
+      ordinary params UNCONDITIONAL: there is no authorized-invocation
+      exemption, hence no branch in which the check is weakened, which is the
+      ambiguity the ruling exists to remove. It also settles the retry
+      question: `_build_retry_params` copies `original_params` wholesale
+      (:2234), so with the seven absent from that dict the retry path CANNOT
+      re-carry them, and the frozen bundle stays the single source -- which is
+      what "legitimate retry keeps the frozen bundle" has to mean.
+
+      DUPLICATE (rejected). The seven would remain in ordinary params on a
+      legitimate pinned invocation, so fail-loud on ordinary-params warm keys
+      would trip the authorized run itself. Avoiding that needs an exemption
+      branch keyed on authority -- reintroducing exactly the "authority
+      inferred from params" coupling Blocker 1 removes -- and `retry_params`
+      would re-carry the seven at :2234, restoring the second source the frozen
+      bundle was created to eliminate.
+
+    G-UNPINNED-IDENTICAL is unaffected either way: with no warm-start input
+    nothing is popped, `operator_pin_params` is None, and `ordinary_params` is
+    the same content the CLI has always passed.
+    """
+    if not params:
+        return params, None
+    pinned = {k: params[k] for k in sorted(STEP1_EXPLICIT_PIN_KEYS) if k in params}
+    if not pinned:
+        return params, None
+    ordinary = {k: v for k, v in params.items() if k not in STEP1_EXPLICIT_PIN_KEYS}
+    return ordinary, pinned
+
+
+def assert_no_unauthorized_pin_keys(params, context):
+    """FAIL LOUD when the seven appear on an invocation carrying no authority.
+
+    Beta's stated preference (R1 Blocker 1). The essential property is that
+    such a caller can never acquire authority or route the pin -- which the
+    authority channel already guarantees, since WALL 1 reads only the bundle.
+    This raises on top of that so the attempt is VISIBLE instead of silently
+    dropped, matching the governing rule that WATCHER-manufactured values fail
+    CLOSED and LOUD.
+
+    Unconditional by construction: the CLI MOVES the seven into the authority
+    channel (`split_operator_pin_params`), so on a legitimate pinned invocation
+    ordinary `params` no longer contains them and this check does not fire.
+    """
+    if not params:
+        return
+    intruders = sorted(STEP1_EXPLICIT_PIN_KEYS & set(params.keys()))
+    if intruders:
+        raise Step1PinAuthorityError(
+            f"UNAUTHORIZED warm-start pin keys in ordinary params ({context}): "
+            f"{intruders}. These seven route ONLY through the explicit operator "
+            "authority channel supplied by the real CLI "
+            "`--run-pipeline --params` entry point. A programmatic caller "
+            "cannot acquire operator authority by placing them in `params` "
+            "(TB patch review R1, Blocker 1)."
+        )
+
+
+def _step1_explicit_pin(step, pin_bundle):
+    """The single authority for 'is this dispatch operator-pinned?'.
+
+    Returns the seven-key dict for a Step-1 dispatch carrying an
+    invocation-local bundle, else None. Both walls consult this and nothing
+    else, so pinned authority cannot be asserted at one wall and not the other.
+    """
+    if step != 1 or not pin_bundle:
+        return None
+    return dict(pin_bundle)
+
+
+def _step1_stamp_pin_provenance(results, pin, argv):
+    """Stamp operator-pin provenance onto a step's STRUCTURED RESULT.
+
+    Brief §4 requires the marker on the `EXEC CMD` log record AND in the step's
+    structured result; the log alone leaves the acceptance record dependent on
+    scraping text. ABSENT -- not None, not empty -- on every unpinned run, so
+    `'step1_pin_source' in results` is itself the whole test and absence is
+    indistinguishable from the pre-patch state.
+
+    The marker proves AUTHORITY; the argv proves what that authority actually
+    REQUESTED (ruling §5). They are deliberately separate facts: a defect that
+    strips the pins downstream of WALL 1 leaves the marker true and the argv
+    honest about carrying no warm-start flags. PROVENANCE ONLY -- no decision
+    logic reads either key (field-6 constraint).
+    """
+    if not pin or not isinstance(results, dict):
+        return results
+    results[STEP1_PIN_PROVENANCE_KEY] = STEP1_PIN_SOURCE_MARKER
+    results[STEP1_PIN_ARGV_KEY] = list(argv)
+    return results
+
+
 def p05_freeze_dataset(run_label: str = "watcher"):
     """Resolve the pointer manifest and freeze the run's dataset identity.
 
@@ -1311,6 +1564,15 @@ class WatcherAgent:
         for key, value in (params or {}).items():
             if key in declared:                              # step-scoped filter
                 merged[key] = value
+        # [S172 RUN-4 ROUTE-A] Declaration parity (brief §3.1). This function
+        # answers "what is this run's backend?" for the execution-set freeze --
+        # it is NOT the command-building wall, and patching it alone would
+        # route nothing. The recognition is mirrored here only so the two
+        # notions of "declared" cannot drift. None of the seven is read for
+        # backend or admission, so this cannot change fleet resolution.
+        for key in STEP1_EXPLICIT_PIN_KEYS:
+            if key in (params or {}) and params[key] is not None:
+                merged[key] = params[key]
         return merged
 
     def _ensure_execution_set(self, params: Dict[str, Any] = None):
@@ -1443,7 +1705,9 @@ class WatcherAgent:
     def run_step(
         self,
         step: int,
-        params: Dict[str, Any] = None
+        params: Dict[str, Any] = None,
+        *,
+        _pin_bundle=None
     ) -> Optional[Dict[str, Any]]:
         """
         Run a pipeline step and return results.
@@ -1554,6 +1818,21 @@ class WatcherAgent:
                     final_params[key] = value
                 else:
                     logger.debug(f"Skipping param '{key}' - not declared in step {step} manifest")
+
+        # [S172 RUN-4 ROUTE-A] WALL 1 -- explicit operator pin.
+        # The seven are DECLARED-AND-ROUTABLE, never DEFAULTED: they enter
+        # `final_params` from the invocation-local operator bundle, and from
+        # nowhere else. `default_params` is untouched (ruling §2 PROHIBITS
+        # putting Run-4 values there). With no bundle this block does nothing
+        # and the merge above is byte-identical to pre-patch behavior.
+        _step1_pin = _step1_explicit_pin(step, _pin_bundle)
+        if _step1_pin:
+            final_params.update(_step1_pin)
+            logger.info(
+                "[S172-PIN] step %d: explicit operator warm-start pin accepted "
+                "(%d keys, step1_pin_source=%s)",
+                step, len(_step1_pin), STEP1_PIN_SOURCE_MARKER,
+            )
 
         # Remove output_file if present (use script default)
         final_params.pop("output_file", None)
@@ -1843,6 +2122,16 @@ class WatcherAgent:
                 'warm_start_session', 'warm_start_fwd_thresh',
                 'warm_start_rev_thresh', 'warm_start_session_idx',
             }
+            # [S172 RUN-4 ROUTE-A] WALL 2 -- narrow the strip ONLY under an
+            # explicit operator pin (ruling §3). `warm_start_session` is not in
+            # STEP1_EXPLICIT_PIN_KEYS, so the set difference leaves it stripped
+            # unconditionally -- it has no CLI route and emitting it would kill
+            # the dispatched step. Unpinned, this set is the original eight.
+            if _step1_pin:
+                _INTERNAL_ONLY_PARAMS = (
+                    _INTERNAL_ONLY_PARAMS - STEP1_EXPLICIT_PIN_KEYS
+                )
+
             _cli_params = {k: v for k, v in final_params.items()
                            if k not in _INTERNAL_ONLY_PARAMS}
 
@@ -1864,6 +2153,17 @@ class WatcherAgent:
 
                 cmd.extend([f"--{cli_key}", str(value)])
 
+        # [S172 RUN-4 ROUTE-A] Provenance (ruling §3). Emitted ONLY on the
+        # pinned path -- ABSENT, not null or empty, on every unpinned run, so
+        # presence is positive evidence and absence is the pre-patch state.
+        # The marker proves AUTHORITY; the argv above proves what that
+        # authority requested. NO DECISION LOGIC CONSUMES THIS.
+        if _step1_pin:
+            logger.info(
+                "[S172-PIN] step1_pin_source=%s keys=%s",
+                STEP1_PIN_SOURCE_MARKER, ",".join(sorted(_step1_pin)),
+            )
+
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
         try:
             # Run the script with live streaming (Team Beta approved)
@@ -1877,11 +2177,11 @@ class WatcherAgent:
             if result.returncode != 0:
                 logger.error(f"Step {step} failed with code {result.returncode}")
                 logger.error(f"stderr: {result.stderr[:500]}")
-                return {
+                return _step1_stamp_pin_provenance({
                     "success": False,
                     "return_code": result.returncode,
                     "error": result.stderr[:500]
-                }
+                }, _step1_pin, cmd)
 
             # POST-STEP CLEANUP (Team Beta Item C)
             self._run_post_step_cleanup(step)
@@ -1889,27 +2189,27 @@ class WatcherAgent:
             # Try to find and load results file
             results = self._find_results(step)
             if results:
-                return results
+                return _step1_stamp_pin_provenance(results, _step1_pin, cmd)
 
             # Return basic success
-            return {
+            return _step1_stamp_pin_provenance({
                 "success": True,
                 "return_code": 0,
                 "stdout": result.stdout[:500]
-            }
+            }, _step1_pin, cmd)
 
         except subprocess.TimeoutExpired:
             logger.error(f"Step {step} timed out after {_timeout_min} minutes")
-            return {
+            return _step1_stamp_pin_provenance({
                 "success": False,
                 "error": "Timeout"
-            }
+            }, _step1_pin, cmd)
         except Exception as e:
             logger.error(f"Step {step} execution error: {e}")
-            return {
+            return _step1_stamp_pin_provenance({
                 "success": False,
                 "error": str(e)
-            }
+            }, _step1_pin, cmd)
 
     def _find_results(self, step: int) -> Optional[Dict[str, Any]]:
         """Find and load results file for a step."""
@@ -2414,15 +2714,63 @@ class WatcherAgent:
             logger.debug(f"Progress file write failed: {e}")
 
 
-    def run_pipeline(self, start_step: int = 1, end_step: int = 6, params: Dict[str, Any] = None):
+    def run_pipeline(self, start_step: int = 1, end_step: int = 6, params: Dict[str, Any] = None,
+                     *, _operator_pin_params: Dict[str, Any] = None):
         """
         Run the full pipeline from start_step to end_step.
 
         Args:
             start_step: First step to run (1-6)
             end_step: Last step to run (1-6)
+            params: ordinary pipeline data. NEVER a source of pin authority.
+            _operator_pin_params: the OPERATOR-AUTHORITY CHANNEL. Keyword-only,
+                defaulting to None, so every existing caller -- the Chapter-13
+                dispatch at the `--dispatch` branch, the selfplay path, and
+                `chapter_13_triggers.py:616` -- acquires no authority without
+                any change to its call. Populated ONLY by the real CLI
+                `--run-pipeline --params` seam via `split_operator_pin_params`.
         """
         logger.info(f"Starting pipeline from step {start_step} to {end_step}")
+
+        # [S172 RUN-4 ROUTE-A] Capture the explicit operator pin ONCE, here,
+        # before the retry/LLM loop below can mutate anything (:2735 rebinds
+        # `params` to `retry_params`, and the LLM proposal path writes into
+        # it). INVOCATION-LOCAL: this name lives only in this frame and dies
+        # when this invocation returns. A later pipeline on the same
+        # WatcherAgent begins with no pin authority unless its own operator
+        # input supplies all seven again (Blocker 1, prior review).
+        #
+        # [R1 BLOCKER 1] The capture source is the AUTHORITY CHANNEL, never
+        # `params`. Presence of the seven in `params` proved a bundle existed,
+        # not who supplied it -- and a live programmatic caller
+        # (`chapter_13_triggers.py:616`) passes `params`, so that inference
+        # misclassified an agent-triggered run as an explicit operator.
+        try:
+            assert_no_unauthorized_pin_keys(
+                params, f"run_pipeline(start_step={start_step})")
+            _pin_bundle = capture_step1_pin_bundle(_operator_pin_params)
+        except Step1PinAuthorityError as _auth_err:
+            logger.error("Pipeline blocked before step %d: %s", start_step, _auth_err)
+            print(f"\u274c {_auth_err}")
+            return {
+                "success": False,
+                "error": str(_auth_err),
+                "blocked_by": "step1_unauthorized_warm_start_pin",
+            }
+        except Step1PinBundleError as _pin_err:
+            logger.error("Pipeline blocked before step %d: %s", start_step, _pin_err)
+            print(f"\u274c {_pin_err}")
+            return {
+                "success": False,
+                "error": str(_pin_err),
+                "blocked_by": "step1_partial_warm_start_pin",
+            }
+        if _pin_bundle:
+            logger.info(
+                "[S172-PIN] pipeline invocation carries an explicit operator "
+                "warm-start pin (%d keys); authority is invocation-local",
+                len(_pin_bundle),
+            )
 
         
         # Check for halt file BEFORE starting
@@ -2471,7 +2819,7 @@ class WatcherAgent:
                 logger.info(f"{'='*60}")
 
                 # Run the step
-                results = self.run_step(step, params)
+                results = self.run_step(step, params, _pin_bundle=_pin_bundle)
 
                 if results is None:
                     results = {"success": False, "error": "No results returned"}
@@ -3464,7 +3812,20 @@ def main():
             except json.JSONDecodeError as e:
                 print(f"ERROR: Invalid JSON in --params: {e}")
                 return
-        watcher.run_pipeline(args.start_step, args.end_step, override_params)
+        # [S172 RUN-4 ROUTE-A / R1 BLOCKER 1] THE ONLY OPERATOR-AUTHORITY SEAM.
+        # This branch is the real human `--run-pipeline --params` entry point,
+        # so it -- and nothing else in the codebase -- may populate the
+        # authority channel. The seven are MOVED out of `override_params`, not
+        # copied: see `split_operator_pin_params` for the traced justification.
+        override_params, _operator_pin = split_operator_pin_params(override_params)
+        if _operator_pin:
+            logger.info(
+                "[S172-PIN] CLI supplied %d explicit warm-start key(s); moved "
+                "from ordinary params into the operator-authority channel",
+                len(_operator_pin),
+            )
+        watcher.run_pipeline(args.start_step, args.end_step, override_params,
+                             _operator_pin_params=_operator_pin)
 
     elif args.daemon:
         watcher.run_daemon()

@@ -1,0 +1,576 @@
+══════════════════════════════════════════════════════════════════════════════
+S172 RUN-4 ROUTE-A ROUTING PATCH — RECORDED ACCEPTANCE RESULTS, R2
+══════════════════════════════════════════════════════════════════════════════
+Recorded      : 2026-08-28T20:32:29-07:00
+Recorded by   : Team Alpha (Claude) on VM101 zeus-ubuntu 192.168.3.177
+Status        : PRE-BETA (patch R2, incl. R2a text-only amendment). Nothing committed,
+                staged, or launched.
+Supersedes    : docs/S172_RUN4_ROUTING_SUITE_RESULTS.txt (digest 0398c0d1..., DO-NOT-COMMIT)
+Governing     : docs/TB_RULING_RUN4_ROUTING_PATCH_REVIEW_R1.md (Blockers 1, 2)
+                docs/S172_RUN4_ROUTING_PATCH_BRIEF_ROUTE_A.md (revision 3)
+
+R2a amendment : second-reader item -- the True-case mechanism in _step1_pin_value_defect is
+                stated as "consumes the next token OR aborts the dispatched step, corrupted
+                either way" rather than asserting one outcome. Docstring + runtime message
+                only; no behavior change. Everything below was regenerated against the
+                amended file (digest d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f), not carried over.
+
+R1 BLOCKERS — DISPOSITION
+  Blocker 1 (operator origin)  CORRECTED. Authority travels in a dedicated keyword-only channel
+                               _operator_pin_params (default None), populated ONLY by the real
+                               CLI --run-pipeline --params seam. capture_step1_pin_bundle()
+                               consumes that channel and never ordinary params. Fail-loud via
+                               assert_no_unauthorized_pin_keys(). New gate G-ORIGIN, mutant M4.
+  SEAM DECISION                MOVE, not duplicate. Traced in brief 4.2 and at source in
+                               split_operator_pin_params.__doc__:
+                               - MOVE makes fail-loud UNCONDITIONAL (no authorized-invocation
+                                 exemption, so no branch weakens it), and _build_retry_params
+                                 copies original_params wholesale (:2234), so with the seven
+                                 absent the retry path cannot re-carry them.
+                               - DUPLICATE would trip fail-loud on the authorized run itself,
+                                 need an authority-keyed exemption (re-coupling authority to
+                                 params -- the very thing Blocker 1 removes), and let
+                                 retry_params re-carry the seven at :2234.
+                               G-UNPINNED-IDENTICAL unaffected: with no warm-start input
+                               nothing is popped. Verified below -- list-equal, 47 tokens.
+  Blocker 2 (presence/value)   CORRECTED. present = SEVEN & params.keys(); empty -> no pin;
+                               else all seven present AND none carrying a value the builder
+                               treats as absent. New gate G-VALUE-USABLE, 30 negative cases.
+  Non-blocking (sorted order)  DONE. Bundle built over sorted(STEP1_EXPLICIT_PIN_KEYS).
+
+BUILDER-SKIP SEMANTICS — THE VALIDATION READ LINE BY LINE
+  Source of truth is run_step's own command builder, agents/watcher_agent.py:2009-2020.
+  _step1_pin_value_defect() rejects exactly the values that never reach the routing exit:
+     None  -> :2017 skips it                 (never reaches argv)
+     ''    -> :2017 skips it                 (never reaches argv)
+     False -> :2013 omits the flag entirely  (never reaches argv)
+     True  -> :2011 emits a VALUELESS flag; all seven are declared type=int/type=float at
+              window_optimizer.py:1514-1526, so argparse either consumes the next token as
+              this flag's value or aborts the dispatched step -- which one depends on what
+              follows in argv. Corrupted either way.
+     :2020 cmd.extend([f'--{cli_key}', str(value)])   <- the only routing exit
+  FLAGGED: Beta's ruling names None and ''. The two bool cases are rejected as well -- the same
+  defect class reached through the builder's other branch. This is a SUPERSET of the ruling,
+  not a substitution, and is flagged in brief 4.3 for Beta's decision. Values the builder
+  stringifies normally are out of scope: builder-skip semantics, not general value sanity.
+
+BRIEF-VS-CODE PARITY (Beta reviews this; checked programmatically this run)
+  CODE -> BRIEF : 12/12 added module-scope definitions documented
+  BRIEF -> CODE : 20/20 gates/mutants named in the brief exist in the suite
+  verdict       : ALL PARITY, both directions
+
+══════════════════════════════════════════════════════════════════════════════
+SECTION 0 — ENVIRONMENT AND PRE-RUN STATE
+══════════════════════════════════════════════════════════════════════════════
+HEAD                     : 69ca9100f72adbeaddceddae1f11c09909b8e0c3
+HEAD subject             : 69ca910 S172 Window-Anchor Brief I: bounded repair — canonical array 4 sources window_anchor
+python                   : Python 3.10.12 (main, Jun 22 2026, 18:55:27) [GCC 11.4.0]
+pytest                   : 9.1.1
+bytecode caches          : cleared before this run
+
+-- digests, pre-run --
+  agents/watcher_agent.py (R2 worktree)                  d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+  agents/watcher_agent.py @ 69ca910 (committed)          8d1ef6d0b7bf1f093a1fbb6bb5562b538ef91074efef3a07a7b5706ff1f6d716
+  R1-rejected digest (superseded)                        0398c0d176d3d930c9aa3f4fb1603c7dc1f3d94aa8e6019dbfe661dbfff86b5a
+  tests/test_s172_run4_routing_patch.py                  1861fcbec3309cfbfa063e6dd70d30bbeb0e53d235df756bd572c89a8161e219
+  tests/fixtures/run4_routing_clean_control.py (FROZEN)  8f61420c8b36096a0537f03346aeacfdff48912a86b175af67416481d6fb91ce
+  tests/fixtures/run4_pin_harness.py                     09c87b0651a24b7ab29b78f6dca9e99c30c9bae67c47f92f28c52ed4db5a1991
+  docs/...BRIEF_ROUTE_A.md (revision 3)                  b92aa897705bfdaed04deb56be088d0f60400e154f32591cfe83cd1a09d61947
+
+-- STEP-0 frozen 69ca910 control (re-verified this run) --
+  base_commit                : 69ca9100f72adbeaddceddae1f11c09909b8e0c3
+  captured_before_any_edit   : True
+  target digest == committed : True
+  frozen fixture unchanged   : True
+  recorded unpinned argv     : 47 tokens
+
+-- operator-authority seam, direct probe --
+  run_pipeline signature     : (self, start_step: int = 1, end_step: int = 6, params: Dict[str, Any] = None, *, _operator_pin_params: Dict[str, Any] = None)
+  channel keyword-only       : True
+  channel default is None    : True
+  seam MOVED (0 left behind) : True | ordinary keys now: ['prng_type']
+  authority channel keys     : 7
+  bundle key order (sorted)  : True
+  no-warm-input split is noop: True
+
+══════════════════════════════════════════════════════════════════════════════
+SECTION 1 — M1b SOURCE-MUTATION / RESTORE PROOF (three-point digest)
+══════════════════════════════════════════════════════════════════════════════
+A matching before/after digest alone is NOT proof: it is equally consistent with the mutant
+never having been applied. All three points are recorded.
+  [1] BEFORE apply  digest : d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+      WALL-2 narrowing live: True
+  [2] MUTANT APPLIED digest: 8fcf31bed10d675e25b9d57cc6803ac8d586581773f42d6b7a21ac8ada2a275e
+      WALL-2 narrowing live: False   <- DEAD
+      line count preserved : 3859
+  [3] AFTER restore digest : d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+      WALL-2 narrowing live: True
+
+══════════════════════════════════════════════════════════════════════════════
+SECTION 2 — FULL ACCEPTANCE SUITE, VERBATIM
+══════════════════════════════════════════════════════════════════════════════
+command: python3 -u tests/test_s172_run4_routing_patch.py
+digest before suite: d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+
+==========================================================================
+S172 RUN-4 ROUTE-A ROUTING PATCH — ACCEPTANCE SUITE
+==========================================================================
+
+GATES
+  [PASS      ] G-ALLOWLIST-EXACT  — 7 literals, 4 hazardous names absent, eighth key absent
+  [PASS      ] G-UNPINNED-IDENTICAL  — list-equal, 47 tokens, vs 69ca910
+  [PASS      ] G-CHAIN  — 7/7 routed to argv (61 tokens)
+  [PASS      ] G-EXACT  — 7/7 value+type equal; session_idx==1 as int; thresholds 0.71/0.47 intact
+  [PASS      ] G-PARTIAL-CLOSED  — 126/126 subsets rejected, incl. the session_idx-dropping six
+  [PASS      ] G-EIGHTH  — absent on both paths
+  [PASS      ] G-NO-SYNTH  — synthesis routes 0/7; operator-supplied bundle replays 7/7
+  [PASS      ] G-NO-LLM  — no bundle -> no pin, step-scoped, 0/7 routed
+  [PASS      ] G-PROVENANCE  — log + structured result: step1_pin_source/step1_pin_argv present pinned (61-token argv recorded), both keys ABSENT (not null/empty) unpinned
+  [PASS      ] G-INVOCATION-ISOLATION  — invocation 1 routes 7/7, invocation 2 routes 0/7; daemon_state absent
+  [PASS      ] G-ONE-TRIAL  — --trials 1 with all seven pinned; the single trial is the enqueued one (enqueue is window_optimizer_bayesian.py:774-786, unchanged by this patch)
+  [PASS      ] G-PARITY-INERT  — mirror routes 7/7 into declared; resolve kwargs identical (['admission_count', 'backend', 'declared_nodes', 'invoked_by', 'rig_profile']); backend miner->pwc control moves them
+❌ UNAUTHORIZED warm-start pin keys in ordinary params (run_pipeline(start_step=1)): ['warm_start_fwd_thresh', 'warm_start_offset', 'warm_start_rev_thresh', 'warm_start_session_idx', 'warm_start_skip_max', 'warm_start_skip_min', 'warm_start_window']. These seven route ONLY through the explicit operator authority channel supplied by the real CLI `--run-pipeline --params` entry point. A programmatic caller cannot acquire operator authority by placing them in `params` (TB patch review R1, Blocker 1).
+  [PASS      ] G-ORIGIN  — ordinary params -> 0/7 + fail-loud + no provenance; authority channel -> 7/7 + provenance; channel is keyword-only defaulting to None
+  [PASS      ] G-VALUE-USABLE  — 30 present-but-non-routable bundles rejected (7 None, 7 '', 7 False, 7 True, 2 all-seven); valid control accepted in sorted key order
+
+MUTANTS
+
+  -- M1-unconditional-strip --
+  [FAIL      ] G-CHAIN  — routed []
+  [FAIL      ] G-EXACT  — warm_start_window: absent; warm_start_offset: absent; warm_start_skip_min: absent; warm_start_skip_max: absent; warm_start_fwd_thresh: absent; warm_start_rev_thresh: absent; warm_start_session_idx: absent
+  [PASS      ] G-UNPINNED-IDENTICAL  — list-equal, 47 tokens, vs 69ca910
+  [PASS      ] M1-unconditional-strip  — applied=True detected_by=['g_chain', 'g_exact'] still_green=['g_unpinned_identical']
+
+  -- M1b-wall2-only-unconditional-strip --
+  [FAIL      ] G-CHAIN  — routed []
+  [FAIL      ] G-EXACT  — warm_start_window: absent; warm_start_offset: absent; warm_start_skip_min: absent; warm_start_skip_max: absent; warm_start_fwd_thresh: absent; warm_start_rev_thresh: absent; warm_start_session_idx: absent
+  [PASS      ] G-UNPINNED-IDENTICAL  — list-equal, 47 tokens, vs 69ca910
+  [PASS      ] G-ALLOWLIST-EXACT  — 7 literals, 4 hazardous names absent, eighth key absent
+  [PASS      ] G-PARTIAL-CLOSED  — 126/126 subsets rejected, incl. the session_idx-dropping six
+  [PASS      ] G-PROVENANCE  — log + structured result: step1_pin_source/step1_pin_argv present pinned (47-token argv recorded), both keys ABSENT (not null/empty) unpinned
+  [PASS      ] M1b-wall2-only-unconditional-strip  — applied=True detected_by=['g_chain', 'g_exact'] still_green=['g_unpinned_identical', 'g_allowlist_exact', 'g_partial_closed', 'g_provenance']
+
+  -- M2a-lifetime-authority --
+  [FAIL      ] G-INVOCATION-ISOLATION  — second invocation inherited a pin bundle
+  [PASS      ] G-CHAIN  — 7/7 routed to argv (61 tokens)
+  [PASS      ] G-UNPINNED-IDENTICAL  — list-equal, 47 tokens, vs 69ca910
+  [PASS      ] M2a-lifetime-authority  — applied=True detected_by=['g_invocation_isolation'] still_green=['g_chain', 'g_unpinned_identical']
+
+  -- M2b-default-contamination --
+  [FAIL      ] G-UNPINNED-IDENTICAL  — argv diverged at [(47, '--warm-start-window', None), (48, '12', None), (49, '--warm-start-offset', None), (50, '25', None)]
+  [FAIL      ] G-PROVENANCE  — marker present on unpinned run: ['[S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)']
+  [PASS      ] G-CHAIN  — 7/7 routed to argv (61 tokens)
+  [PASS      ] M2b-default-contamination  — applied=True detected_by=['g_unpinned_identical', 'g_provenance'] still_green=['g_chain']
+
+  -- M3-derived-allowlist --
+  [FAIL      ] G-ALLOWLIST-EXACT  — set mismatch: {'forward_threshold', 'seed_count', 'reverse_threshold', 'search_strategy'}
+  [PASS      ] G-CHAIN  — 7/7 routed to argv (61 tokens)
+  [PASS      ] G-EXACT  — 7/7 value+type equal; session_idx==1 as int; thresholds 0.71/0.47 intact
+  [PASS      ] M3-derived-allowlist  — applied=True detected_by=['g_allowlist_exact'] still_green=['g_chain', 'g_exact']
+
+  -- M4-origin-from-ordinary-params --
+  [FAIL      ] G-ORIGIN  — a caller acquired pin authority from ordinary params
+  [PASS      ] G-CHAIN  — 7/7 routed to argv (61 tokens)
+  [PASS      ] G-UNPINNED-IDENTICAL  — list-equal, 47 tokens, vs 69ca910
+  [PASS      ] G-VALUE-USABLE  — 30 present-but-non-routable bundles rejected (7 None, 7 '', 7 False, 7 True, 2 all-seven); valid control accepted in sorted key order
+  [PASS      ] M4-origin-from-ordinary-params  — applied=True detected_by=['g_origin'] still_green=['g_chain', 'g_unpinned_identical', 'g_value_usable']
+
+==========================================================================
+  20/20 PASS
+  S172_RUN4_ROUTING_SUITE_COMPLETE
+2026-08-28 20:32:32 [INFO] Dispatch methods bound to WatcherAgent: dispatch_selfplay, dispatch_learning_loop, process_chapter_13_request, _scan_watcher_requests, _validate_selfplay_request, _evaluate_step_via_bundle, _archive_request, _log_dispatch_decision
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [INFO] [S172-PIN] pipeline invocation carries an explicit operator warm-start pin (7 keys); authority is invocation-local
+2026-08-28 20:32:32 [INFO] 
+============================================================
+2026-08-28 20:32:32 [INFO] STEP 1: Window Optimizer (run #1)
+2026-08-28 20:32:32 [INFO] ============================================================
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-fwd-thresh 0.71 --warm-start-offset 25 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1 --warm-start-skip-max 99 --warm-start-skip-min 6 --warm-start-window 12
+2026-08-28 20:32:32 [INFO] Pipeline execution finished
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [INFO] 
+============================================================
+2026-08-28 20:32:32 [INFO] STEP 1: Window Optimizer (run #1)
+2026-08-28 20:32:32 [INFO] ============================================================
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Pipeline execution finished
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] [EXEC-SET] parity-lock-sentinel
+2026-08-28 20:32:32 [INFO] [EXEC-SET] parity-lock-sentinel
+2026-08-28 20:32:32 [INFO] [EXEC-SET] parity-lock-sentinel
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [ERROR] Pipeline blocked before step 1: UNAUTHORIZED warm-start pin keys in ordinary params (run_pipeline(start_step=1)): ['warm_start_fwd_thresh', 'warm_start_offset', 'warm_start_rev_thresh', 'warm_start_session_idx', 'warm_start_skip_max', 'warm_start_skip_min', 'warm_start_window']. These seven route ONLY through the explicit operator authority channel supplied by the real CLI `--run-pipeline --params` entry point. A programmatic caller cannot acquire operator authority by placing them in `params` (TB patch review R1, Blocker 1).
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [INFO] [S172-PIN] pipeline invocation carries an explicit operator warm-start pin (7 keys); authority is invocation-local
+2026-08-28 20:32:32 [INFO] 
+============================================================
+2026-08-28 20:32:32 [INFO] STEP 1: Window Optimizer (run #1)
+2026-08-28 20:32:32 [INFO] ============================================================
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-fwd-thresh 0.71 --warm-start-offset 25 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1 --warm-start-skip-max 99 --warm-start-skip-min 6 --warm-start-window 12
+2026-08-28 20:32:32 [INFO] Pipeline execution finished
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Dispatch methods bound to WatcherAgent: dispatch_selfplay, dispatch_learning_loop, process_chapter_13_request, _scan_watcher_requests, _validate_selfplay_request, _evaluate_step_via_bundle, _archive_request, _log_dispatch_decision
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Dispatch methods bound to WatcherAgent: dispatch_selfplay, dispatch_learning_loop, process_chapter_13_request, _scan_watcher_requests, _validate_selfplay_request, _evaluate_step_via_bundle, _archive_request, _log_dispatch_decision
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [INFO] [S172-PIN] pipeline invocation carries an explicit operator warm-start pin (7 keys); authority is invocation-local
+2026-08-28 20:32:32 [INFO] 
+============================================================
+2026-08-28 20:32:32 [INFO] STEP 1: Window Optimizer (run #1)
+2026-08-28 20:32:32 [INFO] ============================================================
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-fwd-thresh 0.71 --warm-start-offset 25 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1 --warm-start-skip-max 99 --warm-start-skip-min 6 --warm-start-window 12
+2026-08-28 20:32:32 [INFO] Pipeline execution finished
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [INFO] [S172-PIN] pipeline invocation carries an explicit operator warm-start pin (7 keys); authority is invocation-local
+2026-08-28 20:32:32 [INFO] 
+============================================================
+2026-08-28 20:32:32 [INFO] STEP 1: Window Optimizer (run #1)
+2026-08-28 20:32:32 [INFO] ============================================================
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-fwd-thresh 0.71 --warm-start-offset 25 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1 --warm-start-skip-max 99 --warm-start-skip-min 6 --warm-start-window 12
+2026-08-28 20:32:32 [INFO] Pipeline execution finished
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Starting pipeline from step 1 to 1
+2026-08-28 20:32:32 [INFO] [S172-PIN] pipeline invocation carries an explicit operator warm-start pin (7 keys); authority is invocation-local
+2026-08-28 20:32:32 [INFO] 
+============================================================
+2026-08-28 20:32:32 [INFO] STEP 1: Window Optimizer (run #1)
+2026-08-28 20:32:32 [INFO] ============================================================
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-fwd-thresh 0.71 --warm-start-offset 25 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1 --warm-start-skip-max 99 --warm-start-skip-min 6 --warm-start-window 12
+2026-08-28 20:32:32 [INFO] Pipeline execution finished
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+
+suite exit code    : 0
+digest after suite : d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+
+══════════════════════════════════════════════════════════════════════════════
+SECTION 3 — G-PROVENANCE STRUCTURED ARM: INDEPENDENCE PROBE
+══════════════════════════════════════════════════════════════════════════════
+G-PROVENANCE short-circuits on the LOG arm, so under M2b the structured-result arm never
+executes inside the suite and its detection power would go untested. Probed with the log
+arm bypassed.
+  [1] clean, unpinned  -> keys: [] (expect [])
+  [2] M2b,  unpinned   -> keys: ['step1_pin_source', 'step1_pin_argv']
+      marker: explicit_operator_warm_start | argv: 61 tokens, NO warm keys supplied
+      structured arm reds independently of the log arm: True
+  [3] restored         -> keys: [] (expect [])
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [INFO] [S172-PIN] step 1: explicit operator warm-start pin accepted (7 keys, step1_pin_source=explicit_operator_warm_start)
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] [S172-PIN] step1_pin_source=explicit_operator_warm_start keys=warm_start_fwd_thresh,warm_start_offset,warm_start_rev_thresh,warm_start_session_idx,warm_start_skip_max,warm_start_skip_min,warm_start_window
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184 --warm-start-window 12 --warm-start-offset 25 --warm-start-skip-min 6 --warm-start-skip-max 99 --warm-start-fwd-thresh 0.71 --warm-start-rev-thresh 0.47 --warm-start-session-idx 1
+2026-08-28 20:32:32 [INFO] Running Step 1: window_optimizer.py
+2026-08-28 20:32:32 [INFO] Step 1: clean-control: stale - will execute
+2026-08-28 20:32:32 [WARNING] [P0.5] provisioning manifest declares no nodes (<clean-control-stub>) — per-node dataset verification did NOT run for step 1. Recorded as NOT_APPLICABLE.
+2026-08-28 20:32:32 [INFO] [COVERAGE] Step 1: no certified coverage for java_lcg — using seed_start=0 (the legacy exhaustive_progress tracker is retained as telemetry and carries zero certified authority)
+2026-08-28 20:32:32 [INFO] EXEC CMD: python3 window_optimizer.py --lottery-file daily3.json --strategy bayesian --max-seeds 2147483648 --prng-type java_lcg --output optimal_window_config.json --test-both-modes --trials 1 --trse-context trse_context.json --enable-pruning --n-parallel 1 --worker-pool-size 25 --seed-cap-nvidia 5000000 --seed-cap-amd 2000000 --seed-start 0 --pwc-transport tcp --min-workers 24 --use-range-miner --miner-stripe-size 67108864 --miner-substripes 8 --staging-dir /home/michael/miner_staging --staging-workers 4 --staging-queue-depth 2 --staging-capacity-timeout 600.0 --staging-high-water-bytes 17179869184
+
+══════════════════════════════════════════════════════════════════════════════
+SECTION 4 — REGRESSION SUITES (sequential; S172 suites must not overlap)
+══════════════════════════════════════════════════════════════════════════════
+-- tests/test_s172_window_anchor_brief_i.py
+26/26 checks green
+COMPLETION SENTINEL: PASS — §4.8 legacy closure is proven by gate, not by inspection (pending Team Beta review).
+   exit=0
+-- tests/test_s172_window_anchor_brief_i_mutants.py
+DETECTED 14/15   INVALID 1   SURVIVED 0
+COMPLETION SENTINEL: PASS — every mutant either DETECTED by its credited gate at its own assertion, or reported INVALID with a stated reason (pending Team Beta review).
+   exit=0
+-- tests/test_watcher_llm_integration.py (pytest)
+   13 passed, 4 warnings in 3.60s
+   4 PydanticDeprecatedSince20 warnings originate in agents/contexts/base_agent_context.py:43,
+   agents/contexts/window_optimizer_context.py:27 and agents/full_agent_context.py:26 -- all
+   three untouched by this patch, warnings pre-date it. Environment note, not chargeable.
+
+══════════════════════════════════════════════════════════════════════════════
+SECTION 5 — FINAL TOTALS, ROSTER, TREE STATE
+══════════════════════════════════════════════════════════════════════════════
+
+TOTALS
+  tests/test_s172_run4_routing_patch.py    20/20 PASS   (14 gates + 6 mutants; was 12 + 5 at R1)
+  tests/test_s172_window_anchor_brief_i.py 26/26 checks green
+  ..._brief_i_mutants.py                   DETECTED 14/15  INVALID 1  SURVIVED 0
+  tests/test_watcher_llm_integration.py    13 passed, 4 warnings
+  frozen 69ca910 control                   re-verified; G-UNPINNED-IDENTICAL list-equal, 47 tokens
+
+GATES (14) — all PASS
+  G-ALLOWLIST-EXACT · G-UNPINNED-IDENTICAL · G-CHAIN · G-EXACT · G-PARTIAL-CLOSED
+  G-EIGHTH · G-NO-SYNTH · G-NO-LLM · G-PROVENANCE · G-INVOCATION-ISOLATION
+  G-ONE-TRIAL · G-PARITY-INERT · G-ORIGIN (new, R1 B1) · G-VALUE-USABLE (new, R1 B2)
+
+MUTANTS (6) — all APPLIED, EXECUTED, DETECTED
+  [PASS      ] M1-unconditional-strip  — applied=True detected_by=['g_chain', 'g_exact'] still_green=['g_unpinned_identical']
+  [PASS      ] M1b-wall2-only-unconditional-strip  — applied=True detected_by=['g_chain', 'g_exact'] still_green=['g_unpinned_identical', 'g_allowlist_exact', 'g_partial_closed', 'g_provenance']
+  [PASS      ] M2a-lifetime-authority  — applied=True detected_by=['g_invocation_isolation'] still_green=['g_chain', 'g_unpinned_identical']
+  [PASS      ] M2b-default-contamination  — applied=True detected_by=['g_unpinned_identical', 'g_provenance'] still_green=['g_chain']
+  [PASS      ] M3-derived-allowlist  — applied=True detected_by=['g_allowlist_exact'] still_green=['g_chain', 'g_exact']
+  [PASS      ] M4-origin-from-ordinary-params  — applied=True detected_by=['g_origin'] still_green=['g_chain', 'g_unpinned_identical', 'g_value_usable']
+
+  M4 reverts BOTH halves of the pre-R1 shape (capture source AND the absent fail-loud guard),
+  because reverting only one would be a strawman no real regression could produce.
+
+VACUITY RULE IN FORCE: _run_gate_under_mutant credits only a gate's own terminal verdict. A
+gate that RAISES under a mutant is neither detection nor still-green and the mutant terminates
+INCOMPLETE. No detection above rests on an exception.
+
+SHA VERIFICATIONS
+  watcher_agent.py pre-run                       d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+  watcher_agent.py post-run                      d14bcb3b3395877017e33e15fe00fb31b775945bdb1cf3d6bce8bd556a208e5f
+    identical (M1b restore verified)             YES
+  frozen control fixture                         8f61420c8b36096a0537f03346aeacfdff48912a86b175af67416481d6fb91ce
+
+DIFFERENTIAL vs 69ca910 (tracked)
+   agents/watcher_agent.py | 387 ++++++++++++++++++++++++++++++++++++++++++++++--
+   1 file changed, 374 insertions(+), 13 deletions(-)
+
+CLAIM BOUNDARY (ruling 7, inherited unchanged)
+  Routing and containment ONLY. Does not make Run 4 correct, does not certify population
+  equivalence, resolves neither L-1 nor the ingress byte bound.
+
+GOVERNANCE
+  Nothing committed. Nothing staged. Nothing launched. The fleet was DOWN throughout and was
+  never contacted. Michael commits and dual-pushes after Beta reviews patch R2.
+
+END OF RECORD

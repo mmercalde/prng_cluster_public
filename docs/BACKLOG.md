@@ -489,3 +489,142 @@ array-contract amendment, and **no such amendment is pre-authorized.**
 **Precedent for how it is found:** the Brief-I defect was a single unmigrated consumer of the
 retired context key, on the production path, in a file the brief never opened, behind 25 green
 gates. **A gate proving one consumer migrated is not evidence that every consumer did.**
+
+---
+
+## 20. Coordinator ingress is bounded by COUNT and unbounded in BYTES — allocation-limited
+
+**Recorded 2026-08-27. Design observation, flagged for Beta. No fix proposed, none authorized.**
+Full arithmetic: `S172_PHASE3_SURVIVOR_CAPACITY_CHARACTERIZATION.md` §4.4 · register entry
+`LEADS.md` **L-2**.
+
+`miner/range_miner_coordinator.py:9602` — `inbound: _queue.Queue = _queue.Queue(maxsize=1024)`.
+The connection reader decodes each frame and puts the **decoded message object** on this queue
+(`:11284`). The bound is 1,024 *entries*; the byte weight of an entry is linear in the survivor
+rate and bounded nowhere. **Every volume-aware bound in the system — `staging_high_water_files`,
+`staging_high_water_bytes`, the derived deferred bound — sits downstream of the one place that
+has none.**
+
+**How it surfaced.** By elimination, characterizing what limits survivor volume after run 3
+(13,146,485 phase-3 survivors, 1,597× attempt 9). The two candidate retention ceilings were both
+withdrawn on measurement: the **file-count bound is survivor-independent** (attempt 3 with 774
+survivors reached 91.9% of it; run 3 with 13.1M reached 81.9%), and the **16 GiB byte bound peaks
+at ~61% utilisation** from inside the Optuna-reachable space. Ingress is what was left.
+
+**⚠ IT IS AN ALLOCATION LIMIT, NOT AN ARCHITECTURAL ONE.** VM101 is a Proxmox VM; the Zeus host
+has 64 GB. At the current allocation (`MemTotal 15,924.8 MiB`, `SwapTotal 0`, live-read) the
+computed exhaustion point `r_crit = 0.0602–0.0688` **straddles the search space's provable
+reachable maximum `r_max = 0.0642`**. Roughly **17 GiB** clears a full queue at `r_max`; ~32 GiB
+leaves 2× headroom. **Raising the allocation moves the ceiling above the reachable maximum.**
+
+**Two operational constraints on doing that:**
+- **Not before run 4.** Run 4 is the Brief I acceptance run; changing VM101's memory first puts a
+  second variable into it. **Wait until Brief I closes.**
+- **Swap is a separate lever.** `SwapTotal = 0` is what makes the failure mode a hard OOM rather
+  than degradation telemetry could catch. Adding swap changes the failure *mode*, not the ceiling.
+
+**Why it is still worth Beta's attention with a bigger box available:** ingress admission control
+**cannot see volume at all**, so the safe operating region is a function of an ungoverned resource
+(host RAM allocation) rather than of any governed bound. Raising the allocation moves the ceiling;
+it does not give the system a way to know where the ceiling is.
+
+**Status: OPEN.** Computed, never observed — the four assumptions are enumerated in §4.4 and in
+L-2. The cheapest thing that would turn it from computed into observed is a **coordinator RSS
+sampler on the next run**; `[S172-BP]` records queue *occupancy* (550/1024 in run 3) but no byte
+or RSS series exists. That needs no fleet of its own — it rides whatever runs next.
+
+---
+
+## 21. float32/float64 survivor-filter seam — effective M is set by the HOST
+
+**Recorded 2026-08-27. Defect. Repair NOT authorized and NOT proposed** — either side could be
+made to match the other and the two choices yield different survivor populations, which makes it
+a semantics decision. Register entry `LEADS.md` **L-1**; derivation
+`S172_PHASE3_SURVIVOR_CAPACITY_CHARACTERIZATION.md` §2d.
+
+The kernel filters in float32 (`if (best_match_rate >= threshold)`); the host re-filters the same
+value in float64 (`miner/range_miner_worker.py:1281`). When `k·τ` is an exact integer `m` and
+`m/k` is not exactly representable in binary32, the widened float32 rate lands just below the
+float64 threshold and **the host rejects seeds the kernel admitted**, silently raising the
+effective match requirement to `m+1`.
+
+**Measured** (production kernel, 2²⁴ seeds, k=20, τ=0.35 → `7/20 = 0.34999999403953552`):
+**9,575 kernel survivors → 1,513 host survivors, a 6.3× population change.** Three of 64 grid
+cells affected (`k=20/τ=0.35`, `k=20/τ=0.45`, `k=10/τ=0.70`); every other exact-`kτ` cell checked
+and consistent, so the residue is fully explained.
+
+**What it means for correctness:** the survivor population reaching Step 2 and the 22-array NPZ
+depends on a floating-point representability accident, which makes populations at those boundaries
+**non-reproducible across any change to that comparison** — a dtype change, a threshold
+quantization, a refactor comparing float32 on both sides, or a move of the post-filter. The
+affected thresholds are round decimals (0.35, 0.40, 0.45, 0.50, 0.70, 0.75), i.e. exactly what
+Optuna's `round(…, 2)` canonicalization produces. **Status: OPEN**, with three follow-ups
+registered in L-1, including whether it wants one ruling together with the open §2.36 Optuna
+raw→canonical quantization item.
+
+---
+
+## 22. Privileged internal seams `_operator_pin_params` / `_pin_bundle` — governance-gated
+
+**Recorded 2026-08-28. Standing constraint adopted by Team Beta in
+`docs/TB_RULING_RUN4_ROUTING_PATCH_REVIEW_R2_APPROVED.md` §1. Binding. No code required now.**
+
+> `_operator_pin_params` and the internal `_pin_bundle` are **privileged internal seams. No new
+> production caller may populate either without an explicit governance review.**
+
+**Why it is load-bearing.** These two names carry *operator authority*, not data. The whole R1
+correction was that authority must be provable by ORIGIN rather than inferred from the presence of
+a complete bundle in ordinary `params`. Today exactly one production site populates each:
+
+| seam | sole production populator |
+|---|---|
+| `_operator_pin_params` | the `--run-pipeline` CLI branch of `agents/watcher_agent.py`, via `split_operator_pin_params()` |
+| `_pin_bundle` | `run_pipeline()`, from the authority channel, threaded to that invocation's Step-1 `run_step()` |
+
+A second populator added later — however reasonable locally — silently recreates the R1 defect: a
+programmatic caller acquiring explicit-operator provenance. **`G-ORIGIN` and mutant `M4` in
+`tests/test_s172_run4_routing_patch.py` are the standing detectors**; M4 is precisely "capture
+reverted to ordinary `params`". A new populator that routes correctly would still pass G-CHAIN and
+G-UNPINNED-IDENTICAL, so the review is the control, not the suite.
+
+**Applies to** any new caller in `agents/`, `chapter_13_triggers.py`, the selfplay/dispatch paths,
+`step_runner`, or a future scheduler. `step_runner`'s separate dispatch surface is **not** part of
+the certified Run-4 route (ruling §8) and must not be wired to these seams to make it one.
+
+---
+
+## 23. Stale root-level `watcher_agent.py` — wrong-file-edit hazard
+
+**Recorded 2026-08-28. Carried unchanged from the R2 approval's recorded-but-unrepaired list
+(ruling §8). Does not block the R2 commit. No fix proposed, none authorized.**
+
+Two files share the name. The root copy is dead and badly stale:
+
+| path | size | mtime | state |
+|---|---|---|---|
+| `agents/watcher_agent.py` | 171,520 B | 2026-08-28 | **LIVE.** The certified R2 target, sha256 `d14bcb3b…` |
+| `watcher_agent.py` (repo root) | 72,042 B | 2026-04-24 | **STALE.** Four months behind |
+
+**Measured drift, not assumed:** the root copy contains **zero** occurrences of
+`_operator_pin_params` or `STEP1_EXPLICIT_PIN_KEYS`, and its pipeline loop still reads
+`results = self.run_step(step, params)` at `watcher_agent.py:1547` — the pre-patch call with no
+`_pin_bundle` argument.
+
+**The hazard is editing or importing the wrong one.** A patch applied to the root copy would land
+in a file nothing executes, pass a naive `grep` of "watcher_agent.py", and produce a green-looking
+session that changed nothing. The reverse — a tool resolving `import watcher_agent` to the root
+copy — yields a WATCHER with no Run-4 routing at all and no error.
+
+**Mitigation in force today is convention only:** every governance artifact in this workstream
+names the path as `agents/watcher_agent.py`, never the bare filename. **Deletion is NOT proposed
+here** — this repo's standing ruling on stale duplicates (2026-07-31) is to leave them alone
+absent an explicit ruling, and that ruling is Beta's to make, not Alpha's.
+
+**SKILL UPDATE NOTE (for whoever performs the next skill bump).** Both items above belong in the
+skill's standing-rules section. Per §17 of this backlog a skill revision lives in **three places**
+and committing updates only one, so this text is staged here rather than applied piecemeal:
+
+- **SR-3 (proposed):** `_operator_pin_params` / `_pin_bundle` are privileged internal seams; a new
+  production populator requires governance review. Detectors: `G-ORIGIN`, `M4`.
+- **Verified-as-built fact:** `agents/watcher_agent.py` is the live WATCHER. Root-level
+  `watcher_agent.py` is stale as of 2026-04-24 and must never be edited, imported, or cited.
