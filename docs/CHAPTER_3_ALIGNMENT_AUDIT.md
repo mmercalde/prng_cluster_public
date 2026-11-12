@@ -923,3 +923,289 @@ No soak is in flight and no background invoker can reach step 2 on its own.
 **Report file:** `docs/CHAPTER_3_ALIGNMENT_AUDIT.md` — **untracked. It must be committed before
 the Phase-7 soak launches**, or item 5's clean-tree preflight will reject the tree at
 finalization, hours in.
+
+---
+
+## Addendum — live re-verification, 2026-11-11
+
+**Host:** VM 101 (`zeus-ubuntu`), user `michael`, `/home/michael/distributed_prng_analysis`.
+**Base:** `a15b5247336255801de8cf67d52653701b1e8c80` (`a15b524`). Current HEAD is `741822b` (the batch-1
+documentation commit); `git diff --name-only a15b524 741822b` touches only `docs/`, so the code at `741822b` is
+byte-identical to `a15b524`. The audit above was made at `575378e`; every anchor it cites was re-opened at
+`a15b524` for this addendum. **Authority:** `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_CORRECTIONS_20261111.md` REV1,
+§3.1 (re-verify, do not redo) and §5 (`agent_manifests/definitions.json`). Under its §0, a Team Beta ruling
+described as "binding" is recorded here as a review position the owner may keep or lift.
+
+**The text above is left exactly as written. This addendum only adds to it.** Read-only throughout: nothing was
+executed except reads, `stat`/`test -nt` on existing files, `git log`/`git show`, `systemctl`/`crontab` listings, a
+JSON parse of existing artifacts, and one import of `utils.canonical_arrays` to list the contract. The scorer,
+Optuna, the converter, WATCHER and every pipeline step were **not** run. F5 and F11 were **not** re-executed; they
+were re-verified by reading the code at the cited lines.
+
+### A.0 Null results first (each with its denominator)
+
+1. **Step 2 has never run on RANGE-MINER output on this host.** Certified generations present: **1**
+   (`.s172_accumulator/current` → `gen-20260818T013219550933Z-step1_java_lcg_0…`, written 2026-08-17 18:32 PDT).
+   Step-2 runs after it: **0**. The newest Step-2 artifacts are `optimal_scorer_config.json` and `scorer_jobs.json`,
+   both dated **2026-03-11**; `scorer_trial_results/` is empty; `optuna_studies/` holds no scorer study (window-optimizer
+   studies only).
+2. **`agent_manifests/definitions.json` says nothing about Step 2.** It declares 2 pipeline steps (`step5_anti_overfit`
+   `:7`, `step6_prediction` `:60`); Step-2 entries: **0**. No tracked `*.py`/`*.sh` reads it (`/bin/grep -rl
+   definitions.json --include='*.py' --include='*.sh'` → no file). It changes no item in this audit.
+3. **No background invoker can reach Step 2:** enabled units matching `prng|watcher|daily3|chapter|scorer`: **0**;
+   timers: **0**; `crontab -l` → *no crontab for michael*; running `scorer_trial|run_scorer_meta|watcher_agent|scripts_coordinator`
+   processes: **0** (the only `ps` match was the querying shell itself).
+4. **The original tally does not reconcile with its own §6 table.** The §6 rows, counted one by one, give 16 ACCURATE,
+   5 STALE, 1 SUPERSEDED (#32), 1 "omission" (#42), 27 FALSE, 5 UNVERIFIABLE = 55. The summary line says 17 / 9 / 24 / 5.
+   Both sum to 55; the distribution in the summary is not the distribution in the table. A.8 replaces both.
+5. **F1's live premise is no longer true, and F1 still holds.** The accumulator and both root symlinks now exist
+   (A.1). The converter is still reached — through the `-nt` branch at `run_scorer_meta_optimizer.sh:144`, not the
+   missing-file branch at `:140` (A.4, F1).
+
+### A.1 Host surfaces read
+
+| Surface | Command | Result |
+|---|---|---|
+| root NPZ aliases | `ls -la` | `bidirectional_survivors_binary.npz` and `bidirectional_survivors_all.npz` are **symlinks** to `.s172_accumulator/current/…` (2026-08-17 18:32). F1's "no symlink, no accumulator" is superseded |
+| `bidirectional_survivors.json` | `ls -la`; JSON parse | **1193 bytes**, a 19-key **dict** — the D3.5 post-success summary (`note`, `generation_id`, `artifact_sha256`, …), not 2 bytes `[]` |
+| mtimes | `stat -L` | NPZ target 18:32:19.553634671; JSON 18:32:19.579634590 — the JSON is **26 ms newer** |
+| `test -nt` | `[ bidirectional_survivors.json -nt bidirectional_survivors_binary.npz ]` | **TRUE** (test follows the symlink) |
+| history split | JSON parse | `train_history.json` 14454 + `holdout_history.json` 3614 = 18068, 0.80 exactly (2026-08-21) |
+| `optimal_scorer_config.json` | JSON parse | 11 keys, the 11 sampled parameters; no `_run_context` block (2026-03-11) |
+| `scorer_jobs.json` | JSON parse | flat **list** of 100 jobs; args `["/dev/shm/prng/step2/bidirectional_survivors_binary.npz", …, "0", "<inline JSON>", "--optuna-study-name", …]`; `sample_size` across all 100 = **{5000}** |
+| ramdisk | `ls -ld /dev/shm/prng` | does not exist (UNAVAILABLE as a populated surface) |
+| node configs | JSON parse | `distributed_config.json` 1+8+8+8 = **25**; `ml_coordinator_config.json` 2+8+8+8 = **26**; both tracked; per-node `max_concurrent_script_jobs` 8 on rigs, 2 on localhost |
+| `agent_manifests/definitions.json` | `git check-ignore -v`; `cat -n` | ignored by `.gitignore:41` (`*.json`); 220 lines, schema 1.1.0, `updated_at` 2026-01-02 |
+| systemd, cron, processes | `systemctl list-unit-files --state=enabled`, `systemctl list-timers --all`, `crontab -l`, `ps -eo pid,etime,cmd` | nothing (A.0 #3) |
+
+### A.2 Labelling rule used for the three-label mapping
+
+The audit above used ACCURATE / STALE / FALSE / SUPERSEDED / UNVERIFIABLE. Each disagreement is re-labelled with
+exactly one of the brief's three labels:
+
+- **BROKEN** — the chapter describes a behaviour or a data path, and the code at `a15b524` fails to deliver it (a
+  crash, a check that cannot fire, a configured value with no path, a declared consumer that does not consume), and no
+  governance document says that was intended.
+- **SWITCHED-OFF-BY-RULING** — the code exists and an owner/Beta record holds it back.
+- **DESCRIPTION-ONLY** — the chapter's text is stale or wrong and the code is the deliberate later state (a ruled
+  objective change, a removed GPU path, changed ranges or names). No code path is missing.
+
+Under this rule, the audit's FALSE verdicts for the v4.2 objective, the GPU scoring sections and the old CLI are
+**DESCRIPTION-ONLY**: the code was changed on purpose. The v4.0 removal of draw history and of
+`ReinforcementEngine`/`SurvivorScorer` is recorded in the worker's own changelog (`scorer_trial_worker.py:5-10`,
+"TB ruling S102/S103"); the v4.1 → v4.2 → v4.3 → v4.4 objective lineage is ruled (`docs/TB_RULING_REQUEST_STEP2_v4_1_OBJECTIVE.md`,
+`docs/TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`, `docs/S107_session_log.md`, in-code `scorer_trial_worker.py:198`, `:235`,
+`:413` "TB ruling S107"), as `docs/PROJECT_FILE_CATALOG.md` and `docs/CLAUDE_CODE_REPORT_SELECTIVITY_PER_SEED_AUDIT.md`
+§6.5 record.
+
+### A.3 Anchor re-verification
+
+All anchors in `scorer_trial_worker.py`, `generate_scorer_jobs.py`, `run_scorer_meta_optimizer.sh`,
+`convert_survivors_to_binary.py`, `utils/run_finalizer.py`, `utils/survivor_loader.py`, `utils/prng_encoding.py`,
+`survivor_scorer.py`, `scripts_coordinator.py`, `chapter_13_triggers.py`, `agents/agent_core.py`,
+`agents/manifest/agent_manifest.py`, `window_optimizer_integration_final.py:1369`, `prng_sweep_orchestrator.py:48,71`,
+`tests/phase6/wall_ab_gate.py:39,336` and `agent_manifests/scorer_meta.json` **matched** at `a15b524` (none of these
+files changed between `575378e` and `a15b524` in the cited regions; the last commit to the three Step-2 files is
+`ca975f8`). The anchors below **moved**; the cited statement is unchanged unless noted.
+
+| Audit anchor (at `575378e`) | At `a15b524` |
+|---|---|
+| `agents/watcher_agent.py:495-508` `p05_resolve_dataset_path` | `:748-762` |
+| `:530`, `:571-577` required inputs / `check_output_freshness` | `get_step_io_from_manifest` `:765-800`; `check_output_freshness` `:803` |
+| `:1146` / `:1143-1146` "Triggering Step" | `:1395-1399` |
+| `:1398-1407` preflight hard-block keywords | `:1660` (`hard_fail_keywords`) |
+| `:1484` execution-set freeze | `_ensure_execution_set` `:1578` |
+| `:1488` `_run_preflight_check(step)` | `:1753` |
+| `:1720-1728`, `:1732-1735` positional/flag args | `:2089-2103` |
+| `:2336` "Starting pipeline from step" | `:2733` |
+| `:2365` loop guard | `:2802` |
+| `:2381` / `:2385` `STEP N:` banner / `run_step` | `:2818` / `:2822` |
+| `:3043-3054` `--start-step` / `--end-step` | `:3480-3491` |
+| `:309-313` `logging.basicConfig` | `:311`; **`FileHandler` hits: 0** (the audit's `:653`, `:3258` no longer exist) |
+| `preflight_check.py:142` `STEP_INPUTS[2]` | `:282-284` |
+| `preflight_check.py:207-213` "SSH unreachable" | `:354` |
+| `coordinator.py:2584-2588` shortfall warning | `collect_scorer_results` `:2564`; warning `:2591-2593` |
+| `coordinator.py:2601-2606` local read-and-delete | `_read_local_scorer_results` `:2599`, `os.remove` `:2614` |
+| `window_optimizer.py:1005-1022` train/holdout split | `:1086-1105` |
+| `run_finalizer.py:1400-1412` | `:1400-1413` |
+
+**Two supporting-text corrections from the re-read:** (a) the remote pull is **SFTP over a pooled SSH connection**
+(`ssh.open_sftp()`, `sftp.get`, `sftp.remove` in `coordinator.py` `_pull_remote_scorer_results` `:2620`), not `scp`;
+(b) the `--params-file` branch (`scorer_trial_worker.py:570-589`) is **functional** — it reads the job list and pulls the
+inline-JSON argument for `scorer_trial_{trial_id}` — it has no producer, not no function.
+
+### A.4 Findings F1–F16 — re-verified and placed
+
+The F-findings are code findings, not chapter claims. Each is mapped to the claim it bears on, or recorded as outside
+the claim count (audit claim scope: what the chapter says against what the code does). Only F5, F11 and F13 add a
+counted item (N1–N3, A.6).
+
+| F | Re-verification | Placement |
+|---|---|---|
+| **F1** converter invoked | **Confirmed, mechanism corrected.** The root alias now exists, so `:140` is false; but Step 1's certified path writes the summary `bidirectional_survivors.json` at `window_optimizer_integration_final.py:3073`, **after** `finalize_run` at `:3001`, so the JSON is always newer than the NPZ it summarises and `:144` (`-nt`) is **true on every certified run** (A.1). `convert_to_npz` is entered and calls the converter at `:87`. The converter loads a 19-key dict (`convert_survivors_to_binary.py:89-91`) and fails at `:112` (`survivors[0]` on a dict); `:88-89` of the script then `exit 1`. Not executed — read and `test -nt` only | **SWITCHED-OFF-BY-RULING**, = Chapter 12 **S2** (`docs/CHAPTER_12_WATCHER_AGENT.md` §14.2), held by `docs/TEAM_ALPHA_PHASE7_LAUNCH_NOTICE.md` §1 (D3.0-B open; legacy converter not invoked until it closes) and the `--end-step 1` launch rule (`gate12_launch.sh:73`, `:378`). Absorbed into claim **#49**. Already in `docs/TODO_CONSOLIDATED.md:157`. **Not a new finding** |
+| **F2** `mv` over the finalizer-owned symlink | **Confirmed** (`run_scorer_meta_optimizer.sh:97`; `utils/run_finalizer.py:1400-1413`). In the current box state the converter fails first (F1), so `:97` is not reached; any input the converter accepts reaches it | Same as F1: **S2**, absorbed into **#49** |
+| **F3** worker is v4.3, chapter v4.2 | **Confirmed** (`scorer_trial_worker.py:413-444`); docstrings `:3`, `:298`, `:311-322` still say v4.2. `docs/S107_session_log.md` names the deployed worker **v4.4** (the orphaned `bc_stat` removal); the objective is v4.3's | Ruled change → **DESCRIPTION-ONLY**; absorbed into **#1, #15, #34, #36** |
+| **F4** objective change inside a docs commit | **Confirmed**: `git log -S "enrichment objective" -- scorer_trial_worker.py` → `ca975f8` only; subject *chore(S109): move 58 stray docs*; 46/45 numstat; `ca975f8^` = `05b0e6b` (chapter v4.2, 2026-02-23 19:02), so the objective changed in the very next commit (19:10) | History; outside the claim count |
+| **F5** `UnboundLocalError` when pool ≤ `sample_size` | **Confirmed by reading**: `sm_arr` assigned only at `:365-366` (twice), not in the else branch `:368-375`, read at `:421-422` | **BROKEN** → new item **N1** |
+| **F6** objective blind to 7 of 11 dimensions | **Confirmed** (`:343-349`, `:380-444`): only `residue_mod_1/2/3`, `max_offset` reach the objective; `tw_size` read and unused; `LAMBDA_SIZE`, `IR_WEIGHT` unused | Consequence of the ruled v4.3 objective (S107 lineage; `docs/PIPELINE_BEHAVIOUR_MODEL.md` §4 lists it GOVERNED). Design question; outside the claim count |
+| **F7** NN params do not feed Step 5 | **Confirmed**: `optimal_scorer_config` occurs **0** times in `generate_anti_overfit_jobs.py`, `anti_overfit_trial_worker.py`, `meta_prediction_optimizer_anti_overfit.py`, `run_anti_overfit_optimizer.sh`; Step 5 samples its own (`generate_anti_overfit_jobs.py:29-39`) | **BROKEN** = claim **#28** |
+| **F8** objective steers toward `skip_mode == 1` | **Confirmed** (`utils/prng_encoding.py:37`; `scorer_trial_worker.py:417-425`) | Design contact point; outside the claim count |
+| **F9** three fleet surfaces, none from the execution set | **Confirmed**: `execution_set` occurs 0 times in the four files; `scripts_coordinator.py:431-444` reads `distributed_config.json`; `run_scorer_meta_optimizer.sh:284` reads `ml_coordinator_config.json`; `:257` hardcodes three IPs (added deliberately in S107 — `docs/S107_session_log.md` item 3) | Code observation; bears on #14 only for the 25/26 count; outside the claim count |
+| **F10** `collect_scorer_results(1)` | **Confirmed** (`run_scorer_meta_optimizer.sh:285`; `coordinator.py:2591-2593`) | **BROKEN** = claim **#47** |
+| **F11** `--legacy-scoring` exit 127 | **Confirmed by reading** (`run_scorer_meta_optimizer.sh:236-237`, no trailing `\`; `set -e` `:165`). Reachable: `scorer_meta.json:140-142` `flag_args`, `agents/watcher_agent.py:2100-2103`. Additionally `run_trial` accepts `use_legacy_scoring` (`:296`) and never reads it | **BROKEN** → new item **N2** |
+| **F12** three input declarations | **Confirmed** (`scorer_meta.json:6-10`, `:13-17`, `:120`; `preflight_check.py:284`); manifest `description` "Step 2.5" `:3` vs `pipeline_step: 2` `:4` | Absorbed into **#32** and **N5** |
+| **F13** manifest `sample_size: 450` cannot reach the worker | **Confirmed**: `scorer_meta.json:126`, `arg_style: positional` `:136-139`; WATCHER emits positional args only (`agents/watcher_agent.py:2089-2098`); shell default `SAMPLE_SIZE=5000` (`:171`). Host proof: the 2026-03-11 `scorer_jobs.json` carries 5000 in all 100 jobs. `docs/S107_session_log.md` item 2 records the intent that WATCHER's override reach the shell | **BROKEN** → new item **N3** |
+| **F14** loader fallback enabled | **Confirmed** (`scorer_trial_worker.py:166`; `utils/survivor_loader.py:106`, `:161-166`) | Code observation; outside the claim count |
+| **F15** no dataset-provenance binding | **Confirmed** (`scorer_trial_worker.py:527-531`; `run_scorer_meta_optimizer.sh:213-218`; `window_optimizer.py:1086-1105`; `agents/watcher_agent.py:748-762`) | Absorbed into **#7** (holdout) for the chapter; rest outside the claim count |
+| **F16** preflight blocks Step 2 when rigs are in Proxmox | **Confirmed in code** (`agents/watcher_agent.py:1660`, `:1753`; `preflight_check.py:354`). Rig reachability **not** re-checked (no rig access this pass) — **UNAVAILABLE** | Boot state per `CLAUDE.md` §3, not a defect; outside the claim count |
+
+### A.5 Claims #1–#55 — final label
+
+| Final label | Claims |
+|---|---|
+| **Accurate** (13; was 14 — #27 moved post-review, see A.11) | #2, #3 (641 lines), #8, #11, #13 (local `os.remove` `coordinator.py:2614`; remote `sftp.remove`), #18 (history), #19, ~~#27~~ (→ absorbed into Ch4 B5, A.11), #33 (host 14454/3614), #35 (history), #37, #43, #44 (`scripts_coordinator.py:191-198`), #46 (`run_scorer_meta_optimizer.sh:266-269`) |
+| **BROKEN** (2) | **#28** (F7: four NN parameters have no Step-5 consumer); **#47** (F10: chapter documents `collect_scorer_results(total_trials)`, the shell passes `1`) |
+| **SWITCHED-OFF-BY-RULING** (1) | **#49** — the conversion command and the shell's auto-conversion (F1, F2). Ruling: `docs/TEAM_ALPHA_PHASE7_LAUNCH_NOTICE.md` §1 (D3.0-B open), originally approved as `docs/PROPOSAL_NPZ_Auto_Conversion_Step2.md`. = Chapter 12 S2 |
+| **DESCRIPTION-ONLY** (34) | #1, #4, #5, #6, #7, #9, #10, #12, #14, #15, #16, #17, #21, #22, #23, #24, #25, #26, #29, #30, #31, #32, #34, #36, #38, #39, #40, #41, #42, #45, #50, #51, #52, #53 |
+| **UNVERIFIED** (4) | #20 (3.8× — measured code gone, no artifact), #48 (258 MB / 4.2 s — recorded in `docs/PROPOSAL_NPZ_Auto_Conversion_Step2.md:38-41` as "58-258 MB", not re-measured), #54 (throughput table — no artifact), #55 (TPE ranking preserved — no artifact; objective since replaced) |
+
+Notes on moved verdicts: **#14** "26 GPUs" was UNVERIFIABLE; resolved — the chapter's 26 is the total of
+`ml_coordinator_config.json` (the collection config) and of the shell banner (`:196`, `:262`); dispatch reads
+`distributed_config.json` (25 since `f255912`) and the frozen soak set is 25. A count that depends on which file is
+read → **DESCRIPTION-ONLY**. **#47** moves from ACCURATE to **BROKEN**: the chapter states the correct call and the
+code does not make it. **#49** moves from ACCURATE to **SWITCHED-OFF-BY-RULING**. **#52** (450 is the validated
+operating point) is **DESCRIPTION-ONLY**: S107 retired the 450 cap on purpose (`docs/S107_session_log.md` item 2); that
+the manifest's 450 has no path is a separate code item, N3. **#53** (`max_concurrent_script_jobs=12`) is
+**DESCRIPTION-ONLY**: S107 corrected 12 → 8 on purpose (item 5); the Step-2 batch cap is 6 (`scripts_coordinator.py:105`).
+**#32** is **DESCRIPTION-ONLY**: the file now exists as a 1193-byte post-success summary (A.1), not 2 bytes.
+
+### A.6 Items the audit did not number, now counted
+
+**From the F-findings (3):**
+- **N1 — BROKEN** (F5). Chapter §5.1 describes "Sample survivors (if too many)"; the not-too-many branch raises
+  `UnboundLocalError` (`scorer_trial_worker.py:368-375` vs `:421`).
+- **N2 — BROKEN** (F11). The legacy-scoring branch of the shell aborts (`run_scorer_meta_optimizer.sh:236-237`).
+- **N3 — BROKEN** (F13). `agent_manifests/scorer_meta.json:126` `sample_size: 450` has no path to the shell under
+  `arg_style: positional` (`agents/watcher_agent.py:2089-2098`); 5000 (`:171`) runs.
+
+**Chapter claims not in the numbered list (5), all DESCRIPTION-ONLY:**
+- **N4** §5.1 `sample_size = min(10000, len(survivors))` — worker default 50000 (`scorer_trial_worker.py:349`),
+  generator default 25000 (`generate_scorer_jobs.py:85`), shell 5000 (`:171`).
+- **N5** "Step 2.5" (title, §1.3, §2.1, §7.1, §12) — executable Step 2 (`agents/watcher_agent.py:390`, `:401`, `:412`;
+  `scorer_meta.json:4`); "2.5" survives as a label in `scorer_meta.json:3` and `scripts_coordinator.py:141-160`.
+- **N6** §15 "Chapter 13: Scorer Trial Worker", the end marker, and "Next Chapter: Chapter 14: Feature Importance" —
+  this file is Chapter 3; Chapter 4 is `docs/CHAPTER_4_FULL_SCORING.md`.
+- **N7** §3.1 `scorer_trial_worker.py --trial-id 42` — no such flag; trial id is positional `argv[4]`
+  (`scorer_trial_worker.py:531`).
+- **N8** "coordinator pulls via SCP" (§1.2, §2.2, §3.1, §3.3) — SFTP over the SSH pool (A.3 (a)).
+
+**§6.5 parameter rows (11), not in the original 55:** `residue_mod_1/2/3`, `max_offset`, `hidden_layers`, `dropout`,
+`learning_rate` — **Accurate (7)** (`generate_scorer_jobs.py:54-57`, `:63-65`); `temporal_window_size` 50–100 (`:58`),
+`temporal_num_windows` 3–10 (`:59`), `min_confidence_threshold` 0.05–0.25 (`:60`), `batch_size` [32, 64, 128] (`:66`) —
+**DESCRIPTION-ONLY (4)**.
+
+### A.7 RANGE-MINER, the 22-array contract and Brief I, as they bear on Step 2
+
+- **Confirmed:** the seven arrays Step 2 reads (`scorer_trial_worker.py:183-246`) are positions 1, 2, 3, 6, 12, 14, 21
+  of `utils.canonical_arrays.CANONICAL_ARRAY_CONTRACT` (`utils/canonical_arrays.py:98`; 22 entries, listed by import).
+- **Brief I does not reach Step 2.** The `offset` array (5th of 22; "array 4" in the code's 0-based comments) is now sourced from `window_anchor`
+  (`utils/canonical_records.py:225`, `:374`); `generator_phase` lives in miner generation metadata
+  (`miner/range_miner_coordinator.py:1389`, `:2616`) and never enters the NPZ. Step 2 reads neither `offset` nor
+  `window_size`.
+- **Ramdisk ordering:** `run_scorer_meta_optimizer.sh:18-21` preloads the NPZ to `/dev/shm/prng/step2` on every node
+  (`ramdisk_preload.sh:117`, `:139`, `cp`/`scp` follow the symlink) **before** the auto-conversion block (`:140-150`).
+  Workers read the ramdisk copy (`generate_scorer_jobs.py:126`). Recorded in the chapter; mechanism detail of S2.
+
+### A.8 Count reconciliation
+
+*Table corrected post-review (2026-11-11): #27 moved from Accurate to Absorbed (A.11). The first version read 21 / 0.*
+
+| Category | Original 55 | N1–N8 | §6.5 rows | **Final** |
+|---|---|---|---|---|
+| Accurate | 13 | 0 | 7 | **20** |
+| BROKEN | 2 (#28, #47) | 3 (N1–N3) | 0 | **5** |
+| SWITCHED-OFF-BY-RULING | 1 (#49) | 0 | 0 | **1** |
+| DESCRIPTION-ONLY | 34 | 5 (N4–N8) | 4 | **43** |
+| UNVERIFIED | 4 (#20, #48, #54, #55) | 0 | 0 | **4** |
+| Absorbed into an existing item | 1 (#27 → Ch4 B5) | 0 | 0 | **1** |
+| **Total** | **55** | **8** | **11** | **74** |
+
+20 + 5 + 1 + 43 + 4 + 1 = **74** = 55 + 8 + 11. The F-findings are not claims; their placements (A.4) add only N1–N3.
+UNVERIFIED items resolved: **#14** → DESCRIPTION-ONLY. Still UNVERIFIED: #20, #48, #54, #55. **Confirmed** as
+written: 13 accurate claims (14 before the post-review move of #27, A.11), F1–F16 (with F1's mechanism and many line anchors corrected, and F7's Step-3 half corrected in A.11). **Corrected:** the summary
+tally (A.0 #4), #14, #47, #49, F1's mechanism, the pull transport (SFTP), the `--params-file` branch's status, and the
+moved anchors in A.3.
+
+### A.9 Files opened for this addendum (execution proof)
+
+`docs/CHAPTER_3_SCORER_META_OPTIMIZER.md`, this file, `docs/CLAUDE_CODE_INSTRUCTIONS_CHAPTER_CORRECTIONS_20261111.md`,
+`docs/CHAPTER_2_BIDIRECTIONAL_SIEVE.md` (head and headings, read only), `docs/CHAPTER_12_WATCHER_AGENT.md` (header,
+§3.4.3 note, §14–§17), `docs/CHAPTER_13_AUDIT.md` (headings, addendum), `docs/PIPELINE_BEHAVIOUR_MODEL.md` §1.1–§1.3, §4,
+`docs/TEAM_ALPHA_PHASE7_LAUNCH_NOTICE.md` §1–§3, `docs/TEAM_ALPHA_D3_0_B_AND_ITEM1_NOTICE.md` (grep),
+`docs/TB_RULING_REQUEST_STEP2_v4_2_SIGNAL.md`, `docs/S107_session_log.md`,
+`docs/CLAUDE_CODE_REPORT_SELECTIVITY_PER_SEED_AUDIT.md` §6.3–§6.5, `docs/PROPOSAL_NPZ_Auto_Conversion_Step2.md:36-46`,
+`docs/S172_WINDOW_ANCHOR_BRIEF_I_CLOSURE_STEP23_REPORT.md:1-80`, `docs/TODO_CONSOLIDATED.md` (grep), `docs/BACKLOG.md`
+§1, `docs/PROJECT_FILE_CATALOG.md` (grep), `docs/TFM_PROJECT_FACTS_SKILL.md` (grep), `scorer_trial_worker.py` (all 641
+lines), `generate_scorer_jobs.py` (all), `run_scorer_meta_optimizer.sh` (all), `run_scorer_meta_optimizer.py:1-10`,
+`ramdisk_preload.sh:79-170`, `convert_survivors_to_binary.py:20-140`, `:195-230`, `coordinator.py:2564-2680`,
+`scripts_coordinator.py:95-198`, `:425-450`, `:980-1000`, `agents/watcher_agent.py:385-418`, `:745-765`, `:1395-1400`,
+`:2080-2110`, `:3480-3492` (plus grep), `agent_manifests/scorer_meta.json` (all), `agent_manifests/definitions.json`
+(all 220 lines), `preflight_check.py:280-288`, `utils/canonical_arrays.py:98`, `:140-155` (and import),
+`utils/canonical_records.py:195-240`, `:355-380`, `utils/run_finalizer.py:1395-1420` (plus grep),
+`utils/survivor_loader.py` (grep), `utils/prng_encoding.py:37`, `window_optimizer.py:1080-1106`,
+`window_optimizer_integration_final.py:3060-3095` (plus grep), `survivor_scorer.py` (grep),
+`generate_anti_overfit_jobs.py:28-44`, `chapter_13_triggers.py` (grep), `miner/range_miner_coordinator.py` (grep),
+`distributed_config.json`, `ml_coordinator_config.json`, `~/.claude/skills/lead-handling/SKILL.md:1-40`.
+
+### A.10 Surfaces searched, unavailable, and governance
+
+**Searched:** the tracked tree at `a15b524`; gitignored files (`agent_manifests/definitions.json`, the root `*.json`
+artifacts, `git check-ignore -v`); git history (`git log -S`, `git log -- <path>`, `git show --numstat`); host state
+(A.1). **Governance trail searched first:** `docs/TB_RULING_*` (incl. both `TB_RULING_REQUEST_STEP2_*`), `docs/PROPOSAL_*`
+(incl. `PROPOSAL_STEP2_OBJECTIVE_FUNCTION_v1_3_0.md`, `PROPOSAL_NPZ_Auto_Conversion_Step2.md`), `docs/TEAM_ALPHA_*`
+(incl. the Phase-7 launch notice and the D3.0-B notice), `docs/TODO_CONSOLIDATED.md`, `docs/BACKLOG.md`, the fact file.
+F5, F10, F11 and F13 appear in no governance document other than this audit (`/bin/grep` for `sm_arr`,
+`UnboundLocal`, `collect_scorer_results`, `legacy.scoring`, `sample_size` in `TODO_CONSOLIDATED.md` and `BACKLOG.md`
+→ no Step-2 hit). The `-nt` mechanism of F1 is documented nowhere (`/bin/grep` for `JSON newer than NPZ`, `-nt`,
+`Post-success summary` in `docs/`). **Chapters searched:** 2, 12, 13 (audit), `PIPELINE_BEHAVIOUR_MODEL.md`.
+**UNAVAILABLE:** the rigs and their deployed copies of `scorer_trial_worker.py` (no rig access this pass; the
+`:257-261` push means they may differ); a populated `/dev/shm/prng`; `.127`; root/other-user crontabs; the S107/S108
+benchmark artifacts behind #20, #48, #54, #55. None is reported as clean.
+
+**Anchor base for `agents/watcher_agent.py`.** During this pass another session modified `agents/watcher_agent.py`
+and `agents/watcher_dispatch.py` in the working tree (not part of this pass; mtime 2026-11-11 17:08). Every
+`agents/watcher_agent.py` line in A.3–A.6 was re-checked against `git show a15b524:agents/watcher_agent.py` and is
+correct at `a15b524`; in the modified working tree, lines after `:308` are shifted. No other cited file is modified.
+
+### A.11 Post-review correction (2026-11-11) — F7's "other half" and claim #27
+
+**What was wrong.** §1 F7 (*"The other half of §6.1's note is ACCURATE … Those seven have a real consumer"*) and
+§6.5 claim #27 rate as accurate the statement that `residue_mod_1/2/3`, `max_offset`, `temporal_window_size`,
+`temporal_num_windows` and `min_confidence_threshold` feed Step 3's `SurvivorScorer`. That original text is left as
+written. This addendum first repeated it (A.5 Accurate row, A.4 F7 row). **The claim is true of the class constructor
+(`survivor_scorer.py:97-111`) and false of the pipeline.**
+
+**Evidence, opened at `a15b524`:** `full_scoring_worker.py:344`, `scorer = scorer_class(prng_type=prng_type, mod=mod)`,
+with no config, and the worker takes no `--config` argument. `generate_step3_scoring_jobs.py:201-209` reads only
+`prng_type` and `mod` from `optimal_scorer_config.json`. Host evidence, per `docs/CHAPTER_4_AUDIT.md` B5: the live
+config has `residue_mod_1/2/3 = 17/150/1449`, while the 2026-03-11 `survivors_with_scores.json` carries the default
+`residue_8/125/1000` features. Found by the Chapter 4 subagent and confirmed by the main session.
+
+**Relabel:** #27 Accurate → **absorbed into Chapter 4 B5** (`docs/CHAPTER_4_AUDIT.md`). It is not a new Chapter 3
+BROKEN item and is counted once, in Chapter 4. A.8 is updated: Accurate 20, Absorbed 1, total still 74.
+
+**B2 re-checked (#28 / F7, Step 5).** It stands as written. `optimal_scorer_config` occurs 0 times in
+`meta_prediction_optimizer_anti_overfit.py`, `generate_anti_overfit_jobs.py`, `anti_overfit_trial_worker.py` and
+`run_anti_overfit_optimizer.sh`. It stays one item, scoped to the four NN parameters.
+
+**Combined statement:** with Chapter 3 B2 and Chapter 4 B5 taken together, **none of the eleven parameters Step 2
+tunes reaches any downstream step.** Downstream reads only `prng_type`/`mod` from `optimal_scorer_config.json`.
+Step 2 does not tune those values, and the host copy does not contain them (its 11 keys are the sampled parameters,
+A.1), so Step 3 runs on its defaults.
+
+**Chapter text corrected in place,** with visible "Corrected (post-review)" notes: §1.1 note item (2), §6.1
+"Consumers", §16.5, §17.1 (an "Absorbed" line), §19 VIR-2 and §20 counts. The original §6.1 table's "Step 3
+SurvivorScorer" column is pre-existing text and is covered by the §6.1 note.
+
+**Completion sentinel for this addendum: `PASS`** — every original item re-verified and placed; four items remain
+UNVERIFIED by name.

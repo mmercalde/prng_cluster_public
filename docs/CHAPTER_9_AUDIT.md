@@ -67,9 +67,9 @@ Three things matter more than the rest:
 
 **B-1 — ROCm prelude hostname guards never fire on the live fleet.** *(Same class GOVERNED for `sieve_filter.py` as Chapter 2 F-5, §9.5; these two instances are not named there.)*
 - Chapter §6.2 presents the guard as the critical first step on rigs.
-- Code: `if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]` (`distributed_worker.py:17`); script path `if hostname in ["rig-6600", "rig-6600b", "rig-6600c", "rig-6600xt"]` (`:354`). Live worker hostnames `rrig6600`, `rrig6600b`, `rrig6600c` (`rig_profiles_config.json` `nodes[*].worker_hostname`).
+- Code: `if HOST in ["rig-6600", "rig-6600b", "rig-6600c"]` (`distributed_worker.py:18`; corrected 2026-11-11 post-`741822b`, was `:17`, the comment line above the guard); script path `if hostname in ["rig-6600", "rig-6600b", "rig-6600c", "rig-6600xt"]` (`:354`). Live worker hostnames `rrig6600`, `rrig6600b`, `rrig6600c` (`rig_profiles_config.json` `nodes[*].worker_hostname`).
 - Consequence on reading: the branch is dead. Harmless today because ROCm 6.4 needs no override (`docs/CLAUDE_CODE_INSTRUCTIONS_S172_PHASE_6_0_ROCM_PARITY.md:33`), and at `:354` the `else` branch still sets `CUDA_VISIBLE_DEVICES` while `scripts_coordinator.py:967-971` already exports `HIP_VISIBLE_DEVICES`.
-- Stops at: `distributed_worker.py:17`.
+- Stops at: `distributed_worker.py:18` (corrected 2026-11-11 post-`741822b`; was `:17`).
 - Repair would have to: follow Chapter 2 §9.5 — decide whether the prelude is still supported; if retained, key it from the declared rig profile; never rename hosts or write another hostname tuple.
 
 **B-2 — PWC's local GPU slot pool is hardcoded to two GPUs.** *(not found in the governance trail)*

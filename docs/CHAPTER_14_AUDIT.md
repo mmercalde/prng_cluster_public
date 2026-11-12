@@ -482,6 +482,27 @@ New label                                    1  B18 BROKEN — UNVERIFIED #1, on
 
 **Resulting chapter counts** (written into `CH14` §16): 22 accurate · 18 BROKEN (B1–B18) · 10 SWITCHED-OFF-BY-RULING · 18 DESCRIPTION-ONLY (D12 now host-observed) · 2 UNVERIFIED.
 
+**Count reconciliation (added 2026-11-11, after commit `741822b`).** The line above sums to **70**, not the 72 claims
+re-verified. Nothing was lost. The three resolved UNVERIFIED items went to different places, and only one of them
+became a label of its own:
+
+| Item | Resolution | Final placement |
+|---|---|---|
+| U1 NN per-feature gradients never captured | confirmed: 0/75 real reports | **became B18** (BROKEN). This is why BROKEN goes 17 → 18; B18 is not a 73rd claim |
+| U2 `dead_pct` ≈ 0 on every layer | confirmed: 242/242 entries | **absorbed into D12**: host observation of an item already counted as DESCRIPTION-ONLY, not a separate claim |
+| U3 steady-state NN exclusion | resolved (A.1 Q2): `neural_net` is **not** excluded today (count 1 < 3, after hand resets) | **absorbed into B1**: the host-observed consequence of the key mismatch plus the registry history, not a separate claim |
+
+```
+Accurate                  22
+BROKEN                    18   (B1–B17 + B18, which was U1)
+SWITCHED-OFF-BY-RULING    10
+DESCRIPTION-ONLY          18
+UNVERIFIED                 2   (U4 soak results, U5 Booster attributes)
+Absorbed into an item      2   (U2 → D12; U3 → B1), not counted separately
+-------------------------------
+Total                     72
+```
+
 ### A.5 Surfaces read in this addendum
 
 - **Tracked code:** `training_health_check.py`, `training_diagnostics.py`, `train_single_trial.py`, `meta_prediction_optimizer_anti_overfit.py`, `agents/watcher_agent.py`, `per_survivor_attribution.py`, `chapter_13_orchestrator.py`, `selfplay_orchestrator.py`, `inner_episode_trainer.py`, `diagnostics_llm_analyzer.py`, `modules/learning_telemetry.py`.

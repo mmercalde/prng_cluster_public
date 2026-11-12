@@ -1677,7 +1677,9 @@ schema 1.1.0) was read: it defines Step 5/6 sidecar and WATCHER fingerprint cont
 
 ### 15.1 BROKEN
 
-- **B-1 — ROCm prelude hostname guards never fire.** `distributed_worker.py:17` and `:354` test
+- **B-1 — ROCm prelude hostname guards never fire.** `distributed_worker.py:18` and `:354` test
+  *(anchor corrected 2026-11-11 post-commit `741822b`: previously `:17`, which is the comment line
+  above the guard; the `if HOST in [...]` guard is `:18`)*
   `rig-6600*`; live hostnames are `rrig6600*` (`rig_profiles_config.json`). Same class as Chapter
   2 F-5 (`sieve_filter.py`), which is governed by Chapter 2 §9.5's disposition. Harmless today (no
   override needed on ROCm 6.4). A repair must first decide whether the prelude is still supported

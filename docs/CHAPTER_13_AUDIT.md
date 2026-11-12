@@ -574,3 +574,41 @@ Updated count with B19: BROKEN 19 (18 + 1).
 **Anchor precision note.** B6 "Stops at: `agents/watcher_agent.py:3773`" is the `# Dispatch` comment; the call
 `watcher.run_pipeline(min(steps), max(steps))` is `:3774`, and the daemon path computes `min`/`max` at
 `:3338-3339` and calls at `:3341`. Same location, one line off; the chapter uses `:3774`.
+
+### A.10 Count reconciliation (added 2026-11-11, after commit `741822b`)
+
+**The batch-1 report summed to 63 for this chapter. The real total is 69, not 68, and the six missing items are
+the UNVERIFIED items this addendum resolved without assigning them a final label.** The original §1 verdict
+(25 + 18 + 9 + 9 + 7 = 68) is correct for the audit as first written. The addendum then:
+
+- added **B19**, a genuinely new claim found during the chapter correction (68 → **69**);
+- resolved U2, U3, U4, U6, U7 and part of U1 (A.6), but the report counted only U5 as still UNVERIFIED and did not move
+  the resolved items into a bucket.
+
+Final placement of the seven original UNVERIFIED items:
+
+| Item | Resolution (A.6) | Final placement |
+|---|---|---|
+| U1 soak results | partly resolved; soak logs not opened | **UNVERIFIED** (stays) |
+| U2 host bridge for `prediction_pool.json` | no bridge exists (A.7) | **absorbed into B1/B2**: host confirmation of those breaks, not a separate claim |
+| U3 S179 implementation landed? | did not land | **absorbed into S2** (KPI triggers held audit-only under S176/S179) and B3's "governed" status; not a separate claim |
+| U4 `2be51d5` is the D6 fix | confirmed | **Accurate** |
+| U5 Hit@20 > 5 % on synthetic data | no record | **UNVERIFIED** (stays) |
+| U6 R² ≈ 0.000155 on real data | resolved in substance (host `val_r2` −0.00029); the exact figure was not re-measured | **Accurate (in substance)**. The figure itself is unconfirmed; B13 relies only on R² ≪ 0.05, which holds |
+| U7 Part A tasks A1–A4, A6, A7 were run | confirmed by host artifacts | **Accurate** |
+
+**Final counts for Chapter 13 (supersede the batch-1 report's 25 / 19 / 9 / 9 / 1):**
+
+```
+Accurate                  28   (25 + U4, U6, U7)
+BROKEN                    19   (B1–B18 + B19)
+SWITCHED-OFF-BY-RULING     9
+DESCRIPTION-ONLY           9
+UNVERIFIED                 2   (U1, U5)
+Absorbed into an item      2   (U2 → B1/B2; U3 → S2/B3), not counted separately
+-------------------------------
+Total                     69   (68 audited + B19)
+```
+
+The A.6 line "still UNVERIFIED 1 (U5) + the unresolved half of U1" is the same fact as UNVERIFIED **2** above. U1 is
+counted whole because its claim (soak A/B/C passed) is still unchecked.
