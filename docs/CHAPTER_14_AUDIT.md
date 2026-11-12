@@ -510,3 +510,43 @@ Total                     72
 - **Gitignored / host:** `agent_manifests/definitions.json`; `diagnostics_outputs/` (all files, incl. `neural_net_diagnostics.json`, 111 `history/` files, 60 compare summaries, `llm_proposals/`, `soak_report_real.json`); `diagnostics_history/` (listing); `predictions/` (listing); `strategy_recommendation.json` (keys); `find / -xdev` for `*_diagnostics.json`, `model_skip_*`, `compare_models_summary*`, `reinforcement_engine_config*`, `watcher_failures.jsonl`; `crontab -l`; `systemctl list-units`.
 - **Governance:** `docs/TB_RULING_*` (30), `docs/PROPOSAL_*`, `docs/TEAM_ALPHA_*` by `/bin/grep -l -i`; `TFM_SYSTEM_MAP_AND_LEARNING_ARCHITECTURE_v1_2.md` (anchors), `SESSION_CHANGELOG_20260215_S90.md`, `…S92.md`, `…S93.md`, `…S94.md`, `…S95.md`, `…S111.md`, `…S121.md`, `S111_TEAM_BETA_BRIEFING.md`, `CHAPTER_13_IMPLEMENTATION_PROGRESS_v3_9.md`, `PROPOSAL_CATEGORY_B_NN_TRAINING_ENHANCEMENTS_v1_0.md`, `PROPOSAL_EPISTEMIC_AUTONOMY_UNIFIED_v1_3.md`, `TODO_CONSOLIDATED.md` (Ch14 rows).
 - **UNAVAILABLE:** the private-repo history beyond this clone's 884 commits (none needed); ser8 archives; any rig; execution of xgboost/lightgbm Booster attribute behaviour (not run, by scope); WATCHER run logs for the 2026-03-07/08 checks (no log file searched for or found under `diagnostics_outputs/`; `[UNVERIFIED]` which WATCHER action followed each).
+
+---
+
+## Addendum 2 — correction to S10, 2026-11-11 (after commit `955d0fd`)
+
+**Source of the correction:** the batch-2 Chapter 6 subagent found it (`docs/CHAPTER_6_AUDIT.md`, "updates needed
+elsewhere"). The main session confirmed it by opening the file. Michael directed this addendum.
+
+**S10 as first written (§5, kept unchanged above):** "a request still awaiting a ruling … No answering ruling found in
+the trail."
+
+**That is wrong in part.** `docs/SESSION_CHANGELOG_20260225_S111.md:80-84` records:
+
+> **TB response:** Approved all 6. Corrected "leak" terminology to "degenerate constant-feature pathology." Offered to
+> write auto-patcher script (S112).
+>
+> **Decision:** Hold off on S112 patch until clean baseline established.
+
+The same changelog's status table (`:174-178`) lists "S112 TB guardrails patch (G1-G6) | TB approved, pending" as its own
+row, separate from "actual_mean/actual_std exclusion (degenerate constant) | NEW". The S112 plan (`:196`) then bundles
+the two together ("S112 TB guardrails patch (actual_mean exclusion + G1-G6)").
+
+**Corrected S10:**
+- **Guardrails G1–G6:** answered. Team Beta approved all six (`S111.md:80`, `:177`). The patch was then **held by owner
+  decision**, "Hold off on S112 patch until clean baseline established" (`S111.md:84`). So the hold is the owner's, not
+  a missing ruling. The S10 heading's "still awaiting a ruling" is SUPERSEDED for G1–G6.
+- **`actual_mean` / `actual_std` exclusion:** the S111 record does not separate it from the guardrails. It carries its
+  own status row, "NEW" (`:176`), but enters the S112 patch that TB approved and the owner held (`:196`, `:84`).
+  Whether TB's "Approved all 6" also approved the exclusion is **[UNVERIFIED]**; the record leaves it ambiguous.
+- **Code at `a15b524`:** neither change is present. Step 5 excludes only `score` and `confidence` from training
+  (`meta_prediction_optimizer_anti_overfit.py:557`, `get_feature_schema_from_data`). `actual_mean` / `actual_std` are
+  still produced per seed (`survivor_scorer.py:419-420`, `:716-717`). The Chapter 6 audit independently reports
+  G4–G6 absent from code.
+- **Label:** S10 stays **SWITCHED-OFF**, but the authority changes. It is held by the owner's S111 hold-off decision
+  (`S111.md:84`) on a TB-approved patch, not by a pending ruling. Under the 2026-11-11 authority rules, lifting it is
+  Michael's call either way.
+- **What lifting it would enable:** unchanged from §5 S10. The two history-constant columns leave training, and the
+  approved preflight/sidecar guardrails take effect. It needs a schema-hash change and a retrain.
+
+**Count effect:** none. S10 is still one SWITCHED-OFF item; the reconciled total stays 72.
