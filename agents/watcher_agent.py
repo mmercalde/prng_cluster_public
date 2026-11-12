@@ -306,6 +306,24 @@ def evaluate_file_exists(filepath: str, validate_content: bool = True) -> tuple:
     return True, f"Valid file: {file_size} bytes"
 
 
+def _manifest_skip_on_fail(manifest_path) -> bool:
+    """[R-1] True only if the step manifest exists, is a `file_exists`
+    manifest, and declares `skip_on_fail: true` — the exact condition under
+    which evaluate_results' existing skip path (S121) can be reached. Any read
+    or parse failure answers False, so an unreadable manifest fails closed
+    (escalate) rather than open."""
+    if not manifest_path or not os.path.exists(manifest_path):
+        return False
+    try:
+        with open(manifest_path) as f:
+            _m = json.load(f)
+    except Exception:
+        return False
+    return (isinstance(_m, dict)
+            and _m.get('evaluation_type') == 'file_exists'
+            and _m.get('skip_on_fail', False) is True)
+
+
 
 # Configure logging
 logging.basicConfig(
@@ -938,6 +956,44 @@ class WatcherAgent:
                 manifest_path = None
                 logger.warning(f"Manifest not found: {manifest_path}")
 
+        # [R-1 WATCHER SAFETY 2026-11-11] An explicit step failure beats "the
+        # file exists". run_step reports a non-zero exit, timeout, exception or
+        # pre-dispatch block as {"success": False, ...}; the file-based branch
+        # below grades only the output files, so a stale or early-written file
+        # used to turn a failed step into PASSED/1.00 (Gate-12 attempt 3).
+        # `is False` exactly: a results dict with no `success` key (the
+        # --evaluate CLI path) is graded as before. skip_on_fail manifests
+        # (Step 0, TRSE_INTEGRATION_PLAN_S121.md §2C) keep their skip path.
+        _step_failed = isinstance(results, dict) and results.get("success") is False
+        # >>> R1_STEP_FAILED_BRANCH_BEGIN
+        if _step_failed and not _manifest_skip_on_fail(manifest_path):
+            _fail_detail = []
+            if "return_code" in results:
+                _fail_detail.append(f"return_code={results.get('return_code')}")
+            if results.get("error"):
+                _fail_detail.append(f"error={str(results.get('error'))[:200]}")
+            _fail_reason = (
+                f"Step {step} ({STEP_NAMES.get(step, 'Unknown')}) reported "
+                f"success=False" + (f": {', '.join(_fail_detail)}" if _fail_detail else "")
+                + " — explicit step failure overrides output-file evaluation"
+            )
+            logger.error(_fail_reason)
+            decision = AgentDecision(
+                success_condition_met=False,
+                confidence=0.0,
+                reasoning=_fail_reason,
+                recommended_action="escalate",
+                parse_method="step_failed",
+            )
+            context = build_full_context(
+                step=step,
+                results=results,
+                run_number=run_number,
+                manifest_path=manifest_path
+            )
+            return decision, context
+        # <<< R1_STEP_FAILED_BRANCH_END
+
         # Check for file-based evaluation (Step 2.5 style)
         if manifest_path and os.path.exists(manifest_path):
             with open(manifest_path) as f:
@@ -966,7 +1022,9 @@ class WatcherAgent:
                 # [S121] skip_on_fail — advisory/optional steps continue pipeline on failure
                 # rather than escalating. Step 0 (TRSE) uses this: absent context = default bounds.
                 _skip_on_fail = manifest_data.get('skip_on_fail', False)
-                if not success and _skip_on_fail:
+                # [R-1] a step that reported success=False takes the skip path
+                # even when a (possibly stale) output file validates.
+                if (not success or _step_failed) and _skip_on_fail:
                     _skip_reason = manifest_data.get(
                         'skip_on_fail_reason',
                         f'Step {step} failed but skip_on_fail=true — advancing to next step'
@@ -978,13 +1036,20 @@ class WatcherAgent:
                     print(f"\n⚠️  [SKIP_ON_FAIL] Step {step} ({STEP_NAMES.get(step,'?')}): "
                           f"output not produced — continuing with defaults\n"
                           f"   → {_skip_reason}\n")
+                    _skip_warnings = [f"Step {step} output absent — downstream step runs with defaults"]
+                    if _step_failed:
+                        _skip_warnings.append(
+                            f"Step {step} exited non-zero (success=False, "
+                            f"return_code={results.get('return_code')}) — any "
+                            f"existing output may be stale"
+                        )
                     decision = AgentDecision(
                         success_condition_met=True,   # treated as pass for pipeline flow
                         confidence=0.0,
                         reasoning=f"skip_on_fail: {_skip_reason}",
                         recommended_action="proceed",
                         parse_method="skip_on_fail",
-                        warnings=[f"Step {step} output absent — downstream step runs with defaults"]
+                        warnings=_skip_warnings
                     )
                 else:
                     decision = AgentDecision(
@@ -3563,6 +3628,25 @@ def main():
     parser.add_argument("--approve", action="store_true",
                         help="Approve pending Chapter 13 request and execute pipeline")
     args = parser.parse_args()
+
+    # [R-2 WATCHER SAFETY 2026-11-11] --dry-run must never launch. Only the
+    # three dispatch modes honour it; these three modes start real work and
+    # ignore it (--run-pipeline -> run_pipeline; --approve -> run_pipeline;
+    # --daemon -> request scan / approval poll / result processing). Refuse
+    # before any WatcherAgent is constructed. Deliberately NOT inside the
+    # --run-pipeline branch (the Route-A operator-authority seam).
+    # >>> R2_DRY_RUN_REFUSAL_BEGIN
+    if args.dry_run:
+        _dry_unsupported = [_flag for _flag, _on in (
+            ("--run-pipeline", args.run_pipeline),
+            ("--approve", args.approve),
+            ("--daemon", args.daemon),
+        ) if _on]
+        if _dry_unsupported:
+            print(f"ERROR: --dry-run is not supported for {', '.join(_dry_unsupported)} "
+                  f"(it would launch for real); refusing.", flush=True)
+            sys.exit(2)
+    # <<< R2_DRY_RUN_REFUSAL_END
 
     # Create config
     config = WatcherConfig(

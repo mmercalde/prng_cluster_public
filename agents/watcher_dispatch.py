@@ -81,6 +81,34 @@ def _get_build_llm_context():
     return _build_llm_context
 
 
+# ---------------------------------------------------------------------------
+# [R-3 WATCHER SAFETY 2026-11-11] One halt authority for the dispatch paths.
+# --halt, create_halt, escalation and check_safety all use the kill switch's
+# halt file; the dispatch paths used to check only a legacy flag file in the
+# working directory, which no tracked code writes, so a halt stopped the
+# pipeline and the daemon but not selfplay / learning-loop dispatch.
+# ---------------------------------------------------------------------------
+
+def _halt_requested(self) -> Optional[str]:
+    """Return the path of the halt file that is present, or None.
+
+    Checks (1) the agent's own kill-switch halt file — `self.kill_switch.
+    halt_file_path`, falling back to `self.config.halt_file` (no new literal) —
+    and (2) the legacy `watcher_halt.flag` in the working directory. Existence
+    only: KillSwitch.check_all() is NOT called (it mutates the switch's
+    checks/level and runs disk, memory and runtime probes).
+    """
+    # >>> R3_HALT_HELPER_BODY_BEGIN
+    _ks = getattr(self, "kill_switch", None)
+    _ks_path = getattr(_ks, "halt_file_path", None) or getattr(
+        getattr(self, "config", None), "halt_file", None)
+    for _path in (_ks_path, "watcher_halt.flag"):
+        if _path and os.path.exists(_path):
+            return _path
+    return None
+    # <<< R3_HALT_HELPER_BODY_END
+
+
 # ===========================================================================
 # B1: dispatch_selfplay()  (~70 lines)
 # ===========================================================================
@@ -123,8 +151,9 @@ def dispatch_selfplay(self, request: dict, dry_run: bool = False) -> bool:
         return True
 
     # ── Safety gate ──────────────────────────────────────────────
-    if os.path.exists("watcher_halt.flag"):
-        logger.warning(f"[{run_id}] Halt flag present — aborting selfplay dispatch")
+    _halt = _halt_requested(self)
+    if _halt:
+        logger.warning(f"[{run_id}] Halt flag present ({_halt}) — aborting selfplay dispatch")
         return False
 
     # ── Pre-dispatch: free VRAM ──────────────────────────────────
@@ -293,8 +322,9 @@ def dispatch_learning_loop(self, scope: str = "steps_3_5_6",
         return True
 
     # ── Safety gate ──────────────────────────────────────────────
-    if os.path.exists("watcher_halt.flag"):
-        logger.warning(f"[{run_id}] Halt flag present — aborting learning loop")
+    _halt = _halt_requested(self)
+    if _halt:
+        logger.warning(f"[{run_id}] Halt flag present ({_halt}) — aborting learning loop")
         return False
 
     completed_steps = []
@@ -383,8 +413,9 @@ def dispatch_learning_loop(self, scope: str = "steps_3_5_6",
         completed_steps.append(step)
 
         # ── Check halt flag between steps ────────────────────────
-        if os.path.exists("watcher_halt.flag"):
-            logger.warning(f"[{run_id}] Halt flag detected between steps — "
+        _halt = _halt_requested(self)
+        if _halt:
+            logger.warning(f"[{run_id}] Halt flag detected between steps ({_halt}) — "
                            f"stopping after Step {step}")
             _log_dispatch_decision(self, run_id, "learning_loop", "HALTED",
                                    {"completed": completed_steps})
