@@ -358,6 +358,24 @@ def dispatch_learning_loop(self, scope: str = "steps_3_5_6",
                 self.llm_lifecycle.ensure_running()
             return False
 
+        # [F-2 WATCHER FOLLOW-UP 2026-11-11] An explicit step failure stops the
+        # loop exactly as a missing result does. Neither evaluation path below
+        # reads results["success"], so a {"success": False} result used to go
+        # on to evaluation and the next step.
+        # >>> F2_STEP_FAILED_BEGIN
+        if isinstance(results, dict) and results.get("success") is False:
+            logger.error(f"[{run_id}] Step {step} reported success=False "
+                         f"(return_code={results.get('return_code')}, "
+                         f"error={str(results.get('error', ''))[:200]}) — aborting loop")
+            _log_dispatch_decision(self, run_id, "learning_loop",
+                                   "STEP_FAILED",
+                                   {"failed_step": step,
+                                    "completed": completed_steps})
+            if is_gpu_heavy and hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
+                self.llm_lifecycle.ensure_running()
+            return False
+        # <<< F2_STEP_FAILED_END
+
         # ── Restart LLM for evaluation ───────────────────────────
         if is_gpu_heavy and hasattr(self, 'llm_lifecycle') and self.llm_lifecycle:
             self.llm_lifecycle.ensure_running()
@@ -398,11 +416,18 @@ def dispatch_learning_loop(self, scope: str = "steps_3_5_6",
             else:
                 # Heuristic fallback
                 heuristic_decision, _ = self.evaluate_results(step, results)
-                action = getattr(heuristic_decision, 'action', 'proceed')
+                # [F-2] AgentDecision's field is `recommended_action`; it has no
+                # `action`, so the old getattr default made every verdict proceed.
+                action = heuristic_decision.recommended_action  # F2_HEURISTIC_ACTION_READ
                 logger.info(f"[{run_id}] Step {step} heuristic: {action}")
                 if action not in ("proceed",):
                     logger.warning(f"[{run_id}] Step {step} heuristic: "
                                    f"{action} — stopping")
+                    _log_dispatch_decision(
+                        self, run_id, "learning_loop", "STEP_HALTED",
+                        {"halted_step": step, "action": action,
+                         "confidence": getattr(heuristic_decision, 'confidence', None),
+                         "completed": completed_steps})
                     return False
 
         except Exception as e:

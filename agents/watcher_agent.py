@@ -2889,6 +2889,26 @@ class WatcherAgent:
                 if results is None:
                     results = {"success": False, "error": "No results returned"}
 
+                # [F-1 WATCHER FOLLOW-UP 2026-11-11] A finished sweep is a clean
+                # stop, not a failure. run_step's S145 §6 COMPLETE return carries
+                # success=False (no run was generated) plus seed_domain_complete=True.
+                # Since R-1 that would escalate (halt file + CRITICAL alert) and the
+                # halt would block every later run. Stop here instead: no
+                # evaluate_results / execute_decision / _handle_escalate, no halt
+                # file, no step advance, no CRITICAL notification. `is True` on the
+                # dedicated key only — never on blocked_by text. evaluate_results is
+                # deliberately unchanged: other callers still escalate on it.
+                # >>> F1_SEED_DOMAIN_COMPLETE_BEGIN
+                if isinstance(results, dict) and results.get("seed_domain_complete") is True:
+                    logger.info(
+                        "SEED_DOMAIN_COMPLETE — pipeline stopped cleanly at step %d: %s",
+                        step, results.get("error", ""),
+                    )
+                    print(f"\n✅ SEED_DOMAIN_COMPLETE — pipeline stopped cleanly at "
+                          f"Step {step}; no halt file written.\n")
+                    break
+                # <<< F1_SEED_DOMAIN_COMPLETE_END
+
                 # Update progress with results
                 if progress:
                     best_score = results.get("best_score", results.get("confidence", 0))
