@@ -44,7 +44,7 @@ The project is called TFM. Do not describe it as a lottery project.
 
 ## 4. What you must never do
 
-1. **Never edit, create or delete any file outside `docs/exchange/from_beta/`.** You review the
+1. **Never edit, create or delete any file in the repository outside `docs/exchange/from_beta/`.** You review the
    work; you do not change it. If you think a fix is needed, describe it or attach a suggested
    patch as a file in your review. Alpha decides whether to apply it.
 2. **Never commit and never push.** Michael commits and pushes, to both remotes.
