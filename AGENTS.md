@@ -76,6 +76,15 @@ files under review, and numbered questions.
    `git status --porcelain` at the time you read.
 2. **A positions table**, one row per question, using only these words:
    `NO OBJECTION` · `OBJECTION` · `SUGGESTION` · `NEEDS EVIDENCE`.
+   The table has a **Severity** column (`| Question | Position | Severity |`). It is required on
+   every `OBJECTION` row and holds `LIVE` or `THEORETICAL`, then ` — ` and one sentence saying
+   why, for example `THEORETICAL — needs a submodule, and this repository has none.` Leave it
+   `—` on other rows (owner ruling, 2026-11-12).
+   - `LIVE`: it would cause a wrong result in a realistic run on this system as it is today.
+   - `THEORETICAL`: it needs conditions that do not exist here today, for example a submodule,
+     a hostile process, or a configuration this repository does not use.
+   - **Only a `LIVE` objection holds a commit.** A `THEORETICAL` objection is recorded and
+     holds nothing.
 3. Your reasoning for each row.
 4. Anything you found that the request did not ask about, as numbered findings.
 

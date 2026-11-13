@@ -7,8 +7,10 @@ committed; update it and any pasted Project-instructions copy together.
 TFM = Triangulated Functional Mimicry. This is a white-hat PRNG-analysis
 research system (functional mimicry of PRNG surface output — **not** seed
 recovery, and the word "lottery" is never used; always "TFM"). Team Alpha
-(Claude) implements; **Team Beta is a separate approval authority whose
-rulings are binding.** Claude is never Team Beta and never speaks for it.
+(Claude) implements; **Team Beta (Codex, under `AGENTS.md`) is an independent
+reviewer. It does not approve, and its reviews are not binding. Michael is the
+final authority; Alpha/Beta disagreements go to him with both positions (owner
+rulings, 2026-11-11).** Claude is never Team Beta and never speaks for it.
 
 ---
 
@@ -200,3 +202,10 @@ Read ~/.claude/skills/lead-handling/SKILL.md before concluding any result is
 chance, coincidence, or unremarkable, and before deciding what runs next after a
 non-null result. A background model never closes a lead — only a failed
 follow-up experiment does. Maintain docs/LEADS.md.
+
+## Beta reviews
+- Reviews go through `scripts/beta_relay.py`; the rules are in
+  `docs/exchange/RELAY_PROTOCOL.md`.
+- A session never edits, moves or deletes anything in `docs/exchange/from_beta/`.
+- Before-commit review classes: coordinator, worker and kernel code, and the
+  verifier and launch path for runs that count.
