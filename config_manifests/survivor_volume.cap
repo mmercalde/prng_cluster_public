@@ -1,0 +1,5 @@
+{"cap_survivors_per_phase": 25000,
+ "compare": "point",
+ "min_sample_seeds": 67108864,
+ "gpu_process_allowlist": ["sunshine"],
+ "evidence": "owner decision 2026-11-14. Proven point: 23515 (attempt 9 phase 4, run distributed_config_t1_554463d3). Exact count for Run 4 on [2147483648, 4294967296): 23568 (report M-B). Raised only by the owner."}
