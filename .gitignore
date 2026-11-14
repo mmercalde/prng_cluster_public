@@ -161,3 +161,7 @@ launch_s173_*.sh
 crash_dumps/
 models/
 tmp/
+
+# Verifier-scoping evidence and X-0001 review copies (2026-11-12): cited by docs, not for commit
+data/prod_shape_scoping/
+data/x0001/
