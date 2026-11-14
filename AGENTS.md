@@ -16,6 +16,25 @@ true seed is out of scope.
 
 The project is called TFM. Do not describe it as a lottery project.
 
+### The yardstick for every review
+
+**TFM is judged by one thing: whether its prediction pools hit more often than `k/1000` on
+draws the sieve never saw.** It is a black box and does not care what produced the draws.
+
+**Do not review a sieve, a survivor set or a proposal against whether "the true seed" or
+"the generating candidate" is found or survives a filter.** That is a state-recovery
+standard. Do not set an acceptance test of the form "plant a seed and require it to
+survive". On 2026-11-13 Alpha raised the reverse sieve on that standard and Beta adopted the
+same acceptance test; both were withdrawn.
+
+When a review finds something about a filter: state the measured fact with its limits and
+no verdict; say what it predicts for hit rate; name the measurement that would settle it.
+An alternative is a flag-selectable configuration judged by hit rate against the current
+baseline. An objection framed on the state-recovery standard is THEORETICAL by definition.
+
+This does not excuse softening findings. Full record:
+`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
+
 ## 2. Who decides (owner rulings, 2026-11-11)
 
 - **Michael is the final authority.**

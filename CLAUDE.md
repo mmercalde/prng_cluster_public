@@ -14,6 +14,32 @@ rulings, 2026-11-11).** Claude is never Team Beta and never speaks for it.
 
 ---
 
+## The yardstick (READ BEFORE EVALUATING ANY PART OF TFM)
+
+**TFM is judged by one thing: whether its prediction pools hit more often than `k/1000` on
+draws the sieve never saw.** It is a black box. It does not care what produced the draws.
+
+**Never judge TFM, a sieve or a survivor set by whether "the true seed" or "the generating
+candidate" is found, survives a filter or ranks highly.** That is a state-recovery standard.
+The project rejected it in November 2025 and state recovery is not sought.
+
+This mistake has been made twice (2026-08-08 and 2026-11-13) and cost a working day each
+time. If you are about to write "the true seed" as a pass/fail test, "this filter excludes
+the real stream", "cannot succeed" or "does not work", stop and do this instead:
+
+1. State the measured fact, with its limits, and no verdict.
+2. Turn the concern into a prediction about hit rate.
+3. Name the measurement that would settle it.
+4. Propose any alternative as a flag-selectable configuration. The current algorithm stays
+   as the baseline.
+5. Search the repo before saying anything is untested, missing or wrong.
+
+The whitepaper formulas, the chapters and the fact file are AI-written formalisations of
+Michael's design. Where one conflicts with his stated intent, his intent governs. Ask him.
+
+This rule does not excuse softening findings. Measured problems are reported with full
+force, as facts tied to hit rate. Full record: `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
+
 ## 0. Run-as and identity (READ FIRST)
 
 - **Run as `michael`, never root.** The TFM tree lives under
