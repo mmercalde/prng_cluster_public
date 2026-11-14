@@ -354,6 +354,33 @@ class DistributedPRNGDatabase:
             self._coverage_ledger_obj = ledger
         return ledger
 
+    def step1_search_ledger(self):
+        """[STEP1-SEARCH stage 1] The append-only Step 1 SEARCH record, lazily built.
+
+        Same file as the history ledger, its own tables and schema
+        version (utils/step1_search_ledger.py). It is not a second certification door:
+        it never writes the history table.
+        """
+        ledger = getattr(self, '_step1_search_ledger_obj', None)
+        if ledger is None:
+            from utils.step1_search_ledger import Step1SearchLedger
+            ledger = Step1SearchLedger(self.db_path)
+            self._step1_search_ledger_obj = ledger
+        return ledger
+
+    def select_step1_search(self, prng_type: str, *, test_both_modes: bool):
+        """[STEP1-SEARCH stage 1] The search WATCHER schedules Step 1 from.
+
+        Returns a `Selection` whose `state` is one of `no_open_search`,
+        `search_complete` or `gap`; raises `Step1SearchLookupError` on any failure.
+        `test_both_modes` is keyword-only with no default, for the reason
+        `get_certified_cursor` gives below: the caller states what it searches.
+        """
+        from utils.seed_coverage_ledger import canonical_coverage_identity
+        prng_base, required_modes = canonical_coverage_identity(
+            prng_type, test_both_modes=test_both_modes)
+        return self.step1_search_ledger().select(prng_base, sorted(required_modes))
+
     def get_certified_cursor(self, prng_type: str, *, test_both_modes: bool):
         """[S145] The certified cursor: first gap, or an explicit COMPLETE.
 

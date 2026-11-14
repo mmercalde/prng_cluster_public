@@ -4,7 +4,12 @@
 Brief: docs/CLAUDE_CODE_INSTRUCTIONS_WATCHER_FOLLOWUP_REPAIRS_20261111.md
 
   F-1  run_pipeline stops cleanly (no evaluate/escalate, no halt file, no
-       advance) when run_step returns seed_domain_complete is True.
+       advance) when run_step returns a Step 1 search clean stop.
+       [STEP1-SEARCH stage 1 — FIXTURE CHANGED, stated in the report] F-1's FORM is
+       kept; what it stops on changed (v1.1 §3, "The clean stop reports the search's
+       state"). run_step no longer returns the history-COMPLETE dict
+       (seed_domain_complete=True); it returns `step1_search_result` = no_open_search or
+       search_complete. A lookup failure (`lookup_failed`) is NOT a clean stop.
   F-2  dispatch_learning_loop stops on results["success"] is False, and its
        heuristic path reads AgentDecision.recommended_action (not the
        non-existent `.action`) and records STEP_HALTED on a non-proceed verdict.
@@ -178,15 +183,21 @@ for _step in (1, 2, 3, 5):
         _f.write(VALID)
 
 
-def sdc_results():
-    """The §6 COMPLETE dict, keys exactly as run_step builds them at
-    agents/watcher_agent.py (S145 block, `if _cursor.is_complete:`)."""
-    msg = ("SEED_DOMAIN_COMPLETE: the certified coverage union for java_lcg covers the "
-           "governed domain [0, 4294967296) exactly (4,294,967,296 seeds across 3 "
-           "certified interval(s)). The sweep is finished; there is no next seed_start. "
-           "No Step 1 run was generated.")
-    return {"success": False, "error": msg, "blocked_by": "seed_domain_complete",
-            "seed_domain_complete": True, "next_seed_start": None}
+def sdc_results(state="no_open_search"):
+    """A Step 1 search clean-stop dict, keys exactly as run_step builds them at
+    agents/watcher_agent.py (STEP1-SEARCH block). [FIXTURE CHANGED: was the S145 §6
+    history-COMPLETE dict, which run_step no longer produces.]"""
+    if state == "no_open_search":
+        return {"success": False,
+                "error": ("STEP1_NO_OPEN_SEARCH: no Step 1 search is open for java_lcg "
+                          "(modes test_both_modes=True). No Step 1 run was generated."),
+                "blocked_by": "step1_no_open_search",
+                W.STEP1_SEARCH_RESULT_KEY: "no_open_search", "next_seed_start": None}
+    return {"success": False,
+            "error": ("STEP1_SEARCH_COMPLETE: search s1s-x covers its declared range. "
+                      "No Step 1 run was generated."),
+            "blocked_by": "step1_search_complete",
+            W.STEP1_SEARCH_RESULT_KEY: "search_complete", "next_seed_start": None}
 
 
 def make_agent(use_llm=False):
@@ -268,7 +279,7 @@ def drive_pipeline(rp_fn, stub_results, start=1, end=1):
     obs["returned"] = ret
     obs["critical"] = sum(1 for m in obs["telegram"] if "CRITICAL" in m)
     obs["sdc_info"] = [m for lvl, m in cap.records
-                       if lvl == "INFO" and m.startswith("SEED_DOMAIN_COMPLETE")]
+                       if lvl == "INFO" and m.startswith("STEP1_SEARCH_CLEAN_STOP")]
     clear_halt()
     return obs
 
@@ -305,8 +316,12 @@ def f1_a():
     ok = (not o["halt_file"] and o["escalate"] == 0 and o["evaluate"] == 0
           and o["execute"] == 0 and o["critical"] == 0 and not o["telegram"]
           and o["current_step"] == 1 and o["pipeline_running"] is False
-          and len(o["sdc_info"]) == 1 and "The sweep is finished" in o["sdc_info"][0])
-    return ok, f"{_summ(o)}; INFO lines={len(o['sdc_info'])}"
+          and len(o["sdc_info"]) == 1 and "no_open_search" in o["sdc_info"][0])
+    # the second clean stop, search_complete, must behave identically
+    o2 = drive_pipeline(live_rp(), lambda s: sdc_results("search_complete"))
+    ok = ok and (not o2["halt_file"] and o2["escalate"] == 0 and o2["evaluate"] == 0
+                 and len(o2["sdc_info"]) == 1 and "search_complete" in o2["sdc_info"][0])
+    return ok, f"{_summ(o)}; complete={_summ(o2)}; INFO lines={len(o['sdc_info'])}"
 
 
 def f1_b():
@@ -329,7 +344,10 @@ def f1_c():
 
 
 def f1_d():
-    stub = lambda s: {"success": False, "seed_domain_complete": False}  # noqa: E731
+    # [FIXTURE CHANGED] the near-miss is now a LOOKUP FAILURE on the dedicated key: it
+    # must escalate like any block (v1.1 §2.4: a lookup failure blocks Step 1).
+    stub = lambda s: {"success": False, W.STEP1_SEARCH_RESULT_KEY: "lookup_failed",  # noqa: E731
+                      "blocked_by": "step1_search_lookup_failed"}
     o = drive_pipeline(live_rp(), stub)
     ok = o["escalate"] == 1 and o["halt_file"] and o["critical"] == 1 and not o["sdc_info"]
     return ok, f"{_summ(o)}"

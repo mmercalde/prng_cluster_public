@@ -671,6 +671,38 @@ except ImportError:
 # MAIN FUNCTIONS
 # ============================================================================
 
+class Step1MinerStartUnsupportedError(RuntimeError):
+    """G-MINER-START: the RANGE-MINER route cannot sweep from a non-zero seed_start."""
+
+
+def assert_miner_seed_start_supported(seed_start, use_range_miner, *, context=""):
+    """[STEP1-SEARCH stage 1 — G-MINER-START] Refuse, BEFORE DISPATCH, a RANGE-MINER Step 1
+    run whose seed_start is not 0.
+
+    WHY (docs/CLAUDE_CODE_REPORT_STEP1_SEARCH_RECORD_STAGE1.md §6): the miner route never
+    receives Step 1's seed_start. `run_bidirectional_test` passes only
+    `total_seeds=seed_count` (window_optimizer_integration_final.py:1450), `run_trial_miner`
+    has no start parameter, and `serve_trial` calls `assign_stripes` without `base_start`
+    (miner/range_miner_coordinator.py:10324-10326), so the stripes cover [0, seed_count).
+    Shown executed on CPU with seed_start=2147483648: stripes [0,250)...[750,1000). The
+    finalizer would meanwhile be told [seed_start, seed_start+seed_count).
+
+    REPLACED BY THE base_start BRIEF. Owner ruling 2026-11-14 item 2b: the route that
+    carries base_start through run_trial_miner/serve_trial is a separate brief, reviewed
+    before commit and scheduled before Run 4. When it lands, THIS GUARD is what it
+    replaces (together with its test G-MINER-START in
+    tests/test_step1_search_record_stage1.py). The S7 interval-evidence guard stays.
+    """
+    if use_range_miner and seed_start != 0:
+        raise Step1MinerStartUnsupportedError(
+            f"G-MINER-START ({context}): refusing a RANGE-MINER Step 1 run at "
+            f"seed_start={seed_start}. The miner path sweeps from 0 regardless of "
+            f"seed_start (run_trial_miner has no start parameter; serve_trial calls "
+            f"assign_stripes without base_start), so this run would sweep "
+            f"[0, seed_count) while the finalizer is told [{seed_start}, ...). "
+            f"Refused before dispatch until the base_start brief lands.")
+
+
 def run_bayesian_optimization(
     lottery_file: str,
     trials: int,
@@ -714,6 +746,7 @@ def run_bayesian_optimization(
     staging_high_water_files: int = None,
     staging_high_water_bytes: int = 16 * 1024 ** 3,
     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
+    step1_search_id: str = '',              # [STEP1-SEARCH stage 1] hop 2 of 3
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -769,6 +802,10 @@ def run_bayesian_optimization(
         print("   Refused BEFORE dispatch: no fleet work assignment, no sieve "
               "execution, no staging, no coverage mutation.")
         raise
+
+    # [STEP1-SEARCH stage 1 — G-MINER-START] owner ruling 2026-11-14, item 2a.
+    assert_miner_seed_start_supported(seed_start, use_range_miner,
+                                      context=f"window_optimizer CLI {prng_type}")
 
     if not COORDINATOR_AVAILABLE:
         print("❌ Error: coordinator.py not available")
@@ -910,6 +947,9 @@ def run_bayesian_optimization(
         # pattern. Hop 1 is the manifest's `default_params`; hop 3 is the
         # `optimize_window` signature.
         resume_checkpoint=resume_checkpoint,
+        # [STEP1-SEARCH stage 1] HOP 2 OF 3 — without this explicit kwarg the value
+        # never reaches optimize_window (hop 3).
+        step1_search_id=step1_search_id,
     )
 
     # [S140] SEED COVERAGE WRITE-BACK — log this run's range to exhaustive_progress
@@ -1479,6 +1519,12 @@ def main():
                             'with a fresh study would restart trial numbering '
                             'and manufacture a replay-key collision, so it is '
                             'rejected before optimization.')
+    # [STEP1-SEARCH stage 1] hop 2 of 3. Set by WATCHER from the one open search; the
+    # manifest declares it (hop 1) and optimize_window receives it (hop 3).
+    parser.add_argument('--step1-search-id', type=str, default='',
+                       help='[STEP1-SEARCH] The Step 1 search this chunk belongs to. Set '
+                            'by WATCHER from the open search; empty = a run outside any '
+                            'search (history only, no search link).')
     parser.add_argument('--test-both-modes', action='store_true',
                        help='Test BOTH constant and variable skip patterns (NEW!)')
     # S115 R3: pruning + parallelism flags
@@ -1891,6 +1937,8 @@ def main():
                 args, 'staging_high_water_bytes', 16 * 1024 ** 3),
             # [S172 Phase-5 D6.2] the operator route's CLI end of hop 2.
             resume_checkpoint=getattr(args, 'resume_checkpoint', ''),
+            # [STEP1-SEARCH stage 1] hop 2 of 3, CLI end.
+            step1_search_id=getattr(args, 'step1_search_id', ''),
         )
 
         print("\n✅ Bayesian optimization complete!")

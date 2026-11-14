@@ -10,6 +10,17 @@ from typing import Callable, Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 from typing import TYPE_CHECKING
 import random
+import os as _storage_os
+
+# [STEP1-SEARCH stage 1, owner decision 2026-11-14 — path fix ONLY]
+# The Optuna storage base is the checkout this file runs from, not the literal
+# /home/michael/distributed_prng_analysis. Computed ONCE at import, so a later
+# chdir (the suites run the study body from a scratch cwd) cannot move it, and a
+# relative __file__ (PYTHONPATH=.) is resolved against the import-time cwd.
+# From the main tree the storage URL is byte-identical to the former literal:
+#   "sqlite:///" + "/home/michael/distributed_prng_analysis" + "/optuna_studies/..."
+# Proven by tests/test_step1_bayes_storage_path.py.
+_OPTUNA_STORAGE_BASE = _storage_os.path.dirname(_storage_os.path.abspath(__file__))
 
 # Type checking import (no runtime circular dependency)
 if TYPE_CHECKING:
@@ -660,7 +671,7 @@ class OptunaBayesianSearch:
         _resume = False
         _resumed_completed = 0
         _fresh_study_name = f"window_opt_{int(time.time())}"
-        _fresh_storage_path = f"sqlite:////home/michael/distributed_prng_analysis/optuna_studies/{_fresh_study_name}.db"
+        _fresh_storage_path = f"sqlite:///{_OPTUNA_STORAGE_BASE}/optuna_studies/{_fresh_study_name}.db"
 
         if resume_study:
             # specific study_name takes priority over auto-select
@@ -679,7 +690,7 @@ class OptunaBayesianSearch:
                     print(f"   ⚠️  Study DB not found: {_candidate_db}")
                     continue
                 _candidate_name = _os.path.splitext(_os.path.basename(_candidate_db))[0]
-                _candidate_storage = f"sqlite:////home/michael/distributed_prng_analysis/{_candidate_db}"
+                _candidate_storage = f"sqlite:///{_OPTUNA_STORAGE_BASE}/{_candidate_db}"
                 try:
                     _candidate_study = optuna.load_study(
                         study_name=_candidate_name,

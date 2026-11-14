@@ -245,6 +245,12 @@ def _run_route_a(integ_src: str) -> Dict[str, Any]:
         "run_bidirectional_test": rec,
         "_get_partition_coordinator": lambda p: object(),
         "_PARALLEL_PARTITIONS": [["node"]],
+        # [STEP1-SEARCH stage 1 — FIXTURE CHANGED, stated in the report] test_config's
+        # closure now also holds the chunk state (S7 evidence, S8 chunk-open). The REAL
+        # object, outside any search: with no Optuna trial its hooks return at once, so
+        # the kwargs handed to run_bidirectional_test — what this gate measures — are
+        # unchanged.
+        "_s1_chunk": integ.Step1ChunkState(None, "java_lcg", False, 0, 1000, 1, None),
     }
     fn, _ = _compile_func(src, integ, ns, "test_config")
     fn(_window_config(ORACLE_FORWARD, ORACLE_REVERSE))
@@ -333,6 +339,8 @@ def gate_route_a() -> str:
         "survivor_accumulator": {"forward": [], "reverse": [], "bidirectional": []},
         "enable_pruning": False, "run_bidirectional_test": rec,
         "_get_partition_coordinator": lambda p: object(), "_PARALLEL_PARTITIONS": [["n"]],
+        # [STEP1-SEARCH stage 1 — FIXTURE CHANGED] the real chunk state, outside any search
+        "_s1_chunk": integ.Step1ChunkState(None, "java_lcg", False, 0, 1000, 1, None),
     }
     fn, _ = _compile_func(src, integ, ns, "test_config")
     fn(_window_config(ORACLE_FORWARD, ORACLE_REVERSE), ft=0.61, rt=0.62)
@@ -839,6 +847,8 @@ def mutant_m1_route_a() -> Tuple[str, str, str]:
         "survivor_accumulator": {"forward": [], "reverse": [], "bidirectional": []},
         "enable_pruning": False, "run_bidirectional_test": rec,
         "_get_partition_coordinator": lambda p: object(), "_PARALLEL_PARTITIONS": [["n"]],
+        # [STEP1-SEARCH stage 1 — FIXTURE CHANGED] the real chunk state, outside any search
+        "_s1_chunk": integ.Step1ChunkState(None, "java_lcg", False, 0, 1000, 1, None),
     }
     fn, _ = _compile_func(src, integ, ns, "test_config")
     fn(_window_config(ORACLE_FORWARD, ORACLE_REVERSE))

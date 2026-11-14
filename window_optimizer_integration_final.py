@@ -1366,6 +1366,284 @@ def _build_test_result_from_miner(miner_result: dict, accumulator, config,
     )
 
 
+# ============================================================================
+# [STEP1-SEARCH stage 1] S7 credit evidence, S8 chunk/link, S9 study ownership
+# Brief: docs/CLAUDE_CODE_INSTRUCTIONS_STEP1_SEARCH_RECORD_STAGE1_20261114.md
+# The finalizer and the coverage ledger are NOT edited: every gate here sits in the
+# caller, before `finalize_run` and before `record_certified_coverage`.
+# ============================================================================
+class Step1NoCreditError(RuntimeError):
+    """S7: the chunk earned no credit. Nothing was published as certified and no
+    coverage row was written. The attempt is in the non-certifying record."""
+
+
+class Step1ChunkBudgetError(RuntimeError):
+    """S8: the chunk's study has already met its budget; it would run zero trials."""
+
+
+class Step1SearchPreflightError(RuntimeError):
+    """S4/S9 in the child: the presented run does not match the open search."""
+
+
+def _step1_required_phases(prng_base: str, test_both_modes: bool):
+    """The sieve phases a trial must finish over the whole interval: 1/2 (constant
+    forward/reverse) always, 3/4 (variable) when both modes run. Mirrors the executed-mode
+    derivation of `_skip_modes_d3_5` and miner `workflow_stages_for`."""
+    if test_both_modes and not prng_base.endswith('_hybrid'):
+        return (1, 2, 3, 4)
+    return (1, 2)
+
+
+def _step1_unaccounted_route_evidence(route, why):
+    """[Beta X-STEP1-SEARCH-CODE R1 Q1, LIVE] A route that cannot establish, at the trial,
+    that it completed the whole interval is REFUSED CERTIFICATION in stage 1: it carries
+    no swept interval at all, so S7 grants no credit. Manufacturing the interval from the
+    arguments handed to the route was the defect."""
+    return {"route": route, "source": f"no completion evidence: {why}",
+            "swept_intervals": {}, "certification_refused": True}
+
+
+def _step1_legacy_jobs_complete(result):
+    """(ok, why) for one legacy `execute_distributed_analysis` result: ok only if the
+    coordinator's metadata shows at least one planned job, every planned job successful and
+    no permanently failed job (coordinator.py:2193-2222)."""
+    if not isinstance(result, dict):
+        return False, f"no result dict ({type(result).__name__})"
+    md = result.get("metadata")
+    if not isinstance(md, dict):
+        return False, "result carries no metadata"
+    total, ok_n, failed = md.get("total_jobs"), md.get("successful_jobs"), md.get("failed_jobs")
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in (total, ok_n, failed)):
+        return False, f"job accounting incomplete: total={total!r} ok={ok_n!r} failed={failed!r}"
+    if total < 1:
+        return False, f"no job was planned (total_jobs={total})"
+    if failed != 0 or ok_n != total or result.get("failed_jobs"):
+        return False, (f"jobs not all successful: total={total} successful={ok_n} "
+                       f"failed={failed} failed_list={len(result.get('failed_jobs') or [])}")
+    return True, "all planned jobs successful"
+
+
+def _step1_miner_sweep_evidence(miner_result, coordinator):
+    """The interval each miner phase ACTUALLY swept, read from the trial's own ledger
+    stripe rows (no edit under miner/). A phase counts only if every one of its stripes
+    is `done` and the stripes tile one contiguous interval. Returns None when no such
+    evidence can be read — which then earns no credit (S7 fails closed)."""
+    import sqlite3 as _sq
+    try:
+        from miner.range_miner_coordinator import resolve_coordinator_staging_dir
+        run_id = (miner_result or {}).get("run_id")
+        if not run_id or not (miner_result or {}).get("committed"):
+            return None
+        base = resolve_coordinator_staging_dir(
+            getattr(coordinator, 'staging_dir', None),
+            getattr(coordinator, 'miner_output_dir', None), warn=False)
+        path = os.path.join(base, "miner_ledger.db")
+        if not os.path.exists(path):
+            return None
+        con = _sq.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT phase, seed_start, seed_count, state FROM stripes WHERE run_id=? "
+                "ORDER BY phase, seed_start", (run_id,)).fetchall()
+        finally:
+            con.close()
+    except Exception as _e:                      # evidence unreadable -> no evidence
+        print(f"   [STEP1-SEARCH S7] miner sweep evidence unreadable: {_e}")
+        return None
+    by_phase = {}
+    for ph, s, n, st in rows:
+        by_phase.setdefault(int(ph), []).append((int(s), int(n), st))
+    swept = {}
+    for ph, items in by_phase.items():
+        if any(st != "done" for _, _, st in items):
+            continue
+        cur, ok = items[0][0], True
+        for s, n, _ in items:
+            if s != cur:
+                ok = False
+                break
+            cur = s + n
+        if ok:
+            swept[str(ph)] = [items[0][0], cur]
+    return {"route": "range_miner", "run_id": run_id,
+            "source": "miner ledger stripe rows (state done, contiguous) for this run_id",
+            "swept_intervals": swept}
+
+
+def _step1_storage_url(study_name: str) -> str:
+    """The same storage the study body opens (window_optimizer_bayesian, path fix)."""
+    import window_optimizer_bayesian as _wob
+    return f"sqlite:///{_wob._OPTUNA_STORAGE_BASE}/optuna_studies/{study_name}.db"
+
+
+def _step1_study_complete_count(study_name: str):
+    """COMPLETE trials of a named study, or None if the study does not exist. Mirrors the
+    resume branch's relative existence check (window_optimizer_bayesian.py)."""
+    if not study_name or not os.path.exists(f"optuna_studies/{study_name}.db"):
+        return None
+    import optuna as _op
+    st = _op.load_study(study_name=study_name, storage=_step1_storage_url(study_name))
+    return sum(1 for t in st.trials if t.state.name == "COMPLETE")
+
+
+def _step1_budget_preflight(*, resume_study, study_name, max_iterations):
+    """S8 (conditional on M1: run B made ZERO objective calls). A resumed named study
+    whose COMPLETE count already meets the budget would run `max_iterations - completed
+    <= 0` trials (window_optimizer_bayesian.py `_trials_to_run`) and — measured in M1 —
+    still publish and certify the configured interval. Refuse BEFORE dispatch."""
+    if not resume_study or not study_name:
+        return
+    done = _step1_study_complete_count(study_name)
+    if done is not None and done >= int(max_iterations):
+        raise Step1ChunkBudgetError(
+            f"S8: study {study_name!r} already has {done} COMPLETE trial(s) and this chunk's "
+            f"budget is {int(max_iterations)}, so it would run {int(max_iterations) - done} "
+            f"trial(s). A chunk that runs no trial sweeps nothing; refused before dispatch "
+            f"(completed={done}, budget={int(max_iterations)}).")
+
+
+def _step1_search_preflight(*, step1_search_id, prng_base, test_both_modes, seed_start,
+                            seed_count, max_iterations, resume_study, study_name,
+                            n_parallel):
+    """S4/S6/S9 in the child, BEFORE any study or dispatch. Returns the search context,
+    or None for a run outside any search (no step1_search_id)."""
+    if not step1_search_id:
+        return None
+    from database_system import DistributedPRNGDatabase as _DB
+    from utils.seed_coverage_ledger import canonical_coverage_identity as _cci
+    from miner.dataset_authority import get_frozen_dataset as _gfd
+    led = _DB().step1_search_ledger()
+    rec = led.get_search(step1_search_id)
+    if rec is None:
+        raise Step1SearchPreflightError(f"step1_search_id {step1_search_id!r} names no search")
+    # [Beta R1 Q5] a stranded link (published, pending recorded, link write failed) is
+    # repaired before anything else; the cursor below then no longer names that chunk, so
+    # it is never re-run.
+    _repaired = led.repair_pending_links(step1_search_id)
+    if _repaired:
+        print(f"   [STEP1-SEARCH] repaired {len(_repaired)} stranded link(s): "
+              f"{[r['coverage_id'][:16] for r in _repaired]}")
+    state = led.search_state(step1_search_id)
+    if state != "open":
+        raise Step1SearchPreflightError(f"search {step1_search_id} is {state}, not open")
+    base, modes = _cci(prng_base, test_both_modes=test_both_modes)
+    probs = []
+    if base != rec.prng_base:
+        probs.append(f"prng_base presented={base} recorded={rec.prng_base}")
+    if sorted(modes) != sorted(rec.required_modes):
+        probs.append(f"modes presented={sorted(modes)} recorded={list(rec.required_modes)}")
+    fz = _gfd()
+    if fz is None:
+        probs.append("dataset: this process froze no dataset; the search was opened on "
+                     f"{rec.dataset_version_id}")
+    elif (fz.sha256 != rec.dataset_sha256 or (fz.version_id or "") != rec.dataset_version_id):
+        probs.append(f"dataset presented={fz.version_id} ({fz.sha256}) recorded="
+                     f"{rec.dataset_version_id} ({rec.dataset_sha256})")
+    cur = led.cursor(rec)
+    if cur.is_complete:
+        probs.append("the search has no gap; nothing to run")
+    else:
+        if int(seed_start) != cur.next_seed_start:
+            probs.append(f"seed_start presented={int(seed_start)} search first gap="
+                         f"{cur.next_seed_start}")
+        want = min(rec.chunk_seeds, rec.range_end_exclusive - int(seed_start))
+        if int(seed_count) != want:
+            probs.append(f"seed_count presented={int(seed_count)} recorded chunk={want}")
+    if int(max_iterations) != rec.trials_per_chunk:
+        probs.append(f"trials presented={int(max_iterations)} recorded="
+                     f"{rec.trials_per_chunk}")
+    if int(n_parallel) != 1:
+        probs.append(f"n_parallel presented={n_parallel}; a search chunk is certified for "
+                     f"n_parallel == 1 only (per-trial evidence, D6.2)")
+    bound = led.study_bound_to(step1_search_id)
+    if resume_study and study_name:
+        try:
+            led.assert_study_usable(step1_search_id, study_name)
+        except Exception as e:
+            probs.append(str(e))
+    elif bound is not None:
+        probs.append(f"search {step1_search_id} owns study {bound!r}; this run would create "
+                     f"a fresh study (resume_study={resume_study}, study_name={study_name!r})")
+    if probs:
+        raise Step1SearchPreflightError(
+            f"refusing step1_search_id={step1_search_id} before dispatch: " + "; ".join(probs))
+    return {"ledger": led, "record": rec,
+            "interval": (int(seed_start), int(seed_start) + int(seed_count))}
+
+
+class Step1ChunkState:
+    """The per-process chunk state: which trials ran here, their evidence, the chunk-open."""
+
+    def __init__(self, search_ctx, prng_base, test_both_modes, seed_start, seed_count,
+                 max_iterations, checkpoint_run_id):
+        self.search_ctx = search_ctx
+        self.prng_base = prng_base
+        self.required = _step1_required_phases(prng_base, test_both_modes)
+        self.interval = (int(seed_start), int(seed_start) + int(seed_count))
+        self.max_iterations = int(max_iterations)
+        self.checkpoint_run_id = checkpoint_run_id
+        self.seen = []                    # Optuna trial numbers this process ran
+        self.evidence = {}                # trial number -> sweep evidence
+        self.study_name = None
+        self.chunk = None
+
+    def before_trial(self, optuna_trial):
+        """Called before the trial's sieve. The first call writes the chunk-open event
+        (S8) and enforces study ownership (S9) — both before any sieve of this chunk."""
+        if optuna_trial is None:
+            return
+        n = int(optuna_trial.number)
+        self.seen.append(n)
+        if self.study_name is None:
+            self.study_name = optuna_trial.study.study_name
+            if self.search_ctx is not None:
+                prior = sum(1 for t in optuna_trial.study.trials if t.number < n)
+                self.chunk = self.search_ctx["ledger"].chunk_open(
+                    search_id=self.search_ctx["record"].search_id,
+                    seed_start=self.interval[0], seed_end_exclusive=self.interval[1],
+                    study_name=self.study_name, study_trials_at_open=prior,
+                    budget_target=self.max_iterations,
+                    checkpoint_run_id=self.checkpoint_run_id or "")
+
+    def after_trial(self, optuna_trial, result):
+        if optuna_trial is None:
+            return
+        ev = getattr(result, "step1_sweep_evidence", None)
+        if ev is not None:
+            self.evidence[int(optuna_trial.number)] = ev
+
+    def trial_states(self):
+        if not self.seen or not self.study_name:
+            return {}
+        import optuna as _op
+        st = _op.load_study(study_name=self.study_name,
+                            storage=_step1_storage_url(self.study_name))
+        mine = set(self.seen)
+        return {t.number: t.state.name for t in st.trials if t.number in mine}
+
+    def counts(self, states):
+        c = {"complete": 0, "pruned": 0, "fail": 0, "other": 0}
+        for s in states.values():
+            c[{"COMPLETE": "complete", "PRUNED": "pruned", "FAIL": "fail"}.get(s, "other")] += 1
+        return c
+
+    def record_uncredited(self, code, detail):
+        try:
+            if self.search_ctx is not None:
+                led = self.search_ctx["ledger"]
+                sid = self.search_ctx["record"].search_id
+            else:
+                from database_system import DistributedPRNGDatabase as _DB
+                led, sid = _DB().step1_search_ledger(), None
+            return led.record_uncredited(
+                search_id=sid, chunk_id=(self.chunk or {}).get("chunk_id"),
+                prng_base=self.prng_base, seed_start=self.interval[0],
+                seed_end_exclusive=self.interval[1], reason_code=code, reason_detail=detail)
+        except Exception as e:                   # the refusal must still surface
+            print(f"   [STEP1-SEARCH] could not write the non-certifying record: {e}")
+            return None
+
+
 def run_bidirectional_test(coordinator,
                            config: WindowConfig,
                            dataset_path: str,
@@ -1561,9 +1839,14 @@ def run_bidirectional_test(coordinator,
         # D3.25 §4: the miner is NOT a `step1_trial_populations_v2` producer, so
         # it no longer shares the PWC/ZMQ adapter. D6 wires the miner's own
         # already-canonical records in, off the sink's stored assembly.
-        return _build_test_result_from_miner(_miner_result, accumulator, config,
-                                             prng_base, trial_number, optuna_trial,
-                                             phase5_sink=_miner_sink)
+        _miner_tr = _build_test_result_from_miner(_miner_result, accumulator, config,
+                                                  prng_base, trial_number, optuna_trial,
+                                                  phase5_sink=_miner_sink)
+        # [STEP1-SEARCH S7] what this trial actually swept, read from the miner's own
+        # stripe rows — NOT the requested interval (see _step1_miner_sweep_evidence).
+        _miner_tr.step1_sweep_evidence = _step1_miner_sweep_evidence(
+            _miner_result, coordinator)
+        return _miner_tr
     # ========================================================================
     # END RANGE-MINER PATH — original path continues unchanged below
     # ========================================================================
@@ -1608,8 +1891,17 @@ def run_bidirectional_test(coordinator,
                 iteration           = trial_number,
             )
         # Build TestResult from persistent worker result
-        return _build_test_result_from_pw(_pw_result, accumulator, config,
-                                          prng_base, trial_number, optuna_trial)
+        _pw_tr = _build_test_result_from_pw(_pw_result, accumulator, config,
+                                            prng_base, trial_number, optuna_trial)
+        # [STEP1-SEARCH S7] PWC is handed total_seeds only and partitions from 0
+        # (persistent_worker_coordinator.py:1276-1280): the interval it is handed is
+        # [0, seed_count), whatever seed_start is.
+        _pw_tr.step1_sweep_evidence = _step1_unaccounted_route_evidence(
+            "pwc", "run_trial_persistent's result carries no per-trial completion accounting "
+                   "to this layer (failed_chunks stays at pass level), and it is handed "
+                   "total_seeds only with a partition origin of 0 "
+                   "(persistent_worker_coordinator.py:1276-1280)")
+        return _pw_tr
     # ========================================================================
     # END PERSISTENT WORKER PATH — original path continues unchanged below
     # ========================================================================
@@ -1661,9 +1953,16 @@ def run_bidirectional_test(coordinator,
                 bidirectional_count = 0,
                 iteration           = trial_number,
             )
-        return _build_test_result_from_pw(
+        _zmq_tr = _build_test_result_from_pw(
             _zmq_result, accumulator, config, prng_base, trial_number, optuna_trial
         )
+        # [STEP1-SEARCH S7] ZMQ is handed total_seeds only and partitions from 0
+        # (zmq_sqlite_coordinator.py:831-832).
+        _zmq_tr.step1_sweep_evidence = _step1_unaccounted_route_evidence(
+            "zmq", "run_trial_zmq_sqlite's result carries no per-trial completion accounting "
+                   "to this layer, and it is handed total_seeds only with a partition origin "
+                   "of 0 (zmq_sqlite_coordinator.py:831-832)")
+        return _zmq_tr
     # ========================================================================
     # END ZMQ-SQLITE PATH
     # ========================================================================
@@ -1943,13 +2242,43 @@ def run_bidirectional_test(coordinator,
 
     # [S124] Combined bidirectional score: constant + variable skip survivors
     _total_bidi = len(bidirectional_constant) + _variable_bidi_count
-    return TestResult(
+    _legacy_tr = TestResult(
         config=config,
         forward_count=len(forward_records),
         reverse_count=len(reverse_records),
         bidirectional_count=_total_bidi,   # constant + variable (S124)
         iteration=trial_number
     )
+    # [STEP1-SEARCH S7] The legacy coordinator is handed Args.seed_start/Args.seeds
+    # (coordinator.py:2316 reads seed_start). Phases 1-2 always ran to here; phase 3 ran
+    # when variable skip ran; phase 4 ran ONLY if the forward variable sieve returned
+    # survivors (it is skipped otherwise, above) — so a both-modes trial whose forward
+    # variable sieve was empty does NOT show phase 4 finished, and earns no credit.
+    # [Beta X-STEP1-SEARCH-CODE R1 Q1, LIVE] A phase counts ONLY on the coordinator's own
+    # completion accounting for that call (coordinator.py:2193-2222): at least one planned
+    # job, every planned job successful, no permanently failed job. Returning is NOT
+    # evidence — a call whose jobs all failed permanently returns normally with no survivors.
+    _legacy_phase_results = {1: forward_result, 2: reverse_result}
+    if test_both_modes and not prng_base.endswith('_hybrid'):
+        _legacy_phase_results[3] = locals().get('forward_result_hybrid')
+        if locals().get('forward_records_hybrid'):
+            _legacy_phase_results[4] = locals().get('reverse_result_hybrid')
+    _legacy_done, _legacy_why = {}, {}
+    for _p, _res in _legacy_phase_results.items():
+        _ok, _why = _step1_legacy_jobs_complete(_res)
+        if _ok:
+            _legacy_done[str(_p)] = [int(seed_start), int(seed_start) + int(seed_count)]
+        else:
+            _legacy_why[str(_p)] = _why
+    _legacy_tr.step1_sweep_evidence = {
+        "route": "legacy",
+        "source": ("coordinator job accounting per phase (total_jobs>0, successful_jobs == "
+                   "total_jobs, failed_jobs == 0) over the plan that partitions "
+                   "[Args.seed_start, Args.seed_start + Args.seeds) (coordinator.py:2310-2316)"),
+        "swept_intervals": _legacy_done,
+        "incomplete_phases": _legacy_why,
+    }
+    return _legacy_tr
 
 
 def add_window_optimizer_to_coordinator():
@@ -1985,7 +2314,8 @@ def add_window_optimizer_to_coordinator():
                         warm_start_fwd_thresh: float = None,
                         warm_start_rev_thresh: float = None,
                         warm_start_session_idx: int = None,
-                        resume_checkpoint: str = ''):  # [S172 D6.2] hop 3 of 3
+                        resume_checkpoint: str = '',   # [S172 D6.2] hop 3 of 3
+                        step1_search_id: str = ''):    # [STEP1-SEARCH stage 1] hop 3 of 3
         # ── [S172 Phase-5 D6.2 §4.1] THE SELECTOR IS A RUN ID. ONE API. ──────
         # `resume_checkpoint` is a CHECKPOINT RUN ID, never a path and never a
         # handle. Empty means no resume. It is resolved EXCLUSIVELY beneath
@@ -2040,6 +2370,21 @@ def add_window_optimizer_to_coordinator():
                 f"before study creation, worker launch, any fleet action or "
                 f"any candidate admission — no process was started. Re-run "
                 f"with --n-parallel 1 to use --resume-checkpoint.")
+        # [STEP1-SEARCH stage 1] Pre-dispatch checks, placed directly after the D6.2 NP2
+        # rejection (which must stay the first executable statement) and before any
+        # study creation, fork, fleet action or sieve:
+        #   S4/S6/S9 — the presented run must match the open search it names;
+        #   S8      — a resumed study that has already met its budget runs zero trials and
+        #             (measured, M1 run B) would still certify the interval: refused.
+        _s1_search_ctx = _step1_search_preflight(
+            step1_search_id=step1_search_id, prng_base=prng_base,
+            test_both_modes=test_both_modes, seed_start=seed_start, seed_count=seed_count,
+            max_iterations=max_iterations, resume_study=resume_study,
+            study_name=study_name, n_parallel=n_parallel)
+        _step1_budget_preflight(resume_study=resume_study, study_name=study_name,
+                                max_iterations=max_iterations)
+        _s1_chunk = Step1ChunkState(_s1_search_ctx, prng_base, test_both_modes,
+                                    seed_start, seed_count, max_iterations, None)
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -2713,6 +3058,7 @@ def add_window_optimizer_to_coordinator():
                 resume_study=resume_study,
             )
         _install_flush_run_context(_d6_2_context)
+        _s1_chunk.checkpoint_run_id = _d6_2_context.run_id   # [STEP1-SEARCH S8]
 
         if not _np2_complete:
             optimizer = WindowOptimizer(self, dataset_path)
@@ -2772,7 +3118,9 @@ def add_window_optimizer_to_coordinator():
                 print(f"   🔀 Trial {optuna_trial.number} → Partition {_part} ({_PARALLEL_PARTITIONS[_part]})")
             else:
                 _coord = self
-            return run_bidirectional_test(
+            # [STEP1-SEARCH S8/S9] chunk-open + study ownership before this trial's sieve.
+            _s1_chunk.before_trial(optuna_trial)
+            _s1_result = run_bidirectional_test(
                 coordinator=_coord,   # S125: was 'self' -- dead routing var fixed (Bug A)
                 config=config,
                 dataset_path=dataset_path,
@@ -2787,6 +3135,9 @@ def add_window_optimizer_to_coordinator():
                 optuna_trial=optuna_trial,         # S119 Gap5
                 enable_pruning=enable_pruning      # [S145-R1] closure var
             )
+            # [STEP1-SEARCH S7] what this trial swept, as its route reports it.
+            _s1_chunk.after_trial(optuna_trial, _s1_result)
+            return _s1_result
 
         optimizer.test_configuration = test_config
 
@@ -2847,18 +3198,25 @@ def add_window_optimizer_to_coordinator():
         }
 
         if not _np2_complete:  # [S142-B] skip single-process search for NP2
-            results = optimizer.optimize(
-                strategy=strategy,
-                bounds=bounds,
-                max_iterations=max_iterations,
-                scorer=BidirectionalCountScorer(),
-                seed_start=seed_start,
-                seed_count=seed_count,
-                resume_study=resume_study,              # S116-Bug5 confirmed
-                study_name=study_name,                  # S116-Bug5 confirmed
-                trse_context_file=trse_context_file,    # S123 TRSE thread
-                trial_history_context=_trial_history_ctx  # [S140b]
-            )
+            try:
+                results = optimizer.optimize(
+                    strategy=strategy,
+                    bounds=bounds,
+                    max_iterations=max_iterations,
+                    scorer=BidirectionalCountScorer(),
+                    seed_start=seed_start,
+                    seed_count=seed_count,
+                    resume_study=resume_study,              # S116-Bug5 confirmed
+                    study_name=study_name,                  # S116-Bug5 confirmed
+                    trse_context_file=trse_context_file,    # S123 TRSE thread
+                    trial_history_context=_trial_history_ctx  # [S140b]
+                )
+            except Exception as _s1_search_exc:
+                # [STEP1-SEARCH S7] a search that raised earns no credit; the attempt is
+                # recorded as non-certifying, and the exception is re-raised unchanged.
+                _s1_chunk.record_uncredited(
+                    "search_raised", f"{type(_s1_search_exc).__name__}: {_s1_search_exc}")
+                raise
 
             optimizer.save_results(results, output_file)
 
@@ -2987,6 +3345,40 @@ def add_window_optimizer_to_coordinator():
         # finalization fails, the previously certified generation stays current
         # and this function does not return `results` (D3.5 §11, gate F31).
         # --------------------------------------------------------------------
+        # --------------------------------------------------------------------
+        # [STEP1-SEARCH S7] THE CREDIT GATE — before anything is published.
+        #
+        # Nothing is published as certified, and no coverage row is written, unless at
+        # least one trial in state COMPLETE ran IN THIS CHUNK (this process), finished
+        # every required phase, and swept an interval EQUAL to the requested one (owner
+        # ruling 2026-11-14 item 2a: the RANGE-MINER, PWC and ZMQ routes sweep from 0).
+        # Zero survivors from a completed sweep IS credited. The finalizer and the
+        # coverage ledger are not edited; the gate sits here, in the caller.
+        # Measured (M1 run B): before this gate a chunk with ZERO objective calls was
+        # published and certified.
+        # --------------------------------------------------------------------
+        from utils.step1_search_ledger import credit_decision as _s1_credit_decision
+        try:
+            _s1_states = _s1_chunk.trial_states()
+        except Exception as _s1_state_exc:
+            _s1_chunk.record_uncredited(
+                "trial_state_unreadable", f"{type(_s1_state_exc).__name__}: {_s1_state_exc}")
+            raise Step1NoCreditError(
+                f"S7: the chunk's trial states could not be read ({_s1_state_exc}); no "
+                f"credit, nothing published") from _s1_state_exc
+        _s1_ok, _s1_code, _s1_detail, _s1_credited = _s1_credit_decision(
+            requested_interval=_s1_chunk.interval,
+            required_phases=_s1_chunk.required,
+            evidence_by_trial=_s1_chunk.evidence,
+            trial_states=_s1_states)
+        if not _s1_ok:
+            _s1_chunk.record_uncredited(_s1_code, _s1_detail)
+            print(f"\n❌ [STEP1-SEARCH S7] NO CREDIT ({_s1_code}): {_s1_detail}")
+            print("   Nothing was published as certified and no coverage row was written; "
+                  "the attempt is in the non-certifying record.")
+            raise Step1NoCreditError(f"S7 no credit ({_s1_code}): {_s1_detail}")
+        print(f"   [STEP1-SEARCH S7] credited: {_s1_detail}")
+
         _repo_commit_d3_5, _repo_clean_d3_5 = _repository_state()
 
         # From RUN CONFIGURATION, never inferred from survivor rows — an
@@ -3056,7 +3448,11 @@ def add_window_optimizer_to_coordinator():
         _s145_coverage = _DBM_s145().record_certified_coverage(
             _artifact_d3_5,
             dataset_sha256=_frozen_ds_s145().sha256,
-            study_identity=str(locals().get('_mp_study_name') or '') or None,
+            # [STEP1-SEARCH, Beta R2 Q2] a search chunk records its Optuna study as the
+            # door's provenance field, so a link lost after this commit is reconstructible
+            # (Step1SearchLedger._reconstruct_links). Unchanged outside a search.
+            study_identity=(_s1_chunk.study_name if _s1_search_ctx is not None
+                            else (str(locals().get('_mp_study_name') or '') or None)),
         )
         print(f"   [S145 COVERAGE] certified "
               f"[{_s145_coverage.seed_start:,}, "
@@ -3064,6 +3460,26 @@ def add_window_optimizer_to_coordinator():
               f"{_s145_coverage.prng_base} "
               f"modes={{{_s145_coverage.skip_modes_executed}}} "
               f"— coverage_id {_s145_coverage.coverage_id[:16]}")
+
+        # [STEP1-SEARCH S8] THE LINK — after a credited publication only. Every interval/
+        # family/mode/generation field is derived from the witness and the history row
+        # inside the ledger; this call passes the two objects, never their values. If it
+        # fails, it RAISES: the generation and the history row stay as published, the
+        # search does not advance (its cursor counts linked chunks only), and a retry with
+        # the same witness is idempotent.
+        if _s1_search_ctx is not None:
+            _s1_link_args = dict(
+                search_id=_s1_search_ctx["record"].search_id,
+                chunk_id=(_s1_chunk.chunk or {}).get("chunk_id"),
+                artifact=_artifact_d3_5, coverage=_s145_coverage,
+                trial_counts=_s1_chunk.counts(_s1_states))
+            # [Beta R1 Q5] the durable pending record FIRST, so that a link failure below
+            # is repairable by a fresh process (Step1SearchLedger.repair_pending_links, run
+            # by the next scheduling lookup) with no new trial and no new generation.
+            _s1_search_ctx["ledger"].record_link_pending(**_s1_link_args)
+            _s1_link = _s1_search_ctx["ledger"].record_chunk_link(**_s1_link_args)
+            print(f"   [STEP1-SEARCH LINK] coverage {_s145_coverage.coverage_id[:16]} -> "
+                  f"search {_s1_link['search_id'][:20]} chunk {_s1_link['chunk_id'][:20]}")
 
         # [S172 Phase-5 D3.5 §10] `bidirectional_survivors.json` is a
         # POST-SUCCESS SUMMARY of the generation that was just certified. It is

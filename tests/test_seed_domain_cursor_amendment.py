@@ -259,6 +259,10 @@ def _watcher_harness():
         def __getattr__(self, name):
             def boom(*a, **k):
                 fired.append(name)
+                # [STEP1-SEARCH stage 1] the argv is recorded too, so an arm can show
+                # what reached the command (R1-C.2 under search authority).
+                _FIRED_ARGV.append(list(a[0]) if a and isinstance(a[0], (list, tuple))
+                                   else None)
                 raise _DispatchAttempted(f"subprocess.{name} was called")
             return boom
 
@@ -293,6 +297,31 @@ class _DispatchAttempted(BaseException):
     from Exception is swallowed there and the gate reads "no dispatch" for a
     run that dispatched — the measurement would invert.
     """
+
+
+_FIRED_ARGV = []
+
+
+def _open_search(wa, params, range_start=0, range_end=_TERMINUS):
+    """[STEP1-SEARCH stage 1] Open a search in the harness's ISOLATED database through
+    the production operator functions, with the configuration a run with `params`
+    presents and the dataset the run freezes. Since v1.1 §2.4 WATCHER schedules Step 1
+    from the open search, so an arm that must reach dispatch needs one."""
+    import database_system as ds
+    agent = wa.WatcherAgent()
+    final = wa._step1_cli_final_params(agent, dict(params), None)
+    frozen = wa.p05_freeze_dataset(run_label="seed_domain_suite")
+    cfg = wa.step1_presented_configuration(final, None)
+    led = ds.DistributedPRNGDatabase().step1_search_ledger()
+    rec, _ = led.open_search(
+        configuration=cfg, range_start=range_start, range_end_exclusive=range_end,
+        dataset={"dataset_version_id": frozen.version_id or "",
+                 "dataset_sha256": frozen.sha256,
+                 "input_manifest_sha256": frozen.manifest_sha256 or "",
+                 "dataset_lineage_id": frozen.dataset_lineage_id or ""},
+        opened_reason="operator", opened_by_ref="seed_domain_suite",
+        repository_commit="seed-domain-suite")
+    return led, rec
 
 
 def _run_step1(wa, params):
@@ -396,11 +425,30 @@ def arm_preflight_precedes_dispatch_in_live_source():
 def arm_preflight_zero_dispatch_executed():
     """Fault injection AND clean control, both executed against run_step."""
     _require_amendment()
+    # [STEP1-SEARCH stage 1 — FIXTURE CHANGED, stated in the report] Since v1.1 §2.4
+    # WATCHER takes seed_start from the open SEARCH's first gap and the operator's
+    # seed_start carries no authority (it is overwritten), and the search ledger refuses
+    # an out-of-domain range at opening. So the out-of-domain input now has to arrive the
+    # only way it still could — a forged lookup result standing in for a corrupt record.
+    # The wall itself is unchanged and must still refuse with zero dispatch.
+    import database_system as ds
+    from utils.seed_coverage_ledger import CursorResult, CURSOR_STATUS_OPEN
+    from utils import step1_search_ledger as s1l
+    params = {"seed_start": 0, "max_seeds": 1000, "prng_type": "java_lcg"}
     with _watcher_harness() as (wa, fired):
-        # FAULT INJECTION: an out-of-domain request must be refused, and
-        # nothing may be dispatched.
-        result, dispatched = _run_step1(
-            wa, {"seed_start": _TERMINUS, "max_seeds": 1000, "prng_type": "java_lcg"})
+        _led, rec = _open_search(wa, params)
+        forged = s1l.Selection(s1l.SEL_GAP, rec, CursorResult(
+            status=CURSOR_STATUS_OPEN, next_seed_start=_TERMINUS, domain_start=0,
+            domain_end_exclusive=_TERMINUS, covered_seed_count=0,
+            certified_interval_count=0))
+        saved_sel = ds.DistributedPRNGDatabase.select_step1_search
+        ds.DistributedPRNGDatabase.select_step1_search = lambda self, p, **kw: forged
+        try:
+            # FAULT INJECTION: an out-of-domain start must be refused, and
+            # nothing may be dispatched.
+            result, dispatched = _run_step1(wa, params)
+        finally:
+            ds.DistributedPRNGDatabase.select_step1_search = saved_sel
         _assert(not dispatched, "an out-of-domain request REACHED DISPATCH")
         _assert(result is not None and result.get("blocked_by") == "seed_domain_preflight",
                 f"expected blocked_by='seed_domain_preflight', got "
@@ -411,8 +459,7 @@ def arm_preflight_zero_dispatch_executed():
         # dispatch. Without this, "nothing dispatched" would also be satisfied
         # by a dead path or a blanket block.
         fired.clear()
-        result, dispatched = _run_step1(
-            wa, {"seed_start": 0, "max_seeds": 1000, "prng_type": "java_lcg"})
+        result, dispatched = _run_step1(wa, params)
         _assert(dispatched,
                 f"clean control did NOT reach dispatch — the measurement is "
                 f"vacuous. blocked_by={None if result is None else result.get('blocked_by')!r}")
@@ -672,17 +719,28 @@ def arm_complete_production_db_returns_none():
                 f"'There is no 4,294,967,296 next run.'")
 
 
-def arm_complete_generates_no_watcher_run():
-    """COMPLETE => no run generated, and nothing dispatched."""
-    _require_amendment()
-    import database_system as ds
+def _history_complete():
     from utils.seed_coverage_ledger import CursorResult
-
-    complete = CursorResult(
+    return CursorResult(
         status=CURSOR_STATUS_COMPLETE, next_seed_start=None,
         domain_start=0, domain_end_exclusive=_TERMINUS,
         covered_seed_count=_TERMINUS, certified_interval_count=1,
     )
+
+
+def arm_complete_generates_no_watcher_run():
+    """History COMPLETE and NO open search => no run generated, nothing dispatched.
+
+    [STEP1-SEARCH stage 1 — FIXTURE CHANGED, named in the brief §3] This arm tested the
+    authority the brief changes: the HISTORY union's COMPLETE used to decide that no run
+    is generated (`blocked_by='seed_domain_complete'`). Since v1.1 §2.4 the history no
+    longer decides where Step 1 starts; the open SEARCH does. With history COMPLETE and no
+    open search the result is the `no_open_search` clean stop — still no run, no dispatch,
+    no number. The paired case (history COMPLETE AND a search open => a command) is
+    `arm_complete_history_with_open_search_generates_a_run` below."""
+    _require_amendment()
+    import database_system as ds
+    complete = _history_complete()
     saved = ds.DistributedPRNGDatabase.get_certified_cursor
     ds.DistributedPRNGDatabase.get_certified_cursor = (
         lambda self, p, **kw: complete)
@@ -690,16 +748,44 @@ def arm_complete_generates_no_watcher_run():
         with _watcher_harness() as (wa, fired):
             result, dispatched = _run_step1(
                 wa, {"seed_start": 0, "max_seeds": 1000, "prng_type": "java_lcg"})
-            _assert(not dispatched, "a COMPLETE domain REACHED DISPATCH")
+            _assert(not dispatched, "no open search REACHED DISPATCH")
             _assert(result is not None
-                    and result.get("blocked_by") == "seed_domain_complete",
-                    f"expected blocked_by='seed_domain_complete', got "
+                    and result.get("blocked_by") == "step1_no_open_search",
+                    f"expected blocked_by='step1_no_open_search', got "
                     f"{None if result is None else result.get('blocked_by')!r}")
-            _assert(result.get("seed_domain_complete") is True,
-                    "the COMPLETE state must be explicit in the result")
+            _assert(result.get(wa.STEP1_SEARCH_RESULT_KEY) == "no_open_search",
+                    "the stop must be explicit on the dedicated key")
             _assert(result.get("next_seed_start") is None,
-                    "COMPLETE must not hand the operator a number")
+                    "a stop must not hand the operator a number")
             _assert(fired == [], f"dispatch was attempted: {fired}")
+    finally:
+        ds.DistributedPRNGDatabase.get_certified_cursor = saved
+
+
+def arm_complete_history_with_open_search_generates_a_run():
+    """[STEP1-SEARCH stage 1 — the PAIRED CASE the brief §3 requires] History COMPLETE
+    over [0, 2^32) and a search OPEN => WATCHER builds a Step 1 command at the search's
+    first gap (here 0). This is the state Run 4 would create, and the way out of it."""
+    _require_amendment()
+    import database_system as ds
+    complete = _history_complete()
+    saved = ds.DistributedPRNGDatabase.get_certified_cursor
+    ds.DistributedPRNGDatabase.get_certified_cursor = (
+        lambda self, p, **kw: complete)
+    params = {"seed_start": 0, "max_seeds": 1000, "prng_type": "java_lcg"}
+    try:
+        with _watcher_harness() as (wa, fired):
+            _FIRED_ARGV.clear()
+            _led, rec = _open_search(wa, params)
+            result, dispatched = _run_step1(wa, params)
+            _assert(dispatched, f"history COMPLETE + open search did not reach dispatch: "
+                                f"{None if result is None else result.get('blocked_by')!r}")
+            argv = _FIRED_ARGV[-1] or []
+            _assert("--seed-start" in argv and argv[argv.index("--seed-start") + 1] == "0",
+                    f"the command does not start at the search's first gap 0: {argv}")
+            _assert("--step1-search-id" in argv
+                    and argv[argv.index("--step1-search-id") + 1] == rec.search_id,
+                    f"the command does not name search {rec.search_id}: {argv}")
     finally:
         ds.DistributedPRNGDatabase.get_certified_cursor = saved
 
@@ -1560,19 +1646,29 @@ def arm_wrappers_do_not_coerce_types():
         wo.COORDINATOR_AVAILABLE = saved
 
     # --- WATCHER wrapper ---
+    # [STEP1-SEARCH stage 1 — FIXTURE CHANGED, stated in the report] Since v1.1 §2.4 the
+    # operator's seed_start carries NO authority: WATCHER overwrites it with the open
+    # search's first gap, an int from the ledger. So a malformed seed_start can no longer
+    # be coerced into the run — it never reaches the command at all. The arm now proves
+    # exactly that, on the built argv: the start is the search's int gap, never the
+    # malformed value or a coercion of it.
     with _watcher_harness() as (wa, fired):
+        _led, rec = _open_search(wa, {"seed_start": 0, "max_seeds": 1000,
+                                      "prng_type": "java_lcg"})
         for bad in (True, 1.5, "0"):
             fired.clear()
+            _FIRED_ARGV.clear()
             result, dispatched = _run_step1(
                 wa, {"seed_start": bad, "max_seeds": 1000,
                      "prng_type": "java_lcg"})
-            _assert(not dispatched,
-                    f"WATCHER dispatched with seed_start={bad!r}")
-            _assert(result is not None
-                    and result.get("blocked_by") == "seed_domain_preflight",
-                    f"WATCHER accepted seed_start={bad!r}: blocked_by="
-                    f"{None if result is None else result.get('blocked_by')!r} "
-                    f"— int({bad!r}) coercion would produce exactly this")
+            argv = _FIRED_ARGV[-1] if _FIRED_ARGV else None
+            _assert(dispatched and argv,
+                    f"WATCHER did not reach dispatch with seed_start={bad!r}: "
+                    f"{None if result is None else result.get('blocked_by')!r}")
+            got = argv[argv.index("--seed-start") + 1]
+            _assert(got == "0",
+                    f"WATCHER let seed_start={bad!r} reach the command as {got!r}; the "
+                    f"search's first gap is 0 — int({bad!r}) coercion would produce this")
 
 
 def main():
@@ -1600,7 +1696,8 @@ def main():
     print("\nG-CURSOR-COMPLETE")
     _check("G-CURSOR-COMPLETE: COMPLETE carries no numeric next seed", arm_complete_returns_no_number)
     _check("G-CURSOR-COMPLETE: production cursor returns None", arm_complete_production_db_returns_none)
-    _check("G-CURSOR-COMPLETE: no WATCHER run generated, no dispatch", arm_complete_generates_no_watcher_run)
+    _check("G-CURSOR-COMPLETE: history COMPLETE + no open search -> no run, no dispatch", arm_complete_generates_no_watcher_run)
+    _check("G-CURSOR-COMPLETE: history COMPLETE + open search -> a run at its first gap (paired)", arm_complete_history_with_open_search_generates_a_run)
 
     print("\nG-LEGACY-NONAUTHORITY")
     _check("G-LEGACY-NONAUTHORITY: 16.1B history ignored completely", arm_legacy_history_is_ignored_by_certified_cursor)
