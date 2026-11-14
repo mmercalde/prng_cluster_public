@@ -745,6 +745,136 @@ def _step1_stamp_pin_provenance(results, pin, argv):
     return results
 
 
+# ============================================================================
+# [STEP1-SEARCH stage 1] Step 1 search: result key, presented configuration, CLI.
+# Design: docs/PROPOSAL_STEP1_SEARCH_RECORD_AND_RERUN_v1_1.md §2.2-§2.6.
+# ============================================================================
+
+#: The dedicated key on run_step's result that carries the Step 1 search outcome. The
+#: pipeline loop stops CLEANLY (F-1's form) on exactly two of its values, by `in` on this
+#: key only — never on blocked_by text.
+STEP1_SEARCH_RESULT_KEY = 'step1_search_result'
+STEP1_SEARCH_LOOKUP_FAILED = 'lookup_failed'
+
+
+def _s1_result_lookup_failed():
+    return STEP1_SEARCH_LOOKUP_FAILED
+
+
+def step1_search_clean_stop_values():
+    from utils import step1_search_ledger as _l
+    return (_l.SEL_NO_OPEN_SEARCH, _l.SEL_SEARCH_COMPLETE)
+
+
+def step1_presented_configuration(final_params, pin_bundle):
+    """The configuration a Step 1 run presents (utils.step1_search_ledger.
+    presented_configuration), with the live search bounds and session options read the
+    way the child reads them (window_optimizer.load_search_bounds_from_config /
+    SearchBounds). `pin_bundle` is the invocation-local operator bundle or None; it is
+    READ here and never produced from a stored record."""
+    from utils.step1_search_ledger import presented_configuration
+    from window_optimizer import load_search_bounds_from_config, SearchBounds
+    bounds = load_search_bounds_from_config(
+        _os_module.path.join(REPO_ROOT, "distributed_config.json"))
+    return presented_configuration(final_params, pin_bundle, bounds,
+                                   SearchBounds().session_options)
+
+
+def _step1_cli_final_params(watcher, params, pin_bundle):
+    """The step-scoped merge run_step performs for Step 1 (manifest defaults, then only
+    declared keys from `params`, then the operator pin). Used by the open/status commands
+    so the record is computed from what a run would present; run_step compares the two
+    before every dispatch, so any divergence refuses rather than passes."""
+    manifest_path = _os_module.path.join(watcher.config.manifests_dir, STEP_MANIFESTS[1])
+    with open(manifest_path) as f:
+        default_params = json.load(f).get("default_params", {})
+    final = dict(default_params)
+    for k, v in (params or {}).items():
+        if k in default_params:
+            final[k] = v
+    pin = _step1_explicit_pin(1, pin_bundle)
+    if pin:
+        final.update(pin)
+    return final
+
+
+def step1_search_cli(watcher, args):
+    """S2: open / close / status. The ONLY opener in the codebase. Returns an exit code.
+    Opening writes the record and exits; it runs no step."""
+    from database_system import DistributedPRNGDatabase as _DBM
+    from utils import step1_search_ledger as _l
+    ordinary = None
+    if args.params:
+        try:
+            ordinary = json.loads(args.params)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: invalid JSON in --params: {e}")
+            return 2
+    ordinary, operator_pin = split_operator_pin_params(ordinary)
+    try:
+        pin_bundle = capture_step1_pin_bundle(operator_pin)
+    except Step1PinBundleError as e:
+        print(f"ERROR: {e}")
+        return 2
+    ledger = _DBM().step1_search_ledger()
+    final = _step1_cli_final_params(watcher, ordinary, pin_bundle)
+    try:
+        if args.step1_search_close:
+            ledger.close_search(args.step1_search_close, args.search_reason or "")
+            print(f"STEP1_SEARCH_CLOSED {args.step1_search_close} reason={args.search_reason!r}")
+            return 0
+        if args.step1_search_status:
+            sel = _DBM().select_step1_search(
+                final.get('prng_type', 'java_lcg'),
+                test_both_modes=bool(final.get('test_both_modes', False)))
+            print(json.dumps({"state": sel.state,
+                              "search_id": None if sel.search is None else sel.search.search_id,
+                              "next_seed_start": sel.next_seed_start,
+                              "range": None if sel.search is None else
+                              [sel.search.range_start, sel.search.range_end_exclusive]},
+                             indent=2))
+            return 0
+        # --- open ---
+        if args.search_range_start is None or args.search_range_end is None:
+            print("ERROR: --step1-search-open needs --search-range-start and --search-range-end")
+            return 2
+        if not (args.search_reason or "").strip():
+            print("ERROR: --step1-search-open needs --search-reason")
+            return 2
+        try:
+            frozen = p05_freeze_dataset(run_label="watcher_step1_search_open")
+        except Exception as e:
+            print(f"ERROR: the current frozen dataset cannot be resolved ({e}); a search is "
+                  f"not opened without its dataset identity")
+            return 2
+        dataset = {"dataset_version_id": frozen.version_id or "",
+                   "dataset_sha256": frozen.sha256 or "",
+                   "input_manifest_sha256": frozen.manifest_sha256 or "",
+                   "dataset_lineage_id": frozen.dataset_lineage_id or ""}
+        presented = step1_presented_configuration(final, pin_bundle)
+        try:
+            commit = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True, timeout=30).stdout.strip()
+        except Exception:
+            commit = ""
+        rec, created = ledger.open_search(
+            configuration=presented, range_start=args.search_range_start,
+            range_end_exclusive=args.search_range_end, dataset=dataset,
+            opened_reason="operator",
+            opened_by_ref=f"watcher_cli:{_os_module.getpid()}:"
+                          f"{datetime.now().isoformat(timespec='seconds')}",
+            repository_commit=commit or "unknown",
+            repeat_of=args.search_repeat_of)
+        print(f"STEP1_SEARCH_{'OPENED' if created else 'ALREADY_OPEN'} {rec.search_id} "
+              f"range=[{rec.range_start}, {rec.range_end_exclusive}) "
+              f"dataset={rec.dataset_version_id} trials_per_chunk={rec.trials_per_chunk} "
+              f"chunk_seeds={rec.chunk_seeds} space={rec.search_space['kind']}")
+        return 0
+    except _l.Step1SearchError as e:
+        print(f"REFUSED: {e}")
+        return 3
+
+
 def p05_freeze_dataset(run_label: str = "watcher"):
     """Resolve the pointer manifest and freeze the run's dataset identity.
 
@@ -1846,7 +1976,15 @@ class WatcherAgent:
                 "blocked_by": "freshness_hard_failure"
             }
         
-        if is_fresh:
+        # [STEP1-SEARCH S5] For Step 1 ONLY, file times no longer skip it: Step 1 is due
+        # when the open search has a gap, and that is decided by the search lookup below
+        # (no open search / search complete are clean stops there). Every other step keeps
+        # the freshness check unchanged. The hard-failure branch above still applies.
+        if is_fresh and step == 1:
+            logger.info(
+                "Step 1: %s - NOT skipped: Step 1 is due when its open search has a gap "
+                "(decided by the search record, not by file times)", freshness_msg)
+        if is_fresh and step != 1:
             if not preflight_passed:
                 # Soft failure + fresh output = skip with warning
                 warning_msg = f"⚠️ DEGRADED SKIP: Step {step} using existing output. Preflight: {preflight_msg}"
@@ -2008,13 +2146,15 @@ class WatcherAgent:
         # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE AUTHORITY"
         # (2026-08-07). Three changes from the S140 block this replaces:
         #
-        #   1. CURSOR LAW (§6). The cursor is the FIRST GAP in the CERTIFIED union,
-        #      not MAX(seed_range_end) over exhaustive_progress. The legacy tracker
-        #      is deauthorized outright and is not read here or anywhere below it.
-        #   2. COMPLETE IS EXPLICIT (§6). When the certified union covers [0, 2^32)
-        #      exactly, NO RUN IS GENERATED and the operator is told the domain is
-        #      exhausted. There is no 4,294,967,296 next run, and the completion
-        #      state is never signalled by an out-of-range number.
+        #   1. CURSOR LAW (§6). The cursor is the FIRST GAP, never MAX(seed_range_end)
+        #      over exhaustive_progress, which stays deauthorized and unread here.
+        #      [STEP1-SEARCH stage 1] SUPERSEDED FOR SCHEDULING by v1.1 §2.4: the gap
+        #      is now the open SEARCH's (same `first_uncovered_seed`, over that
+        #      search's credited chunks), not the history union's. The history union
+        #      and its COMPLETE stay reportable (get_certified_cursor) but no longer
+        #      decide where Step 1 starts — see the block below.
+        #   2. COMPLETE IS EXPLICIT (§6). Kept, for the SEARCH: when the open search's
+        #      declared range is covered by credited chunks, NO RUN IS GENERATED.
         #   3. FAIL-CLOSED (§7). S140 swallowed every exception and proceeded at
         #      seed_start=0, so a broken coverage lookup was indistinguishable from
         #      "no coverage yet". Step 1 is now BLOCKED instead, mirroring the
@@ -2024,7 +2164,24 @@ class WatcherAgent:
         # cascade: it is reached before the Step-1 subprocess is even spawned, and
         # therefore before fleet work assignment, sieve execution, staging, or any
         # coverage mutation — on the PWC path and the miner path alike.
-        if step == 1 and 'seed_start' in final_params:
+        # [STEP1-SEARCH stage 1 — S3/S4/S6] STEP 1 IS SCHEDULED FROM THE OPEN SEARCH.
+        #
+        # v1.1 §2.4 (owner-accepted 2026-11-14), changing Beta 2026-08-07 §4 and the
+        # cursor-zero boundary of 2026-08-08 R2 for the search cursor:
+        #   * the start is the FIRST GAP of the one open search for the family and mode set
+        #     (`first_uncovered_seed` over that search's credited chunks inside its declared
+        #     range), ASSIGNED EVEN WHEN IT IS 0;
+        #   * three durable results: no open search (clean stop), search complete (clean
+        #     stop), lookup failure (blocks Step 1). Nothing falls back to seed 0 and
+        #     nothing opens a search here — opening is the operator's CLI only;
+        #   * the history (`certified_coverage`) union and its COMPLETE stay reportable but
+        #     no longer decide where Step 1 starts;
+        #   * before dispatch the dataset and every configuration field presented must
+        #     equal the search record, or the run refuses naming both values. Stored
+        #     settings are never authority: pins are READ from the operator bundle and
+        #     COMPARED; nothing is read out of the record into `_pin_bundle`.
+        # The pre-dispatch seed-domain wall below is unchanged.
+        if step == 1:
             try:
                 import sys as _sys
                 _sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -2033,85 +2190,124 @@ class WatcherAgent:
                     assert_seed_domain_preflight as _s145_domain_wall,
                     SeedDomainPreflightError as _S145DomainError,
                 )
+                from utils import step1_search_ledger as _s1l
                 _db = _DBM()
                 _prng_type = final_params.get('prng_type', 'java_lcg')
-                # [S145 R1 C.2] NOT coerced. `max_seeds` absent/None means the
-                # run will use window_optimizer's own default (10_000_000,
-                # `window_optimizer.py:1753` and the `seed_count` default of
-                # `run_bayesian_optimization`), so that is what the wall must
-                # validate — validating a different number than the run uses
-                # would make this check describe a plan nobody executes. Any
-                # OTHER value is passed to the wall exactly as supplied.
-                _chunk_size = final_params.get('max_seeds', None)
-                if _chunk_size is None:
-                    _chunk_size = 10_000_000
-                # [S145 R1 Blocker B] truthiness is deliberate and fail-safe: a
-                # non-bool that reads as true yields {constant, variable}, the
-                # STRONGER request, which counts FEWER certified records and can
-                # only under-claim coverage (re-sweep), never over-claim it.
+                # [S145 R1 Blocker B] truthiness kept: the stronger request can only
+                # under-claim.
                 _test_both = bool(final_params.get('test_both_modes', False))
-                _cursor = _db.get_certified_cursor(
-                    _prng_type, test_both_modes=_test_both)
+                _sel = _db.select_step1_search(_prng_type, test_both_modes=_test_both)
             except Exception as _e:
-                _msg = (f"SEED_COVERAGE_S145: certified cursor unavailable for Step 1: "
-                        f"{_e}. Refusing to fall back to seed_start=0 — a silent "
-                        f"fallback would re-sweep certified ground and is the defect "
-                        f"class this amendment closes.")
+                _msg = (f"STEP1_SEARCH_LOOKUP_FAILED: the Step 1 search for "
+                        f"{final_params.get('prng_type', 'java_lcg')} could not be "
+                        f"resolved: {type(_e).__name__}: {_e}. Step 1 is BLOCKED; there is "
+                        f"no fallback to seed_start=0 and no default search.")
                 logger.error("Step %d blocked before dispatch: %s", step, _msg)
                 print(f"❌ {_msg}")
                 return {
                     "success": False,
                     "error": _msg,
-                    "blocked_by": "seed_coverage_cursor_unavailable",
+                    "blocked_by": "step1_search_lookup_failed",
+                    STEP1_SEARCH_RESULT_KEY: _s1_result_lookup_failed(),
                 }
 
-            # --- §6 COMPLETE: the domain is exhausted. No run is generated. ---
-            if _cursor.is_complete:
-                _msg = (f"SEED_DOMAIN_COMPLETE: the certified coverage union for "
-                        f"{_prng_type} covers the governed domain "
-                        f"[{_cursor.domain_start}, {_cursor.domain_end_exclusive}) "
-                        f"exactly ({_cursor.covered_seed_count:,} seeds across "
-                        f"{_cursor.certified_interval_count} certified interval(s)). "
-                        f"The sweep is finished; there is no next seed_start. No Step 1 "
-                        f"run was generated.")
+            if _sel.state == _s1l.SEL_NO_OPEN_SEARCH:
+                _msg = (f"STEP1_NO_OPEN_SEARCH: no Step 1 search is open for {_prng_type} "
+                        f"(modes test_both_modes={_test_both}). No Step 1 run was "
+                        f"generated. A search is opened only by the operator: "
+                        f"watcher_agent.py --step1-search-open ...")
+                logger.info("Step %d not generated: %s", step, _msg)
+                print(f"⏹️  {_msg}")
+                return {
+                    "success": False,
+                    "error": _msg,
+                    "blocked_by": "step1_no_open_search",
+                    STEP1_SEARCH_RESULT_KEY: _s1l.SEL_NO_OPEN_SEARCH,
+                    "next_seed_start": None,
+                }
+            if _sel.state == _s1l.SEL_SEARCH_COMPLETE:
+                _msg = (f"STEP1_SEARCH_COMPLETE: search {_sel.search.search_id} covers its "
+                        f"declared range [{_sel.search.range_start}, "
+                        f"{_sel.search.range_end_exclusive}) with credited chunks. No Step 1 "
+                        f"run was generated. History is unchanged and stays reportable.")
                 logger.info("Step %d not generated: %s", step, _msg)
                 print(f"✅ {_msg}")
                 return {
                     "success": False,
                     "error": _msg,
-                    "blocked_by": "seed_domain_complete",
-                    "seed_domain_complete": True,
+                    "blocked_by": "step1_search_complete",
+                    STEP1_SEARCH_RESULT_KEY: _s1l.SEL_SEARCH_COMPLETE,
+                    "step1_search_id": _sel.search.search_id,
                     "next_seed_start": None,
                 }
 
-            _next_start = _cursor.next_seed_start
-            if _next_start > 0:
-                final_params['seed_start'] = _next_start
-                # [S145-R1] Conditionalize fresh-study invariant on study_name presence.
-                # If operator explicitly provides study_name in default_params, preserve
-                # Optuna continuity across seed range boundaries (cross-session resume).
-                # Default behavior (no study_name) unchanged — fresh study on range advance.
-                _explicit_study = final_params.get('study_name', '')
-                if not _explicit_study:
-                    final_params['resume_study'] = False   # INVARIANT: new range = fresh study
-                    final_params['study_name'] = ''        # force fresh study name
-                    logger.info(
-                        f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
-                        f"for {_prng_type} — forcing fresh study (no explicit study_name)"
-                    )
-                else:
-                    final_params['resume_study'] = True
-                    logger.info(
-                        f"[COVERAGE] Step 1: advancing seed_start to {_next_start:,} "
-                        f"for {_prng_type} — preserving Optuna continuity "
-                        f"(study_name='{_explicit_study}' explicitly set) [S145-R1]"
-                    )
+            _s1_rec = _sel.search
+            _s1_refusals = []
+            # S6: the search id is WATCHER's, from the lookup. A params-supplied value
+            # carries no authority; a DIFFERENT one refuses.
+            _s1_supplied = final_params.get('step1_search_id') or ''
+            if _s1_supplied and _s1_supplied != _s1_rec.search_id:
+                _s1_refusals.append(
+                    f"step1_search_id presented={_s1_supplied} open search="
+                    f"{_s1_rec.search_id}")
+            # S4: the dataset presented must be the one the search was opened on.
+            # Stage 1 has no route to a named dataset version after the pointer moves
+            # (v1.1 §2.4): it REFUSES, naming both versions.
+            # The dataset is the one THIS run_step froze and verified in the P0.5 block
+            # above (`_p05_frozen`), never a second resolution of the pointer.
+            _s1_fz = locals().get('_p05_frozen')
+            _s1_fz_ver = getattr(_s1_fz, 'version_id', None) or ''
+            _s1_fz_sha = getattr(_s1_fz, 'sha256', None) or ''
+            if _s1_fz is None:
+                _s1_refusals.append(
+                    f"dataset: no dataset is frozen for this run; the search was opened on "
+                    f"{_s1_rec.dataset_version_id} ({_s1_rec.dataset_sha256})")
+            elif (_s1_fz_sha != _s1_rec.dataset_sha256
+                  or _s1_fz_ver != _s1_rec.dataset_version_id):
+                _s1_refusals.append(
+                    f"dataset presented={_s1_fz_ver} ({_s1_fz_sha}) "
+                    f"recorded={_s1_rec.dataset_version_id} ({_s1_rec.dataset_sha256}); the "
+                    f"current pointer is not the version this search was opened on")
+            # S4: every configuration field presented must equal the record. Pins are
+            # read from the invocation's operator bundle (the only authority), never
+            # from the record.
+            try:
+                _s1_presented = step1_presented_configuration(
+                    final_params, _step1_explicit_pin(step, _pin_bundle))
+                _s1_refusals.extend(_s1l.compare_configuration(_s1_presented, _s1_rec))
+            except Exception as _e:
+                _s1_refusals.append(f"configuration could not be computed: {_e}")
+            if _s1_refusals:
+                _msg = (f"STEP1_SEARCH_MISMATCH: refusing Step 1 for search "
+                        f"{_s1_rec.search_id} before dispatch: " + "; ".join(_s1_refusals))
+                logger.error("Step %d blocked before dispatch: %s", step, _msg)
+                print(f"❌ {_msg}")
+                return {
+                    "success": False,
+                    "error": _msg,
+                    "blocked_by": "step1_search_mismatch",
+                    "step1_search_id": _s1_rec.search_id,
+                }
+
+            # The start is the search's first gap, ASSIGNED EVEN WHEN IT IS 0.
+            _next_start = _sel.next_seed_start
+            final_params['seed_start'] = _next_start
+            final_params['max_seeds'] = min(
+                _s1_rec.chunk_seeds, _s1_rec.range_end_exclusive - _next_start)
+            final_params['step1_search_id'] = _s1_rec.search_id
+            _chunk_size = final_params['max_seeds']
+            # Study continuity, as before: an explicit study_name resumes it (the child
+            # checks it is the study this search owns, S9); otherwise a fresh study.
+            _explicit_study = final_params.get('study_name', '')
+            if not _explicit_study:
+                final_params['resume_study'] = False
+                final_params['study_name'] = ''
             else:
-                logger.info(
-                    f"[COVERAGE] Step 1: no certified coverage for {_prng_type} — "
-                    f"using seed_start=0 (the legacy exhaustive_progress tracker is "
-                    f"retained as telemetry and carries zero certified authority)"
-                )
+                final_params['resume_study'] = True
+            logger.info(
+                "[STEP1-SEARCH] Step 1: search %s first gap %s -> seed_start=%s "
+                "max_seeds=%s (study_name=%r)", _s1_rec.search_id, f"{_next_start:,}",
+                _next_start, final_params['max_seeds'], _explicit_study)
 
             # [S167] warm-start DB injection removed per Team Beta ruling.
             # Fresh runs must not be silently converted to historical warm-start runs.
@@ -2228,6 +2424,25 @@ class WatcherAgent:
                 "[S172-PIN] step1_pin_source=%s keys=%s",
                 STEP1_PIN_SOURCE_MARKER, ",".join(sorted(_step1_pin)),
             )
+
+        # [STEP1-SEARCH S6] A Step 1 run reached through WATCHER without its search id
+        # refuses: the id must have reached argv (hop 1 manifest -> builder), carrying
+        # exactly the open search's value. Checked on the built command, so a dropped
+        # manifest declaration or args_map entry is caught here, before dispatch.
+        if step == 1:
+            _s1_want = final_params.get('step1_search_id') or ''
+            _s1_got = None
+            if '--step1-search-id' in cmd:
+                _i = cmd.index('--step1-search-id')
+                _s1_got = cmd[_i + 1] if _i + 1 < len(cmd) else None
+            if not _s1_want or _s1_got != _s1_want:
+                _msg = (f"STEP1_SEARCH_ID_NOT_ROUTED: the built Step 1 command carries "
+                        f"--step1-search-id={_s1_got!r}, expected {_s1_want!r}. A Step 1 run "
+                        f"through WATCHER must name its search; refused before dispatch.")
+                logger.error("Step %d blocked before dispatch: %s", step, _msg)
+                print(f"❌ {_msg}")
+                return {"success": False, "error": _msg,
+                        "blocked_by": "step1_search_id_not_routed"}
 
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
         try:
@@ -2890,22 +3105,31 @@ class WatcherAgent:
                     results = {"success": False, "error": "No results returned"}
 
                 # [F-1 WATCHER FOLLOW-UP 2026-11-11] A finished sweep is a clean
-                # stop, not a failure. run_step's S145 §6 COMPLETE return carries
-                # success=False (no run was generated) plus seed_domain_complete=True.
+                # stop, not a failure. (History: run_step's S145 §6 COMPLETE return
+                # carried success=False plus seed_domain_complete=True; superseded below.)
                 # Since R-1 that would escalate (halt file + CRITICAL alert) and the
                 # halt would block every later run. Stop here instead: no
                 # evaluate_results / execute_decision / _handle_escalate, no halt
                 # file, no step advance, no CRITICAL notification. `is True` on the
                 # dedicated key only — never on blocked_by text. evaluate_results is
                 # deliberately unchanged: other callers still escalate on it.
+                # [STEP1-SEARCH stage 1] F-1's FORM, NOW ON THE SEARCH OUTCOME (v1.1 §3:
+                # "The clean stop reports the search's state"). run_step no longer returns
+                # the history-COMPLETE dict: the history union stopped deciding where Step
+                # 1 starts. The two clean stops are `no_open_search` and `search_complete`,
+                # read off the dedicated key with `in` only. A lookup failure is NOT a
+                # clean stop: it falls through to evaluate/escalate, as every block does.
                 # >>> F1_SEED_DOMAIN_COMPLETE_BEGIN
-                if isinstance(results, dict) and results.get("seed_domain_complete") is True:
+                if (isinstance(results, dict)
+                        and results.get(STEP1_SEARCH_RESULT_KEY)
+                        in step1_search_clean_stop_values()):
                     logger.info(
-                        "SEED_DOMAIN_COMPLETE — pipeline stopped cleanly at step %d: %s",
-                        step, results.get("error", ""),
+                        "STEP1_SEARCH_CLEAN_STOP (%s) — pipeline stopped cleanly at step %d: %s",
+                        results.get(STEP1_SEARCH_RESULT_KEY), step, results.get("error", ""),
                     )
-                    print(f"\n✅ SEED_DOMAIN_COMPLETE — pipeline stopped cleanly at "
-                          f"Step {step}; no halt file written.\n")
+                    print(f"\n✅ STEP1_SEARCH_CLEAN_STOP "
+                          f"({results.get(STEP1_SEARCH_RESULT_KEY)}) — pipeline stopped "
+                          f"cleanly at Step {step}; no halt file written.\n")
                     break
                 # <<< F1_SEED_DOMAIN_COMPLETE_END
 
@@ -3647,6 +3871,26 @@ def main():
                         help="Show last N decision records (default: 5)")
     parser.add_argument("--approve", action="store_true",
                         help="Approve pending Chapter 13 request and execute pipeline")
+    # [STEP1-SEARCH stage 1 — S2] The operator's ONLY route to open, close or read a Step
+    # 1 search. Opening writes the record and exits; it runs no step. The configuration
+    # (including the seven pins, via the existing --params route) is the one a run would
+    # present; the dataset is the current frozen dataset.
+    parser.add_argument("--step1-search-open", action="store_true",
+                        help="[STEP1-SEARCH] Open a Step 1 search (operator only). Needs "
+                             "--search-range-start, --search-range-end, --search-reason; "
+                             "configuration and pins via --params. Runs no step.")
+    parser.add_argument("--step1-search-close", type=str, default=None, metavar="SEARCH_ID",
+                        help="[STEP1-SEARCH] Close a search (a lifecycle event; needs "
+                             "--search-reason). Runs no step.")
+    parser.add_argument("--step1-search-status", action="store_true",
+                        help="[STEP1-SEARCH] Print which search Step 1 would run from, and "
+                             "its first gap. Runs no step.")
+    parser.add_argument("--search-range-start", type=int, default=None)
+    parser.add_argument("--search-range-end", type=int, default=None,
+                        help="exclusive end of the declared seed range")
+    parser.add_argument("--search-reason", type=str, default=None)
+    parser.add_argument("--search-repeat-of", type=str, default=None,
+                        help="an earlier search_id; an EXPLICIT repeat gets a new id")
     args = parser.parse_args()
 
     # [R-2 WATCHER SAFETY 2026-11-11] --dry-run must never launch. Only the
@@ -3691,6 +3935,10 @@ def main():
 
     # Create watcher
     watcher = WatcherAgent(config)
+
+    # [STEP1-SEARCH stage 1 — S2] operator search commands: write/read and exit.
+    if args.step1_search_open or args.step1_search_close or args.step1_search_status:
+        sys.exit(step1_search_cli(watcher, args))
 
     # Execute command
     if args.status:

@@ -60,7 +60,8 @@
         "staging-capacity-timeout": "staging_capacity_timeout",
         "staging-high-water-files": "staging_high_water_files",
         "staging-high-water-bytes": "staging_high_water_bytes",
-        "resume-checkpoint": "resume_checkpoint"
+        "resume-checkpoint": "resume_checkpoint",
+        "step1-search-id": "step1_search_id"
       },
       "distributed": true,
       "timeout_minutes": 1440
@@ -277,7 +278,8 @@
     "staging_capacity_timeout": 600.0,
     "staging_high_water_files": null,
     "staging_high_water_bytes": 17179869184,
-    "resume_checkpoint": ""
+    "resume_checkpoint": "",
+    "step1_search_id": ""
   },
   "evaluation_params": {
     "confidence_formula": "bit_length",
@@ -334,6 +336,12 @@
       "type": "str",
       "default": "",
       "description": "[S172 D6.2] Canonical 24-field accumulator checkpoint to resume. THE VALUE IS A CHECKPOINT RUN ID, never a path: a single opaque component matching [A-Za-z0-9._-]+, resolved only beneath .s172_checkpoint/<run_id>/. Empty = no resume. Must be declared HERE or WATCHER's step-scoped filter (watcher_agent.py:1312) drops the key before the command is built. Requires resume_study=true.",
+      "optimized_by": "Manual"
+    },
+    "step1_search_id": {
+      "type": "str",
+      "default": "",
+      "description": "[STEP1-SEARCH stage 1] The Step 1 search this chunk belongs to (utils/step1_search_ledger.py). NEVER supplied by the operator for a run: WATCHER sets it from the one open search for the family and mode set, and refuses a different value. Declared HERE because WATCHER's step-scoped filter drops an undeclared key; hop 1 of 3 (hop 2 window_optimizer.py --step1-search-id, hop 3 optimize_window(step1_search_id=...)). Opening a search is NOT a parameter: only the operator's WATCHER CLI (--step1-search-open) opens one.",
       "optimized_by": "Manual"
     }
   }
