@@ -40,6 +40,30 @@ Michael's design. Where one conflicts with his stated intent, his intent governs
 This rule does not excuse softening findings. Measured problems are reported with full
 force, as facts tied to hit rate. Full record: `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
 
+## Prior record first (READ BEFORE WRITING ANY PROPOSAL, BRIEF, REPORT OR REVIEW REQUEST)
+
+Owner rule, 2026-11-13. It binds Team Alpha in chat, every Claude Code session, and Beta.
+
+Every proposal, brief, report and review request **opens with a `## Prior record` section**,
+written before anything else in the document. It holds four things:
+
+1. **The searches run**, as commands with their scope, covering at least
+   `docs/PROJECT_FILE_CATALOG.md`, `docs/TB_RULING_*`, `docs/TB_RULING_REQUEST_*`,
+   `docs/PROPOSAL_*`, `docs/CHAPTER_*` and `docs/*_AUDIT.md`, `docs/TODO_CONSOLIDATED.md`,
+   `docs/BACKLOG.md`, `docs/LEADS.md` and `docs/exchange/`.
+2. **Every document found** that already decides, authorises, schedules or records the
+   subject, with file and section.
+3. **For each item the new document raises,** one label: `NEW`, `ALREADY RECORDED` (cite it),
+   or `CHANGES A RULING` (cite it; this needs the owner).
+4. **What was not searched:** the host, ser8 archives, the private repository, project files
+   that are not in the repository.
+
+A document without this section is not accepted. A session given one stops and reports it.
+Beta answers `NEEDS EVIDENCE`. The owner rejects it.
+
+A known, recorded item is a **status**, not a finding. Reporting it as new is an error.
+Read the hits; a keyword match is not a finding until the surrounding text has been read.
+
 ## 0. Run-as and identity (READ FIRST)
 
 - **Run as `michael`, never root.** The TFM tree lives under

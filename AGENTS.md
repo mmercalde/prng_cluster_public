@@ -35,6 +35,19 @@ baseline. An objection framed on the state-recovery standard is THEORETICAL by d
 This does not excuse softening findings. Full record:
 `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
 
+### Prior record (owner rule, 2026-11-13)
+
+Every request you receive must open with a `## Prior record` section: the searches the author
+ran, the governing documents found, a label for each item (`NEW`, `ALREADY RECORDED`,
+`CHANGES A RULING`), and what was not searched.
+
+- If the section is missing, or lists no searches, answer `NEEDS EVIDENCE` on every question,
+  say why in one line, and do not review the substance.
+- If the section is present, check it. A governing document it missed is your finding 1,
+  ahead of anything else.
+- Your own reviews follow the same rule you already hold: a known, recorded item is a status,
+  not a finding.
+
 ## 2. Who decides (owner rulings, 2026-11-11)
 
 - **Michael is the final authority.**
