@@ -280,9 +280,13 @@ component, and does not make the 2026-08-22 run's environment healthy. It explai
 
 ## L-4 — staging admission can stay held by a DONE stripe, and then nothing pumps
 
-**Status: OPEN.** Found 2026-11-14 by the miner seed-start work
-(`docs/CLAUDE_CODE_REPORT_MINER_SEED_START.md` §8). **No repair is made or authorized.** Not
-observed on the fleet; observed on CPU with fake workers.
+**Status: OPEN — REPAIRED ON CPU, NOT YET COMMITTED; fleet incidence still OPEN.** Found
+2026-11-14 by the miner seed-start work (`docs/CLAUDE_CODE_REPORT_MINER_SEED_START.md` §8).
+Repaired the same day under `docs/CLAUDE_CODE_INSTRUCTIONS_MINER_ADMISSION_STALL_20261114.md`
+(report `docs/CLAUDE_CODE_REPORT_MINER_ADMISSION_STALL.md`): the StripeComplete branch hands
+the pump to the staging executor after its finalize. Not observed on the fleet; observed and
+repaired on CPU with fake workers. Stays OPEN until a real fleet run shows no stall (only a
+failed follow-up closes a lead).
 
 **What it is.** The coordinator stages ONE attempt at a time and defers other attempts'
 sub-stripe frames (`_try_admit_locked`, `miner/range_miner_coordinator.py:4832`: a non-empty
@@ -316,22 +320,45 @@ trial would wait indefinitely; no capacity timeout covers deferred frames that a
   explicit prune restores it). Beta rates it an **OBJECTION · LIVE** to launching Run 4 until
   repaired.
 
+**Follow-ups RUN, 2026-11-14 (admission-stall brief; report §2–§3).**
+- *M, base `7b9184a`, no nudger* (`data/miner_stall/M/base/` in worktree
+  `/home/michael/tfm_worktrees/miner-stall`): 2 workers × 4 stripes **6 of 10 stalled**;
+  1 worker **0 of 10**; 4 workers × 2²⁶ **4 of 4**. Every stall showed the L-4 state
+  (`_admitted` = one `done` key; `_deferred` non-empty, unchanged ≥ 3 s). M ran while the
+  baseline suites loaded the CPU, so rates are timing-dependent.
+- *Correction to the earlier "1 worker: nothing can be deferred":* false. One worker's next
+  stripe's frames defer behind its own previous `done` stripe. Observed: 1 of 3 one-worker,
+  both-modes runs on base stalled while capturing the R4 control.
+- *Deterministic reproduction on the real `_serve_dispatch`* (gate G-UNIT): at base,
+  s0 `done`, `_admitted` = {s0}, `_deferred` = [s1], s1's shard `pending`.
+- *Repair and tests, no nudger anywhere* (`tests/test_s172_admission_stall.py`): forced
+  staging-before-StripeComplete and the opposite ordering, 2/4/25 workers, 20 runs each,
+  120/120 committed; Run 4's shape in three orderings committed; one-worker run byte-equal
+  to base; 4/4 mutants red.
+- *Attempt 9 (read-only, `logs/gate12_20260817_181819.log`):* `deferred_high_water=1679`,
+  5,364 of 5,896 frames deferred, staging 7.7 jobs/s. At 107 of 128 StripeCompletes the stripe
+  still had deferred frames none of which had been released, so its staging could not have
+  finished first (the safe order). Staging lag is the likely reason it did not stall
+  (inference).
+
 **Follow-ups OPEN.**
-- Beta R1 Q7: a separately reviewed repair, then a multi-worker test that forces
-  staging-before-StripeComplete **without** the harness pump nudger.
-- Does it occur with real workers? Fleet run logs (attempt 9 and later) — any stage tail with
-  `deferred_high_water > 0` and a stripe `done` long before the next staging job? Read-only.
+- Beta review of the repair (thread X-MINER-STALL).
+- Does it occur with real workers? Shown only that attempt 9 did not stall. The first fleet
+  run after the repair (Run 4) is the follow-up: it should commit with the coordinator
+  sha256 in the report's landing list. Read-only on its logs.
 - What latency between a final staging job and its StripeComplete makes it reachable with real
   payload sizes (fsync, hash)? Measurable on CPU with a real-size inline payload.
-- Which mechanism closes it is Beta's and the owner's (pump after the StripeComplete
-  finalize; prune in `enqueue_staging`; a periodic pump). Each touches certified staging
-  surfaces (SR-1 applies).
+- *Mechanism chosen (pending Beta and owner):* pump after the StripeComplete finalize, handed
+  to the staging executor. Prune in `enqueue_staging` is ruled out by the record (R-1 G1a pins
+  `enqueue_staging` byte-identical, and it would not fire when no further frame arrives). A
+  periodic pump is recovery, not prevention, and was not added.
 
 ---
 
 ## L-5 — WATCHER loses its own INFO records once Step 1's search comparison imports window_optimizer
 
-**Status: OPEN.** Found 2026-11-14 by the miner seed-start work (report §8). **No repair made.**
+**Status: OPEN — REPAIRED ON CPU, NOT YET COMMITTED; real-log confirmation OPEN.** Found
+2026-11-14 by the miner seed-start work (report §8).
 Introduced by stage 1 (`915d382` / `b1cd2fa`) by import order, not by any line it wrote.
 
 **What it is.** `step1_presented_configuration` (`agents/watcher_agent.py:769`) imports
@@ -347,6 +374,12 @@ result is unaffected.
 root level **20 → 30** across the first Step 1 dispatch; `EXEC CMD` records captured **0**.
 Control in the same process with the level restored: `EXEC CMD` **1**.
 
-**Follow-ups OPEN.** Confirm on a real WATCHER log file (the next Step 1 dispatch's log should
-lack `EXEC CMD` if this holds). Fix choice (restore the level after the import, or configure
-logging explicitly) is the owner's.
+**Repair, 2026-11-14 (admission-stall brief Part 3; not committed).**
+`step1_presented_configuration` restores the root level after the `window_optimizer` import
+(`agents/watcher_agent.py:776-787`). Gate G-L5 (`tests/test_s172_small_repairs_part3.py`):
+fresh process, real `run_step` on the pinned path, dispatch intercepted. `window_optimizer` is
+imported inside `run_step`, `EXEC CMD` **1**, `[S172-PIN]` **1**, root level 20 → 20. Mutant
+(base function): `EXEC CMD` 0, `[S172-PIN]` 0, root 20 → 30.
+
+**Follow-ups OPEN.** Confirm on a real WATCHER log file: the next Step 1 dispatch's log should
+now CONTAIN `EXEC CMD` and `[S172-PIN]`.
