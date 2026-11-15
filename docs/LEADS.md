@@ -275,3 +275,78 @@ trace. Stated as a bound, not as a hypothesis.
 
 **What this entry must NOT be read as.** It does not explain the freeze, does not exonerate any
 component, and does not make the 2026-08-22 run's environment healthy. It explains **11 packets**.
+
+---
+
+## L-4 — staging admission can stay held by a DONE stripe, and then nothing pumps
+
+**Status: OPEN.** Found 2026-11-14 by the miner seed-start work
+(`docs/CLAUDE_CODE_REPORT_MINER_SEED_START.md` §8). **No repair is made or authorized.** Not
+observed on the fleet; observed on CPU with fake workers.
+
+**What it is.** The coordinator stages ONE attempt at a time and defers other attempts'
+sub-stripe frames (`_try_admit_locked`, `miner/range_miner_coordinator.py:4832`: a non-empty
+`_admitted` refuses). An admitted key is removed only by `_prune_admitted_locked` (`:4783`),
+which runs only inside `_pump_deferred`, once the stripe is `done`. The staging-job path
+finalizes then pumps (`_run_staging_job`, `:8230`, `:8234`). The StripeComplete path
+finalizes and does not pump (`_serve_dispatch`, `:11897`). `enqueue_staging` does not prune.
+If a stripe's last staging job finishes **before** its StripeComplete is processed, the
+stripe reaches `done` on the non-pumping path, its key stays in `_admitted`, every later
+attempt is deferred, and no further pump occurs. With `serve_timeout=None` (production) the
+trial would wait indefinitely; no capacity timeout covers deferred frames that are not paused.
+
+**Where found.** CPU, real `run_trial_miner` → `serve_trial`, fake workers over loopback
+(`tests/fixtures/miner_seed_start_driver.py`), worktree at base `b11b6fd` + this brief's diff
+(the defect surfaces are untouched by it).
+
+**Follow-ups RUN.**
+- *Mechanism, observed directly:* stalled run, live coordinator object: `_admitted` =
+  {`…__st0_s5`} with s5 `done`; `_deferred` = [s6, s7]; trial aborted at serve_timeout.
+- *Rate, subject vs control* (`data/miner_seed_start/leads/l4_result.json` in the worktree):
+  2 workers, 4×250-seed stripes, no nudger: **1 of 10 stalled**; 1 worker (nothing can be
+  deferred): **0 of 10**. 4 workers × 2²⁶-seed stripes: **4 of 4** attempts stalled before the
+  harness nudger was added.
+- *Recurrence in the record:* the stage-1 report's demo
+  (`docs/CLAUDE_CODE_REPORT_STEP1_SEARCH_RECORD_STAGE1.md` §6.2) had its 4th stripe
+  "cancelled by the fixture's 30 s serve_timeout" — the same shape, read then as a fake-worker
+  limit.
+
+- *Beta, X-MINER-START R1 Q7:* mechanism confirmed independently by injecting a DONE admission
+  holder on a real coordinator over a throwaway ledger (next admission stays false; an
+  explicit prune restores it). Beta rates it an **OBJECTION · LIVE** to launching Run 4 until
+  repaired.
+
+**Follow-ups OPEN.**
+- Beta R1 Q7: a separately reviewed repair, then a multi-worker test that forces
+  staging-before-StripeComplete **without** the harness pump nudger.
+- Does it occur with real workers? Fleet run logs (attempt 9 and later) — any stage tail with
+  `deferred_high_water > 0` and a stripe `done` long before the next staging job? Read-only.
+- What latency between a final staging job and its StripeComplete makes it reachable with real
+  payload sizes (fsync, hash)? Measurable on CPU with a real-size inline payload.
+- Which mechanism closes it is Beta's and the owner's (pump after the StripeComplete
+  finalize; prune in `enqueue_staging`; a periodic pump). Each touches certified staging
+  surfaces (SR-1 applies).
+
+---
+
+## L-5 — WATCHER loses its own INFO records once Step 1's search comparison imports window_optimizer
+
+**Status: OPEN.** Found 2026-11-14 by the miner seed-start work (report §8). **No repair made.**
+Introduced by stage 1 (`915d382` / `b1cd2fa`) by import order, not by any line it wrote.
+
+**What it is.** `step1_presented_configuration` (`agents/watcher_agent.py:769`) imports
+`window_optimizer`. Its import chain (sklearn → `scipy.stats` → `numpy.testing` →
+`numpy.distutils.log` → setuptools `_distutils/log.py:54`) sets the **root** logger to
+WARNING. `run_step` calls it in the S4 comparison, before it builds the command, so every
+later INFO record in that WATCHER process is dropped — including `EXEC CMD` and the
+`[S172-PIN] step1_pin_source` record at `:2424`. The structured provenance in the step
+result is unaffected.
+
+**Follow-ups RUN** (`data/miner_seed_start/leads/l5_run.log` in the worktree). Fresh process,
+`window_optimizer` not yet imported, real `run_step` (dispatch intercepted), open search:
+root level **20 → 30** across the first Step 1 dispatch; `EXEC CMD` records captured **0**.
+Control in the same process with the level restored: `EXEC CMD` **1**.
+
+**Follow-ups OPEN.** Confirm on a real WATCHER log file (the next Step 1 dispatch's log should
+lack `EXEC CMD` if this holds). Fix choice (restore the level after the import, or configure
+logging explicitly) is the owner's.
