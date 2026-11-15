@@ -1,0 +1,3912 @@
+{
+ "completion_sentinel": "CAPTURE COMPLETE",
+ "coordinator_sha256": "59888834bb1c86a270783f1b9fce7ede6b224fb666c47d3a2cabc8c11288c71b",
+ "driver_sha256": "2d264a66fdaa047daf91e8149952df4a64e44ab39d6b8e64856f3a61c0c6b542",
+ "head_at_capture": "b11b6fde7ab57321b42c418f87af8cc2c75c814d",
+ "purpose": "R7 zero-start control, captured before any edit",
+ "shapes": {
+  "A9": {
+   "assigns": [
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 0,
+     "stripe_id": "<RUN>__st0_s0",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1006632960,
+     "stripe_id": "<RUN>__st0_s15",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1073741824,
+     "stripe_id": "<RUN>__st0_s16",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1140850688,
+     "stripe_id": "<RUN>__st0_s17",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1207959552,
+     "stripe_id": "<RUN>__st0_s18",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1275068416,
+     "stripe_id": "<RUN>__st0_s19",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 134217728,
+     "stripe_id": "<RUN>__st0_s2",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1342177280,
+     "stripe_id": "<RUN>__st0_s20",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1409286144,
+     "stripe_id": "<RUN>__st0_s21",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1476395008,
+     "stripe_id": "<RUN>__st0_s22",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1543503872,
+     "stripe_id": "<RUN>__st0_s23",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1610612736,
+     "stripe_id": "<RUN>__st0_s24",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1677721600,
+     "stripe_id": "<RUN>__st0_s25",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1744830464,
+     "stripe_id": "<RUN>__st0_s26",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1811939328,
+     "stripe_id": "<RUN>__st0_s27",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1879048192,
+     "stripe_id": "<RUN>__st0_s28",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 1946157056,
+     "stripe_id": "<RUN>__st0_s29",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 201326592,
+     "stripe_id": "<RUN>__st0_s3",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 2013265920,
+     "stripe_id": "<RUN>__st0_s30",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 2080374784,
+     "stripe_id": "<RUN>__st0_s31",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 268435456,
+     "stripe_id": "<RUN>__st0_s4",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 335544320,
+     "stripe_id": "<RUN>__st0_s5",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 402653184,
+     "stripe_id": "<RUN>__st0_s6",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 469762048,
+     "stripe_id": "<RUN>__st0_s7",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 536870912,
+     "stripe_id": "<RUN>__st0_s8",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 603979776,
+     "stripe_id": "<RUN>__st0_s9",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 67108864,
+     "stripe_id": "<RUN>__st0_s1",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 671088640,
+     "stripe_id": "<RUN>__st0_s10",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 738197504,
+     "stripe_id": "<RUN>__st0_s11",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 805306368,
+     "stripe_id": "<RUN>__st0_s12",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 872415232,
+     "stripe_id": "<RUN>__st0_s13",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 1,
+     "prng_type": "java_lcg",
+     "seed_count": 67108864,
+     "seed_start": 939524096,
+     "stripe_id": "<RUN>__st0_s14",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 0,
+     "stripe_id": "<RUN>__st2_s0",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1006632960,
+     "stripe_id": "<RUN>__st2_s15",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1073741824,
+     "stripe_id": "<RUN>__st2_s16",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1140850688,
+     "stripe_id": "<RUN>__st2_s17",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1207959552,
+     "stripe_id": "<RUN>__st2_s18",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1275068416,
+     "stripe_id": "<RUN>__st2_s19",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 134217728,
+     "stripe_id": "<RUN>__st2_s2",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1342177280,
+     "stripe_id": "<RUN>__st2_s20",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1409286144,
+     "stripe_id": "<RUN>__st2_s21",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1476395008,
+     "stripe_id": "<RUN>__st2_s22",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1543503872,
+     "stripe_id": "<RUN>__st2_s23",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1610612736,
+     "stripe_id": "<RUN>__st2_s24",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1677721600,
+     "stripe_id": "<RUN>__st2_s25",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1744830464,
+     "stripe_id": "<RUN>__st2_s26",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1811939328,
+     "stripe_id": "<RUN>__st2_s27",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1879048192,
+     "stripe_id": "<RUN>__st2_s28",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 1946157056,
+     "stripe_id": "<RUN>__st2_s29",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 201326592,
+     "stripe_id": "<RUN>__st2_s3",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 2013265920,
+     "stripe_id": "<RUN>__st2_s30",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 2080374784,
+     "stripe_id": "<RUN>__st2_s31",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 268435456,
+     "stripe_id": "<RUN>__st2_s4",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 335544320,
+     "stripe_id": "<RUN>__st2_s5",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 402653184,
+     "stripe_id": "<RUN>__st2_s6",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 469762048,
+     "stripe_id": "<RUN>__st2_s7",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 536870912,
+     "stripe_id": "<RUN>__st2_s8",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 603979776,
+     "stripe_id": "<RUN>__st2_s9",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 67108864,
+     "stripe_id": "<RUN>__st2_s1",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 671088640,
+     "stripe_id": "<RUN>__st2_s10",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 738197504,
+     "stripe_id": "<RUN>__st2_s11",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 805306368,
+     "stripe_id": "<RUN>__st2_s12",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 872415232,
+     "stripe_id": "<RUN>__st2_s13",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 67108864,
+     "seed_start": 939524096,
+     "stripe_id": "<RUN>__st2_s14",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 0,
+     "stripe_id": "<RUN>__st3_s0",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1006632960,
+     "stripe_id": "<RUN>__st3_s15",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1073741824,
+     "stripe_id": "<RUN>__st3_s16",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1140850688,
+     "stripe_id": "<RUN>__st3_s17",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1207959552,
+     "stripe_id": "<RUN>__st3_s18",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1275068416,
+     "stripe_id": "<RUN>__st3_s19",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 134217728,
+     "stripe_id": "<RUN>__st3_s2",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1342177280,
+     "stripe_id": "<RUN>__st3_s20",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1409286144,
+     "stripe_id": "<RUN>__st3_s21",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1476395008,
+     "stripe_id": "<RUN>__st3_s22",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1543503872,
+     "stripe_id": "<RUN>__st3_s23",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1610612736,
+     "stripe_id": "<RUN>__st3_s24",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1677721600,
+     "stripe_id": "<RUN>__st3_s25",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1744830464,
+     "stripe_id": "<RUN>__st3_s26",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1811939328,
+     "stripe_id": "<RUN>__st3_s27",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1879048192,
+     "stripe_id": "<RUN>__st3_s28",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1946157056,
+     "stripe_id": "<RUN>__st3_s29",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 201326592,
+     "stripe_id": "<RUN>__st3_s3",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 2013265920,
+     "stripe_id": "<RUN>__st3_s30",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 2080374784,
+     "stripe_id": "<RUN>__st3_s31",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 268435456,
+     "stripe_id": "<RUN>__st3_s4",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 335544320,
+     "stripe_id": "<RUN>__st3_s5",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 402653184,
+     "stripe_id": "<RUN>__st3_s6",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 469762048,
+     "stripe_id": "<RUN>__st3_s7",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 536870912,
+     "stripe_id": "<RUN>__st3_s8",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 603979776,
+     "stripe_id": "<RUN>__st3_s9",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 67108864,
+     "stripe_id": "<RUN>__st3_s1",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 671088640,
+     "stripe_id": "<RUN>__st3_s10",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 738197504,
+     "stripe_id": "<RUN>__st3_s11",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 805306368,
+     "stripe_id": "<RUN>__st3_s12",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 872415232,
+     "stripe_id": "<RUN>__st3_s13",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 4,
+     "prng_type": "java_lcg_hybrid_reverse",
+     "seed_count": 67108864,
+     "seed_start": 939524096,
+     "stripe_id": "<RUN>__st3_s14",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 0,
+     "stripe_id": "<RUN>__st1_s0",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1006632960,
+     "stripe_id": "<RUN>__st1_s15",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1073741824,
+     "stripe_id": "<RUN>__st1_s16",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1140850688,
+     "stripe_id": "<RUN>__st1_s17",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1207959552,
+     "stripe_id": "<RUN>__st1_s18",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1275068416,
+     "stripe_id": "<RUN>__st1_s19",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 134217728,
+     "stripe_id": "<RUN>__st1_s2",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1342177280,
+     "stripe_id": "<RUN>__st1_s20",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1409286144,
+     "stripe_id": "<RUN>__st1_s21",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1476395008,
+     "stripe_id": "<RUN>__st1_s22",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1543503872,
+     "stripe_id": "<RUN>__st1_s23",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1610612736,
+     "stripe_id": "<RUN>__st1_s24",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1677721600,
+     "stripe_id": "<RUN>__st1_s25",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1744830464,
+     "stripe_id": "<RUN>__st1_s26",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1811939328,
+     "stripe_id": "<RUN>__st1_s27",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1879048192,
+     "stripe_id": "<RUN>__st1_s28",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 1946157056,
+     "stripe_id": "<RUN>__st1_s29",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 201326592,
+     "stripe_id": "<RUN>__st1_s3",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 2013265920,
+     "stripe_id": "<RUN>__st1_s30",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 2080374784,
+     "stripe_id": "<RUN>__st1_s31",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 268435456,
+     "stripe_id": "<RUN>__st1_s4",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 335544320,
+     "stripe_id": "<RUN>__st1_s5",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 402653184,
+     "stripe_id": "<RUN>__st1_s6",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 469762048,
+     "stripe_id": "<RUN>__st1_s7",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 536870912,
+     "stripe_id": "<RUN>__st1_s8",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 603979776,
+     "stripe_id": "<RUN>__st1_s9",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 67108864,
+     "stripe_id": "<RUN>__st1_s1",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 671088640,
+     "stripe_id": "<RUN>__st1_s10",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 738197504,
+     "stripe_id": "<RUN>__st1_s11",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 805306368,
+     "stripe_id": "<RUN>__st1_s12",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 872415232,
+     "stripe_id": "<RUN>__st1_s13",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_reverse",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 2,
+     "prng_type": "java_lcg_reverse",
+     "seed_count": 67108864,
+     "seed_start": 939524096,
+     "stripe_id": "<RUN>__st1_s14",
+     "trial_number": 1
+    }
+   ],
+   "committed": true,
+   "digest": "972d23b4e5a3f147dd5845d48835a99c135d1c404864144e36113bfb08603cb6",
+   "evidence": {
+    "route": "range_miner",
+    "run_id": "<RUN>",
+    "source": "miner ledger stripe rows (state done, contiguous) for this run_id",
+    "swept_intervals": {
+     "1": [
+      0,
+      2147483648
+     ],
+     "2": [
+      0,
+      2147483648
+     ],
+     "3": [
+      0,
+      2147483648
+     ],
+     "4": [
+      0,
+      2147483648
+     ]
+    }
+   },
+   "params": {
+    "stripe_size": 67108864,
+    "test_both_modes": true,
+    "total_seeds": 2147483648
+   },
+   "sink": {
+    "aborts": 0,
+    "commits": 1,
+    "published": 128
+   },
+   "state": "committed",
+   "stripes": [
+    [
+     "<RUN>__st0_s0",
+     0,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s1",
+     67108864,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s2",
+     134217728,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s3",
+     201326592,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s4",
+     268435456,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s5",
+     335544320,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s6",
+     402653184,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s7",
+     469762048,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s8",
+     536870912,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s9",
+     603979776,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s10",
+     671088640,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s11",
+     738197504,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s12",
+     805306368,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s13",
+     872415232,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s14",
+     939524096,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s15",
+     1006632960,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s16",
+     1073741824,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s17",
+     1140850688,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s18",
+     1207959552,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s19",
+     1275068416,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s20",
+     1342177280,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s21",
+     1409286144,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s22",
+     1476395008,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s23",
+     1543503872,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s24",
+     1610612736,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s25",
+     1677721600,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s26",
+     1744830464,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s27",
+     1811939328,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s28",
+     1879048192,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s29",
+     1946157056,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s30",
+     2013265920,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s31",
+     2080374784,
+     67108864,
+     1,
+     "java_lcg",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s0",
+     0,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s1",
+     67108864,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s2",
+     134217728,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s3",
+     201326592,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s4",
+     268435456,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s5",
+     335544320,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s6",
+     402653184,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s7",
+     469762048,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s8",
+     536870912,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s9",
+     603979776,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s10",
+     671088640,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s11",
+     738197504,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s12",
+     805306368,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s13",
+     872415232,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s14",
+     939524096,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s15",
+     1006632960,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s16",
+     1073741824,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s17",
+     1140850688,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s18",
+     1207959552,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s19",
+     1275068416,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s20",
+     1342177280,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s21",
+     1409286144,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s22",
+     1476395008,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s23",
+     1543503872,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s24",
+     1610612736,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s25",
+     1677721600,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s26",
+     1744830464,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s27",
+     1811939328,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s28",
+     1879048192,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s29",
+     1946157056,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s30",
+     2013265920,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st1_s31",
+     2080374784,
+     67108864,
+     2,
+     "java_lcg_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s0",
+     0,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s1",
+     67108864,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s2",
+     134217728,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s3",
+     201326592,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s4",
+     268435456,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s5",
+     335544320,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s6",
+     402653184,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s7",
+     469762048,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s8",
+     536870912,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s9",
+     603979776,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s10",
+     671088640,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s11",
+     738197504,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s12",
+     805306368,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s13",
+     872415232,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s14",
+     939524096,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s15",
+     1006632960,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s16",
+     1073741824,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s17",
+     1140850688,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s18",
+     1207959552,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s19",
+     1275068416,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s20",
+     1342177280,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s21",
+     1409286144,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s22",
+     1476395008,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s23",
+     1543503872,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s24",
+     1610612736,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s25",
+     1677721600,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s26",
+     1744830464,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s27",
+     1811939328,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s28",
+     1879048192,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s29",
+     1946157056,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s30",
+     2013265920,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st2_s31",
+     2080374784,
+     67108864,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s0",
+     0,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s1",
+     67108864,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s2",
+     134217728,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s3",
+     201326592,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s4",
+     268435456,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s5",
+     335544320,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s6",
+     402653184,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s7",
+     469762048,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s8",
+     536870912,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s9",
+     603979776,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s10",
+     671088640,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s11",
+     738197504,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s12",
+     805306368,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s13",
+     872415232,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s14",
+     939524096,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s15",
+     1006632960,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s16",
+     1073741824,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s17",
+     1140850688,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s18",
+     1207959552,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s19",
+     1275068416,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s20",
+     1342177280,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s21",
+     1409286144,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s22",
+     1476395008,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s23",
+     1543503872,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s24",
+     1610612736,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s25",
+     1677721600,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s26",
+     1744830464,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s27",
+     1811939328,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s28",
+     1879048192,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s29",
+     1946157056,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s30",
+     2013265920,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ],
+    [
+     "<RUN>__st3_s31",
+     2080374784,
+     67108864,
+     4,
+     "java_lcg_hybrid_reverse",
+     "done"
+    ]
+   ]
+  },
+  "M": {
+   "assigns": [
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 250,
+     "seed_start": 0,
+     "stripe_id": "<RUN>__st0_s0",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 250,
+     "seed_start": 250,
+     "stripe_id": "<RUN>__st0_s1",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 250,
+     "seed_start": 500,
+     "stripe_id": "<RUN>__st0_s2",
+     "trial_number": 1
+    },
+    {
+     "attempt": 0,
+     "family_name": "java_lcg_hybrid",
+     "payload": {
+      "dataset": "<WORK>/dataset.json",
+      "dataset_sha256": "58e5cf34593b3a955fd3c15ed51efa05987a1ef690d6d7d74f530a2178b6d596",
+      "generator_phase": 0,
+      "min_match_threshold": 0.25,
+      "phase2_threshold": 0.25,
+      "residue_sha256": "a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4",
+      "sessions": null,
+      "window_anchor": 0,
+      "window_size": 3
+     },
+     "phase": 3,
+     "prng_type": "java_lcg_hybrid",
+     "seed_count": 250,
+     "seed_start": 750,
+     "stripe_id": "<RUN>__st0_s3",
+     "trial_number": 1
+    }
+   ],
+   "committed": true,
+   "digest": "737e803754f81f739d93aa7788715d92f6158d8be6f63483e85acafd552d4a72",
+   "evidence": {
+    "route": "range_miner",
+    "run_id": "<RUN>",
+    "source": "miner ledger stripe rows (state done, contiguous) for this run_id",
+    "swept_intervals": {
+     "3": [
+      0,
+      1000
+     ]
+    }
+   },
+   "params": {
+    "family_name": "java_lcg_hybrid",
+    "phase": 3,
+    "stripe_size": 250,
+    "test_both_modes": false,
+    "total_seeds": 1000
+   },
+   "sink": {
+    "aborts": 0,
+    "commits": 1,
+    "published": 4
+   },
+   "state": "committed",
+   "stripes": [
+    [
+     "<RUN>__st0_s0",
+     0,
+     250,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s1",
+     250,
+     250,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s2",
+     500,
+     250,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ],
+    [
+     "<RUN>__st0_s3",
+     750,
+     250,
+     3,
+     "java_lcg_hybrid",
+     "done"
+    ]
+   ]
+  }
+ },
+ "tracked_tree_clean": true
+}

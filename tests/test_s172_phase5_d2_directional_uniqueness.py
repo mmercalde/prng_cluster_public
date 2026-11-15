@@ -478,7 +478,7 @@ def _drive_overlap_trial(tmp, sink):
                 seed_cap_nvidia_hybrid=D2A_CAP, seed_cap_amd_hybrid=D2A_CAP,
                 skip_min=1, skip_max=9, window_size=5, offset=2,
                 sessions=["midday", "evening"], serve_timeout=_SERVE_TIMEOUT,
-                _serve=_serve)
+                _serve=_serve, seed_start=0)
         except Exception:  # noqa: BLE001
             holder["err"] = traceback.format_exc()
 

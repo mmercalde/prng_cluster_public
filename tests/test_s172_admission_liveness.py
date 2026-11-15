@@ -373,7 +373,7 @@ def _drive(mod, *, worker_specs, expected_workers, admission_timeout,
                 staging_dir=os.path.join(tmp, "stg"),
                 phase5_sink=sink, listen_sock=lsock,
                 skip_min=0, skip_max=0, window_anchor=0, generator_phase=0,
-                window_size=3,
+                window_size=3, seed_start=0,
                 compute_lease_timeout=lease_timeout,
                 # PRODUCTION DEFAULT in the live arm: None. Nothing here can end
                 # the run except serve_trial's own terminal decision.

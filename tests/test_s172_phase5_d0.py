@@ -666,7 +666,8 @@ def _assert_entrypoint_fails_closed(tmp, ds, label, kw):
         run_trial_miner("runFC", None, 5, "java_lcg", [1, 2, 3], 30, 0.25, 0.25,
                         False, ds, staging_dir=stg, phase5_sink=sink,
                         listen_sock=lsock, worker_pool_size=1,
-                        serve_timeout=0.25, serve_read_deadline=0.25, **kw)
+                        serve_timeout=0.25, serve_read_deadline=0.25,
+                        **{"seed_start": 0, **kw})
     except MinerMetadataError:
         raised = True
     finally:
@@ -695,7 +696,8 @@ def _assert_entrypoint_persists(tmp, ds, run_id, kw):
         result = run_trial_miner(
             run_id, None, 5, "java_lcg", [1, 2, 3], 30, 0.25, 0.25, False, ds,
             staging_dir=stg, phase5_sink=sink, listen_sock=lsock,
-            worker_pool_size=1, serve_timeout=1.0, serve_read_deadline=1.0, **kw)
+            worker_pool_size=1, serve_timeout=1.0, serve_read_deadline=1.0,
+            **{"seed_start": 0, **kw})
     finally:
         lsock.close()
     assert isinstance(result, dict), "complete mandatory args must pass the guard and serve"

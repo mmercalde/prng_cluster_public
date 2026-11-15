@@ -1191,7 +1191,7 @@ def gate11_capacity_timeout_terminates_outside_the_matrix():
                     # filesystem, so the gate red on any host with <16 GiB free
                     # in $TMPDIR for a reason unrelated to what it proves.
                     staging_high_water_bytes=64 * 1024 * 1024,
-                    serve_timeout=45.0)
+                    serve_timeout=45.0, seed_start=0)
             except Exception:
                 holder["err"] = traceback.format_exc()
 
@@ -2465,7 +2465,7 @@ def gate_summary_never_masks_the_sizing_terminal():
                     window_size=3,
                     staging_workers=2, staging_queue_depth=0,
                     staging_high_water_bytes=64 * 1024 * 1024,
-                    serve_timeout=45.0)
+                    serve_timeout=45.0, seed_start=0)
             except Exception:                                 # noqa: BLE001
                 holder["err"] = traceback.format_exc()
 
@@ -2918,7 +2918,7 @@ def _bound_derivation_failure_arm(label, exc_name, mangle):
                     window_size=3,
                     staging_workers=2, staging_queue_depth=0,
                     staging_high_water_bytes=64 * 1024 * 1024,
-                    serve_timeout=45.0)
+                    serve_timeout=45.0, seed_start=0)
             except Exception:                                 # noqa: BLE001
                 holder["err"] = traceback.format_exc()
 
@@ -4195,7 +4195,7 @@ def _prov_serve_fail_closed(tmp):
                 window_size=3,
                 staging_high_water_files=None,          # would be ADMITTED
                 staging_high_water_bytes=64 * 1024 * 1024,
-                serve_timeout=45.0)
+                serve_timeout=45.0, seed_start=0)
         except Exception:
             holder["err"] = traceback.format_exc()
 
@@ -4638,7 +4638,7 @@ def gate_trial_retention_preflight_dispatches_nothing():
                     # 1 cannot retain it.
                     staging_high_water_files=1,
                     staging_high_water_bytes=64 * 1024 * 1024,
-                    serve_timeout=45.0)
+                    serve_timeout=45.0, seed_start=0)
             except Exception:
                 holder["err"] = traceback.format_exc()
 

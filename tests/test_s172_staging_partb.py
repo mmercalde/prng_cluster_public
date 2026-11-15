@@ -337,7 +337,7 @@ def gate_fail_early_before_any_dispatch():
             test_both_modes=False, dataset_path="daily3.json",
             miner_output_dir=None, staging_dir=None,          # the production shape
             window_size=5, sessions=["evening"], offset=0,
-            _serve=_never),
+            _serve=_never, seed_start=0),
         must_contain=["not configured", "rule 4"])
     assert called["n"] == 0, "serve/dispatch was reached despite invalid staging config"
 
@@ -366,7 +366,7 @@ def gate_fail_early_capacity_before_dispatch():
                 test_both_modes=False, dataset_path="daily3.json",
                 staging_dir=tmp, staging_high_water_bytes=avail + 64 * GiB,
                 window_size=5, sessions=["evening"], offset=0,
-                _serve=_never),
+                _serve=_never, seed_start=0),
             must_contain="capacity-invalid")
         assert called["n"] == 0, "dispatch reached despite capacity-invalid config"
 

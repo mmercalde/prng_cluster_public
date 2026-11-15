@@ -671,36 +671,45 @@ except ImportError:
 # MAIN FUNCTIONS
 # ============================================================================
 
-class Step1MinerStartUnsupportedError(RuntimeError):
-    """G-MINER-START: the RANGE-MINER route cannot sweep from a non-zero seed_start."""
+class Step1RouteStartUnsupportedError(RuntimeError):
+    """A Step 1 route that cannot sweep from a non-zero seed_start was asked to."""
 
 
-def assert_miner_seed_start_supported(seed_start, use_range_miner, *, context=""):
-    """[STEP1-SEARCH stage 1 — G-MINER-START] Refuse, BEFORE DISPATCH, a RANGE-MINER Step 1
-    run whose seed_start is not 0.
+def assert_step1_route_seed_start_supported(seed_start, *, route="",
+                                            use_persistent_workers=False,
+                                            use_zmq_sqlite=False, context=""):
+    """[MINER SEED-START R4/R5] Refuse, BEFORE DISPATCH, a Step 1 run whose route
+    cannot sweep from `seed_start`.
 
-    WHY (docs/CLAUDE_CODE_REPORT_STEP1_SEARCH_RECORD_STAGE1.md §6): the miner route never
-    receives Step 1's seed_start. `run_bidirectional_test` passes only
-    `total_seeds=seed_count` (window_optimizer_integration_final.py:1450), `run_trial_miner`
-    has no start parameter, and `serve_trial` calls `assign_stripes` without `base_start`
-    (miner/range_miner_coordinator.py:10324-10326), so the stripes cover [0, seed_count).
-    Shown executed on CPU with seed_start=2147483648: stripes [0,250)...[750,1000). The
-    finalizer would meanwhile be told [seed_start, seed_start+seed_count).
+    Replaces G-MINER-START (stage 1, owner ruling 2026-11-14 item 2a), which refused
+    the RANGE-MINER route at any non-zero start because the miner swept from 0. The
+    miner now carries the start into its stripes (run_trial_miner `seed_start` ->
+    serve_trial -> assign_stripes `base_start`), so the miner route is NOT refused.
 
-    REPLACED BY THE base_start BRIEF. Owner ruling 2026-11-14 item 2b: the route that
-    carries base_start through run_trial_miner/serve_trial is a separate brief, reviewed
-    before commit and scheduled before Run 4. When it lands, THIS GUARD is what it
-    replaces (together with its test G-MINER-START in
-    tests/test_step1_search_record_stage1.py). The S7 interval-evidence guard stays.
+    PWC and ZMQ still partition from a fixed 0: each is handed `total_seeds` only
+    (persistent_worker_coordinator.py:1276, zmq_sqlite_coordinator.py:831). Owner
+    decision 2026-11-14: a Step 1 run on either route with seed_start != 0 refuses
+    before any dispatch, naming the reason. Neither coordinator file is edited; at
+    seed_start == 0 this is a no-op and both routes are unchanged. The legacy
+    coordinator reads Args.seed_start and is not refused.
+
+    Two callers name the route: the child's entry (`run_bayesian_optimization`, and
+    `run_with_config` for every planned iteration) passes the two route flags; the
+    per-trial check in `run_bidirectional_test` passes `route=` for the branch it is in.
+    The S7 interval guard (credit only when swept == requested) is separate and
+    unchanged.
     """
-    if use_range_miner and seed_start != 0:
-        raise Step1MinerStartUnsupportedError(
-            f"G-MINER-START ({context}): refusing a RANGE-MINER Step 1 run at "
-            f"seed_start={seed_start}. The miner path sweeps from 0 regardless of "
-            f"seed_start (run_trial_miner has no start parameter; serve_trial calls "
-            f"assign_stripes without base_start), so this run would sweep "
-            f"[0, seed_count) while the finalizer is told [{seed_start}, ...). "
-            f"Refused before dispatch until the base_start brief lands.")
+    if route:
+        use_persistent_workers = use_persistent_workers or route == "pwc"
+        use_zmq_sqlite = use_zmq_sqlite or route == "zmq"
+    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):
+        name = "PWC" if use_persistent_workers else "ZMQ"
+        raise Step1RouteStartUnsupportedError(
+            f"STEP1_ROUTE_START_UNSUPPORTED ({context}): refusing a {name} ({name.lower()}) "
+            f"Step 1 run at seed_start={seed_start}. The {name} route is handed "
+            f"total_seeds only and partitions from 0, so it would sweep [0, seed_count) "
+            f"while the run is labelled [{seed_start}, ...). Refused before dispatch. "
+            f"Use the RANGE-MINER route (--use-range-miner), which carries the start.")
 
 
 def run_bayesian_optimization(
@@ -803,9 +812,13 @@ def run_bayesian_optimization(
               "execution, no staging, no coverage mutation.")
         raise
 
-    # [STEP1-SEARCH stage 1 — G-MINER-START] owner ruling 2026-11-14, item 2a.
-    assert_miner_seed_start_supported(seed_start, use_range_miner,
-                                      context=f"window_optimizer CLI {prng_type}")
+    # [MINER SEED-START R4/R5] G-MINER-START is replaced: the RANGE-MINER route now
+    # carries seed_start and is not refused; PWC and ZMQ, which partition from 0, are
+    # refused at a non-zero start (owner decision 2026-11-14). Before the coordinator
+    # exists, as G-MINER-START was.
+    assert_step1_route_seed_start_supported(
+        seed_start, use_persistent_workers=use_persistent_workers,
+        use_zmq_sqlite=use_zmq_sqlite, context=f"window_optimizer CLI {prng_type}")
 
     if not COORDINATOR_AVAILABLE:
         print("❌ Error: coordinator.py not available")
@@ -1235,6 +1248,15 @@ def run_with_config(
               f"{iterations!r}. No fleet work assignment, no sieve execution, "
               f"no staging, no coverage mutation.")
         raise
+
+    # [MINER SEED-START R5] The WHOLE plan, before the coordinator exists: iteration i
+    # sweeps [i * max_seeds, (i+1) * max_seeds), so on PWC every iteration after the
+    # first has a non-zero start that PWC cannot honour (it partitions from 0). The
+    # plan is refused as a whole rather than after iteration 1 has already run.
+    for _rs_i in range(_s145_iterations):
+        assert_step1_route_seed_start_supported(
+            _rs_i * max_seeds, use_persistent_workers=use_persistent_workers,
+            context=f"run_with_config plan iteration {_rs_i + 1}/{_s145_iterations}")
 
     if not COORDINATOR_AVAILABLE:
         print("❌ Error: coordinator.py not available")

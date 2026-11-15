@@ -10,6 +10,7 @@ patch, never of two different harnesses.
 """
 
 from . import run4_routing_clean_control as FX
+from . import run4_search_fixture as S
 
 
 def build_argv_with_pin(agent_mod, params, pin_bundle):
@@ -20,9 +21,11 @@ def build_argv_with_pin(agent_mod, params, pin_bundle):
         return real(self, step, p, _pin_bundle=pin_bundle)
 
     agent_mod.WatcherAgent.run_step = _wrapper
+    S.SearchDB.pin_bundle = pin_bundle      # the build's search follows its pin
     try:
         return FX.build_argv(agent_mod, params)
     finally:
+        S.SearchDB.pin_bundle = None
         agent_mod.WatcherAgent.run_step = real
 
 
@@ -55,8 +58,10 @@ def build_result(agent_mod, params, pin_bundle=None):
         return out
 
     agent_mod.WatcherAgent.run_step = _wrapper
+    S.SearchDB.pin_bundle = pin_bundle      # the build's search follows its pin
     try:
         argv = FX.build_argv(agent_mod, params)
     finally:
+        S.SearchDB.pin_bundle = None
         agent_mod.WatcherAgent.run_step = real
     return argv, box.get("results")

@@ -1710,6 +1710,16 @@ def run_bidirectional_test(coordinator,
                 "no candidates and report +0, which is indistinguishable from "
                 "a real empty trial."
             )
+        # [MINER SEED-START R2] The interval this trial will sweep is checked BEFORE
+        # anything is built or dispatched: 0 <= seed_start and
+        # seed_start + seed_count <= 2^32, through the S145 domain wall and the
+        # finalizer's single SEED_DOMAIN_EXCLUSIVE_MAX (imported, never restated).
+        # The CLI and WATCHER already apply the same wall to the whole request; this
+        # is the per-trial check at the hop that now carries the start to the miner.
+        from utils.seed_coverage_ledger import (
+            assert_seed_domain_preflight as _s145_trial_wall)
+        _s145_trial_wall(seed_start, seed_count,
+                         context=f"run_bidirectional_test miner trial {trial_number}")
         _miner_backend = resolve_assembly_backend(
             getattr(coordinator, 'assembly_backend', None),
             **(getattr(coordinator, 'assembly_backend_options', None) or {}),
@@ -1725,6 +1735,10 @@ def run_bidirectional_test(coordinator,
             # _get_residues_for_config dropped config.sessions and broke every
             # single-session trial on the residue_sha256 check.
             residues               = _miner_residues_for_config(config, dataset_path),
+            # [MINER SEED-START R1] The start travels with the size. Before this the
+            # miner was handed `total_seeds` alone and swept [0, seed_count) whatever
+            # seed_start was (stage-1 report §6); run_trial_miner now REQUIRES it.
+            seed_start             = seed_start,
             total_seeds            = seed_count,
             forward_threshold      = forward_threshold,
             reverse_threshold      = reverse_threshold,
@@ -1858,6 +1872,14 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     _use_pw = getattr(coordinator, 'use_persistent_workers', False)
     if _use_pw:
+        # [MINER SEED-START R5, owner decision 2026-11-14] PWC partitions from a fixed
+        # 0 (persistent_worker_coordinator.py:1276); it is handed total_seeds only. A
+        # non-zero start is refused HERE, before the route builds or dispatches
+        # anything. At seed_start == 0 this is a no-op and the route is unchanged.
+        from window_optimizer import (
+            assert_step1_route_seed_start_supported as _route_start_guard)
+        _route_start_guard(seed_start, route="pwc",
+                           context=f"run_bidirectional_test trial {trial_number}")
         if run_trial_persistent is None:
             raise ImportError("persistent_worker_coordinator.py not found — cannot use --use-persistent-workers")
         # [S163-KARG-FIX1] Hops 5→8: pass pwc_host and pwc_port so PersistentWorkerCoordinator
@@ -1912,6 +1934,13 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     _use_zmq = getattr(coordinator, 'use_zmq_sqlite', False)
     if _use_zmq:
+        # [MINER SEED-START R5, owner decision 2026-11-14] ZMQ partitions from a fixed
+        # 0 (zmq_sqlite_coordinator.py:831). Refused before the session coordinator
+        # is created or anything is dispatched; a no-op at seed_start == 0.
+        from window_optimizer import (
+            assert_step1_route_seed_start_supported as _route_start_guard)
+        _route_start_guard(seed_start, route="zmq",
+                           context=f"run_bidirectional_test trial {trial_number}")
         if run_trial_zmq_sqlite is None:
             raise ImportError(
                 "zmq_sqlite_coordinator.py not found — cannot use --use-zmq-sqlite"

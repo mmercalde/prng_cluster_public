@@ -1523,16 +1523,27 @@ def run4_shape():
         cap["argv"].clear()
         res = run_step1(W, agent, RUN4_BASE, W.capture_step1_pin_bundle(bad))
         ok_(res.get("blocked_by") == "step1_search_mismatch" and not cap["argv"], "different pins")
+        # [MINER SEED-START] G-MINER-START is replaced by the route guard: the miner
+        # route now carries the start, so the child's guard ACCEPTS this argv; the same
+        # start on PWC is still refused (owner decision 2026-11-14).
         import window_optimizer as WO
-        e = expect_raises("Step1MinerStartUnsupportedError",
-                          lambda: WO.assert_miner_seed_start_supported(
-                              int(argv_value(argv, "--seed-start")), "--use-range-miner" in argv,
-                              context="run4 argv"))
+        ss = int(argv_value(argv, "--seed-start"))
+        ok_("--use-range-miner" in argv and "--use-persistent-workers" not in argv,
+            "the Run 4 argv is not the RANGE-MINER route")
+        WO.assert_step1_route_seed_start_supported(
+            ss, use_persistent_workers="--use-persistent-workers" in argv,
+            use_zmq_sqlite="--use-zmq-sqlite" in argv, context="run4 argv")
+        expect_raises("Step1RouteStartUnsupportedError",
+                      lambda: WO.assert_step1_route_seed_start_supported(
+                          ss, use_persistent_workers=True, context="run4 argv on PWC"))
         return ("--seed-start 2147483648 --max-seeds 2147483648 + 7 pins; different pins refused; "
-                "the child's G-MINER-START refuses this argv until the base_start brief lands")
+                "the child's route guard accepts this miner argv and refuses it on PWC")
 
 
 def g_miner_start():
+    """[MINER SEED-START] Successor of G-MINER-START: the route guard at the child's entry.
+    The miner and the legacy route at 2^31 reach the coordinator; PWC and ZMQ at 2^31 are
+    refused before it exists; PWC and ZMQ at 0 reach it."""
     import window_optimizer as WO
     import coordinator as C
 
@@ -1543,22 +1554,28 @@ def g_miner_start():
     saved = (C.MultiGPUCoordinator, WO.MultiGPUCoordinator, WO.COORDINATOR_AVAILABLE)
     C.MultiGPUCoordinator = WO.MultiGPUCoordinator = Trip
     WO.COORDINATOR_AVAILABLE = True
+
+    def rbo(ss, **flags):
+        return lambda: WO.run_bayesian_optimization(
+            lottery_file="/nonexistent.json", trials=1, output_config="/dev/null",
+            seed_count=1000, seed_start=ss, **flags)
     try:
         with quiet():
-            e = expect_raises("Step1MinerStartUnsupportedError", lambda: WO.run_bayesian_optimization(
-                lottery_file="/nonexistent.json", trials=1, output_config="/dev/null",
-                seed_count=1000, seed_start=T31, use_range_miner=True))
-            for ss, miner in ((0, True), (T31, False)):
+            for flags in ({"use_persistent_workers": True}, {"use_zmq_sqlite": True}):
+                expect_raises("Step1RouteStartUnsupportedError", rbo(T31, **flags))
+            for ss, flags in ((T31, {"use_range_miner": True}), (0, {"use_range_miner": True}),
+                              (T31, {}), (0, {"use_persistent_workers": True}),
+                              (0, {"use_zmq_sqlite": True})):
                 try:
-                    WO.run_bayesian_optimization(
-                        lottery_file="/nonexistent.json", trials=1, output_config="/dev/null",
-                        seed_count=1000, seed_start=ss, use_range_miner=miner)
+                    rbo(ss, **flags)()
                 except RuntimeError as x:
-                    ok_("TRIPWIRE" in str(x), f"seed_start={ss} miner={miner}: {x}")
+                    ok_("TRIPWIRE" in str(x), f"seed_start={ss} {flags}: {x}")
+                else:
+                    raise Fail(f"seed_start={ss} {flags}: neither refused nor reached the coordinator")
     finally:
         C.MultiGPUCoordinator, WO.MultiGPUCoordinator, WO.COORDINATOR_AVAILABLE = saved
-    return ("miner + seed_start 2^31 refused before the coordinator exists; miner at 0 and "
-            "non-miner at 2^31 pass the guard")
+    return ("PWC/ZMQ + seed_start 2^31 refused before the coordinator exists; miner at 2^31 "
+            "and 0, legacy at 2^31, PWC/ZMQ at 0 pass the guard")
 
 
 # ===========================================================================
@@ -1603,7 +1620,7 @@ GATES = [
     ("G6 Step 1 due with a gap even when output is fresh; others unchanged", g6_step1_due_when_fresh),
     ("F5a history COMPLETE: stop; open -> command; no row changed", f5a),
     ("RUN4-SHAPE pinned upper-half search", run4_shape),
-    ("G-MINER-START owner guard 1", g_miner_start),
+    ("G-ROUTE-START route guard (successor of G-MINER-START)", g_miner_start),
 ]
 
 L_MOD, I_MOD, W_MOD, WO_MOD = ("utils.step1_search_ledger", "window_optimizer_integration_final",
@@ -1705,8 +1722,9 @@ MUTANT_SPECS = [
     ("M-RECONSTRUCTION study filter removed (Beta R2)", L_MOD,
      "                     and r.study_identity == ch[\"study_name\"]\n",
      "                     and True\n", g4_reconstruction_binds_only_this_chunk),
-    ("M-MINER-START guard removed (owner guard 1)", WO_MOD,
-     "    if use_range_miner and seed_start != 0:\n", "    if False:\n", g_miner_start),
+    ("M-ROUTE-START guard removed (successor of M-MINER-START)", WO_MOD,
+     "    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):\n", "    if False:\n",
+     g_miner_start),
 ]
 
 

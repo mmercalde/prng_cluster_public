@@ -848,7 +848,7 @@ def l7_non_lease_consumers_behaviour():
                 window_size=3,
                 # PRODUCTION DEFAULT: nothing but the code's own admission
                 # decision may end this run.
-                serve_timeout=None, worker_admission_timeout=2.0)
+                serve_timeout=None, worker_admission_timeout=2.0, seed_start=0)
         except Exception:                                        # noqa: BLE001
             holder["err"] = traceback.format_exc()
 

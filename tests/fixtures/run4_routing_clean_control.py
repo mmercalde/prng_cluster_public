@@ -10,6 +10,17 @@ both import it and must see byte-identical content; its sha256 is recorded in
 the captured artifact and re-verified by the gate. Editing this module
 invalidates the control.
 
+[MINER SEED-START Part 2, 2026-11-14] EDITED, and the control is therefore
+invalidated on purpose. Since stage 1 (`915d382`) Step 1 is scheduled from the
+open Step 1 SEARCH: run_step looks the search up, compares dataset and
+configuration, takes seed_start/max_seeds from it and routes --step1-search-id.
+The stub boundary below had no search lookup, so every build failed closed
+before a command existed. The stub database and frozen dataset now come from
+`run4_search_fixture` (an open search over [2^31, 2^32), production opener,
+production configuration). The 69ca910 argv the control holds predates S3/S6 —
+it carries `--seed-start 0` and no `--step1-search-id` — so G-UNPINNED-IDENTICAL
+cannot pass against it on today's path; it is left red, not re-pinned.
+
 Stub boundary, and why each is here. Every stubbed collaborator is one the
 routing patch does NOT change; each is stubbed because it reaches live host
 state (fleet, dataset manifest, coverage ledger) that is not deterministic
@@ -23,6 +34,8 @@ import json
 import os
 import sys
 import types
+
+from . import run4_search_fixture as _S
 
 BASE_COMMIT = "69ca9100f72adbeaddceddae1f11c09909b8e0c3"
 
@@ -76,20 +89,6 @@ class _FakeCompleted:
     stderr = ""
 
 
-class _StubCursor:
-    is_complete = False
-    domain_start = 0
-    domain_end_exclusive = 4294967296
-    covered_seed_count = 0
-    certified_interval_count = 0
-    next_seed_start = 0
-
-
-class _StubDB:
-    def get_certified_cursor(self, *a, **kw):
-        return _StubCursor()
-
-
 def build_argv(agent_mod, params):
     """Drive run_step(1, params) on `agent_mod` and return the argv it builds.
 
@@ -122,9 +121,8 @@ def build_argv(agent_mod, params):
     saved = {}
     for name, val in (
         ("check_output_freshness", lambda step: (False, "clean-control: stale", False)),
-        ("p05_freeze_dataset", lambda run_label="watcher": types.SimpleNamespace(
-            path="/home/michael/distributed_prng_analysis/daily3.json",
-            sha256="0" * 64, size=0, record_count=0, manifest_id="clean-control")),
+        ("p05_freeze_dataset", lambda run_label="watcher": _S.stub_frozen_dataset(
+            "/home/michael/distributed_prng_analysis/daily3.json")),
         ("p05_resolve_dataset_path", lambda p: str(p)),
     ):
         saved[name] = getattr(agent_mod, name)
@@ -148,12 +146,19 @@ def build_argv(agent_mod, params):
         setattr(_ds, _n, _v)
 
     stub_db_mod = types.ModuleType("database_system")
-    stub_db_mod.DistributedPRNGDatabase = _StubDB
+    stub_db_mod.DistributedPRNGDatabase = _S.SearchDB
     prev_db = sys.modules.get("database_system")
     sys.modules["database_system"] = stub_db_mod
+    _search_cleanup = None
     try:
+        # The build's Step 1 search: pinned when the harness is building a pinned
+        # command (it sets SearchDB.pin_bundle), unpinned otherwise.
+        _search_cleanup = _S.open_run4_search(agent_mod, agent, params,
+                                              _S.SearchDB.pin_bundle)
         agent_mod.WatcherAgent.run_step(agent, 1, dict(params))
     finally:
+        if _search_cleanup is not None:
+            _search_cleanup()
         for name, val in saved.items():
             setattr(agent_mod, name, val)
         for _n, _v in ds_saved.items():

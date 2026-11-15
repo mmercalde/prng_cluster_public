@@ -2443,7 +2443,7 @@ def gate22_coexistence():
             seed_cap_nvidia_hybrid=2_500_000, seed_cap_amd_hybrid=1_000_000,
             staging_dir=os.path.join(tmp, "stg"),
             staging_high_water_bytes=123, staging_high_water_files=9,
-            compute_lease_timeout=42.0, staging_timeout=99.0, _serve=_capture)
+            compute_lease_timeout=42.0, staging_timeout=99.0, _serve=_capture, seed_start=0)
     cfg = out["config"]
     assert out["is_coordinator"] is True
     assert cfg.seed_cap_nvidia_hybrid == 2_500_000 and cfg.seed_cap_amd_hybrid == 1_000_000
@@ -2672,7 +2672,7 @@ def gate37_serve_path_two_workers():
                     # are fail-closed too; this serve-path gate must supply them
                     # explicitly (window_size already passed).
                     window_anchor=0, generator_phase=0,
-                    workflow_phase=3, window_size=3, serve_timeout=20.0)
+                    workflow_phase=3, window_size=3, serve_timeout=20.0, seed_start=0)
             except Exception:
                 holder["err"] = traceback.format_exc()
 
@@ -3261,7 +3261,7 @@ def gate47_production_call_shape_two_trials():
                 miner_host="0.0.0.0", miner_port=5700, node_allowlist=None,
                 window_size=_Cfg.window_size, sessions=_Cfg.sessions,
                 window_anchor=_Cfg.window_anchor, generator_phase=0,
-                _serve=_capture)
+                _serve=_capture, seed_start=0)
         c0, c1 = captured
         assert c0["run_id"] != c1["run_id"]                       # distinct run_ids
         assert set(c0["stripe_ids"]).isdisjoint(c1["stripe_ids"])  # no PK collision
@@ -3514,7 +3514,7 @@ def _run_serve_thread(tmp, ds, sink, lsock, **kw):
                 skip_min=0, skip_max=0,
                 # D0 Blocker (REV4): explicit window params on the serve-path gate.
                 window_anchor=0, generator_phase=0,
-                window_size=3, **kw)
+                window_size=3, **{"seed_start": 0, **kw})
         except Exception:
             holder["err"] = traceback.format_exc()
 
@@ -3639,7 +3639,7 @@ def gate54_production_serve_timeout_unbounded():
     with tempfile.TemporaryDirectory() as tmp:
         run_trial_miner("run-p", None, 1, "java_lcg", [1, 2, 3], 30, 0.25, 0.25,
                         False, "/data/ds.json", staging_dir=os.path.join(tmp, "s"),
-                        _serve=_capture)
+                        _serve=_capture, seed_start=0)
     assert captured["serve_timeout"] is None, (
         f"production serve_timeout must default to None (unbounded), "
         f"got {captured['serve_timeout']!r}")
@@ -3856,7 +3856,7 @@ def gate57_variant_filtered_scheduling():
                     skip_min=0, skip_max=0,
                     # D0 Blocker (REV4): explicit window params on the serve-path gate.
                     window_anchor=0, generator_phase=0,
-                    window_size=3, serve_timeout=20.0, serve_read_deadline=10.0)
+                    window_size=3, serve_timeout=20.0, serve_read_deadline=10.0, seed_start=0)
             except Exception:
                 holder["err"] = traceback.format_exc()
 

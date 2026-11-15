@@ -370,7 +370,7 @@ def _drive_two_modes_false_run(tmp, sink):
                 # NO family_name / workflow_phase override: the workflow STAGES
                 # come from workflow_stages_for(prng_base, test_both_modes).
                 skip_min=1, skip_max=9, window_size=5, offset=2,
-                sessions=["midday", "evening"], serve_timeout=45.0)
+                sessions=["midday", "evening"], serve_timeout=45.0, seed_start=0)
         except Exception:  # noqa: BLE001
             holder["err"] = traceback.format_exc()
 

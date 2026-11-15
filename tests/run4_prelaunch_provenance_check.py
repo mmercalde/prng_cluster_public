@@ -29,6 +29,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 from fixtures import run4_routing_clean_control as FX     # noqa: E402
+from fixtures import run4_search_fixture as S             # noqa: E402
 import agents.watcher_agent as W                          # noqa: E402
 
 # ── The approved Run-4 geometry, verbatim from the TB pinned-geometry ruling ──
@@ -114,10 +115,11 @@ def build_via_real_cli(params_json):
                  ("PROGRESS_DISPLAY_AVAILABLE", False),
                  ("check_output_freshness",
                   lambda step: (False, "prelaunch dry run", False)),
+                 # [MINER SEED-START Part 2] the stub frozen dataset carries the full
+                 # identity a Step 1 search is opened on (run4_search_fixture).
                  ("p05_freeze_dataset",
-                  lambda run_label="watcher": types.SimpleNamespace(
-                      path=os.path.join(ROOT, "daily3.json"), sha256="0" * 64,
-                      size=0, record_count=0, manifest_id="prelaunch-dry-run")),
+                  lambda run_label="watcher": S.stub_frozen_dataset(
+                      os.path.join(ROOT, "daily3.json"))),
                  ("p05_resolve_dataset_path", lambda p: str(p))):
         saved_mod[n] = getattr(W, n, None)
         setattr(W, n, v)
@@ -133,21 +135,16 @@ def build_via_real_cli(params_json):
         ds_saved[n] = getattr(_ds, n, None)
         setattr(_ds, n, v)
 
+    # [MINER SEED-START Part 2] Since stage 1 (`915d382`) Step 1 is scheduled from the
+    # open Step 1 search; a stub database with no search lookup fails Step 1 closed
+    # before any command is built. The stub is now run4_search_fixture.SearchDB over an
+    # open PINNED search for [2^31, 2^32), opened by the production opener with the
+    # configuration the production open command computes for these params and this
+    # operator bundle.
     stub_db = types.ModuleType("database_system")
-
-    class _Cur:
-        is_complete = False
-        domain_start = 0
-        domain_end_exclusive = 4294967296
-        covered_seed_count = 0
-        certified_interval_count = 0
-        next_seed_start = 0
-
-    class _DB:
-        def get_certified_cursor(self, *a, **kw):
-            return _Cur()
-
-    stub_db.DistributedPRNGDatabase = _DB
+    stub_db.DistributedPRNGDatabase = S.SearchDB
+    _search_cleanup = S.open_run4_search(W, agent, ordinary,
+                                         W.capture_step1_pin_bundle(operator_pin))
     prev_db = sys.modules.get("database_system")
     sys.modules["database_system"] = stub_db
 
@@ -168,6 +165,7 @@ def build_via_real_cli(params_json):
         else:
             sys.modules["database_system"] = prev_db
         W.WatcherAgent._run_step_streaming = real_stream
+        _search_cleanup()
     return captured
 
 

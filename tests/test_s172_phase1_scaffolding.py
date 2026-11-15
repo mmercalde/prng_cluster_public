@@ -95,7 +95,7 @@ def gate2_run_trial_miner_wired():
             residues=[1, 2, 3], total_seeds=1000,
             forward_threshold=0.01, reverse_threshold=0.01,
             test_both_modes=False, dataset_path='daily3.json',
-            staging_dir=os.path.join(tmp, "stg"), _serve=_capture)
+            staging_dir=os.path.join(tmp, "stg"), _serve=_capture, seed_start=0)
     assert out["state"] == "captured", "run_trial_miner must drive the coordinator"
     assert captured["trial"] is not None and captured["trial"]["state"] == "running", (
         "run_trial_miner must build the coordinator + create the trial")

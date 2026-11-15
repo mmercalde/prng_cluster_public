@@ -1469,7 +1469,7 @@ def rxp2_arm3_exhaustion_is_a_trial_terminal_not_a_shed():
                         worker_pool_size=1, miner_stripe_size=100,
                         staging_dir=os.path.join(tmp, "staging"),
                         listen_sock=lsock, family_name="java_lcg",
-                        workflow_phase=1, serve_timeout=60.0, serve_poll=0.05)
+                        workflow_phase=1, serve_timeout=60.0, serve_poll=0.05, seed_start=0)
 
                 t = threading.Thread(target=_run, daemon=True)
                 t.start()
@@ -3195,7 +3195,8 @@ def _fairness_run(tmp, m_seconds, n_workers=2, serve_timeout=25.0,
                 seed_cap_nvidia=10, seed_cap_nvidia_hybrid=10,
                 staging_dir=os.path.join(tmp, "staging"),
                 listen_sock=lsock, family_name="java_lcg", workflow_phase=1,
-                serve_timeout=serve_timeout, serve_poll=0.1, **kw)
+                serve_timeout=serve_timeout, serve_poll=0.1,
+                **{"seed_start": 0, **kw})
         except Exception:                                        # noqa: BLE001
             holder["err"] = traceback.format_exc()
 
@@ -3483,7 +3484,7 @@ def fair12_arm7_red_count_bound_admits_the_violation():
             "run_id": run_id, "trial_number": 1, "prng_base": "java_lcg",
             "family_name": "java_lcg", "phase": 1,
             "workflow_stages": [("java_lcg", 1)],
-            "residues": [1, 2, 3], "total_seeds": 200, "dataset_path": ds,
+            "residues": [1, 2, 3], "total_seeds": 200, "seed_start": 0, "dataset_path": ds,
             "forward_threshold": 0.25, "reverse_threshold": 0.25,
             "skip_min": 0, "skip_max": 0, "test_both_modes": False,
             "worker_pool_size": 1, "window_size": 3,
