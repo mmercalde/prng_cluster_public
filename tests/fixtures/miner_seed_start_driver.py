@@ -10,7 +10,6 @@ make the comparison meaningless).
 
 `OMIT` means "do not pass seed_start at all" — the only form the pre-change tree accepts.
 """
-import contextlib
 import hashlib
 import json
 import os
@@ -31,56 +30,10 @@ from miner.range_miner_worker import (
 
 OMIT = object()
 
-# THE PUMP NUDGER — a labelled harness intercept, made necessary by a coordinator finding
-# this work reports as NEW (not fixed here; outside this brief's scope):
-#
-# the coordinator stages ONE attempt at a time and defers other attempts' sub-stripe
-# frames (`_try_admit_locked`). The admitted key is pruned only inside `_pump_deferred`,
-# once its stripe is DONE. The staging-job path finalizes and then pumps
-# (`_run_staging_job`); the StripeComplete path finalizes (`_serve_dispatch` ->
-# `finalize_stripe`) and does NOT pump, and `enqueue_staging` does not prune. When a
-# stripe's last staging job finishes before its StripeComplete is processed, the stripe
-# becomes DONE on the non-pumping path, its key stays in `_admitted`, every later
-# attempt is deferred, and nothing pumps again: the trial stalls until serve_timeout
-# (None in production). Observed directly here: `_admitted` = {s5} with s5 'done',
-# `_deferred` = [s6, s7], stalled. Fake workers answer in microseconds, so they hit it
-# almost every run.
-#
-# The nudger calls the coordinator's OWN `_pump_deferred()` every NUDGE_S seconds. No
-# coordinator code is patched; it changes WHEN deferred frames resume, never WHAT any
-# stripe is assigned, which is what the seed-start gates measure.
-NUDGE_S = 0.5
-
-
-@contextlib.contextmanager
-def pump_nudger():
-    import miner.range_miner_coordinator as C
-    real = C.build_coordinator
-    made = []
-
-    def capture(**kw):
-        c = real(**kw)
-        made.append(c)
-        return c
-
-    stop = threading.Event()
-
-    def loop():
-        while not stop.wait(NUDGE_S):
-            for c in list(made):
-                try:
-                    c._pump_deferred()
-                except Exception:
-                    pass
-
-    C.build_coordinator = capture
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
-    try:
-        yield made
-    finally:
-        stop.set()
-        C.build_coordinator = real
+# [L-4 REPAIR, docs/CLAUDE_CODE_INSTRUCTIONS_MINER_ADMISSION_STALL_20261114.md] The labelled
+# PUMP NUDGER that used to live here (a timer calling the coordinator's `_pump_deferred`
+# every 0.5 s, needed while L-4 could strand staging admission) is REMOVED. Nothing in
+# this driver calls into the coordinator's staging machinery.
 
 
 def driver_sha256():
@@ -257,8 +210,6 @@ def run_shape(work_dir, *, seed_start=OMIT, total_seeds, stripe_size, test_both_
             holder["exc"] = e
             holder["err"] = traceback.format_exc()
 
-    nudge = pump_nudger()
-    nudge.__enter__()
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     workers = [FakeWorker("127.0.0.1", port, f"host{i}", 0, b, cap)
@@ -271,7 +222,6 @@ def run_shape(work_dir, *, seed_start=OMIT, total_seeds, stripe_size, test_both_
         except OSError as e:
             holder.setdefault("connect_errors", []).append(repr(e))
     t.join(timeout=serve_timeout + 60)
-    nudge.__exit__(None, None, None)
     for w in workers:
         w.stop()
     out = {"serve_alive": t.is_alive(), "error": holder.get("err"),

@@ -1417,6 +1417,10 @@ DECLARED_CHANGED = {
     # change. The proof compares LIVE source against the pinned anchor, so a
     # later authorized commit touching this module must be declared here.
     "RangeMinerCoordinator.log_staging_backpressure_summary",
+    # MP-1's own change; ALSO changed later by the [L-4 STAGING-ADMISSION STALL
+    # REPAIR, 2026-11-14] (the StripeComplete branch hands the pump to the staging
+    # executor). Already declared, so the exact set is unchanged — noted for SR-1
+    # provenance only.
     "RangeMinerCoordinator._serve_dispatch",
     "RangeMinerCoordinator._pump_deferred",
     "RangeMinerCoordinator.serve_trial",

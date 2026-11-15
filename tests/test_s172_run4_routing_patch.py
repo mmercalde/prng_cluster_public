@@ -27,6 +27,10 @@ sys.path.insert(0, HERE)
 
 from fixtures import run4_routing_clean_control as FX          # noqa: E402
 from fixtures import run4_pin_harness as H                     # noqa: E402
+# [MINER ADMISSION-STALL brief, Part 2] The SUCCESSOR builder: the frozen stub boundary
+# plus the stage-1 search collaborator. Every gate builds through it EXCEPT
+# G-UNPINNED-IDENTICAL, which keeps the frozen module for its 69ca910 comparison.
+from fixtures import run4_routing_search_control as FXS         # noqa: E402
 
 import agents.watcher_agent as W                               # noqa: E402
 
@@ -112,6 +116,136 @@ def g_unpinned_identical():
                   f"list-equal, {len(got)} tokens, vs {ctl['base_commit'][:7]}")
 
 
+# ── [MINER ADMISSION-STALL brief, Part 2, 2026-11-14] THE SUCCESSOR COMPARISON ──
+#
+# WHAT G-UNPINNED-IDENTICAL CAN AND CANNOT SHOW ON TODAY'S TREE. Its oracle is intact
+# (frozen module restored byte-for-byte, sha check passes) but it cannot PASS: since
+# stage 1 (`915d382`) Step 1 is scheduled from the open Step 1 search, and the frozen
+# boundary has no search lookup, so run_step fails closed before any command exists and
+# the gate reports INCOMPLETE. It still guards its own oracle (any edit to the frozen
+# module reds it as "oracle invalid"). It no longer certifies today's unpinned argv.
+#
+# That job passes to G-UNPINNED-SUCCESSOR, scoped as Beta X-MINER-START R1 Q6 requires:
+#   * an INDEPENDENT control: the unpinned argv captured from b11b6fd — the tree before
+#     the miner seed-start change and before this brief's changes — under the stage-1
+#     search collaborator (tests/capture_run4_search_control.py; WATCHER is byte-
+#     identical b11b6fd..7b9184a, so it was not captured from the candidate);
+#   * the stage-1 scheduling changes NAMED: against the frozen 69ca910 argv, exactly
+#     `--seed-start 0 -> the search's first gap` and an inserted
+#     `--step1-search-id <id>`; every other token equal, in order;
+#   * the boundary of the successor harness itself gated (G-SUCCESSOR-BOUNDARY).
+# COMPARISON BOUNDARY: argv construction by run_step(1) on the unpinned path, with the
+# same stubs as the frozen control plus the search; not dispatch, not the child.
+SUCCESSOR_CONTROL = os.path.join(HERE, "fixtures", "run4_search_control_b11b6fd.txt")
+SUCCESSOR_BASE = "b11b6fde7ab57321b42c418f87af8cc2c75c814d"
+
+
+def g_unpinned_successor():
+    """4 (successor) — unpinned argv list-equal to the b11b6fd search-collaborator
+    control, and differing from the frozen 69ca910 argv by exactly the two named
+    stage-1 scheduling changes."""
+    import subprocess
+    try:
+        ctl = json.load(open(SUCCESSOR_CONTROL))
+        frozen = load_control()
+    except Exception as e:
+        return record("G-UNPINNED-SUCCESSOR", "UNAVAILABLE", f"control unreadable: {e}")
+    if ctl.get("completion_sentinel") != "CAPTURE COMPLETE":
+        return record("G-UNPINNED-SUCCESSOR", "INCOMPLETE", "successor control incomplete")
+    from fixtures import run4_search_fixture as _S
+    shas = {"frozen_fixture_sha256": FX.fixture_sha256(),
+            "successor_module_sha256": FXS.module_sha256(),
+            "search_fixture_sha256": hashlib.sha256(open(_S.__file__, "rb").read()).hexdigest()}
+    changed = [k for k, v in shas.items() if ctl.get(k) != v]
+    if changed:
+        return record("G-UNPINNED-SUCCESSOR", "INCOMPLETE",
+                      f"fixture changed since the successor capture: {changed} — oracle invalid")
+    if ctl.get("base_commit") != SUCCESSOR_BASE:
+        return record("G-UNPINNED-SUCCESSOR", "INCOMPLETE", "control not from b11b6fd")
+    committed = subprocess.run(["git", "-C", ROOT, "show", f"{SUCCESSOR_BASE}:agents/watcher_agent.py"],
+                               capture_output=True).stdout
+    if hashlib.sha256(committed).hexdigest() != ctl.get("watcher_sha256_committed"):
+        return record("G-UNPINNED-SUCCESSOR", "INCOMPLETE",
+                      "control's WATCHER digest is not b11b6fd's")
+    try:
+        got = FXS.build_argv(W, FXS.CONTROL_PARAMS)
+    except RuntimeError as e:
+        return record("G-UNPINNED-SUCCESSOR", "INCOMPLETE", str(e))
+    want = ctl["argv_unpinned"]
+    if got != want:
+        diff = [(i, a, b) for i, (a, b) in
+                enumerate(itertools.zip_longest(got, want)) if a != b]
+        return record("G-UNPINNED-SUCCESSOR", "FAIL", f"argv diverged at {diff[:4]}")
+    # The named stage-1 delta against the frozen 69ca910 argv, and nothing else.
+    f_argv = frozen["argv_unpinned"]
+    if got.count("--step1-search-id") != 1 or got.index("--step1-search-id") + 2 != len(got):
+        return record("G-UNPINNED-SUCCESSOR", "FAIL", "--step1-search-id not the final pair")
+    sid = got[-1]
+    if not sid.startswith("s1s-"):
+        return record("G-UNPINNED-SUCCESSOR", "FAIL", f"search id {sid!r}")
+    core = got[:-2]
+    if len(core) != len(f_argv):
+        return record("G-UNPINNED-SUCCESSOR", "FAIL",
+                      f"token count {len(core)} != frozen {len(f_argv)} (besides the id)")
+    delta = [(i, a, b) for i, (a, b) in enumerate(zip(f_argv, core)) if a != b]
+    i_ss = f_argv.index("--seed-start") + 1
+    want_delta = [(i_ss, "0", str(_S.RUN4_RANGE[0]))]
+    if delta != want_delta:
+        return record("G-UNPINNED-SUCCESSOR", "FAIL",
+                      f"delta vs 69ca910 {delta[:4]} != the named stage-1 change {want_delta}")
+    return record("G-UNPINNED-SUCCESSOR", "PASS",
+                  f"list-equal to b11b6fd control ({len(got)} tokens); vs 69ca910 exactly "
+                  f"--seed-start 0->{_S.RUN4_RANGE[0]} and +--step1-search-id")
+
+
+# The successor builder's declared delta from the frozen builder, statement by statement
+# (ast.unparse of the two `build_argv` bodies, docstrings and comments excluded).
+_BOUNDARY_REMOVED = [
+    "for (name, val) in (('check_output_freshness', lambda step: (False, 'clean-control: stale', False)), ('p05_freeze_dataset', lambda run_label='watcher': types.SimpleNamespace(path='/home/michael/distributed_prng_analysis/daily3.json', sha256='0' * 64, size=0, record_count=0, manifest_id='clean-control')), ('p05_resolve_dataset_path', lambda p: str(p))):",
+    "stub_db_mod.DistributedPRNGDatabase = _StubDB",
+]
+_BOUNDARY_ADDED = [
+    "for (name, val) in (('check_output_freshness', lambda step: (False, 'clean-control: stale', False)), ('p05_freeze_dataset', lambda run_label='watcher': _S.stub_frozen_dataset('/home/michael/distributed_prng_analysis/daily3.json')), ('p05_resolve_dataset_path', lambda p: str(p))):",
+    "stub_db_mod.DistributedPRNGDatabase = _S.SearchDB",
+    "_search_cleanup = None",
+    "    _search_cleanup = _S.open_run4_search(agent_mod, agent, params, _S.SearchDB.pin_bundle)",
+    "    if _search_cleanup is not None:",
+    "        _search_cleanup()",
+]
+
+
+def g_successor_boundary():
+    """The successor harness is the frozen stub boundary plus the declared search
+    collaborator — nothing else (no stub added, removed or loosened)."""
+    import difflib
+
+    def body(mod):
+        tree = ast.parse(open(mod.__file__).read())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "build_argv")
+        stmts = fn.body
+        if (stmts and isinstance(stmts[0], ast.Expr)
+                and isinstance(stmts[0].value, ast.Constant)):
+            stmts = stmts[1:]
+        return ast.unparse(ast.Module(body=stmts, type_ignores=[])).splitlines()
+
+    a, b = body(FX), body(FXS)
+    removed, added = [], []
+    for l in difflib.unified_diff(a, b, lineterm="", n=0):
+        if l.startswith(("---", "+++", "@@")):
+            continue
+        (removed if l.startswith("-") else added).append(l[1:])
+    if removed != _BOUNDARY_REMOVED or added != _BOUNDARY_ADDED:
+        return record("G-SUCCESSOR-BOUNDARY", "FAIL",
+                      f"undeclared delta: removed {removed} added {added}")
+    for k in ("SEVEN", "CONTROL_PARAMS", "PIN_VALUES"):
+        if getattr(FXS, k) is not getattr(FX, k):
+            return record("G-SUCCESSOR-BOUNDARY", "FAIL", f"{k} not the frozen object")
+    return record("G-SUCCESSOR-BOUNDARY", "PASS",
+                  f"frozen boundary + declared search collaborator only "
+                  f"({len(removed)} replaced, {len(added) - len(removed)} added statements)")
+
+
 def g_chain():
     """1 — all seven survive WATCHER --params -> argv."""
     argv = H.build_argv_with_pin(W, FX.CONTROL_PARAMS, PINS)
@@ -184,7 +318,7 @@ def g_eighth():
     for label, bundle in (("unpinned", None), ("pinned", PINS)):
         params = dict(FX.CONTROL_PARAMS)
         params["warm_start_session"] = "midday"
-        argv = (FX.build_argv(W, params) if bundle is None
+        argv = (FXS.build_argv(W, params) if bundle is None
                 else H.build_argv_with_pin(W, params, bundle))
         if any(t.startswith("--warm-start-session") and not
                t.startswith("--warm-start-session-idx") for t in argv):
@@ -197,7 +331,7 @@ def g_no_synth():
     # (a) WATCHER manufactures the seven into retry_params; frozen record empty.
     synthesized = dict(FX.CONTROL_PARAMS)
     synthesized.update(PINS)                       # as if retry/LLM injected them
-    argv = FX.build_argv(W, synthesized)           # no _pin_bundle threaded
+    argv = FXS.build_argv(W, synthesized)          # no _pin_bundle threaded
     if H.warm_pairs(argv):
         return record("G-NO-SYNTH", "FAIL", "synthesized values reached argv")
     # (b) an operator who DID supply all seven replays legitimately
@@ -220,7 +354,7 @@ def g_no_llm():
             return record("G-NO-LLM", "FAIL", f"pin asserted with no bundle at step {step}")
         if step != 1 and W._step1_explicit_pin(step, bundle) is not None:
             return record("G-NO-LLM", "FAIL", f"pin asserted on step {step}")
-    argv = FX.build_argv(W, {**FX.CONTROL_PARAMS, **PINS})
+    argv = FXS.build_argv(W, {**FX.CONTROL_PARAMS, **PINS})
     if H.warm_pairs(argv):
         return record("G-NO-LLM", "FAIL", "LLM-shaped params reached argv unthreaded")
     return record("G-NO-LLM", "PASS", "no bundle -> no pin, step-scoped, 0/7 routed")
@@ -240,7 +374,7 @@ def g_provenance():
         W.logger.addHandler(cap)
         try:
             if bundle is None:
-                FX.build_argv(W, FX.CONTROL_PARAMS)
+                FXS.build_argv(W, FX.CONTROL_PARAMS)
             else:
                 H.build_argv_with_pin(W, FX.CONTROL_PARAMS, bundle)
         finally:
@@ -706,6 +840,12 @@ def _mutant(name, apply_fn, restore_fn, must_red, must_stay_green):
     return record(name, "PASS", detail)
 
 
+# [MINER ADMISSION-STALL brief, Part 2] The unpinned oracle each mutant needs is now
+# G-UNPINNED-SUCCESSOR (valid today), in place of G-UNPINNED-IDENTICAL (INCOMPLETE on
+# today's tree by construction, so it could neither stay green nor credit a detection).
+# Every mutant's detecting gates (must_red) are unchanged; M2b's vacuous credit through
+# the INCOMPLETE frozen oracle is replaced by a real one through the successor oracle.
+
 def m1():
     """Restore WALL 2 unconditional eight-name stripping."""
     orig = W.STEP1_EXPLICIT_PIN_KEYS
@@ -714,7 +854,7 @@ def m1():
         lambda: setattr(W, "STEP1_EXPLICIT_PIN_KEYS", frozenset()),
         lambda: setattr(W, "STEP1_EXPLICIT_PIN_KEYS", orig),
         must_red=[g_chain, g_exact],
-        must_stay_green=[g_unpinned_identical])
+        must_stay_green=[g_unpinned_successor])
 
 
 _WATCHER_SRC = os.path.join(ROOT, "agents", "watcher_agent.py")
@@ -781,7 +921,7 @@ def m1b():
         "M1b-wall2-only-unconditional-strip",
         _m1b_apply, _m1b_restore,
         must_red=[g_chain, g_exact],
-        must_stay_green=[g_unpinned_identical, g_allowlist_exact,
+        must_stay_green=[g_unpinned_successor, g_allowlist_exact,
                          g_partial_closed, g_provenance])
 
 
@@ -801,7 +941,7 @@ def m2a():
         lambda: setattr(W, "capture_step1_pin_bundle", leaky),
         lambda: (setattr(W, "capture_step1_pin_bundle", orig), cache.clear()),
         must_red=[g_invocation_isolation],
-        must_stay_green=[g_chain, g_unpinned_identical])
+        must_stay_green=[g_chain, g_unpinned_successor])
 
 
 def m2b():
@@ -812,7 +952,7 @@ def m2b():
         lambda: setattr(W, "_step1_explicit_pin",
                         lambda step, bundle: dict(PINS) if step == 1 else None),
         lambda: setattr(W, "_step1_explicit_pin", orig),
-        must_red=[g_unpinned_identical, g_provenance],
+        must_red=[g_unpinned_successor, g_provenance],
         must_stay_green=[g_chain])
 
 
@@ -843,7 +983,7 @@ def m4():
         lambda: (setattr(W, "assert_no_unauthorized_pin_keys", real_assert),
                  setattr(W.WatcherAgent, "run_pipeline", real_pipeline)),
         must_red=[g_origin],
-        must_stay_green=[g_chain, g_unpinned_identical, g_value_usable])
+        must_stay_green=[g_chain, g_unpinned_successor, g_value_usable])
 
 
 def m3():
@@ -866,7 +1006,8 @@ def main():
     print("S172 RUN-4 ROUTE-A ROUTING PATCH — ACCEPTANCE SUITE")
     print("=" * 74)
     print("\nGATES")
-    gates = [g_allowlist_exact, g_unpinned_identical, g_chain, g_exact,
+    gates = [g_allowlist_exact, g_unpinned_identical, g_unpinned_successor,
+             g_successor_boundary, g_chain, g_exact,
              g_partial_closed, g_eighth, g_no_synth, g_no_llm, g_provenance,
              g_invocation_isolation, g_one_trial, g_parity_inert,
              g_origin, g_value_usable]

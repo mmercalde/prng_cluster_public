@@ -2156,6 +2156,11 @@ DECLARED_CHANGED = {
     # never in R-1's, because R-1's anchor predates that change and R-1 did not
     # touch it. Brief I does, so it is declared here for the first time.
     "RangeMinerCoordinator.serve_trial",
+    # [L-4 STAGING-ADMISSION STALL REPAIR, 2026-11-14] NOT R-1's change. SR-1: the
+    # StripeComplete branch now hands `_pump_deferred` to the staging executor after
+    # its finalize (docs/CLAUDE_CODE_INSTRUCTIONS_MINER_ADMISSION_STALL_20261114.md).
+    # The anchor does NOT move and `changed == DECLARED_CHANGED` stays EXACT.
+    "RangeMinerCoordinator._serve_dispatch",
 }
 # EMPTY, AND NOT BY ACCIDENT. MP-1's certified `gate_e2_ast_scope_proof`
 # asserts this module's ADDED-definition set EXACTLY against its own pinned

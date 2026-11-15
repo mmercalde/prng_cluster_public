@@ -792,11 +792,8 @@ def g_e2e():
 
         try:
             t = threading.Thread(target=_drive, daemon=True)
-            # The labelled pump nudger (tests/fixtures/miner_seed_start_driver.py): the
-            # coordinator's own _pump_deferred on a timer, for the NEW staging-admission
-            # finding this work reports. It changes when deferred frames resume, never
-            # what any stripe is assigned.
-            with quiet(), D.pump_nudger():
+            # [L-4 REPAIR] No pump nudger: the coordinator resumes deferred work itself.
+            with quiet():
                 t.start()
                 import time
                 time.sleep(0.2)

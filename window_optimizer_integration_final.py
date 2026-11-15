@@ -1440,7 +1440,20 @@ def _step1_miner_sweep_evidence(miner_result, coordinator):
         path = os.path.join(base, "miner_ledger.db")
         if not os.path.exists(path):
             return None
-        con = _sq.connect(f"file:{path}?mode=ro", uri=True)
+        # [Binding addendum §A, docs/CLAUDE_CODE_INSTRUCTIONS_BINDING_ADDENDUM_BETA_R1_
+        # 20261113.md] A plain `mode=ro` open of this WAL-mode ledger can create `-wal`
+        # / `-shm` beside it. Open it `immutable=1`, which creates nothing — and only
+        # when that is truthful: with a NON-EMPTY `-wal` (or `-journal`) an immutable
+        # read ignores committed-but-uncheckpointed pages and would be stale, so the
+        # evidence is UNAVAILABLE and earns no credit (S7 fails closed).
+        for _side in ("-wal", "-journal"):
+            _sp = path + _side
+            if os.path.exists(_sp) and os.path.getsize(_sp) > 0:
+                print(f"   [STEP1-SEARCH S7] miner sweep evidence UNAVAILABLE: {_sp} is "
+                      f"non-empty ({os.path.getsize(_sp)} bytes); an immutable read "
+                      f"would be stale — no credit")
+                return None
+        con = _sq.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
         try:
             rows = con.execute(
                 "SELECT phase, seed_start, seed_count, state FROM stripes WHERE run_id=? "

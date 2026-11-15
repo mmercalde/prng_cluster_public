@@ -1,9 +1,11 @@
 {
+ "capture_liveness_aid": "b11b6fd has L-4: the base coordinator's own _pump_deferred on a 0.5 s timer during THIS capture only; the gate runs with none",
  "completion_sentinel": "CAPTURE COMPLETE",
  "coordinator_sha256": "59888834bb1c86a270783f1b9fce7ede6b224fb666c47d3a2cabc8c11288c71b",
- "driver_sha256": "2d264a66fdaa047daf91e8149952df4a64e44ab39d6b8e64856f3a61c0c6b542",
+ "driver_sha256": "506225f49158bd736c98ba3942bee6be1a2b70c2bca2fa949c5caf43e0935dd8",
  "head_at_capture": "b11b6fde7ab57321b42c418f87af8cc2c75c814d",
- "purpose": "R7 zero-start control, captured before any edit",
+ "original_driver_sha256": "2d264a66fdaa047daf91e8149952df4a64e44ab39d6b8e64856f3a61c0c6b542",
+ "purpose": "R7 zero-start control, RE-CAPTURED on b11b6fd with the nudger-free driver (L-4 repair); content digests equal the original capture",
  "shapes": {
   "A9": {
    "assigns": [
