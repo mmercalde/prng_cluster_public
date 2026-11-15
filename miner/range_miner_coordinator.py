@@ -9507,6 +9507,20 @@ class RangeMinerCoordinator:
         family_name = context.get("family_name") or context.get("prng_base") or ""
         phase = int(context.get("phase", context.get("workflow_phase", 1)))
         total_seeds = int(context["total_seeds"])
+        # [MINER SEED-START R1] The origin of every stripe this trial creates. Read
+        # from the context with NO default and checked BEFORE the dataset digest, the
+        # trial context and the listening socket, so a context that does not carry
+        # the start (a caller that bypassed run_trial_miner) is refused instead of
+        # being partitioned from 0. It reaches the one place stripes are created,
+        # `assign_stripes(..., base_start=...)` below; retries, lease expiry and
+        # re-placement re-claim those same rows and never re-partition.
+        base_start = context.get("seed_start")
+        if (isinstance(base_start, bool) or not isinstance(base_start, int)
+                or base_start < 0):
+            raise ValueError(
+                f"serve_trial: context['seed_start'] must be an explicit non-negative "
+                f"int (got {base_start!r}) for run {run_id!r}; stripes are never "
+                f"partitioned from a defaulted origin.")
         residues = context["residues"]
         dataset_path = context["dataset_path"]
 
@@ -10322,7 +10336,7 @@ class RangeMinerCoordinator:
                             retention_preflighted = True
                         _t = _sl.start()
                         _stage_assignments = self.assign_stripes(
-                            run_id, fam, ph, total_seeds, eligible,
+                            run_id, fam, ph, total_seeds, eligible, base_start=base_start,
                             stripe_prefix=_stage_prefix(stage_idx))
                         # [S172-BP §2] SIZE THE DEFERRED BOUND FROM THE RESOLVED
                         # EXECUTION SET — at stage setup, from real geometry, phase
@@ -12375,6 +12389,15 @@ def run_trial_miner(
     # value to 0, but the caller must SAY 0 — a pinned field that DEFAULTS
     # silently records a phase nobody chose.
     generator_phase: Optional[int] = None,
+    # [MINER SEED-START, brief 2026-11-14 R1] Step 1's seed_start: the first seed of
+    # the interval this trial sweeps, [seed_start, seed_start + total_seeds). Before
+    # this parameter existed the start was never handed to the miner at all — an
+    # offered `seed_start=` fell into the `**kwargs` tail below (the §2.7 instance-7
+    # shape) and the stripes covered [0, total_seeds) whatever Step 1 asked for
+    # (docs/CLAUDE_CODE_REPORT_STEP1_SEARCH_RECORD_STAGE1.md §6). Same REV4
+    # fail-closed shape as the window fields above: Optional=None so an OMITTED start
+    # is REFUSED below, never fabricated as 0. A caller sweeping from 0 says 0.
+    seed_start: Optional[int] = None,
     worker_pool_size: int = 8,
     seed_cap_nvidia: int = 5_000_000,
     seed_cap_amd: int = 2_000_000,
@@ -12426,6 +12449,23 @@ def run_trial_miner(
     for tests. Only the real worker FLEET / CT100 keys remain Phase-6/7; a
     coordinator server binding to loopback workers is in scope and default.
     """
+    # [MINER SEED-START R1/R2] FIRST, before the staging directory, the ledger, the
+    # trial row or any socket: the start must be an explicit non-negative int. None
+    # (omitted), a bool (`True` is an int in Python) and a float are refused, never
+    # coerced — `int(1.9)` would silently move the sweep. The upper bound
+    # (seed_start + total_seeds <= 2^32) is the S145 domain law; it is applied by the
+    # Step-1 caller with the finalizer's own constant
+    # (window_optimizer_integration_final.run_bidirectional_test), because importing
+    # that constant here would widen this module's import closure, which the rig
+    # parity gate governs (scripts/gate12_parity_gate.py GOVERNED_FILES).
+    if (isinstance(seed_start, bool) or not isinstance(seed_start, int)
+            or seed_start < 0):
+        raise ValueError(
+            f"run_trial_miner: seed_start must be an explicit non-negative int (got "
+            f"{seed_start!r}). The miner sweeps [seed_start, seed_start + total_seeds); "
+            f"an omitted start is refused rather than read as 0, because reading it as "
+            f"0 is how a non-zero Step 1 request was swept from 0. Nothing was created "
+            f"or dispatched.")
     # [S172 Staging Part B §1.1/§1.3, Beta binding ruling] Resolve the canonical
     # coordinator staging directory and VALIDATE it HERE — before build_coordinator,
     # before the ledger exists, before the trial is created, and therefore before
@@ -12492,6 +12532,7 @@ def run_trial_miner(
         "workflow_stages": workflow_stages,
         "residues": residues,
         "total_seeds": total_seeds,
+        "seed_start": seed_start,            # [MINER SEED-START] the sweep's origin
         "dataset_path": dataset_path,
         "forward_threshold": forward_threshold,
         "reverse_threshold": reverse_threshold,
