@@ -773,7 +773,18 @@ def step1_presented_configuration(final_params, pin_bundle):
     SearchBounds). `pin_bundle` is the invocation-local operator bundle or None; it is
     READ here and never produced from a stored record."""
     from utils.step1_search_ledger import presented_configuration
-    from window_optimizer import load_search_bounds_from_config, SearchBounds
+    # [L-5] The first import of window_optimizer in a WATCHER process runs a chain
+    # (sklearn -> scipy.stats -> numpy.testing -> numpy.distutils.log -> setuptools
+    # `_distutils/log.py`) that sets the ROOT logger to WARNING, after which every
+    # later INFO record of this process — `EXEC CMD`, `[S172-PIN] step1_pin_source` —
+    # was dropped (docs/LEADS.md L-5). The root level WATCHER configured is restored
+    # once the import returns; nothing else about logging is touched.
+    _l5_root = logging.getLogger()
+    _l5_level = _l5_root.level
+    try:
+        from window_optimizer import load_search_bounds_from_config, SearchBounds
+    finally:
+        _l5_root.setLevel(_l5_level)
     bounds = load_search_bounds_from_config(
         _os_module.path.join(REPO_ROOT, "distributed_config.json"))
     return presented_configuration(final_params, pin_bundle, bounds,

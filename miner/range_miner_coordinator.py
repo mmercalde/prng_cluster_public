@@ -11894,7 +11894,36 @@ class RangeMinerCoordinator:
             self.emit_stripe_rx_summary(run_id, msg.stripe_id, "stripe_complete")
             # Defect 4 (C3): a StripeComplete whose totals do not reconcile is a
             # definitive failure routed through the matrix, not a park in staging.
-            self.finalize_stripe(run_id, msg.stripe_id, eligible_provider=eligible_provider)
+            _sc_check = self.finalize_stripe(run_id, msg.stripe_id,
+                                             eligible_provider=eligible_provider)
+            # [L-4 STAGING-ADMISSION STALL REPAIR] A stripe can reach `done` on two
+            # paths, and before this only one of them resumed deferred work. The
+            # staging-job path finalizes and then pumps (`_run_staging_job` tail).
+            # THIS path finalizes and did not: when a stripe's last staging job
+            # finished BEFORE its StripeComplete was processed, the stripe became
+            # `done` here, its key stayed in `_admitted` (pruned only inside the
+            # pump), every later attempt deferred behind it, and nothing pumped
+            # again — an indefinite wait under serve_timeout=None (docs/LEADS.md L-4).
+            #
+            # The repair makes that state unreachable rather than recovering from
+            # it later: whenever this finalize leaves the stripe complete, the pump
+            # is HANDED to the staging executor — the thread pool that already runs
+            # it from every staging-job completion. It is never called here: the
+            # pump holds `_admission_lock` across a scan of `_deferred` with ledger
+            # reads, and running it on the dispatch thread is exactly the contention
+            # MP-1 measured. `submit` only enqueues. It is issued AFTER the finalize
+            # returns, so `done` is already written when the pump's prune reads it.
+            # The pump itself is unchanged: retained deferred payloads still claim a
+            # freed slot before a paused reader is resumed, and admission is still
+            # granted only by `_try_admit_locked` on a fresh liveness probe.
+            if _sc_check.is_complete:
+                try:
+                    self._staging_exec().submit(self._pump_deferred)
+                except RuntimeError as _sc_e:
+                    # Only an executor already shut down (trial teardown) refuses.
+                    logger.warning(
+                        "[L-4] could not hand the staging pump to the executor after "
+                        "%s/%s completed: %s", run_id, msg.stripe_id, _sc_e)
         elif mt == "stripe_error":
             self.emit_stripe_rx_summary(run_id, msg.stripe_id, "stripe_error")
             self.handle_stripe_failure(
