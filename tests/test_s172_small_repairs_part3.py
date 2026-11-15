@@ -12,8 +12,11 @@ Governing brief: docs/CLAUDE_CODE_INSTRUCTIONS_MINER_ADMISSION_STALL_20261114.md
                   sidecars: it returns the swept interval, and the directory beside the
                   ledger is unchanged afterwards (no `-wal`, no `-shm`, no other file).
   G-EVID-WAL      the same reader with a NON-EMPTY `-wal` (a writer holding an
-                  uncheckpointed write): the evidence is UNAVAILABLE (None, no credit),
-                  never a stale immutable read.
+                  uncheckpointed write): never a stale immutable read — the phase the
+                  writer un-did is not credited. Since the owner ruling of 2026-11-15
+                  (docs/CLAUDE_CODE_REPORT_STEP1_CREDIT_WAL.md) the committed state is
+                  read (phase 2 credited) and the directory beside the ledger is
+                  unchanged, instead of a blanket UNAVAILABLE.
 Mutants: each repair reverted to its base (7b9184a) form must red its gate.
 Every gate terminates PASS | FAIL; only PASS accepts.
 """
@@ -141,6 +144,21 @@ def _listing(d):
     return out
 
 
+def _content_listing(d):
+    """Names, sizes, mtime_ns and sha256 of every file in d. A plain `mode=ro` reader
+    rewrites a live `-shm` through mmap with size and mtime unchanged, so `_listing` alone
+    cannot see it (measured 2026-11-15, docs/CLAUDE_CODE_REPORT_STEP1_CREDIT_WAL.md); an
+    mtime-only change is caught too (Beta X-STEP1-CREDIT-WAL R2 Q3). This detects any
+    PERSISTENT difference; a write undone between the two listings is not detectable."""
+    out = {}
+    for n in sorted(os.listdir(d)):
+        p = os.path.join(d, n)
+        st = os.stat(p)
+        with open(p, "rb") as f:
+            out[n] = (st.st_size, st.st_mtime_ns, hashlib.sha256(f.read()).hexdigest())
+    return out
+
+
 def _reader():
     import importlib
     return importlib.import_module(I_MOD)._step1_miner_sweep_evidence
@@ -182,17 +200,27 @@ def g_evid_wal(reader=None):
                                "phase=1", ("%_s0",)).fetchone()[0]
             im.close()
             ok_(stale == "done", f"fixture: the immutable view is not stale ({stale})")
+            before = _content_listing(d)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 ev = reader({"run_id": RUN, "committed": True},
                             types.SimpleNamespace(staging_dir=d, miner_output_dir=None))
+            after = _content_listing(d)
         finally:
             w.close()
         ok_(ev is None or "1" not in ev.get("swept_intervals", {}),
             f"a non-empty -wal was read through: evidence {ev}")
-        ok_(ev is None, f"evidence returned with a non-empty -wal: {ev}")
-        ok_("UNAVAILABLE" in buf.getvalue(), f"no UNAVAILABLE reason printed: {buf.getvalue()!r}")
-    return "non-empty -wal -> evidence UNAVAILABLE (None, no credit); stale immutable view shown"
+        # [Owner ruling 2026-11-15, docs/CLAUDE_CODE_REPORT_STEP1_CREDIT_WAL.md §0] The
+        # blanket "non-empty -wal -> no evidence" requirement is reworded: the reader may
+        # read the COMMITTED state (from a stable copy, never opening the original), so
+        # phase 2 is credited and phase 1 is not; and the read changes nothing beside the
+        # ledger. The fixture and the phase-1 safety assertion above are unchanged.
+        ok_(ev is not None and ev.get("swept_intervals") == {"2": [lo, hi]},
+            f"committed state not read as phase 2 only: evidence {ev} {buf.getvalue()!r}")
+        ok_(after == before, f"the read changed the ledger directory: before {before} "
+                             f"after {after}")
+    return ("non-empty -wal -> phase 1 NOT credited (stale immutable view shown), phase 2 "
+            "read from committed state; directory unchanged")
 
 
 def _base_reader():

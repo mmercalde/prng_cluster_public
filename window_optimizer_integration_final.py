@@ -1423,6 +1423,59 @@ def _step1_legacy_jobs_complete(result):
     return True, "all planned jobs successful"
 
 
+def _step1_ledger_rows_via_copy(path, run_id):
+    """This run's stripe rows from a ledger whose `-wal` is non-empty, WITHOUT opening
+    SQLite on the original (binding addendum §A item 4). Copies `<db>` and `<db>-wal`
+    with plain file reads into a fresh private temporary directory, requires both
+    sources unchanged (inode, size, mtime_ns) across the copy, and queries the copy.
+    Returns the rows, or None (UNAVAILABLE -> no credit) if the source moved during the
+    copy or the copy cannot be read. Removing the scratch directory is best effort
+    (`rmtree(ignore_errors=True)` in a `finally`; a killed process leaves it behind).
+
+    A copy taken while the source is stable is a consistent image of every committed
+    transaction. SQLite's WAL recovery on the copy excludes the rest by two separate
+    mechanisms: frames after the last commit frame are ignored for want of a committed
+    transaction boundary (they can carry valid salts and checksums), and frames left
+    over from an older WAL generation fail salt/checksum validation."""
+    import shutil as _sh
+    import sqlite3 as _sq
+    import tempfile as _tf
+    srcs = (path, path + "-wal")
+
+    def _stamp():
+        out = []
+        for p in srcs:
+            st = os.stat(p)
+            out.append((st.st_ino, st.st_size, st.st_mtime_ns))
+        return out
+
+    scratch = _tf.mkdtemp(prefix="step1_credit_evidence_")
+    try:
+        before = _stamp()
+        for p in srcs:
+            _sh.copyfile(p, os.path.join(scratch, os.path.basename(p)))
+        after = _stamp()
+        if before != after:
+            print(f"   [STEP1-SEARCH S7] miner sweep evidence UNAVAILABLE: {path} or its "
+                  f"-wal changed during the evidence copy ({before} -> {after}) — no "
+                  f"credit")
+            return None
+        copy = os.path.join(scratch, os.path.basename(path))
+        con = _sq.connect(f"file:{copy}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT phase, seed_start, seed_count, state FROM stripes WHERE run_id=? "
+                "ORDER BY phase, seed_start", (run_id,)).fetchall()
+        finally:
+            con.close()
+        print(f"   [STEP1-SEARCH S7] miner sweep evidence read from a stable copy of "
+              f"{path} and its non-empty -wal ({before[1][1]} bytes); the original was "
+              f"not opened")
+        return rows
+    finally:
+        _sh.rmtree(scratch, ignore_errors=True)
+
+
 def _step1_miner_sweep_evidence(miner_result, coordinator):
     """The interval each miner phase ACTUALLY swept, read from the trial's own ledger
     stripe rows (no edit under miner/). A phase counts only if every one of its stripes
@@ -1441,25 +1494,40 @@ def _step1_miner_sweep_evidence(miner_result, coordinator):
         if not os.path.exists(path):
             return None
         # [Binding addendum §A, docs/CLAUDE_CODE_INSTRUCTIONS_BINDING_ADDENDUM_BETA_R1_
-        # 20261113.md] A plain `mode=ro` open of this WAL-mode ledger can create `-wal`
-        # / `-shm` beside it. Open it `immutable=1`, which creates nothing — and only
-        # when that is truthful: with a NON-EMPTY `-wal` (or `-journal`) an immutable
-        # read ignores committed-but-uncheckpointed pages and would be stale, so the
-        # evidence is UNAVAILABLE and earns no credit (S7 fails closed).
-        for _side in ("-wal", "-journal"):
-            _sp = path + _side
-            if os.path.exists(_sp) and os.path.getsize(_sp) > 0:
-                print(f"   [STEP1-SEARCH S7] miner sweep evidence UNAVAILABLE: {_sp} is "
-                      f"non-empty ({os.path.getsize(_sp)} bytes); an immutable read "
-                      f"would be stale — no credit")
+        # 20261113.md] A plain `mode=ro` open of this WAL-mode ledger creates `-shm`
+        # (and `-wal`) beside it, or rewrites an existing `-shm`. So:
+        #   * `-journal` non-empty -> a rollback transaction is in flight: UNAVAILABLE.
+        #   * `-wal` absent or empty -> `immutable=1` on the ledger itself, which is
+        #     truthful (no uncheckpointed pages) and creates nothing (§A item 3).
+        #   * `-wal` non-empty -> an immutable read would be stale, and any other open
+        #     of the original writes sidecars. Open NOTHING on the original: copy the
+        #     database and its `-wal` byte-for-byte into a private scratch directory,
+        #     require the source unchanged across the copy, and read the COPY (§A item
+        #     4). The `-shm` is not copied, so SQLite rebuilds the WAL index from the
+        #     WAL's own checksummed frames — the committed state, not a hint.
+        # [STEP1-CREDIT-WAL, docs/CLAUDE_CODE_INSTRUCTIONS_STEP1_CREDIT_WAL_20261115.md]
+        # A non-empty `-wal` is normal after a run: it outlives the coordinator whenever
+        # a read-only observer (the gate12 sampler) is connected at the coordinator's
+        # last close, and a read-only last closer can neither checkpoint nor delete it.
+        _jp = path + "-journal"
+        if os.path.exists(_jp) and os.path.getsize(_jp) > 0:
+            print(f"   [STEP1-SEARCH S7] miner sweep evidence UNAVAILABLE: {_jp} is "
+                  f"non-empty ({os.path.getsize(_jp)} bytes); a rollback transaction "
+                  f"is in flight — no credit")
+            return None
+        _wp = path + "-wal"
+        if not (os.path.exists(_wp) and os.path.getsize(_wp) > 0):
+            con = _sq.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+            try:
+                rows = con.execute(
+                    "SELECT phase, seed_start, seed_count, state FROM stripes WHERE "
+                    "run_id=? ORDER BY phase, seed_start", (run_id,)).fetchall()
+            finally:
+                con.close()
+        else:
+            rows = _step1_ledger_rows_via_copy(path, run_id)
+            if rows is None:
                 return None
-        con = _sq.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
-        try:
-            rows = con.execute(
-                "SELECT phase, seed_start, seed_count, state FROM stripes WHERE run_id=? "
-                "ORDER BY phase, seed_start", (run_id,)).fetchall()
-        finally:
-            con.close()
     except Exception as _e:                      # evidence unreadable -> no evidence
         print(f"   [STEP1-SEARCH S7] miner sweep evidence unreadable: {_e}")
         return None
