@@ -153,6 +153,17 @@ STAGGER="${STAGGER:-3}"
 RUN_NONCE="${RUN_NONCE:-}"
 RELEASE_DEADLINE="${RELEASE_DEADLINE:-900}"
 REMOTE_RELEASE_DIR="${REMOTE_RELEASE_DIR:-/tmp/minerlogs}"
+# [X-MINER-NO-TORCH] worker --cleanup-torch mode, per worker KIND. Defaults keep today's
+# behaviour AND today's command lines byte-identical (the flag is only passed when non-default).
+#   RIG_CLEANUP_TORCH  = per_substripe | off   (ROCm rigs; `off` removes the second HIP/HSA runtime)
+#   ZEUS_CLEANUP_TORCH = per_substripe | off   (local CUDA worker; default per_substripe = unchanged)
+RIG_CLEANUP_TORCH="${RIG_CLEANUP_TORCH:-per_substripe}"
+ZEUS_CLEANUP_TORCH="${ZEUS_CLEANUP_TORCH:-per_substripe}"
+for _ct in "$RIG_CLEANUP_TORCH" "$ZEUS_CLEANUP_TORCH"; do
+    case "$_ct" in per_substripe|off) ;; *) echo "[launch] FATAL: cleanup-torch mode '$_ct' not in per_substripe|off" >&2; exit 64;; esac
+done
+RIG_CT_ARGS=""; [ "$RIG_CLEANUP_TORCH" != "per_substripe" ] && RIG_CT_ARGS="--cleanup-torch $RIG_CLEANUP_TORCH"
+ZEUS_CT_ARGS=""; [ "$ZEUS_CLEANUP_TORCH" != "per_substripe" ] && ZEUS_CT_ARGS="--cleanup-torch $ZEUS_CLEANUP_TORCH"
 # [D6-I1] The bounded launch-settle interval. It is NOT a readiness wait and must
 # not grow into one: the worker still has a GPU to warm and a sentinel to emit
 # after this point. It exists only to make an IMMEDIATE death — argparse, a
@@ -210,6 +221,7 @@ mkdir -p "$LOGDIR"
 echo "[launch] coordinator = $COORD_HOST:$PORT"
 echo "[launch] profile     = ${RIG_PROFILE:-$(python3 -c "import json;print(json.load(open('$REPO_ROOT/rig_profiles_config.json'))['default_profile'])")}"
 echo "[launch] stagger     = ${STAGGER}s   (total dispatch ~$((TOTAL * STAGGER))s)"
+echo "[launch] cleanup-torch: rigs=${RIG_CLEANUP_TORCH} zeus=${ZEUS_CLEANUP_TORCH}"
 echo "[launch] local logs  = $LOGDIR"
 echo "[launch] workers     = $TOTAL"
 echo "$FLEET" | awk -F'\t' '{printf "[launch]   %-16s %-16s %s GPU(s)  [%s]\n", $1, $2, $3, $6}'
@@ -277,7 +289,7 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
             nohup "$PYBIN" "$SCRIPTPATH/miner/range_miner_worker.py" \
                 --host "$COORD_HOST" --port "$PORT" \
                 --gpu-id "$N" --device-index 0 \
-                $LOCAL_SENTINEL_ARGS \
+                $LOCAL_SENTINEL_ARGS $ZEUS_CT_ARGS \
                 > "$LOCAL_LOG" 2>&1 < /dev/null &
             LOCAL_PID=$!
             echo "[launch]   pid=$LOCAL_PID"
@@ -319,7 +331,7 @@ PYTHONPATH=$SCRIPTPATH \
 nohup $PYBIN $SCRIPTPATH/miner/range_miner_worker.py \
   --host $COORD_HOST --port $PORT \
   --gpu-id $N --device-index 0 \
-  $REMOTE_SENTINEL_ARGS \
+  $REMOTE_SENTINEL_ARGS $RIG_CT_ARGS \
   < /dev/null > /tmp/minerlogs/gpu$N.log 2>&1 &
 worker_pid=\$!
 sleep $REMOTE_LAUNCH_SETTLE

@@ -1073,6 +1073,135 @@ def _best_effort_gpu_cleanup() -> None:
 
 
 # ===========================================================================
+# [X-MINER-NO-TORCH] --cleanup-torch: ONE flag, default = today's behaviour
+# ===========================================================================
+# per_substripe (default): `_best_effort_gpu_cleanup` above, byte-unchanged — gc,
+#     torch.cuda.synchronize/empty_cache, both CuPy pool frees, after every
+#     sub-stripe. On the ROCm rigs the torch call maps a SECOND HIP/HSA runtime
+#     (torch wheel, HIP 6.3) beside CuPy's (/opt/rocm 6.4.3) in the same process
+#     (docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT.md T4.11 (1)).
+# off: the worker process never imports torch (a meta-path blocker is installed
+#     before any GPU import) and the cleanup is CuPy-only: gc, a device-wide
+#     synchronize on CuPy's runtime, both CuPy pool frees. A self-check fails
+#     closed if torch, a torch-wheel runtime library, or a second copy of
+#     libamdhip64 / libhsa-runtime64 / libcudart is mapped while the flag is off.
+CLEANUP_TORCH_MODES = ("per_substripe", "off")
+_CLEANUP_TORCH_MODE = "per_substripe"
+_FIRST_CLEANUP_CHECKED = False
+_RUNTIME_LIB_KEYS = ("libamdhip64", "libhsa-runtime64", "libhsakmt", "libcudart")
+
+
+class CleanupTorchSelfCheckError(RuntimeError):
+    """[X-MINER-NO-TORCH] fail-closed: --cleanup-torch off, but a second runtime is mapped."""
+
+
+class _TorchImportBlocker:
+    """Meta-path finder that refuses every `torch` / `torch.*` import (mode off)."""
+    def find_spec(self, name, path=None, target=None):
+        if name == "torch" or name.startswith("torch."):
+            raise ImportError("range_miner_worker --cleanup-torch off: torch import blocked")
+        return None
+
+
+def configure_cleanup_torch(mode: str) -> None:
+    """Set the mode ONCE at start-up, before any GPU import. Mode off installs the torch
+    import blocker and fails closed if torch is already in the process."""
+    global _CLEANUP_TORCH_MODE
+    if mode not in CLEANUP_TORCH_MODES:
+        raise ValueError(f"--cleanup-torch must be one of {CLEANUP_TORCH_MODES}, got {mode!r}")
+    _CLEANUP_TORCH_MODE = mode
+    if mode == "off":
+        if "torch" in sys.modules:
+            raise CleanupTorchSelfCheckError(
+                "[NO-TORCH] --cleanup-torch off but torch is already imported in this process")
+        if not any(isinstance(f, _TorchImportBlocker) for f in sys.meta_path):
+            sys.meta_path.insert(0, _TorchImportBlocker())
+
+
+def _cupy_only_gpu_cleanup() -> None:
+    """Mode off: gc + CuPy device synchronize + CuPy default & pinned pool frees.
+    Same best-effort guarding as `_best_effort_gpu_cleanup`; never imports torch."""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import cupy as cp
+        # Device-wide barrier on CuPy's OWN runtime (what torch.cuda.synchronize() is on
+        # torch's runtime). The result path already blocks on `.get()`; this is the
+        # explicit barrier before the pool frees.
+        cp.cuda.runtime.deviceSynchronize()
+    except Exception:
+        pass
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+
+
+def runtime_identity(maps_text: Optional[str] = None) -> Dict[str, Any]:
+    """Runtime libraries mapped in THIS process (read-only /proc/self/maps)."""
+    live = maps_text is None
+    if live:
+        try:
+            with open("/proc/self/maps") as f:
+                maps_text = f.read()
+        except OSError:
+            maps_text = ""
+    libs: Dict[str, set] = {k: set() for k in _RUNTIME_LIB_KEYS}
+    for ln in maps_text.splitlines():
+        parts = ln.split()
+        if len(parts) < 6:
+            continue
+        path = parts[-1]
+        for key in _RUNTIME_LIB_KEYS:
+            if key in os.path.basename(path):
+                libs[key].add(os.path.realpath(path) if live else path)
+    flat = sorted(p for v in libs.values() for p in v)
+    return {"libs": {k: sorted(v) for k, v in libs.items()},
+            "torch_wheel_libs": [p for p in flat if "/site-packages/torch/" in p],
+            "torch_imported": "torch" in sys.modules}
+
+
+def runtime_selfcheck(stage: str, maps_text: Optional[str] = None) -> Dict[str, Any]:
+    """Log the mode and the mapped runtime files; in mode off, FAIL CLOSED on a second
+    runtime. Raises CleanupTorchSelfCheckError (the worker then exits / fails the work)."""
+    ident = runtime_identity(maps_text)
+    logger.info("[NO-TORCH] cleanup_torch=%s stage=%s torch_imported=%s runtimes=%s",
+                _CLEANUP_TORCH_MODE, stage, ident["torch_imported"],
+                json.dumps({k: v for k, v in ident["libs"].items() if v}, sort_keys=True))
+    if _CLEANUP_TORCH_MODE == "off":
+        problems = []
+        if ident["torch_imported"]:
+            problems.append("torch is imported")
+        if ident["torch_wheel_libs"]:
+            problems.append(f"torch-wheel runtime mapped: {ident['torch_wheel_libs']}")
+        for key in ("libamdhip64", "libhsa-runtime64", "libcudart"):
+            if len(ident["libs"][key]) > 1:
+                problems.append(f"{len(ident['libs'][key])} copies of {key} mapped: {ident['libs'][key]}")
+        if problems:
+            logger.error("[NO-TORCH] FAIL CLOSED at %s: %s", stage, "; ".join(problems))
+            raise CleanupTorchSelfCheckError(f"[NO-TORCH] fail closed at {stage}: " + "; ".join(problems))
+    return ident
+
+
+def _gpu_cleanup_dispatch() -> None:
+    """The ONE cleanup call site used by SieveExecutor.execute's finally. The default mode
+    calls the module global `_best_effort_gpu_cleanup` exactly as before."""
+    global _FIRST_CLEANUP_CHECKED
+    if _CLEANUP_TORCH_MODE == "off":
+        _cupy_only_gpu_cleanup()
+    else:
+        _best_effort_gpu_cleanup()
+    if not _FIRST_CLEANUP_CHECKED:
+        _FIRST_CLEANUP_CHECKED = True
+        runtime_selfcheck("after_first_cleanup")
+
+
+# ===========================================================================
 # GPU execution
 # ===========================================================================
 
@@ -1328,7 +1457,7 @@ class SieveExecutor:
             except NameError: pass
             try: del buffers, kernel_args, arg_list
             except NameError: pass
-            _best_effort_gpu_cleanup()
+            _gpu_cleanup_dispatch()
 
 
 # ===========================================================================
@@ -1991,6 +2120,7 @@ class RangeMinerWorker:
         if self.gpu_info is None:
             self.gpu_info = detect_gpu(self.device_index)
             warm_gpu(self.device_index)
+            runtime_selfcheck("after_warm_gpu")
 
     def emit_startup_sentinel(self, run_nonce: str,
                               log_path: Optional[str] = None) -> Dict[str, Any]:
@@ -2174,6 +2304,7 @@ class RangeMinerWorker:
         if self.gpu_info is None:
             self.gpu_info = detect_gpu(self.device_index)
             warm_gpu(self.device_index)
+            runtime_selfcheck("after_warm_gpu")
         msg = self._build_register_message()
         # [DEFECT A §13] FROZEN COHORT REMAINS AUTHORITY. The first registration
         # freezes the identity this worker was admitted under — worker_id, node
@@ -2829,6 +2960,9 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         "REGISTER until it contains this run's nonce")
     p.add_argument("--release-deadline", type=float, default=900.0,
                    help="fail-closed bound on the release wait, in seconds")
+    p.add_argument("--cleanup-torch", choices=CLEANUP_TORCH_MODES, default="per_substripe",
+                   help="[X-MINER-NO-TORCH] per_substripe (default, today's behaviour) or off "
+                        "(torch never imported; CuPy-only cleanup; fail-closed self-check)")
     p.add_argument("--sentinel-log-path", default=None,
                    help="the worker's own resolved log destination, recorded in "
                         "SESSION_SENTINEL so the harness probe and the daemon "
@@ -2884,6 +3018,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # configuration is first-writer-wins, so ordering is the property.
     configure_worker_logging()
     args = _parse_args(argv)
+    # [X-MINER-NO-TORCH] before the executor is built and before any GPU import.
+    configure_cleanup_torch(args.cleanup_torch)
     caps = VramCaps(
         amd=args.seed_cap_amd,
         nvidia=args.seed_cap_nvidia,
