@@ -1,0 +1,35 @@
+--- a/scripts/launch_fleet_manual.sh	2026-11-16 18:46:48.696401104 -0800
++++ b/scripts/launch_fleet_manual.sh	2026-11-16 18:47:09.945363321 -0800
+@@ -163,6 +163,12 @@
+     case "$_ct" in per_substripe|off) ;; *) echo "[launch] FATAL: cleanup-torch mode '$_ct' not in per_substripe|off" >&2; exit 64;; esac
+ done
+ RIG_CT_ARGS=""; [ "$RIG_CLEANUP_TORCH" != "per_substripe" ] && RIG_CT_ARGS="--cleanup-torch $RIG_CLEANUP_TORCH"
++# [X-CUPY-CACHE-RESET] RIG_CUPY_CACHE_RESET=1: each rig worker's own CuPy kernel cache
++# (/tmp/cupy_cache_gpu$N, in its CT) is emptied immediately before that worker starts, so every phase
++# compiles cold. Default 0: the remote command is byte-identical to today's. Basis: docs/LEADS.md L-7
++# (2026-11-16 Runs A-E: every warm phase-4 path faulted on rrig6600/rrig6600c; every cold one was clean).
++RIG_CUPY_CACHE_RESET="${RIG_CUPY_CACHE_RESET:-0}"
++case "$RIG_CUPY_CACHE_RESET" in 0|1) ;; *) echo "[launch] FATAL: RIG_CUPY_CACHE_RESET must be 0 or 1" >&2; exit 64;; esac
+ ZEUS_CT_ARGS=""; [ "$ZEUS_CLEANUP_TORCH" != "per_substripe" ] && ZEUS_CT_ARGS="--cleanup-torch $ZEUS_CLEANUP_TORCH"
+ # [D6-I1] The bounded launch-settle interval. It is NOT a readiness wait and must
+ # not grow into one: the worker still has a GPU to warm and a sentinel to emit
+@@ -222,6 +228,7 @@
+ echo "[launch] profile     = ${RIG_PROFILE:-$(python3 -c "import json;print(json.load(open('$REPO_ROOT/rig_profiles_config.json'))['default_profile'])")}"
+ echo "[launch] stagger     = ${STAGGER}s   (total dispatch ~$((TOTAL * STAGGER))s)"
+ echo "[launch] cleanup-torch: rigs=${RIG_CLEANUP_TORCH} zeus=${ZEUS_CLEANUP_TORCH}"
++echo "[launch] cupy-cache-reset: rigs=${RIG_CUPY_CACHE_RESET}"
+ echo "[launch] local logs  = $LOGDIR"
+ echo "[launch] workers     = $TOTAL"
+ echo "$FLEET" | awk -F'\t' '{printf "[launch]   %-16s %-16s %s GPU(s)  [%s]\n", $1, $2, $3, $6}'
+@@ -322,8 +329,10 @@
+             # time, which is how the per-worker paths and the settle interval
+             # reach the far side.
+             DISPATCH_LOG="$LOGDIR/dispatch_${WHOST}_gpu$N.log"
++            CACHE_RESET=""; [ "$RIG_CUPY_CACHE_RESET" = 1 ] && CACHE_RESET="rm -rf /tmp/cupy_cache_gpu$N || exit $RC_REMOTE_MKDIR
++"
+             ssh -n -o BatchMode=yes -o ConnectTimeout=10 "michael@$ENDPOINT" \
+-"mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR /tmp/cupy_cache_gpu$N || exit $RC_REMOTE_MKDIR
++"${CACHE_RESET}mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR /tmp/cupy_cache_gpu$N || exit $RC_REMOTE_MKDIR
+ cd $SCRIPTPATH || exit $RC_REMOTE_CD
+ ROCR_VISIBLE_DEVICES=$N \
+ CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N \
