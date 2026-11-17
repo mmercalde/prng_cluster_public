@@ -276,6 +276,27 @@ trace. Stated as a bound, not as a hypothesis.
 **What this entry must NOT be read as.** It does not explain the freeze, does not exonerate any
 component, and does not make the 2026-08-22 run's environment healthy. It explains **11 packets**.
 
+**CORRECTION APPENDED 2026-11-15 (rig-GPU-fault session; the text above is left as written).** The
+"not active — CLOSED" branch is **contradicted by measurement**. `/etc/modprobe.d/netconsole.conf`
+and `/etc/modules-load.d/netconsole.conf` were *created* 2026-08-22 19:25:07–08 on all three hosts
+(`stat` birth time), and the incident boot on `.121`/`.163` (`journalctl -b -3 -k`, 10:40→18:27 /
+18:19) has **zero** netconsole lines; the first `netpoll: netconsole` lines are in boot −2 at
+19:25. The 19:26 `NCPROOF` packets prove arming *after* the post-incident reboot. Correct reading:
+**netconsole NOT armed during the freeze; kernel-event status UNOBSERVED.** The freeze time is
+also 18:32:02–07 per the ledger (forensic doc §5), not 18:42–18:52. **ADOPTED** at gate 1 by
+Alpha, 2026-11-15.
+**RULED (Alpha, after X-RIG-GPU-FAULT R3, 2026-11-15): the recorded wording is Beta's — "no
+pre-freeze arming proof retained; incident kernel-event status UNOBSERVED".** History of the two
+positions follows. **TWO POSITIONS (for Michael), 2026-11-15.** Alpha (adopted at gate 1): *not armed during the
+freeze.* Beta (X-RIG-GPU-FAULT R1 Q2): the record supports only *no pre-freeze arming proof
+retained; kernel-event status UNOBSERVED*. An ad hoc `modprobe netconsole …` in the incident
+boot's lost journal tail (it ends 18:19 / 18:27) would leave neither the persistence-file birth
+time nor a retained journal line. The session agrees with Beta's narrower reading. **Both
+readings reopen the "not active — CLOSED" branch.** Separately measured (Beta R1 Q4, verified
+2026-11-15): the persistence files never arm at boot (`vmbr0 doesn't exist, aborting` on every
+boot of all three hosts); arming has been by hand. Detail: `docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT.md` "Null results and corrections".
+Related: L-6.
+
 ---
 
 ## L-4 — staging admission can stay held by a DONE stripe, and then nothing pumps
@@ -383,3 +404,180 @@ imported inside `run_step`, `EXEC CMD` **1**, `[S172-PIN]` **1**, root level 20 
 
 **Follow-ups OPEN.** Confirm on a real WATCHER log file: the next Step 1 dispatch's log should
 now CONTAIN `EXEC CMD` and `[S172-PIN]`.
+
+---
+
+## L-6 — rig GPU fault at the phase-4 first launch: rrig6600c 16:00.0 `0x00801231` SQC recurs
+
+**Status: OPEN.** Filed 2026-11-15 under `docs/CLAUDE_CODE_INSTRUCTIONS_RIG_GPU_FAULT_20261115.md`;
+report `docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT.md`.
+
+**What it is.** The same first-fault signature — rrig6600c `0000:16:00.0`,
+`GCVM_L2_PROTECTION_FAULT_STATUS 0x00801231`, SQC(inst), PERMISSION_FAULTS 0x3 — observed on
+2026-04-04 (S162), 2026-04-17 (S163KARG) and 2026-11-15 (Run 4 attempt 2), followed within
+~100–200 ms by `0xFFFFFFFF` on it and sibling cards and loss of the card's PCIe functions. On
+2026-11-15 the first fault output from rrig6600 `19:00.0` (TCP `0x00841011`) was **received**
+0.63 ms before rrig6600c's, ~73 ms after phase-4 stripes were created, and before either host
+had a recorded phase-4 shard. The VBIOS-L03 card (rrig6600c `06:00.0`; gpuN mapping
+**provisional**, KFD order, gpu1) faulted on 2026-04-04, 2026-04-17 and 2026-11-15.
+
+**Follow-ups RUN.**
+- ✅ Recur across the record: S162, S163KARG, S164 (different signature), Aug-22 (unobserved —
+  no arming proof retained, two positions in L-3), today. Pattern as above.
+- ✅ Same recorded trial inputs, same host boot, morning pass / afternoon fail. That no static
+  setting explains it alone **assumes no setting changed within the boot** (per-run settings
+  were not snapshotted).
+- ✅ Large phase-3 survivor volume is not necessary for today's phase-4 host hang (60 vs 13.1M).
+  This does not show the two hangs share a cause.
+- ✅ Recurrence despite the configured cap mitigation (installed after Aug-22); the effective cap
+  at the fault is UNOBSERVED (the script logs unconditionally).
+
+**Follow-ups OPEN.**
+- ⬜ Sub-second power/rail record across a phase-4 first launch (H2).
+- ⬜ Card-vs-slot swap on rrig6600c (does the fault follow 16:00.0's card or root port 1d.1?).
+- ~~Clock-pin / voltage A/B~~ — **EXCLUDED from T4** (Kaspa profile recorded as crash-causing,
+  S165; Alpha withdrew the clock-profile lead 2026-11-15). Owner may reopen.
+- ✅ (R3) Two HIP/HSA runtimes in one worker-environment process **confirmed at the library
+  level**, read-only with no device visible or opened. After `import cupy`, only
+  `/opt/rocm-6.4.3` `libamdhip64`/`libhsa-runtime64` are mapped; after `import torch`, the
+  torch wheel's HIP 6.3 copies are mapped too. Whether both **initialise on the GPU** in a live
+  worker is OPEN (first test).
+- ✅ (R3) rrig6600b `19:00.0` SMU `TransferTableSmu2Dram` 0xFFFFFFFF ×2 at 13:47:28.123: a single
+  failed metrics read while idle (the telemetry TSV shows 0 W / 0 °C for that card in that
+  second only); the card is healthy since. Observation on the stable rig, recorded; not a GCVM.
+- ⬜ Live worker `/proc/PID/environ` on a rig (HSA_* absent by reading, not observed).
+- ⬜ Whether earlier faults were rate-limited away ("3 callbacks suppressed").
+- ✅ (owner addition) PCIe atomics read on all hosts: absent on all 7 PCH slots per rig, including
+  the stable rrig6600b → not a rig discriminator by itself.
+- ⬜ Riser path of the three faulting cards (riser, USB cable, riser power) — owner hand swaps
+  e1/e2/e3, f1 (CPU-slot move) per `CLAUDE_CODE_REPORT_RIG_GPU_FAULT.md` T4.5.
+- ⬜ Cold vs warm kernel cache (arm h): first-run-in-CT-boot passed 2/2, later runs failed 2/2.
+- ✅ (R2) Recurrence extended through the record: 2026-04-04 S162 Option B also had **both**
+  repeat cards first (`16:00.0` and `06:00.0`, SQC, 48 ms apart,
+  `TB_UPDATE_S162_OPTION_B_RESULTS.md:30-37`). 2026-05-09 S174_D1: rrig6600 + rrig6600c
+  crashed; rrig6600b "not verified at session close, last known healthy 22:55"
+  (`SESSION_CHANGELOG_20260509_S174_D1.md:40-42`).
+- ✅ (R2) `cwsr_enable=0` is not necessary: all three hosts run `cwsr_enable=1` today, and the
+  same pair failed.
+- ⬜ **(R2, after Beta R2) Possible two HIP runtimes in one worker process.** Measured read-only
+  on rrig6600c CT (2026-11-15 ~15:40):
+  - CuPy's extensions link `/opt/rocm/lib/libamdhip64.so.6` (6.4.3) via `ldd`.
+  - torch `2.7.0+rocm6.3`, installed in all three rig venvs, bundles `torch/lib/libamdhip64.so` and
+    `libhsa-runtime64.so`; both have soname `libamdhip64.so.6` / `libhsa-runtime64.so.1`.
+  - `libtorch_hip.so` has `NEEDED libamdhip64.so` with `RPATH $ORIGIN`.
+  - The miner's per-sub-stripe cleanup imports torch and calls `torch.cuda.synchronize()` and
+    `empty_cache()` after CuPy is loaded (`miner/range_miner_worker.py:1059-1066`).
+
+  **Inference [UNVERIFIED]:** glibc resolves `NEEDED libamdhip64.so` by name, not by the loaded
+  object's soname, so a second (6.3) HIP/HSA runtime would load beside CuPy's 6.4.3 in the same
+  process, on the same GPU. The PWC worker has the same cleanup (`sieve_gpu_worker.py:78-94`).
+  **Follow-up:** read `/proc/PID/maps` of a live worker in the first owner-run test (no extra
+  load), then a torch-free cleanup arm.
+- ✅ (after R3, register-verified) **torch's presence alone does not separate the eras.** torch was
+  in the sieve worker 2025-11-27 → 12-24 (module import; removed in `41165dd`, which records it
+  broke CuPy HIPRTC compilation by altering HIP include paths). It returned as a per-job cleanup
+  (`b425171`, 2026-01-14), then per chunk (`20b0e7c`, 2026-01-26), and now runs per sub-stripe in
+  the long-lived miner (`miner/range_miner_worker.py:1051-1072`). Jan–Mar has zero GCVM records,
+  but **no kernel capture existed before 2026-04-01**, so that is absence of record. What changed
+  is the **frequency** of the torch cleanup and that **the process no longer exits** afterwards.
+  The torch-called state of each PWC-era GCVM event is UNKNOWN (gated by `S163_MEM_DEBUG` from
+  04-08): record check proposed in `docs/CLAUDE_CODE_PLAN_RIG_GPU_PROBE.md` §1.3.
+- ✅ (after R3; wording per Beta X-RIG-GPU-PROBE R1 Q1) Onset timing: in 10 of 26 Part-C GCVM events
+  the onset is **near worker startup**, with module/load/launch and torch-call state **UNKNOWN per
+  event**; today's onset is near phase-4 dispatch, in processes that had run the torch cleanup after
+  every earlier sub-stripe. Timing fact only (plan §1.4).
+- ⬜ Arms P / P1 / M / N and the fleet P-vs-N comparison: `docs/CLAUDE_CODE_PLAN_RIG_GPU_PROBE.md`
+  §2–§4; thread X-RIG-GPU-PROBE.
+- ⬜ Memory handling at the hand-over (arm g2): the miner calls `free_all_blocks()` after every
+  sub-stripe (`miner/range_miner_worker.py:1051-1070`, `:1331`); single-card hand-over series
+  with a serialised re-run.
+- ❌ **2026-11-15 18:28 — the two-runtime hypothesis is REFUTED as the sole cause (arm N, fleet).**
+  The no-torch worker (`048fd47`, parity 30/30) ran Run 4 with `RIG_CLEANUP_TORCH=off`. Attempt 3
+  credited clean at 17:59. The 18:18 confirmation repeat, with all 24 rig workers logging
+  `torch_imported=False` and one HIP/HSA runtime, **faulted the same three cards**: phase-4
+  dispatch 18:28:29.403; first received GCVM 18:28:29.449 on `.121 19:00.0`
+  (`0x00841051`, TCP 0x8, RW 1) and in the same millisecond on `.163 16:00.0` (`0x00801231`,
+  SQC (inst) 0x9, RW 0) and `.163 06:00.0` (`0x80001281`, SQC (inst), RW 0). Both hosts hung;
+  rrig6600b silent. A second runtime is **not required** for this fault. Whether it changes the
+  rate is not measured (n=2 per arm). Evidence: `/home/michael/run4_confirm1_fault_20261115_182829`,
+  main-tree `logs/netconsole_all_rigs.log:855-890`. Decode and follow-ups:
+  `docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT_DECODE_20261115.md`.
+- ⬜ Card hold-out run and card↔identity permutation run: designed in the decode report §4.
+
+## L-7 — today's faults came only on the second run after a host boot (warm CuPy kernel cache)
+
+**Status: OPEN.** Filed 2026-11-15 19:00 PST. Report:
+`docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT_DECODE_20261115.md` §1.6, §3.
+
+**What it is.** On `.121`/`.163` (boots 08:27 and 13:53 PST, `journalctl --list-boots`), the
+first miner run of each boot ran clean (09:05 attempt 1; 17:49 attempt 3), and the second run of
+each boot faulted at phase-4 dispatch + 39–46 ms (13:11 attempt 2; 18:18 confirm 1). The CT's
+`/tmp/cupy_cache_gpuN` is cleared at CT start, so run 1 compiles every kernel and run 2 loads them
+from the cache. rrig6600b (`.155`, one boot 08:27 → all four runs, warm from run 2 on) never faulted.
+
+**Against it, from the record:** register Table 1 has GCVM events with no warm cache possible:
+C-15 (uptime 81 s), C-34 (166 s), C-47 (161 s), C-86 (275 s), and B-59, B-61 with no run active.
+So a warm cache is **not necessary** for GCVM across the record. The other ~37 GCVM rows carry no
+boot time in the register.
+
+- ⬜ Recur: run-since-boot for every GCVM row with a run log (boot markers from netconsole
+  `[uptime]` stamps and journals; main-tree netconsole starts 2026-05-11).
+- ⬜ Mechanism: a warm load removes the per-worker compile (≈0.3–0.7 s phase-4 compile on `.156`,
+  attempt 1 cache mtimes), so all 24 rig workers reach the first phase-4 launch within a few ms of
+  each other. Test: a run-#2 with `CUPY_CACHE_DIR` emptied per worker (cold), and a run-#1 with the
+  cache pre-seeded from the copied tars (warm). Register precedent: in-process pre-compile
+  `22bb145` "made crashes worse" (reverted `ac32cd9`); a warm-up barrier "didn't help" (01-23).
+
+- ✅ **2026-11-16: third same-boot repeat. Run A (run #1 after boot, cold cache) clean and credited
+  16:23–16:4x; Run B (run #2, same boot, warm cache) FAULTED at phase-4 dispatch + ~45 ms, 16:56:20.382, on the
+  same three cards** (rrig6600 `19:00.0`, rrig6600c `16:00.0` and `06:00.0`). rrig6600b (run #2 of its boot,
+  warm) was clean.
+  - Recorded with the outside recorder: `logs/rig_fault_rec/20261116_AB_secured_165728/`.
+  - Tally for these two hosts: run #1 clean 3/3 (11-15 09:05, 11-15 17:49, 11-16 16:23); run #2 faulted 3/3.
+  - The register's counter-examples (C-15, C-34, C-47, C-86, B-59, B-61) still stand. The pattern is
+    today-specific evidence, not a general rule.
+- ✅ Fault addresses located (`docs/CLAUDE_CODE_REPORT_GCVM_LOCATED_20261116.md`, Beta X-GCVM-LOCATED R1).
+  - No covering mapping/PTE event in the retained capture for the data faults.
+  - The instruction fetch landed in the recorded non-executable phase-3 code-staging block.
+  - Host removal/eviction/pressure is excluded for the recorded events. A host translation or visibility
+    error on a real page is **not** excluded.
+- ✅ Load-to-launch gaps (report §8). Run A ph4 buffer→code was 279–671 ms; Run B ph4 was 0.7–0.9 ms on all 24
+  workers. The faulting cards were not the shortest. Phases 1–3 of B had the same fast path, no fault.
+- ✅ **V2 = Run C (2026-11-16, run #1 after boot on rrig6600 and rrig6600c, warm caches pre-filled from
+  rrig6600b): FAULTED** at phase-4 dispatch 17:55:48.651 + 41 ms. Cards: rrig6600c `16:00.0` (gpu6) and
+  rrig6600c **`19:00.0` (gpu7, new)**, both TCP write `0x00841051`, and rrig6600 `19:00.0` (gpu7, first printed
+  status dead). rrig6600c `06:00.0` (gpu1), which faulted in B, was clean. rrig6600b (run #3 of its boot) was
+  clean.
+  - The warm path was confirmed on all 24 workers: phase-4 buffer→code 0.70–1.03 ms (one 4.06, one 6.86).
+  - Reading, as a single event: **carried state from an earlier run on the same boot is NOT necessary**; a
+    first run with warm caches is sufficient for the fault on these hosts.
+  - New: rrig6600c gpu6's second fault (TCP read `0x00801011`, +46 ms) hit `0x738d72000000`. That page was
+    inside a 16 MiB buffer mapped and unmapped 99 times in phases 1–2 (last unmap 17:49:35), at
+    base + 4 MiB, with no mapping in phase 4.
+  - Evidence: `logs/rig_fault_rec/20261116_C_secured_175651/` (`MANIFEST.sha256`, `fault_map.txt`).
+- ⬜ V1 (Beta's): run #2 on a boot with the per-worker caches emptied first.
+- ✅ **Run D (2026-11-16 18:10, run #1 after the 18:00 boot on rrig6600 and rrig6600c, all caches emptied:
+  cold): CLEAN.** T1–T7 recorded; no page-fault line after 18:00. Phase-4 dispatch 18:19:30.391.
+  - Cold path confirmed on all 24 rig workers: buffer→code 280–879 ms, dispatch→code 290–899 ms.
+  - Faulting-history cards: rrig6600 gpu7 573 ms, rrig6600c gpu6 680 ms, rrig6600c gpu7 879 ms (the longest).
+  - rrig6600b: run #4 of its boot, cold, clean.
+  - Evidence: `logs/rig_fault_rec/20261116_D/`.
+- ✅ **Run E = V1 (2026-11-16 18:28, run #2 on the same boot as Run D, caches emptied again: cold): CLEAN.**
+  T1–T7 recorded; no page-fault line. Phase-4 dispatch 18:38:12.542.
+  - Cold path confirmed on all 24 rig workers: buffer→code 276–1184 ms.
+  - Faulting-history cards: rrig6600c gpu7 587 ms, rrig6600c gpu6 701 ms, rrig6600 gpu7 754 ms.
+  - Stream: `logs/rig_fault_rec/20261116_D/stream/`; snapshots `logs/rig_fault_rec/20261116_E/`.
+  - **2×2 tally on rrig6600 and rrig6600c**, single events per run, phase 4:
+
+    | | cold | warm |
+    |---|---|---|
+    | run #1 | clean 4/4 | fault 1/1 |
+    | run #2+ | clean 1/1 | fault 3/3 |
+
+    The fault tracks the warm (~1 ms load→launch) phase-4 path, not the run's position on the boot.
+    Carried state is neither necessary (C) nor sufficient (E).
+  - Remaining confounder: in every warm run, the CuPy arange/fill kernels and the sieve kernel run within
+    ~1 ms of each other after the ~220–237 s idle. In cold runs a 280–1180 ms compile separates them.
+    Whether the fast load or the closeness of the dispatches matters is not separated.
+  - The register's cold-start GCVM counter-examples (C-15, C-34, C-47, C-86) still stand: they were
+    PWC-era, at worker launch, on a different code path.
