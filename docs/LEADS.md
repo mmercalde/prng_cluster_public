@@ -633,3 +633,22 @@ boot time in the register.
   - **Open before the first counted run:**
     - freeze the nonce/PID-matched sentinel line per rig slot for the start-up timing;
     - measure footprint from the TSV paths (apparent vs allocated bytes stated).
+- 2026-11-17 draft v5 (`docs/drafts/cache_policy_v5/`, nothing landed) addresses every R1 item: status-checked git and hash
+  reads; NUL-exact environment checks at startup and at the parked re-read; post-rename invalidation of the TSV; a
+  landed-layout harness with a local Route A fixture and a fixed stub; the timed sentinel per slot frozen; the footprint
+  script (apparent and allocated bytes). Tests: 109/109 three times pre-landing, 108/108 on a simulated landed
+  tree, 19/19 mutants. Sent as X-CACHE-POLICY R2. No rig run: the warm/cold lead itself is unchanged and still OPEN.
+- ✅ 2026-11-17 Beta X-CACHE-POLICY R2 on v5: R1 items satisfied. Q1 LIVE (the test's scratch path depends on the draft
+  layout); Q2 LIVE (a footprint SSH timeout escapes without INCOMPLETE); theoretical: the encoder status. First run:
+  Route A parameters checked separately; join/freeze time in the timing report.
+- 2026-11-18 draft v6 (`docs/drafts/cache_policy_v6/`, nothing landed): fixes R2 items 1–4 (README corrected for item
+  3; the diffs are unchanged); items 5 and 6 are in the README's first-counted-run checklist. Tests: 112/112 three
+  times pre-landing, 111/111 installed under `tests/` in a simulated checkout, 22/22 mutants. Sent as
+  X-CACHE-POLICY R3 (final). The lead remains OPEN; no rig run.
+- ✅ 2026-11-18 Beta X-CACHE-POLICY R3 on v6: **NOT LANDABLE**. One blocker: the package broke the existing D6 suite
+  (`tests/test_s172_d6_integration_repair.py`); R2 items 2–4 hold; a leftover (draft paths at import); three
+  first-run checklist corrections.
+- 2026-11-18 draft v7 (`docs/drafts/cache_policy_v7/`, nothing landed): D6 repaired as a draft diff (Part B on `shared`,
+  WS-7 per-worker path, new WS-2f). On a simulated landed tree: D6 84/84 ×3 (base 82/82; v6 unrepaired 71/82); cache
+  suite 111/111 landed, 112/112 ×3 pre-landing, 22/22 mutants. Sent as new thread X-CACHE-POLICY-D6 R1. Lead still
+  OPEN; no rig run.
