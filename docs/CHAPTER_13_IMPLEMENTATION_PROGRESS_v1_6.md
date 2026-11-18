@@ -180,7 +180,7 @@ See: `SELFPLAY_ARCHITECTURE_PROPOSAL_v1_0.md` for full details.
 |---------|-------------|-------------|
 | Zeus (i9-9920X) | 24 | **22** |
 | rig-6600 (i5-9400) | 6 | **5** |
-| rig-6600b (i5-8400) | 6 | **5** |
+| rig-6600b (i5-9400; corrected 2026-11-17, live read) | 6 | **5** |
 
 **One command works everywhere:**
 ```bash

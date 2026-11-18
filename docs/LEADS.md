@@ -581,3 +581,55 @@ boot time in the register.
     Whether the fast load or the closeness of the dispatches matters is not separated.
   - The register's cold-start GCVM counter-examples (C-15, C-34, C-47, C-86) still stand: they were
     PWC-era, at worker launch, on a different code path.
+- ✅ **2026-11-17, one boot (hosts 16:43–16:48), caches emptied before each run: Runs F (17:00:45), G (17:20:33)
+  and H (17:40:57): all CLEAN.** T1–T7 recorded for each; no page-fault line all day.
+  - Cold path confirmed on all 24 rig workers in each run: phase-4 dispatch→code F 288–824 ms (buf→code),
+    G 288–900, H 293–1428 ms.
+  - Trace loss counters (overrun / commit overrun / dropped) were 0 on all three hosts through G.
+  - Evidence: `logs/rig_fault_rec/20261117_{F,G,H}/`; stream `20261117_F/stream/`.
+  - **Running tally on rrig6600 and rrig6600c, phase 4, single events per run:**
+    - cold: clean 8/8 (first runs: 11-15 ×2, 11-16 A, D, 11-17 F; later runs on the same boot: E, G, H);
+    - warm: fault 4/4.
+- ✅ 2026-11-17 hardware notes (report §12):
+  - **CPU model does not separate the rigs:** i5-9400 on rrig6600 and rrig6600b, i5-8400 on rrig6600c. Older
+    repository documents that say rig-6600b is i5-8400, or rig-6600c i5-9400, conflict with the live read
+    (listed in §12, not edited).
+  - Driver parameters and BIOS are identical on all three hosts.
+  - Slot links are ×1: 5 GT/s on every rrig6600 card, 8 GT/s on every rrig6600b and rrig6600c card. Nothing
+    in the link lines or correctable-error bits separates the fault-history cards.
+- ✅ 2026-11-17 (offline, nothing landed):
+  - Launcher draft v3 (`docs/drafts/DRAFT_launcher_cupy_cache_reset.diff`) meets every Beta R2 Q2 point. Gates
+    4/4 and mutants 14/14 in `docs/drafts/test_launcher_cupy_cache_policy.py`. It is **not** sent to Beta (a
+    round 3 would be the thread's last).
+  - The Run C manifest supplement records the coordinator-log mismatch: both versions are prefixes of the
+    main-tree log.
+  - CPU corrected in the current-state repository tables.
+- ✅ 2026-11-17 Beta X-GCVM-LOCATED R3 (final round): **draft v3 not landable as is — OBJECTION LIVE.**
+  - The R2 enumeration objection is resolved.
+  - Two open defects in `verify_cache_records`:
+    - it returns success even when the TSV cannot be written;
+    - its regex join accepts mismatched dotted tags/roots, missing host/t_prep, a wrong-GPU ACK and a
+      diagnostic line in place of the ACK.
+  - **Required to land:**
+    - literal-field parsing with complete-write failure;
+    - an executable launcher-path test with stubs, including Gate 12 stopping;
+    - `per_run` mandatory on the counted path, with Route A included.
+  - **Required before the first counted run:**
+    - the sentinel/liveness join plus a second `CUPY_CACHE_DIR` read at the parked probe;
+    - evidence freeze and launcher provenance;
+    - live start-up time and footprint.
+  - The thread is at its three-round limit (`docs/exchange/from_beta/X-GCVM-LOCATED_R3_BETA_REVIEW.md`).
+- ✅ 2026-11-17 Beta X-CACHE-POLICY R1 on draft v4 (`docs/exchange/from_beta/X-CACHE-POLICY_R1_BETA_REVIEW.md`):
+  **Q1, Q2 OBJECTION LIVE; Q3 SUGGESTION.**
+  - Beta confirms as satisfied: the literal parser, the dispatch/entry-point evidence, mandatory `per_run` on
+    both counted paths, the join keys and ordering, provenance/freeze placement, and L2 being equivalent.
+  - **Open before landing:**
+    - git HEAD and status reads must be status-checked (a failed read currently passes with empty/zero
+      provenance);
+    - the environment checks must keep NUL boundaries and compare exactly one complete value (newline inside
+      a value and non-UTF-8 cases);
+    - a failure after rename (directory `fsync`) must not leave a success-looking TSV;
+    - the test must also run in the landed layout.
+  - **Open before the first counted run:**
+    - freeze the nonce/PID-matched sentinel line per rig slot for the start-up timing;
+    - measure footprint from the TSV paths (apparent vs allocated bytes stated).

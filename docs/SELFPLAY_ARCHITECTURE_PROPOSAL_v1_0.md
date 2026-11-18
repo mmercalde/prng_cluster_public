@@ -26,7 +26,7 @@ This proposal defines the selfplay architecture for the distributed PRNG analysi
 |------|-----|---------------|------|---------------|
 | **Zeus** | Intel i9-9920X | 12c/24t | 2× RTX 3080 Ti | CUDA |
 | **rig-6600** | Intel i5-9400 | 6c/6t | 12× RX 6600 | ROCm 6.4.3 |
-| **rig-6600b** | Intel i5-8400 | 6c/6t | 12× RX 6600 | ROCm 6.4.3 |
+| **rig-6600b** | Intel i5-9400 (corrected 2026-11-17, live read) | 6c/6t | 12× RX 6600 | ROCm 6.4.3 |
 
 **Totals:**
 - CPU: 24 cores / 36 threads
@@ -167,7 +167,7 @@ This proposal defines the selfplay architecture for the distributed PRNG analysi
 │  rig-6600 i5-9400 (6 threads):                                      │
 │    → 2× CPU workers (3 threads each)                               │
 │                                                                     │
-│  rig-6600b i5-8400 (6 threads):                                     │
+│  rig-6600b i5-9400 (6 threads):                                     │
 │    → 2× CPU workers (3 threads each)                               │
 │                                                                     │
 │  Total: 7-9 parallel inner episode workers                          │

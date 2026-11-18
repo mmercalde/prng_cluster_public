@@ -121,7 +121,7 @@ the card instead:
 | VRAM | **No.** All 24 cards report 8573157376 | same |
 | Slot / upstream bridge | **No common position.** Each card sits behind its own switch pair; the three faulting cards are at three different positions | same |
 | PCIe AtomicOps ReqEn | **No.** The three faulting cards are `ReqEn-`, as are 18 non-faulting cards; the three `ReqEn+` cards (03:00.0) did not fault today | same |
-| Link | **No.** All x16 16 GT/s (cap) | `run4_attempt2…/hostlogs/gpu_config_*.txt` |
+| Link | **No.** All x16 16 GT/s (cap). **Corrected 2026-11-17:** that is the GPU-internal link. The slot links (switch upstream port) are ×1: 5 GT/s on all rrig6600 cards, 8 GT/s on all rrig6600b and rrig6600c cards. Still no separation of the fault cards (`docs/CLAUDE_CODE_REPORT_GCVM_LOCATED_20261116.md` §12) | `run4_attempt2…/hostlogs/gpu_config_*.txt`; `/home/michael/runFGH_evidence_20261117/lspci_amd_*.txt` |
 | Kernel cache directory | Per worker: `CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N` (`launch_fleet_manual.sh:329`), the same scheme for all 24 | §3 |
 | Cached binary | Not comparable for `.122`/`.164`: their caches were cleared at the 18:41 CT restart (§3) | — |
 | CuPy cache environment | Identical by launcher source. No live process could be read: no workers were running at 18:53 | `offline_1908/ct_*_listing.txt` |

@@ -190,6 +190,19 @@ gates + the mutant aggregate). Transcript: `logs/rig_seam_tests/pytest_no_torch_
 - Changing the worker file means the parity gate requires deploying the committed file to every CT
   before a run.
 
+## RESULT 2026-11-15 18:28 — two-runtime hypothesis refuted as the sole cause
+
+With `RIG_CLEANUP_TORCH=off` deployed (`048fd47`, parity 30/30), all 24 rig workers logged
+`torch_imported=False` and exactly one HIP/HSA runtime. Run 4 attempt 3 credited clean at 17:59.
+The 18:18 confirmation repeat faulted the same three cards at phase-4 dispatch + 46 ms:
+- `.121 19:00.0`: `0x00841051`, TCP;
+- `.163 16:00.0`: `0x00801231`, SQC (inst);
+- `.163 06:00.0`: `0x80001281`, SQC (inst).
+
+Both hosts hung. **The fault occurs without a second runtime in the process.** The rate effect
+is unmeasured. Decode: `docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT_DECODE_20261115.md`; `docs/LEADS.md`
+L-6, L-7.
+
 ## 8. Incident recorded this session (off-GPU tests)
 
 - During the X-RIG-GPU-PROBE suite, mutant M11 of `tests/test_rig_seam_probe_controller.py` let

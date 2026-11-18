@@ -30,8 +30,8 @@ This document contains **ONLY verified information** from the actual implementat
 |------|------|-------|---------|-----|--------|
 | Zeus | 2 | RTX 3080 Ti (12GB) | CUDA 12.x | Ryzen 9 | Coordinator |
 | rig-6600 | 8 | RX 6600 (8GB) | ROCm 6.4.3 | i5-9400 | Worker |
-| rig-6600b | 8 | RX 6600 (8GB) | ROCm 6.4.3 | i5-8400 | Worker |
-| rig-6600c | 8 | RX 6600 (8GB) | ROCm 6.4.3 | i5-9400 | Worker |
+| rig-6600b | 8 | RX 6600 (8GB) | ROCm 6.4.3 | i5-9400 (corrected 2026-11-17, live read) | Worker |
+| rig-6600c | 8 | RX 6600 (8GB) | ROCm 6.4.3 | i5-8400 (corrected 2026-11-17, live read) | Worker |
 
 **Source:** CHAPTER_9_GPU_CLUSTER_INFRASTRUCTURE.md
 

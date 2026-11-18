@@ -318,3 +318,213 @@ again against (1).
 
 **Draft mitigation (not landed):** `docs/drafts/DRAFT_launcher_cupy_cache_reset.diff`;
 `docs/exchange/to_beta/X-CUPY-CACHE-RESET_R1_…` (not sent).
+
+## 11. 2026-11-17: Runs F, G, H (cold, one boot); all runs compared; scratch; the installed KFD map path
+
+**Runs F (17:00:45), G (17:20:33) and H (17:40:57)**, one boot (hosts 16:43–16:48), caches emptied before each:
+**all clean**, no page-fault line, T1–T7 + POST recorded.
+
+**Trace loss**, per run (from cumulative per-CPU stats, clock `mono`): overrun 0, commit overrun 0, dropped 0
+on every host for F, G and H. Events read:
+
+| Run | rrig6600 | rrig6600b | rrig6600c |
+|---|---|---|---|
+| F | 185,242 | 152,500 | 144,237 |
+| G | 157,215 | 153,993 | 150,394 |
+| H | 157,371 | 159,090 | 146,397 |
+
+Files: `20261117_{F,G,H}/run*/trace_loss_counters_post.txt`.
+
+**Phase-4 buffer→code, all 24 rig workers** (`logs/rig_fault_rec/allgaps.py`, `allgaps.json`; C has 23
+workers, one with no phase-4 activity before its host froze):
+
+| Run | cache, boot position | min / median / max (ms) | rrig6600 g7, rrig6600c g6, g1, g7 (ms) | outcome |
+|---|---|---|---|---|
+| A | cold #1 | 278.9 / 579.2 / 670.9 | 561.5, 612.2, 576.4, 588.2 | clean |
+| B | warm #2 | 0.705 / 0.792 / 0.904 | 0.713, 0.816, 0.764, 0.834 | **FAULT** (g7, c-g6, c-g1) |
+| C | warm #1 | 0.695 / 0.771 / 6.855 | 0.724, 0.730, 4.064, 0.756 | **FAULT** (g7, c-g6, c-g7) |
+| D | cold #1 | 280.0 / 616.4 / 879.4 | 573.1, 679.8, 568.0, 879.4 | clean |
+| E | cold #2 | 275.7 / 683.4 / 1183.9 | 754.4, 701.3, 693.9, 586.6 | clean |
+| F | cold #1 | 287.7 / 572.9 / 823.6 | 564.9, 679.6, 576.5, 576.8 | clean |
+| G | cold #2 | 278.7 / 586.2 / 881.0 | 865.7, 738.0, 302.9, 587.9 | clean |
+| H | cold #3 | 280.0 / 582.7 / 1407.4 | 566.4, 581.0, 581.6, 577.6 | clean |
+
+On rrig6600 and rrig6600c, single events per run: **cold 8/8 clean, warm 4/4 faulted** (adding 11-15's two
+cold and two warm runs).
+
+### Scratch (Beta lead): code reading and fault placement
+
+- **The miner and sieve code never allocate scratch.** There is no `scratch`/`private_segment` handling in
+  `miner/range_miner_worker.py` or `sieve_gpu_worker.py`. ROCr sizes scratch at dispatch from the kernel's
+  per-lane private segment.
+- **Phase 3** (`JAVA_LCG_HYBRID_KERNEL`, `prng_registry.py:1005-1081`) keeps two per-lane arrays,
+  `unsigned int best_skip_seq[2048]` (`:1020`) and `current_skip_seq[2048]` (`:1028`): ≥16 KiB per lane.
+- **Phase 4** (`JAVA_LCG_HYBRID_REVERSE_KERNEL`, `:3170-3244`) keeps one, `skip_seq[2048]` (`:3196`): ≥8 KiB
+  per lane.
+- **Phases 1–2** (constant kernels) keep none.
+- So phase 3's scratch is large enough for phase 4. That is consistent with the trace: 449 MiB per worker
+  (513 MiB on rrig6600) mapped at phase 3's first dispatch, **no** new scratch mapping in phase 4.
+
+**No Run B or Run C fault address is inside its process's scratch block.**
+
+| Run | Card | Fault | Position relative to scratch |
+|---|---|---|---|
+| B | rrig6600 g7 | write `0x77e7d5826000` | 2340 MiB above the end |
+| B | rrig6600 g7 | write `0x77e7d17e6000` | 2276 MiB above |
+| B | rrig6600c g6 | read `0x76a2cd9fb000` | 3935 MiB below the start |
+| B | rrig6600c g6 | SQC `0x76a3e0662000` | **12.4 MiB above the end** |
+| B | rrig6600c g1 | `0x76ab421aa000` | 1802 MiB above |
+| C | rrig6600c g6 | write `0x738d53600000` | 4535 MiB below |
+| C | rrig6600c g6 | stale-buffer read `0x738d72000000` | 4045 MiB below |
+| C | rrig6600c g7 | `0x77f115470000` | 786 MiB above |
+| C | rrig6600 g7 | `0x7ad60665f000` | 1566 MiB above |
+
+The scratch-reuse candidate (§10) is therefore not "an access inside scratch". It would have to act
+indirectly, for example through the dispatch's scratch setup when no new allocation precedes it. That remains
+a hypothesis.
+
+### Installed driver: KFD map path and flush ordering
+
+Source: `/usr/src/amdgpu-6.12.12-2194681.22.04` on `.155`, read-only. File sha256 prefixes:
+
+| File | sha256 prefix |
+|---|---|
+| `kfd_chardev.c` | `7cd9f0c7` |
+| `amdgpu_amdkfd_gpuvm.c` | `85b09294` |
+| `amdgpu_vm.c` | `3633dcdb` |
+| `amdgpu_vm_cpu.c` | `2b607bda` |
+
+1. **Map** (`kfd_ioctl_map_memory_to_gpu`, `kfd_chardev.c:1286`):
+   - `amdgpu_amdkfd_gpuvm_map_memory_to_gpu` per device (`:1356`);
+   - then `amdgpu_amdkfd_gpuvm_sync_memory(..., true)`, which waits for the page-table update fences
+     (`:1375`);
+   - then `kfd_flush_tlb(peer_pdd, TLB_FLUSH_LEGACY)` per device (`:1388`);
+   - **then** the `kfd_map_memory_to_gpu_end` tracepoint.
+
+   So every recorded `…_end Success` came after the TLB flush was **issued**. Whether the flush had
+   **completed** on the card is not established by this reading.
+2. **The flush** (`kfd_flush_tlb`, `kfd_priv.h:1651`) calls `amdgpu_vm_flush_compute_tlb` (`amdgpu_vm.c:1632`).
+   That **skips the flush entirely** when the VM's `tlb_seq` has not changed since the last KFD flush
+   (`atomic64_xchg(&vm->kfd_last_flushed_seq, tlb_seq) == tlb_seq`). Otherwise it calls
+   `amdgpu_gmc_flush_gpu_tlb_pasid`.
+3. **PTE writes are CPU writes.** `vm_update_mode == -1` with fully visible VRAM →
+   `AMDGPU_VM_USE_CPU_FOR_COMPUTE` (`amdgpu_vm.c:2759-2766`); large BAR is measured on all 24 cards. The
+   commit (`amdgpu_vm_cpu_commit`, `amdgpu_vm_cpu.c`) does `mb(); amdgpu_device_flush_hdp()`. It bumps
+   `tlb_seq` **only if `needs_flush`**.
+4. **Unmap** (`kfd_chardev.c:1462-1492`): a TLB flush and the wait happen only if
+   `kfd_flush_tlb_after_unmap()` is true. That is **only for GC 9.4.x** (`kfd_priv.h:1660-1664`), so **not for
+   gfx1032**. On these cards an unmap returns, and the DMA mapping is removed, without a TLB flush. The pending
+   `tlb_seq` change is flushed at the next map's `kfd_flush_tlb`.
+
+**What this means for the hypotheses** (reading only; nothing measured):
+- **(i)** A freshly mapped range whose map did not bump `tlb_seq` gets **no** TLB flush. That is safe only if
+  the card never cached an invalid translation for that VA.
+- **(ii)** Between an unmap and the next map, the card can hold stale translations for freed VAs. Phase 4's
+  buffers reuse VAs freed in earlier phases: Run B's seeds BO reused the VA mapped 274 s earlier.
+- **(iii)** Run C's second fault read a freed phase-1/2 VA **and faulted**. A stale translation would not
+  fault, so for that page the TLB was not stale. The access itself used an old address, which points back to
+  the arguments or code the card consumed (H2/H3), not to the TLB.
+- **To test:** whether gfx10.3's UTCL2 caches invalid (faulting) translations with `noretry` in effect
+  (`amdgpu.noretry=-1`, auto). Also whether warm phase 4's maps skip the flush because `tlb_seq` is unchanged.
+  Both are observable, offline, by adding the `tlb_seq`/flush decision to the record (driver-side only;
+  needs a go).
+
+## 12. Host hardware notes (2026-11-17 evening; Alpha's live read, offline comparison)
+
+**(a) CPU model does not separate the faulting rigs from rrig6600b.**
+- Alpha's live read, confirmed by `/home/michael/runFGH_evidence_20261117/amdgpu_params_bios_<host>.txt`:
+  - `.121` rrig6600: **i5-9400**;
+  - `.155` rrig6600b: **i5-9400**;
+  - `.163` rrig6600c: **i5-8400** (2.80 GHz, not the "T" part).
+- The faulting rigs are rrig6600 (i5-9400) and rrig6600c (i5-8400), while rrig6600b (i5-9400) is clean, so
+  the CPU model does not separate them.
+- **None of this session's documents stated a CPU model for rrig6600b**
+  (`/bin/grep -nE 'i5-|8400|9400'` over the `CLAUDE_CODE_*` reports, `LEADS.md`, the 11-15 and 11-16
+  changelogs and the X-* requests).
+- **Other repository documents conflicted with the live read.** The current-state tables were **corrected on
+  2026-11-17** (inline "corrected 2026-11-17, live read"):
+  - `TRIANGULATED_FUNCTIONAL_MIMICRY_VERIFIED_v1_0.md:33-34`;
+  - `CHAPTER_13_IMPLEMENTATION_PROGRESS_v1_6.md:183`;
+  - `SELFPLAY_ARCHITECTURE_PROPOSAL_v1_0.md:29, :170`.
+
+  The historical session changelogs (`SESSION_CHANGELOG_20260322_S152.md`, `SESSION_CHANGELOG_20260324_S155.md`,
+  which record an rrig6600c i5-8400T → i5-9400 upgrade) are **left as written**. They record what was believed
+  then; today rrig6600c reads i5-8400. The statements originally found were:
+  - "rig-6600b … i5-8400": `TRIANGULATED_FUNCTIONAL_MIMICRY_VERIFIED_v1_0.md:33`,
+    `CHAPTER_13_IMPLEMENTATION_PROGRESS_v1_6.md:183`, `SELFPLAY_ARCHITECTURE_PROPOSAL_v1_0.md:29, :170`.
+  - "rrig6600c upgraded i5-8400T → i5-9400": `SESSION_CHANGELOG_20260324_S155.md:29, :71`;
+    `TRIANGULATED_FUNCTIONAL_MIMICRY_VERIFIED_v1_0.md:34` lists rig-6600c as i5-9400. Today rrig6600c reads
+    i5-8400.
+- The driver parameters (`/sys/module/amdgpu/parameters`) and BIOS (5.13 06/08/2021, TB360-BTC PRO 2.0) are
+  identical on all three hosts: `diff` of the files shows only the CPU-model line.
+
+**(b) Slot-level PCIe links** (`lspci_amd_<host>.txt`, AMD devices only, cards idle after Runs F–H). Each card
+is an internal switch (upstream port → downstream port → GPU). The **slot link** is the upstream port's link.
+
+| Rig | Slot link, all 8 cards (upstream-port LnkSta) | Capability | GPU-internal link |
+|---|---|---|---|
+| rrig6600 | **5 GT/s ×1** (downgraded) | 16 GT/s ×8 | 16 GT/s ×16 |
+| rrig6600b | **8 GT/s ×1** (downgraded) | 16 GT/s ×8 | 16 GT/s ×16 |
+| rrig6600c | **8 GT/s ×1** (downgraded) | 16 GT/s ×8 | 16 GT/s ×16 |
+
+- **Nothing in the link lines separates the fault-history cards** (rrig6600 `19:00.0`; rrig6600c `16:00.0`,
+  `06:00.0`, `19:00.0`) from the other cards on their own rig, or rrig6600c from the clean rrig6600b.
+  - Speed and width are rig-uniform: rrig6600 runs every slot at Gen2 ×1; rrig6600b and rrig6600c both at
+    Gen3 ×1.
+  - MaxPayload 256 / MaxReadReq 512 on all 24.
+  - DevSta `CorrErr+ UnsupReq+` on all 24.
+- **Correctable-error status bits** (CESta, sticky since boot; the kernel runs `pci=noaer`, so nothing
+  reports them):
+  - `Timeout+` on 5/8 rrig6600b cards, 6/8 rrig6600c cards (incl. all three rrig6600c fault-history cards)
+    and 2/8 rrig6600 cards (`06:00.0`, `10:00.0`, not the fault card);
+  - `Rollover+` on rrig6600 `06:00.0`; `BadTLP+` on rrig6600c `0a:00.0`.
+  - The clean rig carries `Timeout+` on most cards too, so these bits do not separate the faulting cards.
+- **Correction to the record:** the "link=16.0 GT/s PCIe x16" in the 11-15 `gpu_config_<host>.txt` captures,
+  and the "Link: all x16 16 GT/s" row in the decode report §1.3, are the **GPU-internal** link. The slot
+  links are ×1 at 5 or 8 GT/s.
+
+
+## 13. Launcher draft v3 and the Run C manifest supplement (2026-11-17, offline, nothing landed)
+
+**Draft v3:** `docs/drafts/DRAFT_launcher_cupy_cache_reset.diff`, sha256 `6e136180…`, 140 lines, against the
+committed launcher `048fd47` (`21ff9399…`). `scripts/launch_fleet_manual.sh` was not touched. It answers every
+Beta X-GCVM-LOCATED R2 Q2 point:
+
+| Beta R2 Q2 requirement | Draft v3 |
+|---|---|
+| Check the listing's exit status, not only its output | `ENTS=$(find "$WC" -mindepth 1 -maxdepth 1 -printf .) \|\| cache_refuse enumeration_failed` |
+| Count hidden entries explicitly; newline-safe | `find … -printf .` emits one dot per entry, hidden included; the count is `${#ENTS}`; refusal reason `nonempty_<n>` |
+| Exclusive creation | `[ -e ] \|\| [ -L ]` → `exists`; then plain `mkdir` → `mkdir_failed` (also catches a racing creator) |
+| Keep the per-run directory out of the later generic `mkdir -p` | per_run: `SHARED_MKDIR=""`; shared: `SHARED_MKDIR=" $WCACHE"` (today's line, byte-identical) |
+| Refusal visible as rc 14 with a reason | `[cache] REFUSE reason=<…> tag host gpu path` on stderr, exit 14, before the worker starts |
+| The same PID received the intended `CUPY_CACHE_DIR` | after the settle check, the CT reads `/proc/$worker_pid/environ`; a mismatch kills that worker and exits 15 |
+| CT-side record per worker | `[cache] OK tag host gpu policy=per_run path created=exclusive entries=0 t_prep pid env_CUPY_CACHE_DIR`, printed before the launch ACK |
+| Join the record to the PID; one worker refusing stops the fleet | `verify_cache_records` requires exactly one OK record per rig dispatch log for this tag, with matching gpu, path and the ACK's pid. It writes `$LOGDIR/cache_records_<tag>.tsv`. Any defect → `exit 1` before "all … daemons dispatched", hence before Gate 12 creates a coordinator |
+| Policy on by default; opt-out; Zeus untouched | `RIG_CUPY_CACHE_POLICY=per_run` (default) or `shared`; `RIG_CUPY_CACHE_ROOT` (default `/tmp`, validated); the tag is `RUN_NONCE` or `launch<stamp>_<pid>`, validated; Zeus keeps `/tmp/cupy_cache_local_gpu<N>` |
+
+- **Not in the draft:** the join from the TSV to the sentinel and liveness identity. That belongs to the
+  existing gate scripts, which the draft does not modify, and is a landing item for Beta.
+- **Old per-run directories** accumulate under `/tmp` until the CT restarts, a few tens of KB per worker per
+  run.
+
+**Gates and mutants:** `docs/drafts/test_launcher_cupy_cache_policy.py`, sha256 `8242b09d…`. It applies the
+diff to a temporary copy and runs the CT fragments locally against fixtures, with an inert `sleep` stand-in.
+- **Gates G-POLICY, G-PREP, G-RECORDS, G-WIRING: 4/4 pass, 5 of 5 repeated runs.**
+- **14/14 mutants detected**, each by its intended gate. They covered:
+  - default `shared`; validation bypass; tag dropped from the path; GPU dropped from the path;
+  - `mkdir -p` (killed by an injected racing creator); exists check removed; non-empty check removed;
+    enumeration status ignored;
+  - env check removed; record count ignored; record pid ignored;
+  - cache put back into `mkdir -p`; verify not called; ACK moved before the check.
+- **A harness defect found and fixed during this work:** reading `/proc/<pid>/environ` immediately after the
+  stand-in forked raced the `exec`. The fixture now settles 0.5 s, as the launcher does with
+  `REMOTE_LAUNCH_SETTLE`.
+
+**Run C manifest supplement:** `logs/rig_fault_rec/20261116_C_secured_175651/MANIFEST_SUPPLEMENT_20261117.md`
+(+ `.sha256`); the originals are not altered.
+- 39/40 manifest entries match.
+- The coordinator log entry `e67a3d10…` is **the first 1,016,856 bytes** of the main-tree log. The file now in
+  the folder (`777abb49…`) is **the first 1,035,885 bytes**.
+- Cause: a second copy taken ~9 s after the manifest overwrote the first while the coordinator was still
+  writing.
+- The fault evidence (netconsole, traces) matches the manifest.

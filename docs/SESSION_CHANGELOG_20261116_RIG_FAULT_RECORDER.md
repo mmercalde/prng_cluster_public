@@ -118,3 +118,37 @@ No ruling was changed.
   - `docs/CLAUDE_CODE_PLAN_RIG_ARM_V1_V2.md`, `docs/LEADS.md`, this changelog;
   - `docs/drafts/DRAFT_launcher_cupy_cache_reset.diff`;
   - the X-GCVM-LOCATED and X-CUPY-CACHE-RESET exchange files.
+
+## 2026-11-17 addendum
+
+- **Runs F, G, H** (one boot; caches emptied before each; launched by Alpha): all clean, recorded T0–T7 + POST.
+  Trace loss 0 on all hosts. Report §11; LEADS L-7.
+- **Host actions this day:**
+  - tracefs `arm` on all three hosts (~17:00);
+  - snapshots and markers only;
+  - read-only reads of `/usr/src/amdgpu-6.12.12-2194681.22.04` on `.155`.
+  - No telemetry, power, driver or module change.
+- **Still running** at the end of this entry: the stream (`20261117_F/stream.pid`) and tracing armed. Not yet
+  disarmed, awaiting Alpha.
+- **Offline results:**
+  - all-run phase-4 gap table (A–H);
+  - per-lane private arrays per phase;
+  - fault placement against scratch (none inside);
+  - the installed KFD map/unmap/flush ordering (§11).
+- **Evening 11-17:**
+  - **Disarmed** tracing on all three hosts: 0 events, clock `local`, buffer 1410 KB, no readers. `tracing_on`
+    is left at 0 where a fresh boot has 1; the next boot restores it.
+  - Stream (pid 8742) stopped. No further rig contact.
+  - Hardware notes written: report §12, decode report §1.3 link row corrected, LEADS.
+- **11-17 late (offline):**
+  - Beta R2 received: Q1 no objection; Q2 LIVE objection (listing error read as empty); Q3 driver-side flush
+    record; Q4 no objection; finding on the Run C manifest.
+  - Then, as Alpha directed:
+    - draft v3 + gates/mutants (report §13);
+    - Run C `MANIFEST_SUPPLEMENT_20261117.md` (originals untouched);
+    - CPU corrected in `TRIANGULATED_FUNCTIONAL_MIMICRY_VERIFIED_v1_0.md`, `CHAPTER_13_IMPLEMENTATION_PROGRESS_v1_6.md`
+      and `SELFPLAY_ARCHITECTURE_PROPOSAL_v1_0.md` (historical changelogs left as written);
+    - report §12/§13, LEADS.
+  - `scripts/launch_fleet_manual.sh` not touched; no Beta round 3 sent; nothing committed or pushed.
+- **11-17:** X-GCVM-LOCATED R3 sent (final round); Beta: OBJECTION LIVE on draft v3 (record verifier fails
+  open; regex join), with landing and first-counted-run requirements. Recorded in LEADS. Nothing committed.
