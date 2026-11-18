@@ -497,6 +497,17 @@ All inputs are **read-only**. Chapter 13 never mutates source files.
 > cron job, untracked or ignored script, or commit writes `prediction_pool.json` (audit addendum A.7).
 > **"All inputs are read-only"** is accurate for this module: `chapter_13_diagnostics.py` writes only
 > its own output and archive (`save_diagnostics`, `:891-926`).
+>
+> **Status of B1, added 2026-11-17 (`docs/DOC_FIX_LIST_20261113.md` C6, E2).** The gap stands as
+> recorded above: Step 6 writes `predictions/next_draw_prediction.json`; this chapter's grader reads
+> `prediction_pool.json`, which nothing writes, so nothing is graded. **The repair is CODE and has its
+> own brief.** Stage A (read-only) is
+> `docs/CLAUDE_CODE_INSTRUCTIONS_STEP6_CH13_GRADING_CONTRACT_STAGE_A_20261113.md`, reported in
+> `docs/CLAUDE_CODE_REPORT_STEP6_CH13_GRADING_CONTRACT_STAGE_A.md` (WP-2, relay thread X-0003): §Q1–§Q2
+> list every writer and reader, and §Q8 proposes a contract that is **not implemented**. Stage B, the
+> code, is a before-commit Beta review class and is not authorised by this note. This gap decides
+> whether a pool hit rate against `k/1000` on unseen draws can be measured at all
+> (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §5: "hit rate on real draws has never been measured").
 
 ---
 

@@ -8,6 +8,21 @@ from `/home/michael/distributed_prng_analysis` at HEAD **`49c13ad`** (`git pull`
 **Authority:** `docs/CLAUDE_CODE_INSTRUCTIONS_PIPELINE_BEHAVIOUR_MODEL.md` (REV1).
 **Index used:** `docs/PROJECT_FILE_CATALOG.md` (read first, in full).
 
+> **Currency note, added 2026-11-17 (`docs/DOC_FIX_LIST_20261113.md` D2).** This model is a snapshot
+> of 2026-08-03 at `49c13ad` and has not been re-verified since. Read it with these later records:
+> - **Authority (owner rulings, 2026-11-11):** Michael is the final authority; Team Beta reviews, does
+>   not approve, and its reviews are not binding. Where this file calls a Beta ruling "binding", read
+>   it as Beta's recorded review position (`AGENTS.md` §2; `CLAUDE.md` opening paragraph;
+>   `docs/PROPOSAL_S172_COMPLETION_PLAN_v1_1.md` §0).
+> - **The yardstick (2026-11-13):** TFM is judged by whether its prediction pools hit more often than
+>   `k/1000` on draws the sieve never saw, never by whether a "true seed" is found or survives
+>   (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`; `CLAUDE.md` "The yardstick"). §15.1 of this file is
+>   part of that doctrine trail.
+> - **Status after 2026-08-03:** the statements `docs/PROJECT_FILE_CATALOG.md` §6.5 lists as false
+>   now; the "PREDATES THE 2026-11-11 RULINGS" notice at the top of `docs/TFM_PROJECT_FACTS_SKILL.md`
+>   (v27.2); `docs/TODO_CONSOLIDATED.md:9`; and the latest handoff, `docs/TFM_SESSION_HANDOFF_20261114.md`.
+> - The WHY and WHAT anchors below are 2026-08-03 readings. Re-read any line anchor before acting on it.
+
 ---
 
 ## 0. How to read this file

@@ -5,7 +5,10 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v27.1, 2026-08-23. **§6 BOOT-SELECTOR RECOVERY RULE ADDED** — a rebooted rig returns as Ubuntu, not Proxmox; `boot-proxmox` is required and no agent reboots a host unasked. **GATE-12 IS PASSED AND BETA-ACCEPTED** — attempt 9, run
+**Currency:** v27.2, 2026-11-17 — **the yardstick rule added as §0.0, §0.1 reworded, §9 item 23
+added, and the "PREDATES THE 2026-11-11 RULINGS" notice below added** (`docs/DOC_FIX_LIST_20261113.md`
+item A6). Nothing else in the body was re-verified for v27.2; the rest of this line is v27.1's.
+**v27.1, 2026-08-23.** **§6 BOOT-SELECTOR RECOVERY RULE ADDED** — a rebooted rig returns as Ubuntu, not Proxmox; `boot-proxmox` is required and no agent reboots a host unasked. **GATE-12 IS PASSED AND BETA-ACCEPTED** — attempt 9, run
 `distributed_config_t1_554463d3`, nonce `gate12-20260817_181819-46500`, launch commit `e9ca800`,
 tag **`gate12-passed-attempt9`** (§2.49). 128/128 stripes over four stages, saturation SATISFIED,
 coverage certified `[0, 2147483648]`, `coverage_id c6f28aedf7af12cd`, cursor
@@ -22,6 +25,27 @@ WITHDRAWN.
 *(Dated, not commit-pinned: a HEAD pin goes stale the moment anything else lands, and reads as
 noise on the first line a session sees. Commit hashes belong where they anchor a certified
 artifact.)*
+
+> **⚑ PREDATES THE 2026-11-11 RULINGS — read before citing anything below (added v27.2, 2026-11-17).**
+> The body of this file is v27.1 (2026-08-23). The owner's rulings of 2026-11-11 and later records
+> supersede the statements listed here. **Where they conflict, the later source governs.** This
+> notice lists them; the sites themselves are not yet rewritten.
+>
+> | site in this file | v27.1 says | superseded by |
+> |---|---|---|
+> | §7 first bullet; "TB ruling … binding" wording throughout (§1.3, §2.18, §2.53, §8 and elsewhere) | Team Beta is a separate approval authority; its rulings are binding | **Owner ruling 1, 2026-11-11:** Michael is the final authority; Alpha is second in command; **Beta reviews, it does not approve, and its reviews are not binding.** Read an older "binding Beta ruling" as Beta's recorded review position (`AGENTS.md` §2, `:51-58`; `CLAUDE.md` opening paragraph; `docs/PROPOSAL_S172_COMPLETION_PLAN_v1_1.md` §0 `:19`; `docs/exchange/RELAY_PROTOCOL.md:4-5`) |
+> | §7 "Plans for behaviour-changing work go to Beta before implementation" | every behaviour change waits on Beta | **Owner ruling 2:** Beta reviews **before commit** coordinator, worker and kernel code and the verifier/launch path and evidence of runs that count; **after commit** documents, tools, monitoring, dashboard (`AGENTS.md` `:60-66`; completion plan §0 `:20`) |
+> | §2.54 status line and §8 "now (a)": "Michael-initiated only (`CLAUDE.md` rule 3)" | no agent launches | **Owner rulings 4, 5:** agents may launch and operate the fleet, authenticated and scope-limited — **adopted in principle; nothing is built yet, and no agent launches until its §7 guard rails exist and §11 is met** (`docs/PROPOSAL_DELEGATED_FLEET_EXECUTION_v1_1.md:4-5`; completion plan §0 `:22`). `CLAUDE.md` rule 3 is unchanged at HEAD |
+> | header; §2.54 heading and status; §8 "now (a)" | `G-PROD-SHAPE` has NEVER RUN | It **ran on 2026-08-22 and failed: 15 pass / 6 fail, 512 orphan staged files** (completion plan §0 `:25`, citing `docs/S172_BRIEF_I_PRODUCTION_SHAPE_CLASSIFICATION_REPORT.md:330-340`; `docs/TODO_CONSOLIDATED.md:9`) |
+> | header; §2.53 "Sequence and current position"; §8 "now (b)" | Implementation Brief I does not exist yet | **Brief I is implemented and committed; final acceptance waits on one completed production-shape run** (completion plan §1 `:34`; `docs/S172_WINDOW_ANCHOR_BRIEF_I.md`; `docs/S172_WINDOW_ANCHOR_BRIEF_I_REPORT.md`) |
+> | §2.52, §2.54 item 1, §8 "now (a)" | the soak gives the first production observation of both `_bp` falsifier fields | both have been observed in production (`docs/TODO_CONSOLIDATED.md:9`) |
+> | §8 "now" — the Phase-7 soak as the next track | — | **Definition of finished (owner ruling): RANGE-MINER can brute-force the complete seed space `[0, 2³²)` for `java_lcg`, measured as F1–F4** (completion plan §2 `:42-60`). Run 4 over `[2³¹, 2³²)`: attempt 3 credited clean on 2026-11-15 17:59; the confirmation repeat at 18:18 faulted (`docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT_DECODE_20261115.md:154`; `docs/LEADS.md` L-6, L-7). No committed record of a `G-PROD-SHAPE` run on attempt 3 was found in `docs/` at `03f3712` |
+> | §0.1, §0.2, §0.3 seed-recovery wording | — | **The yardstick, §0.0** (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`, 2026-11-13) |
+> | other stale statements | "62 features"; "WATCHER v1.8.0" as the program version; "Supervised model · Steps 4–5" (`:1096` at v27.1); the enabled scraper unit (`:200-202` at v27.1); per-seed skip and vote weighting (`:1118-1122` at v27.1) | ALREADY RECORDED with additions owed: `docs/CHAPTER_CORRECTIONS_REPORT_20261111.md` §"Skill / fact file", `:584-597` |
+>
+> **A revision is done only when all three copies are current (§7, "A SKILL REVISION LIVES IN THREE
+> PLACES").** v27.2 exists in the tracked copy only until Michael commits it, copies it over
+> `~/.claude/skills/tfm-project-facts/SKILL.md`, and re-uploads it to Settings.
 
 **Three documents carry the facts this skill only points at. Read them; do not paraphrase them:**
 
@@ -46,11 +70,59 @@ been read.**
 
 ## 0. FOUNDATIONS — read before proposing any change
 
+### 0.0 ⚑ THE YARDSTICK — read before evaluating any part of TFM (added v27.2)
+
+**TFM is judged by one thing: whether its prediction pools hit more often than `k/1000` on
+draws the sieve never saw.** It is a black box. It does not care what produced the draws.
+
+**Never judge TFM, a sieve or a survivor set by whether "the true seed" or "the generating
+candidate" is found, survives a filter or ranks highly.** That is a state-recovery standard.
+The project rejected it in November 2025 and state recovery is not sought. Seeds are vehicles
+for heuristic extraction; a survivor is a mimic, not the machine.
+
+This mistake has been made twice (2026-08-08 and 2026-11-13) and cost a working day each time.
+If you are about to write "the true seed" as a pass/fail test, "this filter excludes the real
+stream", "cannot succeed" or "does not work", stop and do this instead:
+
+1. State the measured fact, with its limits, and no verdict.
+2. Turn the concern into a prediction about hit rate.
+3. Name the measurement that would settle it.
+4. Propose any alternative as a flag-selectable configuration. The current algorithm stays as
+   the baseline.
+5. Search the repo before saying anything is untested, missing or wrong.
+
+**This file, the whitepaper formulas and the chapters are AI-written formalisations of
+Michael's design. Where one conflicts with his stated intent, his intent governs. Ask him.** The
+"only the true seed survives" sentence in §0.2 and the `{s*}` quotation in §0.3 are whitepaper
+language: they describe the noise arithmetic, and are **not** acceptance criteria.
+
+This rule does not excuse softening findings. Measured problems are reported with full force, as
+facts tied to hit rate (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §5).
+
+*Sources:* `CLAUDE.md` "The yardstick"; `AGENTS.md` "The yardstick for every review";
+`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §1–§6 (doctrine trail: `Functional_Mimicry_via_Reinforcement_v1.1.pdf`,
+2025-11-27; `docs/PROPOSAL_Documentation_Paradigm_Correction_v1_2.md`, 2026-01-19;
+`docs/PIPELINE_BEHAVIOUR_MODEL.md` §15.1); `docs/TEAM_ALPHA_NOTE_TO_BETA_YARDSTICK_REALIGNMENT_20261113.md` §2.
+**Facts recorded 2026-11-13, status not verdict:** pitfall §7 — the reverse pass is the forward
+kernel run against the window newest first (`miner/range_miner_worker.py:1201`); a candidate that
+generated a window passes forward and fails reverse at CPU level (not run on GPU or VM101);
+Chapter 2 F-7 stays "confirmed, unresolved".
+
 ### 0.1 The hypothesis
-California Daily 3 draws are produced by a PRNG. Given observed history, find candidate
-**seeds** whose generated sequences are consistent with what was drawn, then rank those
-candidates with ML into prediction pools.
-Basis: `docs/BIDIRECTIONAL_SIEVE_MATHEMATICAL_WHITEPAPER.md`.
+**Corrected v27.2 (`docs/DOC_FIX_LIST_20261113.md` A6; yardstick §0.0).** California Daily 3 draws
+are treated as the output of a PRNG-driven process, **as a black box**. TFM mimics the output; it
+does not recover the generator's state. The sieves brute-force every seed against every draw,
+oldest to newest and then newest to oldest, and keep the seeds that pass both. A survivor is
+either the seed or something that shares a property with it — which, and what property, is for
+the heuristic extraction and the ML to work out. The survivors are ranked with ML into prediction
+pools, and **the system is judged by whether those pools hit more often than `k/1000` on draws the
+sieve never saw.**
+*Sources:* `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §1–§2; `docs/TEAM_ALPHA_NOTE_TO_BETA_YARDSTICK_REALIGNMENT_20261113.md` §1–§2.
+*Replaced v27.1 wording, kept for the record:* "Given observed history, find candidate **seeds**
+whose generated sequences are consistent with what was drawn, then rank those candidates with ML
+into prediction pools." It named seed-finding as the aim, which the yardstick rejects.
+Basis: `docs/BIDIRECTIONAL_SIEVE_MATHEMATICAL_WHITEPAPER.md` — an AI-written formalisation; where it
+conflicts with Michael's stated intent, his intent governs (§0.0).
 
 ### 0.2 Why bidirectional
 Forward: seed `s` survives if match rate ≥ τ_f. For a random seed p = 1/1000 per position, so
@@ -3225,3 +3297,9 @@ binding.
 22. **Target: any brief closes in ≤3 review rounds.** D6.2 took five, 6-P2 took four, and **every
     round was an Alpha defect, not reviewer padding.** The import gate closed in one — because the
     existing gate was read in full before the brief was written. **Read first, then draft.**
+23. **Did I judge a sieve, a filter, a survivor set or TFM by whether "the true seed" or "the
+    generating candidate" is found, survives or ranks highly — or write "cannot succeed" / "does
+    not work" about one?** (§0.0) *That is the state-recovery standard the project rejected. State
+    the measured fact without a verdict, turn it into a hit-rate prediction against `k/1000` on
+    unseen draws, name the measurement, and offer any alternative as a flag-selectable
+    configuration beside the current baseline.* (Added v27.2; `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §3–§4.)

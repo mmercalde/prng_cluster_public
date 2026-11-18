@@ -26,6 +26,11 @@ entire Gate-12 campaign, the drain-remedy series, the field-6 repair and four Be
 >
 > **This catalog is a snapshot, and a snapshot expires.** Anchors here were read on 2026-08-20.
 > Re-verify before acting on any of them.
+>
+> **Added 2026-11-17:** §9 indexes the 26 documents committed on 2026-11-13, including
+> `PITFALL_STATE_RECOVERY_YARDSTICK.md` (the yardstick). 148 other documents added since `0a4cef1`
+> are not yet indexed (§9 header). Authority and review rulings changed on 2026-11-11: Beta reviews
+> and does not approve (`AGENTS.md` §2).
 
 **Coverage (execution proof).** `docs/` contains **699 files** — 688 at top level plus 11 across four
 subdirectories (`audit/S172_PHASE3/` 4, `phase6_evidence/` 3, `proposals/` 3, `reference/` 1).
@@ -1079,6 +1084,52 @@ absence statements are **repo-scoped** and carry the standing caveat that host s
 - **unavailable surfaces:** `agent_manifests/definitions.json` (gitignored; contents not catalogued) ·
   the `.docx` and three PDFs (binary, unread here) · `~/dashboard_work` (listed only, contents not
   read) · **host state and the ser8 pre-repository archives (not searched, out of scope).**
+
+---
+
+# 9. ADDENDUM — THE DOCUMENTS OF 2026-11-13 (added 2026-11-17)
+
+**Authority:** `docs/DOC_FIX_LIST_20261113.md` item D3 ("add today's documents"). **This is an
+addendum, not a regeneration.** §1–§8 above remain the 2026-08-20 snapshot at `0a4cef1`.
+**174 files were added under `docs/` between `0a4cef1` and `03f3712`** (`git diff --name-only
+--diff-filter=A 0a4cef1 03f3712 -- docs/`); this section indexes only the **26 added by commits dated
+2026-11-13**. The other 148 (commits dated 2026-08-20 to 2026-11-16) are **not indexed here** and are
+an open gap. Each entry was opened at its heading and opening section on 2026-11-17, at `03f3712`.
+
+**The yardstick and the doctrine record**
+
+| File | Question it settles |
+|---|---|
+| `PITFALL_STATE_RECOVERY_YARDSTICK.md` | ★ **By what is TFM judged?** Pool hit rate above `k/1000` on draws the sieve never saw — never by whether a "true seed" is found or survives. The two incidents (2026-08-08, 2026-11-13), the tell-tale phrases, what to do instead, and the doctrine trail (§6). **Read before evaluating any part of TFM.** |
+| `CLAUDE_MD_AND_AGENTS_MD_YARDSTICK_BLOCKS_20261113.md` | The exact yardstick blocks inserted into `CLAUDE.md` (Block A) and `AGENTS.md` (Block B), with insertion points. Both are in place at `03f3712` |
+| `TEAM_ALPHA_NOTE_TO_BETA_YARDSTICK_REALIGNMENT_20261113.md` | What Alpha withdrew from its reverse-sieve review request, what stands as fact without verdict, and the proposal to measure the current box as the baseline with a position-kept reverse pass as a flag-selectable second configuration. Supersedes the framing of `TEAM_ALPHA_REVIEW_REQUEST_REVERSE_SIEVE_20261113.md`, **which is not in the repository** (no git ref, 2026-11-17) |
+| `exchange/from_beta/X-REVERSE-SIEVE_R2_BETA_REALIGNMENT.md` | Beta's response to the realignment. Its R1 review is **not in the repository** (no git ref, 2026-11-17) |
+| `DOC_FIX_LIST_20261113.md` | The documentation fixes owed after the yardstick realignment (A–E). Agent reports on it: `CLAUDE_CODE_REPORT_DOC_FIX_LIST_A_20261117.md`, `CLAUDE_CODE_REPORT_DOC_FIX_LIST_B_20261117.md` |
+| `PRIOR_RECORD_RULE_BLOCKS_20261113.md` | The "Prior record" rule blocks for `CLAUDE.md` and `AGENTS.md`: every proposal, brief, report and review request opens with the searches run and the documents found |
+
+**The 2026-11-13 findings plan and its read-only stages**
+
+| File | Question it settles |
+|---|---|
+| `PROPOSAL_FINDINGS_20261113_RESOLUTION_v1_1.md` | How the 2026-11-13 findings are resolved and which agent does each work package (WP-1, WP-2, …). Supersedes v1.0 (not committed) |
+| `CLAUDE_CODE_INSTRUCTIONS_BINDING_ADDENDUM_BETA_R1_20261113.md` | **Binding on four documents** (the proposal v1.1 and the three briefs below) after Beta's X-FINDINGS-PLAN R1; where they disagree, the addendum wins |
+| `CLAUDE_CODE_INSTRUCTIONS_CPU_GPU_GENERATOR_CONTRACT_STAGE_A_20261113.md` · `CLAUDE_CODE_REPORT_CPU_GPU_GENERATOR_CONTRACT_STAGE_A.md` | WP-1, read-only: does the CPU generator path used by the training target and Step 6 agree with the GPU kernels (skip semantics; `BACKLOG.md` §8.1)? A statement of what the code does; no performance claim |
+| `CLAUDE_CODE_INSTRUCTIONS_STEP6_CH13_GRADING_CONTRACT_STAGE_A_20261113.md` · `CLAUDE_CODE_REPORT_STEP6_CH13_GRADING_CONTRACT_STAGE_A.md` | WP-2, read-only: what Step 6 writes, what Chapter 13 reads, whether a pool has ever been graded against a real draw, and a proposed contract (§Q8, not implemented). Relay thread X-0003 |
+| `CLAUDE_CODE_INSTRUCTIONS_RANGE_MINER_VM101_READS_20261113.md` · `CLAUDE_CODE_REPORT_RANGE_MINER_VM101_READS.md` | Completion-plan items A3, A4: where the coverage cursor sits and how many bidirectional survivors attempt 9 published, read on VM101 before Run 4 |
+| `CLAUDE_CODE_INSTRUCTIONS_STEP1_RERUN_POLICY_STAGE_A_20261113.md` · `CLAUDE_CODE_REPORT_STEP1_RERUN_POLICY_STAGE_A.md` | Read-only: Step 1's rerun policy and what the coverage record records, after Beta's X-RUN4-RANGE R1 |
+| `exchange/to_beta/X-FINDINGS-PLAN_R1_ALPHA_REVIEW_REQUEST_proposal_v1_1_and_briefs.md` · `exchange/from_beta/X-FINDINGS-PLAN_R1_BETA_REVIEW.md` · `exchange/to_beta/X-FINDINGS-PLAN_R2_ALPHA_REPLY.md` · `exchange/from_beta/X-FINDINGS-PLAN_R2_BETA_REVIEW.md` | The review thread on the findings proposal and its briefs: R1 positions, Alpha's acceptance of both LIVE objections, R2 positions |
+
+**Run 4, tools and handoff**
+
+| File | Question it settles |
+|---|---|
+| `exchange/to_beta/X-RUN4-RANGE_R1_ALPHA_REVIEW_REQUEST_run4_seed_range_and_complete_state.md` · `exchange/from_beta/X-RUN4-RANGE_R1_BETA_REVIEW.md` | Run 4's seed range, and what Step 1 does after a family's coverage is COMPLETE; Beta lists records the request missed |
+| `CLAUDE_CODE_REPORT_DELEGATED_RUN_GATES.md` | Two refusal gates for agent-launched runs (brief `CLAUDE_CODE_INSTRUCTIONS_DELEGATED_RUN_GATES_20261111.md`). **Stopped at the brief's §6 gate**; to Beta before the first agent-launched run uses them |
+| `CLAUDE_CODE_INSTRUCTIONS_OWNER_LAND_SCRIPT_20261113.md` · `CLAUDE_CODE_REPORT_OWNER_LAND.md` | The owner's landing script: how Michael commits and pushes an agent's work from a manifest. Tool, after-commit review class |
+| `TFM_SESSION_HANDOFF_20261113.md` | State at the end of 2026-11-13 and the next session's starting point. Superseded as the latest handoff by `TFM_SESSION_HANDOFF_20261114.md` |
+
+**Not searched for this addendum:** host state, the ser8 archives, the private repository, project
+files outside the repository (including `Functional_Mimicry_via_Reinforcement_v1.1.pdf`).
 
 ---
 

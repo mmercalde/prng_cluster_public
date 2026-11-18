@@ -207,6 +207,28 @@ committed `requirements`/setup artifact and re-provision from that.
 
 ## 6. S172 RANGE-MINER — current phase plan
 
+> **⚠ STALE — status note added 2026-11-17 (`docs/DOC_FIX_LIST_20261113.md` D2; completion plan
+> item D2).** The table below is the plan as written in mid-2026 and shows Phase 3 as NEXT. It is
+> kept as history; do not act on its Status column. Current records:
+> - Phases 3–6 are built. Phase-3 audit trail: `docs/PROJECT_FILE_CATALOG.md` §1.4 "Phase-3
+>   permanent audit trail"; Phase 5 as-built: fact file §2.8; bounded Phase 6 certified `d98298c`,
+>   narrowed by D3.0-B (fact file §8, §2.18). Gate 12 passed at attempt 9, `e9ca800`, tag
+>   `gate12-passed-attempt9` (fact file §2.49).
+> - The spec named below, v1.4.4, is marked **SUPERSEDED** by the catalog, authoritative only for
+>   the sections v1.4.5 marks PRESERVED (`docs/PROJECT_FILE_CATALOG.md:338`).
+> - **Definition of finished (owner ruling, 2026-11-11):** RANGE-MINER can brute-force the complete
+>   seed space `[0, 2³²)` for `java_lcg`, measured as conditions F1–F4
+>   (`docs/PROPOSAL_S172_COMPLETION_PLAN_v1_1.md` §2). Where it stands: completion plan §1 and the
+>   latest handoff (`docs/TFM_SESSION_HANDOFF_20261114.md` §1, §3).
+> - Run 4 over `[2³¹, 2³²)`: attempt 3 credited clean on 2026-11-15
+>   (`docs/CLAUDE_CODE_REPORT_RIG_GPU_FAULT_DECODE_20261115.md:154`); the rig GPU-fault leads are
+>   open (`docs/LEADS.md` L-6, L-7).
+> - The 2026-11-11 rulings on authority and review classes are in the opening paragraph of this
+>   file and in `AGENTS.md` §2. Rule 3 of §1 is unchanged; the owner adopted agent launching in
+>   principle only, and nothing is built (`docs/PROPOSAL_DELEGATED_FLEET_EXECUTION_v1_1.md:4-5`).
+>
+> Rewriting the table itself is the owner's call (Questions, `docs/CLAUDE_CODE_REPORT_DOC_FIX_LIST_B_20261117.md`).
+
 Spec: `docs/PROPOSAL_S172_RANGE_MINER_v1_4_4.md` (frozen at `1f6c0c5`).
 All acceptance gates §11.B/C/E are release blockers.
 
