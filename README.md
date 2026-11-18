@@ -1,8 +1,8 @@
 # Distributed PRNG Analysis System
 **Updated:** S135 (2026-03-10)
 
-An agnostic distributed system for reverse-engineering PRNG behavioral patterns via bidirectional
-sieve validation, ML ensemble scoring, and autonomous agent orchestration.
+An agnostic distributed system for functional mimicry of PRNG surface output (TFM, Triangulated Functional Mimicry) via bidirectional
+sieve validation, ML ensemble scoring, and autonomous agent orchestration. It is a black box, not seed recovery and not state reconstruction; it is judged by whether its prediction pools hit more often than `k/1000` on draws the sieve never saw (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §1).
 Modular and configurable -- not tied to any specific PRNG type or data source.
 
 ## Pipeline (Steps 0->6)

@@ -2,8 +2,8 @@
 
 **Version:** 1.2  
 **Date:** 2026-01-19  
-**Status:** PENDING APPROVAL  
-**Type:** Documentation Only (No Code Changes)
+**Status:** ADOPTED 2026-01-19 (the date of commit `689f475`; owner ruling 2026-11-17 17:17 PST, recorded in `docs/CLAUDE_CODE_REPORT_DOC_FIX_LIST_A_20261117.md` Addendum; was "PENDING APPROVAL")  
+**Type:** Documentation Only (No Code Changes) — **Status note (added 2026-11-17, doc fix list B4, `docs/DOC_FIX_LIST_20261113.md:28`):** the fix list's instruction is "Mark adopted, with the date Michael gives"; Michael gave 2026-01-19 on 2026-11-17 (Status line above). Recorded facts: commit `689f475` (2026-01-19, by Michael, "docs: Correct functional mimicry paradigm language"; message: "Removed 'true seed in top-K' convergence targets … Seeds are vehicles for heuristic extraction, not discovery targets") edited Chapter 13 documents named in §4 — whether it applied every §4 item (e.g. §4.2) was not checked; this document is cited as the origin of the doctrine and the naming rule by `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md:84`, `docs/PIPELINE_BEHAVIOUR_MODEL.md:1097`, `docs/PROJECT_FILE_CATALOG.md:610` and Beta (`docs/exchange/from_beta/X-REVERSE-SIEVE_R2_BETA_REALIGNMENT.md:27-28`).
 
 ---
 

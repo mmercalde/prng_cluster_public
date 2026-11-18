@@ -1,4 +1,4 @@
-# 🎲 Distributed PRNG Analysis & Seed Reconstruction System
+# 🎲 Distributed PRNG Analysis & Functional Mimicry System
 
 **Multi-GPU Cluster • AI Agent Architecture • ML Scoring • Optuna Meta-Optimization • Reinforcement Engine**
 
@@ -8,7 +8,7 @@
 
 A fully distributed, AI-driven analysis system designed to:
 
-- 🧠 Reverse-engineer PRNG behavior through functional mimicry
+- 🧠 Mimic PRNG surface output through functional mimicry — a black box, not seed recovery and not state reconstruction; judged by prediction-pool hit rate against `k/1000` on draws the sieve never saw (`../PITFALL_STATE_RECOVERY_YARDSTICK.md` §1)
 - ⚙️ Brute-force and sieve candidate seeds using GPU-accelerated forward/reverse filtering
 - 📊 Score survivors using statistical and ML-based probability matching
 - 🧪 Optimize parameters using Optuna (Bayesian TPE Meta-Optimizer)

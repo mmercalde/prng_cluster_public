@@ -94,8 +94,8 @@ survive, so the fixtures are **regenerable** — this is a recoverable gap, not 
 | reverse | true modular inverse, steps **backward** (`:67-79`) | iterates **forward** on host-reversed residues (skill §0.2) |
 
 So it is a **self-consistent closed loop**: its sieve is validated against its own generator. It
-proves *the bidirectional sieve method recovers a planted seed*; it does **not** certify the
-production kernel's java_lcg. That is the single highest-value fix in §6.
+records a *forward-sieve* known-answer check only; it does **not** certify the
+production kernel's java_lcg. That is the single highest-value fix in §6. *(Corrected 2026-11-17, doc fix list B3, `docs/DOC_FIX_LIST_20261113.md:27`. This line previously said the harness "proves the bidirectional sieve method recovers a planted seed". What `docs/SESSION_CHANGELOG_20260314_S143.md:69-72` records is: "Forward sieve correctly recovers known LCG seed", "Forward and reverse are independent filters (not mirrors)", "LCG signal distinguishable from random noise". It records no bidirectional known-answer result, so **the bidirectional claim is UNVERIFIED** in the repo record. Two further facts, not verdicts: the same changelog (`:64-66`) says the harness's reverse is "the identical forward kernel fed `draws[::-1]`", while the harness code steps the LCG backward by modular inverse (`pa_sieve_validation_harness.py:64-79`, the table above); and a known seed in synthetic data is there to generate "consistent, reproducible test sequences", "not to validate whether the system 'finds' that seed" (`docs/PROPOSAL_Documentation_Paradigm_Correction_v1_2.md:37`), and known-answer tests check specified kernel semantics, not seed retention ( `docs/exchange/from_beta/X-REVERSE-SIEVE_R2_BETA_REALIGNMENT.md:48-50`).)*
 
 ### 1.3 Engine-routed known-answer tests — real assertions, wrong executor for Wall C
 

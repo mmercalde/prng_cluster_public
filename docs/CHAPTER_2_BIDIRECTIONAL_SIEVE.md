@@ -293,7 +293,7 @@ target**, not a time-reversed generator.
 | Early match, late divergence | Reverse sieve |
 | Late match, early divergence | Forward sieve |
 | Consistency in one direction only | Bidirectional intersection |
-
+> **Note on this table (added 2026-11-17, doc fix list B2, `docs/DOC_FIX_LIST_20261113.md:26`).** The table reads as if the reverse pass re-checks the same generated stream from the other end. It does not: per §3.2 the reverse pass compares the **same** forward-generated sequence against the window **newest first** (`miner/range_miner_worker.py:1330`), so "early" and "late" refer to positions in a reversed target, not to a backward walk of the generator. This is Michael's method as he describes it (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md:91-93`). See §3.5 for the 2026-11-13 status. The pass/fail standard for the sieve is pool hit rate against `k/1000` on unseen draws, not whether any particular candidate survives (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md` §1).
 ### 3.4 The ABI consequence
 
 Because every fixed-skip reverse kernel **hardcodes its generator parameters in the kernel
@@ -326,7 +326,7 @@ Whitepaper §4's independence premise (`:61-62`) — on which §5's squaring of 
 
 **This chapter does not assert the statistical consequence either way.** That is a mathematics
 question and mathematics is the whitepaper's side of the boundary (§0.3). It is recorded here
-as an open item (§12, F-7) so that a reader meets it deliberately rather than by inference.
+as an open item (§12, F-7) so that a reader meets it deliberately rather than by inference. **Status recorded 2026-11-13 (added 2026-11-17, doc fix list B2) — a fact, not a verdict:** a candidate that generated a window passed the forward pass and failed the reverse pass — e.g. 12/12 forward and 0 to 1 of 12 reverse on a 12-draw window — in Alpha's C and Python copies of the kernels and in Beta's CPU wrapper around the unchanged kernel bodies, constant and hybrid; **not run on GPU or on VM101** (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md:54-56`, `:94-96`; `docs/TEAM_ALPHA_NOTE_TO_BETA_YARDSTICK_REALIGNMENT_20261113.md:40-45`). Its limits, in Beta's words: these are "measured facts about the tested streams and settings, not a universal statement that every generating candidate fails reverse, and not evidence of predictive loss"; no percentage loss in effectiveness is known (`docs/exchange/from_beta/X-REVERSE-SIEVE_R2_BETA_REALIGNMENT.md:38-46`). Under the yardstick an objection built on this fact alone is THEORETICAL and holds no commit (same, `:34`; realignment note `:49-50`). **What it predicts and what would settle it:** Alpha predicts, unmeasured, that a reverse pass keeping each draw at its position would give a higher pool hit rate; the settling measurement is hit rate on held-out draws against `k/1000`, with the current forward and reverse sieves as the baseline and the position-kept pass as a flag-selectable second configuration (`docs/PITFALL_STATE_RECOVERY_YARDSTICK.md:100-101`; realignment note §4). F-7 stays **confirmed, unresolved**. The bound "forward plus reverse matches cannot exceed the window size" that `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md:97-98` attributes to Beta is **not** carried here: Beta's R2 §5 states it is false without an added condition. Full record of the pitfall: `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
 
 **A related documentation hazard, not to be inherited:** two registry descriptions say "fixed
 skip **backward** validation" (`prng_registry.py:3911`, `:3917`) for kernels whose bodies are
@@ -1172,7 +1172,7 @@ and repairs are out of scope by the brief.
 | **F-4** | **`offset` drives a host data-slice and a device pre-advance from one scalar**; coherent only at `skip = 0`. `parameter_registry.json`'s `offset*(skip+1)` is the alignment the kernel does not implement | `miner/range_miner_worker.py:648-649`, `:694`, `:874`, `:196-197`; `prng_registry.py:974-976` | **CONFIRMED** at the audit anchor. Settles Chapter 1 audit C-2 as an **observed inconsistency — NOT the repair.** No single `offset*(skip+1)` multiplier exists under variable skip. **Belonged in the future hybrid input-semantics design, not a standalone arithmetic patch** — that design is the window-anchor / generator-phase separation. **SUBSEQUENT: repair implemented by Window-Anchor Brief I; acceptance pending** (§7.2.1). The CONFIRMED verdict above is historical and is not rewritten. Described, §7.3 |
 | **F-5** | **The ROCm prelude hostname guard is dead on every live rig** — tuple says `rig-6600*`, live hostnames are `rrig6600*`. `DOCUMENTATION_AUDIT_20260131.md:93-99`'s proposed one-line fix used the same wrong convention | `sieve_filter.py:23-35`; live `hostname` from all three CT100s this session | **CONFIRMED dead legacy branch; NOT a Phase-7 blocker.** Harmless today (no overrides needed). **Do not rename the hosts** — that activates obsolete overrides. A later repair must first decide whether the prelude is supported, and if retained **key it from an explicit platform/profile property, never another hostname tuple.** §9.5 |
 | **F-6** | §1.1's "32-bit internal state" is wrong for `java_lcg` — the state is 48-bit; 32 bits is the extracted output | `prng_registry.py:969`, `:983` | **corrected in §1.1** |
-| **F-7** | Whitepaper §4's `G(s,−i)` assumes a backward step; the implementation is forward-against-reversed-residues, so forward and reverse generate identical sequences for one seed | whitepaper `:57-62`, `:79`; `prng_registry.py:3143`; `miner/range_miner_worker.py:888` | **named, not resolved**, §3.5 — Beta's side of the boundary |
+| **F-7** | Whitepaper §4's `G(s,−i)` assumes a backward step; the implementation is forward-against-reversed-residues, so forward and reverse generate identical sequences for one seed | whitepaper `:57-62`, `:79`; `prng_registry.py:3143`; `miner/range_miner_worker.py:888` | **confirmed, unresolved**, §3.5 — Beta's side of the boundary. *(This wording replaced "named, not resolved" on 2026-11-13; applied here 2026-11-17 by lead decision, fix list B2.)* **2026-11-13 status:** a generating candidate passed forward and failed reverse at CPU level only (not GPU, not VM101) — a fact about the tested streams, not a verdict; THEORETICAL under the yardstick; see §3.5 and `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`. The reverse slice is now at `miner/range_miner_worker.py:1330` |
 | **F-8** | Residues resolve as `entry.get("full_state", entry["draw"])`; no live record carries `full_state` (0 of 18068) | `miner/range_miner_worker.py:650`; `daily3.json` inspected this session; `create_synthetic_full_state.py:3-4`, `:27`; `tests/phase6/known_answer_gate.py:211-216`; `tests/phase6/known_answer_reference.py:409-411` | **Inert in the live dataset, purpose known.** It is the **synthetic known-answer / multi-modulo validation hook** (Wall C ruling) — **not** a "forward-compatibility seam." It changes the **residue source, not the comparison width**: the predicate still reduces mod 1000/8/125. Recorded §1.1 |
 
 ### 12.1 Open items this chapter inherits but does not own
@@ -1384,7 +1384,7 @@ governance item** (§14.3), not a clean result.
 | **F-3** — the lane redundancy may be residue of an unbuilt lane-parallel CRT architecture | §6.5 | **open question**, not determinable from available surfaces |
 | **F-4** — `offset` drives host slice and device pre-advance from one scalar | §7.3; Chapter 1 §3.1.2 | **CONFIRMED, not repaired AT THIS ANCHOR.** Settles Chapter 1 audit C-2 as an **observed inconsistency, not the repair.** No single `offset*(skip+1)` multiplier exists under variable skip; belonged in the future **hybrid input-semantics design**, not a standalone arithmetic patch. **SUBSEQUENT: repair implemented by Window-Anchor Brief I; acceptance pending** — see §7.2.1. The anchor verdict is preserved as recorded |
 | **F-5** — ROCm prelude hostname guard dead on every live rig | §9.5 | **CONFIRMED dead legacy branch, NOT a Phase-7 blocker.** Harmless today. **Do not rename the hosts** — that activates obsolete overrides. Any repair must key from an explicit platform/profile property, never another hostname tuple |
-| **F-7** — whitepaper `G(s,−i)` vs forward-against-reversed-residues | §3.5 | **named, not resolved** — Beta's side of the boundary |
+| **F-7** — whitepaper `G(s,−i)` vs forward-against-reversed-residues | §3.5 | **confirmed, unresolved** — Beta's side of the boundary (CPU-level 2026-11-13 status in §3.5, not a verdict; `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`; added 2026-11-17, fix list B2) |
 | The six §12.1 inherited items | §12.1 | inherited, **not owned** by this chapter: the missing CA PDF, the absent `TB_RULING_*` for the 2026-07-30/31 stream, the untracked descriptive trace, the `java_lcg_cpu` non-zero-skip mismatch (**no fix authorized**), the 44-entry registry vs 4 compiled variants, and `forward_matches`/`reverse_matches` absent from the Step-3 merge list |
 | **No executable gate covers this chapter** | this section | new this pass. Chapter 1 has `tests/test_chapter1_p0_corrections.py`; Chapter 2 has no equivalent, so its claims are protected by review only. Recorded as an observation for the gate owner, **not a proposal** |
 | VIR-6 surfaces 2, 3, 5, 6 | §13 | still `UNAVAILABLE`: rig-deployed source never compared against VM 101; no runtime values; the CA PDF unread; Beta ruling texts external |
@@ -1425,6 +1425,20 @@ that Step 2 is verified, that the hybrid path is certified, or that any F-item w
 ## Version History
 
 ```
+Version 4.2.1 — 2026-11-17  DOC FIX LIST B2 (status only; docs/DOC_FIX_LIST_20261113.md:26)
+- §3.3  NOTE added on the line after the table: reverse compares the same forward-generated
+        sequence against the newest-first window; it is not a backward walk.
+- §3.5  2026-11-13 STATUS recorded as fact, not verdict: generating candidate passed forward,
+        failed reverse, CPU level only (not GPU, not VM101); Beta's limits quoted; THEORETICAL
+        under the yardstick; hit-rate prediction and settling measurement named. Cross-ref
+        docs/PITFALL_STATE_RECOVERY_YARDSTICK.md. The pitfall doc's :97-98 bound NOT carried
+        (Beta R2 §5 says it is false as stated).
+- §12, §14.3  F-7: wording is now "confirmed, unresolved" throughout (lead decision 2026-11-17);
+        §12 keeps one line saying it replaced "named, not resolved" on 2026-11-13. Reverse slice now
+        at miner/range_miner_worker.py:1330 (was :888 when F-7 was written).
+- All additions were made on existing lines, so no line number before this entry moved.
+  No mathematics, code, tests or config touched. No F-item repaired. Nothing removed.
+
 Version 4.2.0 — 2026-08-02  CLOSURE PASS (verified against 81ef3f1)
 - §6.2  SETTLED: the "39 occurrences of the lane test" claim is WITHDRAWN as unreproducible.
         The number is 43, in 43 of the registry's 44 kernels. New §6.2.1 publishes the
