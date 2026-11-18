@@ -164,6 +164,63 @@ for _ct in "$RIG_CLEANUP_TORCH" "$ZEUS_CLEANUP_TORCH"; do
 done
 RIG_CT_ARGS=""; [ "$RIG_CLEANUP_TORCH" != "per_substripe" ] && RIG_CT_ARGS="--cleanup-torch $RIG_CLEANUP_TORCH"
 ZEUS_CT_ARGS=""; [ "$ZEUS_CLEANUP_TORCH" != "per_substripe" ] && ZEUS_CT_ARGS="--cleanup-torch $ZEUS_CLEANUP_TORCH"
+# >>> X-CUPY-CACHE-POLICY block (Beta X-GCVM-LOCATED R2 Q2) >>>
+# Kernel-cache policy for ROCm rig workers. ON BY POLICY.
+#   per_run (default): each rig worker gets a NEW, EMPTY CuPy cache directory for this launch,
+#       $RIG_CUPY_CACHE_ROOT/cupy_cache_run_<tag>_gpu<N>, created exclusively in its CT and verified
+#       empty (exit status AND entry count, hidden entries included) before the worker starts. Any
+#       failure refuses that worker with remote rc 14 and a reason; the fleet then fails here, before
+#       any coordinator exists. After start, the CT checks that the started PID's environment carries
+#       exactly that CUPY_CACHE_DIR (else the worker is killed, rc 15), and emits one "[cache] OK" record.
+#   shared (opt-out, pre-policy behaviour): /tmp/cupy_cache_gpu<N>; command line byte-identical to before.
+# The Zeus local worker keeps its own /tmp/cupy_cache_local_gpu<N> (not covered by this policy).
+# Basis: docs/LEADS.md L-7. Scope: a fresh on-disk cache directory at worker start-up, nothing more.
+# COUNTED RUNS: gate12_launch.sh and run4_launch.sh force per_run and refuse an inherited non-per_run value;
+# "shared" is for explicit diagnostic launches of this script only.
+RIG_CUPY_CACHE_POLICY="${RIG_CUPY_CACHE_POLICY:-per_run}"
+case "$RIG_CUPY_CACHE_POLICY" in per_run|shared) ;; *) echo "[launch] FATAL: RIG_CUPY_CACHE_POLICY must be per_run or shared, got '$RIG_CUPY_CACHE_POLICY'" >&2; exit 64;; esac
+RIG_CUPY_CACHE_ROOT="${RIG_CUPY_CACHE_ROOT:-/tmp}"
+case "$RIG_CUPY_CACHE_ROOT" in /*) ;; *) echo "[launch] FATAL: RIG_CUPY_CACHE_ROOT must be absolute" >&2; exit 64;; esac
+case "$RIG_CUPY_CACHE_ROOT" in *[!A-Za-z0-9._/-]*) echo "[launch] FATAL: RIG_CUPY_CACHE_ROOT has unsafe characters" >&2; exit 64;; esac
+CACHE_TAG="${RUN_NONCE:-launch$(date +%Y%m%d_%H%M%S)_$$}"
+case "$CACHE_TAG" in ''|*[!A-Za-z0-9._-]*) echo "[launch] FATAL: cache tag '$CACHE_TAG' empty or unsafe" >&2; exit 64;; esac
+RC_REMOTE_CACHE_NOT_FRESH=14
+RC_REMOTE_CACHE_ENV_MISMATCH=15
+cache_path_for() {   # $1 = GPU ordinal
+    if [ "$RIG_CUPY_CACHE_POLICY" = per_run ]; then echo "$RIG_CUPY_CACHE_ROOT/cupy_cache_run_${CACHE_TAG}_gpu$1"
+    else echo "/tmp/cupy_cache_gpu$1"; fi
+}
+# Remote fragments: single-quoted HERE, so nothing in them expands on VM101. The remote shell expands
+# them; WC/TAG/NN/RCN/RCE are set per worker in front of PREP (validated values only).
+CACHE_PREP_BODY='
+cache_refuse() { echo "[cache] REFUSE reason=$1 tag=$TAG host=$(hostname) gpu=$NN path=$WC" >&2; exit "$RCN"; }
+if [ -e "$WC" ] || [ -L "$WC" ]; then cache_refuse exists; fi
+mkdir "$WC" 2>/dev/null || cache_refuse mkdir_failed
+ENTS=$(find "$WC" -mindepth 1 -maxdepth 1 -printf .) || cache_refuse enumeration_failed
+[ "${#ENTS}" -eq 0 ] || cache_refuse "nonempty_${#ENTS}"
+T_PREP=$(date +%s.%N)
+'
+# [v5] NUL-safe startup check (Beta X-CACHE-POLICY R1 Q1): the environment is never converted to lines.
+# GNU grep -z treats each NUL-terminated entry as one record; -c counts entries; -x -F requires the WHOLE entry
+# to equal "CUPY_CACHE_DIR=<path>" literally. Exactly one entry may start with CUPY_CACHE_DIR= and exactly one
+# must equal the expected entry, so a missing variable, a duplicate, the name inside another value, or a value
+# with a newline or any extra byte all refuse. LC_ALL=C: bytes, not characters (non-UTF-8 is harmless).
+# grep exit 0/1 = matched/none; 2 = read error -> refuse as unreadable.
+CACHE_POST_BODY='
+ENVF=/proc/$worker_pid/environ
+NANY=$(LC_ALL=C grep -zc -e "^CUPY_CACHE_DIR=" -- "$ENVF"); RA=$?
+NEX=$(LC_ALL=C grep -zxcF -e "CUPY_CACHE_DIR=$WC" -- "$ENVF"); RX=$?
+if [ "$RA" -gt 1 ] || [ "$RX" -gt 1 ] || [ "$NANY" != 1 ] || [ "$NEX" != 1 ]; then
+    kill "$worker_pid" 2>/dev/null
+    echo "[cache] REFUSE reason=env_mismatch tag=$TAG host=$(hostname) gpu=$NN path=$WC pid=$worker_pid entries_named=$NANY exact=$NEX read_rc=$RA/$RX" >&2
+    exit "$RCE"
+fi
+printf "[cache] OK tag=%s host=%s gpu=%s policy=per_run path=%s created=exclusive entries=0 t_prep=%s pid=%s env_CUPY_CACHE_DIR=%s\n" "$TAG" "$(hostname)" "$NN" "$WC" "$T_PREP" "$worker_pid" "$WC"
+'
+# Record verification is done by scripts/cache_records_verify.py (literal field comparison; exactly one
+# complete record and one complete ACK per expected rig slot; the TSV is published only after complete
+# success; any defect or incomplete write returns nonzero). v3's bash verifier failed open (Beta R3).
+# <<< X-CUPY-CACHE-POLICY block <<<
 # [D6-I1] The bounded launch-settle interval. It is NOT a readiness wait and must
 # not grow into one: the worker still has a GPU to warm and a sentinel to emit
 # after this point. It exists only to make an IMMEDIATE death — argparse, a
@@ -222,6 +279,7 @@ echo "[launch] coordinator = $COORD_HOST:$PORT"
 echo "[launch] profile     = ${RIG_PROFILE:-$(python3 -c "import json;print(json.load(open('$REPO_ROOT/rig_profiles_config.json'))['default_profile'])")}"
 echo "[launch] stagger     = ${STAGGER}s   (total dispatch ~$((TOTAL * STAGGER))s)"
 echo "[launch] cleanup-torch: rigs=${RIG_CLEANUP_TORCH} zeus=${ZEUS_CLEANUP_TORCH}"
+echo "[launch] cupy-cache : rigs=${RIG_CUPY_CACHE_POLICY} tag=${CACHE_TAG} root=${RIG_CUPY_CACHE_ROOT} zeus=local(unchanged)"
 echo "[launch] local logs  = $LOGDIR"
 echo "[launch] workers     = $TOTAL"
 echo "$FLEET" | awk -F'\t' '{printf "[launch]   %-16s %-16s %s GPU(s)  [%s]\n", $1, $2, $3, $6}'
@@ -322,11 +380,21 @@ while IFS=$'\t' read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3; do
             # time, which is how the per-worker paths and the settle interval
             # reach the far side.
             DISPATCH_LOG="$LOGDIR/dispatch_${WHOST}_gpu$N.log"
+            WCACHE="$(cache_path_for "$N")"
+            if [ "$RIG_CUPY_CACHE_POLICY" = per_run ]; then
+                # The per-run cache is created ONLY by CACHE_PREP (exclusive); it is kept OUT of the
+                # generic mkdir -p below, so no other path can supply it.
+                CACHE_PREP="WC=$WCACHE; TAG=$CACHE_TAG; NN=$N; RCN=$RC_REMOTE_CACHE_NOT_FRESH; RCE=$RC_REMOTE_CACHE_ENV_MISMATCH
+$CACHE_PREP_BODY"
+                CACHE_POST="$CACHE_POST_BODY"; SHARED_MKDIR=""
+            else
+                CACHE_PREP=""; CACHE_POST=""; SHARED_MKDIR=" $WCACHE"
+            fi
             ssh -n -o BatchMode=yes -o ConnectTimeout=10 "michael@$ENDPOINT" \
-"mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR /tmp/cupy_cache_gpu$N || exit $RC_REMOTE_MKDIR
+"${CACHE_PREP}mkdir -p /tmp/minerlogs $REMOTE_RELEASE_DIR${SHARED_MKDIR} || exit $RC_REMOTE_MKDIR
 cd $SCRIPTPATH || exit $RC_REMOTE_CD
 ROCR_VISIBLE_DEVICES=$N \
-CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N \
+CUPY_CACHE_DIR=$WCACHE \
 PYTHONPATH=$SCRIPTPATH \
 nohup $PYBIN $SCRIPTPATH/miner/range_miner_worker.py \
   --host $COORD_HOST --port $PORT \
@@ -341,11 +409,15 @@ if ! kill -0 \$worker_pid 2>/dev/null; then
     if [ \"\$rc\" -eq 0 ]; then rc=$RC_REMOTE_WORKER_EXITED_ZERO; fi
     exit \$rc
 fi
-printf '[dispatch] started pid=%s gpu=%s\n' \"\$worker_pid\" '$N'
+${CACHE_POST}printf '[dispatch] started pid=%s gpu=%s\n' \"\$worker_pid\" '$N'
 exit 0" > "$DISPATCH_LOG" 2>&1 &
             REMOTE_DISPATCH_PIDS+=("$!")
             REMOTE_DISPATCH_LABELS+=("$WHOST($ENDPOINT):gpu$N")
             REMOTE_DISPATCH_LOGS+=("$DISPATCH_LOG")
+            REMOTE_DISPATCH_CACHE+=("$WCACHE")
+            REMOTE_DISPATCH_GPU+=("$N")
+            REMOTE_DISPATCH_WHOST+=("$WHOST")
+            REMOTE_DISPATCH_ENDPOINT+=("$ENDPOINT")
         fi
         DISPATCHED=$((DISPATCHED + 1))
         N=$((N + 1))
@@ -433,6 +505,34 @@ if [ "$DISPATCHED" -ne "$TOTAL" ]; then
     echo "[launch] will fail at the worker_admission_timeout. Do not treat a" >&2
     echo "[launch] partial fleet as a production-shape trial." >&2
     exit 1
+fi
+if [ "$RIG_CUPY_CACHE_POLICY" = per_run ]; then
+    # Expected rig slots come from the fleet definition, NOT from the dispatch arrays, so a dispatch that
+    # never happened cannot shrink the expectation.
+    RIG_SLOTS=$(echo "$FLEET" | awk -F'\t' '$6=="remote"{s+=$3} END{print s+0}')
+    CACHE_EXPECT="$LOGDIR/cache_expect_${CACHE_TAG}.tsv"
+    CACHE_TSV="$LOGDIR/cache_records_${CACHE_TAG}.tsv"
+    if [ -e "$CACHE_EXPECT" ] || [ -e "$CACHE_TSV" ]; then
+        echo "[launch] *** cache records for tag $CACHE_TAG already exist: refusing (a tag is used once) ***" >&2
+        exit 1
+    fi
+    i=0
+    while [ "$i" -lt "${#REMOTE_DISPATCH_LOGS[@]}" ]; do
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${REMOTE_DISPATCH_LABELS[$i]}" "${REMOTE_DISPATCH_WHOST[$i]}" \
+            "${REMOTE_DISPATCH_ENDPOINT[$i]}" "${REMOTE_DISPATCH_GPU[$i]}" "${REMOTE_DISPATCH_CACHE[$i]}" \
+            "${REMOTE_DISPATCH_LOGS[$i]}" >> "$CACHE_EXPECT" || {
+            echo "[launch] *** could not write $CACHE_EXPECT: refusing the fleet ***" >&2; exit 1; }
+        i=$((i + 1))
+    done
+    python3 "$REPO_ROOT/scripts/cache_records_verify.py" --tag "$CACHE_TAG" --expect "$CACHE_EXPECT" \
+        --expected-slots "$RIG_SLOTS" --out "$CACHE_TSV"
+    CACHE_VERIFY_RC=$?
+    if [ "$CACHE_VERIFY_RC" -ne 0 ]; then
+        echo "[launch] *** PER-RUN CACHE NOT VERIFIED FOR EVERY RIG WORKER (rc=$CACHE_VERIFY_RC): refusing the fleet ***" >&2
+        echo "[launch] No coordinator exists yet; a counted run must not start on this fleet." >&2
+        exit 1
+    fi
+    echo "[launch] cache records verified: $CACHE_TSV"
 fi
 echo "[launch] all $DISPATCHED of $TOTAL daemons dispatched"
 echo "[launch] DISPATCH COMPLETE — this means every dispatch operation has been"

@@ -33,6 +33,14 @@ UNMODIFIED. Part B copies the launcher's live bytes into a temporary tree (diges
 equality asserted) beside stub config, a stub worker and a stub ssh, and drives
 it against a real loopback listener.
 
+[X-CACHE-POLICY v7, DRAFT] Part B drives the launcher on its `shared` cache policy (RIG_CUPY_CACHE_POLICY=
+shared, set by `run_launcher`): the explicit diagnostic path that keeps the pre-policy per-worker directory
+/tmp/cupy_cache_gpu<N>. This suite proves the dispatch channel, the wait set and the parked barrier; the
+counted-path `per_run` policy (fresh per-run cache, record verifier, join, freeze) is proved by
+tests/test_cache_policy_v7.py. WS-7's literal command-line check is replaced by the shared policy's
+per-worker path (static) and WS-2f (each parked remote worker's own environment carries its own path).
+Every RED arm, anchor and mutant is unchanged.
+
 Run:  source ~/venvs/torch/bin/activate && \
       python3 -u tests/test_s172_d6_integration_repair.py
 """
@@ -788,7 +796,7 @@ def build_launcher_fixture(td, launcher_bytes, ssh_shim=STUB_SSH_OK,
 
 def run_launcher(root, listener, nonce="waitset-test", deadline=60,
                  wait_timeout=45, die_now=False, die_remote=False,
-                 settle=None):
+                 settle=None, cache_policy="shared"):
     """Start the launcher; return (proc, logdir, released_path, elapsed|None).
 
     `die_now` kills the LOCAL worker, `die_remote` the REMOTE one — two knobs,
@@ -804,6 +812,12 @@ def run_launcher(root, listener, nonce="waitset-test", deadline=60,
     env["RELEASE_DEADLINE"] = str(deadline)
     env["REMOTE_RELEASE_DIR"] = str(Path(root) / "remote_release")
     env["TFM_STUB_REMOTE_ROOT"] = str(Path(root) / "remote")
+    # [X-CACHE-POLICY v7] the D6 arms run the launcher's explicit `shared` diagnostic policy (pre-policy
+    # per-worker /tmp/cupy_cache_gpu<N>). The pinned pre-fix anchors do not read the variable, so it is inert
+    # for every RED arm. None leaves it unset (the launcher's per_run default), for a caller that wants that.
+    env.pop("RIG_CUPY_CACHE_POLICY", None)
+    if cache_policy is not None:
+        env["RIG_CUPY_CACHE_POLICY"] = cache_policy
     if settle is not None:
         env["REMOTE_LAUNCH_SETTLE"] = str(settle)
     if die_now:
@@ -1005,6 +1019,26 @@ def part_b():
                   and "SESSION_RELEASED" not in log
                   and "SESSION_RELEASE_ABORTED" not in log,
                   log.strip().splitlines()[-1] if log.strip() else "(empty)")
+            # [X-CACHE-POLICY v7] WS-2f replaces WS-7's literal: under the shared policy every parked
+            # REMOTE worker's own environment carries exactly one CUPY_CACHE_DIR, equal to its own
+            # per-GPU directory (relocated by the stub ssh from /tmp/cupy_cache_gpu<N>), distinct per worker.
+            # RED WHEN: a worker has no / two / another worker's / a per-run cache dir under this policy.
+            cache_ok, cache_seen = True, []
+            remote_root = Path(root) / "remote"
+            for dl in sorted(Path(logdir).glob("dispatch_*_gpu*.log")):
+                g = re.search(r"_gpu(\d+)\.log$", dl.name).group(1)
+                m = re.search(r"started pid=(\d+)", dl.read_text(errors="replace"))
+                try:
+                    ents = Path(f"/proc/{m.group(1)}/environ").read_bytes().split(b"\0") if m else []
+                except OSError:
+                    ents = []
+                vals = [e[len(b"CUPY_CACHE_DIR="):] for e in ents if e.startswith(b"CUPY_CACHE_DIR=")]
+                want = str(remote_root / f"cupy_cache_gpu{g}").encode()
+                cache_seen.append((g, vals))
+                cache_ok &= vals == [want] and Path(want.decode()).is_dir()
+            check("WS-2f shared policy: each parked remote worker carries exactly its own per-GPU cache dir",
+                  cache_ok and len(cache_seen) == 2 and len({tuple(v) for _, v in cache_seen}) == 2,
+                  f"{cache_seen}")
             check("WS-2c NO REGISTER has occurred",
                   listener.accepts == [], f"accepts={len(listener.accepts)}")
             tokens = list((Path(root) / "logs" / "miner_workers")
@@ -1129,7 +1163,11 @@ def part_b():
             ("fd 3 record stream", 'done 3<<< "$FLEET"'),
             ("read from fd 3", 'read -r WHOST ENDPOINT NGPU PYBIN SCRIPTPATH KIND <&3'),
             ("PYTHONPATH rule", 'PYTHONPATH=$SCRIPTPATH'),
-            ("per-worker cupy cache", 'CUPY_CACHE_DIR=/tmp/cupy_cache_gpu$N'),
+            # [X-CACHE-POLICY v7] the pre-policy literal moved behind the policy switch: under `shared`
+            # cache_path_for yields /tmp/cupy_cache_gpu<N> and the remote command carries that path
+            # (executed check: WS-2f). The per_run path is proved by tests/test_cache_policy_v7.py.
+            ("shared policy keeps the per-worker cupy cache path", 'else echo "/tmp/cupy_cache_gpu$1"; fi'),
+            ("remote worker gets its policy cache path", 'CUPY_CACHE_DIR=$WCACHE'),
             ("stagger paces dispatch", 'sleep "$STAGGER"')):
         check(f"WS-7  frozen: {name}", needle in text)
 

@@ -258,6 +258,59 @@ fi
 # events use, and then PARKS on its per-host release token. Nothing connects out,
 # so the coordinator need not exist yet and no GPU-second and no cohort freeze is
 # committed by anything below until §2.5 has passed.
+# ---------- 1.9. [X-CACHE-POLICY v5] COUNTED PATH: per_run IS MANDATORY; RECORD PROVENANCE ----------
+# An inherited RIG_CUPY_CACHE_POLICY other than per_run is refused, not overridden silently: `shared` is
+# for explicit diagnostic launches of scripts/launch_fleet_manual.sh only. Basis: docs/LEADS.md L-7;
+# Beta X-GCVM-LOCATED R3. The launcher and entry-point versions used are recorded before anything starts.
+if [ -n "${RIG_CUPY_CACHE_POLICY+set}" ] && [ "$RIG_CUPY_CACHE_POLICY" != per_run ]; then
+  echo "GATE-12 REFUSED: RIG_CUPY_CACHE_POLICY='$RIG_CUPY_CACHE_POLICY' is set; a counted run requires per_run" \
+    | tee -a "$EVID"
+  exit 1
+fi
+export RIG_CUPY_CACHE_POLICY=per_run
+RIG_SLOTS=$(python3 -c '
+import json
+rp = json.load(open("rig_profiles_config.json")); dc = {n["hostname"]: n for n in json.load(open("distributed_config.json"))["nodes"]}
+print(sum(dc[n["config_hostname"]]["gpu_count"] for n in rp["nodes"] if not n.get("local")))') \
+  || { echo "GATE-12 REFUSED: rig slot count not derivable from committed config" | tee -a "$EVID"; exit 1; }
+PROV=logs/gate12_${STAMP}_provenance.txt
+prov_hash() {  # "<label> sha256=<64 hex>" or nonzero: a missing or unhashable file refuses the launch
+  local h
+  h=$(sha256sum -- "$1" 2>/dev/null) || return 1          # [v5] the hash command's own status is checked
+  h=${h%% *}
+  [[ "$h" =~ ^[0-9a-f]{64}$ ]] || return 1
+  echo "$2 sha256=$h"
+}
+# [v5] Git reads are status-checked BEFORE dispatch (Beta X-CACHE-POLICY R1 Q1): a failed read refuses,
+# it is never recorded as an empty HEAD or as "0 dirty lines".
+if ! GIT_HEAD=$(git rev-parse --verify HEAD 2>/dev/null) || ! [[ "$GIT_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "GATE-12 REFUSED: git rev-parse HEAD failed or returned no commit id; provenance incomplete" | tee -a "$EVID"
+  exit 1
+fi
+if ! GIT_STATUS_OUT=$(git status --porcelain 2>/dev/null); then
+  echo "GATE-12 REFUSED: git status failed; provenance incomplete" | tee -a "$EVID"
+  exit 1
+fi
+GIT_DIRTY=$(printf '%s' "$GIT_STATUS_OUT" | grep -c .)
+prov_files() {
+  local f
+  for f in scripts/launch_fleet_manual.sh scripts/cache_records_verify.py scripts/gate12_cache_join_gate.py \
+           scripts/gate12_worker_liveness_gate.py scripts/gate12_sentinel_gate.py; do
+    prov_hash "$f" "$f" || return 1
+  done
+}
+if ! {
+  prov_hash "$0" "entry_point=$0" &&
+  prov_files &&
+  echo "git_head=$GIT_HEAD" &&
+  echo "git_status_porcelain_lines=$GIT_DIRTY" &&
+  echo "rig_cupy_cache_policy=$RIG_CUPY_CACHE_POLICY rig_slots=$RIG_SLOTS run_nonce=$RUN_NONCE"
+} > "$PROV"; then
+  echo "GATE-12 REFUSED: launcher/entry-point provenance not recorded in full ($PROV)" | tee -a "$EVID"
+  exit 1
+fi
+tee -a "$EVID" < "$PROV"
+
 FLEETLOG=logs/gate12_${STAMP}_fleet.log
 RUN_NONCE="$RUN_NONCE" RELEASE_DEADLINE=900 \
   ./scripts/launch_fleet_manual.sh 192.168.3.177 5700 "$PWD/logs/miner_workers" \
@@ -349,6 +402,42 @@ if [ "$LIVENESS_RC" -ne 0 ]; then
   exit 1
 fi
 echo "liveness evidence bundle: $LIVENESS_EVID" | tee -a "$EVID"
+
+# ---------- 2.7. [X-CACHE-POLICY] CACHE JOIN GATE — EVERY RIG WORKER, OR REFUSE ----------
+# Each rig worker's startup cache record (launcher, cache_records_<nonce>.tsv) is joined to its
+# current-nonce, sentinel-correlated parked liveness row (nonce, endpoint, worker id, gpu, pid), and
+# CUPY_CACHE_DIR is RE-READ from the parked process. Before the sampler and the coordinator, like 2.5/2.6.
+CACHE_TSV="$PWD/logs/miner_workers/cache_records_${RUN_NONCE}.tsv"
+CACHE_JOIN_EVID=logs/gate12_${STAMP}_cache_join.json
+CACHE_SENT_TSV=logs/gate12_${STAMP}_cache_sentinels.tsv
+# [v5] also captures, per rig slot, the nonce- and PID-matched SESSION_SENTINEL line with its UTC time and
+# start-up seconds (sentinel - t_prep) into CACHE_SENT_TSV, frozen below with the rest.
+python3 -u scripts/gate12_cache_join_gate.py --run-nonce "$RUN_NONCE" --cache-tsv "$CACHE_TSV" \
+  --liveness-json "$LIVENESS_EVID" --expected-rig-slots "$RIG_SLOTS" \
+  --evidence-json "$CACHE_JOIN_EVID" --sentinel-tsv "$CACHE_SENT_TSV" 2>&1 | tee -a "$EVID"
+CACHE_JOIN_RC=${PIPESTATUS[0]}
+# Freeze the per-run cache evidence NOW: the dispatch logs are reused by the next launch.
+CACHE_FREEZE=logs/gate12_${STAMP}_cache_freeze
+if [ "$CACHE_JOIN_RC" -eq 0 ]; then
+  mkdir "$CACHE_FREEZE" \
+    && cp "$CACHE_TSV" "$PWD/logs/miner_workers/cache_expect_${RUN_NONCE}.tsv" \
+          "$PWD"/logs/miner_workers/dispatch_*.log "$LIVENESS_EVID" "$CACHE_JOIN_EVID" "$CACHE_SENT_TSV" "$PROV" \
+          "$CACHE_FREEZE"/ \
+    && (cd "$CACHE_FREEZE" && sha256sum -- * > SHA256SUMS) \
+    || CACHE_JOIN_RC=97
+fi
+if [ "$CACHE_JOIN_RC" -ne 0 ]; then
+  echo "GATE-12 ABORTED BY THE CACHE JOIN GATE (rc=$CACHE_JOIN_RC; 97 = evidence freeze failed) — see $EVID" \
+    | tee -a "$EVID"
+  echo "killing the parked fleet; it never contacted a coordinator" | tee -a "$EVID"
+  pkill -f "[r]ange_miner_worker"
+  for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+    ssh -n michael@$ip 'pkill -f "[r]ange_miner_worker"' 2>/dev/null
+  done
+  exit 1
+fi
+echo "cache join evidence: $CACHE_JOIN_EVID; frozen: $CACHE_FREEZE" | tee -a "$EVID"
+echo "POST-RUN (after the workers exit): python3 scripts/cache_footprint.py --cache-tsv $CACHE_FREEZE/$(basename "$CACHE_TSV") --out $CACHE_FREEZE/cache_footprint_${RUN_NONCE}.json" | tee -a "$EVID"
 
 # ---------- 3. CONCURRENCY SAMPLER — ARMED BEFORE THE COORDINATOR ----------
 # Ordering is the whole point: the sampler is running before the coordinator
