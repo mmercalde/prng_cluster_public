@@ -1,0 +1,79 @@
+--- a/persistent_worker_coordinator.py
++++ b/persistent_worker_coordinator.py
+@@ -149,6 +149,27 @@
+     "PATH=/opt/rocm/bin:${PATH}",
+     "CUPY_CACHE_DIR=${HOME}/.cache/cupy",
+ ]
++
++# [PWC-CACHE-RESET] Fresh CuPy kernel cache per run on each rig (LEADS L-7: the
++# phase-4 fault follows a warm cache; cold runs were clean). Both rig start paths
++# give worker N CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_<N> (the later assignment wins
++# over the ${HOME} default above). Before any worker starts, each rig empties
++# exactly those folders and proves them empty, or the rig is refused.
++PWC_CACHE_RESET_OK = "PWC_CACHE_RESET_OK"
++
++
++def pwc_cache_reset_command(pool: int) -> str:
++    """Remote shell: empty /tmp/cupy_cache_gpu_0..pool-1; print the OK marker only if all are empty.
++    The GPU list is literal (no seq), and every command's exit status is checked."""
++    gpus = " ".join(str(g) for g in range(int(pool)))
++    return (
++        "for g in %s; do d=/tmp/cupy_cache_gpu_$g; "
++        "rm -rf -- \"$d\" || exit 3; mkdir -- \"$d\" || exit 4; "
++        "n=$(ls -A -- \"$d\") || exit 5; [ -z \"$n\" ] || exit 5; "
++        "done; echo %s" % (gpus, PWC_CACHE_RESET_OK)
++    )
++
++
+ WORKER_SCRIPT = "sieve_gpu_worker.py"
+ WORKER_HEARTBEAT_TIMEOUT_S = 120  # [S161] 120s allows ROCm sequential init on 8-GPU rigs (90s was edge case)
+ JOB_TIMEOUT_S = 600               # seconds max per sieve job
+@@ -554,6 +575,15 @@
+                 self.logger.info(f"  {node.hostname} — non-ROCm, skipping persistent workers")
+                 continue
+             pool = min(self.worker_pool_size, node.gpu_count)
++            _target = f"{node.username}@{node.hostname}" if node.username else node.hostname
++            if pool > 0 and not self._reset_rig_cupy_cache(
++                    ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
++                     "-o", "ConnectTimeout=10", _target], node.hostname, pool):
++                for gpu_id in range(pool):   # same state as a failed spawn
++                    handle = WorkerHandle(node=node, gpu_id=gpu_id)
++                    handle.quarantined = True
++                    self.workers.append(handle)
++                continue
+             self.logger.info(f"  {node.hostname}: spawning {pool} workers (stagger {ROCM_SPAWN_STAGGER_S}s)")
+             for gpu_id in range(pool):
+                 handle = WorkerHandle(node=node, gpu_id=gpu_id)
+@@ -588,6 +618,21 @@
+         # worker_id format: "192_168_3_120_gpu0" → IP "192.168.3.120"
+         # DNS resolution not used — Zeus cannot resolve rig-* hostnames
+ 
++    def _reset_rig_cupy_cache(self, ssh_base: List[str], host: str, pool: int) -> bool:
++        """[PWC-CACHE-RESET] Empty this rig's per-GPU CuPy caches. False = refuse the rig."""
++        try:
++            r = subprocess.run(ssh_base + [pwc_cache_reset_command(pool)],
++                               capture_output=True, text=True, timeout=30)
++        except Exception as e:
++            self.logger.error(f"[PWC-CACHE-RESET] {host}: REFUSED, reset not run: {e}")
++            return False
++        if r.returncode != 0 or r.stdout.strip().splitlines()[-1:] != [PWC_CACHE_RESET_OK]:
++            self.logger.error(f"[PWC-CACHE-RESET] {host}: REFUSED, rc={r.returncode} "
++                              f"stderr={r.stderr.strip()[:200]!r}")
++            return False
++        self.logger.info(f"[PWC-CACHE-RESET] {host}: /tmp/cupy_cache_gpu_0..{pool - 1} emptied and verified")
++        return True
++
+     def _spawn_worker(self, handle: WorkerHandle) -> bool:
+         """SSH + launch sieve_gpu_worker.py on remote GPU, confirm heartbeat."""
+         node   = handle.node
+@@ -725,6 +770,10 @@
+             except Exception as e:
+                 self.logger.warning("[PWC-TCP] " + host + ": kill failed: " + str(e))
+ 
++            # Step 1b: [PWC-CACHE-RESET] fresh CuPy cache, after the kill, before any launch
++            if not self._reset_rig_cupy_cache(ssh_base, host, pool):
++                continue
++
+             # Step 2: Launch one worker per GPU via temp bash script
+ 
+             for gpu_id in range(pool):
