@@ -167,7 +167,36 @@ class TCPWorkerTransport(PWCTransportBase):
         self._last_assign_time = {}
         self._last_assign_lock = threading.Lock()
 
+        # [PWC-STAGE1 A3 level 1] launch-set admission. None = no list (every
+        # hello accepted, the behaviour before this change, kept for any caller
+        # that never sets one). A set = only those worker ids are accepted; any
+        # other hello gets accepted=False and is never registered.
+        self._allowed_worker_ids: Optional[set] = None
+        self._allowed_lock = threading.Lock()
+        self.refused_hellos: List[str] = []   # worker ids refused, in order (bounded)
 
+
+
+    # [PWC-STAGE1 A3 level 1] launch-set admission
+    def set_allowed_worker_ids(self, ids) -> None:
+        with self._allowed_lock:
+            self._allowed_worker_ids = None if ids is None else set(str(i) for i in ids)
+
+    def allow_worker_id(self, worker_id: str) -> None:
+        with self._allowed_lock:
+            if self._allowed_worker_ids is None:
+                raise RuntimeError("allow_worker_id() before set_allowed_worker_ids(): "
+                                   "the launch set was never opened")
+            self._allowed_worker_ids.add(str(worker_id))
+
+    def revoke_worker_id(self, worker_id: str) -> None:
+        with self._allowed_lock:
+            if self._allowed_worker_ids is not None:
+                self._allowed_worker_ids.discard(str(worker_id))
+
+    def _admits(self, worker_id: str) -> bool:
+        with self._allowed_lock:
+            return self._allowed_worker_ids is None or str(worker_id) in self._allowed_worker_ids
 
     def start(self) -> None:
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -393,11 +422,31 @@ class TCPWorkerTransport(PWCTransportBase):
     def _handle_client(self, client: socket.socket, addr: tuple) -> None:
         conn = FramedSocket(client)
         worker_id = f"{addr[0]}:{addr[1]}"
+        refused = False
 
         try:
             # Handshake
             hello = conn.recv_obj()
             worker_id = hello.get("worker_id", worker_id)
+            if not self._admits(worker_id):
+                # [PWC-STAGE1 A3 level 1] not launched by this coordinator: refuse,
+                # register nothing, and leave every table untouched (the finally
+                # block below must not reclaim or pop a same-named entry).
+                refused = True
+                if len(self.refused_hellos) < 10_000:
+                    self.refused_hellos.append(str(worker_id))
+                try:
+                    conn.send_obj({
+                        "message_type":     "hello_ack",
+                        "protocol_version": 1,
+                        "worker_id":        "coordinator",
+                        "timestamp":        time.time(),
+                        "accepted":         False,
+                        "reason":           "worker_id not in this coordinator's launch set",
+                    })
+                except (ConnectionError, OSError):
+                    pass
+                return
             conn.send_obj({
                 "message_type":     "hello_ack",
                 "protocol_version": 1,
@@ -572,13 +621,16 @@ class TCPWorkerTransport(PWCTransportBase):
         except (ConnectionError, OSError, json.JSONDecodeError):
             pass  # worker disconnected
         finally:
-            # Reclaim any inflight jobs for this worker
-            self._reclaim_worker_jobs(worker_id)
-            with self._workers_lock:
-                self._workers.pop(worker_id, None)
-            with self._last_seen_lock:
-                self._last_seen.pop(worker_id, None)
-            with self._state_lock:
-                self._online_workers.discard(worker_id)
-                self._ready_workers.discard(worker_id)
+            # [PWC-STAGE1 A3 level 1] a refused hello registered nothing, so it
+            # must not reclaim or pop anything filed under the same id.
+            if not refused:
+                # Reclaim any inflight jobs for this worker
+                self._reclaim_worker_jobs(worker_id)
+                with self._workers_lock:
+                    self._workers.pop(worker_id, None)
+                with self._last_seen_lock:
+                    self._last_seen.pop(worker_id, None)
+                with self._state_lock:
+                    self._online_workers.discard(worker_id)
+                    self._ready_workers.discard(worker_id)
             conn.close()

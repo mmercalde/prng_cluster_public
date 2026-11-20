@@ -80,6 +80,7 @@ pwc.shutdown()  # clean worker teardown
 
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -170,6 +171,29 @@ def pwc_cache_reset_command(pool: int) -> str:
     )
 
 
+# [PWC-STAGE1 B5] Stale-worker kill on a rig. The old remote string was
+# `pkill -9 -f pwc_worker_service ...; pkill -9 -f sieve_gpu_worker ...; echo killed`.
+# The remote shell running it carries that text in its own command line, so the
+# first pkill matched and SIGKILLed the shell itself: the second pkill and the
+# echo never ran, and the result was not read (CLAUDE.md hard rule 8; executed
+# in tests/test_pwc_stage1.py, G-B5-OLD-SELF-KILL). A bracket pattern such as
+# `[p]wc_worker_service` matches a worker's command line but not the shell's,
+# which holds the brackets literally. The marker prints only if no match is left.
+PWC_STALE_KILL_OK = "PWC_STALE_KILL_OK"
+PWC_STALE_KILL_PATTERNS = ("[p]wc_worker_service", "[s]ieve_gpu_worker")
+# The S156 reap (SSH route) pattern, bracketed for the same reason.
+PWC_S156_PERSISTENT_PATTERN = "[s]ieve_gpu_worker.*--persistent"
+
+
+def pwc_stale_kill_command() -> str:
+    """Remote shell: SIGKILL stale PWC and sieve workers; print PWC_STALE_KILL_OK only
+    when none is left. Exit 6 when one survives the kill."""
+    kills = "".join("pkill -9 -f '%s' 2>/dev/null; " % p for p in PWC_STALE_KILL_PATTERNS)
+    return (kills + "sleep 2; "
+            "if pgrep -f '%s' >/dev/null 2>&1; then exit 6; fi; echo %s"
+            % ("|".join(PWC_STALE_KILL_PATTERNS), PWC_STALE_KILL_OK))
+
+
 WORKER_SCRIPT = "sieve_gpu_worker.py"
 WORKER_HEARTBEAT_TIMEOUT_S = 120  # [S161] 120s allows ROCm sequential init on 8-GPU rigs (90s was edge case)
 JOB_TIMEOUT_S = 600               # seconds max per sieve job
@@ -240,6 +264,343 @@ def assert_pwc_hybrid_not_quarantined(prng_type: str, call_site: str = "") -> No
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [PWC-BACKUP STEP 1] Refusals at the PWC layer
+#
+# Brief: docs/CLAUDE_CODE_INSTRUCTIONS_PWC_BACKUP_STEP1_20261114.md (S1-S6).
+# Gap numbers are those of docs/CLAUDE_CODE_REPORT_PWC_BACKUP_STAGE_A.md P3.
+#
+# Every authority below is ONE function, refuses by raising, and names the
+# setting it refused. None of them has an override flag. None of them changes
+# the hybrid quarantine above, and none of them makes a PWC result count: the
+# Step-1 credit gate still refuses PWC (window_optimizer_integration_final.py,
+# `_step1_unaccounted_route_evidence`), and that is a step-2 / owner decision.
+# ─────────────────────────────────────────────────────────────────────────────
+class PwcSettingRefused(RuntimeError):
+    """A PWC run refused at the PWC layer, before any worker is spawned or any
+    chunk is dispatched, because a setting is missing, unrecognised or outside
+    what the record supports. The message names the setting."""
+
+
+class PwcSeedIntervalRefused(PwcSettingRefused):
+    """[S2] The requested seed interval is outside [0, PWC_SEED_SPACE_END)."""
+
+
+class PwcCoordinatorAddressUnset(PwcSettingRefused):
+    """[S3] The address the rig workers dial is unset or not dialable."""
+
+
+class PwcStableEnvelopeRefused(PwcSettingRefused):
+    """[S5] Workers-per-rig x chunk size lies outside PWC_STABLE_ENVELOPE."""
+
+
+class PwcThresholdContractMismatch(RuntimeError):
+    """[S6] For a constant pass, the requested, payload and worker-reported
+    (effective) thresholds disagree."""
+
+
+# ── [S2] seed interval ──────────────────────────────────────────────────────
+# End bound (exclusive) of the seed space a PWC pass may partition. Source: the
+# owner-decided interval check for Step 1, `0 <= seed_start` and
+# `seed_start + total_seeds <= 2**32` (docs/CLAUDE_CODE_INSTRUCTIONS_MINER_SEED_
+# START_20261114.md R2), restated for PWC in the step-1 brief item S2. No code
+# module commits this constant today; it is not imported from miner/ so that PWC
+# keeps loading nothing RANGE-MINER owns.
+PWC_SEED_SPACE_END = 1 << 32
+
+
+def _is_plain_int(v) -> bool:
+    import numbers
+    return isinstance(v, numbers.Integral) and not isinstance(v, bool)
+
+
+def validate_pwc_seed_interval(seed_start, total_seeds) -> Tuple[int, int]:
+    """Return (start, end) for [seed_start, seed_start + total_seeds), or raise
+    PwcSeedIntervalRefused. ONE authority, called before the fleet is built
+    (run_trial_persistent) and again before chunking (run_sieve_pass)."""
+    if not _is_plain_int(seed_start):
+        raise PwcSeedIntervalRefused(
+            f"seed_start must be an integer, got {seed_start!r} "
+            f"({type(seed_start).__name__})")
+    if not _is_plain_int(total_seeds):
+        raise PwcSeedIntervalRefused(
+            f"total_seeds must be an integer, got {total_seeds!r} "
+            f"({type(total_seeds).__name__})")
+    start, n = int(seed_start), int(total_seeds)
+    if start < 0:
+        raise PwcSeedIntervalRefused(f"seed_start={start} < 0")
+    if n < 0:
+        raise PwcSeedIntervalRefused(f"total_seeds={n} < 0")
+    end = start + n
+    if end > PWC_SEED_SPACE_END:
+        raise PwcSeedIntervalRefused(
+            f"seed_start + total_seeds = {start} + {n} = {end} > "
+            f"PWC_SEED_SPACE_END = {PWC_SEED_SPACE_END} (2**32)")
+    return start, end
+
+
+# ── [S3] the address the rig workers dial ──────────────────────────────────
+# The ONE setting is `pwc_coordinator_address` (a constructor / run_trial_persistent
+# keyword). There is no default: the literal 192.168.3.127 that used to sit in the
+# launch script (and as the worker's own fallback) is the FROZEN bare-metal Zeus,
+# not the canonical VM101 (.177) — CLAUDE.md §0, §3. It is distinct from
+# `pwc_host`, which is the address the coordinator's TCP server BINDS (0.0.0.0 is a
+# valid bind address and a meaningless dial address).
+PWC_COORDINATOR_ADDRESS_SETTING = "pwc_coordinator_address"
+_UNDIALABLE_ADDRESSES = frozenset({"0.0.0.0", "::", "*", "localhost"})
+
+
+def validate_pwc_coordinator_address(address) -> str:
+    """Return the address rig workers must dial, or raise PwcCoordinatorAddressUnset.
+
+    Refuses: unset/empty, a wildcard bind address, and any loopback address (a
+    rig dialling its own loopback reaches itself, not the coordinator)."""
+    if address is None or not isinstance(address, str) or not address.strip():
+        raise PwcCoordinatorAddressUnset(
+            f"{PWC_COORDINATOR_ADDRESS_SETTING} is not set (got {address!r}). It is "
+            f"the address the PWC-TCP rig workers dial back to, and it has NO default: "
+            f"the former literal 192.168.3.127 is the frozen bare-metal Zeus "
+            f"(CLAUDE.md §0). Pass it explicitly, e.g. the canonical dev box's address.")
+    a = address.strip()
+    if a in _UNDIALABLE_ADDRESSES:
+        raise PwcCoordinatorAddressUnset(
+            f"{PWC_COORDINATOR_ADDRESS_SETTING}={a!r} is a wildcard/loopback name, "
+            f"not an address a rig can dial")
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(a)
+    except ValueError:
+        ip = None                         # a hostname: accepted as given
+    if ip is not None and (ip.is_loopback or ip.is_unspecified):
+        raise PwcCoordinatorAddressUnset(
+            f"{PWC_COORDINATOR_ADDRESS_SETTING}={a!r} is a loopback/unspecified "
+            f"address; a rig dialling it reaches itself, not the coordinator")
+    return a
+
+
+# ── [S4] transport ──────────────────────────────────────────────────────────
+PWC_TRANSPORTS = ("ssh", "tcp")
+
+
+def validate_pwc_transport(pwc_transport) -> str:
+    """Refuse an unset or unrecognised transport instead of falling through to the
+    legacy SSH path — the S170-PARITY-1 class (docs/SESSION_CHANGELOG_20260425_
+    S170.md:215-221), where a dropped setting silently became the legacy path."""
+    if pwc_transport not in PWC_TRANSPORTS:
+        raise PwcSettingRefused(
+            f"pwc_transport={pwc_transport!r} is not one of {PWC_TRANSPORTS}. PWC "
+            f"refuses rather than defaulting to the legacy SSH transport (the "
+            f"S170-PARITY-1 silent-downgrade class).")
+    return pwc_transport
+
+
+# The values a PersistentWorkerCoordinator used to take silently when the caller
+# omitted them. They are still applied (callers and committed tests construct
+# the class without them), but now with a WARNING naming the setting, and the
+# stable envelope below refuses any run in which they would size work outside the
+# record (the 2,000,000 cap is outside it for every real-size run).
+_LEGACY_DEFAULT_WORKER_POOL_SIZE = 8
+_LEGACY_DEFAULT_SEED_CAP_NVIDIA  = 5_000_000
+_LEGACY_DEFAULT_SEED_CAP_AMD     = 2_000_000
+
+
+# ── [S5] the recorded stable envelope ──────────────────────────────────────
+# Source: docs/CLAUDE_CODE_REPORT_PWC_BACKUP_STAGE_A.md P4 ONLY, which reads
+# docs/ROCm_Saturation_Report_S172.md:29-35 (full 26-GPU fleet, three rigs) as its
+# repeatable envelope. Each row is a RECORDED point with a cited run:
+#     pool 6 per rig, chunk 50,000  — 5 trials clean, 29:30            (:31)
+#     pool 8 per rig, chunk 25,000  — 5 trials, 1 transient eviction,
+#                                      recovered, 1:30:43              (:33)
+# Deliberately NOT encoded (P4 says why):
+#     pool 6 / 100,000 — "STABLE — Per operator history": no run cited  (:32)
+#     pool 8 / 100,000 — S162 VICTORY clean, but S172 crashed at ~12 min (:35);
+#                        P4 adjudicates neither, so the conservative side wins
+#     pool 8 / 50,000  — crashed at ~23 min                             (:34)
+# A run is INSIDE when some row has workers_per_rig <= row.workers AND
+# chunk_seeds <= row.chunk. That dominance reading is an inference from the
+# report's own finding that "the empirical boundary is concurrency-driven,
+# modulated by chunk size" (:19); it admits, e.g., pool 4 at 50,000 or pool 7 at
+# 25,000, which no run measured directly. There is no override flag.
+PWC_STABLE_ENVELOPE = (
+    # (max workers per rig, max chunk seeds, record)
+    (6, 50_000, "ROCm_Saturation_Report_S172.md:31 (pool 6, 50K: 5 trials clean)"),
+    (8, 25_000, "ROCm_Saturation_Report_S172.md:33 (pool 8, 25K: 5 trials, 1 recovered eviction)"),
+)
+
+
+def pwc_envelope_violation(workers_per_rig: int, chunk_seeds: int) -> Optional[str]:
+    """None if (workers_per_rig, chunk_seeds) is inside PWC_STABLE_ENVELOPE, else
+    the reason. Zero workers on every rig is not a configuration to judge."""
+    w, c = int(workers_per_rig), int(chunk_seeds)
+    if w <= 0:
+        return None
+    for max_w, max_c, _src in PWC_STABLE_ENVELOPE:
+        if w <= max_w and c <= max_c:
+            return None
+    rows = "; ".join(f"<= {mw} workers/rig at <= {mc:,} seeds/chunk"
+                     for mw, mc, _ in PWC_STABLE_ENVELOPE)
+    return (f"workers_per_rig={w}, chunk_size={c:,} is outside PWC_STABLE_ENVELOPE "
+            f"({rows}; source docs/CLAUDE_CODE_REPORT_PWC_BACKUP_STAGE_A.md P4)")
+
+
+def assert_pwc_within_stable_envelope(workers_per_rig: int, chunk_seeds: int,
+                                      where: str) -> None:
+    why = pwc_envelope_violation(workers_per_rig, chunk_seeds)
+    if why is not None:
+        raise PwcStableEnvelopeRefused(f"[{where}] {why}. No override exists.")
+
+
+# ── [S6] directional threshold contract, constant passes ───────────────────
+def _thr_equal(a, b) -> bool:
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return False
+
+
+def pwc_threshold_record(prng_type: str, requested, payload_values, effective_values,
+                         effective_unreported: int) -> Dict[str, Any]:
+    """The requested / payload / effective record for one constant pass.
+
+    `payload_values` are the `min_match_threshold` values actually written into
+    the job dicts; `effective_values` are the values the worker reports it passed
+    to the sieve (TCP: sieve_filter's echoed `min_match_threshold`). A worker that
+    does not report one is counted, not guessed."""
+    payload = sorted({float(v) for v in payload_values})
+    effective = sorted({float(v) for v in effective_values})
+    disagree = [v for v in payload if not _thr_equal(v, requested)] + \
+               [v for v in effective if not _thr_equal(v, requested)]
+    return {
+        "prng_type": prng_type,
+        "requested": float(requested),
+        "payload": payload,
+        "effective": effective,
+        "effective_unreported_chunks": int(effective_unreported),
+        "agree": not disagree,
+        # verified: every completed chunk reported an effective value, and every
+        # value seen equals the request. Unreported is recorded, never assumed.
+        "verified": (not disagree) and effective_unreported == 0 and bool(effective),
+    }
+
+
+def assert_pwc_threshold_contract(record: Dict[str, Any]) -> None:
+    if not record["agree"]:
+        raise PwcThresholdContractMismatch(
+            f"[{record['prng_type']}] threshold contract violated: requested="
+            f"{record['requested']!r} payload={record['payload']!r} "
+            f"effective={record['effective']!r}. A constant pass filters at the "
+            f"trial's directional threshold or it does not return.")
+
+
+# ── [S1] completion accounting ──────────────────────────────────────────────
+PWC_PASS_ACCOUNTING_SCHEMA  = "pwc_pass_accounting_v1"
+PWC_TRIAL_COMPLETION_SCHEMA = "pwc_trial_completion_v1"
+_INCOMPLETE_DETAIL_CAP = 100   # chunk rows listed per pass; counts are never capped
+
+# Step-1 phase numbering used by the credit gate (`credit_decision`,
+# utils/step1_search_ledger.py) and the legacy evidence builder
+# (window_optimizer_integration_final.py, `_legacy_phase_results`).
+PWC_PHASES = (
+    ("1", "forward", "constant"),
+    ("2", "reverse", "constant"),
+    ("3", "forward", "variable"),
+    ("4", "reverse", "variable"),
+)
+
+
+def _merge_intervals(ivs: List[Tuple[int, int]]) -> List[List[int]]:
+    out: List[List[int]] = []
+    for s, e in sorted(ivs):
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+
+
+def _chunk_outcome(res: Optional[Dict[str, Any]], interval: Tuple[int, int],
+                   cancelled: bool) -> Tuple[str, Optional[str]]:
+    """(outcome, reason) for one planned chunk.
+
+    outcomes: completed | failed | timed_out | not_dispatched | missing.
+    A chunk is `completed` only on status ok AND, when the worker reports the
+    seed range it swept, that range equals the chunk. A mismatched range is a
+    failure: its survivors belong to some other interval."""
+    if cancelled:
+        return "not_dispatched", "cancelled before dispatch (pass aborted)"
+    if res is None:
+        return "missing", "no result recorded"
+    if res.get("status") == "ok":
+        wr = res.get("worker_seed_range")
+        if wr is not None:
+            try:
+                ws, we = int(wr["start"]), int(wr["end"])
+            except Exception:
+                return "failed", f"unreadable worker_seed_range {wr!r}"
+            if (ws, we) != (int(interval[0]), int(interval[1])):
+                return "failed", (f"worker reported seed_range [{ws}, {we}) for "
+                                  f"chunk [{interval[0]}, {interval[1]})")
+        return "completed", None
+    msg = str(res.get("message") or res.get("error") or "unknown")
+    if "timeout" in msg.lower():
+        return "timed_out", msg[:200]
+    return "failed", msg[:200]
+
+
+def pwc_pass_complete(accounting: Optional[Dict[str, Any]]) -> bool:
+    return bool(accounting) and accounting.get("schema") == PWC_PASS_ACCOUNTING_SCHEMA \
+        and bool(accounting.get("complete"))
+
+
+def build_pwc_trial_completion(requested_interval: Tuple[int, int],
+                               pass_results: Dict[str, Optional[Dict[str, Any]]]
+                               ) -> Dict[str, Any]:
+    """Carry each pass's accounting to the trial, per phase and direction.
+
+    `pass_results` maps phase ("1".."4") -> the run_sieve_pass result, or None
+    when the pass did not run. A pass that ran but carries no accounting (a
+    result from something other than this module's run_sieve_pass) is
+    `unaccounted`, which is incomplete — never assumed complete.
+
+    `swept_intervals` holds ONLY complete passes, in the shape the Step-1 credit
+    gate reads ({phase: [start, end]}); step 2 would copy it into the PWC sweep
+    evidence. Nothing here grants credit."""
+    req = [int(requested_interval[0]), int(requested_interval[1])]
+    passes: Dict[str, Any] = {}
+    swept: Dict[str, List[int]] = {}
+    incomplete: List[str] = []
+    for ph, direction, mode in PWC_PHASES:
+        res = pass_results.get(ph)
+        if res is None:
+            passes[ph] = {"direction": direction, "mode": mode, "status": "not_run",
+                          "accounting": None}
+            continue
+        acc = res.get("pwc_pass_accounting") if isinstance(res, dict) else None
+        if not acc or acc.get("schema") != PWC_PASS_ACCOUNTING_SCHEMA:
+            status = "unaccounted"
+        elif acc.get("complete") and list(acc.get("requested_interval", [])) == req:
+            status = "complete"
+            swept[ph] = list(req)
+        else:
+            status = "incomplete"
+        if status != "complete":
+            incomplete.append(ph)
+        passes[ph] = {"direction": direction, "mode": mode, "status": status,
+                      "accounting": acc}
+    ran = [ph for ph, *_ in PWC_PHASES if passes[ph]["status"] != "not_run"]
+    return {
+        "schema": PWC_TRIAL_COMPLETION_SCHEMA,
+        "requested_interval": req,
+        "passes": passes,
+        "passes_run": ran,
+        "incomplete_passes": incomplete,
+        "swept_intervals": swept,
+        # Complete = at least one pass ran and every pass that ran is complete.
+        # Which phases are REQUIRED for credit is the credit gate's decision.
+        "trial_complete": bool(ran) and not incomplete,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Data structures
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
@@ -279,25 +640,57 @@ class PersistentWorkerCoordinator:
 
     def __init__(self,
                  config_file: str = "distributed_config.json",
-                 worker_pool_size: int = 8,
-                 seed_cap_nvidia: int = 5_000_000,
-                 seed_cap_amd: int = 2_000_000,
+                 worker_pool_size: Optional[int] = None,
+                 seed_cap_nvidia: Optional[int] = None,
+                 seed_cap_amd: Optional[int] = None,
                  max_per_node: int = 8,
-                 pwc_transport: str = "ssh",
+                 pwc_transport: Optional[str] = None,
                  pwc_host: str = "0.0.0.0",
                  pwc_port: int = 5600,
                  min_workers: int = 1,
-                 node_allowlist=None):   # [S163-KARG-PWC] partition node filter
+                 node_allowlist=None,    # [S163-KARG-PWC] partition node filter
+                 pwc_coordinator_address: Optional[str] = None,  # [PWC-BACKUP S3]
+                 planned_total_seeds: Optional[int] = None):     # [PWC-BACKUP S5]
+        self.logger = logging.getLogger("PersistentWorkerCoordinator")
+        if not self.logger.handlers:
+            h = logging.StreamHandler()
+            h.setFormatter(logging.Formatter("[PWC] %(levelname)s %(message)s"))
+            self.logger.addHandler(h)
+        self.logger.setLevel(logging.INFO)
+
+        # [PWC-BACKUP S4] a sizing setting the caller omitted is no longer taken
+        # silently: it is named in a WARNING, and the stable envelope (S5) refuses
+        # the run at startup() if the value would size work outside the record.
+        def _sized(name, value, legacy):
+            if value is None:
+                self.logger.warning(
+                    f"[PWC-BACKUP S4] {name} not set by the caller — using the legacy "
+                    f"default {legacy:,}. The stable-envelope check still applies.")
+                return legacy
+            return value
         self.config_file     = config_file
         self.node_allowlist  = node_allowlist  # [S163-KARG-PWC] applied in _load_config
-        self.worker_pool_size = worker_pool_size
-        self.seed_cap_nvidia = seed_cap_nvidia
-        self.seed_cap_amd    = seed_cap_amd
+        self.worker_pool_size = _sized("worker_pool_size", worker_pool_size,
+                                       _LEGACY_DEFAULT_WORKER_POOL_SIZE)
+        self.seed_cap_nvidia = _sized("seed_cap_nvidia", seed_cap_nvidia,
+                                      _LEGACY_DEFAULT_SEED_CAP_NVIDIA)
+        self.seed_cap_amd    = _sized("seed_cap_amd", seed_cap_amd,
+                                      _LEGACY_DEFAULT_SEED_CAP_AMD)
         self.max_per_node    = max_per_node
-        # [TCP transport] additive — default ssh preserves legacy behavior
+        # [TCP transport] [PWC-BACKUP S4] no default transport: an unset or
+        # unrecognised value refuses in startup() (validate_pwc_transport), never
+        # becomes the legacy SSH path.
         self.pwc_transport   = pwc_transport
-        self.pwc_host        = pwc_host
+        self.pwc_host        = pwc_host     # the TCP server's BIND address
         self.pwc_port        = pwc_port
+        # [PWC-BACKUP S3] the address rig workers DIAL; validated in startup()
+        self.pwc_coordinator_address = pwc_coordinator_address
+        # [PWC-BACKUP S5] seeds the run will partition, when the caller knows it;
+        # bounds the chunk size the startup envelope check judges
+        self.planned_total_seeds = planned_total_seeds
+        # [PWC-BACKUP S5] effective workers launched per remote rig, filled in by
+        # startup(); the dispatch-site envelope check reads it
+        self._effective_pool_by_host: Dict[str, int] = {}
         self.min_workers     = min_workers  # S161: readiness gate
         self._tcp_transport  = None  # lazily started if pwc_transport == "tcp"
         self._tcp_launch_complete_time: float = 0.0  # set by _tcp_launch_workers()
@@ -321,13 +714,6 @@ class PersistentWorkerCoordinator:
         # [S151] Per-node respawn locks — serialize respawns with stagger to prevent SSH hammer
         self._node_respawn_locks: Dict[str, threading.Lock] = {}
 
-        self.logger = logging.getLogger("PersistentWorkerCoordinator")
-        if not self.logger.handlers:
-            h = logging.StreamHandler()
-            h.setFormatter(logging.Formatter("[PWC] %(levelname)s %(message)s"))
-            self.logger.addHandler(h)
-        self.logger.setLevel(logging.INFO)
-
         self._load_config()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -338,8 +724,11 @@ class PersistentWorkerCoordinator:
             with open(self.config_file) as f:
                 cfg = json.load(f)
         except Exception as e:
-            self.logger.error(f"Cannot load {self.config_file}: {e}")
-            return
+            # [PWC-BACKUP S4] This used to log and return with ZERO nodes, which
+            # then ran on as an empty fleet (SSH: IndexError at dispatch; TCP: a
+            # ready-gate timeout minutes later). Refuse here, naming the file.
+            raise PwcSettingRefused(
+                f"cannot load the PWC node config {self.config_file!r}: {e}") from e
 
         # [RESOLVED EXECUTION SET] The PWC ready gate (:864, min_workers) is the
         # real per-GPU, full-fleet, blocking check — and it was pointed at the
@@ -466,10 +855,45 @@ class PersistentWorkerCoordinator:
     # ─────────────────────────────────────────────────────────────────────────
     # Worker lifecycle
     # ─────────────────────────────────────────────────────────────────────────
+    def _remote_rocm_nodes(self) -> List[WorkerNode]:
+        return [n for n in self.nodes
+                if not self._is_localhost(n.hostname) and self._is_rocm(n)]
+
+    def _startup_refusals(self) -> None:
+        """[PWC-BACKUP S3/S4/S5] Everything that can refuse a run, checked BEFORE
+        the first SSH (the S156 reap below), the first spawn or the TCP bind.
+
+        * transport: unset/unknown refuses (S4);
+        * TCP with any remote rig: the dial address must be set (S3);
+        * envelope (S5): judged on the largest per-rig pool this run can launch,
+          min(worker_pool_size, configured gpu_count) — the live probe can only
+          lower it — against the largest chunk it can cut, seed_cap_amd, bounded
+          by planned_total_seeds when the caller supplied it. Both are upper
+          bounds, so a run judged inside here cannot be outside at dispatch;
+          run_sieve_pass re-checks the exact values anyway."""
+        validate_pwc_transport(self.pwc_transport)
+        rigs = self._remote_rocm_nodes()
+        if self.pwc_transport == "tcp" and rigs:
+            self.pwc_coordinator_address = validate_pwc_coordinator_address(
+                self.pwc_coordinator_address)
+        if rigs:
+            pool_bound = max(min(int(self.worker_pool_size), int(n.gpu_count))
+                             for n in rigs)
+            chunk_bound = int(self.seed_cap_amd)
+            if self.planned_total_seeds is not None:
+                chunk_bound = min(chunk_bound, max(1, int(self.planned_total_seeds)))
+            assert_pwc_within_stable_envelope(
+                pool_bound, chunk_bound,
+                where=(f"startup, before any worker is spawned: worker_pool_size="
+                       f"{self.worker_pool_size}, seed_cap_amd={self.seed_cap_amd}, "
+                       f"planned_total_seeds={self.planned_total_seeds}"))
+
     def startup(self):
         """Spawn persistent workers on all AMD rigs with ROCm stagger."""
         if self._started:
             return
+        # [PWC-BACKUP] refuse before anything touches a rig
+        self._startup_refusals()
         # ── [S156-BANDAID v2] Pre-spawn targeted cleanup ──────────────────────
         # TEMPORARY SAFETY NET — not the root fix.
         # Root fix: session-scoped PWC (Phase B, S157).
@@ -488,7 +912,7 @@ class PersistentWorkerCoordinator:
                     "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
                     "-o BatchMode=yes "
                     + _s156_user + "@" + _s156_host + " "
-                    + "'pgrep -af \"sieve_gpu_worker.*--persistent\" 2>/dev/null "
+                    + "'pgrep -af \"" + PWC_S156_PERSISTENT_PATTERN + "\" 2>/dev/null "
                     "|| echo none'"
                 )
                 _s156_r = _s156_sp.run(
@@ -504,11 +928,11 @@ class PersistentWorkerCoordinator:
                         "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
                         "-o BatchMode=yes "
                         + _s156_user + "@" + _s156_host + " "
-                        + "'pkill -15 -f \"sieve_gpu_worker.*--persistent\" 2>/dev/null; "
+                        + "'pkill -15 -f \"" + PWC_S156_PERSISTENT_PATTERN + "\" 2>/dev/null; "
                         "sleep 2; "
-                        "pkill -9 -f \"sieve_gpu_worker.*--persistent\" 2>/dev/null; "
+                        "pkill -9 -f \"" + PWC_S156_PERSISTENT_PATTERN + "\" 2>/dev/null; "
                         "sleep 1; "
-                        "remaining=$(pgrep -c -f \"sieve_gpu_worker.*--persistent\" "
+                        "remaining=$(pgrep -c -f \"" + PWC_S156_PERSISTENT_PATTERN + "\" "
                         "2>/dev/null || echo 0); "
                         "echo \"reaped:$remaining\"'"
                     )
@@ -519,6 +943,10 @@ class PersistentWorkerCoordinator:
                         "  [S156] " + _s156_host + ": reap result: "
                         + _s156_r2.stdout.strip()
                     )
+                    if "reaped:0" not in _s156_r2.stdout.split():   # [PWC-STAGE1 B5]
+                        self.logger.warning(
+                            "  [S156] " + _s156_host + ": reap did not report "
+                            "'reaped:0' (rc=" + str(_s156_r2.returncode) + ")")
                 else:
                     self.logger.info(
                         "  [S156] " + _s156_host + ": no stale persistent workers"
@@ -542,6 +970,13 @@ class PersistentWorkerCoordinator:
                 pwc_port=self.pwc_port,
             )
             if self._tcp_transport is not None:
+                # [PWC-STAGE1 A3 level 1] Only worker ids this startup() launched
+                # are served. The set starts EMPTY, before the listener exists, so
+                # a stale worker left by an earlier coordinator cannot register in
+                # the gap before the rig kill (it is refused and retries). Ids are
+                # added in _tcp_launch_workers as each launch is issued, and
+                # removed again when a launch returns no PID.
+                self._tcp_transport.set_allowed_worker_ids(set())
                 self._tcp_transport.start()
                 self.logger.info(
                     f"[PWC-TCP] transport started on {self.pwc_host}:{self.pwc_port}"
@@ -598,6 +1033,10 @@ class PersistentWorkerCoordinator:
                 # Stagger to prevent simultaneous HIP init (S130/S133 lesson)
                 if gpu_id < pool - 1:
                     time.sleep(ROCM_SPAWN_STAGGER_S)
+            # [PWC-BACKUP S5] effective workers on this rig, for the dispatch check
+            self._effective_pool_by_host[node.hostname] = sum(
+                1 for w in self.workers
+                if w.node.hostname == node.hostname and not w.quarantined)
         self._started = True
         alive = sum(1 for w in self.workers if w.alive)
         self.logger.info(f"Worker pool ready: {alive}/{len(self.workers)} alive")
@@ -757,24 +1196,39 @@ class PersistentWorkerCoordinator:
             # Step 1: Kill stale pwc_worker_service AND sieve_gpu_worker processes
             # S162: sieve_gpu_worker reap added — same fix as S156 SSH-PWC bandaid.
             # Stale sieve_gpu_worker processes accumulate PageTables → crash.
+            # [PWC-STAGE1 B5] bracket patterns (no self-match) and the result is
+            # READ: no marker, or a non-zero exit, refuses the rig for this run,
+            # the same way a failed cache reset does (Step 1b).
             try:
-                _sp.run(
-                    ssh_base + [
-                        "pkill -9 -f pwc_worker_service 2>/dev/null; "
-                        "pkill -9 -f sieve_gpu_worker 2>/dev/null; "
-                        "sleep 2; echo killed"
-                    ],
-                    capture_output=True, timeout=15
+                _kill_r = _sp.run(
+                    ssh_base + [pwc_stale_kill_command()],
+                    capture_output=True, text=True, timeout=15
                 )
-                self.logger.info("[PWC-TCP] " + host + ": stale workers killed (pwc + sieve_gpu)")
             except Exception as e:
-                self.logger.warning("[PWC-TCP] " + host + ": kill failed: " + str(e))
+                self.logger.error("[PWC-TCP] " + host + ": REFUSED, stale-worker kill not run: " + str(e))
+                continue
+            if (_kill_r.returncode != 0
+                    or (_kill_r.stdout or "").strip().splitlines()[-1:] != [PWC_STALE_KILL_OK]):
+                self.logger.error(
+                    "[PWC-TCP] " + host + ": REFUSED, stale-worker kill not confirmed "
+                    "(rc=" + str(_kill_r.returncode) + ", stderr="
+                    + repr((_kill_r.stderr or "").strip()[:200]) + ")")
+                continue
+            self.logger.info("[PWC-TCP] " + host + ": stale workers killed and none left (pwc + sieve_gpu)")
 
             # Step 1b: [PWC-CACHE-RESET] fresh CuPy cache, after the kill, before any launch
             if not self._reset_rig_cupy_cache(ssh_base, host, pool):
                 continue
 
             # Step 2: Launch one worker per GPU via temp bash script
+            # [PWC-BACKUP S3] The worker reads its dial target ONLY from the
+            # environment (persistent/pwc_worker_service.py `__main__` has no
+            # argparse), so PWC_HOST and PWC_PORT are exported here. Before this,
+            # neither was exported: every rig worker dialled the worker's own
+            # fallback 192.168.3.127 on port 5600 whatever this coordinator bound,
+            # and the `--host/--port` arguments below were never read.
+            _dial = shlex.quote(self.pwc_coordinator_address)
+            _launched_here = 0
 
             for gpu_id in range(pool):
                 rocm_env = " ".join(ROCM_ENV_VARS + [
@@ -799,10 +1253,14 @@ class PersistentWorkerCoordinator:
                     "export CUPY_CACHE_DIR=/tmp/cupy_cache_gpu_" + str(gpu_id),
                     "export PWC_GPU_ID=" + str(gpu_id),
                     "export PWC_WORKER_ID=" + worker_id,
+                    "export PWC_HOST=" + _dial,                # [PWC-BACKUP S3]
+                    "export PWC_PORT=" + str(int(self.pwc_port)),  # [PWC-BACKUP S4]
                     "export PYTHONPATH=.",
                     (
+                        # --host/--port kept for process-listing forensics only;
+                        # the worker reads PWC_HOST/PWC_PORT above.
                         "nohup " + node.python_env + " -m persistent.pwc_worker_service "
-                        "--host 192.168.3.127 --port " + str(self.pwc_port) + " "
+                        "--host " + _dial + " --port " + str(int(self.pwc_port)) + " "
                         "--gpu-id " + str(gpu_id) + " --worker-id " + worker_id + " "
                         ">> " + log_file + " 2>&1 &"
                     ),
@@ -822,17 +1280,28 @@ class PersistentWorkerCoordinator:
                         continue
 
                     # Execute the script
-                    exec_r = _sp.run(
-                        ssh_base + ["bash " + script],
-                        capture_output=True, text=True, timeout=10
-                    )
+                    # [PWC-STAGE1 A3 level 1] admit this id before the worker can dial
+                    self._tcp_transport.allow_worker_id(worker_id)
+                    try:
+                        exec_r = _sp.run(
+                            ssh_base + ["bash " + script],
+                            capture_output=True, text=True, timeout=10
+                        )
+                    except Exception:
+                        self._tcp_transport.revoke_worker_id(worker_id)
+                        raise
                     _launch_time = _t.time()  # S161: start deadline from actual launch
-                    pid_line = exec_r.stdout.strip()
+                    pid_line = (exec_r.stdout or "").strip()
+                    if exec_r.returncode != 0 or not any(
+                            ln.startswith("PID=") for ln in pid_line.splitlines()):
+                        # [PWC-STAGE1 A3 level 1] no PID: not in the launch set
+                        self._tcp_transport.revoke_worker_id(worker_id)
                     self.logger.info(
                         "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
                         " launched — " + pid_line + " log=" + log_file
                     )
                     total_launched += 1
+                    _launched_here += 1
                 except Exception as e:
                     self.logger.error("[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launch failed: " + str(e))
 
@@ -842,6 +1311,8 @@ class PersistentWorkerCoordinator:
                 self.logger.info(
                     "[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launched"
                 )
+            # [PWC-BACKUP S5] effective workers on this rig, for the dispatch check
+            self._effective_pool_by_host[host] = _launched_here
 
         # [S165-ZEUS-TCP] Launch persistent CUDA workers on Zeus (localhost)
         # Workers connect back to 127.0.0.1:port — same TCP path as AMD rigs.
@@ -863,6 +1334,7 @@ class PersistentWorkerCoordinator:
                 _zeus_env["CUDA_VISIBLE_DEVICES"] = str(_zeus_gpu)
                 _zeus_env["CUPY_CACHE_DIR"]       = f"/tmp/cupy_cache_zeus_gpu{_zeus_gpu}"
                 _zeus_env["PYTHONPATH"]           = _zeus_node.script_path
+                self._tcp_transport.allow_worker_id(_zeus_worker_id)   # [PWC-STAGE1 A3]
                 try:
                     with open(_zeus_log, "a") as _lf:
                         _zeus_proc = _sp_zeus.Popen(
@@ -878,6 +1350,7 @@ class PersistentWorkerCoordinator:
                     )
                     total_launched += 1
                 except Exception as _ze:
+                    self._tcp_transport.revoke_worker_id(_zeus_worker_id)  # [PWC-STAGE1 A3]
                     self.logger.error(
                         f"[PWC-TCP] Zeus GPU{_zeus_gpu} local worker launch failed: {_ze}"
                     )
@@ -1092,6 +1565,11 @@ class PersistentWorkerCoordinator:
                         "match_rates":    match_rates,
                         "skip_sequences": skip_seqs,
                         "strategy_ids":   strat_ids,
+                        # [PWC-BACKUP S1/S6] what the worker says it swept / used;
+                        # None when it does not say (sieve_gpu_worker.py reports
+                        # seed_range but no threshold)
+                        "worker_seed_range":          inner.get("seed_range"),
+                        "worker_min_match_threshold": inner.get("min_match_threshold"),
                     }
                 else:
                     handle.jobs_failed += 1
@@ -1154,7 +1632,11 @@ class PersistentWorkerCoordinator:
             raw_surv    = payload.get("survivors", [])
             survivors   = [s["seed"]                  if isinstance(s, dict) else int(s) for s in raw_surv]
             match_rates = [s.get("match_rate", 0.5)   if isinstance(s, dict) else 0.5    for s in raw_surv]
-            skip_seqs   = [s.get("skip_sequence", []) if isinstance(s, dict) else []      for s in raw_surv]
+            # [PWC-STAGE1 B6] sieve_filter.py's legacy survivor record names this
+            # field `skip_pattern` (sieve_filter.py run_hybrid_sieve); reading only
+            # `skip_sequence` returned [] for every survivor. Both names are read.
+            skip_seqs   = [(s.get("skip_pattern", s.get("skip_sequence", [])) if isinstance(s, dict) else [])
+                           for s in raw_surv]
             strat_ids   = [s.get("strategy_id", 0)    if isinstance(s, dict) else 0       for s in raw_surv]
 
         return {
@@ -1168,6 +1650,11 @@ class PersistentWorkerCoordinator:
             "worker_id":      result.get("worker_id", ""),
             "hostname":       result.get("hostname", ""),
             "gpu_id":         result.get("gpu_id", 0),
+            # [PWC-BACKUP S1/S6] sieve_filter.execute_sieve_job echoes the range it
+            # swept and the min_match_threshold it passed to run_sieve
+            # (sieve_filter.py final_result); None when absent, never guessed.
+            "worker_seed_range":          payload.get("seed_range") if isinstance(payload, dict) else None,
+            "worker_min_match_threshold": payload.get("min_match_threshold") if isinstance(payload, dict) else None,
         }
 
     def _dispatch_local_sieve(self, job: Dict[str, Any], node: WorkerNode) -> Dict[str, Any]:
@@ -1221,6 +1708,9 @@ class PersistentWorkerCoordinator:
                                 "match_rates":    match_rates,
                                 "skip_sequences": skip_seqs,
                                 "strategy_ids":   strat_ids,
+                                # [PWC-BACKUP S1/S6]
+                                "worker_seed_range":          inner.get("seed_range"),
+                                "worker_min_match_threshold": inner.get("min_match_threshold"),
                             }
                         return raw
                     except Exception:
@@ -1253,7 +1743,8 @@ class PersistentWorkerCoordinator:
                        target_file: str = "",
                        offset: int = 0,
                        sessions: Optional[List[str]] = None,
-                       skip_range: Optional[List[int]] = None) -> Dict[str, Any]:
+                       skip_range: Optional[List[int]] = None,
+                       seed_start: int = 0) -> Dict[str, Any]:
         """
         Run a full distributed sieve pass (forward OR reverse, constant OR hybrid).
         Returns a result dict compatible with extract_survivor_records() in
@@ -1269,6 +1760,9 @@ class PersistentWorkerCoordinator:
           strategies       — None for constant skip; list of strategy dicts for hybrid
                              (auto-loaded from hybrid_strategy if None and prng is hybrid)
           phase2_threshold — hybrid second-phase threshold
+          seed_start       — [PWC-BACKUP S2] first seed; the pass partitions
+                             [seed_start, seed_start + total_seeds). Default 0
+                             gives exactly the chunks this method cut before.
         """
         is_hybrid = "_hybrid" in prng_type
 
@@ -1277,6 +1771,18 @@ class PersistentWorkerCoordinator:
         # executed for a hybrid pass. Covers every caller, not just
         # run_trial_persistent.
         assert_pwc_hybrid_not_quarantined(prng_type, call_site="run_sieve_pass")
+
+        # [PWC-BACKUP S2] the interval, checked before anything is chunked
+        _req_start, _req_end = validate_pwc_seed_interval(seed_start, total_seeds)
+
+        # [PWC-BACKUP S4] dispatch_chunk below falls back to both sessions and to
+        # skip_range [0, 147] when these are None. Those are silent defaults of
+        # the trial's own configuration, so a pass now refuses without them.
+        if sessions is None or skip_range is None:
+            raise PwcSettingRefused(
+                f"[{prng_type}] run_sieve_pass needs explicit sessions and skip_range "
+                f"(got sessions={sessions!r}, skip_range={skip_range!r}); PWC no "
+                f"longer substitutes ['midday', 'evening'] / [0, 147]")
 
         # Auto-load strategies for hybrid if not provided
         if is_hybrid and strategies is None:
@@ -1321,10 +1827,21 @@ class PersistentWorkerCoordinator:
         chunk_cap   = self.seed_cap_amd
         chunk_size  = min(ideal_chunk, chunk_cap)
 
+        # [PWC-BACKUP S5] exact values, at the last point before dispatch. The
+        # startup check already judged upper bounds of both, so this cannot fire
+        # for a run that started; it is here so no other caller of this method can
+        # dispatch outside the envelope either.
+        _wpr = max(self._effective_pool_by_host.values(), default=0)
+        assert_pwc_within_stable_envelope(
+            _wpr, chunk_size, where=f"run_sieve_pass[{prng_type}], before dispatch")
+
+        # [PWC-BACKUP S2] partition [seed_start, seed_start + total_seeds).
+        # chunk_size is unchanged (it depends on total_seeds only), so at
+        # seed_start = 0 the chunk list is identical to the one cut before.
         chunks = []
-        seed   = 0
-        while seed < total_seeds:
-            end = min(seed + chunk_size, total_seeds)
+        seed   = _req_start
+        while seed < _req_end:
+            end = min(seed + chunk_size, _req_end)
             chunks.append((seed, end))
             seed = end
 
@@ -1405,6 +1922,11 @@ class PersistentWorkerCoordinator:
                     res = _run_once(worker_handle_or_node)
                     elapsed = time.time() - t0
 
+            # [PWC-BACKUP S6] record the threshold this chunk's job dict CARRIED,
+            # read off the job itself rather than restated from the argument
+            res = dict(res)
+            res["pwc_payload_min_match_threshold"] = job["min_match_threshold"]
+
             with lock:
                 results_by_chunk[idx] = res
             status = "✅" if res.get("status") == "ok" else "❌"
@@ -1461,6 +1983,11 @@ class PersistentWorkerCoordinator:
         # 3. Empty-chunks guard — ThreadPoolExecutor(max_workers=0) is invalid.
         # 4. Explicit failure propagation — timed-out chunks written to
         #    results_by_chunk as error entries, not just counted.
+
+        # [PWC-BACKUP S1] kept at pass scope so the accounting below can tell a
+        # chunk that was dispatched from one cancelled before it ever started
+        _future_to_idx: Dict[Any, int] = {}
+        _pass_timed_out = False
 
         # Guard: nothing to dispatch
         if not chunks:
@@ -1549,30 +2076,103 @@ class PersistentWorkerCoordinator:
                     f"timed_out={_pass_timed_out}"
                 )
 
+        # [PWC-BACKUP S1] One snapshot, taken under the lock: a chunk thread still
+        # running after a pass abort must not change the record between the
+        # count and the aggregation.
+        with lock:
+            _snapshot = dict(results_by_chunk)
+        _cancelled = {i for f, i in _future_to_idx.items() if f.cancelled()}
+
         # Aggregate results
         all_survivors   = []
         all_match_rates = []
         all_skip_seqs   = []
         all_strat_ids   = []
         failed_chunks   = 0
+        _outcomes: Dict[str, int] = {"completed": 0, "failed": 0, "timed_out": 0,
+                                     "not_dispatched": 0, "missing": 0}
+        _done_ivs: List[Tuple[int, int]] = []
+        _incomplete_rows: List[Dict[str, Any]] = []
+        _range_unreported = 0
+        _payload_thr: List[Any] = []
+        _effective_thr: List[Any] = []
+        _effective_unreported = 0
 
         for i in range(len(chunks)):
-            res = results_by_chunk.get(i, {"status": "error"})
-            if res.get("status") == "ok":
+            res = _snapshot.get(i)
+            outcome, why = _chunk_outcome(res, chunks[i], i in _cancelled)
+            _outcomes[outcome] += 1
+            if res is not None and "pwc_payload_min_match_threshold" in res:
+                _payload_thr.append(res["pwc_payload_min_match_threshold"])
+            if outcome == "completed":
+                _done_ivs.append(chunks[i])
+                if res.get("worker_seed_range") is None:
+                    _range_unreported += 1
+                if res.get("worker_min_match_threshold") is None:
+                    _effective_unreported += 1
+                else:
+                    _effective_thr.append(res["worker_min_match_threshold"])
                 all_survivors   .extend(res.get("survivors",    []))
                 all_match_rates .extend(res.get("match_rates",  []))
                 all_skip_seqs   .extend(res.get("skip_sequences", []))
                 all_strat_ids   .extend(res.get("strategy_ids",  []))
             else:
                 failed_chunks += 1
-                err_msg = res.get('message') or res.get('error', 'unknown')
+                res = res or {}
+                err_msg = why or res.get('message') or res.get('error', 'unknown')
                 tb      = res.get('traceback', '')
-                self.logger.warning(f"Chunk {i} failed: {err_msg}")
+                self.logger.warning(f"Chunk {i} {outcome}: {err_msg}")
                 if tb:
                     self.logger.warning(f"  Worker traceback:\n{tb}")
+                if len(_incomplete_rows) < _INCOMPLETE_DETAIL_CAP:
+                    _incomplete_rows.append({"idx": i, "interval": list(chunks[i]),
+                                             "outcome": outcome, "reason": err_msg})
 
         if failed_chunks:
             self.logger.warning(f"{failed_chunks}/{len(chunks)} chunks failed for {prng_type}")
+
+        _merged = _merge_intervals(_done_ivs)
+        _pass_complete = (
+            _outcomes["completed"] == len(chunks)
+            and (_merged == [[_req_start, _req_end]] or _req_start == _req_end))
+        assert sum(_outcomes.values()) == len(chunks), (
+            f"PWC accounting lost a chunk: {_outcomes} vs {len(chunks)} planned")
+        _accounting = {
+            "schema":                PWC_PASS_ACCOUNTING_SCHEMA,
+            "prng_type":             prng_type,
+            "requested_interval":    [_req_start, _req_end],
+            "chunk_size":            chunk_size,
+            "workers_per_rig":       _wpr,
+            "planned":               len(chunks),
+            "dispatched":            len(chunks) - _outcomes["not_dispatched"] - _outcomes["missing"],
+            **_outcomes,
+            "seed_range_unreported": _range_unreported,
+            "pass_progress_timeout": bool(_pass_timed_out),
+            "completed_intervals":   _merged,
+            "incomplete_chunks":     _incomplete_rows,
+            "incomplete_chunks_truncated": failed_chunks > len(_incomplete_rows),
+            "complete":              bool(_pass_complete),
+        }
+        if not _pass_complete:
+            self.logger.error(
+                f"[PWC-BACKUP S1] PASS INCOMPLETE [{prng_type}] "
+                f"{_outcomes['completed']}/{len(chunks)} chunks completed "
+                f"(failed={_outcomes['failed']} timed_out={_outcomes['timed_out']} "
+                f"not_dispatched={_outcomes['not_dispatched']} missing={_outcomes['missing']}) "
+                f"over [{_req_start}, {_req_end}) — the result is marked incomplete")
+
+        # [PWC-BACKUP S6] constant passes only; the hybrid passes never get here
+        # (quarantine above) and their phase2 threshold is not this contract.
+        if not is_hybrid:
+            _thr_rec = pwc_threshold_record(prng_type, threshold, _payload_thr,
+                                            _effective_thr, _effective_unreported)
+            _accounting["threshold"] = _thr_rec
+            assert_pwc_threshold_contract(_thr_rec)
+            if not _thr_rec["verified"]:
+                self.logger.warning(
+                    f"[PWC-BACKUP S6] [{prng_type}] effective threshold not reported by "
+                    f"{_effective_unreported} completed chunk(s); requested/payload agree "
+                    f"({_thr_rec['requested']!r}) but the worker-side value is unverified")
 
         if self._progress_writer:
             try:
@@ -1595,6 +2195,11 @@ class PersistentWorkerCoordinator:
             "threshold":         threshold,
             "failed_chunks":     failed_chunks,
             "total_chunks":      len(chunks),
+            # [PWC-BACKUP S1/S2] added fields; none removed
+            "seed_start":          _req_start,
+            "seed_end":            _req_end,
+            "pass_complete":       bool(_pass_complete),
+            "pwc_pass_accounting": _accounting,
         }
 
         # Save to output_file (mirrors coordinator behavior)
@@ -1617,6 +2222,8 @@ class PersistentWorkerCoordinator:
                     "threshold":      threshold,
                     "failed_chunks":  failed_chunks,
                     "total_chunks":   len(chunks),
+                    "pass_complete":  bool(_pass_complete),          # [PWC-BACKUP S1]
+                    "pwc_pass_accounting": _accounting,              # [PWC-BACKUP S1]
                     "note":           "Full survivors omitted (count > 100K) — see NPZ accumulator",
                 }
                 with open(output_file, "w") as f:
@@ -1688,14 +2295,17 @@ def run_trial_persistent(coordinator_cfg: str,
                          reverse_threshold: float,
                          test_both_modes: bool,
                          dataset_path: str = "",
-                         worker_pool_size: int = 8,
-                         seed_cap_nvidia: int = 5_000_000,
-                         seed_cap_amd:   int  = 2_000_000,
-                         pwc_transport: str = "ssh",
+                         worker_pool_size: Optional[int] = None,
+                         seed_cap_nvidia: Optional[int] = None,
+                         seed_cap_amd:   Optional[int] = None,
+                         pwc_transport: Optional[str] = None,
                          pwc_host: str = "0.0.0.0",
                          pwc_port: int = 5600,
                          node_allowlist=None,
-                         min_workers: int = 1) -> Dict[str, Any]:  # [S163-KARG-PWC] + [S174 ready gate]
+                         min_workers: int = 1,                   # [S163-KARG-PWC] + [S174 ready gate]
+                         seed_start: int = 0,                    # [PWC-BACKUP S2]
+                         pwc_coordinator_address: Optional[str] = None,  # [PWC-BACKUP S3]
+                         ) -> Dict[str, Any]:
     """
     Shim called by window_optimizer_integration_final.py when use_persistent_workers=True.
 
@@ -1705,7 +2315,41 @@ def run_trial_persistent(coordinator_cfg: str,
 
     This function manages PersistentWorkerCoordinator lifecycle internally so that
     the caller (run_trial) doesn't need to know about workers at all.
+
+    [PWC-BACKUP STEP 1] Added return fields (none removed, v2 shape unchanged):
+      pwc_completion     — build_pwc_trial_completion(): per phase/direction
+                           accounting, `swept_intervals` of complete passes only,
+                           and `trial_complete`;
+      pwc_trial_complete — the same boolean, at top level.
+    A pass with any failed, timed-out, undispatched or missing chunk is marked
+    incomplete there. The existing caller does not read these yet (step 2).
     """
+    # [PWC-BACKUP S2] the interval, before the fleet is built
+    _req = validate_pwc_seed_interval(seed_start, total_seeds)
+
+    # [PWC-BACKUP S4] the hasattr() fallbacks that used to sit at each pass
+    # (both sessions, skip [0, 147]) were silent defaults of the trial's own
+    # configuration. Refuse before the fleet is built instead.
+    _missing = [a for a in ("window_size", "offset", "sessions", "skip_min", "skip_max")
+                if not hasattr(config, a)]
+    if _missing:
+        raise PwcSettingRefused(
+            f"run_trial_persistent: config {type(config).__name__} lacks {_missing}; "
+            f"PWC no longer substitutes defaults for them")
+    _sessions   = list(config.sessions)
+    _skip_range = [config.skip_min, config.skip_max]
+    _pass_results: Dict[str, Optional[Dict[str, Any]]] = {}
+
+    def _completion_extra() -> Dict[str, Any]:
+        comp = build_pwc_trial_completion(_req, _pass_results)
+        if not comp["trial_complete"]:
+            # the named logger PersistentWorkerCoordinator itself logs to, not
+            # `pwc.logger`, so the record does not depend on the instance
+            logging.getLogger("PersistentWorkerCoordinator").error(
+                f"[PWC-BACKUP S1] TRIAL {trial_number} INCOMPLETE: passes "
+                f"{comp['incomplete_passes']} not complete over {list(_req)} — "
+                f"marked in pwc_completion; the result must not be read as complete")
+        return {"pwc_completion": comp, "pwc_trial_complete": comp["trial_complete"]}
     # [S172 THRESHOLD-REPAIR R3] NOTE — there is deliberately NO pre-flight
     # quarantine check here, and this is a considered placement, not an omission.
     # A `test_both_modes` guard at the top of this function would be earlier and
@@ -1732,6 +2376,8 @@ def run_trial_persistent(coordinator_cfg: str,
         pwc_port         = pwc_port,
         node_allowlist   = node_allowlist,  # [S163-KARG-PWC] partition node filter
         min_workers      = min_workers,     # [S174] ready gate
+        pwc_coordinator_address = pwc_coordinator_address,  # [PWC-BACKUP S3]
+        planned_total_seeds     = total_seeds,              # [PWC-BACKUP S5]
     )
     pwc.startup()
 
@@ -1768,9 +2414,11 @@ def run_trial_persistent(coordinator_cfg: str,
             dataset_path = dataset_path,
             output_file  = f"results/window_opt_forward_{ws}_{off}_t{trial_number}.json",
             offset       = config.offset,
-            sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
-            skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
+            sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+            skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+            seed_start   = _req[0],        # [PWC-BACKUP S2]
         )
+        _pass_results["1"] = fwd_result                     # [PWC-BACKUP S1]
         fwd_survivors   = fwd_result.get("survivors", [])
         fwd_match_rates = fwd_result.get("match_rates", [])
         fwd_map = dict(zip(fwd_survivors, fwd_match_rates))
@@ -1778,6 +2426,8 @@ def run_trial_persistent(coordinator_cfg: str,
 
         if not fwd_survivors:
             pwc.shutdown()
+            # [PWC-BACKUP S1] a forward pass with zero survivors BECAUSE chunks
+            # failed is not a forward-zero result; pwc_completion says which.
             # D3.25-A: the pruned early return carries the COMPLETE v2 shape.
             # It previously carried no map keys at all, and the adapter's
             # `.get("forward_map", {})` silently manufactured empties — the
@@ -1793,6 +2443,7 @@ def run_trial_persistent(coordinator_cfg: str,
                     "bidirectional_count": 0,
                     "forward_records": [],
                     "reverse_records": [],
+                    **_completion_extra(),                   # [PWC-BACKUP S1]
                 },
                 origin="pwc-egress(pruned:forward_zero)",
             )
@@ -1809,9 +2460,11 @@ def run_trial_persistent(coordinator_cfg: str,
             dataset_path = dataset_path,
             output_file  = f"results/window_opt_reverse_{ws}_{off}_t{trial_number}.json",
             offset       = config.offset,
-            sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
-            skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
+            sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+            skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+            seed_start   = _req[0],        # [PWC-BACKUP S2]
         )
+        _pass_results["2"] = rev_result                     # [PWC-BACKUP S1]
         rev_survivors   = rev_result.get("survivors", [])
         rev_match_rates = rev_result.get("match_rates", [])
         rev_map = dict(zip(rev_survivors, rev_match_rates))
@@ -1857,10 +2510,12 @@ def run_trial_persistent(coordinator_cfg: str,
                 dataset_path = dataset_path,
                 output_file  = f"results/window_opt_forward_hybrid_{ws}_{off}_t{trial_number}.json",
                 offset       = config.offset,
-                sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
-                skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
+                sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+                skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+                seed_start   = _req[0],        # [PWC-BACKUP S2]
                 strategies   = _hybrid_strategies,  # [S147 Q2] single strategy
             )
+            _pass_results["3"] = fwd_h_result               # [PWC-BACKUP S1]
             fwd_h_survivors   = fwd_h_result.get("survivors", [])
             fwd_h_match_rates = fwd_h_result.get("match_rates", [])
             fwd_h_map = dict(zip(fwd_h_survivors, fwd_h_match_rates))
@@ -1884,10 +2539,12 @@ def run_trial_persistent(coordinator_cfg: str,
                     dataset_path = dataset_path,
                     output_file  = f"results/window_opt_reverse_hybrid_{ws}_{off}_t{trial_number}.json",
                     offset       = config.offset,
-                    sessions     = list(config.sessions) if hasattr(config, 'sessions') else ["midday", "evening"],
-                    skip_range   = [config.skip_min, config.skip_max] if hasattr(config, 'skip_min') else [0, 147],
+                    sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+                    skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+                    seed_start   = _req[0],        # [PWC-BACKUP S2]
                     strategies   = _hybrid_strategies,  # [S147 Q2] single strategy
                 )
+                _pass_results["4"] = rev_h_result           # [PWC-BACKUP S1]
                 rev_h_survivors   = rev_h_result.get("survivors", [])
                 rev_h_match_rates = rev_h_result.get("match_rates", [])
                 rev_h_map = dict(zip(rev_h_survivors, rev_h_match_rates))
@@ -1943,6 +2600,7 @@ def run_trial_persistent(coordinator_cfg: str,
                 "reverse_records":        [{"seed": s, "match_rate": rev_map[s]} for s in rev_survivors],
                 "forward_records_hybrid": fwd_records_hybrid,
                 "reverse_records_hybrid": rev_records_hybrid,
+                **_completion_extra(),                       # [PWC-BACKUP S1]
             },
             origin="pwc-egress",
         )
@@ -1961,9 +2619,21 @@ if __name__ == "__main__":
     p.add_argument("--pool-size",    type=int, default=2)
     p.add_argument("--total-seeds",  type=int, default=500_000)
     p.add_argument("--prng-type",    default="java_lcg")
-    p.add_argument("--pwc-transport", default="ssh",
-                   choices=["ssh", "tcp"],
-                   help="Transport backend: ssh (default/legacy) or tcp (new)")
+    # [PWC-BACKUP S4] no default transport — the CLI no longer becomes SSH silently
+    p.add_argument("--pwc-transport", required=True,
+                   choices=list(PWC_TRANSPORTS),
+                   help="Transport backend: ssh (legacy) or tcp. Required.")
+    # [PWC-BACKUP S3] the address rig workers dial (tcp mode with rigs); no default
+    p.add_argument("--pwc-coordinator-address", default=None,
+                   help="Address the TCP rig workers dial back to. Required for tcp "
+                        "with remote rigs; there is no default.")
+    # [PWC-BACKUP S4/S5] chunk cap is explicit; the stable envelope judges it
+    p.add_argument("--seed-cap-amd", type=int, required=True,
+                   help="Chunk-size cap. Must lie inside PWC_STABLE_ENVELOPE.")
+    p.add_argument("--sessions", nargs="+", default=None,
+                   help="Sessions to sieve (required unless --startup-only)")
+    p.add_argument("--skip-min", type=int, default=None)
+    p.add_argument("--skip-max", type=int, default=None)
     p.add_argument("--pwc-host",      default="0.0.0.0",
                    help="TCP server bind host (tcp mode only)")
     p.add_argument("--pwc-port",      type=int, default=5600,
@@ -1982,7 +2652,13 @@ if __name__ == "__main__":
         pwc_host         = args.pwc_host,
         pwc_port         = args.pwc_port,
         min_workers      = args.min_workers,
+        seed_cap_amd     = args.seed_cap_amd,
+        pwc_coordinator_address = args.pwc_coordinator_address,
+        planned_total_seeds     = args.total_seeds,
     )
+    if not args.startup_only and (args.sessions is None or args.skip_min is None
+                                  or args.skip_max is None):
+        p.error("--sessions, --skip-min and --skip-max are required for a sieve pass")
     pwc.startup()
 
     if args.startup_only:
@@ -2001,6 +2677,8 @@ if __name__ == "__main__":
         window_size  = 8,
         dataset_path = "daily3.json",
         output_file  = "/tmp/pwc_smoke_test.json",
+        sessions     = args.sessions,
+        skip_range   = [args.skip_min, args.skip_max],
     )
     print(f"\nSmoke test result: {result.get('survivor_count', 0)} survivors")
     pwc.shutdown()

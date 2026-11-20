@@ -1,0 +1,16 @@
+DIFF  tests/test_s172_attempt6_remediation.py: rc 1 -> 1
+      newly failing: ['RXP-1/1  every exit carries its own class']
+      no longer failing: []
+DIFF  tests/test_s172_phase4_coordinator.py: rc 0 -> 1
+      newly failing: ['Gate 22']
+      no longer failing: []
+DIFF  test_s149_rocr_isolation_harness.py: rc 1 -> 0
+      newly failing: []
+      no longer failing: ['CUDA_VISIBLE_DEVICES={gpu_id} IS set per-spawn', 'HIP_VISIBLE_DEVICES={gpu_id} IS set per-spawn', 'ROCR_VISIBLE_DEVICES fix is NOT yet in live codebase', 'ROCR_VISIBLE_DEVICES is ABSENT from per-spawn additions', 'cp.cuda.Device(gpu_id) NOT used anywhere in sieve_gpu_worker.py']
+DIFF  test_persistent_worker_harness.py: rc 1 -> 0
+      newly failing: []
+      no longer failing: ['PwcHybridThresholdContractUncertified', 'T13', 'T14', 'T19', 'T20', 'TrialPopulationContractError', 'ValueError']
+NEW   tests/test_pwc_backup_step1.py: rc 0, failing=[]
+NEW   tests/test_pwc_stage1.py: rc 1, failing=['G-B5-OLD-SELF-KILL (evidence)']
+
+73 suites in after; 4 differ from before (rc or failing-check set)

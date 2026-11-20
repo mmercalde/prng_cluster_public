@@ -121,14 +121,37 @@ def main():
             PWC.json.dump(cfg, f)
         refused = "192.168.3.156"
 
+        class FakeAdmission:
+            """[PWC-STAGE1 A3 level 1] the launch-set API _tcp_launch_workers calls."""
+            def __init__(self):
+                self.allowed = set()
+            def allow_worker_id(self, wid):
+                self.allowed.add(wid)
+            def revoke_worker_id(self, wid):
+                self.allowed.discard(wid)
+
         def make(transport):
+            # [PWC-STAGE1] stage 1 lands the step-1 refusals (PWC-BACKUP S3/S5): a TCP run
+            # with rigs needs a dial address, and pool 8 is inside the stable envelope only
+            # with chunks <= 25,000. Both are passed explicitly; the transport already was.
             p = PWC.PersistentWorkerCoordinator(config_file=cfg_path, worker_pool_size=8,
-                                                pwc_transport=transport)
+                                                seed_cap_amd=25_000, pwc_transport=transport,
+                                                pwc_coordinator_address="192.168.3.177")
+            p._tcp_transport = FakeAdmission()
             log = []
 
             def fake_run(args, *a, **k):
-                log.append(("run", args if isinstance(args, str) else " ".join(args)))
-                return subprocess.CompletedProcess(args, 0, stdout="none" if k.get("text") else b"",
+                flat = args if isinstance(args, str) else " ".join(args)
+                log.append(("run", flat))
+                # [PWC-STAGE1 B5] the stale-worker kill is read now: answer it as a
+                # healthy rig does; a launch answers with a PID (A3 level 1).
+                if PWC.PWC_STALE_KILL_OK in flat:
+                    out = PWC.PWC_STALE_KILL_OK + "\n"
+                elif "bash /tmp/pwc_tcp_launch_gpu" in flat:
+                    out = "PID=4242\n"
+                else:
+                    out = "none"
+                return subprocess.CompletedProcess(args, 0, stdout=out if k.get("text") else out.encode(),
                                                    stderr="" if k.get("text") else b"")
 
             def fake_reset(ssh_base, host, pool):

@@ -23,7 +23,7 @@ PROTOCOL_VERSION = 1
 @dataclass
 class BaseMessage:
     message_type: str
-    worker_id: str
+    worker_id: str = ""
     timestamp: float = field(default_factory=time.time)
     protocol_version: int = PROTOCOL_VERSION
 

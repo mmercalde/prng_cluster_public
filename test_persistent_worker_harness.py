@@ -452,6 +452,10 @@ def T11_constant_forward_pass():
         threshold   = 0.25,
         window_size = 8,
         output_file = "/tmp/harness_T11.json",
+        # [PWC-STAGE1 A4] PWC-BACKUP S4 removed the silent fallback; these are the
+        # values it used to substitute, so the test exercises the same call.
+        sessions    = ["midday", "evening"],
+        skip_range  = [0, 147],
     )
     assert result["survivor_count"] > 0, "Expected survivors"
     assert result["prng_type"] == "java_lcg"
@@ -483,87 +487,47 @@ def T12_constant_reverse_pass():
         threshold   = 0.25,
         window_size = 8,
         output_file = "/tmp/harness_T12.json",
+        # [PWC-STAGE1 A4] PWC-BACKUP S4 removed the silent fallback; these are the
+        # values it used to substitute, so the test exercises the same call.
+        sessions    = ["midday", "evening"],
+        skip_range  = [0, 147],
     )
     assert result["prng_type"] == "java_lcg_reverse"
     assert result["survivor_count"] >= 0
     os.unlink("/tmp/harness_T12.json")
     os.unlink(cfg)
 
-def T13_hybrid_forward_auto_strategies():
+def _assert_hybrid_refused(prng_type, **extra):
+    """[PWC-STAGE1 A4] T13/T14 used to run a hybrid pass. Since 8a55a68 (Beta
+    comparator ruling §5) PWC refuses every variable-skip pass before dispatch,
+    by design, until the owner lifts the quarantine. They now assert that refusal:
+    the named error, raised before ANY job is dispatched or any file written."""
+    import persistent_worker_coordinator as _P
     pwc, cfg = setup_pwc(pool_size=1)
-
     dispatched_jobs = []
-    def fake_dispatch(handle, job):
-        dispatched_jobs.append(job)
-        assert job["prng_type"] == "java_lcg_hybrid"
-        assert job["strategies"] is not None, "Strategies must be auto-loaded for hybrid"
-        return {"status": "ok", "survivors": [9000, 9001],
-                "match_rates": [0.4, 0.5], "skip_sequences": [], "strategy_ids": []}
+    pwc._dispatch_to_worker   = lambda handle, job: dispatched_jobs.append(job) or {}
+    pwc._dispatch_local_sieve = lambda job, node: dispatched_jobs.append(job) or {}
+    out = f"/tmp/harness_{prng_type}_refused.json"
+    try:
+        pwc.run_sieve_pass(prng_type=prng_type, residues=list(range(8)),
+                           total_seeds=500_000, threshold=0.25, window_size=8,
+                           output_file=out, sessions=["midday", "evening"],
+                           skip_range=[0, 147], **extra)
+    except _P.PwcHybridThresholdContractUncertified as exc:
+        assert _P.PWC_HYBRID_QUARANTINE_CODE in str(exc), str(exc)[:200]
+    else:
+        raise AssertionError(f"{prng_type}: hybrid pass was NOT refused")
+    finally:
+        os.unlink(cfg)
+    assert dispatched_jobs == [], f"{len(dispatched_jobs)} job(s) dispatched before the refusal"
+    assert not os.path.exists(out), f"{out} written by a refused pass"
 
-    def fake_local(job, node):
-        return {"status": "ok", "survivors": [], "match_rates": []}
-
-    node = next(n for n in pwc.nodes if pwc._is_rocm(n))
-    from persistent_worker_coordinator import WorkerHandle
-    pwc.workers = [WorkerHandle(node=node, gpu_id=0, alive=True)]
-    pwc._dispatch_to_worker   = fake_dispatch
-    pwc._dispatch_local_sieve = fake_local
-
-    # Mock hybrid_strategy so auto-load works
-    mock_strategy = MagicMock()
-    mock_strategy.max_consecutive_misses = 3
-    mock_strategy.skip_tolerance = 5
-    with patch.dict('sys.modules', {'hybrid_strategy': MagicMock(
-        get_all_strategies=lambda: [mock_strategy]
-    )}):
-        result = pwc.run_sieve_pass(
-            prng_type   = "java_lcg_hybrid",
-            residues    = list(range(8)),
-            total_seeds = 500_000,
-            threshold   = 0.25,
-            window_size = 8,
-            output_file = "/tmp/harness_T13.json",
-        )
-    assert len(dispatched_jobs) > 0
-    assert dispatched_jobs[0]["strategies"] is not None
-    os.unlink("/tmp/harness_T13.json")
-    os.unlink(cfg)
+def T13_hybrid_forward_auto_strategies():
+    _assert_hybrid_refused("java_lcg_hybrid")
 
 def T14_hybrid_reverse_strategies_in_payload():
-    pwc, cfg = setup_pwc(pool_size=1)
-
-    custom_strategies = [{"max_consecutive_misses": 2, "skip_tolerance": 4}]
-    dispatched_jobs = []
-
-    def fake_dispatch(handle, job):
-        dispatched_jobs.append(job)
-        assert job["prng_type"] == "java_lcg_hybrid_reverse"
-        assert job["strategies"] == custom_strategies, "Strategies not passed through"
-        return {"status": "ok", "survivors": [], "match_rates": [],
-                "skip_sequences": [], "strategy_ids": []}
-
-    def fake_local(job, node):
-        return {"status": "ok", "survivors": [], "match_rates": []}
-
-    node = next(n for n in pwc.nodes if pwc._is_rocm(n))
-    from persistent_worker_coordinator import WorkerHandle
-    pwc.workers = [WorkerHandle(node=node, gpu_id=0, alive=True)]
-    pwc._dispatch_to_worker   = fake_dispatch
-    pwc._dispatch_local_sieve = fake_local
-
-    result = pwc.run_sieve_pass(
-        prng_type   = "java_lcg_hybrid_reverse",
-        residues    = list(range(8)),
-        total_seeds = 500_000,
-        threshold   = 0.25,
-        window_size = 8,
-        output_file = "/tmp/harness_T14.json",
-        strategies  = custom_strategies,
-    )
-    assert len(dispatched_jobs) > 0
-    assert dispatched_jobs[0]["strategies"] == custom_strategies
-    os.unlink("/tmp/harness_T14.json")
-    os.unlink(cfg)
+    _assert_hybrid_refused("java_lcg_hybrid_reverse",
+                           strategies=[{"max_consecutive_misses": 2, "skip_tolerance": 4}])
 
 def T15_run_trial_persistent_pruned():
     from persistent_worker_coordinator import run_trial_persistent
@@ -746,18 +710,25 @@ def T19_build_test_result_accumulator():
         window_size = 8; offset = 43; skip_min = 5; skip_max = 56
         sessions = ['evening']; forward_threshold = 0.25; reverse_threshold = 0.25
 
-    pw_result = {
-        "pruned": False,
-        "bidirectional_count": 3,
-        "bidirectional_constant": {1000, 2000},
-        "bidirectional_variable": {3000},
-        "forward_map":  {1000: 0.5, 2000: 0.6, 3000: 0.4, 4000: 0.3},
-        "reverse_map":  {1000: 0.5, 2000: 0.5, 3000: 0.5},
-        "forward_records": [{"seed": 1000, "match_rate": 0.5}],
-        "reverse_records": [{"seed": 1000, "match_rate": 0.5}],
-        "forward_records_hybrid": [{"seed": 3000, "match_rate": 0.4}],
-        "reverse_records_hybrid": [{"seed": 3000, "match_rate": 0.5}],
-    }
+    # [PWC-STAGE1 A4] The adapter takes only the versioned v2 result since D3.25
+    # (utils/canonical_records.py validate_trial_populations); the legacy
+    # unversioned dict is refused by design. Same seeds as before, built through
+    # the producer's own builder, per-mode maps instead of the old merged ones.
+    from utils.canonical_records import build_trial_populations
+    pw_result = build_trial_populations(
+        forward_map_constant={1000: 0.5, 2000: 0.6, 4000: 0.3},
+        reverse_map_constant={1000: 0.5, 2000: 0.5},
+        forward_map_variable={3000: 0.4},
+        reverse_map_variable={3000: 0.5},
+        bidirectional_constant={1000, 2000},
+        bidirectional_variable={3000},
+        pruned=False,
+        extra={
+            "forward_records": [{"seed": 1000, "match_rate": 0.5}],
+            "reverse_records": [{"seed": 1000, "match_rate": 0.5}],
+            "forward_records_hybrid": [{"seed": 3000, "match_rate": 0.4}],
+            "reverse_records_hybrid": [{"seed": 3000, "match_rate": 0.5}],
+        })
     accumulator = {"forward": [], "reverse": [], "bidirectional": []}
 
     from window_optimizer import TestResult
@@ -765,12 +736,14 @@ def T19_build_test_result_accumulator():
                                          "java_lcg", 1, None)
 
     assert isinstance(result, TestResult)
-    assert result.bidirectional_count == 3
-    assert result.forward_count == 4
-    assert result.reverse_count == 3
-    assert len(accumulator["bidirectional"]) == 3  # 2 constant + 1 variable
-    assert len(accumulator["forward"])  == 2   # fwd_records + fwd_h_records
-    assert len(accumulator["reverse"])  == 2
+    assert result.bidirectional_count == 3          # 2 constant + 1 variable
+    assert result.forward_count == 3                # forward_map_constant
+    assert result.reverse_count == 2                # reverse_map_constant
+    bidi = accumulator["bidirectional"]
+    assert len(bidi) == 3, len(bidi)                # one record per (seed, mode)
+    assert sorted(int(r["seed"]) for r in bidi) == [1000, 2000, 3000]
+    assert accumulator["forward_count"] == 2        # fwd_records + fwd_h_records
+    assert accumulator["reverse_count"] == 2
 
 def T20_integration_gate_uses_pwc():
     """Gate routes to PWC when use_persistent_workers=True."""
@@ -779,21 +752,24 @@ def T20_integration_gate_uses_pwc():
     with patch('window_optimizer_integration_final.run_trial_persistent') as mock_rtp, \
          patch('window_optimizer_integration_final._get_residues_for_config', return_value=list(range(8))):
 
-        mock_rtp.return_value = {
-            "pruned": False,
-            "bidirectional_count": 5,
-            "bidirectional_constant": {1, 2, 3, 4, 5},
-            "bidirectional_variable": set(),
-            "forward_map":  {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.5},
-            "reverse_map":  {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.5},
-            "forward_records": [], "reverse_records": [],
-            "forward_records_hybrid": [], "reverse_records_hybrid": [],
-        }
+        # [PWC-STAGE1 A4] v2 result (D3.25), built by the producer's builder.
+        from utils.canonical_records import build_trial_populations
+        _m = {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.5}
+        mock_rtp.return_value = build_trial_populations(
+            forward_map_constant=_m, reverse_map_constant=_m,
+            forward_map_variable={}, reverse_map_variable={},
+            bidirectional_constant={1, 2, 3, 4, 5}, bidirectional_variable=set(),
+            pruned=False,
+            extra={"forward_records": [], "reverse_records": [],
+                   "forward_records_hybrid": [], "reverse_records_hybrid": []})
 
         from window_optimizer_integration_final import run_bidirectional_test
         from window_optimizer import WindowConfig
 
         mock_coord = MagicMock()
+        # [PWC-STAGE1 A4] a bare MagicMock attribute is truthy, so the miner branch
+        # (reached first) ran instead of PWC. Route flags are set explicitly.
+        mock_coord.use_range_miner = False
         mock_coord.use_persistent_workers = True
         mock_coord.config_file  = "distributed_config.json"
         mock_coord.worker_pool_size = 2
@@ -934,6 +910,10 @@ def T24_zeus_local_path():
         threshold   = 0.25,
         window_size = 8,
         output_file = "/tmp/harness_T24.json",
+        # [PWC-STAGE1 A4] PWC-BACKUP S4 removed the silent fallback; these are the
+        # values it used to substitute, so the test exercises the same call.
+        sessions    = ["midday", "evening"],
+        skip_range  = [0, 147],
     )
     assert len(local_called) > 0, "Zeus local path should have been called"
     assert len(worker_called) == 0, "Persistent worker should NOT have been called for Zeus"

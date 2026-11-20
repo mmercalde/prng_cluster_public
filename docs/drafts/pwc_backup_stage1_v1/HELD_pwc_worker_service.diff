@@ -1,0 +1,33 @@
+diff --git a/persistent/pwc_worker_service.py b/persistent/pwc_worker_service.py
+index 19c9cf9..8162727 100644
+--- a/persistent/pwc_worker_service.py
++++ b/persistent/pwc_worker_service.py
+@@ -754,10 +754,26 @@ class PWCWorkerService:
+ # Entry point
+ # ---------------------------------------------------------------------------
+ 
++def _required_env(name: str) -> str:
++    """[PWC-BACKUP S3/S4] The dial target has no fallback. This worker used to
++    default PWC_HOST to 192.168.3.127 (the FROZEN bare-metal Zeus, CLAUDE.md §0)
++    and PWC_PORT to 5600, and the coordinator exported neither, so every rig
++    worker dialled .127:5600 whatever the coordinator had bound. Unset now exits
++    non-zero, naming the variable, before any connection is attempted."""
++    value = os.environ.get(name, "").strip()
++    if not value:
++        log.error(
++            f"[PWC-BACKUP] {name} is not set — refusing to start. The coordinator "
++            f"exports it in the launch script (persistent_worker_coordinator.py, "
++            f"_tcp_launch_workers); this worker has no default dial target.")
++        sys.exit(2)
++    return value
++
++
+ if __name__ == "__main__":
+     gpu_id    = int(os.environ.get("PWC_GPU_ID",    "0"))
+-    host      = os.environ.get("PWC_HOST",      "192.168.3.127")
+-    port      = int(os.environ.get("PWC_PORT",      "5600"))
++    host      = _required_env("PWC_HOST")
++    port      = int(_required_env("PWC_PORT"))
+     worker_id = os.environ.get(
+         "PWC_WORKER_ID", f"{socket.gethostname()}:gpu{gpu_id}"
+     )

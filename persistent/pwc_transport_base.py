@@ -35,12 +35,14 @@ class PWCTransportBase:
         raise NotImplementedError
 
 
-def build_transport(pwc_transport: str = "ssh", **kwargs) -> Optional[PWCTransportBase]:
+def build_transport(pwc_transport: str, **kwargs) -> Optional[PWCTransportBase]:
+    # [PWC-BACKUP S4, Beta X-PWC-BACKUP R1 Q3] no default: an omitted transport
+    # used to return the SSH sentinel silently. It is now a TypeError.
     """
     Factory. Returns TCPWorkerTransport for tcp mode, None for ssh (legacy).
 
     Args:
-        pwc_transport: "ssh" (default/legacy) or "tcp" (new)
+        pwc_transport: "ssh" (legacy) or "tcp". Required; anything else raises.
         **kwargs: passed to transport constructor
 
     Returns:
@@ -54,4 +56,11 @@ def build_transport(pwc_transport: str = "ssh", **kwargs) -> Optional[PWCTranspo
         return TCPWorkerTransport(host=host, port=port)
 
     # SSH mode — legacy path unchanged
-    return None
+    if pwc_transport == "ssh":
+        return None
+
+    # [PWC-BACKUP S4] Any other value used to fall through to `return None`, i.e.
+    # silently to the legacy SSH path (the S170-PARITY-1 class). Refuse instead.
+    raise ValueError(
+        f"pwc_transport={pwc_transport!r} is not 'ssh' or 'tcp'; refusing rather "
+        f"than falling back to the legacy SSH transport")

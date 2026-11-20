@@ -19,7 +19,18 @@ Tests:
   5. Show what the fix looks like
 
 All tests run from source — no GPU hardware needed.
+
+[PWC-STAGE1 A4, 2026-11-19] This file was written to PROVE the S149 defect, so
+five of its checks asserted that the defect was still present. The S155 fix
+(persistent_worker_coordinator.py `[S155-ROCR]`, both spawn paths) removed it, and
+those five went red for that reason only. They now assert the S155 design that
+replaced it: per-worker ROCR_VISIBLE_DEVICES={gpu_id}, no per-spawn
+HIP_/CUDA_VISIBLE_DEVICES, and the worker selecting Device(0) because ROCR remaps
+its one visible GPU to device 0. Test 3's Device(gpu_id) check now reads CODE only
+(an ast walk), because the only remaining match was a stale docstring line in
+sieve_gpu_worker.py. Tests 4-6 are the original informational record, unchanged.
 """
+import ast
 
 import re
 import sys
@@ -88,7 +99,7 @@ check(
 # Test 2 — Per-spawn env vars — HIP present, ROCR absent
 # ---------------------------------------------------------------------------
 
-section("TEST 2 — Per-spawn env vars in _spawn_worker")
+section("TEST 2 — Per-spawn env vars in _spawn_worker (S155 design)")
 
 spawn_match = re.search(
     r'rocm_env\s*=\s*" "\.join\(ROCM_ENV_VARS\s*\+\s*\[(.*?)\]\)',
@@ -101,20 +112,28 @@ check(
     bool(spawn_match),
     detail=f"{spawn_additions.strip()!r}"
 )
+# [PWC-STAGE1 A4] inverted: these three asserted the S149 defect; S155 removed it.
+all_spawn_additions = [m.group(1) for m in re.finditer(
+    r'rocm_env\s*=\s*" "\.join\(ROCM_ENV_VARS\s*\+\s*\[(.*?)\]\)', PWC, re.DOTALL)]
 check(
-    "HIP_VISIBLE_DEVICES={gpu_id} IS set per-spawn",
-    "HIP_VISIBLE_DEVICES" in spawn_additions,
-    detail="Partial mitigation — works on some ROCm versions"
+    "both spawn paths (SSH _spawn_worker, TCP launch) build a per-worker env",
+    len(all_spawn_additions) >= 2,
+    detail=f"{len(all_spawn_additions)} rocm_env blocks found"
 )
 check(
-    "CUDA_VISIBLE_DEVICES={gpu_id} IS set per-spawn",
-    "CUDA_VISIBLE_DEVICES" in spawn_additions,
-    detail="CUDA isolation — no effect on ROCm"
+    "HIP_VISIBLE_DEVICES is NOT set per-spawn in any spawn path (S155 design)",
+    all("HIP_VISIBLE_DEVICES" not in b for b in all_spawn_additions),
+    detail="ROCR_VISIBLE_DEVICES alone isolates the GPU"
 )
 check(
-    "ROCR_VISIBLE_DEVICES is ABSENT from per-spawn additions",
-    "ROCR_VISIBLE_DEVICES" not in spawn_additions,
-    detail="ROOT CAUSE — HSA-level isolation never set"
+    "CUDA_VISIBLE_DEVICES is NOT set per-spawn in any spawn path (S155 design)",
+    all("CUDA_VISIBLE_DEVICES" not in b for b in all_spawn_additions),
+    detail="CUDA isolation has no effect on ROCm"
+)
+check(
+    "ROCR_VISIBLE_DEVICES={gpu_id} IS set per-spawn in every spawn path (S155 fix)",
+    bool(all_spawn_additions) and all('ROCR_VISIBLE_DEVICES={gpu_id}' in b for b in all_spawn_additions),
+    detail="HSA-level isolation, one visible GPU per worker"
 )
 
 # ---------------------------------------------------------------------------
@@ -136,10 +155,16 @@ check(
     len(worker_device0) >= 2,
     detail="Startup warmup + run_sieve_job both use Device(0)"
 )
+# [PWC-STAGE1 A4] code only: a stale docstring line in sieve_gpu_worker.py still
+# mentions `cp.cuda.Device(gpu_id)`; no call does.
+_device_gpuid_calls = [n for n in ast.walk(ast.parse(WORKER))
+                       if isinstance(n, ast.Call) and ast.unparse(n.func) == "cp.cuda.Device"
+                       and n.args and ast.unparse(n.args[0]) == "gpu_id"]
 check(
-    "cp.cuda.Device(gpu_id) NOT used anywhere in sieve_gpu_worker.py",
-    len(worker_device_gpuid) == 0,
-    detail="Worker never uses its own gpu_id for device selection"
+    "cp.cuda.Device(gpu_id) is NOT called anywhere in sieve_gpu_worker.py (code, not text)",
+    len(_device_gpuid_calls) == 0,
+    detail=f"Worker selects Device(0); ROCR remaps its GPU to 0 "
+           f"({len(worker_device_gpuid)} text mention(s), {len(_device_gpuid_calls)} call(s))"
 )
 
 # Show exact locations
@@ -251,12 +276,13 @@ check(
 # Verify fix string is not already present
 # ---------------------------------------------------------------------------
 
-section("TEST 7 — Confirm fix is not already applied")
+section("TEST 7 — Confirm the S155 fix is applied")
 
+# [PWC-STAGE1 A4] inverted: asserted the fix was ABSENT; S155 applied it.
 check(
-    "ROCR_VISIBLE_DEVICES fix is NOT yet in live codebase",
-    "ROCR_VISIBLE_DEVICES" not in PWC,
-    detail="Confirmed — fix needs to be applied"
+    "ROCR_VISIBLE_DEVICES fix IS in the live codebase (S155)",
+    "ROCR_VISIBLE_DEVICES={gpu_id}" in PWC and "[S155-ROCR]" in PWC,
+    detail="persistent_worker_coordinator.py [S155-ROCR]"
 )
 
 # ---------------------------------------------------------------------------
@@ -270,19 +296,12 @@ print(f"{'='*60}")
 
 if FAIL == 0:
     print("""
-  THEORY CONFIRMED by source analysis:
-
-  ROOT CAUSE: ROCR_VISIBLE_DEVICES not set in worker spawn env.
-  HIP_VISIBLE_DEVICES works for GPUs 0-3 but is unreliable for
-  GPUs 4-7 on ROCm, causing workers 5-8 to collide on already-
-  initialized devices → HIP context conflict → crash.
-
-  FIX: Add f"ROCR_VISIBLE_DEVICES={gpu_id}" to _spawn_worker()
-  SCOPE: 1 line in persistent_worker_coordinator.py
-  RISK: Low — ROCR is additive, doesn't remove existing isolation
-  REQUIRES: Team Beta review + controlled soak test at pool_size=8
-  EXPECTED OUTCOME: worker_pool_size=8 stable → 8 workers/rig →
-    ~8x AMD throughput improvement → rigs contribute meaningfully
+  S155 DESIGN IN PLACE (source analysis; [PWC-STAGE1 A4] wording):
+  every spawn path sets ROCR_VISIBLE_DEVICES={gpu_id} and no per-spawn
+  HIP_/CUDA_VISIBLE_DEVICES; the worker selects Device(0), which ROCR
+  remaps to its one visible GPU. The S149 theory text above (tests 4-6)
+  is kept as the historical record of why. Not verified here: behaviour
+  on a rig (no GPU, no rig in this harness).
 """)
 else:
     print(f"\n  {FAIL} check(s) failed — review above")
