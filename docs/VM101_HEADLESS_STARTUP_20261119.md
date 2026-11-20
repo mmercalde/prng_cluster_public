@@ -2,20 +2,20 @@
 
 Written by Claude (Team Alpha). What makes VM101 usable by Claude after a boot with nobody at the screen, why it was needed, and how to undo it. All files are on VM101, outside the repo.
 
-## To do (owner asked for this note, 2026-11-19)
+## VM101 auto-start with Zeus (owner asked for this note, 2026-11-19)
 
-**Make VM101 start by itself when Zeus boots into Proxmox, the same as VM100.** One command on the Proxmox host (`ssh pve-zeus`), run by Michael because Claude cannot reach the Proxmox host from VM101:
+**Goal: VM101 starts by itself when Zeus boots into Proxmox, the same as VM100.** One command on the Proxmox host (`ssh pve-zeus`), run by Michael because Claude cannot reach the Proxmox host from VM101:
 
 ```
 qm set 101 --onboot 1
 ```
 
-Safe to run while VM101 is up. Check afterwards with `qm config 101 | grep onboot`. Not yet done. UNVERIFIED: that VM100 starts by itself because it has this setting on; that is inferred from what Michael sees, the config was not read.
+**Status: DONE, as reported by Michael on 2026-11-19 at 20:33 PST.** Not verified by Claude: the config was not read and it has not yet been proven by a Zeus boot. Check with `qm config 101 | grep onboot`. UNVERIFIED: that VM100 starts by itself because it has this setting on; that is inferred from what Michael sees.
 
 ## Routine
 
 1. Zeus must be in Proxmox (`sudo boot-proxmox` from bare Ubuntu if needed).
-2. On the Proxmox host (`ssh pve-zeus`): `qm start 101`. Proxmox starts VM100 by itself but not VM101 (see To do above).
+2. VM101 should now start by itself with Proxmox (see above). If it does not, on the Proxmox host (`ssh pve-zeus`): `qm start 101`.
 3. Wait about two minutes. VM101 logs in to its desktop automatically, unlocks the login keyring, starts the web terminal at `http://127.0.0.1:7681` and opens Chrome. Chrome's Claude extension then connects (browser deviceId `337d9ee9-34bf-4c11-b6a3-c487c96374e1`).
 
 The start-up is tied to VM101 booting, not to an SSH login. Nobody needs to SSH into VM101.
