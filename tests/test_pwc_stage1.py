@@ -30,6 +30,7 @@ import io
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import struct
@@ -75,11 +76,17 @@ def _mutate(path, old, new):
     return src.replace(old, new)
 
 
+# [PWC-STAGE2] the pre-stage-1 base, pinned. This read HEAD while HEAD was that
+# base; since stage 1 landed (ee39404) HEAD carries the fix and the evidence
+# gates could only fail.
+PRE_STAGE1_BASE = "27eb991"
+
+
 def _head_source():
-    r = subprocess.run(["git", "show", "HEAD:persistent_worker_coordinator.py"],
+    r = subprocess.run(["git", "show", PRE_STAGE1_BASE + ":persistent_worker_coordinator.py"],
                        cwd=ROOT, capture_output=True, text=True)
     if r.returncode != 0:
-        raise Unavailable(f"git show HEAD failed: {r.stderr.strip()[:120]}")
+        raise Unavailable(f"git show {PRE_STAGE1_BASE} failed: {r.stderr.strip()[:120]}")
     return r.stdout
 
 
@@ -215,7 +222,9 @@ def _capture_s156_strings(M):
     strs = [c for c in seen if isinstance(c, str) and c.startswith("ssh ")]
     find = next(c for c in strs if "pgrep -af" in c)
     reap = next(c for c in strs if "pkill -15" in c)
-    remote = lambda c: c[c.index("'") + 1:c.rindex("'")]
+    # [PWC-STAGE2] the remote string is now passed through shlex.quote; the last
+    # shell word of the local ssh command line is exactly what the rig runs.
+    remote = lambda c: shlex.split(c)[-1]
     return remote(find), remote(reap)
 
 
@@ -443,8 +452,12 @@ def d_a3_transport(T=TCP):
         assert _wait(lambda: tr.worker_count() == 1), tr.worker_count()
         _send(s, {"message_type": "online", "worker_id": "rig_gpu0", "timestamp": time.time()})
         assert _wait(lambda: tr.online_count() == 1), tr.online_count()
-        # a refused hello under a registered id must not evict the registered one
-        tr.revoke_worker_id("rig_gpu0")
+        # a refused hello under a registered id must not evict the registered one.
+        # [PWC-STAGE2] The list is replaced directly here: revoke_worker_id now ALSO
+        # drops the id's live connection (Beta X-PWC-STAGE1 R1 finding 3, tested in
+        # tests/test_pwc_backup_stage2.py), and this gate is about the refused-hello
+        # path alone.
+        tr.set_allowed_worker_ids({"rig_gpu1"})
         s2, ack2 = _hello(port, "rig_gpu0"); socks.append(s2)
         assert ack2.get("accepted") is False, ack2
         time.sleep(0.3)
@@ -515,6 +528,21 @@ GATES = [
     ("G-IMPORT", d_import),
 ]
 
+_A3D_START = '            if not refused:\n'
+_A3D_END = '                    owner = self._workers.get(worker_id) is conn\n'
+
+
+def _a3d_old():
+    src = open(TCP_PATH, encoding="utf-8").read()
+    i = src.index(_A3D_START)
+    return src[i:src.index(_A3D_END, i) + len(_A3D_END)]
+
+
+_A3D_OLD = _a3d_old()
+_A3D_NEW = ('            if True:\n'
+            '                with self._workers_lock:\n'
+            '                    owner = True\n')
+
 MUTANTS = [
     ("M-B5a kill marker not read", PWC_PATH,
      '            if (_kill_r.returncode != 0\n'
@@ -532,14 +560,19 @@ MUTANTS = [
      '                self._tcp_transport.set_allowed_worker_ids(set())\n', '',
      d_a3_startup_order, "pwc"),
     ("M-A3b no-PID launch not revoked", PWC_PATH,
-     '                        # [PWC-STAGE1 A3 level 1] no PID: not in the launch set\n'
-     '                        self._tcp_transport.revoke_worker_id(worker_id)\n',
-     '                        pass\n', d_a3_launch_set, "pwc"),
+     '                        self._tcp_transport.revoke_worker_id(worker_id)\n'
+     '                        self.logger.error(\n',
+     '                        self.logger.error(\n', d_a3_launch_set, "pwc"),
     ("M-A3c transport admits every id", TCP_PATH,
      '            return self._allowed_worker_ids is None or str(worker_id) in self._allowed_worker_ids\n',
      '            return True\n', d_a3_transport, "tcp"),
+    # [PWC-STAGE2] Stage 2 added a second guard on the same path (only the
+    # connection that still owns an id cleans up under it), so removing
+    # `if not refused` alone is now masked by it: an invalid mutation experiment
+    # under VIR-2, not a survivor. The mutant removes both guards; the owner
+    # check alone has its own mutant in tests/test_pwc_backup_stage2.py.
     ("M-A3d refused hello cleans up a same-named live worker", TCP_PATH,
-     '            if not refused:\n', '            if True:\n', d_a3_transport, "tcp"),
+     _A3D_OLD, _A3D_NEW, d_a3_transport, "tcp"),
     ("M-B6 skip_pattern not read", PWC_PATH,
      '            skip_seqs   = [(s.get("skip_pattern", s.get("skip_sequence", []))'
      ' if isinstance(s, dict) else [])\n',

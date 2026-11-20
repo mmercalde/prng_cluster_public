@@ -50,16 +50,17 @@ THE GATES (brief §4)
   G-MINER-UNCHANGED  miner/, sieve_gpu_worker.py and prng_registry.py are
                      byte-identical to HEAD, and the D6 threshold harness still
                      passes 17/17
-  G-PWC-HYBRID       Option B: PWC variable-skip fails closed at the execution
-                     boundary with PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED, a
-                     real both-mode trial dies on the first hybrid pass, and the
-                     D3.25 v2 return-shape path is NOT collateral damage
+  G-PWC-HYBRID       [PWC-STAGE2, owner ruling 1] the quarantine is lifted; PWC
+                     variable-skip passes carry the trial's directional threshold
+                     (both keys), a hybrid pass without one refuses before dispatch,
+                     and the D3.25 v2 return-shape path still completes
 
 MUTANTS (four-part kill rule, VIR-2)
 
   M1  restore the bounds.default_* signature default in test_config  -> G-ROUTE-A reds
   M2  restore the _local_bounds.default_* override in _local_test    -> G-ROUTE-B reds
-  M3  delete the quarantine guard / neuter its body                  -> G-PWC-HYBRID reds
+  M3  [PWC-STAGE2] restore the 0.5 default (+ drop the equality refusal) /
+      drop phase 3's threshold                                       -> G-PWC-HYBRID reds
 
 Each mutant proves: applies-exactly-once, mutated-path-executed,
 detector-clean-when-unmutated, detector-fires-on-injected-defect.
@@ -111,8 +112,6 @@ ORACLE_REVERSE = 0.31
 # mutant's failure is legible.
 DEFECT_COLLAPSE_VALUE = 0.30
 
-# The quarantine code Beta's comparator ruling §5 Option B requires.
-ORACLE_QUARANTINE_CODE = "PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -666,13 +665,29 @@ def gate_miner_unchanged() -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# G-PWC-HYBRID (Option B — quarantine)
+# G-PWC-HYBRID — [PWC-STAGE2] the threshold contract that replaced the quarantine
 # ═════════════════════════════════════════════════════════════════════════════
+#
+# Owner ruling 1 (docs/PWC_BACKUP_OWNER_RULINGS_20261119.md, 2026-11-19): "yes-
+# once the threshold is fixed(same as range miner) we lift the block." Until PWC
+# Stage 2 this gate asserted the Option-B quarantine (every PWC variable-skip pass
+# refused). Stage 2 lifts it and fixes the defect the quarantine stood for: the
+# hybrid passes filtered at run_sieve_pass's 0.5 default instead of the trial's
+# directional threshold. The gate now asserts that fix, on the LIVE source:
+#   (1) run_sieve_pass has no threshold default for a hybrid pass — one called
+#       without phase2_threshold refuses before worker acquisition;
+#   (2) a real both-mode trial hands each hybrid pass the trial's own directional
+#       threshold (forward 0.73 to phase 3, reverse 0.31 to phase 4) as both
+#       `threshold` and `phase2_threshold`, as RANGE-MINER writes one value as both;
+#   (3) the D3.25 v2 return-shape path still completes against a fake sieve.
+# The worker-reported (effective) side of the contract is PWC's own suite
+# (tests/test_pwc_backup_stage2.py). Only this section, mutant M3 and the header
+# lines naming them changed in Stage 2; every RANGE-MINER gate is untouched.
 
 def _drive_pwc_run_sieve_pass(src_override: Optional[str] = None):
-    """Execute the LIVE `run_sieve_pass` for a hybrid prng_type. The stub `self`
-    raises _DispatchReached at the first thing the guard is supposed to prevent,
-    so 'the guard did not fire' is observable and cannot be confused with a pass."""
+    """Execute the LIVE `run_sieve_pass` for a hybrid prng_type with NO
+    phase2_threshold. The stub `self` raises _DispatchReached at worker
+    acquisition, so 'nothing refused' is observable and cannot pass."""
     import persistent_worker_coordinator as pwc
 
     src = src_override if src_override is not None else _extract_source(
@@ -695,16 +710,10 @@ def _drive_pwc_run_sieve_pass(src_override: Optional[str] = None):
               output_file="/dev/null", dataset_path=_DATASET)
 
 
-def _drive_pwc_both_modes_trial(hybrid_raises: bool):
-    """Execute the LIVE `run_trial_persistent` both-mode against a FAKE sieve —
-    the same shape D3.25's G1 uses to assert the v2 four-map return contract.
-
-    `hybrid_raises=True` models the real coordinator (its run_sieve_pass carries
-    the quarantine guard); `hybrid_raises=False` models D3.25's fake, which never
-    reaches the guarded code at all. Both must behave as designed:
-      * real  -> the trial fails closed on the first hybrid pass,
-      * fake  -> the return-shape contract still runs to completion.
-    """
+def _drive_pwc_both_modes_trial(src_override: Optional[str] = None):
+    """Execute the LIVE (or mutated) `run_trial_persistent` both-mode against a
+    FAKE sieve that records what each pass is handed — the same shape D3.25's G1
+    uses for the v2 four-map return contract."""
     import persistent_worker_coordinator as pwc
 
     class _FakeSieve:
@@ -712,12 +721,10 @@ def _drive_pwc_both_modes_trial(hybrid_raises: bool):
         logger = _Logger()
 
         def __init__(self):
-            self.calls: List[str] = []
+            self.calls: List[Tuple[str, Any, Any]] = []
 
         def run_sieve_pass(self, prng_type=None, **kw):
-            self.calls.append(prng_type)
-            if hybrid_raises and "_hybrid" in (prng_type or ""):
-                pwc.assert_pwc_hybrid_not_quarantined(prng_type, call_site="fake dispatch")
+            self.calls.append((prng_type, kw.get("threshold"), kw.get("phase2_threshold")))
             return {"survivors": [7, 42], "match_rates": [0.9, 0.8]}
 
         def startup(self):
@@ -727,84 +734,58 @@ def _drive_pwc_both_modes_trial(hybrid_raises: bool):
             pass
 
     fake = _FakeSieve()
-    real = pwc.PersistentWorkerCoordinator
-    pwc.PersistentWorkerCoordinator = lambda **kw: fake
-    try:
-        import contextlib
-        import io
-        with contextlib.redirect_stdout(io.StringIO()):
-            out = pwc.run_trial_persistent(
-                coordinator_cfg="unused.json",
-                config=_window_config(ORACLE_FORWARD, ORACLE_REVERSE),
-                trial_number=1, prng_base="java_lcg", residues=[1, 2],
-                total_seeds=1000, forward_threshold=ORACLE_FORWARD,
-                reverse_threshold=ORACLE_REVERSE, test_both_modes=True,
-                dataset_path="unused.csv")
-        return out, fake.calls
-    finally:
-        pwc.PersistentWorkerCoordinator = real
+    src = src_override if src_override is not None else _extract_source(
+        _read(_PWC_PATH), "run_trial_persistent", _PWC_PATH)
+    fn, _ = _compile_func(src, pwc, {"PersistentWorkerCoordinator": lambda **kw: fake},
+                          "run_trial_persistent")
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        out = fn(coordinator_cfg="unused.json",
+                 config=_window_config(ORACLE_FORWARD, ORACLE_REVERSE),
+                 trial_number=1, prng_base="java_lcg", residues=[1, 2],
+                 total_seeds=1000, forward_threshold=ORACLE_FORWARD,
+                 reverse_threshold=ORACLE_REVERSE, test_both_modes=True,
+                 dataset_path="unused.csv", pwc_transport="tcp")
+    return out, fake.calls
 
 
-def _detect_quarantine(driver, src_override: Optional[str] = None) -> None:
-    """THE detector. Shared verbatim by G-PWC-HYBRID and mutant M3, so the mutant
-    proves this exact detector fires — not a lookalike written for the mutant."""
+def _detect_hybrid_needs_threshold(src_override: Optional[str] = None) -> None:
+    """Detector (1), shared verbatim by G-PWC-HYBRID and mutant M3."""
     import persistent_worker_coordinator as pwc
-
-    exc_type = getattr(pwc, "PwcHybridThresholdContractUncertified", None)
-    assert exc_type is not None, "quarantine exception type missing"
     try:
-        driver(src_override)
-    except exc_type as exc:
-        assert ORACLE_QUARANTINE_CODE in str(exc), (
-            f"quarantine error must name {ORACLE_QUARANTINE_CODE}: {exc}"
-        )
+        _drive_pwc_run_sieve_pass(src_override)
+    except pwc.PwcSettingRefused as exc:
+        assert "phase2_threshold" in str(exc), f"refused for another reason: {exc}"
         return
     except _DispatchReached as exc:
-        raise AssertionError(f"quarantine did not fire — reached dispatch: {exc}")
-    raise AssertionError("a PWC hybrid pass completed instead of failing closed")
+        raise AssertionError(f"a hybrid pass with no threshold reached dispatch: {exc}")
+    raise AssertionError("a hybrid pass with no threshold completed")
+
+
+def _detect_trial_threshold_reaches_hybrid(src_override: Optional[str] = None) -> None:
+    """Detector (2) and (3), shared verbatim by G-PWC-HYBRID and mutant M3."""
+    out, calls = _drive_pwc_both_modes_trial(src_override)
+    by = {c[0]: c[1:] for c in calls}
+    assert by.get("java_lcg_hybrid") == (ORACLE_FORWARD, ORACLE_FORWARD), (
+        f"phase 3 was not handed the forward threshold as both keys: {by.get('java_lcg_hybrid')}")
+    assert by.get("java_lcg_hybrid_reverse") == (ORACLE_REVERSE, ORACLE_REVERSE), (
+        f"phase 4 was not handed the reverse threshold as both keys: "
+        f"{by.get('java_lcg_hybrid_reverse')}")
+    assert isinstance(out, dict) and out.get("schema_version"), (
+        "the both-mode v2 return-shape path must still complete against a fake sieve")
 
 
 def gate_pwc_hybrid() -> str:
     import persistent_worker_coordinator as pwc
 
-    assert getattr(pwc, "PWC_HYBRID_QUARANTINE_CODE", None) == ORACLE_QUARANTINE_CODE, (
-        f"PWC hybrid quarantine code must be {ORACLE_QUARANTINE_CODE!r}"
-    )
-
-    # (1) the execution boundary itself — run_sieve_pass fails closed on hybrid
-    _detect_quarantine(_drive_pwc_run_sieve_pass)
-
-    # (2) a real both-mode trial therefore fails closed too, and does so on the
-    #     FIRST hybrid pass — after the two constant passes, before any hybrid
-    #     survivor exists. Proven by the call log, not assumed.
-    exc_type = pwc.PwcHybridThresholdContractUncertified
-    try:
-        _drive_pwc_both_modes_trial(hybrid_raises=True)
-        raise AssertionError("a both-mode PWC trial completed instead of failing closed")
-    except exc_type as exc:
-        assert ORACLE_QUARANTINE_CODE in str(exc), f"wrong error: {exc}"
-
-    # (3) the quarantine must be scoped to EXECUTION, not to the return-shape
-    #     contract: D3.25's G1 drives this same both-mode path against a fake
-    #     sieve that never reaches the guard, and must still complete. Blocking
-    #     that would quarantine a contract check, not a known-wrong execution.
-    out, calls = _drive_pwc_both_modes_trial(hybrid_raises=False)
-    assert isinstance(out, dict) and out.get("schema_version"), (
-        "the both-mode v2 return-shape path must still complete against a fake "
-        "sieve — the quarantine is scoped to execution, not to the contract"
-    )
-    assert any("_hybrid" in c for c in calls), (
-        "the fake-sieve both-mode path did not reach the variable-skip passes, so "
-        "check (3) would be vacuous"
-    )
-
-    # Constant-skip is explicitly NOT quarantined — the guard must be scoped to
-    # hybrid only, or it would take out the diagnostic comparator Beta kept.
-    # Reaching worker acquisition is the CORRECT outcome here.
-    for constant_family in ("java_lcg", "java_lcg_reverse"):
-        pwc.assert_pwc_hybrid_not_quarantined(constant_family)   # must not raise
-    return ("variable-skip fails closed at the execution boundary and kills a real "
-            "both-mode trial; constant-skip and the D3.25 v2 shape path unaffected")
+    assert not hasattr(pwc, "PWC_HYBRID_QUARANTINE_CODE"), (
+        "the quarantine code is still defined: ruling 1 lifts the quarantine")
+    _detect_hybrid_needs_threshold()
+    _detect_trial_threshold_reaches_hybrid()
+    return ("variable-skip passes carry the trial's directional threshold (0.73 -> P3, "
+            "0.31 -> P4, both keys); a hybrid pass with no threshold refuses before "
+            "dispatch; the D3.25 v2 shape path completes")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -908,40 +889,40 @@ def mutant_m2_route_b() -> Tuple[str, str, str]:
 
 
 def mutant_m3_pwc_quarantine() -> Tuple[str, str, str]:
-    """Delete the quarantine guard from each PWC call site."""
+    """[PWC-STAGE2] Restore the defect the quarantine stood for, at each seam."""
     pwc_src = _read(_PWC_PATH)
     notes = []
 
-    # call site 1 — run_sieve_pass
+    # seam 1 — run_sieve_pass: the 0.5 default back in the signature AND the
+    # equality refusal disabled (either one alone still keeps 0.5 from a hybrid
+    # pass, so each alone would be an invalid mutation experiment under VIR-2)
     s1 = _extract_source(pwc_src, "run_sieve_pass", _PWC_PATH)
     s1 = _mutate_once(
         s1,
-        'assert_pwc_hybrid_not_quarantined(prng_type, call_site="run_sieve_pass")',
-        "pass", "M3/run_sieve_pass")
-    fired1, why1 = _detector_fires(_detect_quarantine, _drive_pwc_run_sieve_pass, s1)
-    assert fired1, "M3: removing the run_sieve_pass guard was not detected"
-    notes.append(f"run_sieve_pass -> {why1}")
+        "phase2_threshold: Optional[float] = None,",
+        "phase2_threshold: Optional[float] = 0.5,", "M3/run_sieve_pass default")
+    s1 = _mutate_once(
+        s1,
+        "            if not _thr_equal(phase2_threshold, threshold):\n",
+        "            if False:\n", "M3/run_sieve_pass equality")
+    fired1, why1 = _detector_fires(_detect_hybrid_needs_threshold, s1)
+    assert fired1, "M3: restoring the 0.5 default was not detected"
+    notes.append(f"run_sieve_pass 0.5 default -> {why1}")
 
-    # The guard function itself: neutering it must also be caught, so the gate
-    # cannot pass on the mere presence of a call that does nothing.
-    def _detect_via_guard():
-        pwc_mod = sys.modules["persistent_worker_coordinator"]
-        real = pwc_mod.assert_pwc_hybrid_not_quarantined
-        pwc_mod.assert_pwc_hybrid_not_quarantined = lambda *a, **k: None
-        try:
-            _drive_pwc_both_modes_trial(hybrid_raises=True)
-        finally:
-            pwc_mod.assert_pwc_hybrid_not_quarantined = real
-        raise AssertionError("a both-mode PWC trial completed with the guard neutered")
+    # seam 2 — run_trial_persistent: phase 3 no longer handed the threshold
+    s2 = _extract_source(pwc_src, "run_trial_persistent", _PWC_PATH)
+    s2 = _mutate_once(
+        s2,
+        "                phase2_threshold = forward_threshold,   # [PWC-STAGE2 ruling 1]\n",
+        "", "M3/run_trial_persistent phase 3")
+    fired2, why2 = _detector_fires(_detect_trial_threshold_reaches_hybrid, s2)
+    assert fired2, "M3: dropping phase 3's threshold was not detected"
+    notes.append(f"phase-3 threshold dropped -> {why2}")
 
-    fired2, why2 = _detector_fires(_detect_via_guard)
-    assert fired2, "M3: neutering the guard body was not detected"
-    notes.append(f"guard body neutered -> {why2}")
-
-    return ("mutated run_sieve_pass executed and reached dispatch; neutered-guard "
-            "both-mode trial ran to completion",
+    return ("mutated run_sieve_pass reached dispatch; mutated run_trial_persistent "
+            "ran phase 3 without the trial's threshold",
             " | ".join(notes),
-            "applies-once verified at the call site; guard body swapped once")
+            "applies-once verified at both seams")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -959,7 +940,7 @@ GATES = [
 MUTANTS = [
     ("M1 restore bounds.default_* in test_config -> G-ROUTE-A", mutant_m1_route_a),
     ("M2 restore _local_bounds override in _local_test -> G-ROUTE-B", mutant_m2_route_b),
-    ("M3 remove the PWC hybrid quarantine guard -> G-PWC-HYBRID", mutant_m3_pwc_quarantine),
+    ("M3 restore the PWC hybrid threshold defect -> G-PWC-HYBRID", mutant_m3_pwc_quarantine),
 ]
 
 

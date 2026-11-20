@@ -1,0 +1,3202 @@
+diff --git a/persistent/pwc_transport_tcp.py b/persistent/pwc_transport_tcp.py
+index 7fe2c6e..eacfc59 100644
+--- a/persistent/pwc_transport_tcp.py
++++ b/persistent/pwc_transport_tcp.py
+@@ -174,6 +174,8 @@ class TCPWorkerTransport(PWCTransportBase):
+         self._allowed_worker_ids: Optional[set] = None
+         self._allowed_lock = threading.Lock()
+         self.refused_hellos: List[str] = []   # worker ids refused, in order (bounded)
++        # [PWC-STAGE2 R2] (worker_id, job_id) of results dropped as not for an active lease
++        self.stale_results: List[tuple] = []
+ 
+ 
+ 
+@@ -190,9 +192,29 @@ class TCPWorkerTransport(PWCTransportBase):
+             self._allowed_worker_ids.add(str(worker_id))
+ 
+     def revoke_worker_id(self, worker_id: str) -> None:
++        """[PWC-STAGE2 BETA-3] Revocation now also applies to a connection the id
++        already holds (Beta X-PWC-STAGE1 R1 finding 3: a worker that connected while
++        its SSH launch was still running kept its accepted socket, reported ready and
++        took a job after revocation). The id leaves the online and ready sets at
++        once, so it is never counted or dispatched to, and its socket is closed; its
++        handler then ends and reclaims anything it had leased."""
++        wid = str(worker_id)
+         with self._allowed_lock:
+             if self._allowed_worker_ids is not None:
+-                self._allowed_worker_ids.discard(str(worker_id))
++                self._allowed_worker_ids.discard(wid)
++        with self._state_lock:
++            self._online_workers.discard(wid)
++            self._ready_workers.discard(wid)
++        with self._workers_lock:
++            conn = self._workers.get(wid)
++        if conn is not None:
++            # shutdown, not just close: close() does not wake the handler thread
++            # blocked in recv on this socket; shutdown makes that recv return EOF,
++            # so the handler ends and cleans up as its connection's owner.
++            try:
++                conn.sock.shutdown(socket.SHUT_RDWR)
++            except Exception:
++                pass
+ 
+     def _admits(self, worker_id: str) -> bool:
+         with self._allowed_lock:
+@@ -316,11 +338,13 @@ class TCPWorkerTransport(PWCTransportBase):
+     # Inflight lease management — TB blocker C fix
+     # ------------------------------------------------------------------
+ 
+-    def _lease_job(self, job: Dict[str, Any], worker_id: str) -> str:
+-        """Register job as inflight. Returns lease_id."""
++    def _lease_job(self, job: Dict[str, Any], worker_id: str, conn: Any = None) -> str:
++        """Register job as inflight. Returns lease_id. [PWC-STAGE2] `conn` records
++        which connection carried it, so a replaced connection reclaims only its own."""
+         lease_id = str(uuid.uuid4())
+         with self._inflight_lock:
+             self._inflight[job["job_id"]] = {
++                "conn":        conn,
+                 "worker_id":   worker_id,
+                 "lease_id":    lease_id,
+                 "assigned_at": time.time(),
+@@ -334,7 +358,21 @@ class TCPWorkerTransport(PWCTransportBase):
+         with self._inflight_lock:
+             self._inflight.pop(job_id, None)
+ 
+-    def _reclaim_worker_jobs(self, worker_id: str) -> List[Dict[str, Any]]:
++    def _take_active_lease(self, job_id: str, lease_id: Any, conn: Any) -> bool:
++        """[PWC-STAGE2 R2, Beta finding 2] Retire the lease for `job_id` ONLY if it is
++        the ACTIVE lease, the result names that lease, and it arrived on the
++        connection that holds it. Anything else is a late or foreign result (a worker
++        still finishing a job that timed out and was handed to another worker, or a
++        result for a lease that was already reclaimed): it must neither retire the
++        current lease nor be delivered as the current job's result."""
++        with self._inflight_lock:
++            info = self._inflight.get(job_id)
++            if info is None or info.get("lease_id") != lease_id or info.get("conn") is not conn:
++                return False
++            del self._inflight[job_id]
++            return True
++
++    def _reclaim_worker_jobs(self, worker_id: str, conn: Any = None) -> List[Dict[str, Any]]:
+         """
+         On worker disconnect — find all inflight jobs for this worker,
+         remove from inflight table, requeue if attempts remain.
+@@ -343,7 +381,7 @@ class TCPWorkerTransport(PWCTransportBase):
+         reclaimed = []
+         with self._inflight_lock:
+             for job_id, info in list(self._inflight.items()):
+-                if info["worker_id"] == worker_id:
++                if info["worker_id"] == worker_id and (conn is None or info.get("conn") is conn):
+                     job = info["job"]
+                     attempt = info["attempt"] + 1
+                     del self._inflight[job_id]
+@@ -376,22 +414,38 @@ class TCPWorkerTransport(PWCTransportBase):
+         """
+         while not self._stop.is_set():
+             time.sleep(LEASE_CHECK_INTERVAL_S)
+-            now = time.time()
+-            with self._last_seen_lock:
+-                timed_out = [
+-                    wid for wid, ts in self._last_seen.items()
+-                    if now - ts > HEARTBEAT_TIMEOUT_S
+-                ]
+-            for worker_id in timed_out:
+-                reclaimed = self._reclaim_worker_jobs(worker_id)
+-                if reclaimed:
+-                    pass  # coordinator will see error results or requeued jobs
++            self._reap_silent_workers(time.time())
++
++    def _reap_silent_workers(self, now: float) -> None:
++        """[PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 Q6] Timeout eviction under the same
++        ownership rule as a disconnect: the registered connection is evicted, and
++        its id's registry, last-seen and online/ready state are cleared, in ONE
++        critical section under `_workers_lock`, re-checking the silence there (a
++        reconnect may have refreshed it). Only the leases the evicted connection
++        carried are reclaimed. The socket is shut down so its handler wakes and ends
++        (it is then no longer the owner and clears nothing else)."""
++        with self._last_seen_lock:
++            timed_out = [
++                wid for wid, ts in self._last_seen.items()
++                if now - ts > HEARTBEAT_TIMEOUT_S
++            ]
++        for worker_id in timed_out:
++            with self._workers_lock:
+                 with self._last_seen_lock:
++                    ts = self._last_seen.get(worker_id)
++                    if ts is None or now - ts <= HEARTBEAT_TIMEOUT_S:
++                        continue
+                     self._last_seen.pop(worker_id, None)
+-                with self._workers_lock:
+-                    conn = self._workers.pop(worker_id, None)
+-                    if conn:
+-                        conn.close()
++                conn = self._workers.pop(worker_id, None)
++                with self._state_lock:
++                    self._online_workers.discard(worker_id)
++                    self._ready_workers.discard(worker_id)
++            if conn is not None:
++                self._reclaim_worker_jobs(worker_id, conn)
++                try:
++                    conn.sock.shutdown(socket.SHUT_RDWR)
++                except Exception:
++                    pass
+ 
+     # ------------------------------------------------------------------
+     # Accept loop
+@@ -455,10 +509,15 @@ class TCPWorkerTransport(PWCTransportBase):
+                 "accepted":         True,
+             })
+ 
++            # [PWC-STAGE2 R3, Beta X-PWC-STAGE2 R2 Q1] Register AND refresh last-seen in
++            # ONE critical section under `_workers_lock`, the section the timeout
++            # reaper uses (`_reap_silent_workers`). The reaper therefore never sees
++            # this fresh connection paired with the previous connection's stale
++            # timestamp.
+             with self._workers_lock:
+                 self._workers[worker_id] = conn
+-            with self._last_seen_lock:
+-                self._last_seen[worker_id] = time.time()
++                with self._last_seen_lock:
++                    self._last_seen[worker_id] = time.time()
+ 
+             # S161 v2: if init already broadcast, send it immediately (late joiner)
+             with self._state_lock:
+@@ -480,22 +539,42 @@ class TCPWorkerTransport(PWCTransportBase):
+                 mtype = msg.get("message_type")
+ 
+                 # Update last-seen on every message — TB blocker E fix
+-                with self._last_seen_lock:
+-                    self._last_seen[worker_id] = time.time()
++                # [PWC-STAGE2 R3] only while THIS connection is the registered one for
++                # the id: a replaced connection's messages never refresh (or create)
++                # the timestamp the reaper judges the current connection by.
++                with self._workers_lock:
++                    if self._workers.get(worker_id) is not conn:
++                        break
++                    with self._last_seen_lock:
++                        self._last_seen[worker_id] = time.time()
+ 
+                 if mtype == "online":
+                     # S161 v2: worker is TCP-connected, not yet compute-ready
+-                    with self._state_lock:
+-                        self._online_workers.add(worker_id)
++                    # [PWC-STAGE2 R3] set only by the registered connection, inside
++                    # the registry lock, so an evicted/replaced one cannot set it
++                    with self._workers_lock:
++                        if self._workers.get(worker_id) is not conn:
++                            break
++                        with self._state_lock:
++                            self._online_workers.add(worker_id)
+                     continue
+ 
+                 elif mtype == "ready":
+                     # S161 v2: worker completed ROCm warmup — compute-ready
+-                    with self._state_lock:
+-                        self._ready_workers.add(worker_id)
++                    if not self._admits(worker_id):     # [PWC-STAGE2 BETA-3]
++                        break
++                    # [PWC-STAGE2 R3] as for online: registered connection only
++                    with self._workers_lock:
++                        if self._workers.get(worker_id) is not conn:
++                            break
++                        with self._state_lock:
++                            self._ready_workers.add(worker_id)
+                     continue
+ 
+                 elif mtype == "request_job":
++                    # [PWC-STAGE2 BETA-3] an id revoked after its hello gets no job
++                    if not self._admits(worker_id):
++                        break
+                     try:
+                         job = self._pending_jobs.get_nowait()
+                     except queue.Empty:
+@@ -560,7 +639,7 @@ class TCPWorkerTransport(PWCTransportBase):
+                     except Exception:
+                         pass
+ 
+-                    lease_id = self._lease_job(job, worker_id)
++                    lease_id = self._lease_job(job, worker_id, conn)
+ 
+                     # [S168A-DIAG] job assignment telemetry (PASSIVE, env-gated)
+                     try:
+@@ -599,9 +678,16 @@ class TCPWorkerTransport(PWCTransportBase):
+                         })
+ 
+                 elif mtype in ("result_inline", "result_spooled"):
+-                    # Complete lease before normalizing
++                    # [PWC-STAGE2 R2, Beta finding 2] Only a result for the ACTIVE
++                    # lease, from the connection holding it, retires the lease and is
++                    # delivered. A late result (its job timed out and was handed to
++                    # another worker, or its lease was reclaimed) is dropped and
++                    # counted; it never completes or answers the current job.
+                     job_id = msg.get("job_id", "")
+-                    self._complete_lease(job_id)
++                    if not self._take_active_lease(job_id, msg.get("lease_id"), conn):
++                        if len(self.stale_results) < 10_000:
++                            self.stale_results.append((str(worker_id), str(job_id)))
++                        continue
+                     normalized = normalize_transport_result(msg)
+                     # Route to per-job queue if registered — TB fix 4
+                     with self._job_queues_lock:
+@@ -624,13 +710,28 @@ class TCPWorkerTransport(PWCTransportBase):
+             # [PWC-STAGE1 A3 level 1] a refused hello registered nothing, so it
+             # must not reclaim or pop anything filed under the same id.
+             if not refused:
+-                # Reclaim any inflight jobs for this worker
+-                self._reclaim_worker_jobs(worker_id)
++                # [PWC-STAGE2 BETA-3] Only the connection that still owns this id
++                # cleans up under it. A later connection with the same id (a
++                # reconnect) replaces the registry entry; when the older handler
++                # ends, it must not pop, reclaim or un-ready the newer one (Beta
++                # X-PWC-STAGE1 R1 Q3).
++                # [PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 Q6] The ownership check and
++                # every piece of per-id state it governs (registry, last-seen,
++                # online/ready) change in ONE critical section under
++                # `_workers_lock`, the lock a replacement takes to register. A
++                # replacement therefore registers either before (this handler is not
++                # the owner and clears nothing) or after (it reports online/ready
++                # only after registering, so nothing of it exists yet to clear).
+                 with self._workers_lock:
+-                    self._workers.pop(worker_id, None)
+-                with self._last_seen_lock:
+-                    self._last_seen.pop(worker_id, None)
+-                with self._state_lock:
+-                    self._online_workers.discard(worker_id)
+-                    self._ready_workers.discard(worker_id)
++                    owner = self._workers.get(worker_id) is conn
++                    if owner:
++                        self._workers.pop(worker_id, None)
++                        with self._last_seen_lock:
++                            self._last_seen.pop(worker_id, None)
++                        with self._state_lock:
++                            self._online_workers.discard(worker_id)
++                            self._ready_workers.discard(worker_id)
++                # Reclaim ONLY the leases this connection carried, owner or not: a
++                # replacement's lease is never requeued or failed by this handler.
++                self._reclaim_worker_jobs(worker_id, conn)
+             conn.close()
+diff --git a/persistent/pwc_worker_service.py b/persistent/pwc_worker_service.py
+index 19c9cf9..333882f 100644
+--- a/persistent/pwc_worker_service.py
++++ b/persistent/pwc_worker_service.py
+@@ -41,6 +41,7 @@ JOB_REQUEST_INTERVAL_S = 0.5
+ HEARTBEAT_INTERVAL_S   = 15.0
+ INLINE_MAX_BYTES       = 32 * 1024 * 1024
+ ROCM_READY_TIMEOUT_S   = 120.0  # max time to wait for sieve_filter import
++PWC_EXIT_HELLO_REJECTED = 43    # [PWC-STAGE2 BETA-4] coordinator refused this worker id
+ 
+ # ── TB-spec heartbeat constants ───────────────────────────────────────────────
+ HEARTBEAT_SCHEMA_VERSION = "1.0.0"
+@@ -356,9 +357,16 @@ class PWCWorkerService:
+ 
+         ack = self._conn.recv_obj()
+         if not ack.get("accepted", True):
+-            raise ConnectionError(
+-                f"coordinator rejected hello: {ack.get('reason')}"
+-            )
++            # [PWC-STAGE2 BETA-4] An explicit refusal is final: exit instead of
++            # retrying every RECONNECT_DELAY_S forever (Beta X-PWC-STAGE1 R1 Q4).
++            # SystemExit is not caught by run_forever's handlers.
++            # [PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 Q7] No heartbeat here: writing one
++            # imports CuPy and syncs a file, which may not return on a degraded rig.
++            # The log line keeps the reason.
++            log.error(f"[{self.worker_id}] coordinator rejected hello: "
++                      f"{ack.get('reason')} — exiting")
++            self._close()
++            sys.exit(PWC_EXIT_HELLO_REJECTED)
+         # S163: remove connect timeout — recv_obj must block for init (up to 120s)
+         sock.settimeout(None)
+         log.info(f"[{self.worker_id}] handshake complete")
+diff --git a/persistent_worker_coordinator.py b/persistent_worker_coordinator.py
+index be54fb1..a6829da 100644
+--- a/persistent_worker_coordinator.py
++++ b/persistent_worker_coordinator.py
+@@ -49,7 +49,7 @@ Job Payload Protocol (stdin → sieve_gpu_worker.py)
+   "threshold": 0.25,
+   "gpu_id": 0,
+   "strategies": null,                 # null for constant skip; list of dicts for hybrid
+-  "phase2_threshold": 0.5             # hybrid only
++  "phase2_threshold": 0.25            # [PWC-STAGE2] = threshold, every job (no 0.5 default)
+ }
+ 
+ Result Protocol (stdout → coordinator)
+@@ -184,14 +184,75 @@ PWC_STALE_KILL_PATTERNS = ("[p]wc_worker_service", "[s]ieve_gpu_worker")
+ # The S156 reap (SSH route) pattern, bracketed for the same reason.
+ PWC_S156_PERSISTENT_PATTERN = "[s]ieve_gpu_worker.*--persistent"
+ 
+-
+-def pwc_stale_kill_command() -> str:
+-    """Remote shell: SIGKILL stale PWC and sieve workers; print PWC_STALE_KILL_OK only
+-    when none is left. Exit 6 when one survives the kill."""
+-    kills = "".join("pkill -9 -f '%s' 2>/dev/null; " % p for p in PWC_STALE_KILL_PATTERNS)
+-    return (kills + "sleep 2; "
+-            "if pgrep -f '%s' >/dev/null 2>&1; then exit 6; fi; echo %s"
+-            % ("|".join(PWC_STALE_KILL_PATTERNS), PWC_STALE_KILL_OK))
++# [PWC-STAGE2 BETA-2] A process check must prove it could see processes before
++# "none found" counts as clean (docs/VERIFICATION_INTEGRITY_STANDARD.md VIR-1 and
++# VIR-5, :30-35, :93-117; the S182 lesson, docs/SESSION_CHANGELOG_20260814_S182.md
++# :122-126). Beta X-PWC-STAGE1 R1 finding 2 ran the Stage 1 strings with pgrep
++# stubbed to exit 2: the TCP kill still printed the OK marker, and the S156 find
++# and reap printed `none` and `reaped:0`.
++#
++# The positive control: the remote shell that runs one of these strings carries
++# the whole string in its own command line (`bash -c '<string>'`, the very fact
++# that made the old pkill kill its own shell). This token is in that string
++# without brackets, so `pgrep -f` of it MUST find that shell. If it does not,
++# pgrep cannot see this host's processes, and every later "no match" is
++# UNAVAILABLE, not clean. pgrep's own exit status is then read exactly:
++# 1 = no process matched; 0 = one matched; anything else (2 syntax, 3 fatal,
++# 127 missing) = the check did not run.
++PWC_PROBE_CONTROL_TOKEN = "PWC_PROBE_CONTROL_7f3a"
++PWC_KILL_EXIT_SURVIVOR = 6      # a matching process is still alive after the kill
++PWC_KILL_EXIT_UNAVAILABLE = 7   # the check could not observe processes
++PWC_S156_UNAVAILABLE = "probe_unavailable"
++
++
++def _pwc_probe_control() -> str:
++    """Shell fragment: exit PWC_KILL_EXIT_UNAVAILABLE unless pgrep finds this shell."""
++    return ("pgrep -f '%s' >/dev/null 2>&1 || exit %d; "
++            % (PWC_PROBE_CONTROL_TOKEN, PWC_KILL_EXIT_UNAVAILABLE))
++
++
++def pwc_stale_kill_command(patterns=PWC_STALE_KILL_PATTERNS) -> str:
++    """Shell: SIGKILL stale PWC and sieve workers; print PWC_STALE_KILL_OK only when
++    the probe is proven to work AND reports none left. Exit 6 when one survives,
++    exit 7 when the check could not observe processes."""
++    kills = "".join("pkill -9 -f '%s' 2>/dev/null; " % p for p in patterns)
++    return (kills + "sleep 2; " + _pwc_probe_control()
++            + "pgrep -f '%s' >/dev/null 2>&1; r=$?; "
++            "if [ $r -eq 1 ]; then echo %s; elif [ $r -eq 0 ]; then exit %d; "
++            "else exit %d; fi"
++            % ("|".join(patterns), PWC_STALE_KILL_OK,
++               PWC_KILL_EXIT_SURVIVOR, PWC_KILL_EXIT_UNAVAILABLE))
++
++
++# The VM101-local kill before the local TCP workers start ([S165-ZEUS-TCP]). It
++# keeps the single pattern the local kill always had: only PWC workers, never
++# anything else on the dev box.
++PWC_LOCAL_STALE_KILL_PATTERNS = ("[p]wc_worker_service",)
++
++
++def pwc_s156_find_command() -> str:
++    """Remote shell for the S156 find: prints the matching processes, `none` when
++    a working probe found none, or PWC_S156_UNAVAILABLE when it could not look."""
++    return ("pgrep -f '%s' >/dev/null 2>&1 || { echo %s; exit 0; }; "
++            "out=$(pgrep -af \"%s\" 2>/dev/null); r=$?; "
++            "if [ $r -eq 1 ]; then echo none; elif [ $r -eq 0 ]; then printf '%%s\\n' \"$out\"; "
++            "else echo %s; fi"
++            % (PWC_PROBE_CONTROL_TOKEN, PWC_S156_UNAVAILABLE,
++               PWC_S156_PERSISTENT_PATTERN, PWC_S156_UNAVAILABLE))
++
++
++def pwc_s156_reap_command() -> str:
++    """Remote shell for the S156 reap: prints `reaped:<count left>` from a working
++    probe, or `reaped:unavailable`. `pgrep -c` prints 0 AND exits 1 when nothing
++    matches, so exit 0 and 1 are both a real count; the old `|| echo 0` printed a
++    second zero there and a fake zero on a probe error (S182)."""
++    p = PWC_S156_PERSISTENT_PATTERN
++    return ("pkill -15 -f \"%s\" 2>/dev/null; sleep 2; "
++            "pkill -9 -f \"%s\" 2>/dev/null; sleep 1; "
++            "pgrep -f '%s' >/dev/null 2>&1 || { echo reaped:unavailable; exit 0; }; "
++            "remaining=$(pgrep -c -f \"%s\" 2>/dev/null); r=$?; "
++            "if [ $r -le 1 ]; then echo \"reaped:$remaining\"; else echo reaped:unavailable; fi"
++            % (p, p, PWC_PROBE_CONTROL_TOKEN, p))
+ 
+ 
+ WORKER_SCRIPT = "sieve_gpu_worker.py"
+@@ -200,67 +261,29 @@ JOB_TIMEOUT_S = 600               # seconds max per sieve job
+ 
+ 
+ # ─────────────────────────────────────────────────────────────────────────────
+-# [S172 THRESHOLD-REPAIR R3] PWC variable-skip (hybrid) QUARANTINE — Option B
+-#
+-# Beta comparator ruling §5: "optional must not mean that a known-wrong PWC
+-# hybrid route remains silently runnable."
+-#
+-# What is wrong. `run_sieve_pass` declares `phase2_threshold: float = 0.5`
+-# (below, in its signature) and the only two hybrid call sites — the forward and
+-# reverse variable-skip passes in `run_trial_persistent` — never pass it. The
+-# 0.5 default therefore reached the job dict, and sieve_gpu_worker.py:257-258
+-# used it as `hybrid_threshold` in preference to the directional threshold. PWC
+-# filtered variable-skip survivors at 0.50 while the miner and the legacy
+-# coordinator filtered at the trial's own threshold, so a four-path comparison
+-# on the variable-skip axis measured the oracle, not the miner.
++# [PWC-STAGE2 RULING 1] The PWC variable-skip (hybrid) QUARANTINE is LIFTED.
+ #
+-# Why quarantine rather than propagate (Option B, not Option A). Propagating the
+-# directional threshold here is two keyword arguments, but it does not make this
+-# route correct: the hybrid kernels also ignore the trial's sampled
+-# skip_min/skip_max and start from a hardcoded `int expected_skip = 5`
+-# (prng_registry.py:1027, :805, :885, :1159) — a second, independent divergence
+-# on the same axis, and a kernel-signature change to fix. Propagating only the
+-# threshold would leave the route still executing a configuration nobody
+-# requested, while removing the one symptom that makes that visible. PWC is no
+-# longer a certifying path, so the correct disposition is to make the defect
+-# loud, not to build a provenance gate for a diagnostic route.
+-#
+-# Scope. Variable-skip/hybrid ONLY. PWC constant-skip is untouched and still
+-# runs as a non-certifying diagnostic comparator; it never used phase2_threshold.
+-# There is deliberately no override flag — an escape hatch would restore exactly
+-# the "silently runnable" property Beta ruled out.
+-# ─────────────────────────────────────────────────────────────────────────────
+-PWC_HYBRID_QUARANTINE_CODE = "PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED"
+-
+-
+-class PwcHybridThresholdContractUncertified(RuntimeError):
+-    """PWC variable-skip execution attempted while its threshold contract is uncertified."""
+-
+-
+-def assert_pwc_hybrid_not_quarantined(prng_type: str, call_site: str = "") -> None:
+-    """
+-    Fail closed on any PWC variable-skip (hybrid) execution.
+-
+-    ONE authority, invoked at ONE place: `run_sieve_pass`, the execution boundary
+-    every hybrid pass must cross, whatever called it. Scoping it there rather than
+-    at the trial entry point is deliberate — see the note in
+-    `run_trial_persistent`.
+-    """
+-    if "_hybrid" not in (prng_type or ""):
+-        return
+-    where = f" [{call_site}]" if call_site else ""
+-    raise PwcHybridThresholdContractUncertified(
+-        f"{PWC_HYBRID_QUARANTINE_CODE}: refusing PWC variable-skip execution for "
+-        f"prng_type={prng_type!r}{where}. The PWC hybrid path filters at "
+-        f"run_sieve_pass's phase2_threshold default (0.5) instead of the trial's "
+-        f"directional threshold, and its kernels ignore the trial's "
+-        f"skip_min/skip_max in favour of a hardcoded expected_skip=5. Neither is "
+-        f"certified. PWC CONSTANT-skip is unaffected — run with "
+-        f"test_both_modes=False. To lift this quarantine, implement Beta "
+-        f"comparator ruling §5 Option A (propagate the directional threshold with "
+-        f"a requested/payload/effective gate proving it reached the kernel) and "
+-        f"resolve the hybrid skip-bound dead dimension."
+-    )
++# Owner ruling 1 (docs/PWC_BACKUP_OWNER_RULINGS_20261119.md, 2026-11-19 20:57):
++# "yes- once the threshold is fixed(same as range miner) we lift the block."
++# The fix is the threshold contract, done here as RANGE-MINER does it
++# (miner/range_miner_coordinator.py build_stripe_assign_payload: one resolved
++# directional threshold written as BOTH min_match_threshold and phase2_threshold,
++# the pair asserted equal):
++#   * run_sieve_pass has no phase2_threshold default; a hybrid pass without one,
++#     or with one different from `threshold`, refuses before dispatch;
++#   * both hybrid calls in run_trial_persistent pass the trial's directional
++#     threshold; the job carries it as both keys;
++#   * the hybrid pass is checked against what the worker reports it used
++#     (pwc_hybrid_threshold_record below) and fails on a mismatch or a missing
++#     report;
++#   * the SSH transport (sieve_gpu_worker.py) reports no threshold, so hybrid
++#     passes refuse on SSH.
++# The other half of the old quarantine text, the hybrid kernels' hardcoded
++# expected_skip, is the shared, still-open skip-bound question
++# (docs/HYBRID_SKIP_BOUND_AUDIT.md §0); it is the same in RANGE-MINER, so it no
++# longer blocks PWC under ruling 1. Removed with the block:
++# PWC_HYBRID_QUARANTINE_CODE, PwcHybridThresholdContractUncertified and
++# assert_pwc_hybrid_not_quarantined.
+ 
+ 
+ # ─────────────────────────────────────────────────────────────────────────────
+@@ -270,8 +293,9 @@ def assert_pwc_hybrid_not_quarantined(prng_type: str, call_site: str = "") -> No
+ # Gap numbers are those of docs/CLAUDE_CODE_REPORT_PWC_BACKUP_STAGE_A.md P3.
+ #
+ # Every authority below is ONE function, refuses by raising, and names the
+-# setting it refused. None of them has an override flag. None of them changes
+-# the hybrid quarantine above, and none of them makes a PWC result count: the
++# setting it refused. None of them has an override flag. [PWC-STAGE2] The hybrid
++# quarantine that used to sit above is lifted (ruling 1). None of them makes a
++# PWC result count: the
+ # Step-1 credit gate still refuses PWC (window_optimizer_integration_final.py,
+ # `_step1_unaccounted_route_evidence`), and that is a step-2 / owner decision.
+ # ─────────────────────────────────────────────────────────────────────────────
+@@ -295,7 +319,39 @@ class PwcStableEnvelopeRefused(PwcSettingRefused):
+ 
+ class PwcThresholdContractMismatch(RuntimeError):
+     """[S6] For a constant pass, the requested, payload and worker-reported
+-    (effective) thresholds disagree."""
++    (effective) thresholds disagree. [PWC-STAGE2] For a hybrid pass, the same,
++    or a completed chunk did not report the threshold it used."""
++
++
++class PwcWindowAnchorRefused(PwcSettingRefused):
++    """[PWC-STAGE2] A window offset other than 0. See validate_pwc_window_offset."""
++
++
++# ── [PWC-STAGE2] window offset ──────────────────────────────────────────────
++# RANGE-MINER keeps two numbers apart (miner/range_miner_worker.py:22-29,
++# :601-605): `window_anchor` picks which draws form the residue window, on the
++# host, and `generator_phase`, the kernel's trailing int32, is pinned to 0.
++# PWC sends one `offset`, and sieve_filter.py uses it for BOTH: it slices the
++# draws at it (execute_sieve_job -> load_draws_from_daily3) and passes it as the
++# kernel's trailing int32 (GPUSieve.run_sieve and run_hybrid_sieve). At offset 0
++# the two engines sieve the same thing; at offset k != 0 PWC also advances the
++# generator by k on every kernel that takes the argument (every constant pass
++# and the reverse variable-skip pass), which RANGE-MINER does not.
++# Separating them needs sieve_filter.py AND the TCP worker, which copies a fixed
++# list of job keys (persistent/pwc_worker_service.py _execute_job). The owner
++# chose (2026-11-20) to hold that change and REFUSE offset != 0 until it lands,
++# so PWC never silently sieves something RANGE-MINER would not.
++def validate_pwc_window_offset(offset) -> int:
++    if not _is_plain_int(offset):
++        raise PwcWindowAnchorRefused(
++            f"window offset must be an integer, got {offset!r} ({type(offset).__name__})")
++    if int(offset) != 0:
++        raise PwcWindowAnchorRefused(
++            f"window offset {int(offset)} != 0 refused: PWC would use it both as the "
++            f"draw-window start and as the kernel's generator phase, where RANGE-MINER "
++            f"pins the phase to 0. Held until the window-anchor / generator-phase split "
++            f"lands in sieve_filter.py and the TCP worker (PWC Stage 2 README).")
++    return 0
+ 
+ 
+ # ── [S2] seed interval ──────────────────────────────────────────────────────
+@@ -482,6 +538,58 @@ def pwc_threshold_record(prng_type: str, requested, payload_values, effective_va
+     }
+ 
+ 
++# [PWC-STAGE2 RULING 1] the hybrid (variable-skip) contract.
++# What the TCP worker reports for a hybrid pass is the threshold sieve_filter
++# passed to run_hybrid_sieve, ROUNDED TO 4 PLACES (sieve_filter.py:597-599,
++# result['single_phase']['threshold']). sieve_filter.py is not edited in Stage 2,
++# so the effective value is compared at that resolution; requested and payload
++# are compared exactly. RANGE-MINER compares exactly; the gap is recorded in the
++# record itself ("effective_resolution": 4).
++PWC_HYBRID_ECHO_PLACES = 4
++
++
++def pwc_hybrid_threshold_record(prng_type: str, requested, payload_min_values,
++                                payload_phase2_values, effective_values,
++                                effective_unreported: int) -> Dict[str, Any]:
++    """Requested / payload / effective record for one hybrid pass.
++
++    `payload_*` are the values written into the job dicts as min_match_threshold
++    and phase2_threshold (RANGE-MINER writes the one resolved value as both);
++    `effective_values` are the worker's single_phase thresholds. A completed chunk
++    that reports none is counted, and for a hybrid pass that fails the contract."""
++    req = float(requested)
++    req_r = round(req, PWC_HYBRID_ECHO_PLACES)
++    p_min = sorted({float(v) for v in payload_min_values})
++    p_p2 = sorted({float(v) for v in payload_phase2_values})
++    eff = sorted({float(v) for v in effective_values})
++    disagree = ([v for v in p_min + p_p2 if not _thr_equal(v, req)]
++                + [v for v in eff if not _thr_equal(v, req_r)])
++    return {
++        "prng_type": prng_type,
++        "kind": "hybrid",
++        "requested": req,
++        "payload_min_match_threshold": p_min,
++        "payload_phase2_threshold": p_p2,
++        "effective": eff,
++        "effective_resolution": PWC_HYBRID_ECHO_PLACES,
++        "effective_unreported_chunks": int(effective_unreported),
++        "agree": not disagree and int(effective_unreported) == 0,
++        "verified": (not disagree) and int(effective_unreported) == 0 and bool(eff),
++    }
++
++
++def assert_pwc_hybrid_threshold_contract(record: Dict[str, Any]) -> None:
++    if not record["agree"]:
++        raise PwcThresholdContractMismatch(
++            f"[{record['prng_type']}] hybrid threshold contract violated: requested="
++            f"{record['requested']!r} payload min={record['payload_min_match_threshold']!r} "
++            f"phase2={record['payload_phase2_threshold']!r} effective={record['effective']!r} "
++            f"(to {record['effective_resolution']} places), completed chunks with no "
++            f"reported threshold={record['effective_unreported_chunks']}. A variable-skip "
++            f"pass filters at the trial's directional threshold, reported by the worker, "
++            f"or it does not return.")
++
++
+ def assert_pwc_threshold_contract(record: Dict[str, Any]) -> None:
+     if not record["agree"]:
+         raise PwcThresholdContractMismatch(
+@@ -600,6 +708,22 @@ def build_pwc_trial_completion(requested_interval: Tuple[int, int],
+     }
+ 
+ 
++def _pwc_hybrid_echo(payload: Any, job: Dict[str, Any]) -> Optional[float]:
++    """[PWC-STAGE2] sieve_filter.execute_sieve_job's report of the single-phase
++    hybrid threshold for the job's one family: final_result['per_family'][family]
++    ['single_phase']['threshold']. None for a constant job or when not reported."""
++    if not job.get("hybrid") or not isinstance(payload, dict):
++        return None
++    fams = job.get("prng_families") or []
++    if len(fams) != 1:
++        return None
++    try:
++        v = payload["per_family"][fams[0]]["single_phase"]["threshold"]
++    except (KeyError, TypeError):
++        return None
++    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
++
++
+ # ─────────────────────────────────────────────────────────────────────────────
+ # Data structures
+ # ─────────────────────────────────────────────────────────────────────────────
+@@ -908,34 +1032,28 @@ class PersistentWorkerCoordinator:
+             try:
+                 _s156_host = _s156_node.hostname
+                 _s156_user = _s156_node.username
+-                _s156_find = (
+-                    "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+-                    "-o BatchMode=yes "
+-                    + _s156_user + "@" + _s156_host + " "
+-                    + "'pgrep -af \"" + PWC_S156_PERSISTENT_PATTERN + "\" 2>/dev/null "
+-                    "|| echo none'"
+-                )
++                _s156_ssh = ("ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
++                             "-o BatchMode=yes " + _s156_user + "@" + _s156_host + " ")
++                # [PWC-STAGE2 BETA-2] the find and reap prove their probe works first
++                # (pwc_s156_find_command / pwc_s156_reap_command); an unavailable
++                # probe is reported as such, never as "no stale workers".
++                _s156_find = _s156_ssh + shlex.quote(pwc_s156_find_command())
+                 _s156_r = _s156_sp.run(
+                     _s156_find, shell=True, capture_output=True, text=True, timeout=10
+                 )
+                 _s156_found = _s156_r.stdout.strip()
+-                if _s156_found and _s156_found != "none":
++                if _s156_r.returncode != 0 or not _s156_found \
++                        or _s156_found == PWC_S156_UNAVAILABLE:
++                    self.logger.error(
++                        "  [S156] " + _s156_host + ": stale-worker probe UNAVAILABLE "
++                        "(rc=" + str(_s156_r.returncode) + ", out=" + repr(_s156_found[:80])
++                        + ") — not known to be clean")
++                elif _s156_found != "none":
+                     self.logger.info(
+                         "  [S156] " + _s156_host + ": found stale workers: "
+                         + _s156_found[:200]
+                     )
+-                    _s156_reap = (
+-                        "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "
+-                        "-o BatchMode=yes "
+-                        + _s156_user + "@" + _s156_host + " "
+-                        + "'pkill -15 -f \"" + PWC_S156_PERSISTENT_PATTERN + "\" 2>/dev/null; "
+-                        "sleep 2; "
+-                        "pkill -9 -f \"" + PWC_S156_PERSISTENT_PATTERN + "\" 2>/dev/null; "
+-                        "sleep 1; "
+-                        "remaining=$(pgrep -c -f \"" + PWC_S156_PERSISTENT_PATTERN + "\" "
+-                        "2>/dev/null || echo 0); "
+-                        "echo \"reaped:$remaining\"'"
+-                    )
++                    _s156_reap = _s156_ssh + shlex.quote(pwc_s156_reap_command())
+                     _s156_r2 = _s156_sp.run(
+                         _s156_reap, shell=True, capture_output=True, text=True, timeout=15
+                     )
+@@ -943,7 +1061,12 @@ class PersistentWorkerCoordinator:
+                         "  [S156] " + _s156_host + ": reap result: "
+                         + _s156_r2.stdout.strip()
+                     )
+-                    if "reaped:0" not in _s156_r2.stdout.split():   # [PWC-STAGE1 B5]
++                    _s156_tokens = _s156_r2.stdout.split()
++                    if "reaped:unavailable" in _s156_tokens:
++                        self.logger.error(
++                            "  [S156] " + _s156_host + ": reap probe UNAVAILABLE — "
++                            "remaining workers not known")
++                    elif "reaped:0" not in _s156_tokens:   # [PWC-STAGE1 B5]
+                         self.logger.warning(
+                             "  [S156] " + _s156_host + ": reap did not report "
+                             "'reaped:0' (rc=" + str(_s156_r2.returncode) + ")")
+@@ -1156,15 +1279,30 @@ class PersistentWorkerCoordinator:
+         total_launched = 0
+ 
+         # [S165-ZEUS-TCP] Kill stale Zeus local pwc workers before launching fresh ones
++        # [PWC-STAGE2 BETA-2] The result is READ now (Beta X-PWC-STAGE1 R1 Q3: the
++        # old local pkill ignored its result and always logged success). The same
++        # probe-checked shell as the rig kill runs locally under `bash -c`; unless
++        # it confirms none are left, the local workers are NOT launched this run.
++        _zeus_kill_ok = False
+         try:
+             import subprocess as _sp_zeus_kill
+-            _sp_zeus_kill.run(
+-                ["pkill", "-9", "-f", "pwc_worker_service"],
+-                capture_output=True, timeout=5
++            _zk = _sp_zeus_kill.run(
++                ["bash", "-c", pwc_stale_kill_command(PWC_LOCAL_STALE_KILL_PATTERNS)],
++                capture_output=True, text=True, timeout=15
+             )
+-            self.logger.info("[PWC-TCP] Zeus: stale local workers killed")
+-        except Exception:
+-            pass  # No stale workers is fine
++            _zeus_kill_ok = (_zk.returncode == 0 and
++                             (_zk.stdout or "").strip().splitlines()[-1:] == [PWC_STALE_KILL_OK])
++            if _zeus_kill_ok:
++                self.logger.info("[PWC-TCP] Zeus: stale local workers killed and none left")
++            else:
++                self.logger.error(
++                    "[PWC-TCP] Zeus: local stale-worker kill not confirmed (rc="
++                    + str(_zk.returncode) + ("; probe UNAVAILABLE" if _zk.returncode ==
++                                             PWC_KILL_EXIT_UNAVAILABLE else "")
++                    + ") — local workers REFUSED this run")
++        except Exception as _zke:
++            self.logger.error("[PWC-TCP] Zeus: local stale-worker kill not run: " + str(_zke)
++                              + " — local workers REFUSED this run")
+ 
+         for node in self.nodes:
+             if self._is_localhost(node.hostname):
+@@ -1211,7 +1349,11 @@ class PersistentWorkerCoordinator:
+                     or (_kill_r.stdout or "").strip().splitlines()[-1:] != [PWC_STALE_KILL_OK]):
+                 self.logger.error(
+                     "[PWC-TCP] " + host + ": REFUSED, stale-worker kill not confirmed "
+-                    "(rc=" + str(_kill_r.returncode) + ", stderr="
++                    "(rc=" + str(_kill_r.returncode)
++                    + {PWC_KILL_EXIT_SURVIVOR: ", a worker survived the kill",
++                       PWC_KILL_EXIT_UNAVAILABLE: ", process probe UNAVAILABLE"}.get(
++                           _kill_r.returncode, "")
++                    + ", stderr="
+                     + repr((_kill_r.stderr or "").strip()[:200]) + ")")
+                 continue
+             self.logger.info("[PWC-TCP] " + host + ": stale workers killed and none left (pwc + sieve_gpu)")
+@@ -1295,7 +1437,16 @@ class PersistentWorkerCoordinator:
+                     if exec_r.returncode != 0 or not any(
+                             ln.startswith("PID=") for ln in pid_line.splitlines()):
+                         # [PWC-STAGE1 A3 level 1] no PID: not in the launch set
++                        # [PWC-STAGE2 BETA-3] revoke also drops a connection this id
++                        # may already hold (pwc_transport_tcp.revoke_worker_id), and
++                        # an unconfirmed launch is not counted: it must not size the
++                        # online wait or the rig's effective pool.
+                         self._tcp_transport.revoke_worker_id(worker_id)
++                        self.logger.error(
++                            "[PWC-TCP] " + host + ":GPU" + str(gpu_id) + " launch NOT "
++                            "confirmed (rc=" + str(exec_r.returncode) + ", no PID line) — "
++                            "id revoked, not counted")
++                        continue
+                     self.logger.info(
+                         "[PWC-TCP] " + host + ":GPU" + str(gpu_id) +
+                         " launched — " + pid_line + " log=" + log_file
+@@ -1321,6 +1472,8 @@ class PersistentWorkerCoordinator:
+         for _zeus_node in self.nodes:
+             if not self._is_localhost(_zeus_node.hostname):
+                 continue
++            if not _zeus_kill_ok:                # [PWC-STAGE2 BETA-2]
++                continue
+             _zeus_pool = min(2, _zeus_node.gpu_count)  # 2 RTX 3080Ti
+             for _zeus_gpu in range(_zeus_pool):
+                 _zeus_worker_id = f"zeus_gpu{_zeus_gpu}"
+@@ -1655,6 +1808,10 @@ class PersistentWorkerCoordinator:
+             # (sieve_filter.py final_result); None when absent, never guessed.
+             "worker_seed_range":          payload.get("seed_range") if isinstance(payload, dict) else None,
+             "worker_min_match_threshold": payload.get("min_match_threshold") if isinstance(payload, dict) else None,
++            # [PWC-STAGE2 ruling 1] the threshold sieve_filter passed to
++            # run_hybrid_sieve for this family, as it reports it (4 places,
++            # sieve_filter.py:597-599); None when absent, never guessed.
++            "worker_hybrid_threshold":    _pwc_hybrid_echo(payload, job),
+         }
+ 
+     def _dispatch_local_sieve(self, job: Dict[str, Any], node: WorkerNode) -> Dict[str, Any]:
+@@ -1739,7 +1896,7 @@ class PersistentWorkerCoordinator:
+                        output_file: str,
+                        dataset_path: str = "",
+                        strategies: Optional[List[Dict]] = None,
+-                       phase2_threshold: float = 0.5,
++                       phase2_threshold: Optional[float] = None,   # [PWC-STAGE2] no 0.5 default
+                        target_file: str = "",
+                        offset: int = 0,
+                        sessions: Optional[List[str]] = None,
+@@ -1759,18 +1916,40 @@ class PersistentWorkerCoordinator:
+           output_file      — path to write result JSON (mirrors existing paths)
+           strategies       — None for constant skip; list of strategy dicts for hybrid
+                              (auto-loaded from hybrid_strategy if None and prng is hybrid)
+-          phase2_threshold — hybrid second-phase threshold
++          phase2_threshold — [PWC-STAGE2 ruling 1] the threshold of a hybrid
++                             (variable-skip) pass. REQUIRED for a hybrid pass and
++                             must equal `threshold` (RANGE-MINER writes the one
++                             directional value as both keys). For a constant pass
++                             it may be omitted; the job then carries `threshold`.
+           seed_start       — [PWC-BACKUP S2] first seed; the pass partitions
+                              [seed_start, seed_start + total_seeds). Default 0
+                              gives exactly the chunks this method cut before.
+         """
+         is_hybrid = "_hybrid" in prng_type
+ 
+-        # [S172 THRESHOLD-REPAIR R3] Dispatch-site quarantine gate. Placed before
+-        # strategy loading, chunking and any worker dispatch so nothing is
+-        # executed for a hybrid pass. Covers every caller, not just
+-        # run_trial_persistent.
+-        assert_pwc_hybrid_not_quarantined(prng_type, call_site="run_sieve_pass")
++        # [PWC-STAGE2 ruling 1] The quarantine raise that stood here is replaced by
++        # the threshold contract, checked before strategy loading, chunking or any
++        # dispatch. Every caller crosses it, not just run_trial_persistent.
++        if is_hybrid:
++            if phase2_threshold is None:
++                raise PwcSettingRefused(
++                    f"[{prng_type}] a variable-skip pass needs phase2_threshold (the "
++                    f"trial's directional threshold); there is no default (the old 0.5 "
++                    f"default filtered at 0.5 whatever the trial asked for)")
++            if not _thr_equal(phase2_threshold, threshold):
++                raise PwcSettingRefused(
++                    f"[{prng_type}] phase2_threshold={phase2_threshold!r} != threshold="
++                    f"{threshold!r}; RANGE-MINER runs one kernel threshold and pins the "
++                    f"two keys equal (build_stripe_assign_payload)")
++            if self._tcp_transport is None:
++                raise PwcSettingRefused(
++                    f"[{prng_type}] variable-skip passes need the TCP transport: the SSH "
++                    f"route (sieve_gpu_worker.py) reports no threshold, so the contract "
++                    f"cannot be checked (pwc_transport={self.pwc_transport!r})")
++        _job_phase2 = float(threshold) if phase2_threshold is None else phase2_threshold
++
++        # [PWC-STAGE2] window offset other than 0 refused (validate_pwc_window_offset)
++        validate_pwc_window_offset(offset)
+ 
+         # [PWC-BACKUP S2] the interval, checked before anything is chunked
+         _req_start, _req_end = validate_pwc_seed_interval(seed_start, total_seeds)
+@@ -1795,9 +1974,12 @@ class PersistentWorkerCoordinator:
+                     for s in raw
+                 ]
+                 self.logger.info(f"Loaded {len(strategies)} strategies for hybrid sieve")
+-            except ImportError:
+-                self.logger.warning("hybrid_strategy not available — hybrid will use default")
+-                strategies = []
++            except ImportError as _e:
++                # [PWC-STAGE2] was: warn and send [], which sieve_filter then
++                # replaced with its own choice. RANGE-MINER loads the same five.
++                raise PwcSettingRefused(
++                    f"[{prng_type}] hybrid_strategy.get_all_strategies unavailable "
++                    f"({_e}); PWC does not substitute a strategy set") from _e
+ 
+         # Build chunk list — divide total seeds across all available workers
+         # S161 v2: workers already online+ready from startup() three-phase init
+@@ -1856,6 +2038,16 @@ class PersistentWorkerCoordinator:
+             except Exception:
+                 pass
+ 
++        # [PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 finding 2] Job ids are unique to THIS
++        # pass. They were `sieve_000`, `sieve_001`, ... in every pass, so a worker still
++        # finishing a timed-out job of one pass could have its late result delivered
++        # as the same-numbered job of the next pass (and pass its range and
++        # threshold checks whenever the two passes' thresholds are equal). The
++        # transport also accepts a result only for the active lease
++        # (persistent/pwc_transport_tcp.py `_take_active_lease`).
++        import uuid as _uuid_pass
++        _pass_id = _uuid_pass.uuid4().hex[:12]
++
+         # Dispatch all chunks in parallel threads
+         results_by_chunk: Dict[int, Dict] = {}
+         lock = threading.Lock()
+@@ -1869,7 +2061,7 @@ class PersistentWorkerCoordinator:
+             # prng_families: strip _reverse/_hybrid suffixes — worker handles variants
+             _base_prng  = prng_type.replace("_reverse", "").replace("_hybrid", "")
+             job = {
+-                "job_id":               f"sieve_{idx:03d}",
++                "job_id":               f"sieve_{_pass_id}_{idx:03d}",   # [PWC-STAGE2 R2]
+                 "search_type":          "residue_sieve",
+                 "dataset_path":         dataset_path or target_file,
+                 "seed_start":           seed_start,
+@@ -1882,7 +2074,7 @@ class PersistentWorkerCoordinator:
+                 "prng_families":        [prng_type],
+                 "strategies":           strategies if is_hybrid else None,
+                 "hybrid":               is_hybrid,
+-                "phase2_threshold":     phase2_threshold,
++                "phase2_threshold":     _job_phase2,   # [PWC-STAGE2] == threshold
+             }
+ 
+             def _run_once(wh):
+@@ -1926,6 +2118,7 @@ class PersistentWorkerCoordinator:
+             # read off the job itself rather than restated from the argument
+             res = dict(res)
+             res["pwc_payload_min_match_threshold"] = job["min_match_threshold"]
++            res["pwc_payload_phase2_threshold"] = job["phase2_threshold"]   # [PWC-STAGE2]
+ 
+             with lock:
+                 results_by_chunk[idx] = res
+@@ -2095,8 +2288,11 @@ class PersistentWorkerCoordinator:
+         _incomplete_rows: List[Dict[str, Any]] = []
+         _range_unreported = 0
+         _payload_thr: List[Any] = []
++        _payload_p2: List[Any] = []          # [PWC-STAGE2]
+         _effective_thr: List[Any] = []
+         _effective_unreported = 0
++        _hyb_effective: List[Any] = []       # [PWC-STAGE2]
++        _hyb_unreported = 0
+ 
+         for i in range(len(chunks)):
+             res = _snapshot.get(i)
+@@ -2104,6 +2300,8 @@ class PersistentWorkerCoordinator:
+             _outcomes[outcome] += 1
+             if res is not None and "pwc_payload_min_match_threshold" in res:
+                 _payload_thr.append(res["pwc_payload_min_match_threshold"])
++            if res is not None and "pwc_payload_phase2_threshold" in res:
++                _payload_p2.append(res["pwc_payload_phase2_threshold"])
+             if outcome == "completed":
+                 _done_ivs.append(chunks[i])
+                 if res.get("worker_seed_range") is None:
+@@ -2112,6 +2310,10 @@ class PersistentWorkerCoordinator:
+                     _effective_unreported += 1
+                 else:
+                     _effective_thr.append(res["worker_min_match_threshold"])
++                if res.get("worker_hybrid_threshold") is None:     # [PWC-STAGE2]
++                    _hyb_unreported += 1
++                else:
++                    _hyb_effective.append(res["worker_hybrid_threshold"])
+                 all_survivors   .extend(res.get("survivors",    []))
+                 all_match_rates .extend(res.get("match_rates",  []))
+                 all_skip_seqs   .extend(res.get("skip_sequences", []))
+@@ -2152,6 +2354,9 @@ class PersistentWorkerCoordinator:
+             "incomplete_chunks":     _incomplete_rows,
+             "incomplete_chunks_truncated": failed_chunks > len(_incomplete_rows),
+             "complete":              bool(_pass_complete),
++            # [PWC-STAGE2] which route ran the pass. Credit is Stage 3; this lets
++            # the Stage 3 evidence builder refuse a pass that was not on TCP.
++            "transport":             "tcp" if self._tcp_transport is not None else "ssh",
+         }
+         if not _pass_complete:
+             self.logger.error(
+@@ -2161,9 +2366,14 @@ class PersistentWorkerCoordinator:
+                 f"not_dispatched={_outcomes['not_dispatched']} missing={_outcomes['missing']}) "
+                 f"over [{_req_start}, {_req_end}) — the result is marked incomplete")
+ 
+-        # [PWC-BACKUP S6] constant passes only; the hybrid passes never get here
+-        # (quarantine above) and their phase2 threshold is not this contract.
+-        if not is_hybrid:
++        # [PWC-BACKUP S6] constant passes; [PWC-STAGE2 ruling 1] hybrid passes below
++        if is_hybrid:
++            _thr_rec = pwc_hybrid_threshold_record(
++                prng_type, threshold, _payload_thr, _payload_p2, _hyb_effective,
++                _hyb_unreported)
++            _accounting["threshold"] = _thr_rec
++            assert_pwc_hybrid_threshold_contract(_thr_rec)
++        else:
+             _thr_rec = pwc_threshold_record(prng_type, threshold, _payload_thr,
+                                             _effective_thr, _effective_unreported)
+             _accounting["threshold"] = _thr_rec
+@@ -2339,6 +2549,18 @@ def run_trial_persistent(coordinator_cfg: str,
+     _sessions   = list(config.sessions)
+     _skip_range = [config.skip_min, config.skip_max]
+     _pass_results: Dict[str, Optional[Dict[str, Any]]] = {}
++    # [PWC-STAGE2] window offset other than 0 refused before the fleet is built
++    validate_pwc_window_offset(config.offset)
++    # [PWC-STAGE2 ruling 4] phases follow RANGE-MINER's workflow_stages_for: 1-2
++    # always, 3-4 when test_both_modes (and the base is not itself a hybrid, the
++    # same test _step1_required_phases uses). Never cut short by a survivor count.
++    _run_variable = bool(test_both_modes) and not prng_base.endswith("_hybrid")
++    # [PWC-STAGE2 ruling 1] variable-skip passes need TCP (threshold report); refuse
++    # here rather than after two constant passes have run.
++    if (_run_variable or prng_base.endswith("_hybrid")) and pwc_transport != "tcp":
++        raise PwcSettingRefused(
++            f"run_trial_persistent: variable-skip passes need pwc_transport='tcp' (got "
++            f"{pwc_transport!r}); the SSH route reports no threshold to check")
+ 
+     def _completion_extra() -> Dict[str, Any]:
+         comp = build_pwc_trial_completion(_req, _pass_results)
+@@ -2350,19 +2572,6 @@ def run_trial_persistent(coordinator_cfg: str,
+                 f"{comp['incomplete_passes']} not complete over {list(_req)} — "
+                 f"marked in pwc_completion; the result must not be read as complete")
+         return {"pwc_completion": comp, "pwc_trial_complete": comp["trial_complete"]}
+-    # [S172 THRESHOLD-REPAIR R3] NOTE — there is deliberately NO pre-flight
+-    # quarantine check here, and this is a considered placement, not an omission.
+-    # A `test_both_modes` guard at the top of this function would be earlier and
+-    # would save the two constant-skip passes, but it also blocks something Beta's
+-    # ruling does NOT ask to be blocked: D3.25's G1 drives this function both-mode
+-    # against a FAKE sieve to assert the v2 four-map return shape on every return
+-    # path, and never executes a hybrid pass. Quarantining a return-shape contract
+-    # is not quarantining a known-wrong execution. The guard therefore lives at the
+-    # EXECUTION boundary only — `run_sieve_pass`, which every hybrid pass must go
+-    # through — so a real both-mode trial still fails closed, loudly, before any
+-    # hybrid survivor exists. The cost is two already-completed constant passes and
+-    # a spawned fleet; the `finally: pwc.shutdown()` below still releases them.
+-
+     # [S163-KARG-PWC] Pass node_allowlist so each partition only sees its own nodes.
+     # Without this, both P0 and P1 read all nodes from config and launch 24 workers each,
+     # competing for the same rigs. P1 wins the race; P0 gets 0 ready workers.
+@@ -2417,6 +2626,7 @@ def run_trial_persistent(coordinator_cfg: str,
+             sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+             skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+             seed_start   = _req[0],        # [PWC-BACKUP S2]
++            phase2_threshold = forward_threshold,   # [PWC-STAGE2] one value, both keys
+         )
+         _pass_results["1"] = fwd_result                     # [PWC-BACKUP S1]
+         fwd_survivors   = fwd_result.get("survivors", [])
+@@ -2424,29 +2634,9 @@ def run_trial_persistent(coordinator_cfg: str,
+         fwd_map = dict(zip(fwd_survivors, fwd_match_rates))
+         print(f"      Forward: {len(fwd_survivors):,} survivors")
+ 
+-        if not fwd_survivors:
+-            pwc.shutdown()
+-            # [PWC-BACKUP S1] a forward pass with zero survivors BECAUSE chunks
+-            # failed is not a forward-zero result; pwc_completion says which.
+-            # D3.25-A: the pruned early return carries the COMPLETE v2 shape.
+-            # It previously carried no map keys at all, and the adapter's
+-            # `.get("forward_map", {})` silently manufactured empties — the
+-            # exact "missing field defaults to empty" failure mode the version
+-            # stamp exists to make impossible. All four maps are empty here
+-            # because forward-constant found nothing and no later pass ran.
+-            return build_trial_populations(
+-                forward_map_constant={}, reverse_map_constant={},
+-                forward_map_variable={}, reverse_map_variable={},
+-                bidirectional_constant=set(), bidirectional_variable=set(),
+-                pruned=True, reason="forward_zero",
+-                extra={
+-                    "bidirectional_count": 0,
+-                    "forward_records": [],
+-                    "reverse_records": [],
+-                    **_completion_extra(),                   # [PWC-BACKUP S1]
+-                },
+-                origin="pwc-egress(pruned:forward_zero)",
+-            )
++        # [PWC-STAGE2 ruling 4] The S147 B1 forward-zero prune that stood here is
++        # removed: RANGE-MINER runs every phase of the trial whatever the survivor
++        # counts (workflow_stages_for). A zero-survivor phase is a complete result.
+ 
+         # ── Pass 2: Reverse constant skip ────────────────────────────────────
+         prng_reverse = prng_base + "_reverse"
+@@ -2463,6 +2653,7 @@ def run_trial_persistent(coordinator_cfg: str,
+             sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+             skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+             seed_start   = _req[0],        # [PWC-BACKUP S2]
++            phase2_threshold = reverse_threshold,   # [PWC-STAGE2] one value, both keys
+         )
+         _pass_results["2"] = rev_result                     # [PWC-BACKUP S1]
+         rev_survivors   = rev_result.get("survivors", [])
+@@ -2485,21 +2676,15 @@ def run_trial_persistent(coordinator_cfg: str,
+         fwd_h_map = {}
+         rev_h_map = {}
+ 
+-        if test_both_modes and not prng_base.endswith("_hybrid"):
++        if _run_variable:
+             prng_hybrid = f"{prng_base}_hybrid"
+             prng_hybrid_rev = f"{prng_hybrid}_reverse"
+ 
+-            # [S147 Q2] Single strategy for full-range scan — 5x work reduction
+-            # TB ruling: balanced_hybrid for discovery, all 5 for refinement only
+-            # Uses pwc.logger — run_trial_persistent is a standalone function, not a method
+-            try:
+-                from hybrid_strategy import get_strategy as _get_strategy
+-                _s = _get_strategy("balanced_hybrid")
+-                _hybrid_strategies = [_s.to_dict() if hasattr(_s, "to_dict") else vars(_s)]
+-            except Exception as _e:
+-                pwc.logger.warning(f"Q2: could not load balanced_hybrid ({_e}) — using all strategies")
+-                _hybrid_strategies = None  # fallback: auto-load all in run_sieve_pass
+-
++            # [PWC-STAGE2] strategies=None: run_sieve_pass loads all five from
++            # hybrid_strategy.get_all_strategies(), the source RANGE-MINER's worker
++            # uses (miner/range_miner_worker.py _load_strategies). The S147 Q2
++            # single balanced_hybrid strategy is removed (owner default rule:
++            # PWC does what RANGE-MINER does).
+             print(f"    Running FORWARD sieve ({prng_hybrid}) [VARIABLE SKIP] [PERSISTENT]...")
+             fwd_h_result = pwc.run_sieve_pass(
+                 prng_type    = prng_hybrid,
+@@ -2513,7 +2698,8 @@ def run_trial_persistent(coordinator_cfg: str,
+                 sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+                 skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+                 seed_start   = _req[0],        # [PWC-BACKUP S2]
+-                strategies   = _hybrid_strategies,  # [S147 Q2] single strategy
++                strategies   = None,           # [PWC-STAGE2] all five
++                phase2_threshold = forward_threshold,   # [PWC-STAGE2 ruling 1]
+             )
+             _pass_results["3"] = fwd_h_result               # [PWC-BACKUP S1]
+             fwd_h_survivors   = fwd_h_result.get("survivors", [])
+@@ -2521,34 +2707,30 @@ def run_trial_persistent(coordinator_cfg: str,
+             fwd_h_map = dict(zip(fwd_h_survivors, fwd_h_match_rates))
+             print(f"      Forward (variable): {len(fwd_h_survivors):,} survivors")
+ 
+-            # [S147 Q0] Gate: skip hybrid reverse if hybrid forward = 0
+-            # Mirrors constant-skip B1 gate. SKIP not prune — constant results preserved.
+-            if not fwd_h_survivors:
+-                print(f"      Hybrid forward zero survivors — skipping hybrid reverse (Q0 gate)")
+-                rev_h_survivors   = []
+-                rev_h_match_rates = []
+-                rev_h_map         = {}
+-            else:
+-                print(f"    Running REVERSE sieve ({prng_hybrid_rev}) [VARIABLE SKIP] [PERSISTENT]...")
+-                rev_h_result = pwc.run_sieve_pass(
+-                    prng_type    = prng_hybrid_rev,
+-                    residues     = residues,
+-                    total_seeds  = total_seeds,
+-                    threshold    = reverse_threshold,
+-                    window_size  = ws,
+-                    dataset_path = dataset_path,
+-                    output_file  = f"results/window_opt_reverse_hybrid_{ws}_{off}_t{trial_number}.json",
+-                    offset       = config.offset,
+-                    sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
+-                    skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
+-                    seed_start   = _req[0],        # [PWC-BACKUP S2]
+-                    strategies   = _hybrid_strategies,  # [S147 Q2] single strategy
+-                )
+-                _pass_results["4"] = rev_h_result           # [PWC-BACKUP S1]
+-                rev_h_survivors   = rev_h_result.get("survivors", [])
+-                rev_h_match_rates = rev_h_result.get("match_rates", [])
+-                rev_h_map = dict(zip(rev_h_survivors, rev_h_match_rates))
+-                print(f"      Reverse (variable): {len(rev_h_survivors):,} survivors")
++            # [PWC-STAGE2 ruling 4] The S147 Q0 gate (skip the reverse variable pass
++            # when the forward variable pass found nothing) is removed: phase 4
++            # always runs when phase 3 does, as in RANGE-MINER.
++            print(f"    Running REVERSE sieve ({prng_hybrid_rev}) [VARIABLE SKIP] [PERSISTENT]...")
++            rev_h_result = pwc.run_sieve_pass(
++                prng_type    = prng_hybrid_rev,
++                residues     = residues,
++                total_seeds  = total_seeds,
++                threshold    = reverse_threshold,
++                window_size  = ws,
++                dataset_path = dataset_path,
++                output_file  = f"results/window_opt_reverse_hybrid_{ws}_{off}_t{trial_number}.json",
++                offset       = config.offset,
++                sessions     = _sessions,      # [PWC-BACKUP S4] no fallback
++                skip_range   = _skip_range,    # [PWC-BACKUP S4] no fallback
++                seed_start   = _req[0],        # [PWC-BACKUP S2]
++                strategies   = None,           # [PWC-STAGE2] all five
++                phase2_threshold = reverse_threshold,   # [PWC-STAGE2 ruling 1]
++            )
++            _pass_results["4"] = rev_h_result               # [PWC-BACKUP S1]
++            rev_h_survivors   = rev_h_result.get("survivors", [])
++            rev_h_match_rates = rev_h_result.get("match_rates", [])
++            rev_h_map = dict(zip(rev_h_survivors, rev_h_match_rates))
++            print(f"      Reverse (variable): {len(rev_h_survivors):,} survivors")
+ 
+             bidirectional_variable = set(fwd_h_map.keys()) & set(rev_h_map.keys())
+             print(f"      ✨ Bidirectional (variable): {len(bidirectional_variable):,} survivors")
+diff --git a/test_persistent_worker_harness.py b/test_persistent_worker_harness.py
+index b079b8a..270b9bb 100644
+--- a/test_persistent_worker_harness.py
++++ b/test_persistent_worker_harness.py
+@@ -21,7 +21,7 @@ Uses synthetic stubs and monkey-patches to exercise:
+   T12 — Constant skip sieve pass (reverse java_lcg_reverse)
+   T13 — Hybrid sieve pass (forward java_lcg_hybrid) — strategy auto-load
+   T14 — Hybrid sieve pass (reverse java_lcg_hybrid_reverse) — strategies in payload
+-  T15 — run_trial_persistent: pruned path (forward_zero)
++  T15 — run_trial_persistent: forward zero survivors still runs all 4 passes (Stage 2, ruling 4)
+   T16 — run_trial_persistent: full 4-pass path, correct result structure
+   T17 — run_trial_persistent: test_both_modes=False skips hybrid passes
+   T18 — _get_residues_for_config helper
+@@ -497,11 +497,12 @@ def T12_constant_reverse_pass():
+     os.unlink("/tmp/harness_T12.json")
+     os.unlink(cfg)
+ 
+-def _assert_hybrid_refused(prng_type, **extra):
+-    """[PWC-STAGE1 A4] T13/T14 used to run a hybrid pass. Since 8a55a68 (Beta
+-    comparator ruling §5) PWC refuses every variable-skip pass before dispatch,
+-    by design, until the owner lifts the quarantine. They now assert that refusal:
+-    the named error, raised before ANY job is dispatched or any file written."""
++def _assert_hybrid_refused(prng_type, why, **extra):
++    """[PWC-STAGE2 ruling 1] The variable-skip quarantine is lifted. A hybrid
++    pass now refuses only when its threshold contract cannot hold: no
++    phase2_threshold (T13), or the SSH route, which reports no threshold (T14;
++    setup_pwc builds an SSH-route coordinator). Either way: the named error,
++    raised before ANY job is dispatched or any file written."""
+     import persistent_worker_coordinator as _P
+     pwc, cfg = setup_pwc(pool_size=1)
+     dispatched_jobs = []
+@@ -513,8 +514,8 @@ def _assert_hybrid_refused(prng_type, **extra):
+                            total_seeds=500_000, threshold=0.25, window_size=8,
+                            output_file=out, sessions=["midday", "evening"],
+                            skip_range=[0, 147], **extra)
+-    except _P.PwcHybridThresholdContractUncertified as exc:
+-        assert _P.PWC_HYBRID_QUARANTINE_CODE in str(exc), str(exc)[:200]
++    except _P.PwcSettingRefused as exc:
++        assert why in str(exc), str(exc)[:200]
+     else:
+         raise AssertionError(f"{prng_type}: hybrid pass was NOT refused")
+     finally:
+@@ -523,10 +524,11 @@ def _assert_hybrid_refused(prng_type, **extra):
+     assert not os.path.exists(out), f"{out} written by a refused pass"
+ 
+ def T13_hybrid_forward_auto_strategies():
+-    _assert_hybrid_refused("java_lcg_hybrid")
++    _assert_hybrid_refused("java_lcg_hybrid", "needs phase2_threshold")
+ 
+ def T14_hybrid_reverse_strategies_in_payload():
+-    _assert_hybrid_refused("java_lcg_hybrid_reverse",
++    _assert_hybrid_refused("java_lcg_hybrid_reverse", "need the TCP transport",
++                           phase2_threshold=0.25,
+                            strategies=[{"max_consecutive_misses": 2, "skip_tolerance": 4}])
+ 
+ def T15_run_trial_persistent_pruned():
+@@ -534,7 +536,7 @@ def T15_run_trial_persistent_pruned():
+ 
+     # Stub config
+     class FakeConfig:
+-        window_size = 8; offset = 43; skip_min = 5; skip_max = 56; sessions = ['evening']
++        window_size = 8; offset = 0; skip_min = 5; skip_max = 56; sessions = ['evening']  # [PWC-STAGE2] offset != 0 refused
+ 
+     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+         json.dump(SYNTHETIC_CONFIG, f)
+@@ -568,22 +570,27 @@ def T15_run_trial_persistent_pruned():
+             forward_threshold = 0.25,
+             reverse_threshold = 0.25,
+             test_both_modes   = True,
++            pwc_transport     = "tcp",   # [PWC-STAGE2] variable-skip passes need TCP
+         )
+     finally:
+         pwc_mod.PersistentWorkerCoordinator.run_sieve_pass = original
+         pwc_mod.PersistentWorkerCoordinator.startup        = original_startup
+         pwc_mod.PersistentWorkerCoordinator.shutdown       = original_shutdown
+ 
+-    assert result["pruned"] is True, "Expected pruned=True when forward=0"
++    # [PWC-STAGE2 ruling 4] no prune: a forward pass with zero survivors is a
++    # complete result and every phase still runs, as in RANGE-MINER.
++    assert result["pruned"] is False, "Stage 2: forward=0 must not prune"
++    assert result["reason"] is None
+     assert result["bidirectional_count"] == 0
+-    assert len(call_log) == 1, f"Should stop after forward pass, got: {call_log}"
++    assert call_log == ["java_lcg", "java_lcg_reverse", "java_lcg_hybrid",
++                        "java_lcg_hybrid_reverse"], f"all 4 passes must run: {call_log}"
+     os.unlink(cfg_path)
+ 
+ def T16_run_trial_persistent_full_4pass():
+     from persistent_worker_coordinator import run_trial_persistent
+ 
+     class FakeConfig:
+-        window_size = 8; offset = 43; skip_min = 5; skip_max = 56; sessions = ['evening']
++        window_size = 8; offset = 0; skip_min = 5; skip_max = 56; sessions = ['evening']  # [PWC-STAGE2] offset != 0 refused
+ 
+     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+         json.dump(SYNTHETIC_CONFIG, f)
+@@ -617,6 +624,7 @@ def T16_run_trial_persistent_full_4pass():
+             forward_threshold = 0.25,
+             reverse_threshold = 0.25,
+             test_both_modes   = True,
++            pwc_transport     = "tcp",   # [PWC-STAGE2] variable-skip passes need TCP
+         )
+     finally:
+         pwc_mod.PersistentWorkerCoordinator.run_sieve_pass = original
+@@ -640,7 +648,7 @@ def T17_test_both_modes_false_skips_hybrid():
+     from persistent_worker_coordinator import run_trial_persistent
+ 
+     class FakeConfig:
+-        window_size = 8; offset = 43; skip_min = 5; skip_max = 56; sessions = ['evening']
++        window_size = 8; offset = 0; skip_min = 5; skip_max = 56; sessions = ['evening']  # [PWC-STAGE2] offset != 0 refused
+ 
+     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+         json.dump(SYNTHETIC_CONFIG, f)
+diff --git a/tests/test_pwc_backup_step1.py b/tests/test_pwc_backup_step1.py
+index a74fe0c..93a4e01 100644
+--- a/tests/test_pwc_backup_step1.py
++++ b/tests/test_pwc_backup_step1.py
+@@ -351,13 +351,31 @@ def d_s1_unaccounted(M):
+ 
+ 
+ # ── S2 ───────────────────────────────────────────────────────────────────────
++# [PWC-STAGE2] The base is the commit BEFORE step 1 / stage 1, pinned. This used
++# to read HEAD, which was that base until stage 1 landed (ee39404); since then
++# HEAD carries the change and the gate could only fail.
++PRE_STAGE1_BASE = "27eb991"
++
++
+ def _baseline_module():
+-    src = subprocess.run(["git", "show", "HEAD:persistent_worker_coordinator.py"],
++    src = subprocess.run(["git", "show", PRE_STAGE1_BASE + ":persistent_worker_coordinator.py"],
+                          cwd=ROOT, capture_output=True, text=True, check=True).stdout
+-    assert "[PWC-BACKUP" not in src, "HEAD already carries this change"
++    assert "[PWC-BACKUP" not in src, f"{PRE_STAGE1_BASE} already carries this change"
+     return _load_source(src, "pwc_baseline_head")
+ 
+ 
++# [PWC-STAGE2 ruling 1] Stage 2 changes ONE job key on purpose: a constant job's
++# phase2_threshold was always the unused 0.5 default; it now carries the trial's
++# threshold, as RANGE-MINER writes one value as both keys. [PWC-STAGE2 R2] job_id
++# is now unique per pass (`sieve_<pass id>_NNN`, Beta X-PWC-STAGE2 R1 finding 2).
++# Every other byte of the job dicts must still match the base.
++_STAGE2_CHANGED_JOB_KEYS = ("phase2_threshold", "job_id")
++
++
++def _jobs_without_stage2_keys(jobs):
++    return [{k: v for k, v in j.items() if k not in _STAGE2_CHANGED_JOB_KEYS} for j in jobs]
++
++
+ def d_s2_zero_byte_equal(M):
+     base = _baseline_module()
+     for total, ready, cap in ((100_000, 4, 25_000), (1_000_003, 6, 50_000),
+@@ -373,11 +391,13 @@ def d_s2_zero_byte_equal(M):
+                     output_file=os.path.join(OUT, f"s2_{tag}.json"),
+                     dataset_path="unused.json", sessions=["midday", "evening"],
+                     skip_range=[0, 10])
+-            jobs[tag] = json.dumps(sorted(w.jobs, key=lambda j: j["job_id"]),
++            jobs[tag] = json.dumps(sorted(_jobs_without_stage2_keys(w.jobs),
++                                          key=lambda j: (j["seed_start"], j["seed_end"])),
+                                    sort_keys=True)
+         assert jobs["new"] == jobs["base"], (
+-            f"seed_start=0 job dicts differ from HEAD (total={total})")
+-    return "seed_start=0: job dicts byte-equal to HEAD's for 3 shapes"
++            f"seed_start=0 job dicts differ from {PRE_STAGE1_BASE} (total={total})")
++    return (f"seed_start=0: job dicts byte-equal to {PRE_STAGE1_BASE}'s for 3 shapes "
++            f"(except {list(_STAGE2_CHANGED_JOB_KEYS)}, changed by stage 2)")
+ 
+ 
+ def d_s2_two31(M):
+@@ -567,12 +587,15 @@ def d_s6_disagree(M):
+     return "one chunk filtered at 0.5 for a 0.4 request -> the pass refuses"
+ 
+ 
+-def d_s6_hybrid_still_quarantined(M):
++def d_s6_hybrid_needs_threshold(M):
++    # [PWC-STAGE2 ruling 1] the quarantine is lifted; in its place a hybrid pass
++    # with no phase2_threshold refuses before any dispatch (tests/test_pwc_backup_stage2.py
++    # covers the whole contract)
+     w = Worker()
+-    raises(M.PwcHybridThresholdContractUncertified,
+-           lambda: sieve(make_pwc(M, worker=w), prng="java_lcg_hybrid"))
+-    assert not w.jobs
+-    return "hybrid run_sieve_pass still raises the quarantine before any dispatch"
++    e = raises(M.PwcSettingRefused,
++               lambda: sieve(make_pwc(M, worker=w), prng="java_lcg_hybrid"))
++    assert "phase2_threshold" in str(e) and not w.jobs, (e, w.jobs)
++    return "hybrid run_sieve_pass without phase2_threshold refuses before any dispatch"
+ 
+ 
+ # ── S7 ───────────────────────────────────────────────────────────────────────
+@@ -775,7 +798,7 @@ GATES = [
+     ("G-S5-ENVELOPE", lambda: d_s5_envelope(PWC)),
+     ("G-S6-AGREE", lambda: d_s6_agree(PWC)),
+     ("G-S6-DISAGREE", lambda: d_s6_disagree(PWC)),
+-    ("G-S6-HYBRID-QUARANTINE", lambda: d_s6_hybrid_still_quarantined(PWC)),
++    ("G-S6-HYBRID-NEEDS-THRESHOLD", lambda: d_s6_hybrid_needs_threshold(PWC)),
+     ("G-S7-IMPORT", lambda: d_s7_import()),
+     ("G-S8-GATE", lambda: d_s8_gate(PG)),
+     ("G-S8-CLOSURE-FLEET", lambda: d_s8_closure_and_fleet(PG)),
+diff --git a/tests/test_pwc_stage1.py b/tests/test_pwc_stage1.py
+index 99a5f7a..9090bdd 100644
+--- a/tests/test_pwc_stage1.py
++++ b/tests/test_pwc_stage1.py
+@@ -30,6 +30,7 @@ import io
+ import contextlib
+ import json
+ import os
++import shlex
+ import shutil
+ import socket
+ import struct
+@@ -75,11 +76,17 @@ def _mutate(path, old, new):
+     return src.replace(old, new)
+ 
+ 
++# [PWC-STAGE2] the pre-stage-1 base, pinned. This read HEAD while HEAD was that
++# base; since stage 1 landed (ee39404) HEAD carries the fix and the evidence
++# gates could only fail.
++PRE_STAGE1_BASE = "27eb991"
++
++
+ def _head_source():
+-    r = subprocess.run(["git", "show", "HEAD:persistent_worker_coordinator.py"],
++    r = subprocess.run(["git", "show", PRE_STAGE1_BASE + ":persistent_worker_coordinator.py"],
+                        cwd=ROOT, capture_output=True, text=True)
+     if r.returncode != 0:
+-        raise Unavailable(f"git show HEAD failed: {r.stderr.strip()[:120]}")
++        raise Unavailable(f"git show {PRE_STAGE1_BASE} failed: {r.stderr.strip()[:120]}")
+     return r.stdout
+ 
+ 
+@@ -215,7 +222,9 @@ def _capture_s156_strings(M):
+     strs = [c for c in seen if isinstance(c, str) and c.startswith("ssh ")]
+     find = next(c for c in strs if "pgrep -af" in c)
+     reap = next(c for c in strs if "pkill -15" in c)
+-    remote = lambda c: c[c.index("'") + 1:c.rindex("'")]
++    # [PWC-STAGE2] the remote string is now passed through shlex.quote; the last
++    # shell word of the local ssh command line is exactly what the rig runs.
++    remote = lambda c: shlex.split(c)[-1]
+     return remote(find), remote(reap)
+ 
+ 
+@@ -443,8 +452,12 @@ def d_a3_transport(T=TCP):
+         assert _wait(lambda: tr.worker_count() == 1), tr.worker_count()
+         _send(s, {"message_type": "online", "worker_id": "rig_gpu0", "timestamp": time.time()})
+         assert _wait(lambda: tr.online_count() == 1), tr.online_count()
+-        # a refused hello under a registered id must not evict the registered one
+-        tr.revoke_worker_id("rig_gpu0")
++        # a refused hello under a registered id must not evict the registered one.
++        # [PWC-STAGE2] The list is replaced directly here: revoke_worker_id now ALSO
++        # drops the id's live connection (Beta X-PWC-STAGE1 R1 finding 3, tested in
++        # tests/test_pwc_backup_stage2.py), and this gate is about the refused-hello
++        # path alone.
++        tr.set_allowed_worker_ids({"rig_gpu1"})
+         s2, ack2 = _hello(port, "rig_gpu0"); socks.append(s2)
+         assert ack2.get("accepted") is False, ack2
+         time.sleep(0.3)
+@@ -515,6 +528,21 @@ GATES = [
+     ("G-IMPORT", d_import),
+ ]
+ 
++_A3D_START = '            if not refused:\n'
++_A3D_END = '                    owner = self._workers.get(worker_id) is conn\n'
++
++
++def _a3d_old():
++    src = open(TCP_PATH, encoding="utf-8").read()
++    i = src.index(_A3D_START)
++    return src[i:src.index(_A3D_END, i) + len(_A3D_END)]
++
++
++_A3D_OLD = _a3d_old()
++_A3D_NEW = ('            if True:\n'
++            '                with self._workers_lock:\n'
++            '                    owner = True\n')
++
+ MUTANTS = [
+     ("M-B5a kill marker not read", PWC_PATH,
+      '            if (_kill_r.returncode != 0\n'
+@@ -532,14 +560,19 @@ MUTANTS = [
+      '                self._tcp_transport.set_allowed_worker_ids(set())\n', '',
+      d_a3_startup_order, "pwc"),
+     ("M-A3b no-PID launch not revoked", PWC_PATH,
+-     '                        # [PWC-STAGE1 A3 level 1] no PID: not in the launch set\n'
+-     '                        self._tcp_transport.revoke_worker_id(worker_id)\n',
+-     '                        pass\n', d_a3_launch_set, "pwc"),
++     '                        self._tcp_transport.revoke_worker_id(worker_id)\n'
++     '                        self.logger.error(\n',
++     '                        self.logger.error(\n', d_a3_launch_set, "pwc"),
+     ("M-A3c transport admits every id", TCP_PATH,
+      '            return self._allowed_worker_ids is None or str(worker_id) in self._allowed_worker_ids\n',
+      '            return True\n', d_a3_transport, "tcp"),
++    # [PWC-STAGE2] Stage 2 added a second guard on the same path (only the
++    # connection that still owns an id cleans up under it), so removing
++    # `if not refused` alone is now masked by it: an invalid mutation experiment
++    # under VIR-2, not a survivor. The mutant removes both guards; the owner
++    # check alone has its own mutant in tests/test_pwc_backup_stage2.py.
+     ("M-A3d refused hello cleans up a same-named live worker", TCP_PATH,
+-     '            if not refused:\n', '            if True:\n', d_a3_transport, "tcp"),
++     _A3D_OLD, _A3D_NEW, d_a3_transport, "tcp"),
+     ("M-B6 skip_pattern not read", PWC_PATH,
+      '            skip_seqs   = [(s.get("skip_pattern", s.get("skip_sequence", []))'
+      ' if isinstance(s, dict) else [])\n',
+diff --git a/tests/test_s172_phase5_d3_25_candidate_ingress.py b/tests/test_s172_phase5_d3_25_candidate_ingress.py
+index ab6471c..552fc6c 100644
+--- a/tests/test_s172_phase5_d3_25_candidate_ingress.py
++++ b/tests/test_s172_phase5_d3_25_candidate_ingress.py
+@@ -320,11 +320,15 @@ def drive_pwc(table, *, test_both_modes=True):
+     PWC.PersistentWorkerCoordinator = lambda **kw: fake
+     try:
+         with contextlib.redirect_stdout(io.StringIO()):
++            # [PWC-STAGE2] PWC refuses a window offset other than 0 (until the
++            # window-anchor / generator-phase split lands) and runs variable-skip
++            # passes only on TCP; the PWC drive passes both. ZMQ is unchanged.
+             return PWC.run_trial_persistent(
+-                coordinator_cfg="unused.json", config=make_config(),
++                coordinator_cfg="unused.json", config=make_config(offset=0),
+                 trial_number=TRIAL_NUMBER, prng_base=PRNG_BASE, residues=[1, 2],
+                 total_seeds=1000, forward_threshold=0.4, reverse_threshold=0.45,
+-                test_both_modes=test_both_modes, dataset_path="unused.csv")
++                test_both_modes=test_both_modes, dataset_path="unused.csv",
++                pwc_transport="tcp")
+     finally:
+         PWC.PersistentWorkerCoordinator = real
+ 
+@@ -375,6 +379,14 @@ def g1_producer_contract_shape():
+                 assert res["reverse_map_variable"] == {}, f"{backend}/{name}"
+                 assert res["forward_map_constant"] == FMC, f"{backend}/{name}"
+                 assert res["pruned"] is False and res["reason"] is None
++            elif name == "pruned" and backend == "PWC":
++                # [PWC-STAGE2 ruling 4] PWC no longer prunes: forward-constant
++                # zero still runs every phase, as RANGE-MINER does, and returns
++                # the complete v2 shape with pruned False and four empty maps.
++                assert res["pruned"] is False and res["reason"] is None, \
++                    f"{backend}/{name}: pruned={res['pruned']!r} reason={res['reason']!r}"
++                for field in ORACLE_MAP_FIELDS:
++                    assert res[field] == {}, f"{backend}/{name}: {field} nonempty"
+             elif name == "pruned":
+                 assert res["pruned"] is True, f"{backend}/{name}: not pruned"
+                 assert res["reason"] == "forward_zero", \
+diff --git a/tests/test_s172_threshold_propagation.py b/tests/test_s172_threshold_propagation.py
+index d10f242..5fa292f 100644
+--- a/tests/test_s172_threshold_propagation.py
++++ b/tests/test_s172_threshold_propagation.py
+@@ -50,16 +50,17 @@ THE GATES (brief §4)
+   G-MINER-UNCHANGED  miner/, sieve_gpu_worker.py and prng_registry.py are
+                      byte-identical to HEAD, and the D6 threshold harness still
+                      passes 17/17
+-  G-PWC-HYBRID       Option B: PWC variable-skip fails closed at the execution
+-                     boundary with PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED, a
+-                     real both-mode trial dies on the first hybrid pass, and the
+-                     D3.25 v2 return-shape path is NOT collateral damage
++  G-PWC-HYBRID       [PWC-STAGE2, owner ruling 1] the quarantine is lifted; PWC
++                     variable-skip passes carry the trial's directional threshold
++                     (both keys), a hybrid pass without one refuses before dispatch,
++                     and the D3.25 v2 return-shape path still completes
+ 
+ MUTANTS (four-part kill rule, VIR-2)
+ 
+   M1  restore the bounds.default_* signature default in test_config  -> G-ROUTE-A reds
+   M2  restore the _local_bounds.default_* override in _local_test    -> G-ROUTE-B reds
+-  M3  delete the quarantine guard / neuter its body                  -> G-PWC-HYBRID reds
++  M3  [PWC-STAGE2] restore the 0.5 default (+ drop the equality refusal) /
++      drop phase 3's threshold                                       -> G-PWC-HYBRID reds
+ 
+ Each mutant proves: applies-exactly-once, mutated-path-executed,
+ detector-clean-when-unmutated, detector-fires-on-injected-defect.
+@@ -111,8 +112,6 @@ ORACLE_REVERSE = 0.31
+ # mutant's failure is legible.
+ DEFECT_COLLAPSE_VALUE = 0.30
+ 
+-# The quarantine code Beta's comparator ruling §5 Option B requires.
+-ORACLE_QUARANTINE_CODE = "PWC_HYBRID_THRESHOLD_CONTRACT_UNCERTIFIED"
+ 
+ 
+ # ═════════════════════════════════════════════════════════════════════════════
+@@ -666,13 +665,29 @@ def gate_miner_unchanged() -> str:
+ 
+ 
+ # ═════════════════════════════════════════════════════════════════════════════
+-# G-PWC-HYBRID (Option B — quarantine)
++# G-PWC-HYBRID — [PWC-STAGE2] the threshold contract that replaced the quarantine
+ # ═════════════════════════════════════════════════════════════════════════════
++#
++# Owner ruling 1 (docs/PWC_BACKUP_OWNER_RULINGS_20261119.md, 2026-11-19): "yes-
++# once the threshold is fixed(same as range miner) we lift the block." Until PWC
++# Stage 2 this gate asserted the Option-B quarantine (every PWC variable-skip pass
++# refused). Stage 2 lifts it and fixes the defect the quarantine stood for: the
++# hybrid passes filtered at run_sieve_pass's 0.5 default instead of the trial's
++# directional threshold. The gate now asserts that fix, on the LIVE source:
++#   (1) run_sieve_pass has no threshold default for a hybrid pass — one called
++#       without phase2_threshold refuses before worker acquisition;
++#   (2) a real both-mode trial hands each hybrid pass the trial's own directional
++#       threshold (forward 0.73 to phase 3, reverse 0.31 to phase 4) as both
++#       `threshold` and `phase2_threshold`, as RANGE-MINER writes one value as both;
++#   (3) the D3.25 v2 return-shape path still completes against a fake sieve.
++# The worker-reported (effective) side of the contract is PWC's own suite
++# (tests/test_pwc_backup_stage2.py). Only this section, mutant M3 and the header
++# lines naming them changed in Stage 2; every RANGE-MINER gate is untouched.
+ 
+ def _drive_pwc_run_sieve_pass(src_override: Optional[str] = None):
+-    """Execute the LIVE `run_sieve_pass` for a hybrid prng_type. The stub `self`
+-    raises _DispatchReached at the first thing the guard is supposed to prevent,
+-    so 'the guard did not fire' is observable and cannot be confused with a pass."""
++    """Execute the LIVE `run_sieve_pass` for a hybrid prng_type with NO
++    phase2_threshold. The stub `self` raises _DispatchReached at worker
++    acquisition, so 'nothing refused' is observable and cannot pass."""
+     import persistent_worker_coordinator as pwc
+ 
+     src = src_override if src_override is not None else _extract_source(
+@@ -695,16 +710,10 @@ def _drive_pwc_run_sieve_pass(src_override: Optional[str] = None):
+               output_file="/dev/null", dataset_path=_DATASET)
+ 
+ 
+-def _drive_pwc_both_modes_trial(hybrid_raises: bool):
+-    """Execute the LIVE `run_trial_persistent` both-mode against a FAKE sieve —
+-    the same shape D3.25's G1 uses to assert the v2 four-map return contract.
+-
+-    `hybrid_raises=True` models the real coordinator (its run_sieve_pass carries
+-    the quarantine guard); `hybrid_raises=False` models D3.25's fake, which never
+-    reaches the guarded code at all. Both must behave as designed:
+-      * real  -> the trial fails closed on the first hybrid pass,
+-      * fake  -> the return-shape contract still runs to completion.
+-    """
++def _drive_pwc_both_modes_trial(src_override: Optional[str] = None):
++    """Execute the LIVE (or mutated) `run_trial_persistent` both-mode against a
++    FAKE sieve that records what each pass is handed — the same shape D3.25's G1
++    uses for the v2 four-map return contract."""
+     import persistent_worker_coordinator as pwc
+ 
+     class _FakeSieve:
+@@ -712,12 +721,10 @@ def _drive_pwc_both_modes_trial(hybrid_raises: bool):
+         logger = _Logger()
+ 
+         def __init__(self):
+-            self.calls: List[str] = []
++            self.calls: List[Tuple[str, Any, Any]] = []
+ 
+         def run_sieve_pass(self, prng_type=None, **kw):
+-            self.calls.append(prng_type)
+-            if hybrid_raises and "_hybrid" in (prng_type or ""):
+-                pwc.assert_pwc_hybrid_not_quarantined(prng_type, call_site="fake dispatch")
++            self.calls.append((prng_type, kw.get("threshold"), kw.get("phase2_threshold")))
+             return {"survivors": [7, 42], "match_rates": [0.9, 0.8]}
+ 
+         def startup(self):
+@@ -727,84 +734,58 @@ def _drive_pwc_both_modes_trial(hybrid_raises: bool):
+             pass
+ 
+     fake = _FakeSieve()
+-    real = pwc.PersistentWorkerCoordinator
+-    pwc.PersistentWorkerCoordinator = lambda **kw: fake
+-    try:
+-        import contextlib
+-        import io
+-        with contextlib.redirect_stdout(io.StringIO()):
+-            out = pwc.run_trial_persistent(
+-                coordinator_cfg="unused.json",
+-                config=_window_config(ORACLE_FORWARD, ORACLE_REVERSE),
+-                trial_number=1, prng_base="java_lcg", residues=[1, 2],
+-                total_seeds=1000, forward_threshold=ORACLE_FORWARD,
+-                reverse_threshold=ORACLE_REVERSE, test_both_modes=True,
+-                dataset_path="unused.csv")
+-        return out, fake.calls
+-    finally:
+-        pwc.PersistentWorkerCoordinator = real
+-
+-
+-def _detect_quarantine(driver, src_override: Optional[str] = None) -> None:
+-    """THE detector. Shared verbatim by G-PWC-HYBRID and mutant M3, so the mutant
+-    proves this exact detector fires — not a lookalike written for the mutant."""
++    src = src_override if src_override is not None else _extract_source(
++        _read(_PWC_PATH), "run_trial_persistent", _PWC_PATH)
++    fn, _ = _compile_func(src, pwc, {"PersistentWorkerCoordinator": lambda **kw: fake},
++                          "run_trial_persistent")
++    import contextlib
++    import io
++    with contextlib.redirect_stdout(io.StringIO()):
++        out = fn(coordinator_cfg="unused.json",
++                 config=_window_config(ORACLE_FORWARD, ORACLE_REVERSE),
++                 trial_number=1, prng_base="java_lcg", residues=[1, 2],
++                 total_seeds=1000, forward_threshold=ORACLE_FORWARD,
++                 reverse_threshold=ORACLE_REVERSE, test_both_modes=True,
++                 dataset_path="unused.csv", pwc_transport="tcp")
++    return out, fake.calls
++
++
++def _detect_hybrid_needs_threshold(src_override: Optional[str] = None) -> None:
++    """Detector (1), shared verbatim by G-PWC-HYBRID and mutant M3."""
+     import persistent_worker_coordinator as pwc
+-
+-    exc_type = getattr(pwc, "PwcHybridThresholdContractUncertified", None)
+-    assert exc_type is not None, "quarantine exception type missing"
+     try:
+-        driver(src_override)
+-    except exc_type as exc:
+-        assert ORACLE_QUARANTINE_CODE in str(exc), (
+-            f"quarantine error must name {ORACLE_QUARANTINE_CODE}: {exc}"
+-        )
++        _drive_pwc_run_sieve_pass(src_override)
++    except pwc.PwcSettingRefused as exc:
++        assert "phase2_threshold" in str(exc), f"refused for another reason: {exc}"
+         return
+     except _DispatchReached as exc:
+-        raise AssertionError(f"quarantine did not fire — reached dispatch: {exc}")
+-    raise AssertionError("a PWC hybrid pass completed instead of failing closed")
++        raise AssertionError(f"a hybrid pass with no threshold reached dispatch: {exc}")
++    raise AssertionError("a hybrid pass with no threshold completed")
++
++
++def _detect_trial_threshold_reaches_hybrid(src_override: Optional[str] = None) -> None:
++    """Detector (2) and (3), shared verbatim by G-PWC-HYBRID and mutant M3."""
++    out, calls = _drive_pwc_both_modes_trial(src_override)
++    by = {c[0]: c[1:] for c in calls}
++    assert by.get("java_lcg_hybrid") == (ORACLE_FORWARD, ORACLE_FORWARD), (
++        f"phase 3 was not handed the forward threshold as both keys: {by.get('java_lcg_hybrid')}")
++    assert by.get("java_lcg_hybrid_reverse") == (ORACLE_REVERSE, ORACLE_REVERSE), (
++        f"phase 4 was not handed the reverse threshold as both keys: "
++        f"{by.get('java_lcg_hybrid_reverse')}")
++    assert isinstance(out, dict) and out.get("schema_version"), (
++        "the both-mode v2 return-shape path must still complete against a fake sieve")
+ 
+ 
+ def gate_pwc_hybrid() -> str:
+     import persistent_worker_coordinator as pwc
+ 
+-    assert getattr(pwc, "PWC_HYBRID_QUARANTINE_CODE", None) == ORACLE_QUARANTINE_CODE, (
+-        f"PWC hybrid quarantine code must be {ORACLE_QUARANTINE_CODE!r}"
+-    )
+-
+-    # (1) the execution boundary itself — run_sieve_pass fails closed on hybrid
+-    _detect_quarantine(_drive_pwc_run_sieve_pass)
+-
+-    # (2) a real both-mode trial therefore fails closed too, and does so on the
+-    #     FIRST hybrid pass — after the two constant passes, before any hybrid
+-    #     survivor exists. Proven by the call log, not assumed.
+-    exc_type = pwc.PwcHybridThresholdContractUncertified
+-    try:
+-        _drive_pwc_both_modes_trial(hybrid_raises=True)
+-        raise AssertionError("a both-mode PWC trial completed instead of failing closed")
+-    except exc_type as exc:
+-        assert ORACLE_QUARANTINE_CODE in str(exc), f"wrong error: {exc}"
+-
+-    # (3) the quarantine must be scoped to EXECUTION, not to the return-shape
+-    #     contract: D3.25's G1 drives this same both-mode path against a fake
+-    #     sieve that never reaches the guard, and must still complete. Blocking
+-    #     that would quarantine a contract check, not a known-wrong execution.
+-    out, calls = _drive_pwc_both_modes_trial(hybrid_raises=False)
+-    assert isinstance(out, dict) and out.get("schema_version"), (
+-        "the both-mode v2 return-shape path must still complete against a fake "
+-        "sieve — the quarantine is scoped to execution, not to the contract"
+-    )
+-    assert any("_hybrid" in c for c in calls), (
+-        "the fake-sieve both-mode path did not reach the variable-skip passes, so "
+-        "check (3) would be vacuous"
+-    )
+-
+-    # Constant-skip is explicitly NOT quarantined — the guard must be scoped to
+-    # hybrid only, or it would take out the diagnostic comparator Beta kept.
+-    # Reaching worker acquisition is the CORRECT outcome here.
+-    for constant_family in ("java_lcg", "java_lcg_reverse"):
+-        pwc.assert_pwc_hybrid_not_quarantined(constant_family)   # must not raise
+-    return ("variable-skip fails closed at the execution boundary and kills a real "
+-            "both-mode trial; constant-skip and the D3.25 v2 shape path unaffected")
++    assert not hasattr(pwc, "PWC_HYBRID_QUARANTINE_CODE"), (
++        "the quarantine code is still defined: ruling 1 lifts the quarantine")
++    _detect_hybrid_needs_threshold()
++    _detect_trial_threshold_reaches_hybrid()
++    return ("variable-skip passes carry the trial's directional threshold (0.73 -> P3, "
++            "0.31 -> P4, both keys); a hybrid pass with no threshold refuses before "
++            "dispatch; the D3.25 v2 shape path completes")
+ 
+ 
+ # ═════════════════════════════════════════════════════════════════════════════
+@@ -908,40 +889,40 @@ def mutant_m2_route_b() -> Tuple[str, str, str]:
+ 
+ 
+ def mutant_m3_pwc_quarantine() -> Tuple[str, str, str]:
+-    """Delete the quarantine guard from each PWC call site."""
++    """[PWC-STAGE2] Restore the defect the quarantine stood for, at each seam."""
+     pwc_src = _read(_PWC_PATH)
+     notes = []
+ 
+-    # call site 1 — run_sieve_pass
++    # seam 1 — run_sieve_pass: the 0.5 default back in the signature AND the
++    # equality refusal disabled (either one alone still keeps 0.5 from a hybrid
++    # pass, so each alone would be an invalid mutation experiment under VIR-2)
+     s1 = _extract_source(pwc_src, "run_sieve_pass", _PWC_PATH)
+     s1 = _mutate_once(
+         s1,
+-        'assert_pwc_hybrid_not_quarantined(prng_type, call_site="run_sieve_pass")',
+-        "pass", "M3/run_sieve_pass")
+-    fired1, why1 = _detector_fires(_detect_quarantine, _drive_pwc_run_sieve_pass, s1)
+-    assert fired1, "M3: removing the run_sieve_pass guard was not detected"
+-    notes.append(f"run_sieve_pass -> {why1}")
+-
+-    # The guard function itself: neutering it must also be caught, so the gate
+-    # cannot pass on the mere presence of a call that does nothing.
+-    def _detect_via_guard():
+-        pwc_mod = sys.modules["persistent_worker_coordinator"]
+-        real = pwc_mod.assert_pwc_hybrid_not_quarantined
+-        pwc_mod.assert_pwc_hybrid_not_quarantined = lambda *a, **k: None
+-        try:
+-            _drive_pwc_both_modes_trial(hybrid_raises=True)
+-        finally:
+-            pwc_mod.assert_pwc_hybrid_not_quarantined = real
+-        raise AssertionError("a both-mode PWC trial completed with the guard neutered")
+-
+-    fired2, why2 = _detector_fires(_detect_via_guard)
+-    assert fired2, "M3: neutering the guard body was not detected"
+-    notes.append(f"guard body neutered -> {why2}")
+-
+-    return ("mutated run_sieve_pass executed and reached dispatch; neutered-guard "
+-            "both-mode trial ran to completion",
++        "phase2_threshold: Optional[float] = None,",
++        "phase2_threshold: Optional[float] = 0.5,", "M3/run_sieve_pass default")
++    s1 = _mutate_once(
++        s1,
++        "            if not _thr_equal(phase2_threshold, threshold):\n",
++        "            if False:\n", "M3/run_sieve_pass equality")
++    fired1, why1 = _detector_fires(_detect_hybrid_needs_threshold, s1)
++    assert fired1, "M3: restoring the 0.5 default was not detected"
++    notes.append(f"run_sieve_pass 0.5 default -> {why1}")
++
++    # seam 2 — run_trial_persistent: phase 3 no longer handed the threshold
++    s2 = _extract_source(pwc_src, "run_trial_persistent", _PWC_PATH)
++    s2 = _mutate_once(
++        s2,
++        "                phase2_threshold = forward_threshold,   # [PWC-STAGE2 ruling 1]\n",
++        "", "M3/run_trial_persistent phase 3")
++    fired2, why2 = _detector_fires(_detect_trial_threshold_reaches_hybrid, s2)
++    assert fired2, "M3: dropping phase 3's threshold was not detected"
++    notes.append(f"phase-3 threshold dropped -> {why2}")
++
++    return ("mutated run_sieve_pass reached dispatch; mutated run_trial_persistent "
++            "ran phase 3 without the trial's threshold",
+             " | ".join(notes),
+-            "applies-once verified at the call site; guard body swapped once")
++            "applies-once verified at both seams")
+ 
+ 
+ # ═════════════════════════════════════════════════════════════════════════════
+@@ -959,7 +940,7 @@ GATES = [
+ MUTANTS = [
+     ("M1 restore bounds.default_* in test_config -> G-ROUTE-A", mutant_m1_route_a),
+     ("M2 restore _local_bounds override in _local_test -> G-ROUTE-B", mutant_m2_route_b),
+-    ("M3 remove the PWC hybrid quarantine guard -> G-PWC-HYBRID", mutant_m3_pwc_quarantine),
++    ("M3 restore the PWC hybrid threshold defect -> G-PWC-HYBRID", mutant_m3_pwc_quarantine),
+ ]
+ 
+ 
+diff --git a/tests/test_pwc_backup_stage2.py b/tests/test_pwc_backup_stage2.py
+new file mode 100644
+index 0000000..e89c83a
+--- /dev/null
++++ b/tests/test_pwc_backup_stage2.py
+@@ -0,0 +1,1405 @@
++#!/usr/bin/env python3
++"""test_pwc_backup_stage2.py — acceptance harness for PWC full-backup STAGE 2.
++
++What Stage 2 changes (docs/drafts/pwc_backup_stage2_v1/README.md has file:line):
++  ruling 1  the variable-skip quarantine is lifted; the threshold contract replaces it
++            (no 0.5 default, one value written as both keys, the worker's report
++            checked, SSH refused for variable-skip passes);
++  ruling 4  no early stop: phases 1-2 always, 3-4 whenever test_both_modes;
++  default   all five hybrid strategies (S147 Q2 single strategy removed);
++  owner     window offset != 0 refused (2026-11-20), until the anchor/phase split lands;
++  Beta-2    a process check must prove it can see processes (positive control) and
++            read pgrep's exit status exactly (rig kill, S156 find/reap, VM101 kill);
++  Beta-3    revocation drops a connection the id already holds; an unconfirmed launch
++            is not counted; only a connection that still owns an id cleans up under it;
++  Beta-4    a worker exits on an explicit hello refusal instead of retrying forever.
++
++Run from the repository root:   python3 -u tests/test_pwc_backup_stage2.py
++
++CPU only. No GPU, no rig, no ssh, no network beyond 127.0.0.1:
++  * every pkill/pgrep this suite EXECUTES runs inside a fresh unprivileged user + PID
++    namespace (unshare --user --map-root-user --pid --fork --mount-proc); without
++    unshare those gates report UNAVAILABLE and the suite does not pass;
++  * transport gates bind a real TCPWorkerTransport on 127.0.0.1, port 0;
++  * the worker-exit gate runs the real worker service in a child process against that
++    loopback transport, with its heartbeat directory pointed under OUT;
++  * the echo gate runs the REAL sieve_filter.execute_sieve_job in a child process with
++    the GPU sieve methods replaced (no device is touched);
++  * everything written goes under <root>/logs/pwc_stage2_test/ (an ignored path).
++
++Every repair has a MUTANT: a textual edit of the LIVE source that undoes it, loaded as a
++separate module (or run from a temporary copy). A mutant counts as killed only if the
++edit applies exactly once, the detector passes on the live source (positive control),
++and the detector fails on the mutant with its own AssertionError (VIR-2).
++"""
++import contextlib
++import importlib.util
++import io
++import json
++import os
++import shutil
++import socket
++import struct
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++import traceback
++import types
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++os.chdir(ROOT)
++
++OUT = os.path.join(ROOT, "logs", "pwc_stage2_test")
++PWC_PATH = os.path.join(ROOT, "persistent_worker_coordinator.py")
++TCP_PATH = os.path.join(ROOT, "persistent", "pwc_transport_tcp.py")
++SVC_PATH = os.path.join(ROOT, "persistent", "pwc_worker_service.py")
++
++import persistent_worker_coordinator as PWC                 # noqa: E402
++import persistent.pwc_transport_tcp as TCP                  # noqa: E402
++
++RIGS = ("192.168.3.122", "192.168.3.156")
++DIAL = "192.168.3.177"
++FWD, REV = 0.73125, 0.31
++
++
++class Unavailable(Exception):
++    """The check could not run here (not a pass, not a fail)."""
++
++
++def _load_source(src, name, path):
++    spec = importlib.util.spec_from_loader(name, loader=None, origin=path)
++    mod = importlib.util.module_from_spec(spec)
++    mod.__file__ = path
++    sys.modules[name] = mod
++    exec(compile(src, path, "exec"), mod.__dict__)
++    return mod
++
++
++def _mutate(path, old, new):
++    src = open(path, encoding="utf-8").read()
++    n = src.count(old)
++    assert n == 1, f"mutant anchor occurs {n} times in {os.path.basename(path)}: {old[:80]!r}"
++    return src.replace(old, new)
++
++
++def raises(exc_type, fn):
++    try:
++        fn()
++    except exc_type as e:
++        return e
++    except Exception as e:                                          # noqa: BLE001
++        raise AssertionError(f"expected {exc_type.__name__}, got {type(e).__name__}: {e}")
++    raise AssertionError(f"expected {exc_type.__name__}; nothing was raised")
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# A coordinator on the TCP route with a fake transport and a fake worker
++# ═════════════════════════════════════════════════════════════════════════════
++def _write_config(rigs=RIGS, gpu_count=8, localhost=False):
++    os.makedirs(OUT, exist_ok=True)
++    nodes = [{"hostname": h, "gpu_type": "RX 6600 XT", "gpu_count": gpu_count,
++              "python_env": "/home/michael/rocm_env/bin/python",
++              "script_path": "/home/michael/distributed_prng_analysis",
++              "username": "michael"} for h in rigs]
++    if localhost:
++        nodes.append({"hostname": "localhost", "gpu_type": "RTX 3080 Ti", "gpu_count": 2,
++                      "python_env": sys.executable, "script_path": ROOT})
++    path = tempfile.mktemp(suffix=".json", dir=OUT)
++    with open(path, "w") as f:
++        json.dump({"nodes": nodes}, f)
++    return path
++
++
++def sieve_like_payload(job, *, echo="exact", ok=True):
++    """What sieve_filter.execute_sieve_job returns for one TCP job (final_result),
++    reduced to the keys PWC reads. `echo`: 'exact' (the 4-place report sieve_filter
++    makes), a float to report instead, or None to report nothing."""
++    fam = job["prng_families"][0]
++    per = {"survivors": [], "tested": job["seed_end"] - job["seed_start"]}
++    if job.get("hybrid"):
++        if echo == "exact":
++            per["single_phase"] = {"threshold": round(job["phase2_threshold"], 4),
++                                   "strategies_tested": len(job["strategies"] or [])}
++        elif echo is not None:
++            per["single_phase"] = {"threshold": echo, "strategies_tested": 5}
++    return {"success": ok, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
++            "min_match_threshold": job["min_match_threshold"], "survivors": [],
++            "per_family": {fam: per}}
++
++
++class FakeTransport:
++    """Stands in for TCPWorkerTransport: records jobs, answers with provider(job)."""
++    def __init__(self, provider, ready=2):
++        self.provider, self.ready, self.jobs = provider, ready, []
++        self._results = {}
++
++    def ready_count(self):
++        return self.ready
++
++    def worker_count(self):
++        return self.ready
++
++    def submit_job(self, job):
++        self.jobs.append(json.loads(json.dumps(job)))
++        payload = self.provider(job)
++        self._results[job["job_id"]] = {"status": "ok", "result": payload,
++                                        "worker_id": "192_168_3_122_gpu0"}
++
++    def recv_result(self, timeout_s=None, job_id=None):
++        return self._results.pop(job_id, None)
++
++
++def make_tcp_pwc(M, provider, *, ready=2):
++    p = M.PersistentWorkerCoordinator(config_file=_write_config(), worker_pool_size=6,
++                                      seed_cap_amd=25_000, pwc_transport="tcp",
++                                      pwc_coordinator_address=DIAL)
++    p._tcp_transport = FakeTransport(provider, ready=ready)
++    p._effective_pool_by_host = {RIGS[0]: 6}
++    return p
++
++
++def run_pass(p, prng, *, thr=FWD, phase2="same", offset=0, total=40_000, strategies=None):
++    kw = {}
++    if phase2 == "same":
++        kw["phase2_threshold"] = thr
++    elif phase2 is not None:
++        kw["phase2_threshold"] = phase2
++    with contextlib.redirect_stderr(io.StringIO()):
++        return p.run_sieve_pass(
++            prng_type=prng, residues=[1, 2, 3], total_seeds=total, threshold=thr,
++            window_size=8, output_file=os.path.join(OUT, f"pass_{prng}.json"),
++            dataset_path="unused.json", sessions=["midday", "evening"],
++            skip_range=[0, 10], offset=offset, strategies=strategies, **kw)
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Ruling 1 — the threshold contract
++# ═════════════════════════════════════════════════════════════════════════════
++def d_thr_jobs(M=PWC):
++    """Every job carries the one requested value as BOTH keys (constant and hybrid)."""
++    for prng, thr in (("java_lcg", FWD), ("java_lcg_reverse", REV),
++                      ("java_lcg_hybrid", FWD), ("java_lcg_hybrid_reverse", REV)):
++        p = make_tcp_pwc(M, sieve_like_payload)
++        res = run_pass(p, prng, thr=thr)
++        jobs = p._tcp_transport.jobs
++        assert jobs, f"{prng}: nothing dispatched"
++        for j in jobs:
++            assert j["min_match_threshold"] == thr and j["phase2_threshold"] == thr, \
++                f"{prng}: job carries min={j['min_match_threshold']} phase2={j['phase2_threshold']}, want {thr}"
++        rec = res["pwc_pass_accounting"]["threshold"]
++        assert rec["agree"] and rec["verified"], f"{prng}: {rec}"
++        if "_hybrid" in prng:
++            assert rec["kind"] == "hybrid" and rec["effective"] == [round(thr, 4)], rec
++        assert res["pwc_pass_accounting"]["transport"] == "tcp"
++    # a constant pass may omit phase2_threshold; the job then carries `threshold`
++    p = make_tcp_pwc(M, sieve_like_payload)
++    run_pass(p, "java_lcg", thr=FWD, phase2=None)
++    assert all(j["phase2_threshold"] == FWD for j in p._tcp_transport.jobs)
++    return "constant and hybrid jobs carry the requested value as both keys; records verified"
++
++
++def d_thr_refusals(M=PWC):
++    # no phase2_threshold on a hybrid pass
++    p = make_tcp_pwc(M, sieve_like_payload)
++    e = raises(M.PwcSettingRefused, lambda: run_pass(p, "java_lcg_hybrid", phase2=None))
++    assert "needs phase2_threshold" in str(e) and not p._tcp_transport.jobs, e
++    # phase2 != threshold (the old 0.5)
++    p = make_tcp_pwc(M, sieve_like_payload)
++    e = raises(M.PwcSettingRefused, lambda: run_pass(p, "java_lcg_hybrid", phase2=0.5))
++    assert "!= threshold" in str(e) and not p._tcp_transport.jobs, e
++    # SSH route (no TCP transport): a hybrid pass refuses before any dispatch
++    p = M.PersistentWorkerCoordinator(config_file=_write_config(), worker_pool_size=6,
++                                      seed_cap_amd=25_000, pwc_transport="ssh")
++    sent = []
++    p._dispatch_to_worker = lambda h, j: sent.append(j) or {}
++    p._dispatch_local_sieve = lambda j, n: sent.append(j) or {}
++    e = raises(M.PwcSettingRefused, lambda: run_pass(p, "java_lcg_hybrid_reverse", thr=REV))
++    assert "need the TCP transport" in str(e) and not sent, e
++    return "no threshold / threshold != requested / SSH route: hybrid pass refused, nothing dispatched"
++
++
++def d_thr_echo(M=PWC):
++    """The worker's report is checked: wrong value, or none, fails the pass."""
++    p = make_tcp_pwc(M, lambda j: sieve_like_payload(j, echo=0.5))
++    e = raises(M.PwcThresholdContractMismatch, lambda: run_pass(p, "java_lcg_hybrid"))
++    assert "0.5" in str(e), e
++    p = make_tcp_pwc(M, lambda j: sieve_like_payload(j, echo=None))
++    e = raises(M.PwcThresholdContractMismatch, lambda: run_pass(p, "java_lcg_hybrid"))
++    assert "no reported threshold=" in str(e), e
++    # one chunk of several reports the wrong value
++    calls = {"n": 0}
++
++    def one_bad(j):
++        calls["n"] += 1
++        return sieve_like_payload(j, echo=0.5 if calls["n"] == 2 else "exact")
++    p = make_tcp_pwc(M, one_bad)
++    raises(M.PwcThresholdContractMismatch, lambda: run_pass(p, "java_lcg_hybrid_reverse", thr=REV))
++    return "hybrid report 0.5 for 0.73125 / no report / one bad chunk: the pass refuses"
++
++
++_ECHO_CHILD = r'''
++import json, sys, types
++sys.path.insert(0, sys.argv[1])
++jobs = json.load(open(sys.argv[2]))
++import sieve_filter as SF
++SF.load_draws_from_daily3 = lambda path, w, sessions, offset: list(range(w))
++class _Sieve:
++    def __init__(self, gpu_id=0): pass
++    def run_hybrid_sieve(self, prng_family, seed_start, seed_end, residues, strategies,
++                         min_match_threshold=0.25, chunk_size=100_000, offset=0):
++        return {"family": prng_family, "seed_range": {"start": seed_start, "end": seed_end},
++                "survivors": [], "strategies_tested": len(strategies),
++                "stats": {"seeds_tested": seed_end - seed_start, "survivors_found": 0,
++                          "duration_ms": 1.0, "seeds_per_sec": 1.0},
++                "_threshold_seen": min_match_threshold, "_offset_seen": offset}
++    def run_sieve(self, **kw):
++        raise AssertionError("constant sieve called for a hybrid job")
++SF.GPUSieve = _Sieve
++out = []
++for j in jobs:
++    out.append(SF.execute_sieve_job(j, 0))
++json.dump(out, open(sys.argv[3], "w"))
++'''
++
++
++def g_echo_real_sieve_filter():
++    """The REAL sieve_filter.execute_sieve_job (child process, GPU methods replaced):
++    the report PWC reads is where PWC reads it, and equals the value the job carried
++    to the sieve call, to 4 places. Not a mutant gate: it checks the shape PWC relies on."""
++    p = make_tcp_pwc(PWC, sieve_like_payload)
++    run_pass(p, "java_lcg_hybrid", thr=FWD, total=20_000)
++    jobs = p._tcp_transport.jobs
++    jpath, opath = os.path.join(OUT, "echo_jobs.json"), os.path.join(OUT, "echo_out.json")
++    json.dump(jobs, open(jpath, "w"))
++    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="")
++    r = subprocess.run([sys.executable, "-c", _ECHO_CHILD, ROOT, jpath, opath],
++                       capture_output=True, text=True, timeout=120, env=env)
++    if r.returncode != 0 or not os.path.exists(opath):
++        raise Unavailable(f"sieve_filter child rc={r.returncode}: {r.stderr.strip()[-200:]!r}")
++    results = json.load(open(opath))
++    for job, res in zip(jobs, results):
++        assert res.get("success"), res.get("error")
++        fam = job["prng_families"][0]
++        seen = res["per_family"][fam]["_threshold_seen"]
++        assert seen == job["phase2_threshold"] == FWD, (seen, job["phase2_threshold"])
++        assert res["per_family"][fam]["_offset_seen"] == 0
++        echo = PWC._pwc_hybrid_echo(res, job)
++        assert echo == round(FWD, 4), (echo, FWD)
++    # and the whole record built from those real reports verifies
++    by_range = {(r["seed_range"]["start"], r["seed_range"]["end"]): r for r in results}
++    p2 = make_tcp_pwc(PWC, lambda j: by_range[(j["seed_start"], j["seed_end"])])
++    res = run_pass(p2, "java_lcg_hybrid", thr=FWD, total=20_000)
++    rec = res["pwc_pass_accounting"]["threshold"]
++    assert rec["verified"] and rec["effective"] == [round(FWD, 4)], rec
++    return (f"real execute_sieve_job: sieve got {FWD} (the job's phase2_threshold), reported "
++            f"{round(FWD, 4)} at per_family[..].single_phase.threshold; record verified")
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Ruling 4 + strategies + offset + SSH: run_trial_persistent
++# ═════════════════════════════════════════════════════════════════════════════
++class _Cfg:
++    def __init__(self, offset=0):
++        self.window_size, self.offset, self.sessions = 8, offset, ["midday", "evening"]
++        self.skip_min, self.skip_max = 0, 10
++
++
++def drive_trial(M, table, *, both=True, offset=0, transport="tcp", base="java_lcg"):
++    calls, made = [], []
++
++    class Fake:
++        _progress_writer = None
++        logger = types.SimpleNamespace(warning=lambda *a, **k: None, info=lambda *a, **k: None,
++                                       error=lambda *a, **k: None)
++
++        def startup(self):
++            pass
++
++        def shutdown(self):
++            pass
++
++        def run_sieve_pass(self, prng_type=None, **kw):
++            calls.append((prng_type, kw))
++            s = table.get(prng_type, [])
++            return {"survivors": list(s), "match_rates": [0.9] * len(s)}
++
++    real = M.PersistentWorkerCoordinator
++    M.PersistentWorkerCoordinator = lambda **kw: made.append(kw) or Fake()
++    try:
++        with contextlib.redirect_stdout(io.StringIO()):
++            out = M.run_trial_persistent(
++                coordinator_cfg="unused.json", config=_Cfg(offset), trial_number=3,
++                prng_base=base, residues=[1, 2], total_seeds=1000, forward_threshold=FWD,
++                reverse_threshold=REV, test_both_modes=both, dataset_path="unused.json",
++                pwc_transport=transport)
++    finally:
++        M.PersistentWorkerCoordinator = real
++    return out, calls, made
++
++
++ALL4 = ["java_lcg", "java_lcg_reverse", "java_lcg_hybrid", "java_lcg_hybrid_reverse"]
++
++
++def d_phases(M=PWC):
++    out, calls, _ = drive_trial(M, {})                       # zero survivors everywhere
++    assert [c[0] for c in calls] == ALL4, f"forward zero: {[c[0] for c in calls]}"
++    assert out["pruned"] is False and out["reason"] is None, out.get("reason")
++    out, calls, _ = drive_trial(M, {"java_lcg": [7], "java_lcg_reverse": [7]})
++    assert [c[0] for c in calls] == ALL4, f"variable forward zero: {[c[0] for c in calls]}"
++    out, calls, _ = drive_trial(M, {"java_lcg": [7]}, both=False)
++    assert [c[0] for c in calls] == ALL4[:2], [c[0] for c in calls]
++    return "zero forward survivors: all 4 phases; zero variable-forward: phase 4 still runs; both=False: 1-2"
++
++
++def d_trial_thresholds_and_strategies(M=PWC):
++    _, calls, _ = drive_trial(M, {"java_lcg": [7]})
++    want = {"java_lcg": FWD, "java_lcg_reverse": REV, "java_lcg_hybrid": FWD,
++            "java_lcg_hybrid_reverse": REV}
++    for prng, kw in calls:
++        assert kw.get("threshold") == want[prng] and kw.get("phase2_threshold") == want[prng], \
++            f"{prng}: threshold={kw.get('threshold')!r} phase2_threshold={kw.get('phase2_threshold')!r}"
++        if "_hybrid" in prng:
++            assert "strategies" in kw and kw["strategies"] is None, \
++                f"{prng}: strategies={kw.get('strategies', 'MISSING')!r}"
++    return "each pass gets its directional threshold as both keys; hybrid passes strategies=None"
++
++
++def d_strategies_all_five(M=PWC):
++    from hybrid_strategy import get_all_strategies
++    want = [s.to_dict() if hasattr(s, "to_dict") else s for s in get_all_strategies()]
++    p = make_tcp_pwc(M, sieve_like_payload)
++    run_pass(p, "java_lcg_hybrid", strategies=None)
++    got = p._tcp_transport.jobs[0]["strategies"]
++    assert got == json.loads(json.dumps(want)) and len(got) == len(want) == 5, \
++        f"{len(got)} strategies sent: {[s.get('name') for s in got]}"
++    return f"strategies=None sends all {len(want)}: {[s.get('name') for s in got]}"
++
++
++def d_offset(M=PWC):
++    e = raises(M.PwcWindowAnchorRefused, lambda: drive_trial(M, {}, offset=25))
++    assert "25" in str(e), e
++    # refused before the coordinator (the fleet) is built
++    real = M.PersistentWorkerCoordinator
++    built = []
++    M.PersistentWorkerCoordinator = lambda **kw: built.append(kw)
++    try:
++        raises(M.PwcWindowAnchorRefused, lambda: M.run_trial_persistent(
++            coordinator_cfg="unused.json", config=_Cfg(25), trial_number=1,
++            prng_base="java_lcg", residues=[1], total_seeds=10, forward_threshold=FWD,
++            reverse_threshold=REV, test_both_modes=False, pwc_transport="tcp"))
++    finally:
++        M.PersistentWorkerCoordinator = real
++    assert not built, "the fleet was built before the offset refusal"
++    p = make_tcp_pwc(M, sieve_like_payload)
++    raises(M.PwcWindowAnchorRefused, lambda: run_pass(p, "java_lcg", offset=3))
++    assert not p._tcp_transport.jobs
++    out, calls, _ = drive_trial(M, {}, offset=0)
++    assert len(calls) == 4
++    return "offset 25: refused before the fleet is built; run_sieve_pass offset 3 refused; offset 0 runs"
++
++
++def d_ssh_variable(M=PWC):
++    real = M.PersistentWorkerCoordinator
++    built = []
++    M.PersistentWorkerCoordinator = lambda **kw: built.append(kw)
++    try:
++        e = raises(M.PwcSettingRefused, lambda: M.run_trial_persistent(
++            coordinator_cfg="unused.json", config=_Cfg(0), trial_number=1,
++            prng_base="java_lcg", residues=[1], total_seeds=10, forward_threshold=FWD,
++            reverse_threshold=REV, test_both_modes=True, pwc_transport="ssh"))
++    finally:
++        M.PersistentWorkerCoordinator = real
++    assert "pwc_transport='tcp'" in str(e) and not built, e
++    out, calls, _ = drive_trial(M, {}, both=False, transport="ssh")
++    assert [c[0] for c in calls] == ALL4[:2]
++    return "both-mode on SSH refused before the fleet; constant-only on SSH still runs"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Beta-2 — process checks prove they can see (isolated PID namespace)
++# ═════════════════════════════════════════════════════════════════════════════
++_HARNESS = r'''#!/bin/bash
++a=pwc_worker; b=_service; c=sieve_gpu; d=_worker.py
++DUMMY_PWC="${a}${b}"; DUMMY_SIEVE="/opt/x/${c}${d}"
++pids=""; p_pwc=""; p_sieve=""
++if [ "$WITH_DUMMIES" = 1 ]; then
++  python3 -c 'import time; time.sleep(120)' "$DUMMY_PWC" --gpu-id 0 & p_pwc=$!
++  python3 -c 'import time; time.sleep(120)' "$DUMMY_SIEVE" --persistent & p_sieve=$!
++  pids="$p_pwc $p_sieve"
++  sleep 0.4
++fi
++[ -n "$FAKE_DIR" ] && export PATH="$FAKE_DIR:$PATH"
++bash -c "$CMD" > "$OUTDIR/stdout" 2> "$OUTDIR/stderr"
++echo $? > "$OUTDIR/rc"
++a_pwc=0; a_sieve=0
++[ -n "$p_pwc" ] && kill -0 "$p_pwc" 2>/dev/null && a_pwc=1
++[ -n "$p_sieve" ] && kill -0 "$p_sieve" 2>/dev/null && a_sieve=1
++echo "$a_pwc $a_sieve" > "$OUTDIR/alive_each"
++for p in $pids; do kill -9 "$p" 2>/dev/null; done
++exit 0
++'''
++
++REAL_PGREP = shutil.which("pgrep") or "/usr/bin/pgrep"
++FAKE_PGREP = {
++    # pgrep that cannot run at all (Beta's reproduction: exit 2)
++    "pgrep_exit2": "#!/bin/sh\nexit 2\n",
++    # pgrep that runs but sees no process (e.g. hidden /proc): always "no match"
++    "pgrep_blind": "#!/bin/sh\n[ \"$1\" = \"-c\" ] || [ \"$2\" = \"-c\" ] && echo 0\nexit 1\n",
++    # pgrep that works for the control token and errors on the worker patterns
++    "pgrep_err_on_target": "#!/bin/sh\ncase \"$*\" in *%s*) exec %s \"$@\";; esac\nexit 2\n"
++                           % (PWC.PWC_PROBE_CONTROL_TOKEN, REAL_PGREP),
++}
++
++
++def run_isolated(cmd, *, dummies=True, fake=None):
++    if shutil.which("unshare") is None:
++        raise Unavailable("unshare not installed")
++    d = tempfile.mkdtemp(prefix="iso_", dir=OUT)
++    h = os.path.join(d, "harness.sh")
++    with open(h, "w") as f:
++        f.write(_HARNESS)
++    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CMD": cmd, "OUTDIR": d,
++           "WITH_DUMMIES": "1" if dummies else "0", "FAKE_DIR": ""}
++    if fake:
++        fp = os.path.join(d, "fakebin")
++        os.makedirs(fp)
++        with open(os.path.join(fp, "pgrep"), "w") as f:
++            f.write(FAKE_PGREP[fake])
++        os.chmod(os.path.join(fp, "pgrep"), 0o755)
++        env["FAKE_DIR"] = fp
++    r = subprocess.run(["unshare", "--user", "--map-root-user", "--pid", "--fork",
++                        "--mount-proc", "bash", h], env=env, capture_output=True,
++                       text=True, timeout=60)
++    if r.returncode != 0 or not os.path.exists(os.path.join(d, "rc")):
++        raise Unavailable(f"unshare rc={r.returncode} stderr={r.stderr.strip()[:160]!r}")
++    read = lambda n: open(os.path.join(d, n)).read()
++    a_pwc, a_sieve = (int(x) for x in read("alive_each").split())
++    return {"rc": int(read("rc")), "stdout": read("stdout").strip().splitlines(),
++            "alive_pwc": a_pwc, "alive_sieve": a_sieve}
++
++
++def d_probe_kill(M=PWC):
++    cmd = M.pwc_stale_kill_command()
++    ok = M.PWC_STALE_KILL_OK
++    r = run_isolated(cmd)                                   # clean control
++    assert r["rc"] == 0 and r["stdout"][-1:] == [ok] and not (r["alive_pwc"] or r["alive_sieve"]), r
++    r = run_isolated(cmd, dummies=False)
++    assert r["rc"] == 0 and r["stdout"][-1:] == [ok], r
++    for fake in ("pgrep_exit2", "pgrep_blind", "pgrep_err_on_target"):
++        r = run_isolated(cmd, dummies=False, fake=fake)
++        assert r["rc"] == M.PWC_KILL_EXIT_UNAVAILABLE and ok not in r["stdout"], f"{fake}: {r}"
++    loc = M.pwc_stale_kill_command(M.PWC_LOCAL_STALE_KILL_PATTERNS)
++    r = run_isolated(loc)
++    assert r["rc"] == 0 and r["stdout"][-1:] == [ok], r
++    assert r["alive_pwc"] == 0 and r["alive_sieve"] == 1, f"local kill must touch only pwc: {r}"
++    r = run_isolated(loc, dummies=False, fake="pgrep_blind")
++    assert r["rc"] == M.PWC_KILL_EXIT_UNAVAILABLE, r
++    return ("kill: real pgrep -> marker; pgrep exit 2 / blind / erroring on the target -> "
++            "rc 7, no marker; VM101-local string kills only the pwc dummy")
++
++
++def d_probe_s156(M=PWC):
++    find, reap = M.pwc_s156_find_command(), M.pwc_s156_reap_command()
++    U = M.PWC_S156_UNAVAILABLE
++    r = run_isolated(find, dummies=False)
++    assert r["stdout"] == ["none"], r
++    r = run_isolated(find)
++    assert len(r["stdout"]) == 1 and "--persistent" in r["stdout"][0], r
++    r = run_isolated(reap)
++    assert r["stdout"] == ["reaped:0"] and r["alive_sieve"] == 0 and r["alive_pwc"] == 1, r
++    for fake in ("pgrep_exit2", "pgrep_blind", "pgrep_err_on_target"):
++        r = run_isolated(find, dummies=False, fake=fake)
++        assert r["stdout"] == [U], f"find/{fake}: {r}"
++        r = run_isolated(reap, dummies=False, fake=fake)
++        assert r["stdout"] == ["reaped:unavailable"], f"reap/{fake}: {r}"
++    return ("S156 find: none / the worker / probe_unavailable; reap: 'reaped:0' exactly "
++            "(no double zero) / 'reaped:unavailable' for all three broken probes")
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Beta-2/3 wiring in _tcp_launch_workers (subprocess recorded, nothing sent)
++# ═════════════════════════════════════════════════════════════════════════════
++class Admission:
++    def __init__(self):
++        self.allowed, self.revoked = set(), []
++
++    def set_allowed_worker_ids(self, ids):
++        self.allowed = set(ids)
++
++    def allow_worker_id(self, wid):
++        self.allowed.add(wid)
++
++    def revoke_worker_id(self, wid):
++        self.allowed.discard(wid)
++        self.revoked.append(wid)
++
++
++def launch(M, *, local_kill, no_pid=(), localhost=True):
++    cfg = _write_config(rigs=RIGS[:1], localhost=localhost)
++    p = M.PersistentWorkerCoordinator(config_file=cfg, worker_pool_size=2, seed_cap_amd=25_000,
++                                      pwc_transport="tcp", pwc_coordinator_address=DIAL)
++    p._tcp_transport = Admission()
++    p._probe_live_rocm_gpu_count = lambda node: 2
++    p._reset_rig_cupy_cache = lambda *a: True
++    waits, popens = [], []
++    p._tcp_wait_online = lambda expected, timeout_s=0: waits.append(expected) or 0
++    p._tcp_broadcast_init = lambda: 0
++    p._tcp_wait_ready = lambda expected, timeout_s=0: 0
++    ok = M.PWC_STALE_KILL_OK
++
++    def fake_run(cmd, *a, **k):
++        flat = cmd if isinstance(cmd, str) else " ".join(map(str, cmd))
++        if isinstance(cmd, list) and cmd[:2] == ["bash", "-c"]:      # VM101-local kill
++            return local_kill(cmd)
++        if ok in flat:
++            return subprocess.CompletedProcess(cmd, 0, ok + "\n", "")
++        if "cat > " in flat:
++            return subprocess.CompletedProcess(cmd, 0, b"", b"")
++        if "bash /tmp/pwc_tcp_launch_gpu" in flat:
++            gpu = int(flat.rsplit("gpu", 1)[1].split(".")[0])
++            return subprocess.CompletedProcess(cmd, 0, "" if gpu in no_pid else "PID=4242\n", "")
++        raise AssertionError(f"unexpected subprocess: {flat[:120]}")
++
++    class FakePopen:
++        def __init__(self, cmd, **kw):
++            popens.append(kw.get("env", {}).get("PWC_WORKER_ID"))
++            self.pid = 999
++
++    import builtins
++
++    def redirected_open(path, *a, **k):
++        # the local launch appends to /tmp/pwc_tcp_worker_zeus_gpuN.log; keep it under OUT
++        if isinstance(path, str) and path.startswith("/tmp/"):
++            path = os.path.join(OUT, "tmp_redirect_" + os.path.basename(path))
++        return builtins.open(path, *a, **k)
++
++    saved = (subprocess.run, subprocess.Popen, time.sleep)
++    subprocess.run, subprocess.Popen, time.sleep = fake_run, FakePopen, (lambda s: None)
++    M.open = redirected_open
++    try:
++        with contextlib.redirect_stderr(io.StringIO()):
++            p._tcp_launch_workers()
++    finally:
++        subprocess.run, subprocess.Popen, time.sleep = saved
++        del M.open
++    return p, waits, popens
++
++
++def d_local_kill_read(M=PWC):
++    good = lambda c: subprocess.CompletedProcess(c, 0, M.PWC_STALE_KILL_OK + "\n", "")
++    p, waits, popens = launch(M, local_kill=good)
++    assert popens == ["zeus_gpu0", "zeus_gpu1"] and {"zeus_gpu0", "zeus_gpu1"} <= p._tcp_transport.allowed, popens
++    for name, reply in (("rc 7", lambda c: subprocess.CompletedProcess(c, 7, "", "")),
++                        ("rc 6", lambda c: subprocess.CompletedProcess(c, 6, "", "")),
++                        ("no marker", lambda c: subprocess.CompletedProcess(c, 0, "", "")),
++                        ("raises", lambda c: (_ for _ in ()).throw(OSError("no bash")))):
++        p, waits, popens = launch(M, local_kill=reply)
++        assert popens == [], f"{name}: local workers launched: {popens}"
++        assert not any(w.startswith("zeus_") for w in p._tcp_transport.allowed), name
++        assert waits == [2], f"{name}: online wait sized {waits}, want the 2 rig workers"
++    return "VM101 kill confirmed -> 2 local workers; rc 7 / rc 6 / no marker / error -> none launched or admitted"
++
++
++def d_launch_counted(M=PWC):
++    good = lambda c: subprocess.CompletedProcess(c, 0, M.PWC_STALE_KILL_OK + "\n", "")
++    p, waits, _ = launch(M, local_kill=good, no_pid=(1,), localhost=False)
++    assert waits == [1], f"online wait sized {waits}; the no-PID launch must not count"
++    assert p._effective_pool_by_host == {RIGS[0]: 1}, p._effective_pool_by_host
++    assert p._tcp_transport.revoked == [f"{RIGS[0].replace('.', '_')}_gpu1"], p._tcp_transport.revoked
++    return "a launch with no PID is revoked and not counted (online wait 1, effective pool 1)"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Beta-3 — the real transport on loopback
++# ═════════════════════════════════════════════════════════════════════════════
++def _send(sock, obj):
++    b = json.dumps(obj, separators=(",", ":")).encode()
++    sock.sendall(struct.pack(">I", len(b)) + b)
++
++
++def _recv(sock):
++    def n(k):
++        buf = b""
++        while len(buf) < k:
++            c = sock.recv(k - len(buf))
++            if not c:
++                raise ConnectionError("closed")
++            buf += c
++        return buf
++    return json.loads(n(struct.unpack(">I", n(4))[0]))
++
++
++def _hello(port, wid):
++    s = socket.create_connection(("127.0.0.1", port), timeout=5)
++    _send(s, {"message_type": "hello", "protocol_version": 1, "worker_id": wid,
++              "timestamp": time.time()})
++    return s, _recv(s)
++
++
++def _wait(pred, t=3.0):
++    end = time.time() + t
++    while time.time() < end:
++        if pred():
++            return True
++        time.sleep(0.02)
++    return pred()
++
++
++def _ready_worker(port, wid):
++    s, ack = _hello(port, wid)
++    assert ack.get("accepted") is True, ack
++    _send(s, {"message_type": "online", "worker_id": wid, "timestamp": time.time()})
++    _send(s, {"message_type": "ready", "worker_id": wid, "timestamp": time.time()})
++    return s
++
++
++def _transport(T, ids):
++    tr = T.TCPWorkerTransport(host="127.0.0.1", port=0)
++    tr.set_allowed_worker_ids(set(ids))
++    try:
++        tr.start()
++    except OSError as e:
++        raise Unavailable(f"cannot bind 127.0.0.1: {e}")
++    return tr, tr._server.getsockname()[1]
++
++
++def d_revoke_drops_connection(T=TCP):
++    tr, port = _transport(T, {"rig_gpu0"})
++    try:
++        s = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 1), tr.ready_count()
++        tr.revoke_worker_id("rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 0 and tr.worker_count() == 0), \
++            f"revoked worker still held: ready={tr.ready_count()} workers={tr.worker_count()}"
++        s.settimeout(3)
++        try:
++            data = s.recv(1)
++        except OSError:
++            data = b""
++        assert data == b"", "revoked worker's socket still open"
++        s.close()
++    finally:
++        tr.stop()
++    return "revoke: the id's open connection is closed, it leaves ready/online at once"
++
++
++def d_request_job_admission(T=TCP):
++    """An id no longer on the list (list replaced, no revoke call) gets no job."""
++    tr, port = _transport(T, {"rig_gpu0"})
++    try:
++        s = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 1)
++        tr.submit_job({"job_id": "j1", "seed_start": 0, "seed_end": 10})
++        tr.set_allowed_worker_ids({"other"})
++        _send(s, {"message_type": "request_job", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        s.settimeout(3)
++        try:
++            msg = _recv(s)
++        except (ConnectionError, OSError):
++            msg = None
++        assert msg is None, f"a worker off the list was sent {msg}"
++        assert _wait(lambda: tr.worker_count() == 0), tr.worker_count()
++        assert tr._pending_jobs.qsize() == 1, "the job was taken by a worker off the list"
++        s.close()
++    finally:
++        tr.stop()
++    return "a worker no longer on the list asks for a job: no job, connection ended, job still queued"
++
++
++def d_owner_cleanup(T=TCP):
++    """A reconnect replaces the id's connection; when the OLD connection ends, the new
++    one stays registered and ready."""
++    tr, port = _transport(T, {"rig_gpu0"})
++    try:
++        old = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 1)
++        new = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr._workers.get("rig_gpu0") is not None)
++        time.sleep(0.2)
++        old.close()
++        time.sleep(0.5)
++        assert tr.worker_count() == 1 and tr.ready_count() == 1, \
++            f"old connection's end evicted the new one: workers={tr.worker_count()} ready={tr.ready_count()}"
++        new.close()
++        assert _wait(lambda: tr.worker_count() == 0 and tr.ready_count() == 0)
++    finally:
++        tr.stop()
++    return "reconnect: the old connection ending leaves the new one registered and ready"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Beta-4 — a refused worker exits (real worker service, child process)
++# ═════════════════════════════════════════════════════════════════════════════
++_WORKER_CHILD = r'''
++import importlib.util, sys
++root, src_path, port, hb = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
++sys.path.insert(0, root)
++spec = importlib.util.spec_from_file_location("svc_under_test", src_path)
++W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
++W.HEARTBEAT_DIR = hb
++W.RECONNECT_DELAY_S = 0.2
++W.PWCWorkerService(worker_id="stale_gpu3", host="127.0.0.1", port=port, gpu_id=0,
++                   use_rocm=False).run_forever()
++'''
++
++
++def d_worker_exits(src_path=SVC_PATH):
++    tr, port = _transport(TCP, {"someone_else"})
++    hb = os.path.join(OUT, "hb")
++    try:
++        env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
++        try:
++            r = subprocess.run([sys.executable, "-c", _WORKER_CHILD, ROOT, src_path,
++                                str(port), hb], capture_output=True, text=True,
++                               timeout=8, env=env)
++        except subprocess.TimeoutExpired:
++            raise AssertionError(f"refused worker still running after 8 s "
++                                 f"({tr.refused_hellos.count('stale_gpu3')} hellos refused)")
++    finally:
++        tr.stop()
++    assert r.returncode == 43, f"rc={r.returncode} stderr={r.stderr.strip()[-200:]!r}"
++    assert tr.refused_hellos.count("stale_gpu3") == 1, tr.refused_hellos
++    return "real worker service, refused hello: exits rc 43 after ONE attempt"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# [R2] Beta X-PWC-STAGE2 R1 Q6 — reconnect overlapping the old handler's cleanup
++# ═════════════════════════════════════════════════════════════════════════════
++def d_reconnect_race(T=TCP):
++    """Beta's interleaving, forced: the OLD connection's handler is paused inside its
++    cleanup, right after it has dealt with the registry; meanwhile the SAME worker
++    reconnects, registers, reports ready and leases a job. When the old handler
++    resumes, the replacement must still be registered and ready, its lease must still
++    be active (not requeued, not failed), and its result must still be accepted."""
++    tr, port = _transport(T, {"rig_gpu0"})
++    gate, entered, calls = threading.Event(), threading.Event(), []
++    real = tr._reclaim_worker_jobs
++
++    def paused(worker_id, conn=None):
++        if not calls:
++            calls.append(worker_id)
++            entered.set()
++            gate.wait(10)
++        return real(worker_id, conn)
++    tr._reclaim_worker_jobs = paused
++    new = None
++    try:
++        old = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 1)
++        old.close()
++        assert entered.wait(5), "the old handler never reached its cleanup"
++        new = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 1 and tr.worker_count() == 1), \
++            f"replacement not ready: ready={tr.ready_count()} workers={tr.worker_count()}"
++        tr.submit_job({"job_id": "jR", "seed_start": 0, "seed_end": 10})
++        _send(new, {"message_type": "request_job", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        new.settimeout(3)
++        msg = _recv(new)
++        assert msg.get("job_id") == "jR", msg
++        lease = msg["lease_id"]
++        gate.set()
++        time.sleep(0.5)
++        assert tr.worker_count() == 1 and tr.ready_count() == 1, \
++            f"old cleanup hit the replacement: workers={tr.worker_count()} ready={tr.ready_count()}"
++        info = tr._inflight.get("jR")
++        assert info is not None and info["lease_id"] == lease, \
++            f"the replacement's active lease was reclaimed (pending={tr._pending_jobs.qsize()})"
++        assert tr._pending_jobs.qsize() == 0, "the replacement's job was requeued"
++        _send(new, {"message_type": "result_inline", "job_id": "jR", "lease_id": lease,
++                    "worker_id": "rig_gpu0", "result": {"success": True, "payload": {}}})
++        r = tr.recv_result(timeout_s=3, job_id="jR")
++        assert r is not None and r.get("status") == "ok", f"replacement's result not delivered: {r}"
++    finally:
++        gate.set()
++        if new is not None:
++            new.close()
++        tr.stop()
++    return ("old handler paused mid-cleanup while the worker reconnected, went ready and "
++            "leased a job: replacement stays registered + ready, lease active, result delivered")
++
++
++def d_reaper_ownership(T=TCP):
++    """Timeout eviction under the same rule: the silent connection's id state is
++    cleared at once, only its own lease is reclaimed, and a fresh one is left alone."""
++    tr, port = _transport(T, {"rig_gpu0", "rig_gpu1"})
++    try:
++        s = _ready_worker(port, "rig_gpu0")
++        f = _ready_worker(port, "rig_gpu1")
++        assert _wait(lambda: tr.ready_count() == 2)
++        tr.submit_job({"job_id": "jP", "seed_start": 0, "seed_end": 10})
++        _send(s, {"message_type": "request_job", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        s.settimeout(3)
++        assert _recv(s).get("job_id") == "jP"
++        with tr._last_seen_lock:
++            tr._last_seen["rig_gpu0"] = time.time() - (T.HEARTBEAT_TIMEOUT_S + 10)
++        tr._reap_silent_workers(time.time())
++        assert "rig_gpu0" not in tr._workers and tr.ready_count() == 1, \
++            f"silent worker not fully evicted: workers={sorted(tr._workers)} ready={tr.ready_count()}"
++        assert "jP" not in tr._inflight and tr._pending_jobs.qsize() == 1, "its lease was not requeued"
++        assert "rig_gpu1" in tr._workers, "the fresh worker was evicted"
++        try:
++            data = s.recv(1)
++        except OSError:
++            data = b""
++        assert data == b"", "evicted worker's socket still open"
++        s.close(); f.close()
++    finally:
++        tr.stop()
++    return "silent worker: registry + ready cleared at once, its lease requeued, socket shut; fresh worker kept"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# [R2] Beta X-PWC-STAGE2 R1 finding 2 — late results
++# ═════════════════════════════════════════════════════════════════════════════
++def d_job_ids_unique_per_pass(M=PWC):
++    ids = []
++    for prng in ("java_lcg", "java_lcg_reverse"):
++        p = make_tcp_pwc(M, sieve_like_payload)
++        run_pass(p, prng, thr=0.5)
++        ids.append([j["job_id"] for j in p._tcp_transport.jobs])
++    a, b = ids
++    assert len(set(a)) == len(a) and len(set(b)) == len(b), ids
++    assert not set(a) & set(b), f"two passes share job ids: {sorted(set(a) & set(b))}"
++    return f"P1 {a[0]}.. / P2 {b[0]}..: no job id shared between passes (equal thresholds 0.5)"
++
++
++def d_active_lease_only(T=TCP):
++    """Within one job id: after the job is re-leased to another worker, the first
++    worker's late result neither retires the active lease nor is delivered."""
++    tr, port = _transport(T, {"wA", "wB"})
++    try:
++        a = _ready_worker(port, "wA")
++        b = _ready_worker(port, "wB")
++        assert _wait(lambda: tr.ready_count() == 2)
++        job = {"job_id": "jX", "seed_start": 0, "seed_end": 10}
++        tr.submit_job(dict(job))
++        _send(a, {"message_type": "request_job", "worker_id": "wA", "timestamp": time.time()})
++        a.settimeout(3); b.settimeout(3)
++        la = _recv(a)["lease_id"]
++        tr.submit_job(dict(job))                      # the coordinator's retry after a timeout
++        _send(b, {"message_type": "request_job", "worker_id": "wB", "timestamp": time.time()})
++        lb = _recv(b)["lease_id"]
++        assert la != lb
++        res = lambda lease, wid: {"message_type": "result_inline", "job_id": "jX", "lease_id": lease,
++                                  "worker_id": wid, "result": {"success": True, "payload": {"who": wid}}}
++        _send(a, res(la, "wA"))                       # late, superseded lease
++        _send(a, res(lb, "wA"))                       # right lease id, wrong connection
++        assert tr.recv_result(timeout_s=0.7, job_id="jX") is None, "a superseded/foreign result was delivered"
++        info = tr._inflight.get("jX")
++        assert info is not None and info["lease_id"] == lb, "the active lease was retired by a late result"
++        assert ("wA", "jX") in tr.stale_results, tr.stale_results
++        _send(b, res(lb, "wB"))
++        r = tr.recv_result(timeout_s=3, job_id="jX")
++        assert r is not None and r["result"].get("who") == "wB", r
++        a.close(); b.close()
++    finally:
++        tr.stop()
++    return "superseded lease and wrong-connection results dropped and counted; the active lease's result delivered"
++
++
++def d_late_result_across_phases(M=PWC, T=TCP):
++    """Beta's sequence end to end, through the real coordinator and the real transport,
++    with EQUAL forward and reverse thresholds: worker A stalls on a P1 chunk, the chunk
++    times out and is retried on worker B, P1 completes, P2 is submitted, and only then
++    does A send its late P1 result. P2 must report B's survivors, never A's."""
++    tr, port = _transport(T, {"wA", "wB"})
++    saved_timeout = M.JOB_TIMEOUT_S
++    M.JOB_TIMEOUT_S = 2.0
++    p2_jobs, p2_ready, late_sent, stop = [], threading.Event(), threading.Event(), threading.Event()
++    real_submit = tr.submit_job
++
++    def submit(job):
++        real_submit(job)
++        if job["prng_families"][0].endswith("_reverse"):
++            p2_jobs.append(job["job_id"])
++            if len(p2_jobs) == 2:
++                p2_ready.set()
++    tr.submit_job = submit
++
++    def payload(job, seed):
++        return {"success": True, "payload": {
++            "success": True, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
++            "min_match_threshold": job["min_match_threshold"],
++            "survivors": [{"seed": seed, "match_rate": 0.9}]}}
++
++    # [PWC-STAGE2 R3, Beta X-PWC-STAGE2 R2 finding 1] Deterministic assignment: A
++    # takes the FIRST job of the run (a P1 chunk) before B asks for anything; after
++    # its late result A asks for nothing more, so B serves the P1 retry and every P2
++    # chunk. The check then measures late-result handling, not scheduling.
++    a_has_job = threading.Event()
++
++    def worker(wid, role):
++        s = _ready_worker(port, wid)
++        s.settimeout(30)
++        stalled = None
++        try:
++            if role == "B":
++                a_has_job.wait(30)
++            while not stop.is_set():
++                if role == "A" and stalled is not None:
++                    stop.wait(0.1)                    # A is done: it never takes a P2 job
++                    continue
++                _send(s, {"message_type": "request_job", "worker_id": wid, "timestamp": time.time()})
++                m = _recv(s)
++                if m.get("message_type") != "job_assign" or not m.get("payload"):
++                    time.sleep(0.05)
++                    continue
++                job = m["payload"]
++                if role == "A" and stalled is None:
++                    stalled = (job, m["lease_id"])
++                    assert not job["prng_families"][0].endswith("_reverse"), "A's first job is not a P1 job"
++                    a_has_job.set()
++                    p2_ready.wait(30)
++                    _send(s, {"message_type": "result_inline", "job_id": job["job_id"],
++                              "lease_id": m["lease_id"], "worker_id": wid, "result": payload(job, 111)})
++                    late_sent.set()
++                    continue
++                if role == "B" and job["prng_families"][0].endswith("_reverse"):
++                    late_sent.wait(30)
++                    time.sleep(0.4)
++                _send(s, {"message_type": "result_inline", "job_id": job["job_id"],
++                          "lease_id": m["lease_id"], "worker_id": wid,
++                          "result": payload(job, 222 if role == "B" else 333)})
++        except (ConnectionError, OSError, ValueError):
++            pass
++    threads = [threading.Thread(target=worker, args=(w, r), daemon=True) for w, r in (("wA", "A"), ("wB", "B"))]
++    try:
++        for t in threads:
++            t.start()
++        assert _wait(lambda: tr.ready_count() == 2, 5)
++        p = M.PersistentWorkerCoordinator(config_file=_write_config(), worker_pool_size=6,
++                                          seed_cap_amd=25_000, pwc_transport="tcp",
++                                          pwc_coordinator_address=DIAL)
++        p._tcp_transport = tr
++        p._effective_pool_by_host = {RIGS[0]: 6}
++        r1 = run_pass(p, "java_lcg", thr=0.5)
++        assert r1["pass_complete"], r1["pwc_pass_accounting"]
++        assert 111 not in r1["survivors"], "P1 took A's stalled result after its retry"
++        r2 = run_pass(p, "java_lcg_reverse", thr=0.5)
++        assert late_sent.is_set(), "the late result was never sent (test did not exercise the path)"
++        assert 111 not in r2["survivors"], f"P2 reported worker A's late P1 result: {r2['survivors']}"
++        assert r2["pass_complete"] and r2["survivors"] and set(r2["survivors"]) == {222}, \
++            f"P2 must be served by B alone: {r2['survivors']} {r2['pwc_pass_accounting']}"
++    finally:
++        stop.set()
++        M.JOB_TIMEOUT_S = saved_timeout
++        tr.stop()
++    return ("A stalls on a P1 chunk, retry on B completes P1, P2 submitted, A's late P1 result "
++            "arrives (thresholds equal 0.5/0.5): P2 reports B's survivors only")
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# [R2] Beta X-PWC-STAGE2 R1 Q7 — the refusal exit writes no GPU heartbeat
++# ═════════════════════════════════════════════════════════════════════════════
++_WORKER_CHILD_CUPY = _WORKER_CHILD.replace(
++    "W.HEARTBEAT_DIR = hb\n",
++    "W.HEARTBEAT_DIR = hb\nimport atexit\n"
++    "atexit.register(lambda: print('CUPY_LOADED=%s' % ('cupy' in sys.modules), flush=True))\n")
++
++
++def d_refusal_no_gpu(src_path=SVC_PATH):
++    if importlib.util.find_spec("cupy") is None:
++        raise Unavailable("cupy is not installed here, so a CuPy import could not be observed")
++    tr, port = _transport(TCP, {"someone_else"})
++    hb = os.path.join(OUT, "hb_q7")
++    try:
++        r = subprocess.run([sys.executable, "-c", _WORKER_CHILD_CUPY, ROOT, src_path, str(port), hb],
++                           capture_output=True, text=True, timeout=30,
++                           env=dict(os.environ, CUDA_VISIBLE_DEVICES=""))
++    finally:
++        tr.stop()
++    assert r.returncode == 43, f"rc={r.returncode} {r.stderr.strip()[-200:]!r}"
++    assert "CUPY_LOADED=False" in r.stdout, f"the refusal exit imported CuPy: {r.stdout.strip()!r}"
++    written = os.listdir(hb) if os.path.isdir(hb) else []
++    assert not any(n.endswith(".json") for n in written), f"heartbeat written on refusal: {written}"
++    return "refused worker exits 43 without importing CuPy or writing a heartbeat"
++
++
++def _q6_old():
++    src = open(TCP_PATH, encoding="utf-8").read()
++    a = "                with self._workers_lock:\n                    owner = self._workers.get(worker_id) is conn\n"
++    b = "                self._reclaim_worker_jobs(worker_id, conn)\n"
++    i = src.index(a)
++    return src[i:src.index(b, i) + len(b)]
++
++
++_Q6_R1 = ("                with self._workers_lock:\n"
++          "                    owner = self._workers.get(worker_id) is conn\n"
++          "                    if owner:\n"
++          "                        self._workers.pop(worker_id, None)\n"
++          "                self._reclaim_worker_jobs(worker_id, None if owner else conn)\n"
++          "                if owner:\n"
++          "                    with self._last_seen_lock:\n"
++          "                        self._last_seen.pop(worker_id, None)\n"
++          "                    with self._state_lock:\n"
++          "                        self._online_workers.discard(worker_id)\n"
++          "                        self._ready_workers.discard(worker_id)\n")
++_LEASE_CHECK = ("            info = self._inflight.get(job_id)\n"
++                "            if info is None or info.get(\"lease_id\") != lease_id or info.get(\"conn\") is not conn:\n"
++                "                return False\n"
++                "            del self._inflight[job_id]\n"
++                "            return True\n")
++_LEASE_OLD = "            self._inflight.pop(job_id, None)\n            return True\n"
++_JOBID_NEW = '"job_id":               f"sieve_{_pass_id}_{idx:03d}",   # [PWC-STAGE2 R2]'
++_JOBID_OLD = '"job_id":               f"sieve_{idx:03d}",'
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# [R3] Beta X-PWC-STAGE2 R2 Q1 — same-id reconnect at the timeout boundary
++# ═════════════════════════════════════════════════════════════════════════════
++class _PausingLock:
++    """Stands in for `_last_seen_lock`. When armed, the first acquisition by a
++    transport handler thread (`pwc-tcp-worker-*`) pauses until released, which
++    holds that handler exactly at its last-seen refresh."""
++    def __init__(self, real):
++        self.real, self.armed = real, False
++        self.entered, self.gate = threading.Event(), threading.Event()
++
++    def __enter__(self):
++        if self.armed and threading.current_thread().name.startswith("pwc-tcp-worker-"):
++            self.armed = False
++            self.entered.set()
++            self.gate.wait(10)
++        return self.real.__enter__()
++
++    def __exit__(self, *a):
++        return self.real.__exit__(*a)
++
++
++def d_reaper_same_id_reconnect(T=TCP):
++    """Beta's interleaving: the old connection is still registered with a timestamp
++    past the timeout; the SAME worker reconnects; the replacement is held at its
++    last-seen refresh while the reaper runs. The reaper must not evict the
++    replacement, which must then go ready, take a job and have its result delivered."""
++    tr, port = _transport(T, {"rig_gpu0"})
++    pl = _PausingLock(tr._last_seen_lock)
++    new, reaper = None, None
++    try:
++        old = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr.ready_count() == 1)
++        with tr._last_seen_lock:
++            tr._last_seen["rig_gpu0"] = time.time() - (T.HEARTBEAT_TIMEOUT_S + 10)
++        tr._last_seen_lock = pl
++        pl.armed = True
++        new, ack = _hello(port, "rig_gpu0")
++        assert ack.get("accepted") is True, ack
++        assert pl.entered.wait(5), "the replacement's handler never reached its last-seen refresh"
++        reaper = threading.Thread(target=tr._reap_silent_workers, args=(time.time(),), daemon=True)
++        reaper.start()
++        reaper.join(0.4)                       # the fix: the reaper waits for the registry lock
++        pl.gate.set()
++        reaper.join(5)
++        assert not reaper.is_alive(), "reaper did not finish"
++        assert tr._workers.get("rig_gpu0") is not None, "the reaper evicted the fresh replacement"
++        _send(new, {"message_type": "online", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        _send(new, {"message_type": "ready", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        assert _wait(lambda: tr.ready_count() == 1 and tr.worker_count() == 1), \
++            f"replacement not ready after the reaper ran: ready={tr.ready_count()} workers={tr.worker_count()}"
++        tr.submit_job({"job_id": "jT", "seed_start": 0, "seed_end": 10})
++        _send(new, {"message_type": "request_job", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        new.settimeout(3)
++        m = _recv(new)
++        assert m.get("job_id") == "jT", m
++        _send(new, {"message_type": "result_inline", "job_id": "jT", "lease_id": m["lease_id"],
++                    "worker_id": "rig_gpu0", "result": {"success": True, "payload": {}}})
++        r = tr.recv_result(timeout_s=3, job_id="jT")
++        assert r is not None and r.get("status") == "ok", f"replacement's result not delivered: {r}"
++        old.close()
++    finally:
++        pl.gate.set()
++        if new is not None:
++            new.close()
++        tr.stop()
++    return ("old connection 310 s silent, same id reconnects, held at its last-seen refresh while "
++            "the reaper runs: replacement kept, goes ready, its job's result delivered")
++
++
++def d_replaced_conn_no_refresh(T=TCP):
++    """A replaced connection's message never refreshes the id's last-seen; it ends."""
++    tr, port = _transport(T, {"rig_gpu0"})
++    try:
++        old = _ready_worker(port, "rig_gpu0")
++        # the old connection must be fully up (its online/ready handled) BEFORE the
++        # replacement registers, or the check would end it before its heartbeat
++        assert _wait(lambda: tr.ready_count() == 1)
++        old_conn = tr._workers.get("rig_gpu0")
++        new = _ready_worker(port, "rig_gpu0")
++        assert _wait(lambda: tr._workers.get("rig_gpu0") not in (None, old_conn) and tr.ready_count() == 1)
++        time.sleep(0.2)
++        with tr._last_seen_lock:
++            tr._last_seen["rig_gpu0"] = 1000.0
++        _send(old, {"message_type": "heartbeat", "worker_id": "rig_gpu0", "timestamp": time.time()})
++        time.sleep(0.5)
++        with tr._last_seen_lock:
++            ts = tr._last_seen.get("rig_gpu0")
++        assert ts == 1000.0, f"a replaced connection refreshed the id's last-seen: {ts}"
++        assert tr.worker_count() == 1 and tr.ready_count() == 1, "the replaced connection's end hit the new one"
++        old.settimeout(3)
++        try:
++            data = old.recv(1)
++        except OSError:
++            data = b""
++        assert data == b"", "the replaced connection was not ended"
++        new.close()
++    finally:
++        tr.stop()
++    return "a replaced connection's heartbeat leaves last-seen untouched and ends that connection"
++
++
++_R3_REG_NEW = ("            with self._workers_lock:\n"
++               "                self._workers[worker_id] = conn\n"
++               "                with self._last_seen_lock:\n"
++               "                    self._last_seen[worker_id] = time.time()\n")
++_R3_REG_OLD = ("            with self._workers_lock:\n"
++               "                self._workers[worker_id] = conn\n"
++               "            with self._last_seen_lock:\n"
++               "                self._last_seen[worker_id] = time.time()\n")
++_R3_MSG_NEW = ("                with self._workers_lock:\n"
++               "                    if self._workers.get(worker_id) is not conn:\n"
++               "                        break\n"
++               "                    with self._last_seen_lock:\n"
++               "                        self._last_seen[worker_id] = time.time()\n")
++_R3_MSG_OLD = ("                with self._last_seen_lock:\n"
++               "                    self._last_seen[worker_id] = time.time()\n")
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Nothing outside PWC moved
++# ═════════════════════════════════════════════════════════════════════════════
++def d_import():
++    code = ("import window_optimizer_integration_final as W; import miner; "
++            "import persistent_worker_coordinator as P; "
++            "assert W.run_trial_persistent is P.run_trial_persistent; print('ok')")
++    r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True,
++                       text=True, timeout=120, env=dict(os.environ, CUDA_VISIBLE_DEVICES=""))
++    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), r.stderr[-300:]
++    return "integration module (Run 4's launch import) + miner package import cleanly, fresh process"
++
++
++GATES = [
++    ("G-THR-JOBS", d_thr_jobs),
++    ("G-THR-REFUSALS", d_thr_refusals),
++    ("G-THR-ECHO", d_thr_echo),
++    ("G-THR-ECHO-REAL-SIEVE-FILTER", g_echo_real_sieve_filter),
++    ("G-PHASES", d_phases),
++    ("G-TRIAL-THRESHOLDS-STRATEGIES", d_trial_thresholds_and_strategies),
++    ("G-STRATEGIES-ALL-FIVE", d_strategies_all_five),
++    ("G-OFFSET", d_offset),
++    ("G-SSH-VARIABLE", d_ssh_variable),
++    ("G-PROBE-KILL", d_probe_kill),
++    ("G-PROBE-S156", d_probe_s156),
++    ("G-LOCAL-KILL-READ", d_local_kill_read),
++    ("G-LAUNCH-COUNTED", d_launch_counted),
++    ("G-REVOKE-DROPS-CONNECTION", d_revoke_drops_connection),
++    ("G-REQUEST-JOB-ADMISSION", d_request_job_admission),
++    ("G-OWNER-CLEANUP", d_owner_cleanup),
++    ("G-WORKER-EXITS", d_worker_exits),
++    ("G-R2-RECONNECT-RACE", d_reconnect_race),
++    ("G-R2-REAPER-OWNERSHIP", d_reaper_ownership),
++    ("G-R2-JOB-IDS-UNIQUE-PER-PASS", d_job_ids_unique_per_pass),
++    ("G-R2-ACTIVE-LEASE-ONLY", d_active_lease_only),
++    ("G-R2-LATE-RESULT-ACROSS-PHASES", d_late_result_across_phases),
++    ("G-R2-REFUSAL-NO-GPU", d_refusal_no_gpu),
++    ("G-R3-REAPER-SAME-ID-RECONNECT", d_reaper_same_id_reconnect),
++    ("G-R3-REPLACED-CONN-NO-REFRESH", d_replaced_conn_no_refresh),
++    ("G-IMPORT", d_import),
++]
++
++MUTANTS = [
++    ("M-THR-1 hybrid phase2 default restored + equality off", "pwc", [
++        ("                       phase2_threshold: Optional[float] = None,   # [PWC-STAGE2] no 0.5 default\n",
++         "                       phase2_threshold: Optional[float] = 0.5,\n"),
++        ("            if not _thr_equal(phase2_threshold, threshold):\n", "            if False:\n")],
++     d_thr_refusals),
++    ("M-THR-2 SSH hybrid allowed", "pwc", [
++        ("            if self._tcp_transport is None:\n                raise PwcSettingRefused(\n"
++         "                    f\"[{prng_type}] variable-skip passes need the TCP transport",
++         "            if False:\n                raise PwcSettingRefused(\n"
++         "                    f\"[{prng_type}] variable-skip passes need the TCP transport")],
++     d_thr_refusals),
++    ("M-THR-3 hybrid report not checked", "pwc", [
++        ("            assert_pwc_hybrid_threshold_contract(_thr_rec)\n", "")], d_thr_echo),
++    ("M-THR-4 missing report tolerated", "pwc", [
++        ("        \"agree\": not disagree and int(effective_unreported) == 0,\n",
++         "        \"agree\": not disagree,\n")], d_thr_echo),
++    ("M-PH-1 forward-zero prune restored", "pwc", [
++        ("        # [PWC-STAGE2 ruling 4] The S147 B1 forward-zero prune that stood here is\n",
++         "        if not fwd_survivors:\n"
++         "            return build_trial_populations(forward_map_constant={}, reverse_map_constant={},"
++         " forward_map_variable={}, reverse_map_variable={}, bidirectional_constant=set(),"
++         " bidirectional_variable=set(), pruned=True, reason='forward_zero',"
++         " extra={'bidirectional_count': 0, **_completion_extra()}, origin='mutant')\n"
++         "        # [PWC-STAGE2 ruling 4] The S147 B1 forward-zero prune that stood here is\n")],
++     d_phases),
++    ("M-PH-2 phase 3 threshold dropped", "pwc", [
++        ("                strategies   = None,           # [PWC-STAGE2] all five\n"
++         "                phase2_threshold = forward_threshold,   # [PWC-STAGE2 ruling 1]\n",
++         "                strategies   = None,           # [PWC-STAGE2] all five\n")],
++     d_trial_thresholds_and_strategies),
++    ("M-ST-1 one strategy only", "pwc", [
++        ("                raw = get_all_strategies()\n", "                raw = get_all_strategies()[:1]\n")],
++     d_strategies_all_five),
++    ("M-OF-1 trial offset check removed", "pwc", [
++        ("    validate_pwc_window_offset(config.offset)\n", "")], d_offset),
++    ("M-OF-2 pass offset check removed", "pwc", [
++        ("        validate_pwc_window_offset(offset)\n", "")], d_offset),
++    ("M-SSH-1 both-mode SSH not refused up front", "pwc", [
++        ("    if (_run_variable or prng_base.endswith(\"_hybrid\")) and pwc_transport != \"tcp\":\n",
++         "    if False:\n")], d_ssh_variable),
++    ("M-PR-1 kill probe control removed", "pwc", [
++        ("    return (\"pgrep -f '%s' >/dev/null 2>&1 || exit %d; \"\n"
++         "            % (PWC_PROBE_CONTROL_TOKEN, PWC_KILL_EXIT_UNAVAILABLE))\n",
++         "    return \"\"\n")], d_probe_kill),
++    ("M-PR-2 kill: any non-match status counts as clean", "pwc", [
++        ("            \"if [ $r -eq 1 ]; then echo %s; elif [ $r -eq 0 ]; then exit %d; \"\n",
++         "            \"if [ $r -ne 0 ]; then echo %s; elif [ $r -eq 0 ]; then exit %d; \"\n")],
++     d_probe_kill),
++    ("M-PR-3 S156 reap: double-zero construct restored", "pwc", [
++        ("            \"remaining=$(pgrep -c -f \\\"%s\\\" 2>/dev/null); r=$?; \"\n"
++         "            \"if [ $r -le 1 ]; then echo \\\"reaped:$remaining\\\"; else echo reaped:unavailable; fi\"\n",
++         "            \"remaining=$(pgrep -c -f \\\"%s\\\" 2>/dev/null || echo 0); \"\n"
++         "            \"echo \\\"reaped:$remaining\\\"\"\n")], d_probe_s156),
++    ("M-PR-4 S156 find: probe control removed", "pwc", [
++        ("    return (\"pgrep -f '%s' >/dev/null 2>&1 || { echo %s; exit 0; }; \"\n"
++         "            \"out=$(pgrep -af",
++         "    return (\"true '%s' %s; \"\n"
++         "            \"out=$(pgrep -af")], d_probe_s156),
++    ("M-LK-1 VM101 kill result ignored", "pwc", [
++        ("            if not _zeus_kill_ok:                # [PWC-STAGE2 BETA-2]\n                continue\n", "")],
++     d_local_kill_read),
++    ("M-LC-1 unconfirmed launch counted", "pwc", [
++        ("                            \"id revoked, not counted\")\n                        continue\n",
++         "                            \"id revoked, not counted\")\n")], d_launch_counted),
++    ("M-RV-1 revoke leaves the connection", "tcp", [
++        ("            try:\n                conn.sock.shutdown(socket.SHUT_RDWR)\n            except Exception:\n                pass\n",
++         "            pass\n")], d_revoke_drops_connection),
++    ("M-RV-2 revoke only edits the list (stage 1 behaviour)", "tcp", [
++        ("        with self._state_lock:\n            self._online_workers.discard(wid)\n"
++         "            self._ready_workers.discard(wid)\n        with self._workers_lock:\n"
++         "            conn = self._workers.get(wid)\n        if conn is not None:\n",
++         "        with self._workers_lock:\n            conn = self._workers.get(wid)\n"
++         "        if False:\n")], d_revoke_drops_connection),
++    ("M-RQ-1 request_job admission removed", "tcp", [
++        ("                    # [PWC-STAGE2 BETA-3] an id revoked after its hello gets no job\n"
++         "                    if not self._admits(worker_id):\n                        break\n", "")],
++     d_request_job_admission),
++    ("M-OW-1 owner check removed", "tcp", [
++        ("                    owner = self._workers.get(worker_id) is conn\n",
++         "                    owner = True\n")], d_owner_cleanup),
++    ("M-R2-Q6a R1 cleanup restored (state cleared after the lock, reclaim by id)", "tcp", [
++        (_q6_old(), _Q6_R1)], d_reconnect_race),
++    ("M-R2-Q6b reaper leaves ready set", "tcp", [
++        ("                conn = self._workers.pop(worker_id, None)\n"
++         "                with self._state_lock:\n"
++         "                    self._online_workers.discard(worker_id)\n"
++         "                    self._ready_workers.discard(worker_id)\n"
++         "            if conn is not None:\n",
++         "                conn = self._workers.pop(worker_id, None)\n"
++         "            if conn is not None:\n")], d_reaper_ownership),
++    ("M-R2-F2a job ids restarted at sieve_000 each pass", "pwc", [(_JOBID_NEW, _JOBID_OLD)],
++     d_job_ids_unique_per_pass),
++    ("M-R2-F2b any result retires the lease", "tcp", [(_LEASE_CHECK, _LEASE_OLD)], d_active_lease_only),
++    ("M-R2-F2c both removed (the pre-R2 path Beta reproduced)", "pwc+tcp", None,
++     d_late_result_across_phases),
++    ("M-R2-Q7 heartbeat written on refusal", "svc", [
++        ("            self._close()\n            sys.exit(PWC_EXIT_HELLO_REJECTED)\n",
++         "            self._emit_heartbeat(\"shutdown\")\n            self._close()\n"
++         "            sys.exit(PWC_EXIT_HELLO_REJECTED)\n")], d_refusal_no_gpu),
++    ("M-R3-Q1a register and last-seen refresh in separate sections (R2)", "tcp",
++     [(_R3_REG_NEW, _R3_REG_OLD)], d_reaper_same_id_reconnect),
++    ("M-R3-Q1b any connection refreshes last-seen", "tcp",
++     [(_R3_MSG_NEW, _R3_MSG_OLD)], d_replaced_conn_no_refresh),
++    ("M-WK-1 worker retries after refusal", "svc", [
++        ("            sys.exit(PWC_EXIT_HELLO_REJECTED)\n",
++         "            raise ConnectionError('rejected')\n")], d_worker_exits),
++]
++
++
++def _mutant_pair():
++    """[R2] both late-result guards removed at once: a mutated coordinator module and a
++    mutated transport module. The detector receives both."""
++    psrc = _mutate(PWC_PATH, _JOBID_NEW, _JOBID_OLD)
++    tsrc = _mutate(TCP_PATH, _LEASE_CHECK, _LEASE_OLD)
++    return (_load_source(psrc, "stage2_mutant_pwc_pair", PWC_PATH),
++            _load_source(tsrc, "stage2_mutant_tcp_pair", TCP_PATH))
++
++
++def run_mutant(label, kind, edits, detector):
++    if kind == "pwc+tcp":
++        detector()                                                  # positive control
++        m, t = _mutant_pair()
++        try:
++            with contextlib.redirect_stderr(io.StringIO()):
++                detector(m, t)
++        except AssertionError as exc:
++            return f"killed: {str(exc)[:110]}"
++        except Exception as exc:                                    # noqa: BLE001
++            raise AssertionError(f"UNATTRIBUTABLE kill: {type(exc).__name__}: {exc}")
++        raise AssertionError(f"SURVIVED: {label}")
++    path = {"pwc": PWC_PATH, "tcp": TCP_PATH, "svc": SVC_PATH}[kind]
++    src = open(path, encoding="utf-8").read()
++    for old, new in edits:
++        n = src.count(old)
++        assert n == 1, f"mutant anchor occurs {n} times in {os.path.basename(path)}: {old[:80]!r}"
++        src = src.replace(old, new)
++    detector()                                                      # positive control
++    if kind == "svc":
++        mpath = os.path.join(OUT, "mutant_pwc_worker_service.py")
++        with open(mpath, "w") as f:
++            f.write(src)
++        target = mpath
++    else:
++        target = _load_source(src, f"stage2_mutant_{kind}", path)
++    try:
++        with contextlib.redirect_stderr(io.StringIO()):
++            detector(target)
++    except AssertionError as exc:
++        return f"killed: {str(exc)[:110]}"
++    except Exception as exc:                                        # noqa: BLE001
++        raise AssertionError(f"UNATTRIBUTABLE kill: {type(exc).__name__}: {exc}")
++    raise AssertionError(f"SURVIVED: {label}")
++
++
++def main():
++    if os.path.isdir(OUT):
++        shutil.rmtree(OUT)
++    os.makedirs(OUT)
++    import logging
++    logging.getLogger("PersistentWorkerCoordinator").handlers[:] = [
++        logging.StreamHandler(io.StringIO())]
++    logging.getLogger("PersistentWorkerCoordinator").propagate = False
++    print("VERIFICATION test_pwc_backup_stage2 START", flush=True)
++    passed = unavailable = 0
++    for name, fn in GATES:
++        try:
++            print(f"[PASS] {name}: {fn()}", flush=True)
++            passed += 1
++        except Unavailable as exc:
++            unavailable += 1
++            print(f"[UNAVAILABLE] {name}: {exc}", flush=True)
++        except Exception as exc:                                    # noqa: BLE001
++            print(f"[FAIL] {name}: {type(exc).__name__}: {exc}", flush=True)
++            traceback.print_exc()
++    killed = 0
++    for label, kind, edits, det in MUTANTS:
++        try:
++            print(f"[PASS] {label} -> {run_mutant(label, kind, edits, det)}", flush=True)
++            killed += 1
++        except Unavailable as exc:
++            print(f"[UNAVAILABLE] {label}: {exc}", flush=True)
++        except Exception as exc:                                    # noqa: BLE001
++            print(f"[FAIL] {label}: {type(exc).__name__}: {exc}", flush=True)
++    print("")
++    print(f"GATES {passed}/{len(GATES)} PASS ({unavailable} UNAVAILABLE)")
++    print(f"MUTANTS {killed}/{len(MUTANTS)} killed")
++    ok = passed == len(GATES) and killed == len(MUTANTS)
++    print("RESULT: PASS" if ok else "RESULT: FAIL")
++    print("VERIFICATION test_pwc_backup_stage2 COMPLETE", flush=True)
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())

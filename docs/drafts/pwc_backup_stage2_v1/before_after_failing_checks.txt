@@ -1,0 +1,15 @@
+DIFF  tests/test_s172_attempt6_remediation.py: rc 1 -> 1
+      newly failing: []
+      no longer failing: ['RXP-1/1  every exit carries its own class']
+DIFF  tests/test_s172_phase4_coordinator.py: rc 0 -> 1
+      newly failing: ['Gate 22']
+      no longer failing: []
+DIFF  tests/test_pwc_backup_step1.py: rc 1 -> 0
+      newly failing: []
+      no longer failing: ['G-S2-ZERO-BYTE-EQUAL']
+DIFF  tests/test_pwc_stage1.py: rc 1 -> 0
+      newly failing: []
+      no longer failing: ['G-B5-OLD-SELF-KILL (evidence)', 'G-B5-S156', 'M-B5c unbracketed S156 pattern restored']
+NEW   tests/test_pwc_backup_stage2.py: rc 0, failing=[]
+
+73 suites in after; 4 differ from before (rc or failing-check set)

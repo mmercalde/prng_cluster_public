@@ -41,6 +41,7 @@ JOB_REQUEST_INTERVAL_S = 0.5
 HEARTBEAT_INTERVAL_S   = 15.0
 INLINE_MAX_BYTES       = 32 * 1024 * 1024
 ROCM_READY_TIMEOUT_S   = 120.0  # max time to wait for sieve_filter import
+PWC_EXIT_HELLO_REJECTED = 43    # [PWC-STAGE2 BETA-4] coordinator refused this worker id
 
 # ── TB-spec heartbeat constants ───────────────────────────────────────────────
 HEARTBEAT_SCHEMA_VERSION = "1.0.0"
@@ -356,9 +357,16 @@ class PWCWorkerService:
 
         ack = self._conn.recv_obj()
         if not ack.get("accepted", True):
-            raise ConnectionError(
-                f"coordinator rejected hello: {ack.get('reason')}"
-            )
+            # [PWC-STAGE2 BETA-4] An explicit refusal is final: exit instead of
+            # retrying every RECONNECT_DELAY_S forever (Beta X-PWC-STAGE1 R1 Q4).
+            # SystemExit is not caught by run_forever's handlers.
+            # [PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 Q7] No heartbeat here: writing one
+            # imports CuPy and syncs a file, which may not return on a degraded rig.
+            # The log line keeps the reason.
+            log.error(f"[{self.worker_id}] coordinator rejected hello: "
+                      f"{ack.get('reason')} — exiting")
+            self._close()
+            sys.exit(PWC_EXIT_HELLO_REJECTED)
         # S163: remove connect timeout — recv_obj must block for init (up to 120s)
         sock.settimeout(None)
         log.info(f"[{self.worker_id}] handshake complete")

@@ -351,11 +351,29 @@ def d_s1_unaccounted(M):
 
 
 # ── S2 ───────────────────────────────────────────────────────────────────────
+# [PWC-STAGE2] The base is the commit BEFORE step 1 / stage 1, pinned. This used
+# to read HEAD, which was that base until stage 1 landed (ee39404); since then
+# HEAD carries the change and the gate could only fail.
+PRE_STAGE1_BASE = "27eb991"
+
+
 def _baseline_module():
-    src = subprocess.run(["git", "show", "HEAD:persistent_worker_coordinator.py"],
+    src = subprocess.run(["git", "show", PRE_STAGE1_BASE + ":persistent_worker_coordinator.py"],
                          cwd=ROOT, capture_output=True, text=True, check=True).stdout
-    assert "[PWC-BACKUP" not in src, "HEAD already carries this change"
+    assert "[PWC-BACKUP" not in src, f"{PRE_STAGE1_BASE} already carries this change"
     return _load_source(src, "pwc_baseline_head")
+
+
+# [PWC-STAGE2 ruling 1] Stage 2 changes ONE job key on purpose: a constant job's
+# phase2_threshold was always the unused 0.5 default; it now carries the trial's
+# threshold, as RANGE-MINER writes one value as both keys. [PWC-STAGE2 R2] job_id
+# is now unique per pass (`sieve_<pass id>_NNN`, Beta X-PWC-STAGE2 R1 finding 2).
+# Every other byte of the job dicts must still match the base.
+_STAGE2_CHANGED_JOB_KEYS = ("phase2_threshold", "job_id")
+
+
+def _jobs_without_stage2_keys(jobs):
+    return [{k: v for k, v in j.items() if k not in _STAGE2_CHANGED_JOB_KEYS} for j in jobs]
 
 
 def d_s2_zero_byte_equal(M):
@@ -373,11 +391,13 @@ def d_s2_zero_byte_equal(M):
                     output_file=os.path.join(OUT, f"s2_{tag}.json"),
                     dataset_path="unused.json", sessions=["midday", "evening"],
                     skip_range=[0, 10])
-            jobs[tag] = json.dumps(sorted(w.jobs, key=lambda j: j["job_id"]),
+            jobs[tag] = json.dumps(sorted(_jobs_without_stage2_keys(w.jobs),
+                                          key=lambda j: (j["seed_start"], j["seed_end"])),
                                    sort_keys=True)
         assert jobs["new"] == jobs["base"], (
-            f"seed_start=0 job dicts differ from HEAD (total={total})")
-    return "seed_start=0: job dicts byte-equal to HEAD's for 3 shapes"
+            f"seed_start=0 job dicts differ from {PRE_STAGE1_BASE} (total={total})")
+    return (f"seed_start=0: job dicts byte-equal to {PRE_STAGE1_BASE}'s for 3 shapes "
+            f"(except {list(_STAGE2_CHANGED_JOB_KEYS)}, changed by stage 2)")
 
 
 def d_s2_two31(M):
@@ -567,12 +587,15 @@ def d_s6_disagree(M):
     return "one chunk filtered at 0.5 for a 0.4 request -> the pass refuses"
 
 
-def d_s6_hybrid_still_quarantined(M):
+def d_s6_hybrid_needs_threshold(M):
+    # [PWC-STAGE2 ruling 1] the quarantine is lifted; in its place a hybrid pass
+    # with no phase2_threshold refuses before any dispatch (tests/test_pwc_backup_stage2.py
+    # covers the whole contract)
     w = Worker()
-    raises(M.PwcHybridThresholdContractUncertified,
-           lambda: sieve(make_pwc(M, worker=w), prng="java_lcg_hybrid"))
-    assert not w.jobs
-    return "hybrid run_sieve_pass still raises the quarantine before any dispatch"
+    e = raises(M.PwcSettingRefused,
+               lambda: sieve(make_pwc(M, worker=w), prng="java_lcg_hybrid"))
+    assert "phase2_threshold" in str(e) and not w.jobs, (e, w.jobs)
+    return "hybrid run_sieve_pass without phase2_threshold refuses before any dispatch"
 
 
 # ── S7 ───────────────────────────────────────────────────────────────────────
@@ -775,7 +798,7 @@ GATES = [
     ("G-S5-ENVELOPE", lambda: d_s5_envelope(PWC)),
     ("G-S6-AGREE", lambda: d_s6_agree(PWC)),
     ("G-S6-DISAGREE", lambda: d_s6_disagree(PWC)),
-    ("G-S6-HYBRID-QUARANTINE", lambda: d_s6_hybrid_still_quarantined(PWC)),
+    ("G-S6-HYBRID-NEEDS-THRESHOLD", lambda: d_s6_hybrid_needs_threshold(PWC)),
     ("G-S7-IMPORT", lambda: d_s7_import()),
     ("G-S8-GATE", lambda: d_s8_gate(PG)),
     ("G-S8-CLOSURE-FLEET", lambda: d_s8_closure_and_fleet(PG)),

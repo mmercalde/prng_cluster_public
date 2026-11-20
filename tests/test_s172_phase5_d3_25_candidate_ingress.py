@@ -320,11 +320,15 @@ def drive_pwc(table, *, test_both_modes=True):
     PWC.PersistentWorkerCoordinator = lambda **kw: fake
     try:
         with contextlib.redirect_stdout(io.StringIO()):
+            # [PWC-STAGE2] PWC refuses a window offset other than 0 (until the
+            # window-anchor / generator-phase split lands) and runs variable-skip
+            # passes only on TCP; the PWC drive passes both. ZMQ is unchanged.
             return PWC.run_trial_persistent(
-                coordinator_cfg="unused.json", config=make_config(),
+                coordinator_cfg="unused.json", config=make_config(offset=0),
                 trial_number=TRIAL_NUMBER, prng_base=PRNG_BASE, residues=[1, 2],
                 total_seeds=1000, forward_threshold=0.4, reverse_threshold=0.45,
-                test_both_modes=test_both_modes, dataset_path="unused.csv")
+                test_both_modes=test_both_modes, dataset_path="unused.csv",
+                pwc_transport="tcp")
     finally:
         PWC.PersistentWorkerCoordinator = real
 
@@ -375,6 +379,14 @@ def g1_producer_contract_shape():
                 assert res["reverse_map_variable"] == {}, f"{backend}/{name}"
                 assert res["forward_map_constant"] == FMC, f"{backend}/{name}"
                 assert res["pruned"] is False and res["reason"] is None
+            elif name == "pruned" and backend == "PWC":
+                # [PWC-STAGE2 ruling 4] PWC no longer prunes: forward-constant
+                # zero still runs every phase, as RANGE-MINER does, and returns
+                # the complete v2 shape with pruned False and four empty maps.
+                assert res["pruned"] is False and res["reason"] is None, \
+                    f"{backend}/{name}: pruned={res['pruned']!r} reason={res['reason']!r}"
+                for field in ORACLE_MAP_FIELDS:
+                    assert res[field] == {}, f"{backend}/{name}: {field} nonempty"
             elif name == "pruned":
                 assert res["pruned"] is True, f"{backend}/{name}: not pruned"
                 assert res["reason"] == "forward_zero", \

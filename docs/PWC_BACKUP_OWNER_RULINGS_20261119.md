@@ -37,3 +37,10 @@ The scope's Stage 0 row lists further items beyond the four: TCP-only for counte
 
 - Stage 1 (PWC-only, needs no rulings): coded by the PWC agent 2026-11-19/20, CPU only, rigs powered off. Beta review X-PWC-STAGE1 R1 (2026-11-20): no objections; three suggestions carried to Stages 2 and 3. Landed with this file on Michael's yes of 2026-11-20 06:24 PST.
 - Stages 2 to 4 not started. Plan for Stages 2 and 3: `docs/drafts/BRIEF_PWC_BACKUP_STAGE2_STAGE3_20261119.md` (rig-gpu-fault worktree, not yet landed).
+
+## Update 2026-11-20
+
+- 08:28 PST, shared test files: owner ruled that only the named PWC checks in tests/test_s172_threshold_propagation.py and tests/test_s172_phase5_d3_25_candidate_ingress.py are edited; every RANGE-MINER check in those files stays identical, shown by a line-by-line diff.
+- 08:30 PST, offset: owner agreed that offset picks the draw window only (window_anchor) and generator_phase stays 0, as RANGE-MINER does (docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md:15-33). PWC refuses offset other than 0 until the worker-side split (stage 2b) lands.
+- 12:34 PST, Beta rounds: owner decided that Beta's round 2 finding (X-PWC-STAGE2 R2-Q1, timeout eviction race) is fixed the way Beta specified and stage 2 lands with no third round.
+- Status: stage 2 landed with this update. Stage 2b (worker-side offset split), stage 3 (shared launch files) and stage 4 (rig sessions) are not landed. Beta's R2-Q3 (five strategies) is NEEDS EVIDENCE and is answered by the stage 4 rig sessions.

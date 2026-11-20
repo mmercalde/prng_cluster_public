@@ -174,6 +174,8 @@ class TCPWorkerTransport(PWCTransportBase):
         self._allowed_worker_ids: Optional[set] = None
         self._allowed_lock = threading.Lock()
         self.refused_hellos: List[str] = []   # worker ids refused, in order (bounded)
+        # [PWC-STAGE2 R2] (worker_id, job_id) of results dropped as not for an active lease
+        self.stale_results: List[tuple] = []
 
 
 
@@ -190,9 +192,29 @@ class TCPWorkerTransport(PWCTransportBase):
             self._allowed_worker_ids.add(str(worker_id))
 
     def revoke_worker_id(self, worker_id: str) -> None:
+        """[PWC-STAGE2 BETA-3] Revocation now also applies to a connection the id
+        already holds (Beta X-PWC-STAGE1 R1 finding 3: a worker that connected while
+        its SSH launch was still running kept its accepted socket, reported ready and
+        took a job after revocation). The id leaves the online and ready sets at
+        once, so it is never counted or dispatched to, and its socket is closed; its
+        handler then ends and reclaims anything it had leased."""
+        wid = str(worker_id)
         with self._allowed_lock:
             if self._allowed_worker_ids is not None:
-                self._allowed_worker_ids.discard(str(worker_id))
+                self._allowed_worker_ids.discard(wid)
+        with self._state_lock:
+            self._online_workers.discard(wid)
+            self._ready_workers.discard(wid)
+        with self._workers_lock:
+            conn = self._workers.get(wid)
+        if conn is not None:
+            # shutdown, not just close: close() does not wake the handler thread
+            # blocked in recv on this socket; shutdown makes that recv return EOF,
+            # so the handler ends and cleans up as its connection's owner.
+            try:
+                conn.sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
 
     def _admits(self, worker_id: str) -> bool:
         with self._allowed_lock:
@@ -316,11 +338,13 @@ class TCPWorkerTransport(PWCTransportBase):
     # Inflight lease management — TB blocker C fix
     # ------------------------------------------------------------------
 
-    def _lease_job(self, job: Dict[str, Any], worker_id: str) -> str:
-        """Register job as inflight. Returns lease_id."""
+    def _lease_job(self, job: Dict[str, Any], worker_id: str, conn: Any = None) -> str:
+        """Register job as inflight. Returns lease_id. [PWC-STAGE2] `conn` records
+        which connection carried it, so a replaced connection reclaims only its own."""
         lease_id = str(uuid.uuid4())
         with self._inflight_lock:
             self._inflight[job["job_id"]] = {
+                "conn":        conn,
                 "worker_id":   worker_id,
                 "lease_id":    lease_id,
                 "assigned_at": time.time(),
@@ -334,7 +358,21 @@ class TCPWorkerTransport(PWCTransportBase):
         with self._inflight_lock:
             self._inflight.pop(job_id, None)
 
-    def _reclaim_worker_jobs(self, worker_id: str) -> List[Dict[str, Any]]:
+    def _take_active_lease(self, job_id: str, lease_id: Any, conn: Any) -> bool:
+        """[PWC-STAGE2 R2, Beta finding 2] Retire the lease for `job_id` ONLY if it is
+        the ACTIVE lease, the result names that lease, and it arrived on the
+        connection that holds it. Anything else is a late or foreign result (a worker
+        still finishing a job that timed out and was handed to another worker, or a
+        result for a lease that was already reclaimed): it must neither retire the
+        current lease nor be delivered as the current job's result."""
+        with self._inflight_lock:
+            info = self._inflight.get(job_id)
+            if info is None or info.get("lease_id") != lease_id or info.get("conn") is not conn:
+                return False
+            del self._inflight[job_id]
+            return True
+
+    def _reclaim_worker_jobs(self, worker_id: str, conn: Any = None) -> List[Dict[str, Any]]:
         """
         On worker disconnect — find all inflight jobs for this worker,
         remove from inflight table, requeue if attempts remain.
@@ -343,7 +381,7 @@ class TCPWorkerTransport(PWCTransportBase):
         reclaimed = []
         with self._inflight_lock:
             for job_id, info in list(self._inflight.items()):
-                if info["worker_id"] == worker_id:
+                if info["worker_id"] == worker_id and (conn is None or info.get("conn") is conn):
                     job = info["job"]
                     attempt = info["attempt"] + 1
                     del self._inflight[job_id]
@@ -376,22 +414,38 @@ class TCPWorkerTransport(PWCTransportBase):
         """
         while not self._stop.is_set():
             time.sleep(LEASE_CHECK_INTERVAL_S)
-            now = time.time()
-            with self._last_seen_lock:
-                timed_out = [
-                    wid for wid, ts in self._last_seen.items()
-                    if now - ts > HEARTBEAT_TIMEOUT_S
-                ]
-            for worker_id in timed_out:
-                reclaimed = self._reclaim_worker_jobs(worker_id)
-                if reclaimed:
-                    pass  # coordinator will see error results or requeued jobs
+            self._reap_silent_workers(time.time())
+
+    def _reap_silent_workers(self, now: float) -> None:
+        """[PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 Q6] Timeout eviction under the same
+        ownership rule as a disconnect: the registered connection is evicted, and
+        its id's registry, last-seen and online/ready state are cleared, in ONE
+        critical section under `_workers_lock`, re-checking the silence there (a
+        reconnect may have refreshed it). Only the leases the evicted connection
+        carried are reclaimed. The socket is shut down so its handler wakes and ends
+        (it is then no longer the owner and clears nothing else)."""
+        with self._last_seen_lock:
+            timed_out = [
+                wid for wid, ts in self._last_seen.items()
+                if now - ts > HEARTBEAT_TIMEOUT_S
+            ]
+        for worker_id in timed_out:
+            with self._workers_lock:
                 with self._last_seen_lock:
+                    ts = self._last_seen.get(worker_id)
+                    if ts is None or now - ts <= HEARTBEAT_TIMEOUT_S:
+                        continue
                     self._last_seen.pop(worker_id, None)
-                with self._workers_lock:
-                    conn = self._workers.pop(worker_id, None)
-                    if conn:
-                        conn.close()
+                conn = self._workers.pop(worker_id, None)
+                with self._state_lock:
+                    self._online_workers.discard(worker_id)
+                    self._ready_workers.discard(worker_id)
+            if conn is not None:
+                self._reclaim_worker_jobs(worker_id, conn)
+                try:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Accept loop
@@ -455,10 +509,15 @@ class TCPWorkerTransport(PWCTransportBase):
                 "accepted":         True,
             })
 
+            # [PWC-STAGE2 R3, Beta X-PWC-STAGE2 R2 Q1] Register AND refresh last-seen in
+            # ONE critical section under `_workers_lock`, the section the timeout
+            # reaper uses (`_reap_silent_workers`). The reaper therefore never sees
+            # this fresh connection paired with the previous connection's stale
+            # timestamp.
             with self._workers_lock:
                 self._workers[worker_id] = conn
-            with self._last_seen_lock:
-                self._last_seen[worker_id] = time.time()
+                with self._last_seen_lock:
+                    self._last_seen[worker_id] = time.time()
 
             # S161 v2: if init already broadcast, send it immediately (late joiner)
             with self._state_lock:
@@ -480,22 +539,42 @@ class TCPWorkerTransport(PWCTransportBase):
                 mtype = msg.get("message_type")
 
                 # Update last-seen on every message — TB blocker E fix
-                with self._last_seen_lock:
-                    self._last_seen[worker_id] = time.time()
+                # [PWC-STAGE2 R3] only while THIS connection is the registered one for
+                # the id: a replaced connection's messages never refresh (or create)
+                # the timestamp the reaper judges the current connection by.
+                with self._workers_lock:
+                    if self._workers.get(worker_id) is not conn:
+                        break
+                    with self._last_seen_lock:
+                        self._last_seen[worker_id] = time.time()
 
                 if mtype == "online":
                     # S161 v2: worker is TCP-connected, not yet compute-ready
-                    with self._state_lock:
-                        self._online_workers.add(worker_id)
+                    # [PWC-STAGE2 R3] set only by the registered connection, inside
+                    # the registry lock, so an evicted/replaced one cannot set it
+                    with self._workers_lock:
+                        if self._workers.get(worker_id) is not conn:
+                            break
+                        with self._state_lock:
+                            self._online_workers.add(worker_id)
                     continue
 
                 elif mtype == "ready":
                     # S161 v2: worker completed ROCm warmup — compute-ready
-                    with self._state_lock:
-                        self._ready_workers.add(worker_id)
+                    if not self._admits(worker_id):     # [PWC-STAGE2 BETA-3]
+                        break
+                    # [PWC-STAGE2 R3] as for online: registered connection only
+                    with self._workers_lock:
+                        if self._workers.get(worker_id) is not conn:
+                            break
+                        with self._state_lock:
+                            self._ready_workers.add(worker_id)
                     continue
 
                 elif mtype == "request_job":
+                    # [PWC-STAGE2 BETA-3] an id revoked after its hello gets no job
+                    if not self._admits(worker_id):
+                        break
                     try:
                         job = self._pending_jobs.get_nowait()
                     except queue.Empty:
@@ -560,7 +639,7 @@ class TCPWorkerTransport(PWCTransportBase):
                     except Exception:
                         pass
 
-                    lease_id = self._lease_job(job, worker_id)
+                    lease_id = self._lease_job(job, worker_id, conn)
 
                     # [S168A-DIAG] job assignment telemetry (PASSIVE, env-gated)
                     try:
@@ -599,9 +678,16 @@ class TCPWorkerTransport(PWCTransportBase):
                         })
 
                 elif mtype in ("result_inline", "result_spooled"):
-                    # Complete lease before normalizing
+                    # [PWC-STAGE2 R2, Beta finding 2] Only a result for the ACTIVE
+                    # lease, from the connection holding it, retires the lease and is
+                    # delivered. A late result (its job timed out and was handed to
+                    # another worker, or its lease was reclaimed) is dropped and
+                    # counted; it never completes or answers the current job.
                     job_id = msg.get("job_id", "")
-                    self._complete_lease(job_id)
+                    if not self._take_active_lease(job_id, msg.get("lease_id"), conn):
+                        if len(self.stale_results) < 10_000:
+                            self.stale_results.append((str(worker_id), str(job_id)))
+                        continue
                     normalized = normalize_transport_result(msg)
                     # Route to per-job queue if registered — TB fix 4
                     with self._job_queues_lock:
@@ -624,13 +710,28 @@ class TCPWorkerTransport(PWCTransportBase):
             # [PWC-STAGE1 A3 level 1] a refused hello registered nothing, so it
             # must not reclaim or pop anything filed under the same id.
             if not refused:
-                # Reclaim any inflight jobs for this worker
-                self._reclaim_worker_jobs(worker_id)
+                # [PWC-STAGE2 BETA-3] Only the connection that still owns this id
+                # cleans up under it. A later connection with the same id (a
+                # reconnect) replaces the registry entry; when the older handler
+                # ends, it must not pop, reclaim or un-ready the newer one (Beta
+                # X-PWC-STAGE1 R1 Q3).
+                # [PWC-STAGE2 R2, Beta X-PWC-STAGE2 R1 Q6] The ownership check and
+                # every piece of per-id state it governs (registry, last-seen,
+                # online/ready) change in ONE critical section under
+                # `_workers_lock`, the lock a replacement takes to register. A
+                # replacement therefore registers either before (this handler is not
+                # the owner and clears nothing) or after (it reports online/ready
+                # only after registering, so nothing of it exists yet to clear).
                 with self._workers_lock:
-                    self._workers.pop(worker_id, None)
-                with self._last_seen_lock:
-                    self._last_seen.pop(worker_id, None)
-                with self._state_lock:
-                    self._online_workers.discard(worker_id)
-                    self._ready_workers.discard(worker_id)
+                    owner = self._workers.get(worker_id) is conn
+                    if owner:
+                        self._workers.pop(worker_id, None)
+                        with self._last_seen_lock:
+                            self._last_seen.pop(worker_id, None)
+                        with self._state_lock:
+                            self._online_workers.discard(worker_id)
+                            self._ready_workers.discard(worker_id)
+                # Reclaim ONLY the leases this connection carried, owner or not: a
+                # replacement's lease is never requeued or failed by this handler.
+                self._reclaim_worker_jobs(worker_id, conn)
             conn.close()

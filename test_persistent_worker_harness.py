@@ -21,7 +21,7 @@ Uses synthetic stubs and monkey-patches to exercise:
   T12 — Constant skip sieve pass (reverse java_lcg_reverse)
   T13 — Hybrid sieve pass (forward java_lcg_hybrid) — strategy auto-load
   T14 — Hybrid sieve pass (reverse java_lcg_hybrid_reverse) — strategies in payload
-  T15 — run_trial_persistent: pruned path (forward_zero)
+  T15 — run_trial_persistent: forward zero survivors still runs all 4 passes (Stage 2, ruling 4)
   T16 — run_trial_persistent: full 4-pass path, correct result structure
   T17 — run_trial_persistent: test_both_modes=False skips hybrid passes
   T18 — _get_residues_for_config helper
@@ -497,11 +497,12 @@ def T12_constant_reverse_pass():
     os.unlink("/tmp/harness_T12.json")
     os.unlink(cfg)
 
-def _assert_hybrid_refused(prng_type, **extra):
-    """[PWC-STAGE1 A4] T13/T14 used to run a hybrid pass. Since 8a55a68 (Beta
-    comparator ruling §5) PWC refuses every variable-skip pass before dispatch,
-    by design, until the owner lifts the quarantine. They now assert that refusal:
-    the named error, raised before ANY job is dispatched or any file written."""
+def _assert_hybrid_refused(prng_type, why, **extra):
+    """[PWC-STAGE2 ruling 1] The variable-skip quarantine is lifted. A hybrid
+    pass now refuses only when its threshold contract cannot hold: no
+    phase2_threshold (T13), or the SSH route, which reports no threshold (T14;
+    setup_pwc builds an SSH-route coordinator). Either way: the named error,
+    raised before ANY job is dispatched or any file written."""
     import persistent_worker_coordinator as _P
     pwc, cfg = setup_pwc(pool_size=1)
     dispatched_jobs = []
@@ -513,8 +514,8 @@ def _assert_hybrid_refused(prng_type, **extra):
                            total_seeds=500_000, threshold=0.25, window_size=8,
                            output_file=out, sessions=["midday", "evening"],
                            skip_range=[0, 147], **extra)
-    except _P.PwcHybridThresholdContractUncertified as exc:
-        assert _P.PWC_HYBRID_QUARANTINE_CODE in str(exc), str(exc)[:200]
+    except _P.PwcSettingRefused as exc:
+        assert why in str(exc), str(exc)[:200]
     else:
         raise AssertionError(f"{prng_type}: hybrid pass was NOT refused")
     finally:
@@ -523,10 +524,11 @@ def _assert_hybrid_refused(prng_type, **extra):
     assert not os.path.exists(out), f"{out} written by a refused pass"
 
 def T13_hybrid_forward_auto_strategies():
-    _assert_hybrid_refused("java_lcg_hybrid")
+    _assert_hybrid_refused("java_lcg_hybrid", "needs phase2_threshold")
 
 def T14_hybrid_reverse_strategies_in_payload():
-    _assert_hybrid_refused("java_lcg_hybrid_reverse",
+    _assert_hybrid_refused("java_lcg_hybrid_reverse", "need the TCP transport",
+                           phase2_threshold=0.25,
                            strategies=[{"max_consecutive_misses": 2, "skip_tolerance": 4}])
 
 def T15_run_trial_persistent_pruned():
@@ -534,7 +536,7 @@ def T15_run_trial_persistent_pruned():
 
     # Stub config
     class FakeConfig:
-        window_size = 8; offset = 43; skip_min = 5; skip_max = 56; sessions = ['evening']
+        window_size = 8; offset = 0; skip_min = 5; skip_max = 56; sessions = ['evening']  # [PWC-STAGE2] offset != 0 refused
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(SYNTHETIC_CONFIG, f)
@@ -568,22 +570,27 @@ def T15_run_trial_persistent_pruned():
             forward_threshold = 0.25,
             reverse_threshold = 0.25,
             test_both_modes   = True,
+            pwc_transport     = "tcp",   # [PWC-STAGE2] variable-skip passes need TCP
         )
     finally:
         pwc_mod.PersistentWorkerCoordinator.run_sieve_pass = original
         pwc_mod.PersistentWorkerCoordinator.startup        = original_startup
         pwc_mod.PersistentWorkerCoordinator.shutdown       = original_shutdown
 
-    assert result["pruned"] is True, "Expected pruned=True when forward=0"
+    # [PWC-STAGE2 ruling 4] no prune: a forward pass with zero survivors is a
+    # complete result and every phase still runs, as in RANGE-MINER.
+    assert result["pruned"] is False, "Stage 2: forward=0 must not prune"
+    assert result["reason"] is None
     assert result["bidirectional_count"] == 0
-    assert len(call_log) == 1, f"Should stop after forward pass, got: {call_log}"
+    assert call_log == ["java_lcg", "java_lcg_reverse", "java_lcg_hybrid",
+                        "java_lcg_hybrid_reverse"], f"all 4 passes must run: {call_log}"
     os.unlink(cfg_path)
 
 def T16_run_trial_persistent_full_4pass():
     from persistent_worker_coordinator import run_trial_persistent
 
     class FakeConfig:
-        window_size = 8; offset = 43; skip_min = 5; skip_max = 56; sessions = ['evening']
+        window_size = 8; offset = 0; skip_min = 5; skip_max = 56; sessions = ['evening']  # [PWC-STAGE2] offset != 0 refused
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(SYNTHETIC_CONFIG, f)
@@ -617,6 +624,7 @@ def T16_run_trial_persistent_full_4pass():
             forward_threshold = 0.25,
             reverse_threshold = 0.25,
             test_both_modes   = True,
+            pwc_transport     = "tcp",   # [PWC-STAGE2] variable-skip passes need TCP
         )
     finally:
         pwc_mod.PersistentWorkerCoordinator.run_sieve_pass = original
@@ -640,7 +648,7 @@ def T17_test_both_modes_false_skips_hybrid():
     from persistent_worker_coordinator import run_trial_persistent
 
     class FakeConfig:
-        window_size = 8; offset = 43; skip_min = 5; skip_max = 56; sessions = ['evening']
+        window_size = 8; offset = 0; skip_min = 5; skip_max = 56; sessions = ['evening']  # [PWC-STAGE2] offset != 0 refused
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(SYNTHETIC_CONFIG, f)
