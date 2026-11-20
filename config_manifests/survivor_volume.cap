@@ -1,5 +1,5 @@
-{"cap_survivors_per_phase": 25000,
+{"cap_survivors_per_phase": 50000,
  "compare": "point",
  "min_sample_seeds": 67108864,
  "gpu_process_allowlist": ["sunshine"],
- "evidence": "owner decision 2026-11-14. Proven point: 23515 (attempt 9 phase 4, run distributed_config_t1_554463d3). Exact count for Run 4 on [2147483648, 4294967296): 23568 (report M-B). Raised only by the owner."}
+ "evidence": "owner decision 2026-11-19: raised from 25000 for the first full-range single run on [0, 4294967296). Measured phase-4 counts under the Run 4 pins: 23410 on [0, 2147483648) (Run M, 2026-11-18) and 23568 on [2147483648, 4294967296) (Run L, 2026-11-18), sum 46978. Previous cap 25000 was the owner decision of 2026-11-14. Raised only by the owner."}
