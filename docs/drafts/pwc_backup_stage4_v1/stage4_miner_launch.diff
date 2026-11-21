@@ -1,0 +1,139 @@
+--- gate12_launch.sh
++++ stage4_miner_launch.sh
+@@ -76,9 +76,65 @@
+ #       finalizer-owned symlink -> PublicationError, hours in, at publication.
+ # =====================================================================
+ set -u
+-cd ~/distributed_prng_analysis || exit 1
++cd /home/michael/stage4_run_miner || exit 1
+ source ~/venvs/torch/bin/activate
+ 
++# --- STAGE4-PARAMS BEGIN ---
++# [STAGE 4, Beta X-PWC-STAGE4 R1 Q8] The run's params are loaded and validated HERE, before
++# any gate, clean slate or fleet step. An unreadable or invalid file stops the launcher;
++# it is never passed on as an empty --params (WATCHER skips an empty value and would run on
++# the manifest defaults, agents/watcher_agent.py:4173, including the live staging_dir).
++STAGE4_PARAMS_FILE=logs/stage4/params.json
++STAGE4_PARAMS=$(python3 - "$STAGE4_PARAMS_FILE" agent_manifests/window_optimizer.json <<'S4EOF'
++import json, os, sys
++def no(msg):
++    print(f"STAGE 4 REFUSED: {msg}", file=sys.stderr); sys.exit(1)
++try:
++    p = json.load(open(sys.argv[1], encoding="utf-8"))
++except (OSError, ValueError) as e:
++    no(f"cannot read params {sys.argv[1]}: {e}")
++if not isinstance(p, dict):
++    no("params is not a JSON object")
++if p.get("use_range_miner") is not True or p.get("use_persistent_workers") is not False:
++    no("params are not a RANGE-MINER run (use_range_miner true, use_persistent_workers false)")
++need = ["prng_type", "max_seeds", "test_both_modes", "window_trials", "n_parallel",
++        "warm_start_window", "warm_start_offset", "warm_start_session_idx",
++        "warm_start_fwd_thresh", "warm_start_rev_thresh", "warm_start_skip_min",
++        "warm_start_skip_max", "staging_dir"]
++miss = [k for k in need if k not in p]
++if miss:
++    no(f"params lack {miss}")
++st = p["staging_dir"]
++if not isinstance(st, str) or not os.path.isabs(st):
++    no(f"staging_dir {st!r} is not an absolute path")
++try:
++    m = json.load(open(sys.argv[2], encoding="utf-8"))
++    live = (m.get("default_params") or {}).get("staging_dir") or m.get("staging_dir")
++except (OSError, ValueError) as e:
++    no(f"cannot read the manifest {sys.argv[2]} to find the live staging_dir: {e}")
++if not live:
++    no("the manifest names no staging_dir, so the live one cannot be excluded")
++rs, rl = os.path.realpath(st), os.path.realpath(live)
++if rs == rl or rs.startswith(rl + os.sep) or rl.startswith(rs + os.sep):
++    no(f"staging_dir {st} is or overlaps the live staging_dir {live}")
++if not os.path.isdir(st):
++    no(f"staging_dir {st} does not exist (Phase A creates it, empty)")
++if os.listdir(st):
++    no(f"staging_dir {st} is not empty: a Stage 4 run starts a fresh miner ledger")
++print(json.dumps(p, separators=(",", ":"), sort_keys=True))
++S4EOF
++) || { echo "STAGE 4 ABORTED before any gate: params invalid (see the line above)"; exit 1; }
++if [ -z "$STAGE4_PARAMS" ]; then echo "STAGE 4 ABORTED: params validated to nothing"; exit 1; fi
++# The shared halt flag (agents/safety/kill_switch.py:60) is honoured, never cleared here:
++# a present flag is someone's halt, so the launcher stops instead of passing --clear-halt.
++STAGE4_HALT=$(python3 -c "from agents.safety.kill_switch import KillSwitch; print(KillSwitch().halt_file_path)") \
++  || { echo "STAGE 4 ABORTED: halt-file path not derivable"; exit 1; }
++if [ -e "$STAGE4_HALT" ]; then
++  echo "STAGE 4 ABORTED: halt file $STAGE4_HALT is present; ask the owner, do not clear it"; exit 1
++fi
++echo "STAGE 4 params validated: $STAGE4_PARAMS"
++# --- STAGE4-PARAMS END ---
++
+ STAMP=$(date +%Y%m%d_%H%M%S)
+ # [ATTEMPT-6 §8.4.2] THE RUN NONCE. Opaque, run-scoped, and it must be UNIQUE per
+ # attempt: it is what makes a leftover /tmp/minerlogs/gpuN.log from an earlier
+@@ -439,51 +495,24 @@
+ echo "cache join evidence: $CACHE_JOIN_EVID; frozen: $CACHE_FREEZE" | tee -a "$EVID"
+ echo "POST-RUN (after the workers exit): python3 scripts/cache_footprint.py --cache-tsv $CACHE_FREEZE/$(basename "$CACHE_TSV") --out $CACHE_FREEZE/cache_footprint_${RUN_NONCE}.json" | tee -a "$EVID"
+ 
+-# ---------- 3. CONCURRENCY SAMPLER — ARMED BEFORE THE COORDINATOR ----------
+-# Ordering is the whole point: the sampler is running before the coordinator
+-# process is created, so it cannot miss the first StripeAssign. It latches onto
+-# the first run whose stripe rows are created AFTER this moment, which is also
+-# what proves it was armed first.
+-#
+-# Read-only against the miner ledger (`file:...?mode=ro`); the ledger path is
+-# derived from the manifest's staging_dir, and a production analysis database is
+-# refused outright by name.
+-#
+-# setsid: so Ctrl-C on the tail -f at the end cannot reach it.
+-setsid nohup python3 -u scripts/gate12_concurrency_sampler.py \
+-  --out "$CONC" --summary "$VERDICT" \
+-  --interval 2 --threshold 25 --min-window-samples 2 \
+-  --port 5700 --max-seconds 7200 \
+-  > "$SAMPLOG" 2>&1 &
+-SAMPLER=$!
+-sleep 2
+-if ! kill -0 "$SAMPLER" 2>/dev/null; then
+-  echo "SAMPLER FAILED TO START — aborting before the run"; cat "$SAMPLOG"; exit 1
+-fi
+-echo "concurrency sampler pid=$SAMPLER -> $CONC" | tee -a "$EVID"
++# ---------- 3. CONCURRENCY SAMPLER — NOT RUN FOR STAGE 4 ----------
++# [STAGE 4, Beta X-PWC-STAGE4 R1 Q8] Dropped for this trial. Its unchanged threshold of 25
++# concurrent workers cannot be reached: 2^28 seeds at 2^26 per macro-stripe is 4 stripes per
++# phase, so at most 4 workers hold a claimed stripe at once. It also resolves its ledger from
++# the manifest (the live staging_dir), and needs an existing `stripes` table before WATCHER
++# starts. Its output would prove neither saturation nor Gate 12 acceptance.
++SAMPLER=""
++echo "concurrency sampler: NOT RUN for Stage 4 (4 stripes/phase cannot reach threshold 25)" | tee -a "$EVID"
++echo "stage 4 params: $STAGE4_PARAMS" | tee -a "$EVID"
+ 
+-# ---------- 4. COORDINATOR UP (halt cleared, miner on, PWC off) ----------
+-nohup env PYTHONPATH=. python3 agents/watcher_agent.py --clear-halt --run-pipeline \
++# ---------- 4. COORDINATOR UP (halt honoured, not cleared; miner on, PWC off) ----------
++nohup env PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline \
+   --start-step 1 --end-step 1 \
+-  --params '{"use_persistent_workers": false, "use_range_miner": true,
+-             "worker_pool_size": 25,
+-             "seed_start": 0, "max_seeds": 2147483648,
+-             "miner_stripe_size": 67108864, "test_both_modes": true,
+-             "prng_type": "java_lcg", "window_trials": 1, "n_parallel": 1}' \
++  --params "$STAGE4_PARAMS" \
+   > "$LOG" 2>&1 &
+ WATCHER=$!
+ echo "watcher pid=$WATCHER -> $LOG" | tee -a "$EVID"
+ 
+-# ---------- 4.5. SAMPLER TERMINATES WITH THE RUN ----------
+-# A supervisor, not a wall clock: when the run's own process exits, the sampler
+-# is asked to stop and writes its verdict. Attempt 1's sampler had no such link
+-# and looped for two hours against a dead trial.
+-setsid nohup bash -c '
+-  while kill -0 '"$WATCHER"' 2>/dev/null; do sleep 5; done
+-  sleep 10                      # let the last in-flight sample land
+-  kill -TERM '"$SAMPLER"' 2>/dev/null
+-' > /dev/null 2>&1 &
+-
+ # ---------- 5. WAIT FOR BIND, THEN RELEASE THE PARKED FLEET ----------
+ # [ATTEMPT-6 §8.4.3] steps 4-6 of the launch order. The fleet is already up and
+ # already proved its log channel; what happens here is only the RELEASE, and it
+@@ -520,4 +549,4 @@
+ echo "SAMPLOG: $SAMPLOG"
+ echo "EVID:    $EVID"
+ echo
+-tail -f "$LOG"
++echo "launcher done; follow $LOG by reading it, not by tail -f"
