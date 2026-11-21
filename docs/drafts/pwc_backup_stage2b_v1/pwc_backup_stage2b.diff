@@ -1,0 +1,1970 @@
+diff --git a/persistent/pwc_worker_service.py b/persistent/pwc_worker_service.py
+index 333882f..5bd0b1a 100644
+--- a/persistent/pwc_worker_service.py
++++ b/persistent/pwc_worker_service.py
+@@ -552,7 +552,6 @@ class PWCWorkerService:
+                 "skip_range":          job.get("skip_range",
+                                                [job.get("skip_min", 0),
+                                                 job.get("skip_max", 147)]),
+-                "offset":              job.get("offset", job.get("chunk_offset", 0)),
+                 "sessions":            job.get("sessions", ["midday", "evening"]),
+                 "prng_families":       job.get("prng_families",
+                                                [job.get("prng_type", "java_lcg")]),
+@@ -561,6 +560,32 @@ class PWCWorkerService:
+                                                job.get("is_hybrid", False))),
+                 "phase2_threshold":    job.get("phase2_threshold", 0.5),
+             }
++            # [PWC-BACKUP STAGE 2b] Window-anchor / generator-phase separation,
++            # RANGE-MINER's method (owner ruling 2026-11-20 08:30 PST; v1.1 §4.1;
++            # miner/range_miner_worker.py:813-860). This worker is PWC's TCP entry
++            # point, so it takes ONLY new-key jobs:
++            #   * a job carrying the retired `offset` (or its alias `chunk_offset`)
++            #     is refused; it is not mapped to either new key;
++            #   * `window_anchor` and `generator_phase` are both required, with no
++            #     default; sieve_filter.execute_sieve_job then refuses a non-integer
++            #     value, a nonzero phase, or an anchor outside the window domain.
++            # The refusal is raised before any sieve work and comes back as
++            # success False with the code in `error`, like every worker failure.
++            # (sieve_filter.execute_sieve_job itself still accepts old-style jobs:
++            # the legacy coordinator.py and ZMQ engines send them. Owner, 2026-11-20.)
++            for _k in ("offset", "chunk_offset"):
++                if _k in job:
++                    raise ValueError(
++                        f"PWC_LEGACY_OFFSET_REFUSED: job {chunk_id} carries the retired "
++                        f"key {_k!r}; PWC workers take window_anchor + generator_phase "
++                        f"only (docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §4.1)")
++            _absent = [k for k in ("window_anchor", "generator_phase") if k not in job]
++            if _absent:
++                raise ValueError(
++                    f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {chunk_id} lacks required "
++                    f"key(s) {_absent}; no default is substituted")
++            sieve_job["window_anchor"] = job["window_anchor"]
++            sieve_job["generator_phase"] = job["generator_phase"]
+ 
+             self._emit_heartbeat("pre_kernel", job=job)
+ 
+diff --git a/persistent_worker_coordinator.py b/persistent_worker_coordinator.py
+index a6829da..335dad7 100644
+--- a/persistent_worker_coordinator.py
++++ b/persistent_worker_coordinator.py
+@@ -354,6 +354,69 @@ def validate_pwc_window_offset(offset) -> int:
+     return 0
+ 
+ 
++# ── [PWC-BACKUP STAGE 2b] window anchor / generator phase ───────────────────
++# Owner ruling 2026-11-20 08:30 PST: the trial's `offset` picks the draw window
++# only, the generator phase is 0, and PWC moves to RANGE-MINER's method. The
++# split now exists on the TCP worker and in sieve_filter.execute_sieve_job, so
++# on the TCP and local routes a job carries `window_anchor` (the trial's offset)
++# and `generator_phase` (pinned to 0) and NO `offset`, exactly as the miner's
++# coordinator builds its context (miner/range_miner_coordinator.py:2731-2732);
++# the worker checks the anchor against the post-session-filter domain and never
++# clamps (miner/range_miner_worker.py:913-925). The SSH route ends in
++# sieve_gpu_worker.py, a parity-pinned file that reads one `offset` for both
++# jobs, so it cannot carry the split: there Stage 2's refusal of offset != 0
++# stays (owner, 2026-11-20). The pin is restated, not imported from miner/,
++# so PWC does not import the miner package.
++PWC_GENERATOR_PHASE_V1_PIN = 0
++
++
++def validate_pwc_window_anchor(anchor, *, ssh_route: bool) -> int:
++    """The trial's window anchor (`config.offset`), checked before dispatch.
++    A non-integer or negative anchor is refused here; the upper bound needs the
++    dataset and is checked by the worker. On the SSH route anything but 0 is
++    refused (validate_pwc_window_offset)."""
++    if ssh_route:
++        return validate_pwc_window_offset(anchor)
++    if not _is_plain_int(anchor):
++        raise PwcWindowAnchorRefused(
++            f"window anchor must be an integer, got {anchor!r} ({type(anchor).__name__})")
++    if int(anchor) < 0:
++        raise PwcWindowAnchorRefused(f"window anchor {int(anchor)} < 0 refused")
++    return int(anchor)
++
++
++def pwc_new_key_job(job: Dict[str, Any], window_anchor: int) -> Dict[str, Any]:
++    """A copy of an assembled PWC job for the TCP and local routes: `offset` is
++    replaced, in its place in the key order, by `window_anchor` and
++    `generator_phase` (the v1 pin). Nothing else changes."""
++    out: Dict[str, Any] = {}
++    for k, v in job.items():
++        if k == "offset":
++            out["window_anchor"] = int(window_anchor)
++            out["generator_phase"] = PWC_GENERATOR_PHASE_V1_PIN
++        else:
++            out[k] = v
++    return out
++
++
++def pwc_anchor_echo_error(payload: Any, job: Dict[str, Any]) -> Optional[str]:
++    """None when the worker's result echoes exactly the window_anchor and
++    generator_phase the job carried; otherwise why not. A worker from before
++    Stage 2b drops both keys and sieves the window at 0 without saying so, and
++    echoes neither: this is where that run is caught instead of counted."""
++    if "window_anchor" not in job:
++        return None
++    if not isinstance(payload, dict):
++        return "worker result has no payload to check window_anchor/generator_phase against"
++    for k in ("window_anchor", "generator_phase"):
++        if k not in payload:
++            return (f"worker did not echo {k} (sent {job[k]!r}); a worker without the "
++                    f"window-anchor split would have sieved a different window")
++        if not _is_plain_int(payload[k]) or int(payload[k]) != int(job[k]):
++            return f"worker echoed {k}={payload[k]!r}, job sent {job[k]!r}"
++    return None
++
++
+ # ── [S2] seed interval ──────────────────────────────────────────────────────
+ # End bound (exclusive) of the seed space a PWC pass may partition. Source: the
+ # owner-decided interval check for Step 1, `0 <= seed_start` and
+@@ -1792,6 +1855,11 @@ class PersistentWorkerCoordinator:
+                            for s in raw_surv]
+             strat_ids   = [s.get("strategy_id", 0)    if isinstance(s, dict) else 0       for s in raw_surv]
+ 
++        # [PWC-BACKUP STAGE 2b] the worker must echo the anchor and phase it ran
++        _echo_err = pwc_anchor_echo_error(payload, job)
++        if _echo_err is not None:
++            return {"status": "error", "message": f"[PWC-BACKUP STAGE 2b] {_echo_err}"}
++
+         return {
+             "status":         "ok",
+             "job_id":         job["job_id"],
+@@ -1858,6 +1926,11 @@ class PersistentWorkerCoordinator:
+                                 match_rates = inner.get("match_rates", [0.5]*len(survivors))
+                                 skip_seqs   = inner.get("skip_sequences", [])
+                                 strat_ids   = inner.get("strategy_ids",   [])
++                            # [PWC-BACKUP STAGE 2b] the anchor and phase it ran
++                            _echo_err = pwc_anchor_echo_error(inner, job)
++                            if _echo_err is not None:
++                                return {"status": "error",
++                                        "message": f"[PWC-BACKUP STAGE 2b] {_echo_err}"}
+                             return {
+                                 "status":         "ok",
+                                 "job_id":         raw.get("job_id", "local"),
+@@ -1949,7 +2022,10 @@ class PersistentWorkerCoordinator:
+         _job_phase2 = float(threshold) if phase2_threshold is None else phase2_threshold
+ 
+         # [PWC-STAGE2] window offset other than 0 refused (validate_pwc_window_offset)
+-        validate_pwc_window_offset(offset)
++        # [PWC-BACKUP STAGE 2b] now only on the SSH route; the TCP and local routes
++        # carry it as window_anchor (validate_pwc_window_anchor).
++        _window_anchor = validate_pwc_window_anchor(
++            offset, ssh_route=self._tcp_transport is None)
+ 
+         # [PWC-BACKUP S2] the interval, checked before anything is chunked
+         _req_start, _req_end = validate_pwc_seed_interval(seed_start, total_seeds)
+@@ -2080,7 +2156,7 @@ class PersistentWorkerCoordinator:
+             def _run_once(wh):
+                 # [TCP transport] dispatch bridge — additive, SSH path unchanged
+                 if self._tcp_transport is not None:  # [S166] route ALL workers via TCP incl Zeus
+-                    return self._dispatch_to_tcp(job)
++                    return self._dispatch_to_tcp(pwc_new_key_job(job, _window_anchor))  # [STAGE 2b]
+                 if isinstance(wh, WorkerHandle):
+                     job["gpu_id"] = wh.gpu_id
+                     return self._dispatch_to_worker(wh, job)
+@@ -2096,7 +2172,8 @@ class PersistentWorkerCoordinator:
+                         f"CUDA_VISIBLE_DEVICES={local_gpu_id}"
+                     )
+                     try:
+-                        return self._dispatch_local_sieve(job, wh)
++                        return self._dispatch_local_sieve(
++                            pwc_new_key_job(job, _window_anchor), wh)  # [PWC-BACKUP STAGE 2b]
+                     finally:
+                         self._localhost_gpu_slots.put(local_gpu_id)
+ 
+@@ -2550,7 +2627,9 @@ def run_trial_persistent(coordinator_cfg: str,
+     _skip_range = [config.skip_min, config.skip_max]
+     _pass_results: Dict[str, Optional[Dict[str, Any]]] = {}
+     # [PWC-STAGE2] window offset other than 0 refused before the fleet is built
+-    validate_pwc_window_offset(config.offset)
++    # [PWC-BACKUP STAGE 2b] now only on the SSH route (validate_pwc_window_anchor);
++    # on TCP the anchor's upper bound is the worker's to check.
++    validate_pwc_window_anchor(config.offset, ssh_route=(pwc_transport != "tcp"))
+     # [PWC-STAGE2 ruling 4] phases follow RANGE-MINER's workflow_stages_for: 1-2
+     # always, 3-4 when test_both_modes (and the base is not itself a hybrid, the
+     # same test _step1_required_phases uses). Never cut short by a survivor count.
+diff --git a/sieve_filter.py b/sieve_filter.py
+index 2e2c510..1ff3d07 100755
+--- a/sieve_filter.py
++++ b/sieve_filter.py
+@@ -359,9 +359,28 @@ class GPUSieve:
+         strategies: List[Dict[str, Any]],
+         min_match_threshold: float = 0.25,
+         chunk_size: int = 100_000,
+-        offset: int = 0
++        offset: int = 0,
++        miner_abi: bool = False
+     ) -> Dict[str, Any]:
+-        """Run hybrid multi-strategy variable skip sieve"""
++        """Run hybrid multi-strategy variable skip sieve
++
++        [PWC-BACKUP STAGE 2b] miner_abi=True (set by execute_sieve_job for a PWC
++        new-key job only) gives the four forward hybrids whose kernels take NO
++        phase argument exactly RANGE-MINER's argument count: java_lcg_hybrid 15,
++        minstd_hybrid 15, xorshift32_hybrid 16, xorshift128_hybrid 16
++        (miner/range_miner_worker.py:39-44, :160, :179). The trailing int32 is
++        left out for them, and a nonzero `offset` (here: the generator phase) is
++        refused for them, as the miner refuses it (:570-600). miner_abi=False,
++        the default every other caller gets, leaves the launch exactly as before.
++        """
++        _no_phase_fwd = ("java_lcg", "minstd", "xorshift32", "xorshift128")
++        _base_family = prng_family.replace("_hybrid", "").replace("_reverse", "")
++        _drop_phase_arg = (miner_abi and '_reverse' not in prng_family
++                           and _base_family in _no_phase_fwd)
++        if _drop_phase_arg and int(offset) != 0:
++            raise ValueError(
++                f"PWC_GENERATOR_PHASE_REFUSED: {prng_family} (forward hybrid) has no "
++                f"generator-phase argument; phase {int(offset)} cannot be applied")
+         # Import strategy helper
+         try:
+             from hybrid_strategy import analyze_skip_pattern
+@@ -458,7 +477,7 @@ class GPUSieve:
+                         if "xorshift128" in prng_family else
+                         []
+                     ),
+-                    cp.int32(offset)
++                    *([] if _drop_phase_arg else [cp.int32(offset)])
+                 ]
+                 kernel((blocks,), (threads_per_block,), tuple(kernel_args))
+                 cp.cuda.Device().synchronize()
+@@ -518,6 +537,47 @@ class GPUSieve:
+ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+     """Execute a sieve job from job specification"""
+     job_id = job.get('job_id', 'unknown')
++    # [PWC-BACKUP STAGE 2b] Window-anchor / generator-phase separation, worker side
++    # (docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §2, §4.1, §4.2;
++    # owner ruling 2026-11-20 08:30 PST: PWC moves to RANGE-MINER's method).
++    # A job carrying `window_anchor` / `generator_phase` is a NEW-schema job:
++    #   window_anchor   -> which records form the residue window (host side, only);
++    #   generator_phase -> the kernel's trailing pre-advance argument (device side,
++    #                      only), pinned to 0 in v1 (range_miner_worker.py
++    #                      GENERATOR_PHASE_V1_PIN).
++    # Both keys are required together, `offset` must be absent (HARD REJECT, v1.1
++    # §4.1; miner: range_miner_worker.py _LEGACY_OFFSET_KEY), a nonzero phase is
++    # refused, and an anchor outside [0, N_filtered - window_size] is refused, never
++    # clamped (§4.2; miner: load_residue_window). These refusals RAISE, before any
++    # dataset read, kernel compile or GPU work. A job WITHOUT either key takes the
++    # unchanged legacy path below, where `offset` still does both jobs.
++    _pwc_new_schema = ('window_anchor' in job) or ('generator_phase' in job)
++    if _pwc_new_schema:
++        _missing = [k for k in ('window_anchor', 'generator_phase') if k not in job]
++        if _missing:
++            raise ValueError(
++                f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {job_id!r} carries one of "
++                f"window_anchor/generator_phase but lacks {_missing}. Both are "
++                f"required together; no default is substituted.")
++        if 'offset' in job:
++            raise ValueError(
++                f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {job_id!r} carries the "
++                f"retired key 'offset' alongside window_anchor/generator_phase. "
++                f"'offset' is not mapped to either and is not read as a fallback.")
++        try:
++            _pwc_window_anchor = int(job['window_anchor'])
++            _pwc_generator_phase = int(job['generator_phase'])
++        except (TypeError, ValueError) as _e:
++            raise ValueError(
++                f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {job_id!r}: window_anchor="
++                f"{job['window_anchor']!r} / generator_phase={job['generator_phase']!r} "
++                f"must be integers") from _e
++        if _pwc_generator_phase != 0:
++            raise ValueError(
++                f"PWC_GENERATOR_PHASE_REFUSED: job {job_id!r} requests "
++                f"generator_phase={_pwc_generator_phase}. v1 pins the device-side "
++                f"generator phase to exactly 0 (same pin as RANGE-MINER). Nonzero "
++                f"phase is DEP-ABI-V2: recorded, not built. No kernel was launched.")
+     try:
+         # Extract parameters
+         dataset_path = job.get('dataset_path') or job.get('target_file')
+@@ -534,8 +594,31 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+         min_match_threshold = job.get('min_match_threshold', 0.25)
+         offset = job.get('offset', 0)
+         sessions = job.get('sessions', ['midday', 'evening'])
+-        # Load draws
+-        draws = load_draws_from_daily3(dataset_path, window_size, sessions, offset)
++        if _pwc_new_schema:
++            # [PWC-BACKUP STAGE 2b] Domain check on the POST-session-filter count,
++            # then the SAME loader the legacy path uses (one derivation of the
++            # window); inside the domain its clamp is a no-op. `offset` from here
++            # on is only the kernel's trailing argument, i.e. generator_phase (0).
++            with open(dataset_path, 'r') as _f:
++                _data = json.load(_f)
++            if sessions:
++                _data = [e for e in _data if e.get('session') in sessions]
++            _derived_max = len(_data) - window_size
++            if _pwc_window_anchor < 0 or _pwc_window_anchor > _derived_max:
++                raise ValueError(
++                    f"PWC_WINDOW_ANCHOR_OUT_OF_DOMAIN: window_anchor "
++                    f"{_pwc_window_anchor} is outside the derived domain "
++                    f"[0, {_derived_max}] — dataset={dataset_path!r}, sessions="
++                    f"{sorted(sessions) if sessions else 'ALL'}, N_filtered="
++                    f"{len(_data)}, window_size={window_size}. The anchor is "
++                    f"validated, never clamped.")
++            del _data
++            draws = load_draws_from_daily3(dataset_path, window_size, sessions,
++                                           _pwc_window_anchor)
++            offset = _pwc_generator_phase
++        else:
++            # Load draws
++            draws = load_draws_from_daily3(dataset_path, window_size, sessions, offset)
+         print(f'🔍 LOADED DRAWS: len(draws)={len(draws)}, requested window_size={window_size}', file=sys.stderr)
+         if not draws:
+             raise ValueError("No draws loaded from dataset")
+@@ -592,7 +675,8 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+                             residues=draws,
+                             strategies=strategies,
+                             min_match_threshold=phase2_threshold,
+-                            offset=offset
++                            offset=offset,
++                            miner_abi=_pwc_new_schema  # [PWC-BACKUP STAGE 2b]
+                         )
+                         result['single_phase'] = {
+                             'threshold': round(phase2_threshold, 4),
+@@ -635,7 +719,8 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+                                 residues=draws,
+                                 strategies=strategies,
+                                 min_match_threshold=phase2_threshold,
+-                                offset=offset
++                                offset=offset,
++                                miner_abi=_pwc_new_schema  # [PWC-BACKUP STAGE 2b]
+                             )
+                             phase2_duration = (time.time() - phase2_start) * 1000
+                             phase2_survivors = phase2_result.get('survivors', [])
+@@ -710,6 +795,10 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+             },
+             'seeds_analyzed': total_tested
+         }
++        if _pwc_new_schema:
++            # [PWC-BACKUP STAGE 2b] record what ran, independently (v1.1 §2).
++            final_result['window_anchor'] = _pwc_window_anchor
++            final_result['generator_phase'] = _pwc_generator_phase
+         return final_result
+     except Exception as e:
+         import traceback
+diff --git a/tests/test_pwc_backup_stage2.py b/tests/test_pwc_backup_stage2.py
+index e89c83a..c8d852f 100644
+--- a/tests/test_pwc_backup_stage2.py
++++ b/tests/test_pwc_backup_stage2.py
+@@ -8,6 +8,8 @@ What Stage 2 changes (docs/drafts/pwc_backup_stage2_v1/README.md has file:line):
+   ruling 4  no early stop: phases 1-2 always, 3-4 whenever test_both_modes;
+   default   all five hybrid strategies (S147 Q2 single strategy removed);
+   owner     window offset != 0 refused (2026-11-20), until the anchor/phase split lands;
++            [PWC-BACKUP STAGE 2b] it has landed: TCP carries window_anchor + generator_phase 0
++            and the echo is checked; the refusal stays on the SSH route only (G-ANCHOR);
+   Beta-2    a process check must prove it can see processes (positive control) and
+             read pgrep's exit status exactly (rig kill, S156 find/reap, VM101 kill);
+   Beta-3    revocation drops a connection the id already holds; an unconfirmed launch
+@@ -125,9 +127,19 @@ def sieve_like_payload(job, *, echo="exact", ok=True):
+                                    "strategies_tested": len(job["strategies"] or [])}
+         elif echo is not None:
+             per["single_phase"] = {"threshold": echo, "strategies_tested": 5}
+-    return {"success": ok, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
+-            "min_match_threshold": job["min_match_threshold"], "survivors": [],
+-            "per_family": {fam: per}}
++    out = {"success": ok, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
++           "min_match_threshold": job["min_match_threshold"], "survivors": [],
++           "per_family": {fam: per}}
++    return _anchor_echo(out, job)
++
++
++def _anchor_echo(out, job):
++    """[PWC-BACKUP STAGE 2b] sieve_filter.execute_sieve_job records window_anchor and
++    generator_phase in its result for a new-key job (and PWC checks the echo)."""
++    for k in ("window_anchor", "generator_phase"):
++        if k in job:
++            out[k] = job[k]
++    return out
+ 
+ 
+ class FakeTransport:
+@@ -249,12 +261,14 @@ SF.load_draws_from_daily3 = lambda path, w, sessions, offset: list(range(w))
+ class _Sieve:
+     def __init__(self, gpu_id=0): pass
+     def run_hybrid_sieve(self, prng_family, seed_start, seed_end, residues, strategies,
+-                         min_match_threshold=0.25, chunk_size=100_000, offset=0):
++                         min_match_threshold=0.25, chunk_size=100_000, offset=0,
++                         miner_abi=False):
+         return {"family": prng_family, "seed_range": {"start": seed_start, "end": seed_end},
+                 "survivors": [], "strategies_tested": len(strategies),
+                 "stats": {"seeds_tested": seed_end - seed_start, "survivors_found": 0,
+                           "duration_ms": 1.0, "seeds_per_sec": 1.0},
+-                "_threshold_seen": min_match_threshold, "_offset_seen": offset}
++                "_threshold_seen": min_match_threshold, "_offset_seen": offset,
++                "_miner_abi_seen": miner_abi}
+     def run_sieve(self, **kw):
+         raise AssertionError("constant sieve called for a hybrid job")
+ SF.GPUSieve = _Sieve
+@@ -273,6 +287,12 @@ def g_echo_real_sieve_filter():
+     run_pass(p, "java_lcg_hybrid", thr=FWD, total=20_000)
+     jobs = p._tcp_transport.jobs
+     jpath, opath = os.path.join(OUT, "echo_jobs.json"), os.path.join(OUT, "echo_out.json")
++    # [PWC-BACKUP STAGE 2b] a new-key job's anchor is checked against the dataset's
++    # length before the (stubbed) loader runs, so the child needs a real file
++    dpath = os.path.join(OUT, "echo_dataset.json")
++    json.dump([{"draw": i, "session": "midday" if i % 2 else "evening"} for i in range(40)],
++              open(dpath, "w"))
++    jobs = [dict(j, dataset_path=dpath) for j in jobs]
+     json.dump(jobs, open(jpath, "w"))
+     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="")
+     r = subprocess.run([sys.executable, "-c", _ECHO_CHILD, ROOT, jpath, opath],
+@@ -286,6 +306,10 @@ def g_echo_real_sieve_filter():
+         seen = res["per_family"][fam]["_threshold_seen"]
+         assert seen == job["phase2_threshold"] == FWD, (seen, job["phase2_threshold"])
+         assert res["per_family"][fam]["_offset_seen"] == 0
++        # [PWC-BACKUP STAGE 2b] a PWC job is a new-key job: the miner's hybrid ABI
++        assert res["per_family"][fam]["_miner_abi_seen"] is True
++        assert res.get("window_anchor") == job["window_anchor"] == 0, res.get("window_anchor")
++        assert res.get("generator_phase") == job["generator_phase"] == 0
+         echo = PWC._pwc_hybrid_echo(res, job)
+         assert echo == round(FWD, 4), (echo, FWD)
+     # and the whole record built from those real reports verifies
+@@ -378,27 +402,70 @@ def d_strategies_all_five(M=PWC):
+     return f"strategies=None sends all {len(want)}: {[s.get('name') for s in got]}"
+ 
+ 
+-def d_offset(M=PWC):
+-    e = raises(M.PwcWindowAnchorRefused, lambda: drive_trial(M, {}, offset=25))
+-    assert "25" in str(e), e
+-    # refused before the coordinator (the fleet) is built
++def _ssh_pass(M, offset):
++    """A run_sieve_pass on the SSH route (no TCP transport). Dispatch is stubbed so
++    that a pass which should have been refused finishes instead of blocking."""
++    import queue as _q
++    p = make_tcp_pwc(M, sieve_like_payload)
++    p._tcp_transport = None
++    _node = types.SimpleNamespace(hostname="localhost", gpu_type="stub", gpu_count=1)
++    p._get_available_workers = lambda *a, **k: [_node]
++    p._localhost_gpu_slots = _q.Queue()
++    p._localhost_gpu_slots.put(0)
++    p._dispatch_local_sieve = lambda job, wh: {"status": "error", "message": "stub"}
++    p._dispatch_to_worker = lambda wh, job: {"status": "error", "message": "stub"}
++    return run_pass(p, "java_lcg", offset=offset)
++
++
++def d_anchor(M=PWC):
++    """[PWC-BACKUP STAGE 2b, owner ruling 2026-11-20 08:30 PST] The trial's offset picks
++    the draw window only; the generator phase is 0; RANGE-MINER's method. On TCP the
++    anchor travels as `window_anchor` with `generator_phase` 0 and NO `offset`, and the
++    worker's echo of both is checked. The SSH route ends in sieve_gpu_worker.py (pinned),
++    so there offset != 0 is still refused (Stage 2's refusal)."""
++    # TCP: anchor 25 runs, every job carries the split, the pass is complete
++    p = make_tcp_pwc(M, sieve_like_payload)
++    res = run_pass(p, "java_lcg", offset=25)
++    jobs = p._tcp_transport.jobs
++    assert jobs and all(j.get("window_anchor") == 25 and j.get("generator_phase") == 0
++                        and "offset" not in j for j in jobs), jobs[:1]
++    assert res["pwc_pass_accounting"]["complete"], res["pwc_pass_accounting"]
++    # a worker without the split echoes nothing: no chunk counts
++    p = make_tcp_pwc(M, lambda j: {k: v for k, v in sieve_like_payload(j).items()
++                                   if k not in ("window_anchor", "generator_phase")})
++    acc = run_pass(p, "java_lcg", offset=25)["pwc_pass_accounting"]
++    assert not acc["complete"] and acc["completed"] == 0, acc
++    # a worker that echoes another anchor (or phase): no chunk counts
++    for bad in ({"window_anchor": 0}, {"generator_phase": 25}):
++        p = make_tcp_pwc(M, lambda j, b=bad: dict(sieve_like_payload(j), **b))
++        acc = run_pass(p, "java_lcg", offset=25)["pwc_pass_accounting"]
++        assert not acc["complete"] and acc["completed"] == 0, (bad, acc)
++    # non-integer or negative anchor: refused before anything is dispatched
++    for bad in (-1, "25", 2.0, True):
++        p = make_tcp_pwc(M, sieve_like_payload)
++        raises(M.PwcWindowAnchorRefused, lambda: run_pass(p, "java_lcg", offset=bad))
++        assert not p._tcp_transport.jobs, bad
++    # SSH trial with offset 25: refused before the fleet is built
+     real = M.PersistentWorkerCoordinator
+     built = []
+     M.PersistentWorkerCoordinator = lambda **kw: built.append(kw)
+     try:
+-        raises(M.PwcWindowAnchorRefused, lambda: M.run_trial_persistent(
++        e = raises(M.PwcWindowAnchorRefused, lambda: M.run_trial_persistent(
+             coordinator_cfg="unused.json", config=_Cfg(25), trial_number=1,
+             prng_base="java_lcg", residues=[1], total_seeds=10, forward_threshold=FWD,
+-            reverse_threshold=REV, test_both_modes=False, pwc_transport="tcp"))
++            reverse_threshold=REV, test_both_modes=False, pwc_transport="ssh"))
+     finally:
+         M.PersistentWorkerCoordinator = real
+-    assert not built, "the fleet was built before the offset refusal"
+-    p = make_tcp_pwc(M, sieve_like_payload)
+-    raises(M.PwcWindowAnchorRefused, lambda: run_pass(p, "java_lcg", offset=3))
+-    assert not p._tcp_transport.jobs
+-    out, calls, _ = drive_trial(M, {}, offset=0)
+-    assert len(calls) == 4
+-    return "offset 25: refused before the fleet is built; run_sieve_pass offset 3 refused; offset 0 runs"
++    assert not built and "25" in str(e), (built, e)
++    # SSH pass with offset 3: refused; SSH pass with offset 0: not refused
++    raises(M.PwcWindowAnchorRefused, lambda: _ssh_pass(M, 3))
++    _ssh_pass(M, 0)
++    # TCP trial with offset 25 runs all four passes, each given offset 25
++    out, calls, _ = drive_trial(M, {}, offset=25)
++    assert len(calls) == 4 and all(kw["offset"] == 25 for _, kw in calls), calls
++    return ("TCP anchor 25: jobs carry window_anchor 25 / generator_phase 0 / no offset, "
++            "echo checked (none, wrong anchor, wrong phase: no chunk counts); -1/'25'/2.0/True "
++            "refused before dispatch; SSH: 25 refused before the fleet, pass 3 refused, 0 runs")
+ 
+ 
+ def d_ssh_variable(M=PWC):
+@@ -920,10 +987,10 @@ def d_late_result_across_phases(M=PWC, T=TCP):
+     tr.submit_job = submit
+ 
+     def payload(job, seed):
+-        return {"success": True, "payload": {
++        return {"success": True, "payload": _anchor_echo({
+             "success": True, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
+             "min_match_threshold": job["min_match_threshold"],
+-            "survivors": [{"seed": seed, "match_rate": 0.9}]}}
++            "survivors": [{"seed": seed, "match_rate": 0.9}]}, job)}
+ 
+     # [PWC-STAGE2 R3, Beta X-PWC-STAGE2 R2 finding 1] Deterministic assignment: A
+     # takes the FIRST job of the run (a P1 chunk) before B asks for anything; after
+@@ -1187,7 +1254,7 @@ GATES = [
+     ("G-PHASES", d_phases),
+     ("G-TRIAL-THRESHOLDS-STRATEGIES", d_trial_thresholds_and_strategies),
+     ("G-STRATEGIES-ALL-FIVE", d_strategies_all_five),
+-    ("G-OFFSET", d_offset),
++    ("G-ANCHOR", d_anchor),
+     ("G-SSH-VARIABLE", d_ssh_variable),
+     ("G-PROBE-KILL", d_probe_kill),
+     ("G-PROBE-S156", d_probe_s156),
+@@ -1242,10 +1309,23 @@ MUTANTS = [
+     ("M-ST-1 one strategy only", "pwc", [
+         ("                raw = get_all_strategies()\n", "                raw = get_all_strategies()[:1]\n")],
+      d_strategies_all_five),
+-    ("M-OF-1 trial offset check removed", "pwc", [
+-        ("    validate_pwc_window_offset(config.offset)\n", "")], d_offset),
+-    ("M-OF-2 pass offset check removed", "pwc", [
+-        ("        validate_pwc_window_offset(offset)\n", "")], d_offset),
++    ("M-OF-1 trial anchor check removed", "pwc", [
++        ("    validate_pwc_window_anchor(config.offset, ssh_route=(pwc_transport != \"tcp\"))\n",
++         "")], d_anchor),
++    ("M-OF-2 pass anchor check treats SSH as TCP", "pwc", [
++        ("            offset, ssh_route=self._tcp_transport is None)\n",
++         "            offset, ssh_route=False)\n")], d_anchor),
++    ("M-AN-1 TCP job keeps the old offset (no split)", "pwc", [
++        ("                    return self._dispatch_to_tcp(pwc_new_key_job(job, _window_anchor))  # [STAGE 2b]\n",
++         "                    return self._dispatch_to_tcp(job)\n")], d_anchor),
++    ("M-AN-2 worker echo not checked", "pwc", [
++        ("    if \"window_anchor\" not in job:\n        return None\n    if not isinstance(payload, dict):\n",
++         "    return None\n    if not isinstance(payload, dict):\n")], d_anchor),
++    ("M-AN-3 generator phase follows the anchor", "pwc", [
++        ("            out[\"generator_phase\"] = PWC_GENERATOR_PHASE_V1_PIN\n",
++         "            out[\"generator_phase\"] = int(window_anchor)\n")], d_anchor),
++    ("M-AN-4 negative anchor accepted", "pwc", [
++        ("    if int(anchor) < 0:\n", "    if False:\n")], d_anchor),
+     ("M-SSH-1 both-mode SSH not refused up front", "pwc", [
+         ("    if (_run_variable or prng_base.endswith(\"_hybrid\")) and pwc_transport != \"tcp\":\n",
+          "    if False:\n")], d_ssh_variable),
+diff --git a/tests/test_pwc_backup_step1.py b/tests/test_pwc_backup_step1.py
+index 93a4e01..3a73eb3 100644
+--- a/tests/test_pwc_backup_step1.py
++++ b/tests/test_pwc_backup_step1.py
+@@ -373,7 +373,24 @@ _STAGE2_CHANGED_JOB_KEYS = ("phase2_threshold", "job_id")
+ 
+ 
+ def _jobs_without_stage2_keys(jobs):
+-    return [{k: v for k, v in j.items() if k not in _STAGE2_CHANGED_JOB_KEYS} for j in jobs]
++    return [_stage2b_as_offset({k: v for k, v in j.items() if k not in _STAGE2_CHANGED_JOB_KEYS})
++            for j in jobs]
++
++
++def _stage2b_as_offset(j):
++    """[PWC-BACKUP STAGE 2b] A TCP job now carries `window_anchor` + `generator_phase`
++    (pinned 0) in place of `offset` (owner ruling 2026-11-20 08:30 PST). It maps back to
++    the old job exactly when the phase is 0: offset = window_anchor, at the same place in
++    the key order. Any other phase is left as is, so the comparison fails."""
++    if "window_anchor" not in j or "offset" in j or j.get("generator_phase") != 0:
++        return j
++    out = {}
++    for k, v in j.items():
++        if k == "window_anchor":
++            out["offset"] = v
++        elif k != "generator_phase":
++            out[k] = v
++    return out
+ 
+ 
+ def d_s2_zero_byte_equal(M):
+diff --git a/scripts/pwc_sieve_filter_import_proof.py b/scripts/pwc_sieve_filter_import_proof.py
+new file mode 100644
+index 0000000..677f3ae
+--- /dev/null
++++ b/scripts/pwc_sieve_filter_import_proof.py
+@@ -0,0 +1,196 @@
++#!/usr/bin/env python3
++"""PWC-BACKUP STAGE 2b — proof that an edit to sieve_filter.py leaves what
++RANGE-MINER's launch process gets from it unchanged.
++
++Why this exists. RANGE-MINER's VM101 launch process imports sieve_filter.py at
++module load (window_optimizer_integration_final.py:52-55, inside try/except
++ImportError), so its module top level runs inside the miner's process: the ROCm
++env prelude, the CuPy import and `get_default_memory_pool().set_limit(...)`. The
++rig miner worker never imports it (scripts/gate12_parity_gate.py GOVERNED_FILES).
++
++Two checks, both read-only and CPU-only:
++
++1. AST. Every module-level statement of the file at BASE and in the working
++   tree is compared with `ast.dump(..., include_attributes=False)`, in order,
++   EXCEPT the top-level functions/classes named with --allow (default:
++   execute_sieve_job). The allowed names must exist at the same position on
++   both sides (nothing added, removed or moved).
++
++2. Import. For BASE and for the working tree, a fresh `python3 -I` subprocess
++   with a minimal fixed environment imports `sieve_filter` and reports:
++     * the os.environ diff caused by the import (added / changed / removed);
++     * every CuPy access and call made during the import, including the
++       pool-limit value passed to set_limit.
++   CuPy is replaced by a RECORDING STAND-IN (no GPU, no driver, no context).
++   Each version is imported twice: with the real hostname, and with
++   socket.gethostname() patched to "rig-6600" so the hostname-gated HSA
++   prelude is exercised too. Reports must be identical pairwise.
++   `--real-cupy` uses the real CuPy instead and reads get_limit(); it touches
++   the GPU and is for an owner-run session only.
++
++Exit 0 = both checks hold; 1 = a difference (printed); 2 = usage/setup error.
++Usage:
++  python3 scripts/pwc_sieve_filter_import_proof.py [--base ee39404]
++          [--file sieve_filter.py] [--allow execute_sieve_job ...] [--real-cupy]
++"""
++import argparse
++import ast
++import json
++import os
++import subprocess
++import sys
++import tempfile
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++_CHILD = r'''
++import json, os, sys, types, socket
++version_dir, repo, host_mode, real_cupy, modname = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1", sys.argv[5]
++sys.path[:0] = [version_dir, repo]
++events = []
++if not real_cupy:
++    class _Rec:
++        def __init__(self, path): self._p = path
++        def __getattr__(self, name):
++            if name.startswith("__"): raise AttributeError(name)
++            events.append(["getattr", self._p + "." + name]); return _Rec(self._p + "." + name)
++        def __call__(self, *a, **k):
++            events.append(["call", self._p, [repr(x) for x in a], {kk: repr(v) for kk, v in sorted(k.items())}])
++            return _Rec(self._p + "()")
++    mod = types.ModuleType("cupy")
++    def _mod_getattr(name):
++        if name.startswith("__"):
++            raise AttributeError(name)
++        events.append(["getattr", "cupy." + name])
++        return _Rec("cupy." + name)
++    mod.__getattr__ = _mod_getattr
++    sys.modules["cupy"] = mod
++if host_mode != "real":
++    socket.gethostname = lambda: host_mode
++import importlib
++before = dict(os.environ)
++mods_before = set(sys.modules)
++target = importlib.import_module(modname)
++mods_added = sorted(set(sys.modules) - mods_before)
++after = dict(os.environ)
++rep = {
++    "module_file_is_version_dir": os.path.dirname(os.path.abspath(target.__file__)) == os.path.abspath(version_dir),
++    "modules_added": mods_added,
++    "env_added":   {k: after[k] for k in sorted(after) if k not in before},
++    "env_changed": {k: [before[k], after[k]] for k in sorted(after) if k in before and before[k] != after[k]},
++    "env_removed": sorted(k for k in before if k not in after),
++    "cupy_events": events,
++    "GPU_AVAILABLE": getattr(target, "GPU_AVAILABLE", None),
++}
++if real_cupy:
++    import cupy as cp
++    rep["pool_limit_bytes"] = cp.get_default_memory_pool().get_limit()
++print("@@REPORT@@" + json.dumps(rep, sort_keys=True))
++'''
++
++_FIXED_ENV = {
++    "PATH": "/usr/bin:/bin",
++    "HOME": os.environ.get("HOME", "/home/michael"),
++    "LANG": "C.UTF-8",
++    "CUDA_VISIBLE_DEVICES": "",      # belt and braces: no device even if real CuPy loads
++}
++
++
++def _git_show(rev, path):
++    return subprocess.run(["git", "-C", REPO, "show", f"{rev}:{path}"], check=True,
++                          capture_output=True, text=True).stdout
++
++
++def ast_check(base_src, new_src, allow, allow_added=()):
++    """Delegates to scripts/prove_unchanged_outside.py (qualified names, any depth)."""
++    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++    import prove_unchanged_outside as _P
++    rep = _P.compare(base_src, new_src, allow, allow_added)
++    return {"ok": rep["ok"], "problems": rep["problems"], "allowed": rep["allowed"],
++            "allowed_added": rep["allowed_added"],
++            "base_statements": rep["base_top_level_statements"],
++            "new_statements": rep["new_top_level_statements"],
++            "checked_definitions": rep["checked_definitions"]}
++
++
++def _ast_check_top_level_only(base_src, new_src, allow):
++    """The Stage 2b v1 check (top-level names only), kept for reference."""
++    b, n = ast.parse(base_src).body, ast.parse(new_src).body
++
++    def name(s):
++        return s.name if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else None
++
++    out = {"base_statements": len(b), "new_statements": len(n), "allowed": sorted(allow)}
++    bpos = [i for i, s in enumerate(b) if name(s) in allow]
++    npos = [i for i, s in enumerate(n) if name(s) in allow]
++    out["allowed_positions_base"], out["allowed_positions_new"] = bpos, npos
++    bk = [ast.dump(s, include_attributes=False) for s in b if name(s) not in allow]
++    nk = [ast.dump(s, include_attributes=False) for s in n if name(s) not in allow]
++    diffs = [i for i in range(max(len(bk), len(nk)))
++             if i >= len(bk) or i >= len(nk) or bk[i] != nk[i]]
++    changed = sorted({name(s) for s in b if name(s) in allow
++                      for t in n if name(t) == name(s)
++                      and ast.dump(s, include_attributes=False) != ast.dump(t, include_attributes=False)})
++    out["compared_statements"] = len(bk)
++    out["differing_outside_allowed"] = diffs
++    out["allowed_names_that_changed"] = changed
++    out["ok"] = (not diffs and len(bk) == len(nk) and bpos == npos)
++    return out
++
++
++def import_report(version_dir, host_mode, real_cupy, modname="sieve_filter"):
++    p = subprocess.run([sys.executable, "-I", "-c", _CHILD, version_dir, REPO, host_mode,
++                        "1" if real_cupy else "0", modname],
++                       env=_FIXED_ENV, capture_output=True, text=True, timeout=300)
++    for line in p.stdout.splitlines():
++        if line.startswith("@@REPORT@@"):
++            return json.loads(line[len("@@REPORT@@"):])
++    raise RuntimeError(f"child produced no report (rc={p.returncode}): {p.stderr[-2000:]}")
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
++    ap.add_argument("--base", default="0caeaf9")
++    ap.add_argument("--file", default="sieve_filter.py")
++    ap.add_argument("--allow", nargs="*", default=["execute_sieve_job", "GPUSieve.run_hybrid_sieve"])
++    ap.add_argument("--allow-added", nargs="*", default=[])
++    ap.add_argument("--real-cupy", action="store_true")
++    a = ap.parse_args()
++    if a.file not in ("sieve_filter.py", "persistent_worker_coordinator.py"):
++        print("only sieve_filter.py and persistent_worker_coordinator.py (both imported by "
++              "RANGE-MINER's launch, window_optimizer_integration_final.py:52-58) are "
++              "supported for the import check", file=sys.stderr)
++        return 2
++    modname = a.file[:-3]
++    base_src = _git_show(a.base, a.file)
++    with open(os.path.join(REPO, a.file)) as f:
++        new_src = f.read()
++
++    result = {"base": a.base, "file": a.file, "cupy": "real" if a.real_cupy else "recording stand-in"}
++    result["ast"] = ast_check(base_src, new_src, set(a.allow), set(a.allow_added))
++
++    scratch = os.path.join(REPO, "logs", "pwc_sieve_filter_import_proof")   # ignored path, never /tmp
++    os.makedirs(scratch, exist_ok=True)
++    with tempfile.TemporaryDirectory(dir=scratch) as td:
++        bdir, ndir = os.path.join(td, "base"), os.path.join(td, "new")
++        os.makedirs(bdir); os.makedirs(ndir)
++        for d, src in ((bdir, base_src), (ndir, new_src)):
++            with open(os.path.join(d, a.file), "w") as f:
++                f.write(src)
++        imp = {}
++        for host in ("real", "rig-6600"):
++            rb = import_report(bdir, host, a.real_cupy, modname)
++            rn = import_report(ndir, host, a.real_cupy, modname)
++            imp[host] = {"identical": rb == rn, "base": rb,
++                         **({} if rb == rn else {"new": rn})}
++        result["import"] = imp
++
++    ok = result["ast"]["ok"] and all(v["identical"] and v["base"]["module_file_is_version_dir"]
++                                     for v in result["import"].values())
++    result["verdict"] = "HOLDS" if ok else "DOES NOT HOLD"
++    print(json.dumps(result, indent=2, sort_keys=True))
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/prove_unchanged_outside.py b/scripts/prove_unchanged_outside.py
+new file mode 100644
+index 0000000..1b32e6c
+--- /dev/null
++++ b/scripts/prove_unchanged_outside.py
+@@ -0,0 +1,436 @@
++#!/usr/bin/env python3
++"""Prove that a Python file is unchanged outside a declared set of functions/classes.
++
++Written for PWC-BACKUP Stage 3 (and reusable for any later stage). It compares one
++file at a BASE commit with the working tree (or with another revision or file), and
++reports every difference that falls OUTSIDE the names the caller allows to change.
++
++What counts as "the same"
++-------------------------
++Equality is `ast.dump(node, include_attributes=False)`: the parsed program text with
++line/column positions dropped. Comments and blank lines are not in the AST, so they
++are reported by the byte-diff summary only (see --strict-bytes). Docstrings ARE in
++the AST and count.
++
++How allowed names are handled
++-----------------------------
++`--allow` takes qualified names: `func`, `Class`, `Class.method`, `outer.inner`
++(a function nested in a function). An allowed name covers its whole definition,
++including its decorators, signature, defaults and anything nested inside it.
++`foo` does NOT cover `foobar`, and `Class.method` does NOT cover the rest of `Class`.
++
++In both trees every allowed definition is replaced by a fixed placeholder that keeps
++only its name and kind. Then:
++
++  1. Top-level statements are compared in order. Any statement that differs, was
++     added, was removed or moved is reported. So a moved import, a changed
++     module-level constant, a changed `if`/`try` block at module level, or a
++     reordered definition is caught.
++  2. Every function and class definition at any depth that is not allowed (and is
++     not inside an allowed one) is compared by qualified name. A change anywhere
++     inside it — a default argument, a decorator, a nested function, a method's
++     order — is reported, with the innermost changed name where it can be found.
++  3. Every allowed name must exist exactly once at the same position in both
++     trees' structure, so an allowed definition cannot be used to smuggle in a
++     move. A missing allowed name is an error.
++
++Byte-diff summary
++-----------------
++A line diff of the two files, with each changed line attributed to the innermost
++definition that contains it (or `<module>`), and marked allowed / NOT allowed. A
++changed line outside the allowed definitions that the AST check does not see (a
++comment or formatting change) is listed. With `--strict-bytes` it also fails.
++
++Exit status: 0 = no unexpected difference; 1 = at least one (printed);
++             2 = usage or setup error (bad revision, unparsable file, ...).
++
++Usage
++-----
++  python3 scripts/prove_unchanged_outside.py --base ee39404 --file sieve_filter.py \
++          --allow execute_sieve_job
++  python3 scripts/prove_unchanged_outside.py --base-file old.py --new-file new.py \
++          --allow Foo.bar baz --json
++
++Read-only. CPU only. It imports nothing from the file it checks.
++"""
++import argparse
++import ast
++import copy
++import difflib
++import hashlib
++import json
++import os
++import subprocess
++import sys
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++_DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
++
++
++class SetupError(Exception):
++    pass
++
++
++# --------------------------------------------------------------------------- names
++
++def _walk_defs(body, prefix=""):
++    """Yield (qualname, node) for every def/class at any depth, in source order.
++    Statements like `if`/`try`/`with`/`for` do not add to the qualified name, so a
++    function defined inside a module-level `try:` is still `name`."""
++    for stmt in body:
++        yield from _walk_stmt(stmt, prefix)
++
++
++def _walk_stmt(stmt, prefix):
++    if isinstance(stmt, _DEFS):
++        q = f"{prefix}{stmt.name}"
++        yield q, stmt
++        yield from _walk_defs(stmt.body, q + ".")
++        return
++    for field in ("body", "orelse", "finalbody", "handlers", "cases"):
++        for child in getattr(stmt, field, None) or []:
++            if isinstance(child, (ast.ExceptHandler,)) or type(child).__name__ == "match_case":
++                yield from _walk_defs(child.body, prefix)
++            else:
++                yield from _walk_stmt(child, prefix)
++
++
++def _is_allowed(qualname, allow):
++    return any(qualname == a or qualname.startswith(a + ".") for a in allow)
++
++
++def _placeholder(node, qualname):
++    kind = type(node).__name__
++    return ast.Expr(value=ast.Constant(value=f"<ALLOWED {kind} {qualname}>"))
++
++
++class _Masker(ast.NodeTransformer):
++    """Replace every allowed definition with a placeholder carrying name + kind."""
++
++    def __init__(self, allow):
++        self.allow, self.stack, self.masked = allow, [], []
++
++    def _visit_def(self, node):
++        q = ".".join(self.stack + [node.name])
++        if q in self.allow:
++            self.masked.append(q)
++            return _placeholder(node, q)
++        self.stack.append(node.name)
++        self.generic_visit(node)
++        self.stack.pop()
++        return node
++
++    visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _visit_def
++
++
++def _dump(node):
++    return ast.dump(node, include_attributes=False)
++
++
++def _parse(src, label):
++    try:
++        return ast.parse(src)
++    except SyntaxError as exc:
++        raise SetupError(f"{label} does not parse: {exc}") from exc
++
++
++def _stmt_label(stmt):
++    if isinstance(stmt, _DEFS):
++        return f"{type(stmt).__name__} {stmt.name}"
++    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) \
++            and isinstance(stmt.value.value, str) and stmt.value.value.startswith("<ALLOWED "):
++        return stmt.value.value
++    txt = ast.unparse(stmt).splitlines()[0] if hasattr(ast, "unparse") else type(stmt).__name__
++    return (txt[:100] + "...") if len(txt) > 100 else txt
++
++
++# --------------------------------------------------------------------------- core
++
++def _top_names(stmt):
++    """Names a top-level statement defines, for --allow-added: a def/class name,
++    or every target name of a plain/annotated assignment. Anything else: None."""
++    if isinstance(stmt, _DEFS):
++        return {stmt.name}
++    if isinstance(stmt, ast.Assign) and all(isinstance(t, ast.Name) for t in stmt.targets):
++        return {t.id for t in stmt.targets}
++    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
++        return {stmt.target.id}
++    return None
++
++
++def compare(base_src, new_src, allow, allow_added=()):
++    """Return a report dict. report['ok'] is True only if nothing outside `allow`
++    differs. `allow_added` names top-level definitions or assignments that are
++    NEW by design: each must exist exactly once in the new file, at top level,
++    and not at all in the base; they are then left out of the comparison.
++    Pure function: no I/O."""
++    allow, allow_added = set(allow), set(allow_added)
++    bt, nt = _parse(base_src, "base"), _parse(new_src, "new")
++    problems = []
++    added_report = {}
++    raw_new_statements = len(nt.body)
++    if allow_added:
++        b_top = [n for st in bt.body for n in (_top_names(st) or ())]
++        b_all = set(b_top) | {q for q, _ in _walk_defs(bt.body)}
++        n_hits = {}
++        for st in nt.body:
++            names = _top_names(st)
++            if names and names <= allow_added:
++                for nm in names:
++                    n_hits[nm] = n_hits.get(nm, 0) + 1
++        for nm in sorted(allow_added):
++            added_report[nm] = {"in_base": nm in b_all, "new_count": n_hits.get(nm, 0)}
++            if nm in b_all or n_hits.get(nm, 0) != 1:
++                problems.append({"kind": "allowed-added-name-invalid", "name": nm,
++                                 "base_count": int(nm in b_all),
++                                 "new_count": n_hits.get(nm, 0)})
++        nt = copy.deepcopy(nt)
++        nt.body = [st for st in nt.body
++                   if not ((_top_names(st) or None) and _top_names(st) <= allow_added)]
++
++    # 3. allowed names: present exactly once on each side
++    bq = [q for q, _ in _walk_defs(bt.body)]
++    nq = [q for q, _ in _walk_defs(nt.body)]
++    allowed_report = {}
++    for a in sorted(allow):
++        cb, cn = bq.count(a), nq.count(a)
++        allowed_report[a] = {"base_count": cb, "new_count": cn}
++        if cb != 1 or cn != 1:
++            problems.append({"kind": "allowed-name-not-unique-or-missing", "name": a,
++                             "base_count": cb, "new_count": cn})
++
++    bm, nm = _Masker(allow), _Masker(allow)
++    bmt, nmt = bm.visit(copy.deepcopy(bt)), nm.visit(copy.deepcopy(nt))
++    for a in sorted(allow):
++        bmasked = [q for q, n in _walk_defs(bt.body) if q == a]
++        nmasked = [q for q, n in _walk_defs(nt.body) if q == a]
++        allowed_report[a]["changed"] = (
++            [_dump(n) for q, n in _walk_defs(bt.body) if q == a]
++            != [_dump(n) for q, n in _walk_defs(nt.body) if q == a]) if bmasked and nmasked else None
++
++    # 1. top-level statements, in order, allowed defs masked
++    bd = [_dump(s) for s in bmt.body]
++    nd = [_dump(s) for s in nmt.body]
++    top = []
++    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, bd, nd, autojunk=False).get_opcodes():
++        if op == "equal":
++            continue
++        top.append({"op": op,
++                    "base": [{"index": i, "stmt": _stmt_label(bmt.body[i])} for i in range(i1, i2)],
++                    "new": [{"index": j, "stmt": _stmt_label(nmt.body[j])} for j in range(j1, j2)]})
++    if top:
++        problems.append({"kind": "top-level-statements-differ", "hunks": top})
++
++    # 2. every non-allowed definition, by qualified name (masked, so an allowed
++    #    method inside a checked class does not count against the class)
++    def defmap(masked_tree):
++        out = {}
++        for q, n in _walk_defs(masked_tree.body):
++            out.setdefault(q, []).append(_dump(n))
++        return out
++
++    bdef, ndef = defmap(bmt), defmap(nmt)
++    changed_defs = []
++    for q in sorted(set(bdef) | set(ndef), key=lambda s: (s.count("."), s)):
++        if _is_allowed(q, allow):
++            continue
++        if q not in ndef:
++            changed_defs.append({"name": q, "change": "removed"})
++        elif q not in bdef:
++            changed_defs.append({"name": q, "change": "added"})
++        elif bdef[q] != ndef[q]:
++            changed_defs.append({"name": q, "change": "changed"})
++    if changed_defs:
++        # innermost: a changed name none of whose changed children explains it alone
++        names = {d["name"] for d in changed_defs}
++        for d in changed_defs:
++            d["has_changed_child"] = any(n.startswith(d["name"] + ".") for n in names)
++        problems.append({"kind": "definitions-differ", "definitions": changed_defs})
++
++    return {
++        "allowed": allowed_report,
++        "allowed_added": added_report,
++        "base_top_level_statements": len(bt.body),
++        "new_top_level_statements": raw_new_statements,
++        "new_top_level_statements_compared": len(nt.body),
++        "base_definitions": len(bq),
++        "new_definitions": len(nq),
++        "checked_definitions": len([q for q in set(bdef) | set(ndef) if not _is_allowed(q, allow)]),
++        "problems": problems,
++        "ok": not problems,
++    }
++
++
++# --------------------------------------------------------------------------- bytes
++
++def _spans(tree):
++    """[(start, end, qualname)] for every def, start including decorators."""
++    out = []
++    for q, n in _walk_defs(tree.body):
++        start = min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])])
++        out.append((start, n.end_lineno, q))
++    return out
++
++
++def _owner(lineno, spans):
++    best = None
++    for s, e, q in spans:
++        if s <= lineno <= e and (best is None or (e - s) < (best[1] - best[0])):
++            best = (s, e, q)
++    return best[2] if best else "<module>"
++
++
++def byte_summary(base_src, new_src, allow, allow_added=()):
++    allow = set(allow) | set(allow_added)
++    bl, nl = base_src.splitlines(keepends=True), new_src.splitlines(keepends=True)
++    bs, ns = _spans(ast.parse(base_src)), _spans(ast.parse(new_src))
++    for st in ast.parse(new_src).body:
++        names = _top_names(st)
++        if names and not isinstance(st, _DEFS) and names <= set(allow_added):
++            ns.append((st.lineno, st.end_lineno, sorted(names)[0]))
++    regions, outside = {}, []
++    hunks = 0
++    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, bl, nl, autojunk=False).get_opcodes():
++        if op == "equal":
++            continue
++        hunks += 1
++        for side, lo, hi, spans, lines, key in (("base", i1, i2, bs, bl, "removed"),
++                                                ("new", j1, j2, ns, nl, "added")):
++            for k in range(lo, hi):
++                owner = _owner(k + 1, spans)
++                r = regions.setdefault(owner, {"added": 0, "removed": 0,
++                                               "allowed": _is_allowed(owner, allow)})
++                r[key] += 1
++                if not r["allowed"]:
++                    outside.append({"side": side, "line": k + 1, "owner": owner,
++                                    "text": lines[k].rstrip("\n")[:160]})
++    return {
++        "base_bytes": len(base_src.encode()), "new_bytes": len(new_src.encode()),
++        "base_sha256": hashlib.sha256(base_src.encode()).hexdigest(),
++        "new_sha256": hashlib.sha256(new_src.encode()).hexdigest(),
++        "identical": base_src == new_src,
++        "hunks": hunks,
++        "lines_added": sum(r["added"] for r in regions.values()),
++        "lines_removed": sum(r["removed"] for r in regions.values()),
++        "by_region": dict(sorted(regions.items())),
++        "changed_lines_outside_allowed": outside,
++    }
++
++
++# --------------------------------------------------------------------------- CLI
++
++def _git_show(repo, rev, path):
++    p = subprocess.run(["git", "-C", repo, "show", f"{rev}:{path}"],
++                       capture_output=True, text=True)
++    if p.returncode != 0:
++        raise SetupError(f"git show {rev}:{path} failed: {p.stderr.strip()[:300]}")
++    return p.stdout
++
++
++def _read(path):
++    try:
++        with open(path, encoding="utf-8") as f:
++            return f.read()
++    except OSError as exc:
++        raise SetupError(f"cannot read {path}: {exc}") from exc
++
++
++def _text(report):
++    a, b = report["ast"], report["bytes"]
++    out = [f"file      {report['file']}",
++           f"base      {report['base']}",
++           f"new       {report['new']}",
++           f"allowed   {', '.join(sorted(a['allowed'])) or '(none)'}",
++           f"added     {', '.join(sorted(a.get('allowed_added', {}))) or '(none)'}",
++           f"AST       top-level statements base={a['base_top_level_statements']} "
++           f"new={a['new_top_level_statements']}; definitions compared base={a['base_definitions']} "
++           f"new={a['new_definitions']}; checked (not allowed)={a['checked_definitions']}"]
++    for name, info in sorted(a["allowed"].items()):
++        out.append(f"  allowed {name}: base x{info['base_count']}, new x{info['new_count']}, "
++                   f"changed={info['changed']}")
++    for p in a["problems"]:
++        if p["kind"] == "top-level-statements-differ":
++            out.append("  UNEXPECTED top-level statements:")
++            for h in p["hunks"]:
++                for s in h["base"]:
++                    out.append(f"    [{h['op']}] base #{s['index']}: {s['stmt']}")
++                for s in h["new"]:
++                    out.append(f"    [{h['op']}] new  #{s['index']}: {s['stmt']}")
++        elif p["kind"] == "definitions-differ":
++            out.append("  UNEXPECTED definitions:")
++            for d in p["definitions"]:
++                tag = " (a nested definition also changed)" if d["has_changed_child"] else ""
++                out.append(f"    {d['change']}: {d['name']}{tag}")
++        else:
++            out.append(f"  ERROR {p['kind']}: {p['name']} base x{p['base_count']} "
++                       f"new x{p['new_count']}")
++    for name, info in sorted(a.get("allowed_added", {}).items()):
++        out.append(f"  added (allowed) {name}: in base={info['in_base']}, new x{info['new_count']}")
++    out.append(f"bytes     base {b['base_bytes']} B sha256 {b['base_sha256'][:16]}; "
++               f"new {b['new_bytes']} B sha256 {b['new_sha256'][:16]}; "
++               f"{'identical' if b['identical'] else str(b['hunks']) + ' hunk(s), +' + str(b['lines_added']) + '/-' + str(b['lines_removed']) + ' lines'}")
++    for region, r in b["by_region"].items():
++        out.append(f"  {region:<40} +{r['added']:<4} -{r['removed']:<4} "
++                   f"{'allowed' if r['allowed'] else 'NOT ALLOWED'}")
++    if b["changed_lines_outside_allowed"]:
++        out.append("  changed lines outside allowed definitions:")
++        for c in b["changed_lines_outside_allowed"][:40]:
++            out.append(f"    {c['side']}:{c['line']} [{c['owner']}] {c['text']}")
++        if len(b["changed_lines_outside_allowed"]) > 40:
++            out.append(f"    ... {len(b['changed_lines_outside_allowed']) - 40} more")
++    out.append(f"verdict   {report['verdict']}")
++    return "\n".join(out)
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
++    g = ap.add_mutually_exclusive_group(required=True)
++    g.add_argument("--base", help="base git revision (read with git show)")
++    g.add_argument("--base-file", help="base version as a file instead of a revision")
++    ap.add_argument("--file", help="repository-relative path (required with --base)")
++    ap.add_argument("--new-rev", help="compare against this revision instead of the working tree")
++    ap.add_argument("--new-file", help="compare against this file instead of the working tree")
++    ap.add_argument("--repo", default=REPO, help="repository root (default: this script's repo)")
++    ap.add_argument("--allow", nargs="*", default=[], help="qualified names allowed to change")
++    ap.add_argument("--allow-added", nargs="*", default=[],
++                    help="top-level definitions/assignments that are new by design")
++    ap.add_argument("--strict-bytes", action="store_true",
++                    help="also fail on comment/format-only changes outside the allowed names")
++    ap.add_argument("--json", action="store_true", help="print the full report as JSON")
++    a = ap.parse_args(argv)
++    try:
++        if a.base and not a.file:
++            raise SetupError("--file is required with --base")
++        if a.new_rev and a.new_file:
++            raise SetupError("give at most one of --new-rev / --new-file")
++        if a.base:
++            base_src, base_label = _git_show(a.repo, a.base, a.file), f"{a.base}:{a.file}"
++        else:
++            base_src, base_label = _read(a.base_file), a.base_file
++        if a.new_file:
++            new_src, new_label = _read(a.new_file), a.new_file
++        elif a.new_rev:
++            if not a.file:
++                raise SetupError("--file is required with --new-rev")
++            new_src, new_label = _git_show(a.repo, a.new_rev, a.file), f"{a.new_rev}:{a.file}"
++        else:
++            if not a.file:
++                raise SetupError("--file is required when comparing against the working tree")
++            new_src, new_label = _read(os.path.join(a.repo, a.file)), f"working tree:{a.file}"
++        report = {"file": a.file or a.new_file, "base": base_label, "new": new_label,
++                  "ast": compare(base_src, new_src, a.allow, a.allow_added),
++                  "bytes": byte_summary(base_src, new_src, a.allow, a.allow_added)}
++    except SetupError as exc:
++        print(f"prove_unchanged_outside: {exc}", file=sys.stderr)
++        return 2
++    ok = report["ast"]["ok"]
++    if a.strict_bytes and report["bytes"]["changed_lines_outside_allowed"]:
++        ok = False
++    report["strict_bytes"] = a.strict_bytes
++    report["verdict"] = "UNCHANGED OUTSIDE ALLOWED" if ok else "UNEXPECTED DIFFERENCE"
++    print(json.dumps(report, indent=2, sort_keys=True) if a.json else _text(report))
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/test_pwc_stage2b_anchor_phase.py b/tests/test_pwc_stage2b_anchor_phase.py
+new file mode 100644
+index 0000000..e8c2c68
+--- /dev/null
++++ b/tests/test_pwc_stage2b_anchor_phase.py
+@@ -0,0 +1,397 @@
++#!/usr/bin/env python3
++"""PWC-BACKUP STAGE 2b — worker side of the window-anchor / generator-phase split.
++
++CPU-only. No GPU, no rigs, no network, no live ledger. CuPy is replaced by an
++in-process stand-in BEFORE sieve_filter is imported, and `GPUSieve` is replaced
++by a recorder, so no kernel is compiled or launched. Scratch files live under
++this worktree's ignored `logs/` (never /tmp).
++
++Gates
++  G-OLD-1   old-style jobs: execute_sieve_job at BASE and in the working tree make
++            the same GPUSieve calls with the same arguments and return the same
++            result (json-identical), across constant/reverse/hybrid/two-phase jobs,
++            anchors 0 and 25, both and single sessions.
++  G-OLD-2   old-style jobs: the worker's sieve_job dict is identical to BASE's.
++  G-NEW-1   window_anchor selects the draws: equal to RANGE-MINER's
++            load_residue_window(path, w, sessions, anchor) and to the plain slice,
++            for both-session and single-session jobs; boundary anchor accepted.
++  G-NEW-2   generator_phase 0 is what reaches the kernel's trailing argument
++            (`offset=` of run_sieve / run_hybrid_sieve), whatever the anchor; the
++            result records window_anchor and generator_phase.
++  G-REF-1   generator_phase != 0 raises PWC_GENERATOR_PHASE_REFUSED before any
++            dataset read or GPUSieve construction.
++  G-REF-2   one key without the other, `offset` alongside the new keys, and a
++            non-integer value are refused the same way.
++  G-REF-3   an out-of-domain anchor (negative, or > N_filtered - window_size) is
++            refused, not clamped, and no GPUSieve is constructed.
++  G-WRK-1   the worker copies window_anchor and generator_phase into the sieve
++            job and drops its DEFAULTED offset; an offset the job itself sent is
++            kept (so sieve_filter refuses the mixed job).
++  G-WRK-2   worker + sieve_filter end to end: a phase-1 job comes back
++            success=False naming PWC_GENERATOR_PHASE_REFUSED; a phase-0 job runs.
++  G-PRF-1   the proof script's AST check detects a changed module-level statement
++            (mutant: pool limit default 256 -> 512) and passes on an unchanged copy.
++  G-PRF-2   the proof script's import check detects the same mutant.
++"""
++import copy
++import importlib.util
++import json
++import os
++import subprocess
++import sys
++import types
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++BASE = os.environ.get("PWC_STAGE2B_BASE", "0caeaf9")
++SCRATCH = os.path.join(REPO, "logs", "test_pwc_stage2b")
++sys.path.insert(0, REPO)
++
++# --- CuPy stand-in, installed before anything can import the real one ---------
++_cp = types.ModuleType("cupy")
++class _Pool:
++    def set_limit(self, *a, **k): pass
++_cp.get_default_memory_pool = lambda: _Pool()
++sys.modules["cupy"] = _cp
++
++PASS, FAIL = [], []
++def gate(name, cond, detail=""):
++    (PASS if cond else FAIL).append(name)
++    print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f" — {detail}" if detail and not cond else ""), flush=True)
++
++
++def _load_module(name, src, path_hint):
++    spec = importlib.util.spec_from_loader(name, loader=None, origin=path_hint)
++    mod = importlib.util.module_from_spec(spec)
++    mod.__file__ = path_hint
++    exec(compile(src, path_hint, "exec"), mod.__dict__)
++    sys.modules[name] = mod
++    return mod
++
++
++def _git_show(path):
++    return subprocess.run(["git", "-C", REPO, "show", f"{BASE}:{path}"], check=True,
++                          capture_output=True, text=True).stdout
++
++
++# --- the two versions of each file -------------------------------------------
++import sieve_filter as SF_NEW                                    # working tree
++SF_BASE = _load_module("sieve_filter_base", _git_show("sieve_filter.py"),
++                       os.path.join(REPO, "sieve_filter.py@BASE"))
++from persistent import pwc_worker_service as WS_NEW
++WS_BASE = _load_module("pwc_worker_service_base", _git_show("persistent/pwc_worker_service.py"),
++                       os.path.join(REPO, "persistent", "pwc_worker_service.py@BASE"))
++from miner.range_miner_worker import load_residue_window       # read-only reference
++
++
++# --- GPUSieve recorder --------------------------------------------------------
++class Recorder:
++    def __init__(self):
++        self.calls = []
++    def factory(self):
++        rec = self
++        class FakeSieve:
++            def __init__(self, gpu_id=0):
++                rec.calls.append(("init", {"gpu_id": gpu_id}))
++            def _res(self, kw, tag):
++                return {"family": kw["prng_family"],
++                        "seed_range": {"start": kw["seed_start"], "end": kw["seed_end"]},
++                        "survivors": [{"seed": kw["seed_start"], "match_rate": 0.9, "tag": tag}],
++                        "stats": {"seeds_tested": kw["seed_end"] - kw["seed_start"],
++                                  "survivors_found": 1, "duration_ms": 1.0,
++                                  "seeds_per_sec": 1.0}}
++            def run_sieve(self, **kw):
++                rec.calls.append(("run_sieve", copy.deepcopy(kw)))
++                return self._res(kw, "const")
++            def run_hybrid_sieve(self, **kw):
++                kw2 = copy.deepcopy({k: v for k, v in kw.items() if k != "strategies"})
++                kw2.setdefault("miner_abi", False)   # BASE passes none; False is the default
++                kw2["n_strategies"] = len(kw.get("strategies") or [])
++                rec.calls.append(("run_hybrid_sieve", kw2))
++                return self._res(kw, "hybrid")
++        return FakeSieve
++
++
++def run(mod, job):
++    rec = Recorder()
++    saved = mod.GPUSieve
++    mod.GPUSieve = rec.factory()
++    try:
++        out = mod.execute_sieve_job(copy.deepcopy(job), 0)
++    finally:
++        mod.GPUSieve = saved
++    return rec.calls, out
++
++
++def run_raises(mod, job):
++    rec = Recorder()
++    saved = mod.GPUSieve
++    mod.GPUSieve = rec.factory()
++    try:
++        mod.execute_sieve_job(copy.deepcopy(job), 0)
++        return None, rec.calls
++    except Exception as e:                       # noqa: BLE001 — we inspect it
++        return e, rec.calls
++    finally:
++        mod.GPUSieve = saved
++
++
++# --- fixture dataset ----------------------------------------------------------
++os.makedirs(SCRATCH, exist_ok=True)
++DS = os.path.join(SCRATCH, "daily3_fixture.json")
++_data = []
++for i in range(120):
++    e = {"draw": (i * 37 + 11) % 1000, "session": "midday" if i % 2 == 0 else "evening"}
++    if i % 5 == 0:
++        e["full_state"] = 100000 + i
++    _data.append(e)
++with open(DS, "w") as f:
++    json.dump(_data, f)
++
++from hybrid_strategy import get_all_strategies
++STRATS = [s.to_dict() if hasattr(s, "to_dict") else dict(vars(s)) for s in get_all_strategies()]
++
++def job(**kw):
++    j = {"job_id": "t", "search_type": "residue_sieve", "dataset_path": DS,
++         "seed_start": 1000, "seed_end": 3000, "window_size": 12,
++         "min_match_threshold": 0.71, "skip_range": [6, 99],
++         "sessions": ["midday", "evening"], "prng_families": ["java_lcg"],
++         "strategies": None, "hybrid": False, "phase2_threshold": 0.71}
++    j.update(kw)
++    return j
++
++OLD_JOBS = []
++for fam, hyb in (("java_lcg", False), ("java_lcg_reverse", False),
++                 ("java_lcg_hybrid", True), ("java_lcg_hybrid_reverse", True),
++                 ("java_lcg", True)):                       # last = two-phase path
++    for off in (0, 25):
++        for sess in (["midday", "evening"], ["midday"]):
++            OLD_JOBS.append(job(prng_families=[fam], hybrid=hyb, offset=off, sessions=sess,
++                                strategies=STRATS if hyb else None))
++OLD_JOBS.append({k: v for k, v in job().items() if k != "sessions"})   # no sessions, no offset key
++
++print("== G-OLD: jobs without the new keys", flush=True)
++same_calls = same_out = True
++for j in OLD_JOBS:
++    cb, ob = run(SF_BASE, j)
++    cn, on = run(SF_NEW, j)
++    same_calls &= (cb == cn)
++    same_out &= (json.dumps(ob, sort_keys=True) == json.dumps(on, sort_keys=True))
++gate("G-OLD-1a GPUSieve calls identical to BASE (%d jobs)" % len(OLD_JOBS), same_calls)
++gate("G-OLD-1b results json-identical to BASE (%d jobs)" % len(OLD_JOBS), same_out)
++gate("G-OLD-1c old jobs carry no window_anchor/generator_phase in the result",
++     all("window_anchor" not in run(SF_NEW, j)[1] for j in OLD_JOBS))
++gate("G-OLD-1d old jobs: every hybrid launch keeps the old argument list (miner_abi False)",
++     all(c[1]["miner_abi"] is False for j in OLD_JOBS for c in run(SF_NEW, j)[0]
++         if c[0] == "run_hybrid_sieve"))
++
++def worker(mod):
++    w = mod.PWCWorkerService("test:gpu0", "127.0.0.1", 1, 0, use_rocm=False)
++    w._emit_heartbeat = lambda *a, **k: None                 # no files under ~
++    seen = []
++    w._execute_sieve_job = lambda sj, g: (seen.append(copy.deepcopy(sj)) or {"success": True})
++    return w, seen
++
++# [STAGE 2b, owner 2026-11-20] the TCP worker is PWC's entry point and takes
++# new-key jobs only, as RANGE-MINER's worker does (miner/range_miner_worker.py:813-860)
++wn, sn = worker(WS_NEW)
++old_refused = True
++for j in [dict(j, lease_id="L", attempt=1) for j in OLD_JOBS] + [
++        {"job_id": "c", "dataset_path": DS, "seed_start": 0, "seed_end": 10, "window_size": 12,
++         "chunk_offset": 7, "threshold": 0.4, "prng_type": "java_lcg", "is_hybrid": True}]:
++    r = wn._execute_job(copy.deepcopy(j))
++    code = ("PWC_LEGACY_OFFSET_REFUSED" if ("offset" in j or "chunk_offset" in j)
++            else "PWC_WINDOW_ANCHOR_SCHEMA_REFUSED")
++    old_refused &= r["success"] is False and code in (r.get("error") or "")
++gate("G-OLD-2 worker refuses every old-style job (%d jobs: offset, chunk_offset, neither key)"
++     % (len(OLD_JOBS) + 1), old_refused and sn == [])
++
++print("== G-NEW: window_anchor / generator_phase", flush=True)
++ok_draws = ok_phase = ok_echo = ok_abi = True
++for fam, hyb in (("java_lcg", False), ("java_lcg_reverse", False),
++                 ("java_lcg_hybrid", True), ("java_lcg_hybrid_reverse", True)):
++    for sess in (["midday", "evening"], ["midday"], ["evening"]):
++        for anchor in (0, 25, 7):
++            j = job(prng_families=[fam], hybrid=hyb, sessions=sess,
++                    strategies=STRATS if hyb else None, window_anchor=anchor, generator_phase=0)
++            calls, out = run(SF_NEW, j)
++            kern = [c for c in calls if c[0] in ("run_sieve", "run_hybrid_sieve")]
++            ref = load_residue_window(DS, 12, sess, anchor)
++            filt = [e for e in _data if e["session"] in sess]
++            plain = [int(e.get("full_state", e["draw"])) for e in filt[anchor:anchor + 12]]
++            ok_draws &= bool(kern) and all(c[1]["residues"] == ref == plain for c in kern)
++            ok_phase &= bool(kern) and all(c[1]["offset"] == 0 for c in kern)
++            ok_abi &= all(c[1]["miner_abi"] is True for c in kern if c[0] == "run_hybrid_sieve")
++            ok_echo &= out.get("success") is True and out.get("window_anchor") == anchor \
++                and out.get("generator_phase") == 0
++gate("G-NEW-1a draws == miner load_residue_window == slice (anchors 0/7/25, 3 session sets)", ok_draws)
++gate("G-NEW-2a kernel trailing argument is generator_phase 0 at every anchor", ok_phase)
++gate("G-NEW-2b result records window_anchor and generator_phase", ok_echo)
++gate("G-NEW-2d new-key hybrid launches ask for the miner's argument list (miner_abi True)", ok_abi)
++# the old path at offset 25 sends 25 to the kernel; the new path at anchor 25 sends 0
++_c_old, _ = run(SF_NEW, job(offset=25))
++_c_new, _ = run(SF_NEW, job(window_anchor=25, generator_phase=0))
++gate("G-NEW-2c same draws as legacy offset=25, kernel arg 25 -> 0",
++     _c_old[1][1]["residues"] == _c_new[1][1]["residues"]
++     and _c_old[1][1]["offset"] == 25 and _c_new[1][1]["offset"] == 0)
++n_mid = sum(1 for e in _data if e["session"] == "midday")
++calls, out = run(SF_NEW, job(sessions=["midday"], window_anchor=n_mid - 12, generator_phase=0))
++gate("G-NEW-1b boundary anchor N_filtered - window_size accepted", out.get("success") is True)
++
++print("== G-REF: refusals", flush=True)
++missing_ds = job(dataset_path=os.path.join(SCRATCH, "does_not_exist.json"))
++for ph in (1, -1, 25):
++    e, calls = run_raises(SF_NEW, dict(missing_ds, window_anchor=0, generator_phase=ph))
++    gate(f"G-REF-1 generator_phase={ph} raises PWC_GENERATOR_PHASE_REFUSED, no dataset read, no GPUSieve",
++         isinstance(e, ValueError) and "PWC_GENERATOR_PHASE_REFUSED" in str(e) and calls == [],
++         repr(e))
++for label, extra in (("window_anchor only", {"window_anchor": 0}),
++                     ("generator_phase only", {"generator_phase": 0}),
++                     ("offset alongside", {"window_anchor": 0, "generator_phase": 0, "offset": 0}),
++                     ("non-integer anchor", {"window_anchor": "x", "generator_phase": 0}),
++                     ("None phase", {"window_anchor": 0, "generator_phase": None})):
++    e, calls = run_raises(SF_NEW, dict(missing_ds, **extra))
++    gate(f"G-REF-2 {label}: refused before any read",
++         isinstance(e, ValueError) and "PWC_WINDOW_ANCHOR_SCHEMA_REFUSED" in str(e) and calls == [],
++         repr(e))
++for anchor in (-1, n_mid - 12 + 1, 10_000):
++    calls, out = run(SF_NEW, job(sessions=["midday"], window_anchor=anchor, generator_phase=0))
++    gate(f"G-REF-3 anchor {anchor} refused, not clamped, no GPUSieve",
++         out.get("success") is False and "PWC_WINDOW_ANCHOR_OUT_OF_DOMAIN" in out.get("error", "")
++         and calls == [], out.get("error", ""))
++
++print("== G-WRK: worker pass-through", flush=True)
++w, seen = worker(WS_NEW)
++w._execute_job(job(window_anchor=25, generator_phase=0))
++s = seen[-1]
++gate("G-WRK-1a keys copied verbatim, defaulted offset dropped",
++     s.get("window_anchor") == 25 and s.get("generator_phase") == 0 and "offset" not in s, str(s))
++n_seen = len(seen)
++r = w._execute_job(dict(job(window_anchor=25, generator_phase=0), offset=25))
++gate("G-WRK-1b offset alongside the new keys: refused by the worker, nothing run",
++     r["success"] is False and "PWC_LEGACY_OFFSET_REFUSED" in r["error"] and len(seen) == n_seen)
++r1 = w._execute_job(job(generator_phase=0)); r2 = w._execute_job(job(window_anchor=0))
++gate("G-WRK-1c one key alone: refused by the worker, nothing run",
++     all(x["success"] is False and "PWC_WINDOW_ANCHOR_SCHEMA_REFUSED" in x["error"] for x in (r1, r2))
++     and len(seen) == n_seen)
++
++w2 = WS_NEW.PWCWorkerService("test:gpu0", "127.0.0.1", 1, 0, use_rocm=False)
++w2._emit_heartbeat = lambda *a, **k: None
++rec = Recorder(); saved = SF_NEW.GPUSieve; SF_NEW.GPUSieve = rec.factory()
++try:
++    w2._execute_sieve_job = SF_NEW.execute_sieve_job
++    r1 = w2._execute_job(job(window_anchor=25, generator_phase=1))
++    r0 = w2._execute_job(job(window_anchor=25, generator_phase=0))
++finally:
++    SF_NEW.GPUSieve = saved
++gate("G-WRK-2a end to end: phase 1 -> success False naming PWC_GENERATOR_PHASE_REFUSED",
++     r1["success"] is False and "PWC_GENERATOR_PHASE_REFUSED" in (r1.get("error") or ""))
++gate("G-WRK-2b end to end: phase 0 -> success, anchor recorded in payload",
++     r0["success"] is True and r0["payload"].get("window_anchor") == 25
++     and r0["payload"].get("generator_phase") == 0)
++
++print("== G-HYB: the real run_hybrid_sieve's kernel arguments", flush=True)
++import re as _re
++from miner.range_miner_worker import EXPECTED_KERNEL_ARITY           # read-only reference
++from prng_registry import get_kernel_info
++
++
++class _Arr:
++    def __getitem__(self, i): return self
++    def get(self): return 0
++
++
++class _Dev:
++    def __enter__(self): return self
++    def __exit__(self, *a): return False
++    def synchronize(self): pass
++
++
++def _scalar(tag):
++    return lambda v=None: (tag, v)
++
++
++_FCP = types.SimpleNamespace(
++    int32=_scalar("int32"), uint32=_scalar("uint32"), uint64=_scalar("uint64"),
++    float32=_scalar("float32"),
++    array=lambda *a, **k: _Arr(), zeros=lambda *a, **k: _Arr(), arange=lambda *a, **k: _Arr(),
++    cuda=types.SimpleNamespace(Device=lambda *a: _Dev()))
++
++
++def hybrid_args(mod, family, *, miner_abi=None, offset=0):
++    """Kernel arguments the REAL GPUSieve.run_hybrid_sieve passes, CuPy replaced."""
++    launched = []
++    sv = object.__new__(mod.GPUSieve)
++    sv.device, sv.compiled_kernels = _Dev(), {}
++    cfg = get_kernel_info(family)
++    sv._get_kernel = lambda fam, params=None: (
++        lambda grid, block, args: launched.append(list(args)), cfg)
++    saved = mod.cp
++    mod.cp = _FCP
++    try:
++        kw = {} if miner_abi is None else {"miner_abi": miner_abi}
++        sv.run_hybrid_sieve(prng_family=family, seed_start=0, seed_end=10, residues=[1] * 12,
++                            strategies=STRATS, min_match_threshold=0.5, offset=offset, **kw)
++    finally:
++        mod.cp = saved
++    assert len(launched) == 1, launched
++    # scalars are (dtype, value) tuples; device arrays are compared by kind only
++    return [x if isinstance(x, tuple) else type(x).__name__ for x in launched[0]], cfg
++
++
++def declared_params(cfg):
++    m = _re.search(_re.escape(cfg["kernel_name"]) + r"\s*\(([^)]*)\)", cfg["kernel_source"])
++    return len([x for x in m.group(1).split(",") if x.strip()])
++
++
++HYB = [f for f in EXPECTED_KERNEL_ARITY if "_hybrid" in f]
++ok_miner = ok_decl = ok_old = ok_drop = True
++detail = []
++for fam in HYB:
++    a_new, cfg = hybrid_args(SF_NEW, fam, miner_abi=True)
++    a_dflt, _ = hybrid_args(SF_NEW, fam)
++    a_base, _ = hybrid_args(SF_BASE, fam)
++    ok_miner &= len(a_new) == EXPECTED_KERNEL_ARITY[fam]
++    ok_decl &= len(a_new) == declared_params(cfg)
++    ok_old &= repr(a_dflt) == repr(a_base)
++    no_phase = fam in ("java_lcg_hybrid", "minstd_hybrid", "xorshift32_hybrid", "xorshift128_hybrid")
++    ok_drop &= (repr(a_new) == repr(a_base[:-1]) if no_phase else repr(a_new) == repr(a_base))
++    detail.append(f"{fam}: pwc {len(a_new)} / miner {EXPECTED_KERNEL_ARITY[fam]} / "
++                  f"kernel {declared_params(cfg)} / old {len(a_base)}")
++gate("G-HYB-1 new-key launch: argument count == miner EXPECTED_KERNEL_ARITY for all %d hybrids"
++     % len(HYB), ok_miner, "; ".join(detail))
++gate("G-HYB-2 new-key launch: argument count == the kernel's declared parameters", ok_decl,
++     "; ".join(detail))
++gate("G-HYB-3 default (legacy/ZMQ callers): arguments identical to BASE for every hybrid", ok_old)
++gate("G-HYB-4 the change is only the trailing int32 of the four no-phase forward hybrids", ok_drop)
++e = None
++try:
++    hybrid_args(SF_NEW, "java_lcg_hybrid", miner_abi=True, offset=1)
++except Exception as exc:                          # noqa: BLE001
++    e = exc
++gate("G-HYB-5 new-key launch, no-phase hybrid, phase 1: refused before any kernel launch",
++     isinstance(e, ValueError) and "PWC_GENERATOR_PHASE_REFUSED" in str(e), repr(e))
++print("    " + "\n    ".join(detail), flush=True)
++
++print("== G-PRF: the proof script detects a mutant", flush=True)
++proof = _load_module("pwc_proof", open(os.path.join(REPO, "scripts", "pwc_sieve_filter_import_proof.py")).read(),
++                     os.path.join(REPO, "scripts", "pwc_sieve_filter_import_proof.py"))
++base_src = _git_show("sieve_filter.py")
++mut_src = base_src.replace('"PRNG_CUPY_POOL_LIMIT_MB", "256"', '"PRNG_CUPY_POOL_LIMIT_MB", "512"', 1)
++assert mut_src != base_src
++gate("G-PRF-1a AST check passes on an unchanged copy",
++     proof.ast_check(base_src, base_src, {"execute_sieve_job"})["ok"])
++gate("G-PRF-1b AST check fails on the pool-limit mutant",
++     not proof.ast_check(base_src, mut_src, {"execute_sieve_job"})["ok"])
++mdir = os.path.join(SCRATCH, "mutant"); bdir = os.path.join(SCRATCH, "basecopy")
++for d, src in ((mdir, mut_src), (bdir, base_src)):
++    os.makedirs(d, exist_ok=True)
++    with open(os.path.join(d, "sieve_filter.py"), "w") as f:
++        f.write(src)
++rb, rm = proof.import_report(bdir, "real", False), proof.import_report(mdir, "real", False)
++gate("G-PRF-2 import check sees set_limit(268435456) vs set_limit(536870912)",
++     rb != rm and "268435456" in json.dumps(rb) and "536870912" in json.dumps(rm))
++
++print(f"\nRESULT: {len(PASS)} passed, {len(FAIL)} failed", flush=True)
++if FAIL:
++    print("FAILED: " + ", ".join(FAIL))
++sys.exit(1 if FAIL else 0)
+diff --git a/tests/test_prove_unchanged_outside.py b/tests/test_prove_unchanged_outside.py
+new file mode 100644
+index 0000000..d1b3043
+--- /dev/null
++++ b/tests/test_prove_unchanged_outside.py
+@@ -0,0 +1,334 @@
++#!/usr/bin/env python3
++"""Tests for scripts/prove_unchanged_outside.py (PWC-BACKUP Stage 3 proof tool).
++
++CPU only, read-only on the repository. Fixture files go under
++logs/test_prove_unchanged_outside/ (never /tmp). Runs as a script
++(`python3 tests/test_prove_unchanged_outside.py`) or under pytest.
++
++PASS cases: the tool must report no unexpected difference.
++CATCH cases: deliberate breakages the tool must report (exit 1), each naming
++what changed.
++"""
++import os
++import subprocess
++import sys
++import textwrap
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++TOOL = os.path.join(ROOT, "scripts", "prove_unchanged_outside.py")
++FIX = os.path.join(ROOT, "logs", "test_prove_unchanged_outside")
++sys.path.insert(0, os.path.join(ROOT, "scripts"))
++import prove_unchanged_outside as P  # noqa: E402
++
++BASE = textwrap.dedent('''\
++    """module docstring"""
++    import os
++    import sys
++
++    LIMIT = 268435456
++    os.environ.setdefault("X_FLAG", "1")
++
++    def deco(f):
++        return f
++
++    @deco
++    def checked(a, b=1):
++        def inner(x):
++            return x + 1
++        return inner(a) + b
++
++    def allowed(job):
++        return job.get("offset", 0)
++
++    class Sieve:
++        def run(self, offset=0):
++            return offset
++
++        def other(self):
++            return 2
++
++    try:
++        import cupy
++    except ImportError:
++        cupy = None
++
++        def fallback():
++            return None
++    ''')
++
++
++def _cmp(new, allow=("allowed",), base=BASE):
++    return P.compare(base, new, allow)
++
++
++def _kinds(rep):
++    return {p["kind"] for p in rep["problems"]}
++
++
++def _defs(rep):
++    for p in rep["problems"]:
++        if p["kind"] == "definitions-differ":
++            return {d["name"]: d["change"] for d in p["definitions"]}
++    return {}
++
++
++def _cli(new_src, *args, base_src=BASE):
++    os.makedirs(FIX, exist_ok=True)
++    b, n = os.path.join(FIX, "base.py"), os.path.join(FIX, "new.py")
++    with open(b, "w") as f:
++        f.write(base_src)
++    with open(n, "w") as f:
++        f.write(new_src)
++    return subprocess.run([sys.executable, TOOL, "--base-file", b, "--new-file", n, *args],
++                          capture_output=True, text=True)
++
++
++# ------------------------------------------------------------------ PASS cases
++
++def test_pass_identical():
++    rep = _cmp(BASE)
++    assert rep["ok"], rep["problems"]
++
++
++def test_pass_change_inside_allowed_function():
++    # body, signature, default and a new decorator: all inside the allowed def
++    new = BASE.replace('def allowed(job):\n    return job.get("offset", 0)',
++                       '@deco\ndef allowed(job, phase=0):\n    if phase:\n        raise ValueError\n'
++                       '    return job["window_anchor"]')
++    assert new != BASE
++    rep = _cmp(new)
++    assert rep["ok"], rep["problems"]
++    assert rep["allowed"]["allowed"]["changed"] is True
++
++
++def test_pass_change_inside_allowed_method():
++    new = BASE.replace("    def run(self, offset=0):\n        return offset",
++                       "    def run(self, offset=0, phase=0):\n        return offset + phase")
++    assert new != BASE
++    assert _cmp(new, allow=("Sieve.run",))["ok"]
++
++
++def test_pass_comment_only_change_is_reported_not_failed():
++    new = BASE.replace("LIMIT = 268435456", "LIMIT = 268435456  # 256 MiB")
++    assert _cmp(new)["ok"]
++    r = _cli(new, "--allow", "allowed")
++    assert r.returncode == 0, r.stdout + r.stderr
++    assert "changed lines outside allowed definitions" in r.stdout
++    r = _cli(new, "--allow", "allowed", "--strict-bytes")
++    assert r.returncode == 1, r.stdout
++
++
++# ------------------------------------------------------------------ CATCH cases
++
++def test_catch_changed_default_argument():
++    new = BASE.replace("def checked(a, b=1):", "def checked(a, b=2):")
++    rep = _cmp(new)
++    assert not rep["ok"]
++    assert _defs(rep).get("checked") == "changed"
++
++
++def test_catch_changed_default_in_non_allowed_method():
++    new = BASE.replace("    def run(self, offset=0):", "    def run(self, offset=1):")
++    rep = _cmp(new)
++    assert not rep["ok"]
++    assert _defs(rep).get("Sieve.run") == "changed"
++    assert _defs(rep).get("Sieve") == "changed"
++
++
++def test_catch_changed_decorator():
++    new = BASE.replace("@deco\ndef checked", "@staticmethod\ndef checked")
++    assert new != BASE
++    rep = _cmp(new)
++    assert not rep["ok"] and _defs(rep).get("checked") == "changed"
++    # decorator removed entirely
++    rep = _cmp(BASE.replace("@deco\ndef checked", "def checked"))
++    assert not rep["ok"] and _defs(rep).get("checked") == "changed"
++
++
++def test_catch_moved_import_reordered():
++    new = BASE.replace("import os\nimport sys\n", "import sys\nimport os\n")
++    assert new != BASE
++    rep = _cmp(new)
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++
++
++def test_catch_import_moved_below_side_effect():
++    new = BASE.replace('import sys\n', '').replace(
++        'os.environ.setdefault("X_FLAG", "1")\n', 'os.environ.setdefault("X_FLAG", "1")\nimport sys\n')
++    assert new != BASE
++    rep = _cmp(new)
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++
++
++def test_catch_import_moved_into_allowed_function_is_still_caught():
++    # removing a module-level import is a top-level change even if the allowed
++    # function now imports it itself
++    new = BASE.replace("import sys\n", "").replace(
++        'def allowed(job):\n    return', 'def allowed(job):\n    import sys\n    return')
++    rep = _cmp(new)
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++
++
++def test_catch_changed_module_constant():
++    rep = _cmp(BASE.replace("LIMIT = 268435456", "LIMIT = 536870912"))
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++    hunk = [p for p in rep["problems"] if p["kind"] == "top-level-statements-differ"][0]["hunks"]
++    assert any("LIMIT" in s["stmt"] for h in hunk for s in h["new"])
++
++
++def test_catch_changed_module_side_effect():
++    rep = _cmp(BASE.replace('setdefault("X_FLAG", "1")', 'setdefault("X_FLAG", "0")'))
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++
++
++def test_catch_change_inside_nested_function_of_non_allowed_function():
++    new = BASE.replace("        return x + 1", "        return x + 2")
++    assert new != BASE
++    rep = _cmp(new)
++    d = _defs(rep)
++    assert not rep["ok"] and d.get("checked.inner") == "changed" and d.get("checked") == "changed"
++    marked = [x for p in rep["problems"] if p["kind"] == "definitions-differ"
++              for x in p["definitions"] if x["name"] == "checked"][0]
++    assert marked["has_changed_child"] is True
++
++
++def test_catch_parent_change_when_only_nested_is_allowed():
++    new = BASE.replace("    return inner(a) + b", "    return inner(a) - b")
++    rep = _cmp(new, allow=("checked.inner",))
++    assert not rep["ok"] and _defs(rep).get("checked") == "changed"
++
++
++def test_catch_other_method_when_one_method_allowed():
++    new = BASE.replace("        return 2", "        return 3")
++    rep = _cmp(new, allow=("Sieve.run",))
++    assert not rep["ok"] and _defs(rep).get("Sieve.other") == "changed"
++
++
++def test_catch_reordered_methods():
++    a = "    def run(self, offset=0):\n        return offset\n"
++    b = "    def other(self):\n        return 2\n"
++    new = BASE.replace(a + "\n" + b, b + "\n" + a)
++    assert new != BASE
++    rep = _cmp(new)
++    assert not rep["ok"] and _defs(rep).get("Sieve") == "changed"
++
++
++def test_catch_function_inside_module_try_block():
++    rep = _cmp(BASE.replace("        return None", "        return 0"))
++    assert not rep["ok"] and _defs(rep).get("fallback") == "changed"
++
++
++def test_catch_added_and_removed_definitions():
++    rep = _cmp(BASE + "\ndef extra():\n    return 1\n")
++    assert not rep["ok"] and _defs(rep).get("extra") == "added"
++    rep = _cmp(BASE.replace("def deco(f):\n    return f\n", ""))
++    assert not rep["ok"] and _defs(rep).get("deco") == "removed"
++
++
++def test_catch_allowed_prefix_does_not_cover_longer_name():
++    base = BASE + "\ndef allowedness():\n    return 1\n"
++    new = BASE + "\ndef allowedness():\n    return 2\n"
++    rep = _cmp(new, base=base)
++    assert not rep["ok"] and _defs(rep).get("allowedness") == "changed"
++
++
++def test_catch_allowed_function_moved():
++    blk = 'def allowed(job):\n    return job.get("offset", 0)\n\n'
++    assert blk in BASE
++    new = BASE.replace(blk, "").replace("def deco(f):", blk + "def deco(f):")
++    rep = _cmp(new)
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++
++
++def test_catch_missing_allowed_name():
++    rep = _cmp(BASE, allow=("allowed", "no_such_function"))
++    assert not rep["ok"] and "allowed-name-not-unique-or-missing" in _kinds(rep)
++
++
++def test_catch_docstring_change_outside():
++    rep = _cmp(BASE.replace('"""module docstring"""', '"""module docstring v2"""'))
++    assert not rep["ok"]
++
++
++# ------------------------------------------------------------------ CLI + real file
++
++def test_cli_exit_codes():
++    assert _cli(BASE, "--allow", "allowed").returncode == 0
++    r = _cli(BASE.replace("def checked(a, b=1):", "def checked(a, b=2):"), "--allow", "allowed")
++    assert r.returncode == 1 and "changed: checked" in r.stdout
++    r = _cli("def broken(:\n", "--allow", "allowed")
++    assert r.returncode == 2
++    r = subprocess.run([sys.executable, TOOL, "--base", "no_such_rev_zz", "--file", "sieve_filter.py"],
++                       capture_output=True, text=True)
++    assert r.returncode == 2
++
++
++def test_real_sieve_filter_against_stage2b_base():
++    """The Stage 2b edit to sieve_filter.py, against 0caeaf9 (Stage 2 landed):
++    unchanged outside execute_sieve_job and GPUSieve.run_hybrid_sieve; and the
++    same comparison allowing only execute_sieve_job must fail and name
++    GPUSieve.run_hybrid_sieve. UNAVAILABLE (not passed) without 0caeaf9."""
++    if subprocess.run(["git", "-C", ROOT, "cat-file", "-e", "0caeaf9^{commit}"]).returncode != 0:
++        print("  [UNAVAILABLE] 0caeaf9 not in this repository")
++        return
++    ok = subprocess.run([sys.executable, TOOL, "--base", "0caeaf9", "--file", "sieve_filter.py",
++                         "--allow", "execute_sieve_job", "GPUSieve.run_hybrid_sieve"],
++                        capture_output=True, text=True)
++    assert ok.returncode == 0, ok.stdout + ok.stderr
++    bad = subprocess.run([sys.executable, TOOL, "--base", "0caeaf9", "--file", "sieve_filter.py",
++                          "--allow", "execute_sieve_job"], capture_output=True, text=True)
++    if "identical" in bad.stdout.split("bytes", 1)[-1].splitlines()[0]:
++        return  # working tree equals base: nothing to catch
++    assert bad.returncode == 1 and "GPUSieve.run_hybrid_sieve" in bad.stdout, bad.stdout
++
++
++# ------------------------------------------------------------------ --allow-added
++
++def test_pass_allowed_added_function_and_constant():
++    new = BASE.replace("def deco(f):", "NEW_PIN = 0\n\n\ndef new_helper(x):\n    return x\n\n\ndef deco(f):")
++    assert new != BASE
++    rep = P.compare(BASE, new, ["allowed"], ["NEW_PIN", "new_helper"])
++    assert rep["ok"], rep["problems"]
++
++
++def test_catch_added_function_not_listed():
++    new = BASE.replace("def deco(f):", "def new_helper(x):\n    return x\n\n\ndef deco(f):")
++    rep = P.compare(BASE, new, ["allowed"], [])
++    assert not rep["ok"]
++
++
++def test_catch_allowed_added_name_already_in_base():
++    # "LIMIT" exists in the base, so it cannot be declared as added
++    new = BASE.replace("LIMIT = 268435456", "LIMIT = 1")
++    rep = P.compare(BASE, new, ["allowed"], ["LIMIT"])
++    assert not rep["ok"] and "allowed-added-name-invalid" in _kinds(rep)
++
++
++def test_catch_allowed_added_missing_from_new():
++    rep = P.compare(BASE, BASE, ["allowed"], ["NEVER_ADDED"])
++    assert not rep["ok"] and "allowed-added-name-invalid" in _kinds(rep)
++
++
++def test_catch_side_effect_hidden_next_to_allowed_added():
++    # an added constant is allowed; an added call statement beside it is not
++    new = BASE.replace("def deco(f):", "NEW_PIN = 0\nos.environ['Y'] = '1'\n\n\ndef deco(f):")
++    rep = P.compare(BASE, new, ["allowed"], ["NEW_PIN"])
++    assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
++
++
++def _main():
++    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
++    failed = 0
++    for n, f in tests:
++        try:
++            f()
++            print(f"PASS {n}")
++        except Exception as exc:  # noqa: BLE001
++            failed += 1
++            print(f"FAIL {n}: {type(exc).__name__}: {exc}")
++    print(f"{len(tests) - failed}/{len(tests)} passed")
++    return 1 if failed else 0
++
++
++if __name__ == "__main__":
++    sys.exit(_main())

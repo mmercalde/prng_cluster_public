@@ -1,0 +1,13 @@
+DIFF  tests/test_s172_attempt6_remediation.py: rc 1 -> 1
+      newly failing: ['FAIR-1   count pressure (many cheap)']
+      no longer failing: []
+DIFF  tests/test_s172_phase4_coordinator.py: rc 0 -> 1
+      newly failing: ['Gate 22']
+      no longer failing: []
+DIFF  tests/test_pwc_backup_step1.py: rc 0 -> 1
+      newly failing: ['G-S2-ZERO-BYTE-EQUAL']
+      no longer failing: []
+NEW   tests/test_pwc_stage2b_anchor_phase.py: rc 0, failing=[]
+NEW   tests/test_prove_unchanged_outside.py: rc 0, failing=[]
+
+75 suites in after; 3 differ from before (rc or failing-check set)

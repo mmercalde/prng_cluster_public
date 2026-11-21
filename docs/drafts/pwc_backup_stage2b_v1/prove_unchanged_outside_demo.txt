@@ -1,0 +1,124 @@
+$ python3 scripts/prove_unchanged_outside.py --base 0caeaf9 --file sieve_filter.py --allow execute_sieve_job GPUSieve.run_hybrid_sieve
+file      sieve_filter.py
+base      0caeaf9:sieve_filter.py
+new       working tree:sieve_filter.py
+allowed   GPUSieve.run_hybrid_sieve, execute_sieve_job
+added     (none)
+AST       top-level statements base=31 new=31; definitions compared base=11 new=11; checked (not allowed)=8
+  allowed GPUSieve.run_hybrid_sieve: base x1, new x1, changed=True
+  allowed execute_sieve_job: base x1, new x1, changed=True
+bytes     base 39972 B sha256 b44454da3239d9e1; new 45698 B sha256 a9735e8337ebf9a9; 8 hunk(s), +96/-7 lines
+  GPUSieve.run_hybrid_sieve                +22   -3    allowed
+  execute_sieve_job                        +74   -4    allowed
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0
+
+$ ... --file sieve_filter.py --allow execute_sieve_job   (control: run_hybrid_sieve not allowed)
+file      sieve_filter.py
+base      0caeaf9:sieve_filter.py
+new       working tree:sieve_filter.py
+allowed   execute_sieve_job
+added     (none)
+AST       top-level statements base=31 new=31; definitions compared base=11 new=11; checked (not allowed)=10
+  allowed execute_sieve_job: base x1, new x1, changed=True
+  UNEXPECTED top-level statements:
+    [replace] base #27: ClassDef GPUSieve
+    [replace] new  #27: ClassDef GPUSieve
+  UNEXPECTED definitions:
+    changed: GPUSieve (a nested definition also changed)
+    changed: GPUSieve.run_hybrid_sieve
+bytes     base 39972 B sha256 b44454da3239d9e1; new 45698 B sha256 a9735e8337ebf9a9; 8 hunk(s), +96/-7 lines
+  GPUSieve.run_hybrid_sieve                +22   -3    NOT ALLOWED
+  execute_sieve_job                        +74   -4    allowed
+  changed lines outside allowed definitions:
+    base:362 [GPUSieve.run_hybrid_sieve]         offset: int = 0
+    new:362 [GPUSieve.run_hybrid_sieve]         offset: int = 0,
+    new:363 [GPUSieve.run_hybrid_sieve]         miner_abi: bool = False
+    base:364 [GPUSieve.run_hybrid_sieve]         """Run hybrid multi-strategy variable skip sieve"""
+    new:365 [GPUSieve.run_hybrid_sieve]         """Run hybrid multi-strategy variable skip sieve
+    new:366 [GPUSieve.run_hybrid_sieve] 
+    new:367 [GPUSieve.run_hybrid_sieve]         [PWC-BACKUP STAGE 2b] miner_abi=True (set by execute_sieve_job for a PWC
+    new:368 [GPUSieve.run_hybrid_sieve]         new-key job only) gives the four forward hybrids whose kernels take NO
+    new:369 [GPUSieve.run_hybrid_sieve]         phase argument exactly RANGE-MINER's argument count: java_lcg_hybrid 15,
+    new:370 [GPUSieve.run_hybrid_sieve]         minstd_hybrid 15, xorshift32_hybrid 16, xorshift128_hybrid 16
+    new:371 [GPUSieve.run_hybrid_sieve]         (miner/range_miner_worker.py:39-44, :160, :179). The trailing int32 is
+    new:372 [GPUSieve.run_hybrid_sieve]         left out for them, and a nonzero `offset` (here: the generator phase) is
+    new:373 [GPUSieve.run_hybrid_sieve]         refused for them, as the miner refuses it (:570-600). miner_abi=False,
+    new:374 [GPUSieve.run_hybrid_sieve]         the default every other caller gets, leaves the launch exactly as before.
+    new:375 [GPUSieve.run_hybrid_sieve]         """
+    new:376 [GPUSieve.run_hybrid_sieve]         _no_phase_fwd = ("java_lcg", "minstd", "xorshift32", "xorshift128")
+    new:377 [GPUSieve.run_hybrid_sieve]         _base_family = prng_family.replace("_hybrid", "").replace("_reverse", "")
+    new:378 [GPUSieve.run_hybrid_sieve]         _drop_phase_arg = (miner_abi and '_reverse' not in prng_family
+    new:379 [GPUSieve.run_hybrid_sieve]                            and _base_family in _no_phase_fwd)
+    new:380 [GPUSieve.run_hybrid_sieve]         if _drop_phase_arg and int(offset) != 0:
+    new:381 [GPUSieve.run_hybrid_sieve]             raise ValueError(
+    new:382 [GPUSieve.run_hybrid_sieve]                 f"PWC_GENERATOR_PHASE_REFUSED: {prng_family} (forward hybrid) has no "
+    new:383 [GPUSieve.run_hybrid_sieve]                 f"generator-phase argument; phase {int(offset)} cannot be applied")
+    base:461 [GPUSieve.run_hybrid_sieve]                     cp.int32(offset)
+    new:480 [GPUSieve.run_hybrid_sieve]                     *([] if _drop_phase_arg else [cp.int32(offset)])
+verdict   UNEXPECTED DIFFERENCE
+exit 1
+
+$ ... --file persistent/pwc_worker_service.py --allow PWCWorkerService._execute_job
+file      persistent/pwc_worker_service.py
+base      0caeaf9:persistent/pwc_worker_service.py
+new       working tree:persistent/pwc_worker_service.py
+allowed   PWCWorkerService._execute_job
+added     (none)
+AST       top-level statements base=31 new=31; definitions compared base=21 new=21; checked (not allowed)=20
+  allowed PWCWorkerService._execute_job: base x1, new x1, changed=True
+bytes     base 31382 B sha256 4744b2cfb035d8b5; new 33152 B sha256 f50d548905c3a544; 2 hunk(s), +26/-1 lines
+  PWCWorkerService._execute_job            +26   -1    allowed
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0
+
+$ ... --file persistent_worker_coordinator.py --allow PersistentWorkerCoordinator.run_sieve_pass PersistentWorkerCoordinator._dispatch_to_tcp PersistentWorkerCoordinator._dispatch_local_sieve run_trial_persistent --allow-added PWC_GENERATOR_PHASE_V1_PIN validate_pwc_window_anchor pwc_new_key_job pwc_anchor_echo_error
+file      persistent_worker_coordinator.py
+base      0caeaf9:persistent_worker_coordinator.py
+new       working tree:persistent_worker_coordinator.py
+allowed   PersistentWorkerCoordinator._dispatch_local_sieve, PersistentWorkerCoordinator._dispatch_to_tcp, PersistentWorkerCoordinator.run_sieve_pass, run_trial_persistent
+added     PWC_GENERATOR_PHASE_V1_PIN, pwc_anchor_echo_error, pwc_new_key_job, validate_pwc_window_anchor
+AST       top-level statements base=78 new=82; definitions compared base=62 new=62; checked (not allowed)=55
+  allowed PersistentWorkerCoordinator._dispatch_local_sieve: base x1, new x1, changed=True
+  allowed PersistentWorkerCoordinator._dispatch_to_tcp: base x1, new x1, changed=True
+  allowed PersistentWorkerCoordinator.run_sieve_pass: base x1, new x1, changed=True
+  allowed run_trial_persistent: base x1, new x1, changed=True
+  added (allowed) PWC_GENERATOR_PHASE_V1_PIN: in base=False, new x1
+  added (allowed) pwc_anchor_echo_error: in base=False, new x1
+  added (allowed) pwc_new_key_job: in base=False, new x1
+  added (allowed) validate_pwc_window_anchor: in base=False, new x1
+bytes     base 153136 B sha256 91a1d7e3e993b9f5; new 157583 B sha256 ceca9be7d4aaea51; 7 hunk(s), +83/-4 lines
+  <module>                                 +21   -0    NOT ALLOWED
+  PWC_GENERATOR_PHASE_V1_PIN               +1    -0    allowed
+  PersistentWorkerCoordinator._dispatch_local_sieve +5    -0    allowed
+  PersistentWorkerCoordinator._dispatch_to_tcp +5    -0    allowed
+  PersistentWorkerCoordinator.run_sieve_pass +4    -1    allowed
+  PersistentWorkerCoordinator.run_sieve_pass.dispatch_chunk._run_once +3    -2    allowed
+  pwc_anchor_echo_error                    +16   -0    allowed
+  pwc_new_key_job                          +12   -0    allowed
+  run_trial_persistent                     +3    -1    allowed
+  validate_pwc_window_anchor               +13   -0    allowed
+  changed lines outside allowed definitions:
+    new:355 [<module>] 
+    new:356 [<module>] 
+    new:357 [<module>] # ── [PWC-BACKUP STAGE 2b] window anchor / generator phase ───────────────────
+    new:358 [<module>] # Owner ruling 2026-11-20 08:30 PST: the trial's `offset` picks the draw window
+    new:359 [<module>] # only, the generator phase is 0, and PWC moves to RANGE-MINER's method. The
+    new:360 [<module>] # split now exists on the TCP worker and in sieve_filter.execute_sieve_job, so
+    new:361 [<module>] # on the TCP and local routes a job carries `window_anchor` (the trial's offset)
+    new:362 [<module>] # and `generator_phase` (pinned to 0) and NO `offset`, exactly as the miner's
+    new:363 [<module>] # coordinator builds its context (miner/range_miner_coordinator.py:2731-2732);
+    new:364 [<module>] # the worker checks the anchor against the post-session-filter domain and never
+    new:365 [<module>] # clamps (miner/range_miner_worker.py:913-925). The SSH route ends in
+    new:366 [<module>] # sieve_gpu_worker.py, a parity-pinned file that reads one `offset` for both
+    new:367 [<module>] # jobs, so it cannot carry the split: there Stage 2's refusal of offset != 0
+    new:368 [<module>] # stays (owner, 2026-11-20). The pin is restated, not imported from miner/,
+    new:369 [<module>] # so PWC does not import the miner package.
+    new:371 [<module>] 
+    new:372 [<module>] 
+    new:386 [<module>] 
+    new:387 [<module>] 
+    new:400 [<module>] 
+    new:401 [<module>] 
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0

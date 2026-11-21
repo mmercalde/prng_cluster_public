@@ -359,9 +359,28 @@ class GPUSieve:
         strategies: List[Dict[str, Any]],
         min_match_threshold: float = 0.25,
         chunk_size: int = 100_000,
-        offset: int = 0
+        offset: int = 0,
+        miner_abi: bool = False
     ) -> Dict[str, Any]:
-        """Run hybrid multi-strategy variable skip sieve"""
+        """Run hybrid multi-strategy variable skip sieve
+
+        [PWC-BACKUP STAGE 2b] miner_abi=True (set by execute_sieve_job for a PWC
+        new-key job only) gives the four forward hybrids whose kernels take NO
+        phase argument exactly RANGE-MINER's argument count: java_lcg_hybrid 15,
+        minstd_hybrid 15, xorshift32_hybrid 16, xorshift128_hybrid 16
+        (miner/range_miner_worker.py:39-44, :160, :179). The trailing int32 is
+        left out for them, and a nonzero `offset` (here: the generator phase) is
+        refused for them, as the miner refuses it (:570-600). miner_abi=False,
+        the default every other caller gets, leaves the launch exactly as before.
+        """
+        _no_phase_fwd = ("java_lcg", "minstd", "xorshift32", "xorshift128")
+        _base_family = prng_family.replace("_hybrid", "").replace("_reverse", "")
+        _drop_phase_arg = (miner_abi and '_reverse' not in prng_family
+                           and _base_family in _no_phase_fwd)
+        if _drop_phase_arg and int(offset) != 0:
+            raise ValueError(
+                f"PWC_GENERATOR_PHASE_REFUSED: {prng_family} (forward hybrid) has no "
+                f"generator-phase argument; phase {int(offset)} cannot be applied")
         # Import strategy helper
         try:
             from hybrid_strategy import analyze_skip_pattern
@@ -458,7 +477,7 @@ class GPUSieve:
                         if "xorshift128" in prng_family else
                         []
                     ),
-                    cp.int32(offset)
+                    *([] if _drop_phase_arg else [cp.int32(offset)])
                 ]
                 kernel((blocks,), (threads_per_block,), tuple(kernel_args))
                 cp.cuda.Device().synchronize()
@@ -518,6 +537,47 @@ class GPUSieve:
 def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
     """Execute a sieve job from job specification"""
     job_id = job.get('job_id', 'unknown')
+    # [PWC-BACKUP STAGE 2b] Window-anchor / generator-phase separation, worker side
+    # (docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §2, §4.1, §4.2;
+    # owner ruling 2026-11-20 08:30 PST: PWC moves to RANGE-MINER's method).
+    # A job carrying `window_anchor` / `generator_phase` is a NEW-schema job:
+    #   window_anchor   -> which records form the residue window (host side, only);
+    #   generator_phase -> the kernel's trailing pre-advance argument (device side,
+    #                      only), pinned to 0 in v1 (range_miner_worker.py
+    #                      GENERATOR_PHASE_V1_PIN).
+    # Both keys are required together, `offset` must be absent (HARD REJECT, v1.1
+    # §4.1; miner: range_miner_worker.py _LEGACY_OFFSET_KEY), a nonzero phase is
+    # refused, and an anchor outside [0, N_filtered - window_size] is refused, never
+    # clamped (§4.2; miner: load_residue_window). These refusals RAISE, before any
+    # dataset read, kernel compile or GPU work. A job WITHOUT either key takes the
+    # unchanged legacy path below, where `offset` still does both jobs.
+    _pwc_new_schema = ('window_anchor' in job) or ('generator_phase' in job)
+    if _pwc_new_schema:
+        _missing = [k for k in ('window_anchor', 'generator_phase') if k not in job]
+        if _missing:
+            raise ValueError(
+                f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {job_id!r} carries one of "
+                f"window_anchor/generator_phase but lacks {_missing}. Both are "
+                f"required together; no default is substituted.")
+        if 'offset' in job:
+            raise ValueError(
+                f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {job_id!r} carries the "
+                f"retired key 'offset' alongside window_anchor/generator_phase. "
+                f"'offset' is not mapped to either and is not read as a fallback.")
+        try:
+            _pwc_window_anchor = int(job['window_anchor'])
+            _pwc_generator_phase = int(job['generator_phase'])
+        except (TypeError, ValueError) as _e:
+            raise ValueError(
+                f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {job_id!r}: window_anchor="
+                f"{job['window_anchor']!r} / generator_phase={job['generator_phase']!r} "
+                f"must be integers") from _e
+        if _pwc_generator_phase != 0:
+            raise ValueError(
+                f"PWC_GENERATOR_PHASE_REFUSED: job {job_id!r} requests "
+                f"generator_phase={_pwc_generator_phase}. v1 pins the device-side "
+                f"generator phase to exactly 0 (same pin as RANGE-MINER). Nonzero "
+                f"phase is DEP-ABI-V2: recorded, not built. No kernel was launched.")
     try:
         # Extract parameters
         dataset_path = job.get('dataset_path') or job.get('target_file')
@@ -534,8 +594,31 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
         min_match_threshold = job.get('min_match_threshold', 0.25)
         offset = job.get('offset', 0)
         sessions = job.get('sessions', ['midday', 'evening'])
-        # Load draws
-        draws = load_draws_from_daily3(dataset_path, window_size, sessions, offset)
+        if _pwc_new_schema:
+            # [PWC-BACKUP STAGE 2b] Domain check on the POST-session-filter count,
+            # then the SAME loader the legacy path uses (one derivation of the
+            # window); inside the domain its clamp is a no-op. `offset` from here
+            # on is only the kernel's trailing argument, i.e. generator_phase (0).
+            with open(dataset_path, 'r') as _f:
+                _data = json.load(_f)
+            if sessions:
+                _data = [e for e in _data if e.get('session') in sessions]
+            _derived_max = len(_data) - window_size
+            if _pwc_window_anchor < 0 or _pwc_window_anchor > _derived_max:
+                raise ValueError(
+                    f"PWC_WINDOW_ANCHOR_OUT_OF_DOMAIN: window_anchor "
+                    f"{_pwc_window_anchor} is outside the derived domain "
+                    f"[0, {_derived_max}] — dataset={dataset_path!r}, sessions="
+                    f"{sorted(sessions) if sessions else 'ALL'}, N_filtered="
+                    f"{len(_data)}, window_size={window_size}. The anchor is "
+                    f"validated, never clamped.")
+            del _data
+            draws = load_draws_from_daily3(dataset_path, window_size, sessions,
+                                           _pwc_window_anchor)
+            offset = _pwc_generator_phase
+        else:
+            # Load draws
+            draws = load_draws_from_daily3(dataset_path, window_size, sessions, offset)
         print(f'🔍 LOADED DRAWS: len(draws)={len(draws)}, requested window_size={window_size}', file=sys.stderr)
         if not draws:
             raise ValueError("No draws loaded from dataset")
@@ -592,7 +675,8 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
                             residues=draws,
                             strategies=strategies,
                             min_match_threshold=phase2_threshold,
-                            offset=offset
+                            offset=offset,
+                            miner_abi=_pwc_new_schema  # [PWC-BACKUP STAGE 2b]
                         )
                         result['single_phase'] = {
                             'threshold': round(phase2_threshold, 4),
@@ -635,7 +719,8 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
                                 residues=draws,
                                 strategies=strategies,
                                 min_match_threshold=phase2_threshold,
-                                offset=offset
+                                offset=offset,
+                                miner_abi=_pwc_new_schema  # [PWC-BACKUP STAGE 2b]
                             )
                             phase2_duration = (time.time() - phase2_start) * 1000
                             phase2_survivors = phase2_result.get('survivors', [])
@@ -710,6 +795,10 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
             },
             'seeds_analyzed': total_tested
         }
+        if _pwc_new_schema:
+            # [PWC-BACKUP STAGE 2b] record what ran, independently (v1.1 §2).
+            final_result['window_anchor'] = _pwc_window_anchor
+            final_result['generator_phase'] = _pwc_generator_phase
         return final_result
     except Exception as e:
         import traceback

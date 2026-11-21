@@ -552,7 +552,6 @@ class PWCWorkerService:
                 "skip_range":          job.get("skip_range",
                                                [job.get("skip_min", 0),
                                                 job.get("skip_max", 147)]),
-                "offset":              job.get("offset", job.get("chunk_offset", 0)),
                 "sessions":            job.get("sessions", ["midday", "evening"]),
                 "prng_families":       job.get("prng_families",
                                                [job.get("prng_type", "java_lcg")]),
@@ -561,6 +560,32 @@ class PWCWorkerService:
                                                job.get("is_hybrid", False))),
                 "phase2_threshold":    job.get("phase2_threshold", 0.5),
             }
+            # [PWC-BACKUP STAGE 2b] Window-anchor / generator-phase separation,
+            # RANGE-MINER's method (owner ruling 2026-11-20 08:30 PST; v1.1 §4.1;
+            # miner/range_miner_worker.py:813-860). This worker is PWC's TCP entry
+            # point, so it takes ONLY new-key jobs:
+            #   * a job carrying the retired `offset` (or its alias `chunk_offset`)
+            #     is refused; it is not mapped to either new key;
+            #   * `window_anchor` and `generator_phase` are both required, with no
+            #     default; sieve_filter.execute_sieve_job then refuses a non-integer
+            #     value, a nonzero phase, or an anchor outside the window domain.
+            # The refusal is raised before any sieve work and comes back as
+            # success False with the code in `error`, like every worker failure.
+            # (sieve_filter.execute_sieve_job itself still accepts old-style jobs:
+            # the legacy coordinator.py and ZMQ engines send them. Owner, 2026-11-20.)
+            for _k in ("offset", "chunk_offset"):
+                if _k in job:
+                    raise ValueError(
+                        f"PWC_LEGACY_OFFSET_REFUSED: job {chunk_id} carries the retired "
+                        f"key {_k!r}; PWC workers take window_anchor + generator_phase "
+                        f"only (docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §4.1)")
+            _absent = [k for k in ("window_anchor", "generator_phase") if k not in job]
+            if _absent:
+                raise ValueError(
+                    f"PWC_WINDOW_ANCHOR_SCHEMA_REFUSED: job {chunk_id} lacks required "
+                    f"key(s) {_absent}; no default is substituted")
+            sieve_job["window_anchor"] = job["window_anchor"]
+            sieve_job["generator_phase"] = job["generator_phase"]
 
             self._emit_heartbeat("pre_kernel", job=job)
 

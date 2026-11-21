@@ -1,0 +1,5 @@
+S1 single-phase hybrid not told miner_abi: rc=1 caught by 1: ["G-NEW-2d new-key hybrid launches ask for the miner's argument li"]
+S2 trailing arg dropped for every caller: rc=1 caught by 1: ['G-HYB-3 default (legacy/ZMQ callers): arguments identical to BAS']
+S3 no-phase hybrid phase refusal removed: rc=1 caught by 1: ['G-HYB-5 new-key launch, no-phase hybrid, phase 1: refused before']
+S4 worker accepts offset: rc=1 caught by 3: ['G-OLD-2 worker refuses every old-style job (22 jobs: offset, chu', 'G-WRK-1b offset alongside the new keys: refused by the worker, n', 'G-WRK-1c one key alone: refused by the worker, nothing run']
+S5 worker missing-key check removed: rc=1 caught by 2: ['G-OLD-2 worker refuses every old-style job (22 jobs: offset, chu', 'G-WRK-1c one key alone: refused by the worker, nothing run']

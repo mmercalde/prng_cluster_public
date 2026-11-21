@@ -373,7 +373,24 @@ _STAGE2_CHANGED_JOB_KEYS = ("phase2_threshold", "job_id")
 
 
 def _jobs_without_stage2_keys(jobs):
-    return [{k: v for k, v in j.items() if k not in _STAGE2_CHANGED_JOB_KEYS} for j in jobs]
+    return [_stage2b_as_offset({k: v for k, v in j.items() if k not in _STAGE2_CHANGED_JOB_KEYS})
+            for j in jobs]
+
+
+def _stage2b_as_offset(j):
+    """[PWC-BACKUP STAGE 2b] A TCP job now carries `window_anchor` + `generator_phase`
+    (pinned 0) in place of `offset` (owner ruling 2026-11-20 08:30 PST). It maps back to
+    the old job exactly when the phase is 0: offset = window_anchor, at the same place in
+    the key order. Any other phase is left as is, so the comparison fails."""
+    if "window_anchor" not in j or "offset" in j or j.get("generator_phase") != 0:
+        return j
+    out = {}
+    for k, v in j.items():
+        if k == "window_anchor":
+            out["offset"] = v
+        elif k != "generator_phase":
+            out[k] = v
+    return out
 
 
 def d_s2_zero_byte_equal(M):

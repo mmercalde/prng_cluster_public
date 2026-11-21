@@ -354,6 +354,69 @@ def validate_pwc_window_offset(offset) -> int:
     return 0
 
 
+# ── [PWC-BACKUP STAGE 2b] window anchor / generator phase ───────────────────
+# Owner ruling 2026-11-20 08:30 PST: the trial's `offset` picks the draw window
+# only, the generator phase is 0, and PWC moves to RANGE-MINER's method. The
+# split now exists on the TCP worker and in sieve_filter.execute_sieve_job, so
+# on the TCP and local routes a job carries `window_anchor` (the trial's offset)
+# and `generator_phase` (pinned to 0) and NO `offset`, exactly as the miner's
+# coordinator builds its context (miner/range_miner_coordinator.py:2731-2732);
+# the worker checks the anchor against the post-session-filter domain and never
+# clamps (miner/range_miner_worker.py:913-925). The SSH route ends in
+# sieve_gpu_worker.py, a parity-pinned file that reads one `offset` for both
+# jobs, so it cannot carry the split: there Stage 2's refusal of offset != 0
+# stays (owner, 2026-11-20). The pin is restated, not imported from miner/,
+# so PWC does not import the miner package.
+PWC_GENERATOR_PHASE_V1_PIN = 0
+
+
+def validate_pwc_window_anchor(anchor, *, ssh_route: bool) -> int:
+    """The trial's window anchor (`config.offset`), checked before dispatch.
+    A non-integer or negative anchor is refused here; the upper bound needs the
+    dataset and is checked by the worker. On the SSH route anything but 0 is
+    refused (validate_pwc_window_offset)."""
+    if ssh_route:
+        return validate_pwc_window_offset(anchor)
+    if not _is_plain_int(anchor):
+        raise PwcWindowAnchorRefused(
+            f"window anchor must be an integer, got {anchor!r} ({type(anchor).__name__})")
+    if int(anchor) < 0:
+        raise PwcWindowAnchorRefused(f"window anchor {int(anchor)} < 0 refused")
+    return int(anchor)
+
+
+def pwc_new_key_job(job: Dict[str, Any], window_anchor: int) -> Dict[str, Any]:
+    """A copy of an assembled PWC job for the TCP and local routes: `offset` is
+    replaced, in its place in the key order, by `window_anchor` and
+    `generator_phase` (the v1 pin). Nothing else changes."""
+    out: Dict[str, Any] = {}
+    for k, v in job.items():
+        if k == "offset":
+            out["window_anchor"] = int(window_anchor)
+            out["generator_phase"] = PWC_GENERATOR_PHASE_V1_PIN
+        else:
+            out[k] = v
+    return out
+
+
+def pwc_anchor_echo_error(payload: Any, job: Dict[str, Any]) -> Optional[str]:
+    """None when the worker's result echoes exactly the window_anchor and
+    generator_phase the job carried; otherwise why not. A worker from before
+    Stage 2b drops both keys and sieves the window at 0 without saying so, and
+    echoes neither: this is where that run is caught instead of counted."""
+    if "window_anchor" not in job:
+        return None
+    if not isinstance(payload, dict):
+        return "worker result has no payload to check window_anchor/generator_phase against"
+    for k in ("window_anchor", "generator_phase"):
+        if k not in payload:
+            return (f"worker did not echo {k} (sent {job[k]!r}); a worker without the "
+                    f"window-anchor split would have sieved a different window")
+        if not _is_plain_int(payload[k]) or int(payload[k]) != int(job[k]):
+            return f"worker echoed {k}={payload[k]!r}, job sent {job[k]!r}"
+    return None
+
+
 # ── [S2] seed interval ──────────────────────────────────────────────────────
 # End bound (exclusive) of the seed space a PWC pass may partition. Source: the
 # owner-decided interval check for Step 1, `0 <= seed_start` and
@@ -1792,6 +1855,11 @@ class PersistentWorkerCoordinator:
                            for s in raw_surv]
             strat_ids   = [s.get("strategy_id", 0)    if isinstance(s, dict) else 0       for s in raw_surv]
 
+        # [PWC-BACKUP STAGE 2b] the worker must echo the anchor and phase it ran
+        _echo_err = pwc_anchor_echo_error(payload, job)
+        if _echo_err is not None:
+            return {"status": "error", "message": f"[PWC-BACKUP STAGE 2b] {_echo_err}"}
+
         return {
             "status":         "ok",
             "job_id":         job["job_id"],
@@ -1858,6 +1926,11 @@ class PersistentWorkerCoordinator:
                                 match_rates = inner.get("match_rates", [0.5]*len(survivors))
                                 skip_seqs   = inner.get("skip_sequences", [])
                                 strat_ids   = inner.get("strategy_ids",   [])
+                            # [PWC-BACKUP STAGE 2b] the anchor and phase it ran
+                            _echo_err = pwc_anchor_echo_error(inner, job)
+                            if _echo_err is not None:
+                                return {"status": "error",
+                                        "message": f"[PWC-BACKUP STAGE 2b] {_echo_err}"}
                             return {
                                 "status":         "ok",
                                 "job_id":         raw.get("job_id", "local"),
@@ -1949,7 +2022,10 @@ class PersistentWorkerCoordinator:
         _job_phase2 = float(threshold) if phase2_threshold is None else phase2_threshold
 
         # [PWC-STAGE2] window offset other than 0 refused (validate_pwc_window_offset)
-        validate_pwc_window_offset(offset)
+        # [PWC-BACKUP STAGE 2b] now only on the SSH route; the TCP and local routes
+        # carry it as window_anchor (validate_pwc_window_anchor).
+        _window_anchor = validate_pwc_window_anchor(
+            offset, ssh_route=self._tcp_transport is None)
 
         # [PWC-BACKUP S2] the interval, checked before anything is chunked
         _req_start, _req_end = validate_pwc_seed_interval(seed_start, total_seeds)
@@ -2080,7 +2156,7 @@ class PersistentWorkerCoordinator:
             def _run_once(wh):
                 # [TCP transport] dispatch bridge — additive, SSH path unchanged
                 if self._tcp_transport is not None:  # [S166] route ALL workers via TCP incl Zeus
-                    return self._dispatch_to_tcp(job)
+                    return self._dispatch_to_tcp(pwc_new_key_job(job, _window_anchor))  # [STAGE 2b]
                 if isinstance(wh, WorkerHandle):
                     job["gpu_id"] = wh.gpu_id
                     return self._dispatch_to_worker(wh, job)
@@ -2096,7 +2172,8 @@ class PersistentWorkerCoordinator:
                         f"CUDA_VISIBLE_DEVICES={local_gpu_id}"
                     )
                     try:
-                        return self._dispatch_local_sieve(job, wh)
+                        return self._dispatch_local_sieve(
+                            pwc_new_key_job(job, _window_anchor), wh)  # [PWC-BACKUP STAGE 2b]
                     finally:
                         self._localhost_gpu_slots.put(local_gpu_id)
 
@@ -2550,7 +2627,9 @@ def run_trial_persistent(coordinator_cfg: str,
     _skip_range = [config.skip_min, config.skip_max]
     _pass_results: Dict[str, Optional[Dict[str, Any]]] = {}
     # [PWC-STAGE2] window offset other than 0 refused before the fleet is built
-    validate_pwc_window_offset(config.offset)
+    # [PWC-BACKUP STAGE 2b] now only on the SSH route (validate_pwc_window_anchor);
+    # on TCP the anchor's upper bound is the worker's to check.
+    validate_pwc_window_anchor(config.offset, ssh_route=(pwc_transport != "tcp"))
     # [PWC-STAGE2 ruling 4] phases follow RANGE-MINER's workflow_stages_for: 1-2
     # always, 3-4 when test_both_modes (and the base is not itself a hybrid, the
     # same test _step1_required_phases uses). Never cut short by a survivor count.

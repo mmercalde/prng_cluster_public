@@ -8,6 +8,8 @@ What Stage 2 changes (docs/drafts/pwc_backup_stage2_v1/README.md has file:line):
   ruling 4  no early stop: phases 1-2 always, 3-4 whenever test_both_modes;
   default   all five hybrid strategies (S147 Q2 single strategy removed);
   owner     window offset != 0 refused (2026-11-20), until the anchor/phase split lands;
+            [PWC-BACKUP STAGE 2b] it has landed: TCP carries window_anchor + generator_phase 0
+            and the echo is checked; the refusal stays on the SSH route only (G-ANCHOR);
   Beta-2    a process check must prove it can see processes (positive control) and
             read pgrep's exit status exactly (rig kill, S156 find/reap, VM101 kill);
   Beta-3    revocation drops a connection the id already holds; an unconfirmed launch
@@ -125,9 +127,19 @@ def sieve_like_payload(job, *, echo="exact", ok=True):
                                    "strategies_tested": len(job["strategies"] or [])}
         elif echo is not None:
             per["single_phase"] = {"threshold": echo, "strategies_tested": 5}
-    return {"success": ok, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
-            "min_match_threshold": job["min_match_threshold"], "survivors": [],
-            "per_family": {fam: per}}
+    out = {"success": ok, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
+           "min_match_threshold": job["min_match_threshold"], "survivors": [],
+           "per_family": {fam: per}}
+    return _anchor_echo(out, job)
+
+
+def _anchor_echo(out, job):
+    """[PWC-BACKUP STAGE 2b] sieve_filter.execute_sieve_job records window_anchor and
+    generator_phase in its result for a new-key job (and PWC checks the echo)."""
+    for k in ("window_anchor", "generator_phase"):
+        if k in job:
+            out[k] = job[k]
+    return out
 
 
 class FakeTransport:
@@ -249,12 +261,14 @@ SF.load_draws_from_daily3 = lambda path, w, sessions, offset: list(range(w))
 class _Sieve:
     def __init__(self, gpu_id=0): pass
     def run_hybrid_sieve(self, prng_family, seed_start, seed_end, residues, strategies,
-                         min_match_threshold=0.25, chunk_size=100_000, offset=0):
+                         min_match_threshold=0.25, chunk_size=100_000, offset=0,
+                         miner_abi=False):
         return {"family": prng_family, "seed_range": {"start": seed_start, "end": seed_end},
                 "survivors": [], "strategies_tested": len(strategies),
                 "stats": {"seeds_tested": seed_end - seed_start, "survivors_found": 0,
                           "duration_ms": 1.0, "seeds_per_sec": 1.0},
-                "_threshold_seen": min_match_threshold, "_offset_seen": offset}
+                "_threshold_seen": min_match_threshold, "_offset_seen": offset,
+                "_miner_abi_seen": miner_abi}
     def run_sieve(self, **kw):
         raise AssertionError("constant sieve called for a hybrid job")
 SF.GPUSieve = _Sieve
@@ -273,6 +287,12 @@ def g_echo_real_sieve_filter():
     run_pass(p, "java_lcg_hybrid", thr=FWD, total=20_000)
     jobs = p._tcp_transport.jobs
     jpath, opath = os.path.join(OUT, "echo_jobs.json"), os.path.join(OUT, "echo_out.json")
+    # [PWC-BACKUP STAGE 2b] a new-key job's anchor is checked against the dataset's
+    # length before the (stubbed) loader runs, so the child needs a real file
+    dpath = os.path.join(OUT, "echo_dataset.json")
+    json.dump([{"draw": i, "session": "midday" if i % 2 else "evening"} for i in range(40)],
+              open(dpath, "w"))
+    jobs = [dict(j, dataset_path=dpath) for j in jobs]
     json.dump(jobs, open(jpath, "w"))
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="")
     r = subprocess.run([sys.executable, "-c", _ECHO_CHILD, ROOT, jpath, opath],
@@ -286,6 +306,10 @@ def g_echo_real_sieve_filter():
         seen = res["per_family"][fam]["_threshold_seen"]
         assert seen == job["phase2_threshold"] == FWD, (seen, job["phase2_threshold"])
         assert res["per_family"][fam]["_offset_seen"] == 0
+        # [PWC-BACKUP STAGE 2b] a PWC job is a new-key job: the miner's hybrid ABI
+        assert res["per_family"][fam]["_miner_abi_seen"] is True
+        assert res.get("window_anchor") == job["window_anchor"] == 0, res.get("window_anchor")
+        assert res.get("generator_phase") == job["generator_phase"] == 0
         echo = PWC._pwc_hybrid_echo(res, job)
         assert echo == round(FWD, 4), (echo, FWD)
     # and the whole record built from those real reports verifies
@@ -378,27 +402,70 @@ def d_strategies_all_five(M=PWC):
     return f"strategies=None sends all {len(want)}: {[s.get('name') for s in got]}"
 
 
-def d_offset(M=PWC):
-    e = raises(M.PwcWindowAnchorRefused, lambda: drive_trial(M, {}, offset=25))
-    assert "25" in str(e), e
-    # refused before the coordinator (the fleet) is built
+def _ssh_pass(M, offset):
+    """A run_sieve_pass on the SSH route (no TCP transport). Dispatch is stubbed so
+    that a pass which should have been refused finishes instead of blocking."""
+    import queue as _q
+    p = make_tcp_pwc(M, sieve_like_payload)
+    p._tcp_transport = None
+    _node = types.SimpleNamespace(hostname="localhost", gpu_type="stub", gpu_count=1)
+    p._get_available_workers = lambda *a, **k: [_node]
+    p._localhost_gpu_slots = _q.Queue()
+    p._localhost_gpu_slots.put(0)
+    p._dispatch_local_sieve = lambda job, wh: {"status": "error", "message": "stub"}
+    p._dispatch_to_worker = lambda wh, job: {"status": "error", "message": "stub"}
+    return run_pass(p, "java_lcg", offset=offset)
+
+
+def d_anchor(M=PWC):
+    """[PWC-BACKUP STAGE 2b, owner ruling 2026-11-20 08:30 PST] The trial's offset picks
+    the draw window only; the generator phase is 0; RANGE-MINER's method. On TCP the
+    anchor travels as `window_anchor` with `generator_phase` 0 and NO `offset`, and the
+    worker's echo of both is checked. The SSH route ends in sieve_gpu_worker.py (pinned),
+    so there offset != 0 is still refused (Stage 2's refusal)."""
+    # TCP: anchor 25 runs, every job carries the split, the pass is complete
+    p = make_tcp_pwc(M, sieve_like_payload)
+    res = run_pass(p, "java_lcg", offset=25)
+    jobs = p._tcp_transport.jobs
+    assert jobs and all(j.get("window_anchor") == 25 and j.get("generator_phase") == 0
+                        and "offset" not in j for j in jobs), jobs[:1]
+    assert res["pwc_pass_accounting"]["complete"], res["pwc_pass_accounting"]
+    # a worker without the split echoes nothing: no chunk counts
+    p = make_tcp_pwc(M, lambda j: {k: v for k, v in sieve_like_payload(j).items()
+                                   if k not in ("window_anchor", "generator_phase")})
+    acc = run_pass(p, "java_lcg", offset=25)["pwc_pass_accounting"]
+    assert not acc["complete"] and acc["completed"] == 0, acc
+    # a worker that echoes another anchor (or phase): no chunk counts
+    for bad in ({"window_anchor": 0}, {"generator_phase": 25}):
+        p = make_tcp_pwc(M, lambda j, b=bad: dict(sieve_like_payload(j), **b))
+        acc = run_pass(p, "java_lcg", offset=25)["pwc_pass_accounting"]
+        assert not acc["complete"] and acc["completed"] == 0, (bad, acc)
+    # non-integer or negative anchor: refused before anything is dispatched
+    for bad in (-1, "25", 2.0, True):
+        p = make_tcp_pwc(M, sieve_like_payload)
+        raises(M.PwcWindowAnchorRefused, lambda: run_pass(p, "java_lcg", offset=bad))
+        assert not p._tcp_transport.jobs, bad
+    # SSH trial with offset 25: refused before the fleet is built
     real = M.PersistentWorkerCoordinator
     built = []
     M.PersistentWorkerCoordinator = lambda **kw: built.append(kw)
     try:
-        raises(M.PwcWindowAnchorRefused, lambda: M.run_trial_persistent(
+        e = raises(M.PwcWindowAnchorRefused, lambda: M.run_trial_persistent(
             coordinator_cfg="unused.json", config=_Cfg(25), trial_number=1,
             prng_base="java_lcg", residues=[1], total_seeds=10, forward_threshold=FWD,
-            reverse_threshold=REV, test_both_modes=False, pwc_transport="tcp"))
+            reverse_threshold=REV, test_both_modes=False, pwc_transport="ssh"))
     finally:
         M.PersistentWorkerCoordinator = real
-    assert not built, "the fleet was built before the offset refusal"
-    p = make_tcp_pwc(M, sieve_like_payload)
-    raises(M.PwcWindowAnchorRefused, lambda: run_pass(p, "java_lcg", offset=3))
-    assert not p._tcp_transport.jobs
-    out, calls, _ = drive_trial(M, {}, offset=0)
-    assert len(calls) == 4
-    return "offset 25: refused before the fleet is built; run_sieve_pass offset 3 refused; offset 0 runs"
+    assert not built and "25" in str(e), (built, e)
+    # SSH pass with offset 3: refused; SSH pass with offset 0: not refused
+    raises(M.PwcWindowAnchorRefused, lambda: _ssh_pass(M, 3))
+    _ssh_pass(M, 0)
+    # TCP trial with offset 25 runs all four passes, each given offset 25
+    out, calls, _ = drive_trial(M, {}, offset=25)
+    assert len(calls) == 4 and all(kw["offset"] == 25 for _, kw in calls), calls
+    return ("TCP anchor 25: jobs carry window_anchor 25 / generator_phase 0 / no offset, "
+            "echo checked (none, wrong anchor, wrong phase: no chunk counts); -1/'25'/2.0/True "
+            "refused before dispatch; SSH: 25 refused before the fleet, pass 3 refused, 0 runs")
 
 
 def d_ssh_variable(M=PWC):
@@ -920,10 +987,10 @@ def d_late_result_across_phases(M=PWC, T=TCP):
     tr.submit_job = submit
 
     def payload(job, seed):
-        return {"success": True, "payload": {
+        return {"success": True, "payload": _anchor_echo({
             "success": True, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
             "min_match_threshold": job["min_match_threshold"],
-            "survivors": [{"seed": seed, "match_rate": 0.9}]}}
+            "survivors": [{"seed": seed, "match_rate": 0.9}]}, job)}
 
     # [PWC-STAGE2 R3, Beta X-PWC-STAGE2 R2 finding 1] Deterministic assignment: A
     # takes the FIRST job of the run (a P1 chunk) before B asks for anything; after
@@ -1187,7 +1254,7 @@ GATES = [
     ("G-PHASES", d_phases),
     ("G-TRIAL-THRESHOLDS-STRATEGIES", d_trial_thresholds_and_strategies),
     ("G-STRATEGIES-ALL-FIVE", d_strategies_all_five),
-    ("G-OFFSET", d_offset),
+    ("G-ANCHOR", d_anchor),
     ("G-SSH-VARIABLE", d_ssh_variable),
     ("G-PROBE-KILL", d_probe_kill),
     ("G-PROBE-S156", d_probe_s156),
@@ -1242,10 +1309,23 @@ MUTANTS = [
     ("M-ST-1 one strategy only", "pwc", [
         ("                raw = get_all_strategies()\n", "                raw = get_all_strategies()[:1]\n")],
      d_strategies_all_five),
-    ("M-OF-1 trial offset check removed", "pwc", [
-        ("    validate_pwc_window_offset(config.offset)\n", "")], d_offset),
-    ("M-OF-2 pass offset check removed", "pwc", [
-        ("        validate_pwc_window_offset(offset)\n", "")], d_offset),
+    ("M-OF-1 trial anchor check removed", "pwc", [
+        ("    validate_pwc_window_anchor(config.offset, ssh_route=(pwc_transport != \"tcp\"))\n",
+         "")], d_anchor),
+    ("M-OF-2 pass anchor check treats SSH as TCP", "pwc", [
+        ("            offset, ssh_route=self._tcp_transport is None)\n",
+         "            offset, ssh_route=False)\n")], d_anchor),
+    ("M-AN-1 TCP job keeps the old offset (no split)", "pwc", [
+        ("                    return self._dispatch_to_tcp(pwc_new_key_job(job, _window_anchor))  # [STAGE 2b]\n",
+         "                    return self._dispatch_to_tcp(job)\n")], d_anchor),
+    ("M-AN-2 worker echo not checked", "pwc", [
+        ("    if \"window_anchor\" not in job:\n        return None\n    if not isinstance(payload, dict):\n",
+         "    return None\n    if not isinstance(payload, dict):\n")], d_anchor),
+    ("M-AN-3 generator phase follows the anchor", "pwc", [
+        ("            out[\"generator_phase\"] = PWC_GENERATOR_PHASE_V1_PIN\n",
+         "            out[\"generator_phase\"] = int(window_anchor)\n")], d_anchor),
+    ("M-AN-4 negative anchor accepted", "pwc", [
+        ("    if int(anchor) < 0:\n", "    if False:\n")], d_anchor),
     ("M-SSH-1 both-mode SSH not refused up front", "pwc", [
         ("    if (_run_variable or prng_base.endswith(\"_hybrid\")) and pwc_transport != \"tcp\":\n",
          "    if False:\n")], d_ssh_variable),
