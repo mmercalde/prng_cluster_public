@@ -255,6 +255,67 @@ def pwc_s156_reap_command() -> str:
             % (p, p, PWC_PROBE_CONTROL_TOKEN, p))
 
 
+# [PWC-STAGE4 SHUTDOWN, Beta X-PWC-SHUTDOWN R1 Q3] BOUND TO THIS COORDINATOR. Every rig worker
+# this coordinator launches carries `--launch-token <hex>` on its command line (forensic argv,
+# like the --worker-id beside it; the worker reads only its environment,
+# persistent/pwc_worker_service.py `__main__`). The token is fresh per coordinator instance
+# (uuid4, never reused), so the shutdown reap matches ONLY this coordinator's launches: a
+# second coordinator's workers, an earlier run's leftovers and a reused PID cannot match.
+# The STARTUP stale kill stays host-wide on purpose (it clears a crashed predecessor).
+PWC_LAUNCH_TOKEN_FLAG = "--launch-token"
+_PWC_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
+
+
+def pwc_token_pattern(token: str) -> str:
+    """The bracketed (no self-match) pgrep/pkill pattern for one coordinator's workers."""
+    if not isinstance(token, str) or not _PWC_TOKEN_RE.match(token):
+        raise ValueError(f"launch token {token!r} is not 32 lowercase hex characters")
+    return f"[p]wc_worker_service.*{PWC_LAUNCH_TOKEN_FLAG} {token}"
+
+
+# [PWC-STAGE4 SHUTDOWN] The shutdown reap on the TCP route. The S156 lifecycle fix
+# (TB-approved, docs/PROPOSAL_PWC_LIFECYCLE_FIX_S156_v2_0.md:271-293, "shutdown must not
+# rely solely on stdin pipe close") asked for an explicit remote reap AFTER shutdown;
+# the code ran the S156 reap at startup only. On TCP, stop() sends `shutdown` to every
+# connected worker; a worker that was busy, or whose socket closed first, may never read
+# it. So after the transport stops, each rig that got workers is checked over SSH:
+# wait up to PWC_SHUTDOWN_GRACE_S for every `[p]wc_worker_service` to exit by itself,
+# then SIGKILL any left and verify none remain (the probe-checked stale-kill tail).
+# Only PWC workers: never sieve_gpu_worker, never anything of RANGE-MINER's.
+PWC_SHUTDOWN_GRACE_S = 15
+PWC_SHUTDOWN_PATTERNS = ("[p]wc_worker_service",)
+PWC_SHUTDOWN_WAIT_TAG = "PWC_SHUTDOWN_WAIT"
+
+
+def pwc_shutdown_reap_command(grace_s: int = PWC_SHUTDOWN_GRACE_S,
+                              patterns=PWC_SHUTDOWN_PATTERNS, token: Optional[str] = None) -> str:
+    """Remote shell: first line `PWC_SHUTDOWN_WAIT:<seconds waited>:<pgrep status>`
+    (status 1 = all had exited by themselves; 0 = some still alive at the deadline);
+    then the stale-kill tail, which prints PWC_STALE_KILL_OK only when a working probe
+    finds none left, exits 6 when one survives and 7 when it cannot observe.
+    With `token`, the patterns are replaced by this coordinator's token pattern only."""
+    if token is not None:
+        patterns = (pwc_token_pattern(token),)
+    pat = "|".join(patterns)
+    return ("n=0; r=0; while [ $n -lt %d ]; do pgrep -f '%s' >/dev/null 2>&1; r=$?; "
+            "[ $r -eq 0 ] || break; n=$((n+1)); sleep 1; done; echo %s:$n:$r; "
+            % (int(grace_s), pat, PWC_SHUTDOWN_WAIT_TAG)) + pwc_stale_kill_command(patterns)
+
+
+def classify_shutdown_reap(returncode: int, stdout: str) -> str:
+    """exited | killed | survivor | unavailable | error, from one reap's result."""
+    lines = (stdout or "").strip().splitlines()
+    wait = [ln for ln in lines if ln.startswith(PWC_SHUTDOWN_WAIT_TAG + ":")]
+    if returncode == PWC_KILL_EXIT_SURVIVOR:
+        return "survivor"
+    if returncode == PWC_KILL_EXIT_UNAVAILABLE:
+        return "unavailable"
+    if returncode != 0 or lines[-1:] != [PWC_STALE_KILL_OK] or not wait:
+        return "error"
+    status = wait[0].split(":")[-1]
+    return "exited" if status == "1" else "killed" if status == "0" else "unavailable"
+
+
 WORKER_SCRIPT = "sieve_gpu_worker.py"
 WORKER_HEARTBEAT_TIMEOUT_S = 120  # [S161] 120s allows ROCm sequential init on 8-GPU rigs (90s was edge case)
 JOB_TIMEOUT_S = 600               # seconds max per sieve job
@@ -878,6 +939,12 @@ class PersistentWorkerCoordinator:
         # [PWC-BACKUP S5] effective workers launched per remote rig, filled in by
         # startup(); the dispatch-site envelope check reads it
         self._effective_pool_by_host: Dict[str, int] = {}
+        # [PWC-STAGE4 SHUTDOWN] what shutdown() must reap on the TCP route
+        self._tcp_reap_targets: Dict[str, List[str]] = {}   # host -> ssh argv prefix
+        import uuid as _uuid_tok
+        self._launch_token: str = _uuid_tok.uuid4().hex       # [Beta X-PWC-SHUTDOWN R1 Q3]
+        self._tcp_local_procs: List[Any] = []                # VM101 local Popen objects
+        self.shutdown_reap: Dict[str, str] = {}              # host -> classify_shutdown_reap
         self.min_workers     = min_workers  # S161: readiness gate
         self._tcp_transport  = None  # lazily started if pwc_transport == "tcp"
         self._tcp_launch_complete_time: float = 0.0  # set by _tcp_launch_workers()
@@ -1352,6 +1419,8 @@ class PersistentWorkerCoordinator:
         import time as _t
 
         total_launched = 0
+        self.logger.info(f"[PWC-TCP] launch token {self._launch_token} (the shutdown reap "
+                         f"matches only workers carrying it)")
 
         # [S165-ZEUS-TCP] Kill stale Zeus local pwc workers before launching fresh ones
         # [PWC-STAGE2 BETA-2] The result is READ now (Beta X-PWC-STAGE1 R1 Q3: the
@@ -1446,6 +1515,9 @@ class PersistentWorkerCoordinator:
             # and the `--host/--port` arguments below were never read.
             _dial = shlex.quote(self.pwc_coordinator_address)
             _launched_here = 0
+            # [Beta X-PWC-SHUTDOWN R1 Q3] recorded at the launch ATTEMPT, not on a confirmed
+            # PID: if every acknowledgment from this rig is lost, a launch may still have run.
+            self._tcp_reap_targets[host] = list(ssh_base)
 
             for gpu_id in range(pool):
                 rocm_env = " ".join(ROCM_ENV_VARS + [
@@ -1479,6 +1551,7 @@ class PersistentWorkerCoordinator:
                         "nohup " + node.python_env + " -m persistent.pwc_worker_service "
                         "--host " + _dial + " --port " + str(int(self.pwc_port)) + " "
                         "--gpu-id " + str(gpu_id) + " --worker-id " + worker_id + " "
+                        + PWC_LAUNCH_TOKEN_FLAG + " " + self._launch_token + " "   # [X-PWC-SHUTDOWN Q3]
                         ">> " + log_file + " 2>&1 &"
                     ),
                     "echo PID=$!",
@@ -1572,6 +1645,7 @@ class PersistentWorkerCoordinator:
                             stdout=_lf, stderr=_lf,
                             start_new_session=True,
                         )
+                    self._tcp_local_procs.append(_zeus_proc)    # [PWC-STAGE4 SHUTDOWN]
                     self.logger.info(
                         f"[PWC-TCP] Zeus GPU{_zeus_gpu} local worker launched "
                         f"— PID={_zeus_proc.pid} log={_zeus_log}"
@@ -1717,8 +1791,61 @@ class PersistentWorkerCoordinator:
             except Exception as _e:
                 self.logger.warning(f"[PWC-TCP] transport stop error: {_e}")
             self._tcp_transport = None
+            _reap = self._tcp_reap_after_shutdown()      # [PWC-STAGE4 SHUTDOWN]
+            _bad = {h: st for h, st in _reap.items() if st not in ("exited", "killed")}
+            if _bad:
+                # [Beta X-PWC-SHUTDOWN R1 Q7] never an unconditional all-clear after an error
+                self.logger.error(f"[PWC-TCP] shutdown INCOMPLETE: workers not confirmed gone "
+                                  f"on {_bad}")
+                return
 
         self.logger.info("All workers shut down")
+
+    def _tcp_reap_after_shutdown(self) -> Dict[str, str]:
+        """[PWC-STAGE4 SHUTDOWN] After a PLANNED transport stop: every worker this
+        coordinator launched must be gone. Local VM101 workers are waited for (their
+        Popen objects), then killed if still alive at PWC_SHUTDOWN_GRACE_S; each rig
+        that got workers runs pwc_shutdown_reap_command over SSH, in parallel. Results
+        go to `self.shutdown_reap` and the log (ERROR unless exited/killed). Never
+        raises: shutdown() runs in run_trial_persistent's `finally`, and a reap failure
+        must not hide the trial's own outcome."""
+        import subprocess as _sp
+        results: Dict[str, str] = {}
+        for proc in list(self._tcp_local_procs):
+            key = f"localhost:pid{getattr(proc, 'pid', '?')}"
+            try:
+                proc.wait(timeout=PWC_SHUTDOWN_GRACE_S)
+                results[key] = "exited"
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                    results[key] = "killed"
+                except Exception as _e:
+                    results[key] = "error"
+                    self.logger.error(f"[PWC-TCP] shutdown reap {key}: {_e}")
+        self._tcp_local_procs = []
+
+        def _reap(host, ssh_base):
+            try:
+                r = _sp.run(ssh_base + [pwc_shutdown_reap_command(token=self._launch_token)],
+                            capture_output=True,
+                            text=True, timeout=PWC_SHUTDOWN_GRACE_S + 30)
+                return host, classify_shutdown_reap(r.returncode, r.stdout), r
+            except Exception as _e:
+                return host, "error", _e
+
+        targets = dict(self._tcp_reap_targets)
+        if targets:
+            with ThreadPoolExecutor(max_workers=len(targets)) as ex:
+                for host, status, detail in ex.map(lambda kv: _reap(*kv), targets.items()):
+                    results[host] = status
+                    msg = (f"[PWC-TCP] shutdown reap {host}: {status}"
+                           + ("" if status in ("exited", "killed") else f" ({detail!r:.300})"))
+                    (self.logger.info if status in ("exited", "killed") else self.logger.error)(msg)
+        self._tcp_reap_targets = {}
+        self.shutdown_reap = results
+        return results
 
     # ─────────────────────────────────────────────────────────────────────────
     # Job dispatch

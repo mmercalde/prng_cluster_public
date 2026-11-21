@@ -18,6 +18,9 @@ Gates
   G-READONLY    the run tree is byte-identical after extraction; no -wal/-shm sidecar
   G-SUMMARY     a phase over 100K survivors (summary file only) -> that phase null; vs a
                 full bundle or another summary bundle: exit 3, that phase NOT COMPARED
+  O-*           [Stage 4 run, 2026-11-21] the pass files' _t<N> is the record ordinal, not the
+                Optuna trial: discovered and bound by evidence (link 1/0/0/0, NPZ trial_number,
+                optional run log); ambiguous, split, mismatched or asserted-wrong ordinals refused
   R1-R13        refusals: parent generation, NPZ hash, missing pass, not TCP, interval,
                 incomplete pass, float64 rate, NPZ != union of sets, not a PWC run, live
                 path, stale pass file, non-empty out dir, no ledger
@@ -58,6 +61,9 @@ from persistent_worker_coordinator import (                                 # no
 S = 2147483648                  # 2^31, Stage 4's interval start
 N = 1000
 WS, OFF = 12, 25
+# A fresh run's first trial: Optuna trial 0, record ordinal 1 (window_optimizer_integration_final
+# .py:3273, :3296, :3316). PWC names its pass files _t1 and the NPZ rows carry trial_number 1.
+ORD = 1
 F32 = lambda x: float(np.float32(x))                                        # noqa: E731
 
 # seed offsets -> match rate, per phase (constant: 1 fwd, 2 rev; variable: 3 fwd, 4 rev)
@@ -83,7 +89,7 @@ def cand(seed, mode, fwd, rev):
     sc = F32((fwd + rev) / 2)
     return {"seed": seed, "forward_match_rate": fwd, "reverse_match_rate": rev, "score": sc,
             "window_size": WS, "offset": OFF, "skip_min": 0, "skip_max": 16, "skip_range": 16,
-            "sessions": ["evening"], "trial_number": 0, "prng_base": "java_lcg",
+            "sessions": ["evening"], "trial_number": ORD, "prng_base": "java_lcg",
             "skip_mode": mode, "prng_type": "java_lcg" if mode == "constant" else "java_lcg_hybrid",
             "forward_count": 4.0, "reverse_count": 3.0, "bidirectional_count": 2.0,
             "intersection_count": 2.0, "intersection_ratio": 0.4, "forward_only_count": 2.0,
@@ -140,7 +146,7 @@ def candidates(phase_data):
 
 
 def make_tree(tag, phase_data=None, pass_over=None, summary=(), cand_data=None,
-              ledger=True, params=None, twice=False):
+              ledger=True, params=None, twice=False, ordinals=None, cand_ord=None, link_trials=(1, 0, 0, 0)):
     """A finished PWC run tree: results/ pass files, then the published generation, then
     the ledger rows (the order the run writes them)."""
     phase_data = copy.deepcopy(phase_data or PHASE_DATA)
@@ -149,13 +155,18 @@ def make_tree(tag, phase_data=None, pass_over=None, summary=(), cand_data=None,
     os.makedirs(os.path.join(r, "results"))
     for ph, data in phase_data.items():
         doc = pass_doc(ph, data, summary=ph in summary, **pass_over.get(ph, {}))
-        with open(X.pass_file(os.path.join(r, "results"), ph, WS, OFF, 0), "w") as f:
-            json.dump(doc, f)
+        for o in (ordinals or {}).get(ph, [ORD]):
+            with open(X.pass_file(os.path.join(r, "results"), ph, WS, OFF, o), "w") as f:
+                json.dump(doc, f)
     time.sleep(0.02)
     kw = dict(output_root=Path(r), run_id=f"step1_java_lcg_{S}", prng_base="java_lcg",
               skip_modes_executed=("constant", "variable"), seed_start=S, seed_count=N,
               repository_commit="6d75f71" + "0" * 33, repository_tree_clean=True)
-    art = finalize_run(candidates(cand_data or phase_data), **kw)
+    cands = candidates(cand_data or phase_data)
+    if cand_ord is not None:
+        for c in cands:
+            c["trial_number"] = cand_ord
+    art = finalize_run(cands, **kw)
     if twice:
         time.sleep(0.02)
         art = finalize_run(candidates(cand_data or phase_data), **dict(kw, run_id="again"))
@@ -169,7 +180,7 @@ def make_tree(tag, phase_data=None, pass_over=None, summary=(), cand_data=None,
                      art.generation_id, CERTIFIED, "2026-11-21T00:00:00Z"))
         con.execute(f"INSERT INTO {T_LINK} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("link" + tag, "cov" + tag, "s1s-" + tag, "chunk", "java_lcg",
-                     "constant,variable", S, S + N, art.generation_id, 1, 0, 0, 0,
+                     "constant,variable", S, S + N, art.generation_id, *link_trials,
                      "2026-11-21T00:00:01Z"))
         con.commit()
         con.close()
@@ -288,7 +299,7 @@ def r2_hash():
 def r7_float64():
     def build():
         r, p, a = make_tree("r7")
-        f = X.pass_file(os.path.join(r, "results"), "1", WS, OFF, 0)
+        f = X.pass_file(os.path.join(r, "results"), "1", WS, OFF, ORD)
         d = json.load(open(f))
         d["match_rates"][0] = 0.71                         # a float64, not a float32
         st = os.stat(f)
@@ -301,7 +312,7 @@ def r7_float64():
 def r11_stale():
     def build():
         r, p, a = make_tree("r11")
-        f = X.pass_file(os.path.join(r, "results"), "2", WS, OFF, 0)
+        f = X.pass_file(os.path.join(r, "results"), "2", WS, OFF, ORD)
         t = time.time() + 60
         os.utime(f, (t, t))
         return r, p, a
@@ -467,6 +478,166 @@ def g_membership_one_mode():
         "m1mode", phase_data=bad, cand_data=PHASE_DATA, summary=("4",)))
 
 
+def g_ordinal_is_t1():
+    """The real Stage 4 case: files at _t1, credit says trial 0. Extracted, ordinal recorded."""
+    r, p, _ = make_tree("ord1")
+    assert os.path.exists(X.pass_file(os.path.join(r, "results"), "1", WS, OFF, 1))
+    assert not os.path.exists(X.pass_file(os.path.join(r, "results"), "1", WS, OFF, 0))
+    _, b = extract("ord1", r, p)
+    assert b["provenance"]["record_ordinal"] == 1, b["provenance"]["record_ordinal"]
+    assert any("exactly one complete trial" in x for x in b["provenance"]["record_ordinal_binding"])
+    return "files at _t1 (no _t0): extracted, record ordinal 1 bound by link and NPZ"
+
+
+def g_ordinal_not_guessed():
+    """Any single shared ordinal is discovered, e.g. a resumed run's _t5."""
+    r, p, _ = make_tree("ord5", ordinals={ph: [5] for ph in ("1", "2", "3", "4")}, cand_ord=5)
+    _, b = extract("ord5", r, p)
+    assert b["provenance"]["record_ordinal"] == 5
+    return "files at _t5, NPZ rows trial_number 5: discovered 5, nothing assumed"
+
+
+def g_run_log():
+    r, p, _ = make_tree("rlog")
+    log = os.path.join(OUT, "rlog", "pwc_run.log")
+    with open(log, "w") as f:
+        for stem in ("forward", "reverse", "forward_hybrid", "reverse_hybrid"):
+            f.write(f"2026-11-21 13:47:19,855 - PersistentWorkerCoordinator - INFO - Results saved: "
+                    f"results/window_opt_{stem}_{WS}_{OFF}_t1.json (0 survivors)\n")
+    _, b = X.extract(r, p, os.path.join(OUT, "rlog", "bundle"), live_paths=(), run_log=log)
+    assert any("run log records" in x for x in b["provenance"]["record_ordinal_binding"])
+    log2 = os.path.join(OUT, "rlog", "pwc_run_short.log")
+    open(log2, "w").write(open(log).read().replace("forward_hybrid", "XX"))
+    try:
+        X.extract(r, p, os.path.join(OUT, "rlog", "bundle2"), live_paths=(), run_log=log2)
+    except X.ExtractRefused as exc:
+        assert "does not record saving" in str(exc), exc
+        return "run log naming all four files: accepted; one missing: refused"
+    raise AssertionError("a run log missing a pass file was accepted")
+
+
+def g_symlink_live_sidecar():
+    """[Beta X-PWC-STAGE4 R2 Q5] provenance.json is a symlink to a file under a (stand-in)
+    live root: refused BEFORE the file is opened. The target is deliberately not JSON, so a
+    read before the guard would fail with 'cannot read provenance' instead."""
+    r, p, art = make_tree("symlive")
+    live = os.path.join(OUT, "symlive", "live_root")
+    os.makedirs(live)
+    target = os.path.join(live, "provenance.json")
+    open(target, "w").write("{not json - must never be read")
+    g = os.path.join(OUT, "symlive", "gen_copy")
+    shutil.copytree(art.generation_dir, g)
+    os.remove(os.path.join(g, "provenance.json"))
+    os.symlink(target, os.path.join(g, "provenance.json"))
+    try:
+        X.extract(r, p, os.path.join(OUT, "symlive", "bundle"), generation_dir=g,
+                  live_paths=(live,))
+    except X.ExtractRefused as exc:
+        assert "live path" in str(exc) and "provenance" in str(exc), exc
+        return "symlinked sidecar into a live root: refused before any read"
+    raise AssertionError("followed a symlink into a live root")
+
+
+ZERO = {"1": [(1, 0.75)], "2": [(2, 0.75)], "3": [(3, 0.75)], "4": [(4, 0.75)]}   # no intersection
+
+
+def write_log(path, names, prefix="results/"):
+    with open(path, "w") as f:
+        for n in names:
+            f.write(f"2026-11-21 13:47:19,855 - PersistentWorkerCoordinator - INFO - Results saved: "
+                    f"{prefix}{n} (1 survivors)\n")
+    return path
+
+
+def names(o=1):
+    return [f"window_opt_{st}_{WS}_{OFF}_t{o}.json"
+            for st in ("forward", "reverse", "forward_hybrid", "reverse_hybrid")]
+
+
+def g_zero_rows_needs_log():
+    r, p, _ = make_tree("zero1", phase_data=ZERO)
+    try:
+        X.extract(r, p, os.path.join(OUT, "zero1", "bundle"), live_paths=())
+    except X.ExtractRefused as exc:
+        assert "--run-log" in str(exc) and "zero-row" in str(exc), exc
+    else:
+        raise AssertionError("a zero-row bundle was extracted without the run log")
+    log = write_log(os.path.join(OUT, "zero1", "run.log"), names())
+    _, b = X.extract(r, p, os.path.join(OUT, "zero1", "bundle2"), live_paths=(), run_log=log)
+    bind = b["provenance"]["record_ordinal_binding"]
+    assert any("UNAVAILABLE (no rows)" in x for x in bind) and b["provenance"]["run_log"]["sha256"]
+    return "zero rows: refused without --run-log; with it, bound by the log (NPZ check reported UNAVAILABLE)"
+
+
+def g_beta_t5_case():
+    """Beta's reproduction: empty NPZ, all four files renamed _t1 -> _t5 and a phase-3
+    survivor added; the stopped run's ORIGINAL log (naming _t1) must reject it."""
+    r, p, _ = make_tree("t5", phase_data=ZERO)
+    log = write_log(os.path.join(OUT, "t5", "run.log"), names(1))
+    res = os.path.join(r, "results")
+    for ph in ("1", "2", "3", "4"):
+        a, b_ = X.pass_file(res, ph, WS, OFF, 1), X.pass_file(res, ph, WS, OFF, 5)
+        st = os.stat(a)
+        d = json.load(open(a))
+        if ph == "3":
+            d["survivors"].append(S + 9); d["match_rates"].append(F32(0.75)); d["survivor_count"] += 1
+        json.dump(d, open(b_, "w")); os.remove(a); os.utime(b_, (st.st_atime, st.st_mtime))
+    try:
+        X.extract(r, p, os.path.join(OUT, "t5", "bundle"), live_paths=(), run_log=log)
+    except X.ExtractRefused as exc:
+        assert "does not record saving" in str(exc), exc
+        return "renamed _t5 set + added survivor, empty NPZ: rejected by the run's own log"
+    raise AssertionError("a foreign pass set was accepted")
+
+
+def g_log_substring():
+    r, p, _ = make_tree("subs")
+    log = write_log(os.path.join(OUT, "subs", "run.log"),
+                    [f"other-{n}.bak" for n in names()])
+    try:
+        X.extract(r, p, os.path.join(OUT, "subs", "bundle"), live_paths=(), run_log=log)
+    except X.ExtractRefused as exc:
+        assert "exact path match" in str(exc), exc
+        return "log naming results/other-<name>.bak: refused (exact path, not substring)"
+    raise AssertionError("a substring match was accepted")
+
+
+def g_run_log_symlink_live():
+    r, p, _ = make_tree("logsym")
+    live = os.path.join(OUT, "logsym", "live_root"); os.makedirs(live)
+    target = write_log(os.path.join(live, "pwc_run.log"), names())
+    link = os.path.join(OUT, "logsym", "run.log")
+    os.symlink(target, link)
+    try:
+        X.extract(r, p, os.path.join(OUT, "logsym", "bundle"), live_paths=(live,), run_log=link)
+    except X.ExtractRefused as exc:
+        assert "--run-log" in str(exc) and "live path" in str(exc), exc
+        return "--run-log symlinked into a live root: refused before it is opened"
+    raise AssertionError("followed a --run-log symlink into a live root")
+
+
+GATES_ORDINAL = [
+    ("Q5-ZERO-ROWS-REQUIRE-RUN-LOG", g_zero_rows_needs_log),
+    ("Q5-BETA-T5-CASE", g_beta_t5_case),
+    ("Q5-LOG-EXACT-PATH (no substring)", g_log_substring),
+    ("F2-RUN-LOG-SYMLINK-LIVE", g_run_log_symlink_live),
+    ("B2-SYMLINK-LIVE-SIDECAR (Beta R2-Q5)", g_symlink_live_sidecar),
+    ("O-ORDINAL-T1 (the Stage 4 run's case)", g_ordinal_is_t1),
+    ("O-ORDINAL-DISCOVERED-NOT-GUESSED (_t5)", g_ordinal_not_guessed),
+    ("O-ORDINAL-AMBIGUOUS (_t1 and _t2 sets)", lambda: refusal(
+        "oamb", "not one shared value", lambda: make_tree(
+            "oamb", ordinals={ph: [1, 2] for ph in ("1", "2", "3", "4")}))),
+    ("O-ORDINAL-SPLIT (phase 3 at _t2)", lambda: refusal(
+        "osplit", "not one shared value", lambda: make_tree("osplit", ordinals={"3": [2]}))),
+    ("O-ORDINAL-ASSERTED-MISMATCH", lambda: refusal("oassert", "asserted", None, record_ordinal=0)),
+    ("O-NPZ-ORDINAL-MISMATCH (rows trial 0, files _t1)", lambda: refusal(
+        "onpz", "not the same trial", lambda: make_tree("onpz", cand_ord=0))),
+    ("O-LINK-TWO-TRIALS", lambda: refusal(
+        "olink", "not exactly one complete trial", lambda: make_tree("olink", link_trials=(2, 0, 0, 0)))),
+    ("O-RUN-LOG", g_run_log),
+]
+
+
 GATES_BETA = [
     ("B-WAL-ONLY-CREDIT", g_wal_only_credit),
     ("B-JOURNAL-UNAVAILABLE", g_journal_unavailable),
@@ -511,8 +682,8 @@ GATES = [
     ("R1 generation with a parent", lambda: refusal(
         "r1", "has a parent", lambda: make_tree("r1", twice=True))),
     ("R2 NPZ hash mismatch", r2_hash),
-    ("R3 pass file missing", lambda: refusal("r3", "missing", lambda: (
-        lambda t: (os.remove(X.pass_file(os.path.join(t[0], "results"), "3", WS, OFF, 0)), t)[1])(
+    ("R3 pass file missing", lambda: refusal("r3", "no pass file", lambda: (
+        lambda t: (os.remove(X.pass_file(os.path.join(t[0], "results"), "3", WS, OFF, ORD)), t)[1])(
         make_tree("r3")))),
     ("R4 pass not on TCP", lambda: refusal(
         "r4", "not tcp", lambda: make_tree("r4", pass_over={"2": {"transport": "ssh"}}))),
@@ -531,6 +702,7 @@ GATES = [
     ("R12 non-empty out dir", r12_out_nonempty),
     ("R13 no ledger", lambda: refusal("r13", "no run ledger", lambda: make_tree("r13", ledger=False))),
     *GATES_BETA,
+    *GATES_ORDINAL,
     ("G-SUBPROCESS", g_subprocess),
 ]
 

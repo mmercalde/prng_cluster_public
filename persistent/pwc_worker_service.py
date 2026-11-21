@@ -163,6 +163,13 @@ class PWCWorkerService:
         self._hb_json_path:  Optional[str] = None
         self._hb_jsonl_path: Optional[str] = None
 
+        # [PWC-STAGE4 SHUTDOWN] set when the coordinator sends `shutdown` on purpose
+        # (PwcTcpTransport.stop, persistent/pwc_transport_tcp.py:241-261). A planned
+        # shutdown ends the PROCESS, as the S96B lifecycle specifies ("worker exits
+        # cleanly", docs/PROPOSAL_S96B_PERSISTENT_GPU_WORKERS_v1_0.md:64-70); before this,
+        # it ended only the session and run_forever reconnected for ~5 minutes.
+        self._shutdown_requested: Optional[str] = None
+
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
@@ -172,9 +179,18 @@ class PWCWorkerService:
 
         _had_session  = False
         _refused_count = 0
-        _MAX_REFUSED  = 60  # [S163-KARG] increased from 5 — allows ~2min for rig reboot+reconnect
+        # [S163-KARG] increased from 5: 60 refusals x RECONNECT_DELAY_S (5 s) = ~5 min for a
+        # rig reboot / coordinator restart (docs/SESSION_CHANGELOG_20260419_S163KARG_P2.md
+        # :71-76). The old comment said ~2min; 60 x 5 s is 300 s.
+        _MAX_REFUSED  = 60
 
         while True:
+            if self._shutdown_requested:
+                log.info(f"[{self.worker_id}] planned shutdown "
+                         f"({self._shutdown_requested}) — exiting, no reconnect")
+                self._emit_heartbeat("shutdown")
+                self._close()
+                break
             try:
                 self._connect()
                 log.info(f"[{self.worker_id}] connected to {self.host}:{self.port}")
@@ -188,14 +204,21 @@ class PWCWorkerService:
                 self._import_sieve()
                 self._validate_compute_device()  # [S170-LIVE-GPU-PROBE] fail before READY if isolated GPU invalid
                 self._send_ready()
+                # [PWC-STAGE4 SHUTDOWN] A session exists once READY was sent. Before,
+                # this was set only when _main_loop RETURNED, so a session that ended
+                # by a dropped connection left it False: the refusal count never ran
+                # and the worker retried every 5 s forever, against the recorded 5-min
+                # window (S163-KARG Fix 8).
+                _had_session = True
 
                 self._main_loop()
-                _had_session = True
             except KeyboardInterrupt:
                 log.info(f"[{self.worker_id}] interrupted")
                 self._emit_heartbeat("shutdown")
                 break
             except (ConnectionError, OSError) as exc:
+                if self._shutdown_requested:
+                    continue                     # the top of the loop exits
                 err_str = str(exc)
                 if _had_session and "Connection refused" in err_str:
                     _refused_count += 1
@@ -247,6 +270,7 @@ class PWCWorkerService:
                 self._emit_heartbeat("init_start")
                 return
             elif mtype == "shutdown":
+                self._shutdown_requested = str(msg.get("reason") or "shutdown before init")
                 raise ConnectionError("shutdown before init")
         raise TimeoutError(f"init not received within {ROCM_READY_TIMEOUT_S}s")
 
@@ -404,7 +428,7 @@ class PWCWorkerService:
 
             if mtype == "shutdown":
                 log.info(f"[{self.worker_id}] shutdown received")
-                self._emit_heartbeat("shutdown")
+                self._shutdown_requested = str(msg.get("reason") or "shutdown")
                 break
 
             if mtype != "job_assign":

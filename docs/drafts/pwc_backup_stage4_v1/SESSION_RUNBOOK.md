@@ -42,6 +42,10 @@ record. Live code was read at every anchor cited.
 | `docs/exchange/from_beta/X-FINDINGS-PLAN_R1_BETA_REVIEW.md:69-73` | Beta's LIVE objection behind §A: `mode=ro` defeats the live-state boundary; a separate worktree does not redirect an absolute ledger target | ALREADY RECORDED (Finding 1). Why the miner staging and the sampler are handled in A4 |
 | `docs/CLAUDE_CODE_REPORT_STEP1_CREDIT_WAL.md:70-85` | Run 4 attempt 1 earned no credit: the sampler, still connected at the coordinator's last close, left a non-empty `-wal`; the remedy is the stable scratch copy | ALREADY RECORDED (Finding 1). A further reason the sampler is not run here (A4) |
 | `docs/CLAUDE_CODE_REPORT_RUN4_LAUNCH_PREP.md:153-164` | A fresh worktree lacked the dataset files and `optuna_studies/` (git-ignored); creating an empty `optuna_studies/` fixed it | ALREADY RECORDED (Finding 1). A1 now creates it, A2 copies the dataset files |
+| `docs/PROPOSAL_STEP1_SEARCH_RECORD_AND_RERUN_v1_1.md:153-171`, `:196-217` | The Step 1 search record: pins and search space "in effective terms" (window, anchor, generator phase, skip range, thresholds), sessions as labels with the index-to-set mapping, the chunk link tied to the search, and the presented configuration required to equal the record before dispatch | ALREADY RECORDED. It governs the open part of Beta R1 Q3, binding the pins to the search record, which the extractors do not do (Beta X-PWC-STAGE4 R2 Finding 1) |
+| `docs/VERIFICATION_INTEGRITY_STANDARD.md:30-47`, `:68-107`; `docs/exchange/from_beta/X-PWC-STAGE1_R1_BETA_REVIEW.md:42-44` | Cleanup observation (a probe that cannot see is not "none"), test skips and reporter safety; Beta required it for PWC cleanup | ALREADY RECORDED (Beta X-PWC-SHUTDOWN R1 Finding 1). C5b and `tests/test_pwc_shutdown_reap.py` follow it |
+| `docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:82-90`, `:115-126`, `:156-167` | On-target digest verification and retained per-node provisioning evidence | ALREADY RECORDED (Finding 1). A2b keeps the provisioner's log and a per-tree `provision.ok` |
+| `docs/PWC_BACKUP_OWNER_RULINGS_20261119.md:47-50`; `docs/drafts/pwc_backup_stage3_v1/PLAN.md:299-325` | The owner's serial two-engine comparison and the same-job (F2) and comparison (F3) criteria | ALREADY RECORDED (Finding 1). The serial order is why the reap's exclusive-use assumption holds |
 | `docs/exchange/from_beta/X-PWC-STAGE4_R1_BETA_REVIEW.md` | Beta's review of the Stage 4 tooling: six LIVE objections (Q2, Q3, Q5, Q6, Q7, Q8), Finding 1 | ALREADY RECORDED. This revision answers Q2, Q3 (PWC side), Q5, Q7, Q8 and Finding 1; Q6 and Q3's miner side are agent 2's |
 
 **Labels for what this runbook raises:**
@@ -212,21 +216,75 @@ mkdir -p $MSTAGE && test -z "$(ls -A $MSTAGE)" && echo "MSTAGE EMPTY"
 - the version file it names;
 - the legacy alias `daily3.json` (`:72`);
 - `dataset_provisioning.json` (`:100`, `:959-961`);
-- `trse_context.json` (manifest default `trse_context`).
+- `trse_context.json` (manifest default `trse_context`);
+- `schemas/field_mappings.json`. Added after the 2026-11-21 session:
+  - **why it is missing:** it is the only file under `schemas/` that git ignores (`.gitignore:41`, `*.json`;
+    `git check-ignore -v`). `output_templates.json` and `results_schema_v1.json` are tracked, and so are the
+    two `.py` files and `README.txt`.
+  - **who reads it:** `ResultsManager` loads all three JSON schemas from the tree's own `schemas/`
+    (`core/results_manager.py:113-115`, with `schema_dir` built from the module path at
+    `integration/sieve_integration.py:314-317`). It is called once per run, AFTER publication, by the
+    "new results format" save (`window_optimizer_integration_final.py:3709-3710`).
+  - **impact:** the failure is caught and printed (`integration/sieve_integration.py:333-336`). Both Stage 4 runs
+    logged `New results format failed: Schema file not found: …/schemas/field_mappings.json` after credit and
+    publication, so it did not affect credit, the NPZ or the bundles; it only drops the optional
+    `results/summaries|csv|json` outputs.
+  - **nothing else is read from `schemas/`:** `sieve_filter.py:864` reaches the same save only in its own CLI
+    `main()`, not the PWC worker's job path.
 ```bash
 VER=$(python3 -c "import json;print(json.load(open('$MAIN/daily3_current.json'))['filename'])")
+IGN="daily3_current.json $VER daily3.json dataset_provisioning.json trse_context.json schemas/field_mappings.json"
 for T in $TM $TP; do
-  for f in daily3_current.json "$VER" daily3.json dataset_provisioning.json trse_context.json; do
+  for f in $IGN; do
     cp -p "$MAIN/$f" "$T/$f"
   done
-  diff <(cd $MAIN && sha256sum daily3_current.json "$VER" daily3.json dataset_provisioning.json trse_context.json) \
-       <(cd $T && sha256sum daily3_current.json "$VER" daily3.json dataset_provisioning.json trse_context.json) && echo "$T inputs identical"
+  diff <(cd $MAIN && sha256sum $IGN) <(cd $T && sha256sum $IGN) && echo "$T inputs identical"
   (cd $T && test -z "$(git status --porcelain)" && echo "$T CLEAN")
 done
 ```
 - The `filename` key is the pointer field read by `miner/dataset_authority.py:271-309`.
 - **[UNVERIFIED]** whether a Step 1 run reads any other ignored file from the working directory. A missing one shows up
   in A5 or at the run's pre-dispatch checks, which refuse before any GPU work.
+
+**A2b. Provision the dataset to every node FROM EACH RUN TREE.** This writes to the rigs, so it needs the owner's
+OK. Run 1 attempt 1 on 2026-11-21 was refused before dispatch without it: `DATASET_AUTHORITY_P0_5: FAIL BEFORE
+DISPATCH — the dataset is not verified on every node` (`$TM/logs/gate12_20261121_132251.log:38`; refusal raised
+at `agents/watcher_agent.py:2148`).
+- **Why per tree:** P0.5 freezes the dataset at the run tree's own absolute path (same log `:33`:
+  `/home/michael/stage4_run_miner/daily3-…json`), and every node must hold the file at exactly that path ("the
+  destination is `frozen.path` — the same absolute path the coordinator dispatches", `miner/dataset_authority.py:855-859`).
+- **So each new tree needs its own provisioning.** The main tree's earlier provisioning does not cover it.
+  Provisioning is an explicit bring-up step, not a side effect of cloning (`scripts/provision_dataset_fleet.py:4-8`;
+  `docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md` §4).
+```bash
+# --- A2B-PROVISION BEGIN ---
+for T in $TM $TP; do
+  mkdir -p "$T/logs/stage4" || { echo "$T: cannot create logs/stage4 - STOP"; break; }
+  if cd "$T"; then
+    PYTHONPATH=. python3 -u scripts/provision_dataset_fleet.py 2>&1 | tee logs/stage4/provision.log
+    rc=("${PIPESTATUS[@]}")
+    echo "$T provisioner rc=${rc[0]} log-writer rc=${rc[1]}"
+    if [ "${rc[0]}" -eq 0 ] && [ "${rc[1]}" -eq 0 ] && [ -s logs/stage4/provision.log ]; then
+      echo "PROVISION_OK $(date -u +%FT%TZ) $(sha256sum logs/stage4/provision.log)" > logs/stage4/provision.ok
+    else
+      echo "$T: provisioning NOT confirmed - STOP"; break
+    fi
+  else
+    echo "$T: cd failed - STOP"; break
+  fi
+done
+# --- A2B-PROVISION END ---
+ls -la $TM/logs/stage4/provision.ok $TP/logs/stage4/provision.ok      # both must exist
+```
+- **Revised after Beta X-PWC-SHUTDOWN R1 Q7.** The first version ran before A3 created `logs/stage4/`, so `tee` lost
+  both logs while still printing `rc=0`. The directory is now created first, and both the provisioner's and the log
+  writer's exit codes are checked. Success is recorded per tree in `provision.ok`.
+- The retained per-node evidence is the contract's (`docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:82-90`,
+  `:115-126`, `:156-167`).
+- **Pass:** both `provision.ok` files exist, meaning every declared node PASS (`scripts/provision_dataset_fleet.py:31`,
+  `:85-95`). Otherwise stop. WATCHER still enforces its execution set before dispatch (`agents/watcher_agent.py:2112-2154`).
+- It copies the already-published immutable version and verifies the digest on each node; it never publishes and
+  never moves the pointer (`:22-24`).
 
 **A3. The params files, inside each tree's ignored `logs/`.**
 ```bash
@@ -300,29 +358,47 @@ Everything else is unchanged, and is already the RANGE-MINER launch path of Runs
 is launched, so no card is working. This is the only `rocm-smi` in the session, and it needs the owner's approval
 (§10 item 5).
 
+**A4b. Redeploy the changed PWC rig file BEFORE A5 (and before C2).** The PWC shutdown fix changes
+`persistent/pwc_worker_service.py`, which is in the PWC TCP parity pin (`scripts/pwc_parity_gate.py:107-122`).
+- **sha256:** `f50d5489…` deployed on 2026-11-21 → `31927811fe39d14122b2afc6fa33ec926084ea059eabcc115143e855eb5c47d9`
+  once the fix lands.
+- **Procedure:** the plan's §2 deploy (`REDEPLOY_AND_SESSION_PLAN.md` §2: `git archive` of the landed commit,
+  `cp -p` rollback copy, `mkdir -p`, `scp -p`, verify), for this one file, to all three CT100s.
+- **Approval:** it is a rig write and needs the owner's go.
+- **Unaffected:** RANGE-MINER's ten gate12 files and `miner/` (byte-identical), so gate12 parity is unaffected.
+- **If the trees use a commit without the fix:** skip A4b, and the deployed `f50d5489…` must match instead.
+
 **A5. CPU-only dry checks in each tree.** No worker starts and no GPU is used.
 ```bash
 cd $TM && python3 -u scripts/gate12_cleantree_gate.py --phase admission 2>&1 | tee logs/stage4/cleantree_A5.log; echo "rc=${PIPESTATUS[0]}"
 cd $TP && python3 -u scripts/gate12_cleantree_gate.py --phase admission 2>&1 | tee logs/stage4/cleantree_A5.log; echo "rc=${PIPESTATUS[0]}"
 cd $TP && python3 -u scripts/pwc_parity_gate.py --transport tcp --evidence-json logs/stage4/pwc_parity_A5.json 2>&1 | tee logs/stage4/pwc_parity_A5.log; echo "rc=${PIPESTATUS[0]}"
 ```
-- **Pass:** every `rc=0`, and PWC parity PASS 39/39. The parity gate compares the rigs to the run tree. The tree is
-  `$COMMIT`, and the four rig files are unchanged by any Stage 4 code, so it should PASS as after the redeploy.
+- **Pass:** every `rc=0`, and PWC parity PASS 39/39. The parity gate compares the rigs to the run tree (`$COMMIT`).
+  It PASSes only if A4b deployed the same `persistent/pwc_worker_service.py` the tree holds. A MISMATCH on that file
+  means A4b was not done: stop.
 
 **A6. Open one search in each tree. This is the owner's act** (`RUN4_LAUNCH_CHECKLIST.md:304`). It writes only that
 tree's new `prng_analysis.db`.
 ```bash
 for T in $TM $TP; do
-  cd $T
-  P="$(cat logs/stage4/params.json)"
-  python3 agents/watcher_agent.py --step1-search-open \
-    --search-range-start 2147483648 --search-range-end 2415919104 \
-    --search-reason "<owner's words: Stage 4 engine comparison, $(basename $T), [2^31, 2^31+2^28), skip [0,16], Run 4 pins>" \
-    --params "$P" 2>&1 | tee logs/stage4/search_open.log
-  python3 agents/watcher_agent.py --step1-search-status --params "$P" 2>&1 | tee logs/stage4/search_status.log
+  P=""
+  if cd "$T" && P="$(python3 -c "import json; print(json.dumps(json.load(open('logs/stage4/params.json'))))")" \
+     && [ -n "$P" ]; then
+    PYTHONPATH=. python3 agents/watcher_agent.py --step1-search-open \
+      --search-range-start 2147483648 --search-range-end 2415919104 \
+      --search-reason "<owner's words: Stage 4 engine comparison, $(basename $T), [2^31, 2^31+2^28), skip [0,16], Run 4 pins>" \
+      --params "$P" 2>&1 | tee logs/stage4/search_open.log
+    PYTHONPATH=. python3 agents/watcher_agent.py --step1-search-status --params "$P" 2>&1 | tee logs/stage4/search_status.log
+  else
+    echo "$T: cd or params read failed - no search command run - STOP"; break
+  fi
 done
 stat -c '%n %s %Y' $MAIN/prng_analysis.db     # must equal the A0 line: the live database was not written
 ```
+- **Revised after Beta X-PWC-SHUTDOWN R1 Q7.** The CLI opens a cwd-relative `prng_analysis.db` (`database_system.py:44-46`),
+  so the search commands run only after a successful `cd` into the tree and a successful params read. Otherwise a
+  failed `cd` would open a search in whatever directory the shell was in.
 - **Pass:** `STEP1_SEARCH_OPENED s1s-…`, then a status of `"state": "gap"` with `"next_seed_start": 2147483648`.
 - **Fail:** `REFUSED` or `ERROR`. Read the reason; do not work around it.
 
@@ -439,30 +515,97 @@ starts (`persistent_worker_coordinator.py:968-1000`).
 **C3. Launch.** The PWC coordinator starts and stops its own rig workers: stale kill, cache reset, then a `nohup`
 launch per GPU (`:1409-1500`), and `pwc.shutdown()` at the end (`:2882`).
 ```bash
-cd $TP
-PWC_PARAMS=$(python3 -c "import json,sys; p=json.load(open('logs/stage4/params.json')); \
+# --- C3-PWC-LAUNCH BEGIN ---
+PWC_PARAMS=""
+if cd "$TP" \
+   && PWC_PARAMS=$(python3 -c "import json; p=json.load(open('logs/stage4/params.json')); \
+assert isinstance(p, dict), 'params not an object'; \
 assert p.get('use_persistent_workers') is True and p.get('use_range_miner') is False, 'not a PWC run'; \
-print(json.dumps(p, separators=(',',':'), sort_keys=True))") || { echo "PWC params invalid - stop"; false; }
-test -n "$PWC_PARAMS" && echo "PWC params: $PWC_PARAMS"
-nohup env PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline \
-  --start-step 1 --end-step 1 --params "$PWC_PARAMS" \
-  > logs/stage4/pwc_run.log 2>&1 &
-echo $! > logs/stage4/watcher.pid
+print(json.dumps(p, separators=(',',':'), sort_keys=True))") \
+   && [ -n "$PWC_PARAMS" ]; then
+  echo "PWC params: $PWC_PARAMS"
+  nohup env PYTHONPATH=. python3 agents/watcher_agent.py --run-pipeline \
+    --start-step 1 --end-step 1 --params "$PWC_PARAMS" \
+    > logs/stage4/pwc_run.log 2>&1 &
+  echo $! > logs/stage4/watcher.pid
+else
+  echo "PWC LAUNCH REFUSED: cd \$TP, params validation or empty params failed - nothing started"
+fi
+# --- C3-PWC-LAUNCH END ---
 ```
-- The params are validated before the launch and passed as a value, never as an inline `$(cat …)` that could be empty.
+- **Revised after Beta X-PWC-STAGE4 R2 Finding 2 (LIVE).** The old block printed "stop", ran `false`, and then
+  launched WATCHER anyway with an empty `--params`. WATCHER skips an empty value (`agents/watcher_agent.py:4173`) and
+  falls back to the manifest defaults: RANGE-MINER and the live staging.
+- **Now `nohup` is reached only inside the `then` branch,** after a successful `cd`, a successful validation and a
+  non-empty value. `tests/test_stage4_miner_launch.py` runs this block verbatim, from the markers, with `nohup` stubbed:
+  - three invalid cases (missing file, malformed JSON, a RANGE-MINER params file) and a bad `cd` all start nothing;
+  - the valid case passes the JSON.
 - No `--clear-halt`: a present flag is someone's halt (A0).
 
 **C4. While it runs:** the same read-only rule as B3. PWC time is not measured. It is about 10,700 chunks per pass at
 25,000 seeds (plan §4a). Watch the log's chunk progress in the first minutes, and tell the owner if it is far off.
 
 **C5. It has ended by itself** when `kill -0 $(cat logs/stage4/watcher.pid)` fails. The log must show:
-- four `Results saved: results/window_opt_{forward,reverse,forward_hybrid,reverse_hybrid}_12_25_t0.json (<n> survivors)`
-  lines (`persistent_worker_coordinator.py:2514`). A `Results summary saved` line means more than 100,000 survivors in a
+- four `Results saved: results/window_opt_{forward,reverse,forward_hybrid,reverse_hybrid}_12_25_t1.json (<n> survivors)`
+  lines (`persistent_worker_coordinator.py:2514`). **The suffix is `_t1`, not `_t0`:** it is the integration's record
+  ordinal, which starts at 1 on a fresh run (`window_optimizer_integration_final.py:3273`, `:3296`, `:3316`). The
+  credit line still reads `credited: trials [0]`, which is Optuna's number. On 2026-11-21 the real run wrote `_t1`. A `Results summary saved` line means more than 100,000 survivors in a
   phase (`:2509-2532`): that phase will be `NOT COMPARED`;
 - the same four lines as B4, with `Prior rows: 0`;
 - no `PASS INCOMPLETE`, `TRIAL 0 INCOMPLETE` or `NO CREDIT`.
 
-Then check the rigs: no `pwc_worker_service` may remain.
+**C5b. Check for leftover PWC workers on every host, and stop them if any remain.** On 2026-11-21, after
+`[PWC-TCP] transport stopped` at 13:50:49, all 24 rig `pwc_worker_service` processes were still alive 2 minutes later.
+- **Why:** a planned `shutdown` ended only the worker's session. The fix in this worktree changes that: the worker
+  exits on a planned shutdown, and the coordinator then reaps this coordinator's own workers. Those are only the ones
+  carrying its `--launch-token`, which is logged as `[PWC-TCP] launch token <32 hex>`. Each reap is logged as
+  `[PWC-TCP] shutdown reap <host>: …`, followed by `shutdown INCOMPLETE …` or `All workers shut down`. The fix needs
+  A4b first.
+- **The cleanup evidence is the per-host result below, never an all-clear line alone.**
+
+Revised after Beta X-PWC-SHUTDOWN R1 Q7: a probe that cannot run, or an SSH failure, is UNAVAILABLE and stops. It never
+reads as "none" (`docs/VERIFICATION_INTEGRITY_STANDARD.md:30-47`, `:68-107`).
+```bash
+cd $TP
+/bin/grep -n "launch token\|shutdown reap\|shutdown INCOMPLETE\|All workers shut down" logs/stage4/pwc_run.log
+# The check prints exactly one marker per host: PWC_NONE | PWC_FOUND (plus the processes) | PROBE_UNAVAILABLE.
+# It carries the probe-control token literally, so pgrep must find its own shell, or the probe is broken.
+CHECK='pgrep -f "PWC_PROBE_CONTROL_7f3a" >/dev/null 2>&1 || { echo PROBE_UNAVAILABLE; exit 7; }; out=$(pgrep -af "[p]wc_worker_service"); r=$?; if [ $r -eq 1 ]; then echo PWC_NONE; elif [ $r -eq 0 ]; then printf "%s\n" "$out"; echo PWC_FOUND; exit 6; else echo PROBE_UNAVAILABLE; exit 7; fi'
+res_local=$(bash -c "$CHECK"); echo "VM101 rc=$? $res_local"
+for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+  res=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 michael@$ip "$CHECK"); rc=$?
+  case "$res" in *PWC_NONE*) st=NONE;; *PWC_FOUND*) st=FOUND;; *) st=UNAVAILABLE;; esac
+  [ $rc -eq 255 ] && st=UNAVAILABLE                     # ssh itself failed: no result from this rig
+  echo "$ip rc=$rc status=$st"; printf '%s\n' "$res"
+done
+```
+- **Pass:** `VM101 … PWC_NONE`, and `status=NONE` on all three rigs.
+- **Any `UNAVAILABLE`:** stop and report. That covers a probe error, SSH exit 255, or no marker.
+- **`FOUND` on VM101:** stop and escalate to the owner. There is no automatic kill on the dev box. With the fix, VM101's
+  local workers are reaped through their own process handles.
+- **`FOUND` on a rig: stop this coordinator's workers only**, with the token from its own log:
+```bash
+cd $TP
+TOK=$(/bin/grep -o "launch token [0-9a-f]\{32\}" logs/stage4/pwc_run.log | tail -1 | awk '{print $3}')
+if [ -n "$TOK" ] && REAP=$(python3 -c "from persistent_worker_coordinator import pwc_shutdown_reap_command as c; print(c(token='$TOK'))"); then
+  for ip in <each FOUND rig>; do
+    out=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 michael@$ip "$REAP"); rc=$?
+    if [ $rc -eq 0 ] && [ "$(printf '%s\n' "$out" | tail -1)" = "PWC_STALE_KILL_OK" ]; then
+      echo "$ip: reaped, none left"
+    else
+      echo "$ip: reap NOT confirmed (rc=$rc) - STOP"; printf '%s\n' "$out"
+    fi
+  done
+else
+  echo "no launch token in the log (a coordinator without the fix) - STOP and ask the owner"
+fi
+```
+- **Success** requires both `rc=0` and the `PWC_STALE_KILL_OK` marker. `rc=6` (survivor), `rc=7` (probe unavailable),
+  SSH failure and a missing marker are all stop conditions (§9 item 12).
+- **No token** means the workers came from a coordinator without the fix. A host-wide `[p]wc_worker_service` kill
+  would hit every PWC worker on that rig, including another coordinator's, so it is the owner's decision. It comes only
+  after verifying exclusive use: no `watcher_agent` or `window_optimizer` process on VM101 (bracket `pgrep`), and no
+  listener on `:5600`.
 
 **C6. Copy out, then extract (CPU):**
 ```bash
@@ -472,10 +615,25 @@ cp -p $TP/prng_analysis.db* $R2/
 (cd $R2 && find . -type f -print0 | sort -z | xargs -0 sha256sum) > $EV/run2_pwc.sha256
 cd <tree holding scripts/extract_pwc_bundle.py>       # $MAIN once landed, else /home/michael/tfm_worktrees/pwc-backup
 python3 -u scripts/extract_pwc_bundle.py --run-dir $TP --params-json $TP/logs/stage4/params.json \
-  --out-dir $EV/bundle_pwc 2>&1 | tee $EV/extract_pwc.log; echo "rc=${PIPESTATUS[0]}"
+  --run-log $TP/logs/stage4/pwc_run.log --out-dir $EV/bundle_pwc 2>&1 | tee $EV/extract_pwc.log; echo "rc=${PIPESTATUS[0]}"
 ```
+- **Record ordinal:** the extractor no longer assumes `_t0`. It discovers the pass files' single shared `_t<N>`
+  (expected 1) and binds it to the credited trial by evidence:
+  - the chunk link must record exactly one complete trial;
+  - the NPZ `trial_number` rows must equal N;
+  - with `--run-log`, the log must record saving each of the four files.
+
+  An ambiguous, split or mismatched ordinal is refused. The 2026-11-21 real extraction (without `--run-log`) gave
+  rc 0, ordinal 1.
 - **Pass:** `BUNDLE_WRITTEN …/bundle_pwc/bundle.json`, plus the check line `NPZ seeds == union of bidirectional sets`.
-- The extractor reads `$TP` and never writes there. It opens the tree's ledger `?mode=ro&immutable=1`.
+- The extractor reads `$TP` and never writes there. Its ledger reads follow
+  `docs/CLAUDE_CODE_INSTRUCTIONS_BINDING_ADDENDUM_BETA_R1_20261113.md` §A:
+  - with no or an empty `-wal`, it opens the tree's ledger `?mode=ro&immutable=1`;
+  - with a non-empty (retained) `-wal`, it copies the database and its `-wal` byte for byte into a scratch directory
+    under the out-dir, checks the sources are unchanged across the copy, and reads the copy;
+  - a non-empty `-journal`, or a source that changes during the copy, is refused as UNAVAILABLE.
+- `--run-log` is **required** when the NPZ has no rows, as in the 2026-11-21 run (Beta X-PWC-SHUTDOWN R1 Q5). It is
+  live-path checked before it is opened, and each saved path must match a pass file exactly.
 - It refuses (exit 2) on any of the conditions in its docstring.
 
 ---
@@ -594,6 +752,9 @@ the question as Beta put it is for the owner and Beta.
 10. E2 shows the live `prng_analysis.db` or the `current` pointer changed.
 11. The halt flag is present at A0, B1 or C1, or the launcher aborts on it. It is someone's halt: ask the owner, and
     never clear it.
+12. After Run 2, C5b finds a PWC worker that the PWC-only reap cannot remove (`rc=6`), or cannot observe (`rc=7`),
+    or a `shutdown reap … survivor|unavailable|error` line. Tell the owner before anything else uses the rigs.
+13. A2b's provisioning is not `rc=0` for both trees.
 
 ---
 
@@ -649,13 +810,18 @@ the question as Beta put it is for the owner and Beta.
 - That a real coordinator run starts cleanly in an empty `$MSTAGE`. The constructor does
   (`tests/test_stage4_miner_launch.py` L-EMPTY-STAGING), but no run has.
 - The derived launcher end to end. Only its params block is executed in tests; the rest is the unchanged Run 4 path.
+- **The PWC shutdown fix on a real rig.** It is tested on CPU only: worker fakes, stubbed ssh, and a local dummy
+  process. It needs the rig redeploy of `persistent/pwc_worker_service.py` and a PWC parity PASS first.
+- That A2b's provisioning creates the run-tree path on each rig. The lead ran it by hand successfully on 2026-11-21;
+  this session did not.
 
 ## 13. Test status (CPU, this worktree)
 
 | Suite | Result |
 |---|---|
 | `tests/test_compare_engine_outputs.py` | 36/36 PASS (2026-11-21, after Beta R1) |
-| `tests/test_extract_pwc_bundle.py` | 32/32 PASS (2026-11-21, after Beta R1; 15 new Beta regressions) |
-| `tests/test_stage4_miner_launch.py` | 14/14 PASS (2026-11-21, new) |
+| `tests/test_extract_pwc_bundle.py` | 45/45 PASS (2026-11-21: record ordinal; Beta R2-Q5; Beta X-PWC-SHUTDOWN R1 Q5 and Finding 2) |
+| `tests/test_pwc_shutdown_reap.py` | 12/12 PASS (2026-11-21: planned-shutdown exit, token-bound reap, controlled mutants, shell faults) |
+| `tests/test_stage4_miner_launch.py` | 19/19 PASS (2026-11-21; 5 C3 PWC-launch regressions for Beta R2 Finding 2) |
 
 Run one after another (they must not run concurrently). Agent 2's `tests/test_extract_miner_bundle.py` was not run here.

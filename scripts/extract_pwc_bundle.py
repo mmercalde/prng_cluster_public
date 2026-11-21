@@ -11,7 +11,10 @@ What a finished PWC run leaves on disk, and what this reads
 (a) The four per-pass result files PWC writes from `run_sieve_pass`
     (`persistent_worker_coordinator.py:2504-2535`), named by `run_trial_persistent`
     (`:2715`, `:2742`, `:2787`, `:2812`):
-        <run-dir>/results/window_opt_{forward,reverse,forward_hybrid,reverse_hybrid}_<W>_<O>_t<T>.json
+        <run-dir>/results/window_opt_{forward,reverse,forward_hybrid,reverse_hybrid}_<W>_<O>_t<N>.json
+    <N> is the integration's RECORD ORDINAL, not the Optuna trial number: a fresh run's
+    first trial writes _t1 and is credited as trial 0. N is discovered from the files and
+    bound to the run by evidence (`discover_record_ordinal`).
     Each holds `pwc_pass_accounting` (`:2431-2449`). At or below 100,000 survivors it
     also holds the full `survivors` / `match_rates` lists (the survivor map); above
     that, only a summary (`:2517-2532`) and that phase is then null (NOT COMPARED).
@@ -59,8 +62,10 @@ Usage:
 import argparse
 import datetime
 import hashlib
+import glob
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -129,9 +134,15 @@ def _load_json(path, what):
 
 
 # --------------------------------------------------------------------------- generation
-def read_generation(gen_dir):
+def read_generation(gen_dir, live_paths=LIVE_PATHS):
     prov_path = os.path.join(gen_dir, SIDECAR)
     npz_path = os.path.join(gen_dir, BINARY_NPZ)
+    # [Beta X-PWC-STAGE4 R2 Q5] resolve and live-check BOTH files before the first read:
+    # a symlink inside the generation directory must not lead the tool to open a file
+    # under a live root. Before, this check ran after the sidecar was opened and the NPZ
+    # hashed and loaded.
+    for p, what in ((prov_path, "provenance"), (npz_path, "NPZ")):
+        refuse_live(p, what, live_paths)
     prov = _load_json(prov_path, "provenance")
     if prov.get("parent_generation_id") is not None or prov.get("prior_row_count") != 0:
         raise ExtractRefused(
@@ -157,9 +168,75 @@ def read_generation(gen_dir):
 
 
 # --------------------------------------------------------------------------- passes
-def pass_file(results_dir, ph, ws, off, trial):
+def pass_file(results_dir, ph, ws, off, ordinal):
     stem, _ = PASS_FILES[ph]
-    return os.path.join(results_dir, f"window_opt_{stem}_{ws}_{off}_t{trial}.json")
+    return os.path.join(results_dir, f"window_opt_{stem}_{ws}_{off}_t{ordinal}.json")
+
+
+def discover_record_ordinal(results_dir, required, ws, off, asserted=None):
+    """[Stage 4 run, 2026-11-21] The `_t<N>` suffix is NOT the Optuna trial number.
+    `run_trial_persistent` names the pass files by the `trial_number` it is handed
+    (persistent_worker_coordinator.py:2715, :2742, :2787, :2812), and the integration hands
+    it the local RECORD ORDINAL, `trial_counter['count']`, which starts at the resume floor
+    (0 on a fresh run, window_optimizer_integration_final.py:3273) and is incremented BEFORE
+    each trial (:3296, passed at :3316). So the first trial of a fresh run writes `_t1` while
+    Optuna and the credit gate call it trial 0 (`credited: trials [0]`). The ordinal is
+    therefore DISCOVERED from the files, never guessed: every required phase must carry
+    exactly one, the same, ordinal. The caller binds it to the run by further evidence (the
+    chunk link's trial counts, the NPZ's `trial_number` rows, and the run log if given)."""
+    found = {}
+    for ph in required:
+        stem, _ = PASS_FILES[ph]
+        pat = re.compile(rf"^window_opt_{re.escape(stem)}_{ws}_{off}_t(\d+)\.json$")
+        ords = set()
+        for f in glob.glob(os.path.join(glob.escape(results_dir), f"window_opt_{stem}_{ws}_{off}_t*.json")):
+            m = pat.match(os.path.basename(f))
+            if m:
+                ords.add(int(m.group(1)))
+        found[ph] = ords
+    every = set().union(*found.values()) if found else set()
+    missing = [ph for ph, o in found.items() if not o]
+    if missing:
+        raise ExtractRefused(f"phase(s) {missing}: no pass file window_opt_<pass>_{ws}_{off}_t<N>.json "
+                             f"in {results_dir}")
+    if len(every) != 1 or any(o != every for o in found.values()):
+        raise ExtractRefused(f"pass-file record ordinals are not one shared value: "
+                             f"{ {ph: sorted(o) for ph, o in found.items()} }; a Stage 4 run tree "
+                             f"holds one trial's files")
+    n = next(iter(every))
+    if asserted is not None and int(asserted) != n:
+        raise ExtractRefused(f"--record-ordinal {asserted} asserted, but the pass files carry "
+                             f"ordinal {n}")
+    return n
+
+
+def check_run_log(log_path, run_dir, results_dir, required, ws, off, ordinal,
+                  live_paths=LIVE_PATHS):
+    """Evidence: the run's own log names each pass file it saved
+    (persistent_worker_coordinator.py `Results saved:` / `Results summary saved:`).
+    [Beta X-PWC-SHUTDOWN R1 Finding 2] the log is live-path checked (resolved) BEFORE it is
+    opened. [Beta R1 Q5] each saved path token must resolve to EXACTLY the pass file read,
+    not merely contain its name (a line naming `other-<name>.bak` no longer counts).
+    Returns (binding line, sha256 of the log)."""
+    refuse_live(log_path, "--run-log", live_paths)
+    try:
+        text = open(log_path, encoding="utf-8", errors="replace").read()
+    except OSError as exc:
+        raise ExtractRefused(f"cannot read --run-log {log_path}: {exc}") from exc
+    saved = set()
+    for m in re.finditer(r"Results (?:summary )?saved: (\S+)", text):
+        tok = m.group(1)
+        saved.add(_real(tok if os.path.isabs(tok) else os.path.join(run_dir, tok)))
+    missing = []
+    for ph in required:
+        want = _real(pass_file(results_dir, ph, ws, off, ordinal))
+        if want not in saved:
+            missing.append(os.path.basename(want))
+    if missing:
+        raise ExtractRefused(f"--run-log {log_path} does not record saving {missing} "
+                             f"(exact path match)")
+    return (f"run log records saving all {len(required)} pass files at ordinal {ordinal} "
+            f"(exact paths)", _sha256(log_path))
 
 
 _OUTCOMES = ("completed", "failed", "timed_out", "not_dispatched", "missing")
@@ -229,7 +306,7 @@ def validate_threshold(ph, rec, want_type, want):
         raise ExtractRefused(f"phase {ph}: threshold record not verified: " + "; ".join(probs))
 
 
-def read_passes(results_dir, prov, prov_path, ws, off, trial, params, live_paths=LIVE_PATHS):
+def read_passes(results_dir, prov, prov_path, ws, off, ordinal, params, live_paths=LIVE_PATHS):
     """{phase: pass dict} for every phase the run executed, each checked."""
     fwd, rev = params.get("warm_start_fwd_thresh"), params.get("warm_start_rev_thresh")
     thresholds = {"1": fwd, "2": rev, "3": fwd, "4": rev}
@@ -242,7 +319,7 @@ def read_passes(results_dir, prov, prov_path, ws, off, trial, params, live_paths
     prov_mtime = os.path.getmtime(prov_path)
     out, files = {}, {}
     for ph in required:
-        path = pass_file(results_dir, ph, ws, off, trial)
+        path = pass_file(results_dir, ph, ws, off, ordinal)
         refuse_live(path, f"phase {ph} pass file", live_paths)
         if not os.path.isfile(path):
             raise ExtractRefused(f"phase {ph}: pass file {path} is missing")
@@ -366,7 +443,8 @@ def read_ledger(db_path, prov, scratch_parent, live_paths=LIVE_PATHS):
                 "generation_id, artifact_sha256 FROM certified_coverage "
                 "WHERE artifact_sha256=? OR generation_id=?",
                 (prov["artifact_sha256"], prov["generation_id"])),
-        "link": ("SELECT seed_start, seed_end_exclusive, search_id, coverage_id, generation_id "
+        "link": ("SELECT seed_start, seed_end_exclusive, search_id, coverage_id, generation_id, "
+                 "trials_complete, trials_pruned, trials_fail, trials_other "
                  "FROM step1_chunk_link WHERE generation_id=?", (prov["generation_id"],)),
     }, scratch_parent, optional=("link",), live_paths=live_paths)
     covs, links = rows["cov"] or [], rows["link"]
@@ -398,6 +476,10 @@ def read_ledger(db_path, prov, scratch_parent, live_paths=LIVE_PATHS):
     if [int(link[0]), int(link[1])] != [int(cov[0]), int(cov[1])]:
         raise ExtractRefused(f"linked interval {[link[0], link[1]]} != certified interval "
                              f"{[cov[0], cov[1]]}")
+    if tuple(link[5:9]) != (1, 0, 0, 0):
+        raise ExtractRefused(f"the chunk link records trials complete/pruned/fail/other = "
+                             f"{tuple(link[5:9])}, not exactly one complete trial: the pass files "
+                             f"cannot be bound to the credited trial")
     return cov, link, how
 
 
@@ -407,8 +489,8 @@ def _inside(path, root):
     return rp == rr or rp.startswith(rr + os.sep)
 
 
-def extract(run_dir, params_path, out_dir, trial=0, generation_dir=None, results_dir=None,
-            ledger_db=None, live_paths=LIVE_PATHS):
+def extract(run_dir, params_path, out_dir, record_ordinal=None, generation_dir=None,
+            results_dir=None, ledger_db=None, live_paths=LIVE_PATHS, run_log=None):
     refuse_live(run_dir, "--run-dir", live_paths)
     gen_dir = _real(generation_dir or os.path.join(run_dir, ACCUMULATOR_CURRENT))
     results_dir = results_dir or os.path.join(run_dir, "results")
@@ -439,11 +521,30 @@ def extract(run_dir, params_path, out_dir, trial=0, generation_dir=None, results
         raise ExtractRefused("params lack integer warm_start_window / warm_start_offset; "
                              "the pass files are named by them")
 
-    prov, prov_path, npz_path, arrays = read_generation(gen_dir)
-    for p, what in ((prov_path, "provenance"), (npz_path, "NPZ")):
-        refuse_live(p, what, live_paths)          # the resolved files actually opened
+    prov, prov_path, npz_path, arrays = read_generation(gen_dir, live_paths)
+    _modes = list(prov.get("skip_modes_executed") or [])
+    _required = [ph for m in _modes if m in MODE_PHASES for ph in MODE_PHASES[m]]
+    ordinal = discover_record_ordinal(results_dir, _required, ws, off, record_ordinal)
     passes, pass_files, required, req = read_passes(results_dir, prov, prov_path, ws, off,
-                                                    trial, params, live_paths)
+                                                    ordinal, params, live_paths)
+    bind = [f"pass files carry record ordinal {ordinal} in every required phase"]
+    npz_ords = sorted({int(x) for x in arrays["trial_number"].tolist()})
+    if npz_ords and npz_ords != [ordinal]:
+        raise ExtractRefused(f"the NPZ rows carry trial_number {npz_ords}, but the pass files "
+                             f"carry record ordinal {ordinal}: not the same trial")
+    if not npz_ords and run_log is None:
+        # [Beta X-PWC-SHUTDOWN R1 Q5] with no NPZ rows the ordinal is bound by nothing but the
+        # file names (the chunk link carries no ordinal), so the run's own log is REQUIRED.
+        raise ExtractRefused("the NPZ has no rows, so it cannot bind the pass files' record "
+                             "ordinal to the credited trial; --run-log (the stopped run's own "
+                             "log) is required for a zero-row bundle")
+    bind.append(f"NPZ trial_number rows {npz_ords} agree with ordinal {ordinal}" if npz_ords
+                else "NPZ ordinal check UNAVAILABLE (no rows): bound by the run log instead")
+    run_log_sha = None
+    if run_log is not None:
+        line, run_log_sha = check_run_log(run_log, run_dir, results_dir, required, ws, off,
+                                          ordinal, live_paths)
+        bind.append(line)
 
     comp = build_pwc_trial_completion(tuple(req), {ph: passes.get(ph) for ph, *_ in PWC_PHASES
                                                    if ph in passes})
@@ -506,6 +607,7 @@ def extract(run_dir, params_path, out_dir, trial=0, generation_dir=None, results
         }
         checks.append(f"run ledger read: {how}; coverage {cov[3][:16]} and link bound to "
                       f"generation {prov['generation_id']}")
+        bind.append("chunk link records exactly one complete trial (1/0/0/0)")
         out_npz = os.path.join(out_dir, "survivors.npz")
         shutil.copy2(npz_path, out_npz)
         if _sha256(out_npz) != prov["artifact_sha256"]:
@@ -523,7 +625,10 @@ def extract(run_dir, params_path, out_dir, trial=0, generation_dir=None, results
                 "run_dir": _real(run_dir), "generation_dir": gen_dir,
                 "generation_id": prov.get("generation_id"),
                 "coverage_id": cov[3], "ledger_read": how,
-                "pass_files": pass_files, "trial": trial,
+                "pass_files": pass_files, "record_ordinal": ordinal,
+                "record_ordinal_binding": bind,
+                "run_log": ({"path": _real(run_log), "sha256": run_log_sha}
+                            if run_log is not None else None),
                 "pwc_completion_rebuilt": comp, "self_checks": checks,
             },
             "inputs": inputs,
@@ -549,14 +654,18 @@ def main(argv=None):
     ap.add_argument("--run-dir", required=True, help="the separate tree the PWC run ran in")
     ap.add_argument("--params-json", required=True, help="the WATCHER --params JSON the run used")
     ap.add_argument("--out-dir", required=True, help="new, empty directory for the bundle")
-    ap.add_argument("--trial", type=int, default=0, help="trial number (default 0)")
+    ap.add_argument("--record-ordinal", type=int, default=None,
+                    help="assert the pass files' _t<N> record ordinal (it is discovered from the "
+                         "files and bound by evidence; this only asserts the expected value)")
+    ap.add_argument("--run-log", default=None,
+                    help="optional: the run's log, which must record saving each pass file")
     ap.add_argument("--generation-dir", help="default <run-dir>/.s172_accumulator/current")
     ap.add_argument("--results-dir", help="default <run-dir>/results")
     ap.add_argument("--ledger-db", help="default <run-dir>/prng_analysis.db")
     a = ap.parse_args(argv)
     try:
-        path, b = extract(a.run_dir, a.params_json, a.out_dir, a.trial, a.generation_dir,
-                          a.results_dir, a.ledger_db)
+        path, b = extract(a.run_dir, a.params_json, a.out_dir, a.record_ordinal,
+                          a.generation_dir, a.results_dir, a.ledger_db, run_log=a.run_log)
     except ExtractRefused as exc:
         print(f"extract_pwc_bundle: REFUSED: {exc}", file=sys.stderr)
         return 2
@@ -566,6 +675,8 @@ def main(argv=None):
     print(f"  phase rows {[(p, (c or {}).get('survivor_rows')) for p, c in b['phase_counts'].items()]}")
     print(f"  credit granted={b['credit']['granted']}  swept={b['credit']['swept_intervals']}")
     print(f"  null (will be NOT COMPARED unless the other bundle has them): {nulls or 'none'}")
+    for c in b["provenance"]["record_ordinal_binding"]:
+        print(f"  ordinal: {c}")
     for c in b["provenance"]["self_checks"]:
         print(f"  check: {c}")
     return 0

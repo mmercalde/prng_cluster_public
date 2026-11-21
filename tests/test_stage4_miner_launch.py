@@ -21,6 +21,10 @@ Beta X-PWC-STAGE4 R1 Q8/Q7/Q9:
                miner run / a pin missing / halt present (and left in place)
   L-EMPTY-STAGING  the coordinator's own ledger constructor makes a fresh schema in an
                empty staging dir (miner/range_miner_coordinator.py:12371-12374)
+  C3-*         [Beta X-PWC-STAGE4 R2 Finding 2] the runbook's PWC launch block (between its
+               C3-PWC-LAUNCH markers, run verbatim, nohup stubbed to record its argv): a
+               missing, malformed or RANGE-MINER params file, or a failed cd, starts
+               NOTHING; a valid PWC params file reaches nohup with that JSON
 """
 import json
 import os
@@ -184,6 +188,120 @@ def g_empty_staging_ledger():
     return f"MinerLedger on an empty staging dir creates {sorted(need)} (fresh ledger)"
 
 
+RUNBOOK = os.path.join(ROOT, "docs", "drafts", "pwc_backup_stage4_v1", "SESSION_RUNBOOK.md")
+PWC_PARAMS = {"prng_type": "java_lcg", "use_range_miner": False, "use_persistent_workers": True,
+              "pwc_transport": "tcp", "warm_start_window": 12}
+
+
+def c3_block():
+    src = open(RUNBOOK).read()
+    a = src.index("# --- C3-PWC-LAUNCH BEGIN ---")
+    b = src.index("# --- C3-PWC-LAUNCH END ---")
+    return src[a:b]
+
+
+def c3_case(tag, raw=None, write=True, bad_cd=False):
+    base = os.path.join(OUT, "c3_" + tag)
+    tp = os.path.join(base, "tree")
+    os.makedirs(os.path.join(tp, "logs", "stage4"))
+    if write:
+        with open(os.path.join(tp, "logs", "stage4", "params.json"), "w") as f:
+            f.write(raw if raw is not None else json.dumps(PWC_PARAMS))
+    stub = os.path.join(base, "bin")
+    os.makedirs(stub)
+    rec = os.path.join(base, "nohup_argv.txt")
+    with open(os.path.join(stub, "nohup"), "w") as f:
+        f.write(f'#!/bin/bash\nprintf "%s\\n" "$@" > {rec!r}\n')
+    os.chmod(os.path.join(stub, "nohup"), 0o755)
+    script = os.path.join(base, "c3.sh")
+    with open(script, "w") as f:
+        f.write(c3_block() + "wait\n")
+    env = dict(os.environ, PATH=stub + os.pathsep + os.environ["PATH"],
+               TP=os.path.join(base, "no_such_tree") if bad_cd else tp)
+    r = subprocess.run(["bash", script], cwd=base, capture_output=True, text=True, timeout=60, env=env)
+    argv = open(rec).read().splitlines() if os.path.exists(rec) else None
+    return r, argv
+
+
+def c3_valid():
+    r, argv = c3_case("valid")
+    assert argv is not None, (r.stdout, r.stderr)
+    i = argv.index("--params")
+    assert json.loads(argv[i + 1]) == PWC_PARAMS, argv
+    return "valid PWC params: nohup reached with the validated JSON"
+
+
+def c3_refused(tag, **kw):
+    r, argv = c3_case(tag, **kw)
+    assert argv is None, f"{tag}: nohup was started with {argv}"
+    assert "PWC LAUNCH REFUSED" in r.stdout, r.stdout[-300:]
+    return f"{tag}: nothing started; REFUSED printed"
+
+
+def runbook_check_line():
+    for ln in open(RUNBOOK).read().splitlines():
+        if ln.startswith("CHECK='"):
+            return ln[len("CHECK='"):-1]
+    raise AssertionError("no CHECK= line in the runbook's C5b")
+
+
+def c5b_check():
+    """[Beta X-PWC-SHUTDOWN R1 Q7] the runbook's per-host leftover check: a working probe
+    reports PWC_NONE (no real PWC worker here) or PWC_FOUND; pgrep that cannot run reports
+    PROBE_UNAVAILABLE with exit 7, never 'none'."""
+    chk = runbook_check_line()
+    if subprocess.run(["pgrep", "-f", "[p]wc_worker_service"], capture_output=True).returncode == 0:
+        return "UNAVAILABLE: a real pwc_worker_service runs on this host; the NONE case cannot be shown"
+    r = subprocess.run(["bash", "-c", chk], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout.strip() == "PWC_NONE", (r.returncode, r.stdout)
+    stub = os.path.join(OUT, "c5b_stub")
+    os.makedirs(stub, exist_ok=True)
+    with open(os.path.join(stub, "pgrep"), "w") as f:
+        f.write("#!/bin/bash\nexit 2\n")
+    os.chmod(os.path.join(stub, "pgrep"), 0o755)
+    env = dict(os.environ, PATH=stub + os.pathsep + os.environ["PATH"])
+    r2 = subprocess.run(["bash", "-c", chk], capture_output=True, text=True, timeout=30, env=env)
+    assert r2.returncode == 7 and r2.stdout.strip() == "PROBE_UNAVAILABLE", (r2.returncode, r2.stdout)
+    return "working probe: PWC_NONE; pgrep exit 2: PROBE_UNAVAILABLE rc 7 (never 'none')"
+
+
+def a2b_block():
+    src = open(RUNBOOK).read()
+    return src[src.index("# --- A2B-PROVISION BEGIN ---"):src.index("# --- A2B-PROVISION END ---")]
+
+
+def a2b_case(tag, rc_tm, rc_tp):
+    base = os.path.join(OUT, "a2b_" + tag)
+    trees = {}
+    for name, rc in (("tm", rc_tm), ("tp", rc_tp)):
+        t = os.path.join(base, name)
+        os.makedirs(os.path.join(t, "scripts"))                 # NO logs/stage4: a fresh tree
+        with open(os.path.join(t, "scripts", "provision_dataset_fleet.py"), "w") as f:
+            f.write(f"print('node rrig6600: PASS (stub)'); raise SystemExit({rc})\n")
+        trees[name] = t
+    script = os.path.join(base, "a2b.sh")
+    with open(script, "w") as f:
+        f.write(a2b_block())
+    env = dict(os.environ, TM=trees["tm"], TP=trees["tp"])
+    r = subprocess.run(["bash", script], cwd=base, capture_output=True, text=True, timeout=60, env=env)
+    ok = {n: os.path.exists(os.path.join(t, "logs", "stage4", "provision.ok")) for n, t in trees.items()}
+    logs = {n: os.path.exists(os.path.join(t, "logs", "stage4", "provision.log")) for n, t in trees.items()}
+    return r, ok, logs
+
+
+def a2b_ok():
+    r, ok, logs = a2b_case("ok", 0, 0)
+    assert ok == {"tm": True, "tp": True} and logs == {"tm": True, "tp": True}, (ok, logs, r.stdout)
+    return "fresh trees (no logs/stage4): both logs kept, both provision.ok written"
+
+
+def a2b_fail():
+    r, ok, logs = a2b_case("fail", 1, 0)
+    assert ok == {"tm": False, "tp": False}, (ok, r.stdout)
+    assert "NOT confirmed - STOP" in r.stdout and logs["tm"], r.stdout
+    return "provisioner rc 1 on the first tree: STOP, no provision.ok anywhere, its log kept"
+
+
 GATES = [
     ("L-APPLY", g_apply),
     ("L-STRUCTURE", g_structure),
@@ -207,6 +325,15 @@ GATES = [
         "p9", lambda p: {k: v for k, v in p.items() if k != "warm_start_skip_min"}, "params lack")),
     ("P10 halt present: abort, never cleared", p10_halt),
     ("L-EMPTY-STAGING", g_empty_staging_ledger),
+    ("C3-VALID", c3_valid),
+    ("C3-MISSING-PARAMS", lambda: c3_refused("missing", write=False)),
+    ("C3-MALFORMED-PARAMS", lambda: c3_refused("malformed", raw="{not json")),
+    ("C3-WRONG-ROUTE (RANGE-MINER params)", lambda: c3_refused(
+        "wrongroute", raw=json.dumps(dict(PWC_PARAMS, use_range_miner=True, use_persistent_workers=False)))),
+    ("C3-BAD-CD", lambda: c3_refused("badcd", bad_cd=True)),
+    ("C5B-CHECK probe (Beta X-PWC-SHUTDOWN R1 Q7)", c5b_check),
+    ("A2B-OK fresh trees keep their logs", a2b_ok),
+    ("A2B-FAIL provisioner failure stops", a2b_fail),
 ]
 
 
@@ -216,15 +343,21 @@ def main():
     os.makedirs(OUT)
     os.makedirs(PARAMS_STAGING())
     print("VERIFICATION test_stage4_miner_launch START", flush=True)
-    passed = 0
+    passed = unavailable = 0
     for name, fn in GATES:
         try:
-            print(f"[PASS] {name}: {fn()}", flush=True)
-            passed += 1
+            out = fn()
+            if isinstance(out, str) and out.startswith("UNAVAILABLE"):
+                print(f"[UNAVAILABLE] {name}: {out}", flush=True)
+                unavailable += 1
+            else:
+                print(f"[PASS] {name}: {out}", flush=True)
+                passed += 1
         except Exception as exc:                                    # noqa: BLE001
             print(f"[FAIL] {name}: {type(exc).__name__}: {exc}", flush=True)
-    print(f"\n{passed}/{len(GATES)} PASS")
-    print("RESULT: PASS" if passed == len(GATES) else "RESULT: FAIL")
+    failed = len(GATES) - passed - unavailable
+    print(f"\n{passed}/{len(GATES)} PASS, {unavailable} UNAVAILABLE, {failed} FAIL")
+    print("RESULT: " + ("FAIL" if failed else "INCOMPLETE" if unavailable else "PASS"))
     print("VERIFICATION test_stage4_miner_launch COMPLETE", flush=True)
     return 0 if passed == len(GATES) else 1
 
