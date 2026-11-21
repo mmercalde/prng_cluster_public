@@ -1,0 +1,10 @@
+# suite	rc_now	rc_before_pass_b2efdef	run
+tests/test_prove_unchanged_outside.py	0	0	2026-11-21 header-check narrowing (logs/stage3a_focus_r3/), 49/49
+tests/test_pwc_stage3a.py	0	new	2026-11-21 header-check narrowing (logs/stage3a_focus_r3/), 6/6 gates 3/3 mutants
+tests/test_pwc_stage2b_anchor_phase.py	0	0	2026-11-21 header-check narrowing (logs/stage3a_focus_r3/), 35/35; uses the tool via scripts/pwc_sieve_filter_import_proof.py
+tests/test_pwc_backup_stage2.py	0	0	2026-11-20 after S3-13 removal (logs/stage3a_focus_r2/); does not use the tool
+tests/test_pwc_backup_step1.py	0	0	2026-11-20 after S3-13 removal (logs/stage3a_focus_r2/); does not use the tool
+tests/test_pwc_stage1.py	0	0	2026-11-20 after S3-13 removal (logs/stage3a_focus_r2/); does not use the tool
+tests/test_pwc_cache_reset.py	0	0	2026-11-20 after S3-13 removal (logs/stage3a_focus_r2/); does not use the tool
+test_persistent_worker_harness.py	0	0	2026-11-20 after S3-13 removal (logs/stage3a_focus_r2/); does not use the tool
+tests/test_s172_phase5_d3_25_candidate_ingress.py	0	0	2026-11-20 after S3-13 removal (logs/stage3a_focus_r2/); does not use the tool

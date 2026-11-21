@@ -10,7 +10,9 @@ Written by Claude (Team Alpha). What makes VM101 usable by Claude after a boot w
 qm set 101 --onboot 1
 ```
 
-**Status: DONE, as reported by Michael on 2026-11-19 at 20:33 PST.** Not verified by Claude: the config was not read and it has not yet been proven by a Zeus boot. Check with `qm config 101 | grep onboot`. UNVERIFIED: that VM100 starts by itself because it has this setting on; that is inferred from what Michael sees.
+**Status: DONE on 2026-11-20 at 12:57 PST** (set by Michael; correction 2026-11-20). The earlier status line said it was done on 2026-11-19 at 20:33 PST; that was wrong, and the setting was not on then. Not verified by Claude: the config was not read, and auto-start has not yet been proven by a Zeus boot. Check with `qm config 101 | grep onboot`. UNVERIFIED: that VM100 starts by itself because it has this setting on; that is inferred from what Michael sees.
+
+**Discard: enabled on 2026-11-20** (set by Michael), so blocks freed inside VM101 can be returned to the Proxmox thin pool. Not verified by Claude: which disk entry carries `discard=on`, and whether a trim (`fstrim`) has run since. Check on the Proxmox host with `qm config 101 | grep discard`.
 
 ## Routine
 

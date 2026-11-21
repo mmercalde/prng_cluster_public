@@ -1,0 +1,88 @@
+==============================================================================
+S172 Phase-5 D3.25 — mode-preserving backend contract + canonical candidate ingress
+==============================================================================
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+  ok    G1:  v2 producer contract shape at BOTH boundaries
+  ok    G2:  same seed, both modes, different rates -> TWO records
+  ok    G3:  mode-specific aggregates (no constant bias)
+  ok    G4:  intersection consistency fires BEFORE accumulator mutation
+  ok    G5:  skip_range is the integer difference
+  ok    G6:  sessions canonical form + defensive copy
+  ok    G7:  legacy generic maps carry no authority
+[S172-D6.2-CHECKPOINT] ERROR: no run context is installed, so the canonical checkpoint cannot be written or verified (non-fatal to the trial; ALL 12 candidates retained in memory, NOTHING cleared). `_install_flush_run_context` must run at run start.
+  ok    G8:  trial-major / mode-minor ordering + dual preservation
+  ok    G9:  hand-written 24-field canonical oracle (load-bearing)
+  ok    G10: a record list is NOT a map
+  ok    G12: D3 conformance — records_to_arrays + validate_array_bundle
+  ok    G13: miner path is isolated — no ingress, flush cadence preserved
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[PWC-BACKUP S1] TRIAL 3 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+  ok    G11: mutation proof (17 mutants)
+
+------------------------------------------------------------------------------
+G11 mutation evidence (red signature per mutant):
+------------------------------------------------------------------------------
+  killed by G2   restored set union at ingress
+              -> AssertionError: expected TWO records for the cross-mode seed 42, got 1: ['variable']. The pre-fix adapter unioned the two populations and emitted ONE 
+  killed by G8   restored set union at ingress
+              -> AssertionError: ['constant', 'variable', 'variable', 'variable']
+  killed by G2   variable records built from the CONSTANT maps
+              -> AssertionError: variable fwd rate: 0.9 != 0.55
+  killed by G3   variable records built from the CONSTANT maps
+              -> AssertionError: variable record seed 7 forward_count: 4 != 1
+  killed by G9   variable records built from the CONSTANT maps
+              -> AssertionError: production records differ from the hand-computed oracle:
+  killed by G3   variable aggregates overwritten with the constant counts
+              -> AssertionError: variable record seed 42 forward_count: 4 != 1
+  killed by G9   variable aggregates overwritten with the constant counts
+              -> AssertionError: production records differ from the hand-computed oracle:
+  killed by G12  string skip_range restored
+              -> CanonicalRecordError: record 0: 'skip_range' must be an integer, got '5-56' (str).
+  killed by G5   string skip_range restored
+              -> AssertionError: skip_range is str ('5-56'); the legacy string form is prohibited
+  killed by G9   string skip_range restored
+              -> AssertionError: production records differ from the hand-computed oracle:
+  killed by G6   'all' sessions fallback restored
+              -> AssertionError: normalize with the scalar 'all': did NOT fail closed — it returned normally
+  killed by G1   adapter-ingress validation removed (producer validation intact)
+              -> AssertionError: adapter ingress with 'schema_version' removed: did NOT fail closed — it returned normally
+  killed by G4   adapter-ingress validation removed (producer validation intact)
+              -> AssertionError: ingress with bidirectional_constant = {42}: did NOT fail closed — it returned normally
+  killed by G10  map reconstructed from forward_records_hybrid
+              -> AssertionError: 2
+  killed by G1   a missing v2 field defaults to {} (wall also removed)
+              -> AssertionError: adapter ingress with 'schema_version' removed: did NOT fail closed — it returned normally
+  killed by G4   intersection disagreement silently repaired at ingress
+              -> AssertionError: egress with bidirectional_constant = {42}: did NOT fail closed — it returned normally
+  killed by G4   producer egress validation removed
+              -> AssertionError: build_trial_populations with an inconsistent constant set: did NOT fail closed — it returned normally
+  killed by G3   combined bidirectional total stamped onto records
+              -> AssertionError: constant record seed 7 bidirectional_count: 3 != 2
+  killed by G9   combined bidirectional total stamped onto records
+              -> AssertionError: production records differ from the hand-computed oracle:
+  killed by G6   sessions shared by reference with the caller
+              -> AssertionError: a caller-side mutation reached a produced record: ['MUTATED', 'evening', 'night']
+  killed by G8   records emitted in mode-major order
+              -> AssertionError: ['variable', 'variable', 'variable', 'constant', 'constant', 'constant']
+  killed by G8   seed order within a mode no longer ascending
+              -> AssertionError: [90, 42, 7, 90, 42, 5]
+  killed by G9   seed order within a mode no longer ascending
+              -> AssertionError: production records differ from the hand-computed oracle:
+  killed by G13  miner path appends no candidate
+              -> AssertionError: the appended candidates are not the stored assembly's records, in assembly order
+  killed by G13  miner path drops the flush call
+              -> AssertionError: _flush_npz_incremental called 0 time(s); the pre-D3.25 shared path called it EXACTLY ONCE per invocation — flush cadence must not shif
+  killed by G13  miner path fabricates a zero result
+              -> AssertionError: a serve_trial dict with NO Phase-5 sink produced a TestResult (TestResult(config=WindowConfig(window_size=30, offset=2, sessions=['mid
+
+==============================================================================
+
+13/13 D3.25 gate checks green
+
+All D3.25 gate checks green — PWC/ZMQ emit the four-map v2 contract and the adapter builds canonical per-mode candidates behind an ingress wall (pending Team Alpha + Team Beta review).

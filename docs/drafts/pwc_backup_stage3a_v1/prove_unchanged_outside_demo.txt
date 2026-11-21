@@ -1,0 +1,65 @@
+$ python3 scripts/prove_unchanged_outside.py --base b2efdef --file sieve_filter.py --allow execute_sieve_job
+file      sieve_filter.py
+base      b2efdef:sieve_filter.py
+new       working tree:sieve_filter.py
+allowed   execute_sieve_job
+added     (none)
+AST       top-level statements base=31 new=31; definitions compared base=11 new=11; checked (not allowed)=10
+  allowed execute_sieve_job: base x1, new x1, changed=True
+bytes     base 45698 B sha256 a9735e8337ebf9a9; new 46146 B sha256 50a977bffa82749d; 4 hunk(s), +13/-6 lines
+  execute_sieve_job                        +13   -6    allowed
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0
+
+$ python3 scripts/prove_unchanged_outside.py --base b2efdef --file persistent_worker_coordinator.py   (S3-13 withdrawn: no change allowed)
+file      persistent_worker_coordinator.py
+base      b2efdef:persistent_worker_coordinator.py
+new       working tree:persistent_worker_coordinator.py
+allowed   (none)
+added     (none)
+AST       top-level statements base=82 new=82; definitions compared base=65 new=65; checked (not allowed)=65
+bytes     base 157583 B sha256 ceca9be7d4aaea51; new 157583 B sha256 ceca9be7d4aaea51; identical
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0
+
+== Stage 2b recheck with the strengthened tool (0caeaf9 -> b2efdef)
+$ python3 scripts/prove_unchanged_outside.py --base 0caeaf9 --new-rev b2efdef --file sieve_filter.py --allow execute_sieve_job GPUSieve.run_hybrid_sieve
+file      sieve_filter.py
+base      0caeaf9:sieve_filter.py
+new       b2efdef:sieve_filter.py
+allowed   GPUSieve.run_hybrid_sieve, execute_sieve_job
+added     (none)
+AST       top-level statements base=31 new=31; definitions compared base=11 new=11; checked (not allowed)=8
+  allowed GPUSieve.run_hybrid_sieve: base x1, new x1, changed=True
+  allowed execute_sieve_job: base x1, new x1, changed=True
+  allowed GPUSieve.run_hybrid_sieve: header changed (annotations, defaults, parameters); import-time issues: 0; order/kind issues: 0
+bytes     base 39972 B sha256 b44454da3239d9e1; new 45698 B sha256 a9735e8337ebf9a9; 8 hunk(s), +96/-7 lines
+  GPUSieve.run_hybrid_sieve                +22   -3    allowed
+  execute_sieve_job                        +74   -4    allowed
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0
+
+== Narrowed header check (owner 2026-11-21): the reported false positive, on a READ-ONLY COPY of agent 1's window_optimizer.py
+   copy: /home/michael/tfm_worktrees/pwc-backup/window_optimizer.py, sha256 e94aff9c33cb3a3a417bfc4fad21bf1290420813486a632a78e3de3a526d508a
+   base: git show b2efdef:window_optimizer.py; staging_high_water_bytes: int = 16 * 1024 ** 3 at base :756, copy :759 (unchanged); one parameter added: pwc_coordinator_address (trailing)
+$ python3 scripts/prove_unchanged_outside.py --base-file logs/stage3a_tool_mutants2/b2efdef_window_optimizer.py --new-file logs/stage3a_tool_mutants2/agent1_window_optimizer.py.copy --allow run_bayesian_optimization assert_step1_route_seed_start_supported run_with_config main
+file      logs/stage3a_tool_mutants2/agent1_window_optimizer.py.copy
+base      logs/stage3a_tool_mutants2/b2efdef_window_optimizer.py
+new       logs/stage3a_tool_mutants2/agent1_window_optimizer.py.copy
+allowed   assert_step1_route_seed_start_supported, main, run_bayesian_optimization, run_with_config
+added     (none)
+AST       top-level statements base=40 new=40; definitions compared base=58 new=58; checked (not allowed)=53
+  allowed assert_step1_route_seed_start_supported: base x1, new x1, changed=True
+  allowed main: base x1, new x1, changed=True
+  allowed run_bayesian_optimization: base x1, new x1, changed=True
+  allowed run_with_config: base x1, new x1, changed=True
+  allowed run_bayesian_optimization: header changed (annotations, defaults, parameters); import-time issues: 0; order/kind issues: 0
+  allowed run_with_config: header changed (annotations, defaults, parameters); import-time issues: 0; order/kind issues: 0
+bytes     base 104639 B sha256 a0e7e90505bf6183; new 106206 B sha256 e94aff9c33cb3a3a; 11 hunk(s), +24/-3 lines
+  assert_step1_route_seed_start_supported  +6    -3    allowed
+  main                                     +10   -0    allowed
+  run_bayesian_optimization                +5    -0    allowed
+  run_with_config                          +3    -0    allowed
+verdict   UNCHANGED OUTSIDE ALLOWED
+exit 0
+   The pre-narrowing rule on the same header: ['run_bayesian_optimization: default `16 * 1024 ** 3` is evaluated at import'] (the false positive)

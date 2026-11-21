@@ -158,7 +158,279 @@ def _top_names(stmt):
     return None
 
 
-def compare(base_src, new_src, allow, allow_added=()):
+def _bound_names(body):
+    """Every name bound by MODULE-LEVEL code, in order, with repeats: def/class
+    names, assignment / augmented / annotated targets (incl. tuple unpacking),
+    `import x` / `import x.y` (binds x) / `import x as y` / `from m import a as b`,
+    `for` and `with ... as` targets and `except ... as` names, inside module-level
+    if/try/with/for/while blocks too. Not inside defs or classes (those are local).
+    [Stage 3a, Beta X-PWC-STAGE2B R1 Q8: an added `time = 0` after `import time`
+    rebinds an import, so imports count as bindings.] Walrus targets are not read."""
+    out = []
+
+    def tgt(t):
+        if isinstance(t, ast.Name):
+            out.append(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for e in t.elts:
+                tgt(e)
+        elif isinstance(t, ast.Starred):
+            tgt(t.value)
+
+    def walk(stmts):
+        for st in stmts:
+            if isinstance(st, _DEFS):
+                out.append(st.name)
+                continue
+            if isinstance(st, ast.Import):
+                out.extend(a.asname or a.name.split(".")[0] for a in st.names)
+            elif isinstance(st, ast.ImportFrom):
+                out.extend(a.asname or a.name for a in st.names)
+            elif isinstance(st, ast.Assign):
+                for t in st.targets:
+                    tgt(t)
+            elif isinstance(st, (ast.AnnAssign, ast.AugAssign)):
+                tgt(st.target)
+            elif isinstance(st, (ast.For, ast.AsyncFor)):
+                tgt(st.target)
+            elif isinstance(st, (ast.With, ast.AsyncWith)):
+                for it in st.items:
+                    if it.optional_vars is not None:
+                        tgt(it.optional_vars)
+            for field in ("body", "orelse", "finalbody"):
+                walk(getattr(st, field, None) or [])
+            for h in getattr(st, "handlers", None) or []:
+                if h.name:
+                    out.append(h.name)
+                walk(h.body)
+            for c in getattr(st, "cases", None) or []:
+                walk(c.body)
+    walk(body)
+    return out
+
+
+def _is_literal(node):
+    try:
+        ast.literal_eval(node)
+        return True
+    except (ValueError, TypeError, SyntaxError, RecursionError):
+        return False
+
+
+def _is_inert_annotation(node):
+    """Names, dotted names, subscripts of those, constants, tuples/lists of those,
+    and `A | B`. No calls, no other operators."""
+    if node is None or isinstance(node, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _is_inert_annotation(node.value)
+    if isinstance(node, ast.Subscript):
+        return _is_inert_annotation(node.value) and _is_inert_annotation(node.slice)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_is_inert_annotation(e) for e in node.elts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _is_inert_annotation(node.left) and _is_inert_annotation(node.right)
+    if hasattr(ast, "Index") and isinstance(node, getattr(ast, "Index")):   # Python < 3.9
+        return _is_inert_annotation(node.value)
+    return False
+
+
+def _header_parts(node):
+    """What Python evaluates when it EXECUTES a def/class statement (i.e. at import
+    for a module-level one): decorators, argument defaults and annotations, the
+    return annotation; for a class, its bases and keywords."""
+    if isinstance(node, ast.ClassDef):
+        return {"decorators": node.decorator_list, "bases": node.bases,
+                "keywords": [k.value for k in node.keywords]}
+    a = node.args
+    anns = [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs]
+    anns += [x.annotation for x in (a.vararg, a.kwarg) if x is not None]
+    return {"decorators": node.decorator_list,
+            "defaults": list(a.defaults) + [d for d in a.kw_defaults if d is not None],
+            "annotations": [x for x in anns if x is not None] + ([node.returns] if node.returns else [])}
+
+
+def _header_issues(node, where):
+    """Import-time evaluation in a def/class header that is not inert."""
+    parts, issues = _header_parts(node), []
+    if parts["decorators"]:
+        issues.append(f"{where}: decorator(s) {[ast.unparse(d) for d in parts['decorators']]} run at import")
+    for d in parts.get("defaults", []):
+        if not _is_literal(d):
+            issues.append(f"{where}: default `{ast.unparse(d)}` is evaluated at import")
+    for an in parts.get("annotations", []):
+        if not _is_inert_annotation(an):
+            issues.append(f"{where}: annotation `{ast.unparse(an)}` is evaluated at import")
+    for b in parts.get("bases", []) + parts.get("keywords", []):
+        if not _is_inert_annotation(b):
+            issues.append(f"{where}: class base/keyword `{ast.unparse(b)}` is evaluated at import")
+    return issues
+
+
+def _param_table(fn):
+    """A def's parameters in signature order: (kind, name, annotation, default).
+    Positional defaults are aligned to the LAST len(defaults) positional parameters."""
+    a = fn.args
+    pos = [("posonly", p) for p in a.posonlyargs] + [("arg", p) for p in a.args]
+    first_def = len(pos) - len(a.defaults)
+    rows = [(k, p.arg, p.annotation, a.defaults[i - first_def] if i >= first_def else None)
+            for i, (k, p) in enumerate(pos)]
+    if a.vararg is not None:
+        rows.append(("vararg", a.vararg.arg, a.vararg.annotation, None))
+    rows += [("kwonly", p.arg, p.annotation, d) for p, d in zip(a.kwonlyargs, a.kw_defaults)]
+    if a.kwarg is not None:
+        rows.append(("kwarg", a.kwarg.arg, a.kwarg.annotation, None))
+    return rows
+
+
+def _changed_header_issues(fb, fn, where):
+    """[Stage 3a, Beta Q8, narrowed 2026-11-21] For an ALLOWED definition whose header
+    changed. Returns (import_time_issues, order_issues, removed_parameters).
+
+    - Decorators: if the decorator list differs from the base, every decorator in the
+      new header is flagged (a decorator always runs code at import).
+    - A parameter's default or annotation that is not inert is flagged only when the
+      parameter is new, or its default/annotation AST differs from the SAME-NAMED
+      parameter's in the base. An unchanged non-inert default (already evaluated at
+      import in the base) is not flagged.
+    - The return annotation: flagged when not inert and different from the base's.
+    - Order: the parameters present on both sides must keep their relative order and
+      their kind (positional-only / positional / *args / keyword-only / **kwargs).
+      Any change is an order issue, whatever the defaults.
+    Classes keep the full check of _header_issues (bases and keywords when changed)."""
+    if isinstance(fn, ast.ClassDef) or isinstance(fb, ast.ClassDef):
+        issues = _header_issues(fn, where)
+        if [_dump(d) for d in fb.decorator_list] == [_dump(d) for d in fn.decorator_list]:
+            issues = [i for i in issues if "decorator(s)" not in i]
+        return issues, [], []
+    issues, order = [], []
+    if [_dump(d) for d in fb.decorator_list] != [_dump(d) for d in fn.decorator_list] and fn.decorator_list:
+        issues.append(f"{where}: decorator(s) {[ast.unparse(d) for d in fn.decorator_list]} run at import")
+    tb, tn = _param_table(fb), _param_table(fn)
+    bmap, nmap = {r[1]: r for r in tb}, {r[1]: r for r in tn}
+    common_b = [r[1] for r in tb if r[1] in nmap]
+    common_n = [r[1] for r in tn if r[1] in bmap]
+    if common_b != common_n:
+        order.append(f"{where}: parameter order changed: base {common_b} -> new {common_n}")
+    for name in common_n:
+        if bmap[name][0] != nmap[name][0]:
+            order.append(f"{where}: parameter `{name}` changed kind {bmap[name][0]} -> {nmap[name][0]}")
+    for kind, name, ann, dflt in tn:
+        b = bmap.get(name)
+        for label, node, bnode, inert in (("default", dflt, b[3] if b else None, _is_literal),
+                                          ("annotation", ann, b[2] if b else None, _is_inert_annotation)):
+            if node is None or inert(node):
+                continue
+            if b is None:
+                issues.append(f"{where}: new parameter `{name}` {label} `{ast.unparse(node)}` is evaluated at import")
+            elif bnode is None or _dump(bnode) != _dump(node):
+                issues.append(f"{where}: parameter `{name}` {label} changed to `{ast.unparse(node)}`, "
+                              f"evaluated at import")
+    if fn.returns is not None and not _is_inert_annotation(fn.returns) and \
+            (fb.returns is None or _dump(fb.returns) != _dump(fn.returns)):
+        issues.append(f"{where}: return annotation `{ast.unparse(fn.returns)}` is evaluated at import")
+    removed = [r[1] for r in tb if r[1] not in nmap]
+    return issues, order, removed
+
+
+def _import_time_issues(stmt, where):
+    """[Stage 3a, Beta Q8] What an ADDED top-level statement runs at import, if it is
+    not inert: a non-literal assigned value; a def with decorators, non-literal
+    defaults or non-inert annotations; a class with a non-inert header or a body
+    statement other than defs, literal assignments, a docstring or `pass`."""
+    if isinstance(stmt, ast.Assign):
+        return [] if _is_literal(stmt.value) else \
+            [f"{where}: value `{ast.unparse(stmt.value)}` is evaluated at import (not a literal)"]
+    if isinstance(stmt, ast.AnnAssign):
+        out = [] if _is_inert_annotation(stmt.annotation) else \
+            [f"{where}: annotation `{ast.unparse(stmt.annotation)}` is evaluated at import"]
+        if stmt.value is not None and not _is_literal(stmt.value):
+            out.append(f"{where}: value `{ast.unparse(stmt.value)}` is evaluated at import (not a literal)")
+        return out
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return _header_issues(stmt, where)
+    if isinstance(stmt, ast.ClassDef):
+        out = _header_issues(stmt, where)
+        for i, b in enumerate(stmt.body):
+            sub = f"{where}.{getattr(b, 'name', '<body %d>' % i)}"
+            if isinstance(b, ast.Pass) or (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant)):
+                continue
+            if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign)):
+                out.extend(_import_time_issues(b, sub))
+            else:
+                out.append(f"{sub}: class-body statement `{_stmt_label(b)}` runs at import")
+        return out
+    return [f"{where}: statement kind {type(stmt).__name__} cannot be checked"]
+
+
+def _find_def(tree, qual):
+    hits = [n for q, n in _walk_defs(tree.body) if q == qual]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _header_text(stmt):
+    return ast.unparse(stmt).splitlines()[0].strip()
+
+
+def _find_block(fn, header):
+    """Within def `fn` (not entering nested defs/classes), the compound statements
+    whose first source line, as ast.unparse prints it, equals `header`. Returns
+    [(top_index, node)], where top_index is the index in fn.body of the top-level
+    statement that contains the block."""
+    found = []
+
+    def walk(stmts, top):
+        for i, st in enumerate(stmts):
+            ti = i if top is None else top
+            if isinstance(st, _DEFS):
+                continue
+            if any(getattr(st, f, None) for f in ("body", "handlers", "cases")) and \
+                    _header_text(st) == header:
+                found.append((ti, st))
+            for f in ("body", "orelse", "finalbody"):
+                walk(getattr(st, f, None) or [], ti)
+            for h in getattr(st, "handlers", None) or []:
+                walk(h.body, ti)
+            for c in getattr(st, "cases", None) or []:
+                walk(c.body, ti)
+    walk(fn.body, None)
+    return found
+
+
+def keep_block_check(bt, nt, spec):
+    """[Stage 3a, Beta X-PWC-STAGE2B R1 Q8] `QUALNAME::HEADER`. The block (e.g. the
+    `if _use_miner:` branch of a function that is otherwise allowed to change) must
+    be found exactly once in that function on each side, and both the block and its
+    PREAMBLE (every statement of the function body before the top-level statement
+    that holds the block) must be AST-identical. The signature/decorators of the
+    function are part of the preamble check too. Returns a list of problems."""
+    if "::" not in spec:
+        raise SetupError(f"--keep-block needs QUALNAME::HEADER, got {spec!r}")
+    qual, header = spec.split("::", 1)
+    header = header.strip()
+    fb, fn = _find_def(bt, qual), _find_def(nt, qual)
+    if fb is None or fn is None:
+        return [{"kind": "kept-block-function-not-unique", "name": qual, "block": header,
+                 "base_count": int(fb is not None), "new_count": int(fn is not None)}]
+    hb, hn = _find_block(fb, header), _find_block(fn, header)
+    if len(hb) != 1 or len(hn) != 1:
+        return [{"kind": "kept-block-not-unique", "name": qual, "block": header,
+                 "base_count": len(hb), "new_count": len(hn)}]
+    (ib, nb), (in_, nn) = hb[0], hn[0]
+    out = []
+    if _dump(nb) != _dump(nn):
+        out.append({"kind": "kept-block-differs", "name": qual, "block": header})
+    sig_b = _dump(ast.FunctionDef(name="_", args=fb.args, body=[], decorator_list=fb.decorator_list,
+                                  returns=fb.returns)) if not isinstance(fb, ast.ClassDef) else _dump(fb)
+    sig_n = _dump(ast.FunctionDef(name="_", args=fn.args, body=[], decorator_list=fn.decorator_list,
+                                  returns=fn.returns)) if not isinstance(fn, ast.ClassDef) else _dump(fn)
+    if ib != in_ or [_dump(x) for x in fb.body[:ib]] != [_dump(x) for x in fn.body[:in_]] or sig_b != sig_n:
+        out.append({"kind": "kept-block-preamble-differs", "name": qual, "block": header,
+                    "base_preamble_statements": ib, "new_preamble_statements": in_})
+    return out
+
+
+def compare(base_src, new_src, allow, allow_added=(), keep_blocks=()):
     """Return a report dict. report['ok'] is True only if nothing outside `allow`
     differs. `allow_added` names top-level definitions or assignments that are
     NEW by design: each must exist exactly once in the new file, at top level,
@@ -170,20 +442,28 @@ def compare(base_src, new_src, allow, allow_added=()):
     added_report = {}
     raw_new_statements = len(nt.body)
     if allow_added:
-        b_top = [n for st in bt.body for n in (_top_names(st) or ())]
-        b_all = set(b_top) | {q for q, _ in _walk_defs(bt.body)}
+        b_all = set(_bound_names(bt.body)) | {q for q, _ in _walk_defs(bt.body)}
+        n_bound = _bound_names(nt.body)
         n_hits = {}
         for st in nt.body:
             names = _top_names(st)
             if names and names <= allow_added:
                 for nm in names:
                     n_hits[nm] = n_hits.get(nm, 0) + 1
+                issues = _import_time_issues(st, "/".join(sorted(names)))
+                if issues:
+                    problems.append({"kind": "allowed-added-import-time-evaluation",
+                                     "name": "/".join(sorted(names)), "issues": issues})
         for nm in sorted(allow_added):
-            added_report[nm] = {"in_base": nm in b_all, "new_count": n_hits.get(nm, 0)}
-            if nm in b_all or n_hits.get(nm, 0) != 1:
+            added_report[nm] = {"in_base": nm in b_all, "new_count": n_hits.get(nm, 0),
+                                "new_bindings": n_bound.count(nm)}
+            # bound anywhere in the base (incl. as an import), or bound more than
+            # once in the new file (the added statement plus a rebinding): invalid
+            if nm in b_all or n_hits.get(nm, 0) != 1 or n_bound.count(nm) != 1:
                 problems.append({"kind": "allowed-added-name-invalid", "name": nm,
                                  "base_count": int(nm in b_all),
-                                 "new_count": n_hits.get(nm, 0)})
+                                 "new_count": n_hits.get(nm, 0),
+                                 "new_bindings": n_bound.count(nm)})
         nt = copy.deepcopy(nt)
         nt.body = [st for st in nt.body
                    if not ((_top_names(st) or None) and _top_names(st) <= allow_added)]
@@ -198,6 +478,40 @@ def compare(base_src, new_src, allow, allow_added=()):
         if cb != 1 or cn != 1:
             problems.append({"kind": "allowed-name-not-unique-or-missing", "name": a,
                              "base_count": cb, "new_count": cn})
+
+    # [Stage 3a, Beta Q8] an allowed definition's HEADER runs when its def/class
+    # statement runs (module-level: at import). When the header changed, every part
+    # of the new header must be inert -- narrowed 2026-11-21 (owner): a non-inert part
+    # is flagged only where it differs from the same parameter's in the base, or the
+    # parameter is new; any reorder or kind change of existing parameters is caught.
+    header_notes = []
+    for a in sorted(allow):
+        fb_, fn_ = _find_def(bt, a), _find_def(nt, a)
+        if fb_ is None or fn_ is None:
+            continue
+        hb_ = {k: [_dump(x) for x in v] for k, v in _header_parts(fb_).items()}
+        hn_ = {k: [_dump(x) for x in v] for k, v in _header_parts(fn_).items()}
+        if not isinstance(fb_, ast.ClassDef) and not isinstance(fn_, ast.ClassDef):
+            # parameter names and kinds too: a pure reorder of default-less parameters
+            # leaves decorators, defaults and annotations unchanged
+            hb_["parameters"] = [r[:2] for r in _param_table(fb_)]
+            hn_["parameters"] = [r[:2] for r in _param_table(fn_)]
+        if hb_ != hn_:
+            changed_parts = sorted(k for k in set(hb_) | set(hn_) if hb_.get(k) != hn_.get(k))
+            issues, order, removed = _changed_header_issues(fb_, fn_, a)
+            header_notes.append({"name": a, "changed": changed_parts, "issues": issues,
+                                 "order_issues": order, "removed_parameters": removed})
+            if issues:
+                problems.append({"kind": "allowed-header-import-time-evaluation", "name": a,
+                                 "issues": issues})
+            if order:
+                problems.append({"kind": "allowed-header-parameter-order-changed", "name": a,
+                                 "issues": order})
+    kept = []
+    for spec in keep_blocks:
+        kp = keep_block_check(bt, nt, spec)
+        kept.append({"spec": spec, "ok": not kp})
+        problems.extend(kp)
 
     bm, nm = _Masker(allow), _Masker(allow)
     bmt, nmt = bm.visit(copy.deepcopy(bt)), nm.visit(copy.deepcopy(nt))
@@ -250,6 +564,8 @@ def compare(base_src, new_src, allow, allow_added=()):
     return {
         "allowed": allowed_report,
         "allowed_added": added_report,
+        "allowed_header_changes": header_notes,
+        "kept_blocks": kept,
         "base_top_level_statements": len(bt.body),
         "new_top_level_statements": raw_new_statements,
         "new_top_level_statements_compared": len(nt.body),
@@ -361,9 +677,26 @@ def _text(report):
             for d in p["definitions"]:
                 tag = " (a nested definition also changed)" if d["has_changed_child"] else ""
                 out.append(f"    {d['change']}: {d['name']}{tag}")
+        elif "issues" in p:
+            out.append(f"  ERROR {p['kind']}: {p['name']}")
+            for i in p["issues"]:
+                out.append(f"    {i}")
+        elif p["kind"].startswith("kept-block"):
+            out.append(f"  ERROR {p['kind']}: {p['name']} :: {p['block']}"
+                       + (f" (base x{p['base_count']}, new x{p['new_count']})" if "base_count" in p else ""))
         else:
             out.append(f"  ERROR {p['kind']}: {p['name']} base x{p['base_count']} "
-                       f"new x{p['new_count']}")
+                       f"new x{p['new_count']}" + (f" bindings in new x{p['new_bindings']}"
+                                                   if "new_bindings" in p else ""))
+    for h in a.get("allowed_header_changes", []):
+        out.append(f"  allowed {h['name']}: header changed ({', '.join(h['changed'])}); "
+                   f"import-time issues: {len(h['issues'])}; order/kind issues: "
+                   f"{len(h.get('order_issues', []))}"
+                   + (f"; removed parameters: {h['removed_parameters']}" if h.get("removed_parameters") else ""))
+        for i in h["issues"] + h.get("order_issues", []):
+            out.append(f"    - {i}")
+    for k in a.get("kept_blocks", []):
+        out.append(f"  kept block {k['spec']}: {'identical, with preamble' if k['ok'] else 'DIFFERS'}")
     for name, info in sorted(a.get("allowed_added", {}).items()):
         out.append(f"  added (allowed) {name}: in base={info['in_base']}, new x{info['new_count']}")
     out.append(f"bytes     base {b['base_bytes']} B sha256 {b['base_sha256'][:16]}; "
@@ -394,6 +727,10 @@ def main(argv=None):
     ap.add_argument("--allow", nargs="*", default=[], help="qualified names allowed to change")
     ap.add_argument("--allow-added", nargs="*", default=[],
                     help="top-level definitions/assignments that are new by design")
+    ap.add_argument("--keep-block", nargs="*", default=[], metavar="QUALNAME::HEADER",
+                    help="a block inside an allowed function that must stay AST-identical, "
+                         "with everything before it in that function (e.g. "
+                         "'run_bidirectional_test::if _use_miner:')")
     ap.add_argument("--strict-bytes", action="store_true",
                     help="also fail on comment/format-only changes outside the allowed names")
     ap.add_argument("--json", action="store_true", help="print the full report as JSON")
@@ -418,7 +755,7 @@ def main(argv=None):
                 raise SetupError("--file is required when comparing against the working tree")
             new_src, new_label = _read(os.path.join(a.repo, a.file)), f"working tree:{a.file}"
         report = {"file": a.file or a.new_file, "base": base_label, "new": new_label,
-                  "ast": compare(base_src, new_src, a.allow, a.allow_added),
+                  "ast": compare(base_src, new_src, a.allow, a.allow_added, a.keep_block),
                   "bytes": byte_summary(base_src, new_src, a.allow, a.allow_added)}
     except SetupError as exc:
         print(f"prove_unchanged_outside: {exc}", file=sys.stderr)

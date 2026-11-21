@@ -1,0 +1,1046 @@
+diff --git a/scripts/prove_unchanged_outside.py b/scripts/prove_unchanged_outside.py
+index 1b32e6c..9d43255 100644
+--- a/scripts/prove_unchanged_outside.py
++++ b/scripts/prove_unchanged_outside.py
+@@ -158,7 +158,279 @@ def _top_names(stmt):
+     return None
+ 
+ 
+-def compare(base_src, new_src, allow, allow_added=()):
++def _bound_names(body):
++    """Every name bound by MODULE-LEVEL code, in order, with repeats: def/class
++    names, assignment / augmented / annotated targets (incl. tuple unpacking),
++    `import x` / `import x.y` (binds x) / `import x as y` / `from m import a as b`,
++    `for` and `with ... as` targets and `except ... as` names, inside module-level
++    if/try/with/for/while blocks too. Not inside defs or classes (those are local).
++    [Stage 3a, Beta X-PWC-STAGE2B R1 Q8: an added `time = 0` after `import time`
++    rebinds an import, so imports count as bindings.] Walrus targets are not read."""
++    out = []
++
++    def tgt(t):
++        if isinstance(t, ast.Name):
++            out.append(t.id)
++        elif isinstance(t, (ast.Tuple, ast.List)):
++            for e in t.elts:
++                tgt(e)
++        elif isinstance(t, ast.Starred):
++            tgt(t.value)
++
++    def walk(stmts):
++        for st in stmts:
++            if isinstance(st, _DEFS):
++                out.append(st.name)
++                continue
++            if isinstance(st, ast.Import):
++                out.extend(a.asname or a.name.split(".")[0] for a in st.names)
++            elif isinstance(st, ast.ImportFrom):
++                out.extend(a.asname or a.name for a in st.names)
++            elif isinstance(st, ast.Assign):
++                for t in st.targets:
++                    tgt(t)
++            elif isinstance(st, (ast.AnnAssign, ast.AugAssign)):
++                tgt(st.target)
++            elif isinstance(st, (ast.For, ast.AsyncFor)):
++                tgt(st.target)
++            elif isinstance(st, (ast.With, ast.AsyncWith)):
++                for it in st.items:
++                    if it.optional_vars is not None:
++                        tgt(it.optional_vars)
++            for field in ("body", "orelse", "finalbody"):
++                walk(getattr(st, field, None) or [])
++            for h in getattr(st, "handlers", None) or []:
++                if h.name:
++                    out.append(h.name)
++                walk(h.body)
++            for c in getattr(st, "cases", None) or []:
++                walk(c.body)
++    walk(body)
++    return out
++
++
++def _is_literal(node):
++    try:
++        ast.literal_eval(node)
++        return True
++    except (ValueError, TypeError, SyntaxError, RecursionError):
++        return False
++
++
++def _is_inert_annotation(node):
++    """Names, dotted names, subscripts of those, constants, tuples/lists of those,
++    and `A | B`. No calls, no other operators."""
++    if node is None or isinstance(node, (ast.Name, ast.Constant)):
++        return True
++    if isinstance(node, ast.Attribute):
++        return _is_inert_annotation(node.value)
++    if isinstance(node, ast.Subscript):
++        return _is_inert_annotation(node.value) and _is_inert_annotation(node.slice)
++    if isinstance(node, (ast.Tuple, ast.List)):
++        return all(_is_inert_annotation(e) for e in node.elts)
++    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
++        return _is_inert_annotation(node.left) and _is_inert_annotation(node.right)
++    if hasattr(ast, "Index") and isinstance(node, getattr(ast, "Index")):   # Python < 3.9
++        return _is_inert_annotation(node.value)
++    return False
++
++
++def _header_parts(node):
++    """What Python evaluates when it EXECUTES a def/class statement (i.e. at import
++    for a module-level one): decorators, argument defaults and annotations, the
++    return annotation; for a class, its bases and keywords."""
++    if isinstance(node, ast.ClassDef):
++        return {"decorators": node.decorator_list, "bases": node.bases,
++                "keywords": [k.value for k in node.keywords]}
++    a = node.args
++    anns = [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs]
++    anns += [x.annotation for x in (a.vararg, a.kwarg) if x is not None]
++    return {"decorators": node.decorator_list,
++            "defaults": list(a.defaults) + [d for d in a.kw_defaults if d is not None],
++            "annotations": [x for x in anns if x is not None] + ([node.returns] if node.returns else [])}
++
++
++def _header_issues(node, where):
++    """Import-time evaluation in a def/class header that is not inert."""
++    parts, issues = _header_parts(node), []
++    if parts["decorators"]:
++        issues.append(f"{where}: decorator(s) {[ast.unparse(d) for d in parts['decorators']]} run at import")
++    for d in parts.get("defaults", []):
++        if not _is_literal(d):
++            issues.append(f"{where}: default `{ast.unparse(d)}` is evaluated at import")
++    for an in parts.get("annotations", []):
++        if not _is_inert_annotation(an):
++            issues.append(f"{where}: annotation `{ast.unparse(an)}` is evaluated at import")
++    for b in parts.get("bases", []) + parts.get("keywords", []):
++        if not _is_inert_annotation(b):
++            issues.append(f"{where}: class base/keyword `{ast.unparse(b)}` is evaluated at import")
++    return issues
++
++
++def _param_table(fn):
++    """A def's parameters in signature order: (kind, name, annotation, default).
++    Positional defaults are aligned to the LAST len(defaults) positional parameters."""
++    a = fn.args
++    pos = [("posonly", p) for p in a.posonlyargs] + [("arg", p) for p in a.args]
++    first_def = len(pos) - len(a.defaults)
++    rows = [(k, p.arg, p.annotation, a.defaults[i - first_def] if i >= first_def else None)
++            for i, (k, p) in enumerate(pos)]
++    if a.vararg is not None:
++        rows.append(("vararg", a.vararg.arg, a.vararg.annotation, None))
++    rows += [("kwonly", p.arg, p.annotation, d) for p, d in zip(a.kwonlyargs, a.kw_defaults)]
++    if a.kwarg is not None:
++        rows.append(("kwarg", a.kwarg.arg, a.kwarg.annotation, None))
++    return rows
++
++
++def _changed_header_issues(fb, fn, where):
++    """[Stage 3a, Beta Q8, narrowed 2026-11-21] For an ALLOWED definition whose header
++    changed. Returns (import_time_issues, order_issues, removed_parameters).
++
++    - Decorators: if the decorator list differs from the base, every decorator in the
++      new header is flagged (a decorator always runs code at import).
++    - A parameter's default or annotation that is not inert is flagged only when the
++      parameter is new, or its default/annotation AST differs from the SAME-NAMED
++      parameter's in the base. An unchanged non-inert default (already evaluated at
++      import in the base) is not flagged.
++    - The return annotation: flagged when not inert and different from the base's.
++    - Order: the parameters present on both sides must keep their relative order and
++      their kind (positional-only / positional / *args / keyword-only / **kwargs).
++      Any change is an order issue, whatever the defaults.
++    Classes keep the full check of _header_issues (bases and keywords when changed)."""
++    if isinstance(fn, ast.ClassDef) or isinstance(fb, ast.ClassDef):
++        issues = _header_issues(fn, where)
++        if [_dump(d) for d in fb.decorator_list] == [_dump(d) for d in fn.decorator_list]:
++            issues = [i for i in issues if "decorator(s)" not in i]
++        return issues, [], []
++    issues, order = [], []
++    if [_dump(d) for d in fb.decorator_list] != [_dump(d) for d in fn.decorator_list] and fn.decorator_list:
++        issues.append(f"{where}: decorator(s) {[ast.unparse(d) for d in fn.decorator_list]} run at import")
++    tb, tn = _param_table(fb), _param_table(fn)
++    bmap, nmap = {r[1]: r for r in tb}, {r[1]: r for r in tn}
++    common_b = [r[1] for r in tb if r[1] in nmap]
++    common_n = [r[1] for r in tn if r[1] in bmap]
++    if common_b != common_n:
++        order.append(f"{where}: parameter order changed: base {common_b} -> new {common_n}")
++    for name in common_n:
++        if bmap[name][0] != nmap[name][0]:
++            order.append(f"{where}: parameter `{name}` changed kind {bmap[name][0]} -> {nmap[name][0]}")
++    for kind, name, ann, dflt in tn:
++        b = bmap.get(name)
++        for label, node, bnode, inert in (("default", dflt, b[3] if b else None, _is_literal),
++                                          ("annotation", ann, b[2] if b else None, _is_inert_annotation)):
++            if node is None or inert(node):
++                continue
++            if b is None:
++                issues.append(f"{where}: new parameter `{name}` {label} `{ast.unparse(node)}` is evaluated at import")
++            elif bnode is None or _dump(bnode) != _dump(node):
++                issues.append(f"{where}: parameter `{name}` {label} changed to `{ast.unparse(node)}`, "
++                              f"evaluated at import")
++    if fn.returns is not None and not _is_inert_annotation(fn.returns) and \
++            (fb.returns is None or _dump(fb.returns) != _dump(fn.returns)):
++        issues.append(f"{where}: return annotation `{ast.unparse(fn.returns)}` is evaluated at import")
++    removed = [r[1] for r in tb if r[1] not in nmap]
++    return issues, order, removed
++
++
++def _import_time_issues(stmt, where):
++    """[Stage 3a, Beta Q8] What an ADDED top-level statement runs at import, if it is
++    not inert: a non-literal assigned value; a def with decorators, non-literal
++    defaults or non-inert annotations; a class with a non-inert header or a body
++    statement other than defs, literal assignments, a docstring or `pass`."""
++    if isinstance(stmt, ast.Assign):
++        return [] if _is_literal(stmt.value) else \
++            [f"{where}: value `{ast.unparse(stmt.value)}` is evaluated at import (not a literal)"]
++    if isinstance(stmt, ast.AnnAssign):
++        out = [] if _is_inert_annotation(stmt.annotation) else \
++            [f"{where}: annotation `{ast.unparse(stmt.annotation)}` is evaluated at import"]
++        if stmt.value is not None and not _is_literal(stmt.value):
++            out.append(f"{where}: value `{ast.unparse(stmt.value)}` is evaluated at import (not a literal)")
++        return out
++    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
++        return _header_issues(stmt, where)
++    if isinstance(stmt, ast.ClassDef):
++        out = _header_issues(stmt, where)
++        for i, b in enumerate(stmt.body):
++            sub = f"{where}.{getattr(b, 'name', '<body %d>' % i)}"
++            if isinstance(b, ast.Pass) or (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant)):
++                continue
++            if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign)):
++                out.extend(_import_time_issues(b, sub))
++            else:
++                out.append(f"{sub}: class-body statement `{_stmt_label(b)}` runs at import")
++        return out
++    return [f"{where}: statement kind {type(stmt).__name__} cannot be checked"]
++
++
++def _find_def(tree, qual):
++    hits = [n for q, n in _walk_defs(tree.body) if q == qual]
++    return hits[0] if len(hits) == 1 else None
++
++
++def _header_text(stmt):
++    return ast.unparse(stmt).splitlines()[0].strip()
++
++
++def _find_block(fn, header):
++    """Within def `fn` (not entering nested defs/classes), the compound statements
++    whose first source line, as ast.unparse prints it, equals `header`. Returns
++    [(top_index, node)], where top_index is the index in fn.body of the top-level
++    statement that contains the block."""
++    found = []
++
++    def walk(stmts, top):
++        for i, st in enumerate(stmts):
++            ti = i if top is None else top
++            if isinstance(st, _DEFS):
++                continue
++            if any(getattr(st, f, None) for f in ("body", "handlers", "cases")) and \
++                    _header_text(st) == header:
++                found.append((ti, st))
++            for f in ("body", "orelse", "finalbody"):
++                walk(getattr(st, f, None) or [], ti)
++            for h in getattr(st, "handlers", None) or []:
++                walk(h.body, ti)
++            for c in getattr(st, "cases", None) or []:
++                walk(c.body, ti)
++    walk(fn.body, None)
++    return found
++
++
++def keep_block_check(bt, nt, spec):
++    """[Stage 3a, Beta X-PWC-STAGE2B R1 Q8] `QUALNAME::HEADER`. The block (e.g. the
++    `if _use_miner:` branch of a function that is otherwise allowed to change) must
++    be found exactly once in that function on each side, and both the block and its
++    PREAMBLE (every statement of the function body before the top-level statement
++    that holds the block) must be AST-identical. The signature/decorators of the
++    function are part of the preamble check too. Returns a list of problems."""
++    if "::" not in spec:
++        raise SetupError(f"--keep-block needs QUALNAME::HEADER, got {spec!r}")
++    qual, header = spec.split("::", 1)
++    header = header.strip()
++    fb, fn = _find_def(bt, qual), _find_def(nt, qual)
++    if fb is None or fn is None:
++        return [{"kind": "kept-block-function-not-unique", "name": qual, "block": header,
++                 "base_count": int(fb is not None), "new_count": int(fn is not None)}]
++    hb, hn = _find_block(fb, header), _find_block(fn, header)
++    if len(hb) != 1 or len(hn) != 1:
++        return [{"kind": "kept-block-not-unique", "name": qual, "block": header,
++                 "base_count": len(hb), "new_count": len(hn)}]
++    (ib, nb), (in_, nn) = hb[0], hn[0]
++    out = []
++    if _dump(nb) != _dump(nn):
++        out.append({"kind": "kept-block-differs", "name": qual, "block": header})
++    sig_b = _dump(ast.FunctionDef(name="_", args=fb.args, body=[], decorator_list=fb.decorator_list,
++                                  returns=fb.returns)) if not isinstance(fb, ast.ClassDef) else _dump(fb)
++    sig_n = _dump(ast.FunctionDef(name="_", args=fn.args, body=[], decorator_list=fn.decorator_list,
++                                  returns=fn.returns)) if not isinstance(fn, ast.ClassDef) else _dump(fn)
++    if ib != in_ or [_dump(x) for x in fb.body[:ib]] != [_dump(x) for x in fn.body[:in_]] or sig_b != sig_n:
++        out.append({"kind": "kept-block-preamble-differs", "name": qual, "block": header,
++                    "base_preamble_statements": ib, "new_preamble_statements": in_})
++    return out
++
++
++def compare(base_src, new_src, allow, allow_added=(), keep_blocks=()):
+     """Return a report dict. report['ok'] is True only if nothing outside `allow`
+     differs. `allow_added` names top-level definitions or assignments that are
+     NEW by design: each must exist exactly once in the new file, at top level,
+@@ -170,20 +442,28 @@ def compare(base_src, new_src, allow, allow_added=()):
+     added_report = {}
+     raw_new_statements = len(nt.body)
+     if allow_added:
+-        b_top = [n for st in bt.body for n in (_top_names(st) or ())]
+-        b_all = set(b_top) | {q for q, _ in _walk_defs(bt.body)}
++        b_all = set(_bound_names(bt.body)) | {q for q, _ in _walk_defs(bt.body)}
++        n_bound = _bound_names(nt.body)
+         n_hits = {}
+         for st in nt.body:
+             names = _top_names(st)
+             if names and names <= allow_added:
+                 for nm in names:
+                     n_hits[nm] = n_hits.get(nm, 0) + 1
++                issues = _import_time_issues(st, "/".join(sorted(names)))
++                if issues:
++                    problems.append({"kind": "allowed-added-import-time-evaluation",
++                                     "name": "/".join(sorted(names)), "issues": issues})
+         for nm in sorted(allow_added):
+-            added_report[nm] = {"in_base": nm in b_all, "new_count": n_hits.get(nm, 0)}
+-            if nm in b_all or n_hits.get(nm, 0) != 1:
++            added_report[nm] = {"in_base": nm in b_all, "new_count": n_hits.get(nm, 0),
++                                "new_bindings": n_bound.count(nm)}
++            # bound anywhere in the base (incl. as an import), or bound more than
++            # once in the new file (the added statement plus a rebinding): invalid
++            if nm in b_all or n_hits.get(nm, 0) != 1 or n_bound.count(nm) != 1:
+                 problems.append({"kind": "allowed-added-name-invalid", "name": nm,
+                                  "base_count": int(nm in b_all),
+-                                 "new_count": n_hits.get(nm, 0)})
++                                 "new_count": n_hits.get(nm, 0),
++                                 "new_bindings": n_bound.count(nm)})
+         nt = copy.deepcopy(nt)
+         nt.body = [st for st in nt.body
+                    if not ((_top_names(st) or None) and _top_names(st) <= allow_added)]
+@@ -199,6 +479,40 @@ def compare(base_src, new_src, allow, allow_added=()):
+             problems.append({"kind": "allowed-name-not-unique-or-missing", "name": a,
+                              "base_count": cb, "new_count": cn})
+ 
++    # [Stage 3a, Beta Q8] an allowed definition's HEADER runs when its def/class
++    # statement runs (module-level: at import). When the header changed, every part
++    # of the new header must be inert -- narrowed 2026-11-21 (owner): a non-inert part
++    # is flagged only where it differs from the same parameter's in the base, or the
++    # parameter is new; any reorder or kind change of existing parameters is caught.
++    header_notes = []
++    for a in sorted(allow):
++        fb_, fn_ = _find_def(bt, a), _find_def(nt, a)
++        if fb_ is None or fn_ is None:
++            continue
++        hb_ = {k: [_dump(x) for x in v] for k, v in _header_parts(fb_).items()}
++        hn_ = {k: [_dump(x) for x in v] for k, v in _header_parts(fn_).items()}
++        if not isinstance(fb_, ast.ClassDef) and not isinstance(fn_, ast.ClassDef):
++            # parameter names and kinds too: a pure reorder of default-less parameters
++            # leaves decorators, defaults and annotations unchanged
++            hb_["parameters"] = [r[:2] for r in _param_table(fb_)]
++            hn_["parameters"] = [r[:2] for r in _param_table(fn_)]
++        if hb_ != hn_:
++            changed_parts = sorted(k for k in set(hb_) | set(hn_) if hb_.get(k) != hn_.get(k))
++            issues, order, removed = _changed_header_issues(fb_, fn_, a)
++            header_notes.append({"name": a, "changed": changed_parts, "issues": issues,
++                                 "order_issues": order, "removed_parameters": removed})
++            if issues:
++                problems.append({"kind": "allowed-header-import-time-evaluation", "name": a,
++                                 "issues": issues})
++            if order:
++                problems.append({"kind": "allowed-header-parameter-order-changed", "name": a,
++                                 "issues": order})
++    kept = []
++    for spec in keep_blocks:
++        kp = keep_block_check(bt, nt, spec)
++        kept.append({"spec": spec, "ok": not kp})
++        problems.extend(kp)
++
+     bm, nm = _Masker(allow), _Masker(allow)
+     bmt, nmt = bm.visit(copy.deepcopy(bt)), nm.visit(copy.deepcopy(nt))
+     for a in sorted(allow):
+@@ -250,6 +564,8 @@ def compare(base_src, new_src, allow, allow_added=()):
+     return {
+         "allowed": allowed_report,
+         "allowed_added": added_report,
++        "allowed_header_changes": header_notes,
++        "kept_blocks": kept,
+         "base_top_level_statements": len(bt.body),
+         "new_top_level_statements": raw_new_statements,
+         "new_top_level_statements_compared": len(nt.body),
+@@ -361,9 +677,26 @@ def _text(report):
+             for d in p["definitions"]:
+                 tag = " (a nested definition also changed)" if d["has_changed_child"] else ""
+                 out.append(f"    {d['change']}: {d['name']}{tag}")
++        elif "issues" in p:
++            out.append(f"  ERROR {p['kind']}: {p['name']}")
++            for i in p["issues"]:
++                out.append(f"    {i}")
++        elif p["kind"].startswith("kept-block"):
++            out.append(f"  ERROR {p['kind']}: {p['name']} :: {p['block']}"
++                       + (f" (base x{p['base_count']}, new x{p['new_count']})" if "base_count" in p else ""))
+         else:
+             out.append(f"  ERROR {p['kind']}: {p['name']} base x{p['base_count']} "
+-                       f"new x{p['new_count']}")
++                       f"new x{p['new_count']}" + (f" bindings in new x{p['new_bindings']}"
++                                                   if "new_bindings" in p else ""))
++    for h in a.get("allowed_header_changes", []):
++        out.append(f"  allowed {h['name']}: header changed ({', '.join(h['changed'])}); "
++                   f"import-time issues: {len(h['issues'])}; order/kind issues: "
++                   f"{len(h.get('order_issues', []))}"
++                   + (f"; removed parameters: {h['removed_parameters']}" if h.get("removed_parameters") else ""))
++        for i in h["issues"] + h.get("order_issues", []):
++            out.append(f"    - {i}")
++    for k in a.get("kept_blocks", []):
++        out.append(f"  kept block {k['spec']}: {'identical, with preamble' if k['ok'] else 'DIFFERS'}")
+     for name, info in sorted(a.get("allowed_added", {}).items()):
+         out.append(f"  added (allowed) {name}: in base={info['in_base']}, new x{info['new_count']}")
+     out.append(f"bytes     base {b['base_bytes']} B sha256 {b['base_sha256'][:16]}; "
+@@ -394,6 +727,10 @@ def main(argv=None):
+     ap.add_argument("--allow", nargs="*", default=[], help="qualified names allowed to change")
+     ap.add_argument("--allow-added", nargs="*", default=[],
+                     help="top-level definitions/assignments that are new by design")
++    ap.add_argument("--keep-block", nargs="*", default=[], metavar="QUALNAME::HEADER",
++                    help="a block inside an allowed function that must stay AST-identical, "
++                         "with everything before it in that function (e.g. "
++                         "'run_bidirectional_test::if _use_miner:')")
+     ap.add_argument("--strict-bytes", action="store_true",
+                     help="also fail on comment/format-only changes outside the allowed names")
+     ap.add_argument("--json", action="store_true", help="print the full report as JSON")
+@@ -418,7 +755,7 @@ def main(argv=None):
+                 raise SetupError("--file is required when comparing against the working tree")
+             new_src, new_label = _read(os.path.join(a.repo, a.file)), f"working tree:{a.file}"
+         report = {"file": a.file or a.new_file, "base": base_label, "new": new_label,
+-                  "ast": compare(base_src, new_src, a.allow, a.allow_added),
++                  "ast": compare(base_src, new_src, a.allow, a.allow_added, a.keep_block),
+                   "bytes": byte_summary(base_src, new_src, a.allow, a.allow_added)}
+     except SetupError as exc:
+         print(f"prove_unchanged_outside: {exc}", file=sys.stderr)
+diff --git a/sieve_filter.py b/sieve_filter.py
+index 1ff3d07..c6d0a83 100755
+--- a/sieve_filter.py
++++ b/sieve_filter.py
+@@ -595,14 +595,21 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+         offset = job.get('offset', 0)
+         sessions = job.get('sessions', ['midday', 'evening'])
+         if _pwc_new_schema:
+-            # [PWC-BACKUP STAGE 2b] Domain check on the POST-session-filter count,
+-            # then the SAME loader the legacy path uses (one derivation of the
+-            # window); inside the domain its clamp is a no-op. `offset` from here
+-            # on is only the kernel's trailing argument, i.e. generator_phase (0).
++            # [PWC-BACKUP STAGE 3a, Beta X-PWC-STAGE2B R1 Finding 2] ONE dataset read:
++            # the domain check and the window are taken from the same parsed,
++            # session-filtered list, as RANGE-MINER's load_residue_window does
++            # (miner/range_miner_worker.py:904-932). (Stage 2b read the file a second
++            # time through load_draws_from_daily3; a file replaced between the two
++            # reads could yield a different window under an accepted echo.)
++            # `offset` from here on is only the kernel's trailing argument, i.e.
++            # generator_phase (0).
+             with open(dataset_path, 'r') as _f:
+                 _data = json.load(_f)
+             if sessions:
+                 _data = [e for e in _data if e.get('session') in sessions]
++            if len(_data) < window_size:
++                raise ValueError(
++                    f"Dataset has only {len(_data)} entries, need at least {window_size}")
+             _derived_max = len(_data) - window_size
+             if _pwc_window_anchor < 0 or _pwc_window_anchor > _derived_max:
+                 raise ValueError(
+@@ -612,9 +619,9 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
+                     f"{sorted(sessions) if sessions else 'ALL'}, N_filtered="
+                     f"{len(_data)}, window_size={window_size}. The anchor is "
+                     f"validated, never clamped.")
++            draws = [int(e.get("full_state", e["draw"]))
++                     for e in _data[_pwc_window_anchor:_pwc_window_anchor + window_size]]
+             del _data
+-            draws = load_draws_from_daily3(dataset_path, window_size, sessions,
+-                                           _pwc_window_anchor)
+             offset = _pwc_generator_phase
+         else:
+             # Load draws
+diff --git a/tests/test_prove_unchanged_outside.py b/tests/test_prove_unchanged_outside.py
+index d1b3043..5285aee 100644
+--- a/tests/test_prove_unchanged_outside.py
++++ b/tests/test_prove_unchanged_outside.py
+@@ -92,13 +92,15 @@ def test_pass_identical():
+ 
+ def test_pass_change_inside_allowed_function():
+     # body, signature, default and a new decorator: all inside the allowed def
++    # body, signature and a literal default: inside the allowed def, inert at import
+     new = BASE.replace('def allowed(job):\n    return job.get("offset", 0)',
+-                       '@deco\ndef allowed(job, phase=0):\n    if phase:\n        raise ValueError\n'
++                       'def allowed(job, phase=0):\n    if phase:\n        raise ValueError\n'
+                        '    return job["window_anchor"]')
+     assert new != BASE
+     rep = _cmp(new)
+     assert rep["ok"], rep["problems"]
+     assert rep["allowed"]["allowed"]["changed"] is True
++    assert rep["allowed_header_changes"] and not rep["allowed_header_changes"][0]["issues"]
+ 
+ 
+ def test_pass_change_inside_allowed_method():
+@@ -316,6 +318,209 @@ def test_catch_side_effect_hidden_next_to_allowed_added():
+     assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
+ 
+ 
++
++# ------------------------------------------------------------------ Stage 3a: Beta X-PWC-STAGE2B R1 Q8
++
++def test_catch_decorator_added_to_allowed_function():
++    new = BASE.replace('def allowed(job):', '@deco\ndef allowed(job):')
++    rep = _cmp(new)
++    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
++
++
++def test_catch_call_default_added_to_allowed_function():
++    new = BASE.replace('def allowed(job):', 'def allowed(job, t=os.getpid()):')
++    rep = _cmp(new)
++    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
++
++
++def test_pass_unchanged_decorator_on_allowed_function():
++    # the checked function already has @deco in the base: allowing it and changing
++    # only its body must not be flagged for the unchanged decorator
++    new = BASE.replace("    return inner(a) + b", "    return inner(a) * b")
++    rep = P.compare(BASE, new, ["checked"])
++    assert rep["ok"], rep["problems"]
++
++
++# ------------------------------------------------------------------ Stage 3a, narrowed header check (owner 2026-11-21)
++# A non-inert default/annotation in an allowed definition's header is flagged only
++# when its AST differs from the same-named parameter's in the base, or the parameter
++# is new. Reordering or re-kinding existing parameters is always caught.
++
++HDR_BASE = textwrap.dedent('''\
++    import os
++
++    def deco(f):
++        return f
++
++    def run_opt(trials, seed=0, staging_high_water_bytes=16 * 1024 ** 3, *, tag=os.sep):
++        return trials
++    ''')
++
++
++def _hdr(new, allow=("run_opt",)):
++    return P.compare(HDR_BASE, new, allow)
++
++
++def test_pass_unchanged_noninert_default_with_new_trailing_inert_parameter():
++    # (a) the run_bayesian_optimization shape: the 16 * 1024 ** 3 default is unchanged,
++    # only an inert keyword-only parameter is appended
++    new = HDR_BASE.replace("tag=os.sep):", "tag=os.sep, miner_abi=None):")
++    rep = _hdr(new)
++    assert rep["ok"], rep["problems"]
++    note = rep["allowed_header_changes"][0]
++    assert note["issues"] == [] and note["order_issues"] == [] and "parameters" in note["changed"]
++
++
++def test_pass_unchanged_noninert_default_with_new_trailing_positional_parameter():
++    new = HDR_BASE.replace("staging_high_water_bytes=16 * 1024 ** 3, *",
++                           "staging_high_water_bytes=16 * 1024 ** 3, extra=None, *")
++    rep = _hdr(new)
++    assert rep["ok"], rep["problems"]
++
++
++def test_catch_changed_noninert_default():
++    # (b)
++    new = HDR_BASE.replace("16 * 1024 ** 3", "8 * 1024 ** 3")
++    rep = _hdr(new)
++    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
++    assert any("staging_high_water_bytes" in i for p in rep["problems"] for i in p.get("issues", []))
++
++
++def test_catch_new_parameter_with_noninert_default():
++    # (c) for keyword-only and positional additions, and a non-inert annotation
++    for new in (HDR_BASE.replace("tag=os.sep):", "tag=os.sep, pid=os.getpid()):"),
++                HDR_BASE.replace("seed=0,", "seed=0, cap=2 ** 30,"),
++                HDR_BASE.replace("tag=os.sep):", "tag=os.sep, cb: deco(int) = None):")):
++        rep = _hdr(new)
++        assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep), new
++
++
++def test_catch_reordered_parameters():
++    # (d) swapping two defaulted parameters; also a pure swap of default-less ones,
++    # which leaves decorators/defaults/annotations unchanged
++    new = HDR_BASE.replace("seed=0, staging_high_water_bytes=16 * 1024 ** 3",
++                           "staging_high_water_bytes=16 * 1024 ** 3, seed=0")
++    rep = _hdr(new)
++    assert not rep["ok"] and "allowed-header-parameter-order-changed" in _kinds(rep)
++    base2 = HDR_BASE.replace("def run_opt(trials, seed=0,", "def run_opt(trials, study, seed=0,")
++    new2 = base2.replace("def run_opt(trials, study,", "def run_opt(study, trials,")
++    rep2 = P.compare(base2, new2, ["run_opt"])
++    assert not rep2["ok"] and "allowed-header-parameter-order-changed" in _kinds(rep2)
++
++
++def test_catch_parameter_kind_change():
++    # moving an existing parameter behind * (positional -> keyword-only), order kept
++    new = HDR_BASE.replace("seed=0, staging_high_water_bytes=16 * 1024 ** 3, *,",
++                           "seed=0, *, staging_high_water_bytes=16 * 1024 ** 3,")
++    rep = _hdr(new)
++    assert not rep["ok"] and "allowed-header-parameter-order-changed" in _kinds(rep)
++
++
++def test_catch_decorator_added_next_to_unchanged_noninert_default():
++    new = HDR_BASE.replace("def run_opt(", "@deco\ndef run_opt(")
++    rep = _hdr(new)
++    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
++
++
++def test_catch_allowed_added_with_side_effect_value():
++    # Beta's example: PIN = os.environ.setdefault('FLAG', '1')
++    new = BASE.replace("def deco(f):", "PIN = os.environ.setdefault('FLAG', '1')\n\n\ndef deco(f):")
++    rep = P.compare(BASE, new, ["allowed"], ["PIN"])
++    assert not rep["ok"] and "allowed-added-import-time-evaluation" in _kinds(rep)
++
++
++def test_catch_allowed_added_shadowing_an_import():
++    # Beta's example: time = 0 after a base `import time`
++    base = BASE.replace("import sys\n", "import sys\nimport time\n")
++    new = base.replace("def deco(f):", "time = 0\n\n\ndef deco(f):")
++    rep = P.compare(base, new, ["allowed"], ["time"])
++    assert not rep["ok"] and "allowed-added-name-invalid" in _kinds(rep)
++    # `from x import y as time` and `import a.b` (binds a) count too
++    base2 = BASE.replace("import sys\n", "import sys\nfrom os import path as time\nimport xml.dom\n")
++    for nm in ("time", "xml"):
++        new2 = base2.replace("def deco(f):", f"{nm} = 0\n\n\ndef deco(f):")
++        assert "allowed-added-name-invalid" in _kinds(P.compare(base2, new2, ["allowed"], [nm])), nm
++
++
++def test_catch_allowed_added_rebound_later():
++    new = BASE.replace("def deco(f):", "NEW_PIN = 0\n\n\ndef deco(f):") + "\nNEW_PIN = 1\n"
++    rep = P.compare(BASE, new, ["allowed"], ["NEW_PIN"])
++    assert not rep["ok"]
++
++
++def test_catch_allowed_added_function_with_decorator_or_call_default():
++    for hdr in ("@deco\ndef new_helper(x):", "def new_helper(x=os.getcwd()):",
++                "def new_helper(x: make_type()):"):
++        new = BASE.replace("def deco(f):", f"{hdr}\n    return x\n\n\ndef deco(f):")
++        rep = P.compare(BASE, new, ["allowed"], ["new_helper"])
++        assert [p["kind"] for p in rep["problems"]] == ["allowed-added-import-time-evaluation"], \
++            (hdr, rep["problems"])
++    # the same helper with an inert header passes
++    ok = BASE.replace("def deco(f):", "def new_helper(x: int = 0) -> int:\n    return x\n\n\ndef deco(f):")
++    assert P.compare(BASE, ok, ["allowed"], ["new_helper"])["ok"]
++
++
++def test_catch_allowed_added_class_with_body_side_effect():
++    new = BASE.replace("def deco(f):", "class NewThing:\n    X = 1\n    print('hi')\n\n\ndef deco(f):")
++    rep = P.compare(BASE, new, ["allowed"], ["NewThing"])
++    assert not rep["ok"] and "allowed-added-import-time-evaluation" in _kinds(rep)
++    ok = BASE.replace("def deco(f):", 'class NewThing:\n    """doc"""\n    X = 1\n\n    def m(self, a: int = 0) -> int:\n        return a\n\n\ndef deco(f):')
++    assert P.compare(BASE, ok, ["allowed"], ["NewThing"])["ok"]
++
++
++ROUTED = textwrap.dedent('''\
++    def route(coordinator, x):
++        _use_miner = getattr(coordinator, "use_range_miner", False)
++        if _use_miner:
++            r = x + 1
++            return r
++        _use_pw = getattr(coordinator, "use_persistent_workers", False)
++        if _use_pw:
++            return x + 2
++        return x
++    ''')
++
++
++def test_pass_keep_block_when_only_other_branch_changes():
++    new = ROUTED.replace("return x + 2", "return x + 3")
++    rep = P.compare(ROUTED, new, ["route"], (), ["route::if _use_miner:"])
++    assert rep["ok"], rep["problems"]
++    assert rep["kept_blocks"] == [{"spec": "route::if _use_miner:", "ok": True}]
++
++
++def test_catch_keep_block_change_inside_kept_branch():
++    new = ROUTED.replace("r = x + 1", "r = x + 9")
++    assert P.compare(ROUTED, new, ["route"])["ok"]                       # hidden without --keep-block
++    rep = P.compare(ROUTED, new, ["route"], (), ["route::if _use_miner:"])
++    assert not rep["ok"] and "kept-block-differs" in _kinds(rep)
++
++
++def test_catch_keep_block_preamble_change():
++    new = ROUTED.replace('getattr(coordinator, "use_range_miner", False)',
++                         'getattr(coordinator, "use_range_miner", True)')
++    rep = P.compare(ROUTED, new, ["route"], (), ["route::if _use_miner:"])
++    assert not rep["ok"] and "kept-block-preamble-differs" in _kinds(rep)
++    # a statement inserted before the block counts as a preamble change
++    new2 = ROUTED.replace("    _use_miner =", "    x = x * 2\n    _use_miner =")
++    assert "kept-block-preamble-differs" in _kinds(P.compare(ROUTED, new2, ["route"], (), ["route::if _use_miner:"]))
++    # and so does a signature change
++    new3 = ROUTED.replace("def route(coordinator, x):", "def route(coordinator, x, y=0):")
++    assert "kept-block-preamble-differs" in _kinds(P.compare(ROUTED, new3, ["route"], (), ["route::if _use_miner:"]))
++
++
++def test_catch_keep_block_missing_or_duplicated():
++    gone = ROUTED.replace("if _use_miner:", "if _use_miner and x:")
++    assert "kept-block-not-unique" in _kinds(P.compare(ROUTED, gone, ["route"], (), ["route::if _use_miner:"]))
++    assert "kept-block-function-not-unique" in _kinds(P.compare(ROUTED, ROUTED, ["route"], (), ["nope::if _use_miner:"]))
++
++
++def test_cli_keep_block_and_bad_spec():
++    new = ROUTED.replace("r = x + 1", "r = x + 9")
++    r = _cli(new, "--allow", "route", "--keep-block", "route::if _use_miner:", base_src=ROUTED)
++    assert r.returncode == 1 and "kept-block-differs" in r.stdout, r.stdout
++    r = _cli(ROUTED, "--allow", "route", "--keep-block", "no-separator", base_src=ROUTED)
++    assert r.returncode == 2
++
+ def _main():
+     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+     failed = 0
+diff --git a/tests/test_pwc_stage3a.py b/tests/test_pwc_stage3a.py
+new file mode 100644
+index 0000000..e739d26
+--- /dev/null
++++ b/tests/test_pwc_stage3a.py
+@@ -0,0 +1,350 @@
++#!/usr/bin/env python3
++"""PWC-BACKUP STAGE 3a — PWC-only items of the Stage 3 plan, CPU only.
++
++  S3-13  WITHDRAWN (owner, 2026-11-20 21:32-21:35 PST: "Well range miner must be fixed
++         none the less" / "Please do whatever method is the quickest and least
++         recoding"). PWC keeps sending the trial's skip range, as at b2efdef; the miner
++         gap (F-1) is to be fixed on the miner side. No skip-range gate here.
++  F2     (Beta X-PWC-STAGE2B R1 Finding 2) a new-key job derives the anchor check and
++         the window from ONE dataset read, as miner/range_miner_worker.py:904-932 does.
++  S3-11  the coordinator side of the offset split already landed in Stage 2b (b2efdef);
++         G-S311 re-asserts it on the wire (and that the job carries the range it is given).
++
++Every repair has a mutant: a textual edit of the LIVE source, run in a separate module. A mutant counts as killed only if the detector passes on the live
++source and fails on the mutant.
++
++Run from the repository root:  python3 -u tests/test_pwc_stage3a.py
++Writes only under logs/test_pwc_stage3a/ (ignored). No GPU, no network, no rigs.
++"""
++import contextlib
++import copy
++import importlib.util
++import io
++import json
++import os
++import subprocess
++import sys
++import types
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++OUT = os.path.join(ROOT, "logs", "test_pwc_stage3a")
++os.makedirs(OUT, exist_ok=True)
++SF_PATH = os.path.join(ROOT, "sieve_filter.py")
++BASE = os.environ.get("PWC_STAGE3A_BASE", "b2efdef")
++
++# CuPy stand-in before anything imports sieve_filter
++_cp = types.ModuleType("cupy")
++class _Pool:
++    def set_limit(self, *a, **k): pass
++_cp.get_default_memory_pool = lambda: _Pool()
++sys.modules.setdefault("cupy", _cp)
++
++import persistent_worker_coordinator as PWC                 # noqa: E402
++import sieve_filter as SF                                    # noqa: E402
++
++RESULTS = []
++
++
++def gate(name, fn):
++    try:
++        detail = fn()
++        RESULTS.append((name, True))
++        print(f"[PASS] {name}: {detail}", flush=True)
++    except Exception as e:                                   # noqa: BLE001
++        RESULTS.append((name, False))
++        print(f"[FAIL] {name}: {type(e).__name__}: {e}", flush=True)
++
++
++def _load_source(src, name, path):
++    spec = importlib.util.spec_from_loader(name, loader=None, origin=path)
++    mod = importlib.util.module_from_spec(spec)
++    mod.__file__ = path
++    sys.modules[name] = mod
++    exec(compile(src, path, "exec"), mod.__dict__)
++    return mod
++
++
++def _mutate(src, old, new):
++    n = src.count(old)
++    assert n == 1, f"mutant anchor occurs {n} times: {old[:80]!r}"
++    return src.replace(old, new)
++
++
++class _FakeTransport:
++    def __init__(self, provider):
++        self.provider, self.jobs, self._r = provider, [], {}
++
++    def ready_count(self):
++        return 2
++
++    def worker_count(self):
++        return 2
++
++    def submit_job(self, job):
++        self.jobs.append(json.loads(json.dumps(job)))
++        self._r[job["job_id"]] = {"status": "ok", "result": self.provider(job),
++                                  "worker_id": "192_168_3_122_gpu0"}
++
++    def recv_result(self, timeout_s=None, job_id=None):
++        return self._r.pop(job_id, None)
++
++
++def _payload(job):
++    out = {"success": True, "seed_range": {"start": job["seed_start"], "end": job["seed_end"]},
++           "min_match_threshold": job["min_match_threshold"], "survivors": [],
++           "per_family": {job["prng_families"][0]: {"survivors": []}}}
++    for k in ("window_anchor", "generator_phase"):
++        if k in job:
++            out[k] = job[k]
++    return out
++
++
++def _config_file():
++    path = os.path.join(OUT, "nodes.json")
++    nodes = [{"hostname": h, "gpu_type": "RX 6600 XT", "gpu_count": 8,
++              "python_env": "/home/michael/rocm_env/bin/python",
++              "script_path": "/home/michael/distributed_prng_analysis", "username": "michael"}
++             for h in ("192.168.3.122", "192.168.3.156")]
++    with open(path, "w") as f:
++        json.dump({"nodes": nodes}, f)
++    return path
++
++
++def d_s311_jobs(M=PWC):
++    """S3-11 on the wire: a TCP pass at anchor 25 sends window_anchor 25,
++    generator_phase 0 and no offset, and carries the skip range it is given (the
++    trial's, as at b2efdef; S3-13 withdrawn)."""
++    p = M.PersistentWorkerCoordinator(config_file=_config_file(), worker_pool_size=6,
++                                      seed_cap_amd=25_000, pwc_transport="tcp",
++                                      pwc_coordinator_address="192.168.3.177")
++    p._tcp_transport = _FakeTransport(_payload)
++    p._effective_pool_by_host = {"192.168.3.122": 6}
++    with contextlib.redirect_stderr(io.StringIO()):
++        res = p.run_sieve_pass(prng_type="java_lcg", residues=[1], total_seeds=40_000,
++                               threshold=0.71, window_size=8,
++                               output_file=os.path.join(OUT, "pass.json"),
++                               dataset_path="unused.json", sessions=["midday"],
++                               skip_range=[6, 99], offset=25)
++    jobs = p._tcp_transport.jobs
++    assert jobs and all(j["window_anchor"] == 25 and j["generator_phase"] == 0
++                        and "offset" not in j and j["skip_range"] == [6, 99] for j in jobs), jobs[:1]
++    assert res["pwc_pass_accounting"]["complete"], res["pwc_pass_accounting"]
++    return f"{len(jobs)} TCP jobs: window_anchor 25, generator_phase 0, no offset, skip_range [6, 99] as given"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# F2 — one dataset read for a new-key job
++# ═════════════════════════════════════════════════════════════════════════════
++class _Recorder:
++    def __init__(self):
++        self.calls = []
++
++    def factory(self):
++        rec = self
++
++        class FakeSieve:
++            def __init__(self, gpu_id=0):
++                pass
++
++            def run_sieve(self, **kw):
++                rec.calls.append(("run_sieve", copy.deepcopy(kw)))
++                return {"family": kw["prng_family"], "survivors": [],
++                        "seed_range": {"start": kw["seed_start"], "end": kw["seed_end"]},
++                        "stats": {"seeds_tested": 1, "survivors_found": 0, "duration_ms": 1.0,
++                                  "seeds_per_sec": 1.0}}
++        return FakeSieve
++
++
++def _rows(n, session="midday", start=0):
++    return [{"draw": (start + i) * 7 % 1000, "session": session} for i in range(n)]
++
++
++def run_with_reads(mod, job, contents_by_read):
++    """execute_sieve_job with `open` on the dataset path answering read k with
++    contents_by_read[min(k, last)]. Returns (result, sieve calls, number of reads)."""
++    path = job["dataset_path"]
++    reads = {"n": 0}
++    real_open = open
++
++    def fake_open(p, *a, **k):
++        if os.path.abspath(p) == os.path.abspath(path):
++            data = contents_by_read[min(reads["n"], len(contents_by_read) - 1)]
++            reads["n"] += 1
++            return io.StringIO(json.dumps(data))
++        return real_open(p, *a, **k)
++
++    rec = _Recorder()
++    saved_gs, saved_open = mod.GPUSieve, mod.__dict__.get("open")
++    mod.GPUSieve, mod.open = rec.factory(), fake_open
++    try:
++        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
++            out = mod.execute_sieve_job(copy.deepcopy(job), 0)
++    finally:
++        mod.GPUSieve = saved_gs
++        if saved_open is None:
++            del mod.open
++        else:
++            mod.open = saved_open
++    return out, rec.calls, reads["n"]
++
++
++def _job(**kw):
++    j = {"job_id": "f2", "search_type": "residue_sieve",
++         "dataset_path": os.path.join(OUT, "f2_dataset.json"),
++         "seed_start": 0, "seed_end": 100, "window_size": 8, "min_match_threshold": 0.5,
++         "skip_range": [0, 16], "sessions": ["midday"], "prng_families": ["java_lcg"],
++         "strategies": None, "hybrid": False, "phase2_threshold": 0.5,
++         "window_anchor": 2, "generator_phase": 0}
++    j.update(kw)
++    return j
++
++
++def d_one_read(mod=SF):
++    """Beta's fixture: ten single-session rows, width 8, anchor 2; the file shrinks to
++    nine rows after the first read. One read: the window is rows[2:10] of the
++    ten-row content, and it is the only read."""
++    ten, nine = _rows(10), _rows(9)
++    out, calls, n = run_with_reads(mod, _job(), [ten, nine])
++    assert n == 1, f"the dataset was read {n} times for one new-key job"
++    assert out.get("success") is True and out.get("window_anchor") == 2, out.get("error")
++    want = [e["draw"] for e in ten[2:10]]
++    assert calls and all(c[1]["residues"] == want for c in calls), \
++        (want, [c[1]["residues"] for c in calls])
++    return "one read; anchor 2 of ten rows gives rows[2:10]; a file shrunk after the read is never seen"
++
++
++def d_one_read_domain(mod=SF):
++    """The domain and the short-file refusal come from that same read, as in the miner."""
++    out, calls, n = run_with_reads(mod, _job(window_anchor=3), [_rows(10)])
++    assert n == 1 and out.get("success") is False and \
++        "PWC_WINDOW_ANCHOR_OUT_OF_DOMAIN" in out.get("error", "") and calls == [], out
++    out, calls, n = run_with_reads(mod, _job(window_anchor=0), [_rows(5)])
++    assert n == 1 and out.get("success") is False and \
++        "Dataset has only 5 entries" in out.get("error", "") and calls == [], out
++    return "anchor 3 of 10 rows (w 8) refused out of domain; 5 rows < w 8 refused; one read each, no sieve"
++
++
++def d_one_read_equals_miner(mod=SF):
++    from miner.range_miner_worker import load_residue_window       # read-only reference
++    data = []
++    for i in range(60):
++        e = {"draw": (i * 37 + 11) % 1000, "session": "midday" if i % 2 == 0 else "evening"}
++        if i % 5 == 0:
++            e["full_state"] = 100000 + i
++        data.append(e)
++    path = os.path.join(OUT, "f2_equiv.json")
++    with open(path, "w") as f:
++        json.dump(data, f)
++    n_checked = 0
++    for sess in (["midday", "evening"], ["midday"], ["evening"]):
++        n_f = len([e for e in data if e["session"] in sess])
++        for anchor in (0, 7, n_f - 8):
++            out, calls, n = run_with_reads(mod, _job(dataset_path=path, sessions=sess,
++                                                     window_anchor=anchor), [data])
++            ref = load_residue_window(path, 8, sess, anchor)
++            assert n == 1 and calls and calls[0][1]["residues"] == ref, (sess, anchor)
++            n_checked += 1
++    return f"{n_checked} windows (3 session sets x 3 anchors incl. the boundary) equal the miner's load_residue_window"
++
++
++def d_legacy_unchanged(mod=SF):
++    """Old-style jobs (legacy coordinator.py, ZMQ) still go through load_draws_from_daily3,
++    its clamp included, exactly as at the base."""
++    base = _load_source(subprocess.run(["git", "-C", ROOT, "show", f"{BASE}:sieve_filter.py"],
++                                       check=True, capture_output=True, text=True).stdout,
++                        "sieve_filter_base_3a", SF_PATH + "@BASE")
++    for off in (0, 1, 5):                       # 5 is past the end of 10 rows / w 8: clamped
++        j = {k: v for k, v in _job().items() if k not in ("window_anchor", "generator_phase")}
++        j["offset"] = off
++        ob, cb, _ = run_with_reads(base, j, [_rows(10)])
++        on, cn, _ = run_with_reads(mod, j, [_rows(10)])
++        assert cb == cn and json.dumps(ob, sort_keys=True) == json.dumps(on, sort_keys=True), off
++    return f"old-style offsets 0/1/5 (5 clamped): sieve calls and results identical to {BASE}"
++
++
++def d_one_read_base_control():
++    """Positive control: the detector sees the base's two reads."""
++    base = _load_source(subprocess.run(["git", "-C", ROOT, "show", f"{BASE}:sieve_filter.py"],
++                                       check=True, capture_output=True, text=True).stdout,
++                        "sieve_filter_base_3a_ctl", SF_PATH + "@BASE")
++    out, calls, n = run_with_reads(base, _job(), [_rows(10), _rows(9)])
++    assert n == 2, f"base read the file {n} times"
++    return f"{BASE} reads the dataset twice for a new-key job (the case Beta reproduced)"
++
++
++GATES = [
++    ("G-S311-JOBS", d_s311_jobs),
++    ("G-F2-ONE-READ", d_one_read),
++    ("G-F2-DOMAIN", d_one_read_domain),
++    ("G-F2-EQUALS-MINER", d_one_read_equals_miner),
++    ("G-F2-LEGACY-UNCHANGED", d_legacy_unchanged),
++    ("G-F2-BASE-CONTROL", d_one_read_base_control),
++]
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# Mutants
++# ═════════════════════════════════════════════════════════════════════════════
++def _sf_mutant(old, new):
++    return _load_source(_mutate(open(SF_PATH, encoding="utf-8").read(), old, new),
++                        "sf_mutant_3a", SF_PATH)
++
++
++def m_two_reads():
++    d_one_read(_sf_mutant(
++        "            draws = [int(e.get(\"full_state\", e[\"draw\"]))\n"
++        "                     for e in _data[_pwc_window_anchor:_pwc_window_anchor + window_size]]\n",
++        "            draws = load_draws_from_daily3(dataset_path, window_size, sessions,\n"
++        "                                           _pwc_window_anchor)\n"))
++
++
++def m_short_file_check_removed():
++    d_one_read_domain(_sf_mutant(
++        "            if len(_data) < window_size:\n                raise ValueError(\n",
++        "            if False:\n                raise ValueError(\n"))
++
++
++def m_window_off_by_one():
++    d_one_read_equals_miner(_sf_mutant(
++        "for e in _data[_pwc_window_anchor:_pwc_window_anchor + window_size]]\n",
++        "for e in _data[_pwc_window_anchor + 1:_pwc_window_anchor + 1 + window_size]]\n"))
++
++
++MUTANTS = [
++    ("M-F2-1 second read restored", m_two_reads, d_one_read),
++    ("M-F2-2 short-file refusal removed", m_short_file_check_removed, d_one_read_domain),
++    ("M-F2-3 window off by one", m_window_off_by_one, d_one_read_equals_miner),
++]
++
++
++def main():
++    for name, fn in GATES:
++        gate(name, fn)
++    killed = 0
++    for name, mutant, detector in MUTANTS:
++        try:
++            detector()                                      # positive control on the live source
++        except Exception as e:                              # noqa: BLE001
++            print(f"[FAIL] {name}: detector fails on the LIVE source: {e}", flush=True)
++            continue
++        try:
++            mutant()
++        except AssertionError as e:
++            killed += 1
++            print(f"[PASS] {name} -> killed: {str(e)[:160]}", flush=True)
++        except Exception as e:                              # noqa: BLE001
++            print(f"[FAIL] {name}: mutant raised {type(e).__name__}, not the detector's "
++                  f"AssertionError: {e}", flush=True)
++        else:
++            print(f"[FAIL] {name}: SURVIVED", flush=True)
++    ok = sum(1 for _, r in RESULTS if r)
++    print(f"GATES {ok}/{len(RESULTS)} PASS")
++    print(f"MUTANTS {killed}/{len(MUTANTS)} killed")
++    good = ok == len(RESULTS) and killed == len(MUTANTS)
++    print(f"RESULT: {'PASS' if good else 'FAIL'}")
++    return 0 if good else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())

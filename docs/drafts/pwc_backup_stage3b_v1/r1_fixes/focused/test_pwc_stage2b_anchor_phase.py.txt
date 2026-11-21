@@ -1,0 +1,607 @@
+== G-OLD: jobs without the new keys
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+  PASS  G-OLD-1a GPUSieve calls identical to BASE (21 jobs)
+  PASS  G-OLD-1b results json-identical to BASE (21 jobs)
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+  PASS  G-OLD-1c old jobs carry no window_anchor/generator_phase in the result
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+  PASS  G-OLD-1d old jobs: every hybrid launch keeps the old argument list (miner_abi False)
+  PASS  G-OLD-2 worker refuses every old-style job (22 jobs: offset, chunk_offset, neither key)
+== G-NEW: window_anchor / generator_phase
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_reverse (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg_hybrid_reverse in HYBRID mode...
+ Running SINGLE-PHASE HYBRID for java_lcg_hybrid_reverse...
+  PASS  G-NEW-1a draws == miner load_residue_window == slice (anchors 0/7/25, 3 session sets)
+  PASS  G-NEW-2a kernel trailing argument is generator_phase 0 at every anchor
+  PASS  G-NEW-2b result records window_anchor and generator_phase
+  PASS  G-NEW-2d new-key hybrid launches ask for the miner's argument list (miner_abi True)
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+  PASS  G-NEW-2c same draws as legacy offset=25, kernel arg 25 -> 0
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+  PASS  G-NEW-1b boundary anchor N_filtered - window_size accepted
+== G-REF: refusals
+  PASS  G-REF-1 generator_phase=1 raises PWC_GENERATOR_PHASE_REFUSED, no dataset read, no GPUSieve
+  PASS  G-REF-1 generator_phase=-1 raises PWC_GENERATOR_PHASE_REFUSED, no dataset read, no GPUSieve
+  PASS  G-REF-1 generator_phase=25 raises PWC_GENERATOR_PHASE_REFUSED, no dataset read, no GPUSieve
+  PASS  G-REF-2 window_anchor only: refused before any read
+  PASS  G-REF-2 generator_phase only: refused before any read
+  PASS  G-REF-2 offset alongside: refused before any read
+  PASS  G-REF-2 non-integer anchor: refused before any read
+  PASS  G-REF-2 None phase: refused before any read
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+  PASS  G-REF-3 anchor -1 refused, not clamped, no GPUSieve
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+  PASS  G-REF-3 anchor 49 refused, not clamped, no GPUSieve
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+  PASS  G-REF-3 anchor 10000 refused, not clamped, no GPUSieve
+== G-WRK: worker pass-through
+  PASS  G-WRK-1a keys copied verbatim, defaulted offset dropped
+  PASS  G-WRK-1b offset alongside the new keys: refused by the worker, nothing run
+  PASS  G-WRK-1c one key alone: refused by the worker, nothing run
+🔍 SIEVE READ: window_size=12 from job file
+🔍 SIEVE READ: skip_range=(6, 99) from job file
+🔍 LOADED DRAWS: len(draws)=12, requested window_size=12
+Testing java_lcg (standard mode)...
+  PASS  G-WRK-2a end to end: phase 1 -> success False naming PWC_GENERATOR_PHASE_REFUSED
+  PASS  G-WRK-2b end to end: phase 0 -> success, anchor recorded in payload
+== G-HYB: the real run_hybrid_sieve's kernel arguments
+  PASS  G-HYB-1 new-key launch: argument count == miner EXPECTED_KERNEL_ARITY for all 12 hybrids
+  PASS  G-HYB-2 new-key launch: argument count == the kernel's declared parameters
+  PASS  G-HYB-3 default (legacy/ZMQ callers): arguments identical to BASE for every hybrid
+  PASS  G-HYB-4 the change is only the trailing int32 of the four no-phase forward hybrids
+  PASS  G-HYB-5 new-key launch, no-phase hybrid, phase 1: refused before any kernel launch
+    java_lcg_hybrid: pwc 15 / miner 15 / kernel 15 / old 16
+    lcg32_hybrid: pwc 17 / miner 17 / kernel 17 / old 17
+    minstd_hybrid: pwc 15 / miner 15 / kernel 15 / old 16
+    pcg32_hybrid: pwc 15 / miner 15 / kernel 15 / old 15
+    xorshift32_hybrid: pwc 16 / miner 16 / kernel 16 / old 17
+    xorshift128_hybrid: pwc 16 / miner 16 / kernel 16 / old 17
+    java_lcg_hybrid_reverse: pwc 14 / miner 14 / kernel 14 / old 14
+    lcg32_hybrid_reverse: pwc 14 / miner 14 / kernel 14 / old 14
+    minstd_hybrid_reverse: pwc 14 / miner 14 / kernel 14 / old 14
+    pcg32_hybrid_reverse: pwc 14 / miner 14 / kernel 14 / old 14
+    xorshift32_hybrid_reverse: pwc 14 / miner 14 / kernel 14 / old 14
+    xorshift128_hybrid_reverse: pwc 14 / miner 14 / kernel 14 / old 14
+== G-PRF: the proof script detects a mutant
+  PASS  G-PRF-1a AST check passes on an unchanged copy
+  PASS  G-PRF-1b AST check fails on the pool-limit mutant
+  PASS  G-PRF-2 import check sees set_limit(268435456) vs set_limit(536870912)
+
+RESULT: 35 passed, 0 failed

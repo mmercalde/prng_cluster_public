@@ -175,10 +175,15 @@ def gate5_watcher_manifest():
         assert key in bounds, f"parameter_bounds missing miner key {key!r}"
 
     defaults = m['default_params']
-    # Phase 1: use_range_miner MUST default to False in the manifest (spec §7 —
-    # only set true after TB approves miner production readiness at Phase 7).
-    assert defaults.get('use_range_miner') is False, (
-        "default_params.use_range_miner must be false in Phase 1 (spec §7 comment)"
+    # [PWC-STAGE3] Owner ruling 2026-11-20 15:53 PST, "Yes, range miner is the new
+    # default" (docs/PWC_BACKUP_OWNER_RULINGS_20261119.md), replaces the Phase-1 rule
+    # (spec §7: default false until Phase 7). RANGE-MINER is the default Step 1 engine
+    # and PWC is chosen only by its flag.
+    assert defaults.get('use_range_miner') is True, (
+        "default_params.use_range_miner must be true (owner ruling 2026-11-20 15:53)"
+    )
+    assert defaults.get('use_persistent_workers') is False, (
+        "default_params.use_persistent_workers must be false (owner ruling 2026-11-20 15:53)"
     )
     assert defaults.get('miner_stripe_size') == 67108864
     assert defaults.get('miner_substripes')  == 8

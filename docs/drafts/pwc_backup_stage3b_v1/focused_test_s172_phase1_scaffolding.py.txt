@@ -1,0 +1,14 @@
+
+S172 Phase 1 scaffolding acceptance harness
+==================================================================
+  [[92mPASS[0m] Gate 1: miner/ package imports; run_trial_miner callable
+  [[92mPASS[0m] Gate 2: run_trial_miner is the real wired entrypoint
+  [[92mPASS[0m] Gate 3: argparse accepts 4 miner flags
+  [[92mPASS[0m] Gate 4: mutex — miner + PWC rejected
+  [[92mPASS[0m] Gate 5: WATCHER manifest v1.8.0 has miner keys
+  [[92mPASS[0m] Gate 6: Phase 0 encoding harness still green
+==================================================================
+
+6/6 gates green
+
+All gates green — Phase 1 scaffolding is deploy-ready.

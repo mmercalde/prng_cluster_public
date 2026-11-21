@@ -1,0 +1,48 @@
+[PASS] G-S1-CLEAN: clean pass: 4/4 completed, tiles [0, 100000), complete
+[PASS] G-S1-FAILED: failed chunk: 3/4 completed, gap [50000, 75000), marked incomplete
+[PASS] G-S1-TIMEOUT: timed-out chunk (after its one retry): counted timed_out, incomplete
+[PASS] G-S1-ABORT: pass abort: completed=1 timed_out=4 not_dispatched=3, incomplete
+[PASS] G-S1-RANGE: worker reports a different seed_range: failed, survivors excluded
+[PASS] G-S1-TRIAL: trial: clean -> complete, swept {1,2}; reverse chunk fails -> incomplete [2]
+[PASS] G-S1-UNACCOUNTED: a pass result with no accounting is 'unaccounted', never complete
+[PASS] G-S2-ZERO-BYTE-EQUAL: seed_start=0: job dicts byte-equal to 27eb991's for 3 shapes (except ['phase2_threshold', 'job_id'], changed by stage 2)
+[PASS] G-S2-2^31: seed_start=2^31: chunks partition [2^31, 2^31+100000)
+[PASS] G-S2-ENDPOINTS: end = 2^32 accepted; 2^32+1, -1, bool refused; trial refuses pre-fleet
+[PASS] G-S3-UNSET: unset/empty/wildcard/loopback dial address refuses before any SSH
+[PASS] G-S3-SET: set: every launch script exports PWC_HOST=192.168.3.177, PWC_PORT; no .127
+[HELD] G-S3-WORKER: needs the held pwc_worker_service.py hunk (owner decision)
+[PASS] G-S4-TRANSPORT: unset/unknown transport refuses at startup and in build_transport
+[PASS] G-S4-FACTORY: build_transport() with no transport raises TypeError (no silent SSH)
+[PASS] G-S4-FIELDS: missing config file, missing sessions/skip_range, config lacking fields refuse
+[PASS] G-S5-ENVELOPE: inside/edge pass, outside refuses pre-spawn (no SSH) and pre-dispatch
+[PASS] G-S6-AGREE: fwd 0.4 / rev 0.45 agree and verified; unreported effective -> unverified
+[PASS] G-S6-DISAGREE: one chunk filtered at 0.5 for a 0.4 request -> the pass refuses
+[PASS] G-S6-HYBRID-NEEDS-THRESHOLD: hybrid run_sieve_pass without phase2_threshold refuses before any dispatch
+[PASS] G-S7-IMPORT: persistent/pwc_protocol.py imports; from_dict round-trips
+[PASS] G-S8-GATE: equal (tcp, ssh) PASS; differing, unreachable, truncated, hostname, dirty, zero rigs, resolver error, unknown transport all REFUSE
+[PASS] G-S8-CLOSURE-FLEET: pins cover derived closures; narrowed pin refuses; committed fleet resolves to ['192.168.3.122', '192.168.3.156', '192.168.3.164'] (not probed)
+[PASS] M-S1a pass completeness forced true -> killed: AssertionError: {'schema': 'pwc_pass_accounting_v1', 'prng_type': 'java_lcg', 'requested_interval': [0, 100000], 'chunk_size':
+[PASS] M-S1b timed-out chunk not counted (outcome = completed) -> killed: AssertionError: {'schema': 'pwc_pass_accounting_v1', 'prng_type': 'java_lcg', 'requested_interval': [0, 100000], 'chunk_size':
+[PASS] M-S1c unaccounted pass treated as complete -> killed: AssertionError: {'schema': 'pwc_trial_completion_v1', 'requested_interval': [0, 10], 'passes': {'1': {'direction': 'forward', 
+[PASS] M-S1d trial ignores pass accounting -> killed: AssertionError: {'schema': 'pwc_trial_completion_v1', 'requested_interval': [0, 100000], 'passes': {'1': {'direction': 'forwar
+[PASS] M-S2a partition restarts at seed 0 -> killed: AssertionError: [(0, 25000), (25000, 50000), (50000, 75000), (75000, 100000), (100000, 125000), (125000, 150000), (150000, 175
+[PASS] M-S2b end bound check removed -> killed: AssertionError: expected PwcSeedIntervalRefused; nothing was raised
+[PASS] M-S3a dial address not checked at startup -> killed: AssertionError: (None, None)
+[HELD] M-S3b worker falls back to 192.168.3.127: needs the held pwc_worker_service.py hunk (owner decision)
+[PASS] M-S4a unknown transport accepted -> killed: AssertionError: (None, None)
+[PASS] M-S4c factory default transport restored -> killed: AssertionError: expected TypeError; nothing was raised
+[PASS] M-S4b sessions/skip_range fallback restored -> killed: AssertionError: expected PwcSettingRefused; nothing was raised
+[PASS] M-S5a envelope admits everything -> killed: AssertionError: (6, 50001)
+[PASS] M-S5b startup envelope check skipped -> killed: AssertionError: (8, 25001, None)
+[PASS] M-S6 threshold disagreement not refused -> killed: AssertionError: expected PwcThresholdContractMismatch; nothing was raised
+[PASS] M-S7 worker_id default removed -> killed: TypeError: non-default argument 'worker_id' follows default argument
+[PASS] M-S8a zero rigs pass -> killed: AssertionError: ==============================================================================
+PWC RIG CODE-PARITY GATE [tcp] 
+[PASS] M-S8b UNAVAILABLE not refused -> killed: AssertionError: rig unreachable: rc=0
+==============================================================================
+PWC RIG C
+[PASS] CONTAINMENT: repository results/ unchanged; the suite's own relative writes went to /home/michael/tfm_worktrees/pwc-backup/data/pwc_step1/test_out/cwd_7l7seqd3: ['window_opt_forward_8_0_t1.json', 'window_opt_reverse_8_0_t1.json']
+
+GATES 22/22 PASS (1 HELD)
+MUTANTS 16/16 killed (1 HELD)
+RESULT: PASS — 2 HELD, not run: ['G-S3-WORKER', 'M-S3b worker falls back to 192.168.3.127']

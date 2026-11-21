@@ -1,0 +1,22 @@
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: 192.168.3.122 (8× RX 6600 XT)
+[PWC] INFO Node loaded: 192.168.3.156 (8× RX 6600 XT)
+[PWC] INFO [PWC-TCP] dispatch confirmed: 2 ready workers (min_workers=1)
+[PWC] INFO [java_lcg] 40,000 seeds → 2 chunks (20,000/chunk) across 2 workers
+[PWC] INFO [S158B] Bounded dispatch: 2 chunks → pool_size=2 (num_workers=2)
+[PWC] INFO   ✅ Chunk 0: 20,000 seeds → 0 survivors
+[PWC] INFO   ✅ Chunk 1: 20,000 seeds → 0 survivors
+[PWC] INFO [S158B] Executor shut down — peak_threads=3 timed_out=False
+[PWC] INFO Results saved: /home/michael/tfm_worktrees/pwc-offset/logs/test_pwc_stage3a/pass.json (0 survivors)
+[PASS] G-S311-JOBS: 2 TCP jobs: window_anchor 25, generator_phase 0, no offset, skip_range [6, 99] as given
+[PASS] G-F2-ONE-READ: one read; anchor 2 of ten rows gives rows[2:10]; a file shrunk after the read is never seen
+[PASS] G-F2-DOMAIN: anchor 3 of 10 rows (w 8) refused out of domain; 5 rows < w 8 refused; one read each, no sieve
+[PASS] G-F2-EQUALS-MINER: 9 windows (3 session sets x 3 anchors incl. the boundary) equal the miner's load_residue_window
+[PASS] G-F2-LEGACY-UNCHANGED: old-style offsets 0/1/5 (5 clamped): sieve calls and results identical to b2efdef
+[PASS] G-F2-BASE-CONTROL: b2efdef reads the dataset twice for a new-key job (the case Beta reproduced)
+[PASS] M-F2-1 second read restored -> killed: the dataset was read 2 times for one new-key job
+[PASS] M-F2-2 short-file refusal removed -> killed: {'job_id': 'f2', 'success': False, 'error': "PWC_WINDOW_ANCHOR_OUT_OF_DOMAIN: window_anchor 0 is outside the derived domain [0, -3] — dataset='/home/michael/tfm
+[PASS] M-F2-3 window off by one -> killed: (['midday', 'evening'], 0)
+GATES 6/6 PASS
+MUTANTS 3/3 killed
+RESULT: PASS

@@ -1,0 +1,39 @@
+parity gate: derived worker import closure (static, from miner/range_miner_worker.py ): ['adaptive_thresholds.py', 'execution_set.py', 'hybrid_strategy.py', 'miner/__init__.py', 'miner/dataset_authority.py', 'miner/range_miner_coordinator.py', 'miner/range_miner_protocol.py', 'miner/range_miner_worker.py', 'prng_registry.py', 'sieve_gpu_worker.py']
+closure_coverage: (True, [], [])
+Stage 3 code files in GOVERNED_FILES: []
+Stage 3 code files in derived closure: []
+local_worktree_dirty signature: (repo_root='/home/michael/tfm_worktrees/pwc-backup', governed=('adaptive_thresholds.py', 'execution_set.py', 'hybrid_strategy.py', 'miner/__init__.py', 'miner/dataset_authority.py', 'miner/range_miner_coordinator.py', 'miner/range_miner_protocol.py', 'miner/range_miner_worker.py', 'prng_registry.py', 'sieve_gpu_worker.py'), runner=None)
+clean-tree producer _repository_state: base x1 new x1, AST-identical: True
+  changed/added top-level: ClassDef PwcTrialIncompleteError
+  changed/added top-level: ClassDef PwcThresholdProvenanceError
+  changed/added top-level: Assign _PWC_TRIAL_COMPLETION_SCHEMA
+  changed/added top-level: FunctionDef _pwc_required_passes
+  changed/added top-level: FunctionDef _pwc_require_complete_trial
+  changed/added top-level: FunctionDef _pwc_require_threshold_provenance
+  changed/added top-level: FunctionDef _step1_pwc_sweep_evidence
+  changed/added top-level: FunctionDef run_bidirectional_test
+
+## Alpha's reading (2026-11-21): does the Stage 3 change to window_optimizer_integration_final.py trip a RANGE-MINER
+## launch gate after commit?
+
+1. W-NO-WEAKENING (tests/test_gate12_cleantree_admission.py:937-958) is a test, not a launch gate. It hashes
+   utils/run_finalizer.py, window_optimizer_integration_final.py and .gitignore in the working tree and compares them
+   with `git show HEAD:<file>` (:941-951). Once the change is committed, HEAD holds the same bytes, so it is green.
+   Read, not executed: no commit was made.
+2. Why the file is on that list: the clean-tree launch gate imports this whole module (scripts/gate12_cleantree_gate.py:77)
+   and takes its verdict from WOI._repository_state (:81, :117; defined window_optimizer_integration_final.py:101).
+   _repository_state is AST-identical to b2efdef (above). Stage 3b's other top-level changes are 2 classes, 1 literal
+   assignment and 5 functions, plus the body of run_bidirectional_test. None runs code at import: the 3a tool's
+   import-time check passes on this file. So the admission and pre-dispatch clean-tree checks (gate12_launch.sh:133-136,
+   :246-249) compute the same predicate. After commit the tree is clean, so they PROCEED. Before commit they REFUSE,
+   correctly, because the tree is dirty.
+3. Rig code-parity gate (gate12_launch.sh:191-198; scripts/gate12_parity_gate.py:174-185). It governs 10 files, and
+   none is a Stage 3 file. Its own derivation of the worker import closure from miner/range_miner_worker.py (run above,
+   static) gives exactly the 10 governed files; closure_coverage = (True, [], []). Stage 3 adds no governed file and
+   needs no rig redeploy for parity. Note: the Stage 3a sieve_filter.py change is a PWC rig-worker file, outside this gate.
+4. Provenance block (gate12_launch.sh:286-312): it records HEAD and the porcelain line count, and refuses only if git
+   itself fails.
+
+Conclusion (reading plus the static closure run): after commit, no gate12_launch.sh gate is tripped by this file's
+change. The open risk is the usual one: the counted launcher refuses any tree that is not clean, including one that
+holds these files uncommitted.

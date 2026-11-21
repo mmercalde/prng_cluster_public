@@ -1,0 +1,65 @@
+VERIFICATION test_pwc_backup_stage2 START
+[PASS] G-THR-JOBS: constant and hybrid jobs carry the requested value as both keys; records verified
+[PASS] G-THR-REFUSALS: no threshold / threshold != requested / SSH route: hybrid pass refused, nothing dispatched
+[PASS] G-THR-ECHO: hybrid report 0.5 for 0.73125 / no report / one bad chunk: the pass refuses
+[PASS] G-THR-ECHO-REAL-SIEVE-FILTER: real execute_sieve_job: sieve got 0.73125 (the job's phase2_threshold), reported 0.7312 at per_family[..].single_phase.threshold; record verified
+[PASS] G-PHASES: zero forward survivors: all 4 phases; zero variable-forward: phase 4 still runs; both=False: 1-2
+[PASS] G-TRIAL-THRESHOLDS-STRATEGIES: each pass gets its directional threshold as both keys; hybrid passes strategies=None
+[PASS] G-STRATEGIES-ALL-FIVE: strategies=None sends all 5: ['Strict Continuous (No Reseed)', 'Lenient Continuous (Large Gaps OK)', 'Aggressive Reseed Detection', 'Balanced Hybrid (Recommended)', 'Extreme Tolerance (Catch Everything)']
+[PASS] G-ANCHOR: TCP anchor 25: jobs carry window_anchor 25 / generator_phase 0 / no offset, echo checked (none, wrong anchor, wrong phase: no chunk counts); -1/'25'/2.0/True refused before dispatch; SSH: 25 refused before the fleet, pass 3 refused, 0 runs
+[PASS] G-SSH-VARIABLE: both-mode on SSH refused before the fleet; constant-only on SSH still runs
+[PASS] G-PROBE-KILL: kill: real pgrep -> marker; pgrep exit 2 / blind / erroring on the target -> rc 7, no marker; VM101-local string kills only the pwc dummy
+[PASS] G-PROBE-S156: S156 find: none / the worker / probe_unavailable; reap: 'reaped:0' exactly (no double zero) / 'reaped:unavailable' for all three broken probes
+[PASS] G-LOCAL-KILL-READ: VM101 kill confirmed -> 2 local workers; rc 7 / rc 6 / no marker / error -> none launched or admitted
+[PASS] G-LAUNCH-COUNTED: a launch with no PID is revoked and not counted (online wait 1, effective pool 1)
+[PASS] G-REVOKE-DROPS-CONNECTION: revoke: the id's open connection is closed, it leaves ready/online at once
+[PASS] G-REQUEST-JOB-ADMISSION: a worker no longer on the list asks for a job: no job, connection ended, job still queued
+[PASS] G-OWNER-CLEANUP: reconnect: the old connection ending leaves the new one registered and ready
+[PASS] G-WORKER-EXITS: real worker service, refused hello: exits rc 43 after ONE attempt
+[PASS] G-R2-RECONNECT-RACE: old handler paused mid-cleanup while the worker reconnected, went ready and leased a job: replacement stays registered + ready, lease active, result delivered
+[PASS] G-R2-REAPER-OWNERSHIP: silent worker: registry + ready cleared at once, its lease requeued, socket shut; fresh worker kept
+[PASS] G-R2-JOB-IDS-UNIQUE-PER-PASS: P1 sieve_06530bd3da02_000.. / P2 sieve_002918705e97_000..: no job id shared between passes (equal thresholds 0.5)
+[PASS] G-R2-ACTIVE-LEASE-ONLY: superseded lease and wrong-connection results dropped and counted; the active lease's result delivered
+[PASS] G-R2-LATE-RESULT-ACROSS-PHASES: A stalls on a P1 chunk, retry on B completes P1, P2 submitted, A's late P1 result arrives (thresholds equal 0.5/0.5): P2 reports B's survivors only
+[PASS] G-R2-REFUSAL-NO-GPU: refused worker exits 43 without importing CuPy or writing a heartbeat
+[PASS] G-R3-REAPER-SAME-ID-RECONNECT: old connection 310 s silent, same id reconnects, held at its last-seen refresh while the reaper runs: replacement kept, goes ready, its job's result delivered
+[PASS] G-R3-REPLACED-CONN-NO-REFRESH: a replaced connection's heartbeat leaves last-seen untouched and ends that connection
+[PASS] G-IMPORT: integration module (Run 4's launch import) + miner package import cleanly, fresh process
+[PASS] M-THR-1 hybrid phase2 default restored + equality off -> killed: expected PwcSettingRefused, got PwcThresholdContractMismatch: [java_lcg_hybrid] hybrid threshold contract viol
+[PASS] M-THR-2 SSH hybrid allowed -> killed: expected PwcSettingRefused, got IndexError: list index out of range
+[PASS] M-THR-3 hybrid report not checked -> killed: expected PwcThresholdContractMismatch; nothing was raised
+[PASS] M-THR-4 missing report tolerated -> killed: expected PwcThresholdContractMismatch; nothing was raised
+[PASS] M-PH-1 forward-zero prune restored -> killed: forward zero: ['java_lcg']
+[PASS] M-PH-2 phase 3 threshold dropped -> killed: java_lcg_hybrid: threshold=0.73125 phase2_threshold=None
+[PASS] M-ST-1 one strategy only -> killed: 1 strategies sent: ['Strict Continuous (No Reseed)']
+[PASS] M-OF-1 trial anchor check removed -> killed: expected PwcWindowAnchorRefused, got AttributeError: 'NoneType' object has no attribute 'startup'
+[PASS] M-OF-2 pass anchor check treats SSH as TCP -> killed: expected PwcWindowAnchorRefused; nothing was raised
+[PASS] M-AN-1 TCP job keeps the old offset (no split) -> killed: [{'job_id': 'sieve_6838c3f04463_000', 'search_type': 'residue_sieve', 'dataset_path': 'unused.json', 'seed_sta
+[PASS] M-AN-2 worker echo not checked -> killed: {'schema': 'pwc_pass_accounting_v1', 'prng_type': 'java_lcg', 'requested_interval': [0, 40000], 'chunk_size': 
+[PASS] M-AN-3 generator phase follows the anchor -> killed: [{'job_id': 'sieve_5a5a3ec9bb2b_000', 'search_type': 'residue_sieve', 'dataset_path': 'unused.json', 'seed_sta
+[PASS] M-AN-4 negative anchor accepted -> killed: expected PwcWindowAnchorRefused; nothing was raised
+[PASS] M-SSH-1 both-mode SSH not refused up front -> killed: expected PwcSettingRefused, got AttributeError: 'NoneType' object has no attribute 'startup'
+[PASS] M-PR-1 kill probe control removed -> killed: pgrep_blind: {'rc': 0, 'stdout': ['PWC_STALE_KILL_OK'], 'alive_pwc': 0, 'alive_sieve': 0}
+[PASS] M-PR-2 kill: any non-match status counts as clean -> killed: pgrep_err_on_target: {'rc': 0, 'stdout': ['PWC_STALE_KILL_OK'], 'alive_pwc': 0, 'alive_sieve': 0}
+[PASS] M-PR-3 S156 reap: double-zero construct restored -> killed: {'rc': 0, 'stdout': ['reaped:0', '0'], 'alive_pwc': 1, 'alive_sieve': 0}
+[PASS] M-PR-4 S156 find: probe control removed -> killed: find/pgrep_blind: {'rc': 0, 'stdout': ['none'], 'alive_pwc': 0, 'alive_sieve': 0}
+[PASS] M-LK-1 VM101 kill result ignored -> killed: rc 7: local workers launched: ['zeus_gpu0', 'zeus_gpu1']
+[PASS] M-LC-1 unconfirmed launch counted -> killed: online wait sized [2]; the no-PID launch must not count
+[PASS] M-RV-1 revoke leaves the connection -> killed: revoked worker still held: ready=0 workers=1
+[PASS] M-RV-2 revoke only edits the list (stage 1 behaviour) -> killed: revoked worker still held: ready=1 workers=1
+[PASS] M-RQ-1 request_job admission removed -> killed: a worker off the list was sent {'message_type': 'job_assign', 'protocol_version': 1, 'worker_id': 'coordinator
+[PASS] M-OW-1 owner check removed -> killed: old connection's end evicted the new one: workers=0 ready=0
+[PASS] M-R2-Q6a R1 cleanup restored (state cleared after the lock, reclaim by id) -> killed: old cleanup hit the replacement: workers=1 ready=0
+[PASS] M-R2-Q6b reaper leaves ready set -> killed: silent worker not fully evicted: workers=['rig_gpu1'] ready=2
+[PASS] M-R2-F2a job ids restarted at sieve_000 each pass -> killed: two passes share job ids: ['sieve_000', 'sieve_001']
+[PASS] M-R2-F2b any result retires the lease -> killed: a superseded/foreign result was delivered
+[PASS] M-R2-F2c both removed (the pre-R2 path Beta reproduced) -> killed: P2 reported worker A's late P1 result: [111, 222]
+[PASS] M-R2-Q7 heartbeat written on refusal -> killed: the refusal exit imported CuPy: 'CUPY_LOADED=True'
+[PASS] M-R3-Q1a register and last-seen refresh in separate sections (R2) -> killed: the reaper evicted the fresh replacement
+[PASS] M-R3-Q1b any connection refreshes last-seen -> killed: a replaced connection refreshed the id's last-seen: 1795273834.8097765
+[PASS] M-WK-1 worker retries after refusal -> killed: refused worker still running after 8 s (40 hellos refused)
+
+GATES 26/26 PASS (0 UNAVAILABLE)
+MUTANTS 33/33 killed
+RESULT: PASS
+VERIFICATION test_pwc_backup_stage2 COMPLETE

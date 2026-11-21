@@ -1,0 +1,16 @@
+DIFF  tests/test_gate12_cleantree_admission.py: rc 0 -> 1
+      newly failing: ['W-NO-WEAKENING                     run_finalizer, the producer and .gitignore are byte-ide']
+      no longer failing: []
+DIFF  tests/test_s172_miner_seed_start.py: rc 1 -> 1
+      newly failing: ['G-R5-ROUTES ZMQ refuses non-zero before dispatch; PWC carries the start (stage 3); 0 uncha']
+      no longer failing: ['G-R5-ROUTES PWC/ZMQ refuse non-zero before dispatch; 0 unchanged']
+DIFF  tests/test_s172_phase4_coordinator.py: rc 0 -> 1
+      newly failing: ['Gate 22']
+      no longer failing: []
+DIFF  test_persistent_worker_harness.py: rc 0 -> 1
+      newly failing: ['PwcTrialIncompleteError', 'T20']
+      no longer failing: []
+NEW   tests/test_pwc_backup_stage3.py: rc 0, failing=[]
+NEW   tests/test_compare_engine_outputs.py: rc 0, failing=[]
+
+77 suites in after; 4 differ from before (rc or failing-check set)

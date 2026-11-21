@@ -1,0 +1,8 @@
+tests/test_pwc_backup_stage3.py	1	7s
+tests/test_pwc_stage3a.py	0	0s
+tests/test_prove_unchanged_outside.py	0	2s
+tests/test_pwc_stage2b_anchor_phase.py	0	1s
+tests/test_pwc_backup_stage2.py	0	153s
+tests/test_pwc_backup_step1.py	0	21s
+test_persistent_worker_harness.py	0	5s
+tests/test_compare_engine_outputs.py	0	2s

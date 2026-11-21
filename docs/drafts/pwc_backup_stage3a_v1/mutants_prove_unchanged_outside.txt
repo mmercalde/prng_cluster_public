@@ -1,0 +1,17 @@
+== 2026-11-21: narrowed header check (owner). Mutants applied to a COPY of the tool (logs/stage3a_tool_mutants2/run_mutants.py), real test file beside it; clean control first.
+   The control's one failure, test_real_sieve_filter_against_stage2b_base, needs the repository's git and passes in the worktree (49/49).
+CONTROL (unmutated copy): rc 1, failing ['test_real_sieve_filter_against_stage2b_base']
+H1 old rule: every non-inert part of a changed header flagged: rc 1, DETECTED by 2: ['test_pass_unchanged_noninert_default_with_new_trailing_inert_parameter', 'test_pass_unchanged_noninert_default_with_new_trailing_positional_parameter']
+H2 changed default of an existing parameter not flagged: rc 1, DETECTED by 1: ['test_catch_changed_noninert_default']
+H3 new parameter's non-inert default not flagged: rc 1, DETECTED by 2: ['test_catch_call_default_added_to_allowed_function', 'test_catch_new_parameter_with_noninert_default']
+H4 order/kind check removed: rc 1, DETECTED by 2: ['test_catch_parameter_kind_change', 'test_catch_reordered_parameters']
+H5 parameter names/kinds not part of the header-change trigger: rc 1, DETECTED by 3: ['test_catch_parameter_kind_change', 'test_catch_reordered_parameters', 'test_pass_unchanged_noninert_default_with_new_trailing_inert_parameter']
+H6 kind change not checked: rc 1, DETECTED by 1: ['test_catch_parameter_kind_change']
+RESULT: PASS
+
+== 2026-11-20: Q8 mutants, run on the pre-narrowing tool (kept for the record; Q8c's 'header check off' is still covered by H1-H6 above and by test_catch_decorator_added_to_allowed_function / test_catch_call_default_added_to_allowed_function, which pass)
+Q8a imports not bindings: rc 1, caught by 1: ['test_catch_allowed_added_shadowing_an_import']
+Q8b added assign value not checked: rc 1, caught by 1: ['test_catch_allowed_added_with_side_effect_value']
+Q8c header check off: rc 1, caught by 2: ['test_catch_call_default_added_to_allowed_function', 'test_catch_decorator_added_to_allowed_function']
+KB1 block not compared: rc 1, caught by 2: ['test_catch_keep_block_change_inside_kept_branch', 'test_cli_keep_block_and_bad_spec']
+KB2 preamble not compared: rc 1, caught by 1: ['test_catch_keep_block_preamble_change']

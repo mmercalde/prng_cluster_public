@@ -92,13 +92,15 @@ def test_pass_identical():
 
 def test_pass_change_inside_allowed_function():
     # body, signature, default and a new decorator: all inside the allowed def
+    # body, signature and a literal default: inside the allowed def, inert at import
     new = BASE.replace('def allowed(job):\n    return job.get("offset", 0)',
-                       '@deco\ndef allowed(job, phase=0):\n    if phase:\n        raise ValueError\n'
+                       'def allowed(job, phase=0):\n    if phase:\n        raise ValueError\n'
                        '    return job["window_anchor"]')
     assert new != BASE
     rep = _cmp(new)
     assert rep["ok"], rep["problems"]
     assert rep["allowed"]["allowed"]["changed"] is True
+    assert rep["allowed_header_changes"] and not rep["allowed_header_changes"][0]["issues"]
 
 
 def test_pass_change_inside_allowed_method():
@@ -315,6 +317,209 @@ def test_catch_side_effect_hidden_next_to_allowed_added():
     rep = P.compare(BASE, new, ["allowed"], ["NEW_PIN"])
     assert not rep["ok"] and "top-level-statements-differ" in _kinds(rep)
 
+
+
+# ------------------------------------------------------------------ Stage 3a: Beta X-PWC-STAGE2B R1 Q8
+
+def test_catch_decorator_added_to_allowed_function():
+    new = BASE.replace('def allowed(job):', '@deco\ndef allowed(job):')
+    rep = _cmp(new)
+    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
+
+
+def test_catch_call_default_added_to_allowed_function():
+    new = BASE.replace('def allowed(job):', 'def allowed(job, t=os.getpid()):')
+    rep = _cmp(new)
+    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
+
+
+def test_pass_unchanged_decorator_on_allowed_function():
+    # the checked function already has @deco in the base: allowing it and changing
+    # only its body must not be flagged for the unchanged decorator
+    new = BASE.replace("    return inner(a) + b", "    return inner(a) * b")
+    rep = P.compare(BASE, new, ["checked"])
+    assert rep["ok"], rep["problems"]
+
+
+# ------------------------------------------------------------------ Stage 3a, narrowed header check (owner 2026-11-21)
+# A non-inert default/annotation in an allowed definition's header is flagged only
+# when its AST differs from the same-named parameter's in the base, or the parameter
+# is new. Reordering or re-kinding existing parameters is always caught.
+
+HDR_BASE = textwrap.dedent('''\
+    import os
+
+    def deco(f):
+        return f
+
+    def run_opt(trials, seed=0, staging_high_water_bytes=16 * 1024 ** 3, *, tag=os.sep):
+        return trials
+    ''')
+
+
+def _hdr(new, allow=("run_opt",)):
+    return P.compare(HDR_BASE, new, allow)
+
+
+def test_pass_unchanged_noninert_default_with_new_trailing_inert_parameter():
+    # (a) the run_bayesian_optimization shape: the 16 * 1024 ** 3 default is unchanged,
+    # only an inert keyword-only parameter is appended
+    new = HDR_BASE.replace("tag=os.sep):", "tag=os.sep, miner_abi=None):")
+    rep = _hdr(new)
+    assert rep["ok"], rep["problems"]
+    note = rep["allowed_header_changes"][0]
+    assert note["issues"] == [] and note["order_issues"] == [] and "parameters" in note["changed"]
+
+
+def test_pass_unchanged_noninert_default_with_new_trailing_positional_parameter():
+    new = HDR_BASE.replace("staging_high_water_bytes=16 * 1024 ** 3, *",
+                           "staging_high_water_bytes=16 * 1024 ** 3, extra=None, *")
+    rep = _hdr(new)
+    assert rep["ok"], rep["problems"]
+
+
+def test_catch_changed_noninert_default():
+    # (b)
+    new = HDR_BASE.replace("16 * 1024 ** 3", "8 * 1024 ** 3")
+    rep = _hdr(new)
+    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
+    assert any("staging_high_water_bytes" in i for p in rep["problems"] for i in p.get("issues", []))
+
+
+def test_catch_new_parameter_with_noninert_default():
+    # (c) for keyword-only and positional additions, and a non-inert annotation
+    for new in (HDR_BASE.replace("tag=os.sep):", "tag=os.sep, pid=os.getpid()):"),
+                HDR_BASE.replace("seed=0,", "seed=0, cap=2 ** 30,"),
+                HDR_BASE.replace("tag=os.sep):", "tag=os.sep, cb: deco(int) = None):")):
+        rep = _hdr(new)
+        assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep), new
+
+
+def test_catch_reordered_parameters():
+    # (d) swapping two defaulted parameters; also a pure swap of default-less ones,
+    # which leaves decorators/defaults/annotations unchanged
+    new = HDR_BASE.replace("seed=0, staging_high_water_bytes=16 * 1024 ** 3",
+                           "staging_high_water_bytes=16 * 1024 ** 3, seed=0")
+    rep = _hdr(new)
+    assert not rep["ok"] and "allowed-header-parameter-order-changed" in _kinds(rep)
+    base2 = HDR_BASE.replace("def run_opt(trials, seed=0,", "def run_opt(trials, study, seed=0,")
+    new2 = base2.replace("def run_opt(trials, study,", "def run_opt(study, trials,")
+    rep2 = P.compare(base2, new2, ["run_opt"])
+    assert not rep2["ok"] and "allowed-header-parameter-order-changed" in _kinds(rep2)
+
+
+def test_catch_parameter_kind_change():
+    # moving an existing parameter behind * (positional -> keyword-only), order kept
+    new = HDR_BASE.replace("seed=0, staging_high_water_bytes=16 * 1024 ** 3, *,",
+                           "seed=0, *, staging_high_water_bytes=16 * 1024 ** 3,")
+    rep = _hdr(new)
+    assert not rep["ok"] and "allowed-header-parameter-order-changed" in _kinds(rep)
+
+
+def test_catch_decorator_added_next_to_unchanged_noninert_default():
+    new = HDR_BASE.replace("def run_opt(", "@deco\ndef run_opt(")
+    rep = _hdr(new)
+    assert not rep["ok"] and "allowed-header-import-time-evaluation" in _kinds(rep)
+
+
+def test_catch_allowed_added_with_side_effect_value():
+    # Beta's example: PIN = os.environ.setdefault('FLAG', '1')
+    new = BASE.replace("def deco(f):", "PIN = os.environ.setdefault('FLAG', '1')\n\n\ndef deco(f):")
+    rep = P.compare(BASE, new, ["allowed"], ["PIN"])
+    assert not rep["ok"] and "allowed-added-import-time-evaluation" in _kinds(rep)
+
+
+def test_catch_allowed_added_shadowing_an_import():
+    # Beta's example: time = 0 after a base `import time`
+    base = BASE.replace("import sys\n", "import sys\nimport time\n")
+    new = base.replace("def deco(f):", "time = 0\n\n\ndef deco(f):")
+    rep = P.compare(base, new, ["allowed"], ["time"])
+    assert not rep["ok"] and "allowed-added-name-invalid" in _kinds(rep)
+    # `from x import y as time` and `import a.b` (binds a) count too
+    base2 = BASE.replace("import sys\n", "import sys\nfrom os import path as time\nimport xml.dom\n")
+    for nm in ("time", "xml"):
+        new2 = base2.replace("def deco(f):", f"{nm} = 0\n\n\ndef deco(f):")
+        assert "allowed-added-name-invalid" in _kinds(P.compare(base2, new2, ["allowed"], [nm])), nm
+
+
+def test_catch_allowed_added_rebound_later():
+    new = BASE.replace("def deco(f):", "NEW_PIN = 0\n\n\ndef deco(f):") + "\nNEW_PIN = 1\n"
+    rep = P.compare(BASE, new, ["allowed"], ["NEW_PIN"])
+    assert not rep["ok"]
+
+
+def test_catch_allowed_added_function_with_decorator_or_call_default():
+    for hdr in ("@deco\ndef new_helper(x):", "def new_helper(x=os.getcwd()):",
+                "def new_helper(x: make_type()):"):
+        new = BASE.replace("def deco(f):", f"{hdr}\n    return x\n\n\ndef deco(f):")
+        rep = P.compare(BASE, new, ["allowed"], ["new_helper"])
+        assert [p["kind"] for p in rep["problems"]] == ["allowed-added-import-time-evaluation"], \
+            (hdr, rep["problems"])
+    # the same helper with an inert header passes
+    ok = BASE.replace("def deco(f):", "def new_helper(x: int = 0) -> int:\n    return x\n\n\ndef deco(f):")
+    assert P.compare(BASE, ok, ["allowed"], ["new_helper"])["ok"]
+
+
+def test_catch_allowed_added_class_with_body_side_effect():
+    new = BASE.replace("def deco(f):", "class NewThing:\n    X = 1\n    print('hi')\n\n\ndef deco(f):")
+    rep = P.compare(BASE, new, ["allowed"], ["NewThing"])
+    assert not rep["ok"] and "allowed-added-import-time-evaluation" in _kinds(rep)
+    ok = BASE.replace("def deco(f):", 'class NewThing:\n    """doc"""\n    X = 1\n\n    def m(self, a: int = 0) -> int:\n        return a\n\n\ndef deco(f):')
+    assert P.compare(BASE, ok, ["allowed"], ["NewThing"])["ok"]
+
+
+ROUTED = textwrap.dedent('''\
+    def route(coordinator, x):
+        _use_miner = getattr(coordinator, "use_range_miner", False)
+        if _use_miner:
+            r = x + 1
+            return r
+        _use_pw = getattr(coordinator, "use_persistent_workers", False)
+        if _use_pw:
+            return x + 2
+        return x
+    ''')
+
+
+def test_pass_keep_block_when_only_other_branch_changes():
+    new = ROUTED.replace("return x + 2", "return x + 3")
+    rep = P.compare(ROUTED, new, ["route"], (), ["route::if _use_miner:"])
+    assert rep["ok"], rep["problems"]
+    assert rep["kept_blocks"] == [{"spec": "route::if _use_miner:", "ok": True}]
+
+
+def test_catch_keep_block_change_inside_kept_branch():
+    new = ROUTED.replace("r = x + 1", "r = x + 9")
+    assert P.compare(ROUTED, new, ["route"])["ok"]                       # hidden without --keep-block
+    rep = P.compare(ROUTED, new, ["route"], (), ["route::if _use_miner:"])
+    assert not rep["ok"] and "kept-block-differs" in _kinds(rep)
+
+
+def test_catch_keep_block_preamble_change():
+    new = ROUTED.replace('getattr(coordinator, "use_range_miner", False)',
+                         'getattr(coordinator, "use_range_miner", True)')
+    rep = P.compare(ROUTED, new, ["route"], (), ["route::if _use_miner:"])
+    assert not rep["ok"] and "kept-block-preamble-differs" in _kinds(rep)
+    # a statement inserted before the block counts as a preamble change
+    new2 = ROUTED.replace("    _use_miner =", "    x = x * 2\n    _use_miner =")
+    assert "kept-block-preamble-differs" in _kinds(P.compare(ROUTED, new2, ["route"], (), ["route::if _use_miner:"]))
+    # and so does a signature change
+    new3 = ROUTED.replace("def route(coordinator, x):", "def route(coordinator, x, y=0):")
+    assert "kept-block-preamble-differs" in _kinds(P.compare(ROUTED, new3, ["route"], (), ["route::if _use_miner:"]))
+
+
+def test_catch_keep_block_missing_or_duplicated():
+    gone = ROUTED.replace("if _use_miner:", "if _use_miner and x:")
+    assert "kept-block-not-unique" in _kinds(P.compare(ROUTED, gone, ["route"], (), ["route::if _use_miner:"]))
+    assert "kept-block-function-not-unique" in _kinds(P.compare(ROUTED, ROUTED, ["route"], (), ["nope::if _use_miner:"]))
+
+
+def test_cli_keep_block_and_bad_spec():
+    new = ROUTED.replace("r = x + 1", "r = x + 9")
+    r = _cli(new, "--allow", "route", "--keep-block", "route::if _use_miner:", base_src=ROUTED)
+    assert r.returncode == 1 and "kept-block-differs" in r.stdout, r.stdout
+    r = _cli(ROUTED, "--allow", "route", "--keep-block", "no-separator", base_src=ROUTED)
+    assert r.returncode == 2
 
 def _main():
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

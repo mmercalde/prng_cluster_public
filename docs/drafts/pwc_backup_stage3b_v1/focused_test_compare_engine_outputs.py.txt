@@ -1,0 +1,18 @@
+VERIFICATION test_compare_engine_outputs START
+[PASS] G-CLEAN: clean pair (only allowed fields differ): exit 0, SAME; all 22 arrays compared
+[PASS] M1 one changed survivor: caught (exit 1): phases.3.survivors
+[PASS] M2 one changed match rate: caught (exit 1): phases.1.match_rates
+[PASS] M3 one reordered array: caught (exit 1): npz.order[B]
+[PASS] M4 one missing array: caught (exit 1): npz.order[B], npz.score
+[PASS] M5 one changed NPZ value: caught (exit 1): npz.forward_matches
+[PASS] M6 one changed credit interval: caught (exit 1): credit.swept_intervals.4
+[PASS] M7 one changed bidirectional set: caught (exit 1): bidirectional.constant
+[PASS] M8 one changed phase count: caught (exit 1): phase_counts.2.survivors
+[PASS] M9 an unclassified top-level key: caught (exit 1): <unclassified>.new_field_nobody_classified
+[PASS] M10 rows reordered inside an NPZ array: caught (exit 1): npz.seeds
+[PASS] M11 inputs differ (not the same job): caught (exit 2): inputs
+[PASS] G-SUBPROCESS-EXIT: as a program: exit 0 on SAME, exit 1 on a changed survivor
+
+13/13 PASS
+RESULT: PASS
+VERIFICATION test_compare_engine_outputs COMPLETE

@@ -595,14 +595,21 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
         offset = job.get('offset', 0)
         sessions = job.get('sessions', ['midday', 'evening'])
         if _pwc_new_schema:
-            # [PWC-BACKUP STAGE 2b] Domain check on the POST-session-filter count,
-            # then the SAME loader the legacy path uses (one derivation of the
-            # window); inside the domain its clamp is a no-op. `offset` from here
-            # on is only the kernel's trailing argument, i.e. generator_phase (0).
+            # [PWC-BACKUP STAGE 3a, Beta X-PWC-STAGE2B R1 Finding 2] ONE dataset read:
+            # the domain check and the window are taken from the same parsed,
+            # session-filtered list, as RANGE-MINER's load_residue_window does
+            # (miner/range_miner_worker.py:904-932). (Stage 2b read the file a second
+            # time through load_draws_from_daily3; a file replaced between the two
+            # reads could yield a different window under an accepted echo.)
+            # `offset` from here on is only the kernel's trailing argument, i.e.
+            # generator_phase (0).
             with open(dataset_path, 'r') as _f:
                 _data = json.load(_f)
             if sessions:
                 _data = [e for e in _data if e.get('session') in sessions]
+            if len(_data) < window_size:
+                raise ValueError(
+                    f"Dataset has only {len(_data)} entries, need at least {window_size}")
             _derived_max = len(_data) - window_size
             if _pwc_window_anchor < 0 or _pwc_window_anchor > _derived_max:
                 raise ValueError(
@@ -612,9 +619,9 @@ def execute_sieve_job(job: Dict[str, Any], gpu_id: int) -> Dict[str, Any]:
                     f"{sorted(sessions) if sessions else 'ALL'}, N_filtered="
                     f"{len(_data)}, window_size={window_size}. The anchor is "
                     f"validated, never clamped.")
+            draws = [int(e.get("full_state", e["draw"]))
+                     for e in _data[_pwc_window_anchor:_pwc_window_anchor + window_size]]
             del _data
-            draws = load_draws_from_daily3(dataset_path, window_size, sessions,
-                                           _pwc_window_anchor)
             offset = _pwc_generator_phase
         else:
             # Load draws

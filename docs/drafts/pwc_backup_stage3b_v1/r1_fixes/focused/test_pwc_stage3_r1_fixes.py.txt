@@ -1,0 +1,13 @@
+VERIFICATION test_pwc_stage3_r1_fixes START
+[PASS] G-Q3-REFUSE: refused before any subprocess call: seed_cap_amd=0, seed_cap_amd=-1, seed_cap_nvidia=0, seed_cap_nvidia=-1
+[PASS] G-Q3-NORMAL: seed caps 25,000: startup ran (4 launch scripts); pass 4/4 complete over [0, 100000)
+[PASS] G-Q7-CALL: coordinator pwc_min_workers=24: the PWC call is b2efdef's plus seed_start and pwc_coordinator_address; min_workers not passed
+[PASS] G-Q7-READY19: 3x6 rig + 1 VM101 workers: 19/19 ready passes at the effective minimum 1 (startup gate and dispatch check; pass complete); control at 24 refuses
+[PASS] M-Q3-1 nonpositive-cap refusal removed -> killed: seed_cap_amd=0: startup did not refuse: None
+[PASS] M-Q3-2 refusal weakened to cap < 0 (cap 0 passes) -> killed: seed_cap_amd=0: startup did not refuse: None
+[PASS] M-Q3-3 NVIDIA cap not checked -> killed: seed_cap_nvidia=0: startup did not refuse: None
+[PASS] M-Q7-1 pool size passed as min_workers again -> killed: min_workers passed to run_trial_persistent: 24
+[PASS] M-Q7-2 run_trial_persistent default minimum raised to 24 -> killed: effective minimum 24: 19 of 19 ready refused: RuntimeError('PWC TCP ready gate failed: 19/19 ready < min_workers=24 afte
+GATES 4/4 PASS
+MUTANTS 5/5 killed
+RESULT: PASS

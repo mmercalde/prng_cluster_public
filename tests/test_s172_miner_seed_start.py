@@ -571,10 +571,36 @@ def _canon_calls(rec):
     return json.dumps(out, sort_keys=True, default=str)
 
 
+# [PWC-STAGE3] Owner ruling 3 (2026-11-19, docs/PWC_BACKUP_OWNER_RULINGS_20261119.md):
+# PWC is no longer refused at a non-zero start; it is handed seed_start. Stage 3 also
+# hands it pwc_coordinator_address and min_workers. ZMQ is unchanged.
+_PWC_STAGE3_ADDED_KW = ("seed_start", "pwc_coordinator_address", "min_workers")
+
+
+def _canon_calls_without(rec, drop):
+    return _canon_calls({"calls": [(n, {k: v for k, v in kw.items() if k not in drop})
+                                   for n, kw in rec["calls"]]})
+
+
 def g_r5_routes():
     import window_optimizer as WO
     out = []
-    for route in ("pwc", "zmq"):
+    # PWC [PWC-STAGE3]: a non-zero start is dispatched, carrying the start
+    rec, exc = _route_call("pwc", 1000)
+    ok_(exc is None, f"pwc at 1000 raised: {type(exc).__name__}: {exc}")
+    ok_(len(rec["calls"]) == 1 and rec["calls"][0][0] == "run_trial_persistent"
+        and rec["calls"][0][1].get("seed_start") == 1000,
+        f"pwc at 1000 did not dispatch with seed_start=1000: {_canon_calls(rec)}")
+    live, e1 = _route_call("pwc", 0)
+    base, e2 = _route_call("pwc", 0, base=True)
+    ok_(e1 is None and e2 is None, f"pwc at 0 raised: {e1!r} / {e2!r}")
+    ok_(live["calls"] and live["calls"][0][1].get("seed_start") == 0
+        and _canon_calls_without(live, _PWC_STAGE3_ADDED_KW) == _canon_calls(base),
+        f"pwc at 0 differs from {BASE[:7]} beyond the stage-3 keywords:\n live "
+        f"{_canon_calls(live)}\n base {_canon_calls(base)}")
+    out.append(f"pwc: 1000 dispatched with seed_start=1000; 0 = {BASE[:7]} plus "
+               f"{list(_PWC_STAGE3_ADDED_KW)}")
+    for route in ("zmq",):
         rec, exc = _route_call(route, 1000)
         ok_(type(exc).__name__ == "Step1RouteStartUnsupportedError",
             f"{route} at 1000: {type(exc).__name__}: {exc}")
@@ -608,9 +634,10 @@ def g_r5_routes():
 
     try:
         with quiet():
-            for flags in ({"use_persistent_workers": True}, {"use_zmq_sqlite": True}):
+            for flags in ({"use_zmq_sqlite": True},):          # [PWC-STAGE3] PWC not refused
                 expect_raises("Step1RouteStartUnsupportedError", rbo(T31, **flags))
             for ss, flags in ((T31, {"use_range_miner": True}), (T31, {}),
+                              (T31, {"use_persistent_workers": True}),   # [PWC-STAGE3]
                               (0, {"use_persistent_workers": True}),
                               (0, {"use_zmq_sqlite": True})):
                 e = expect_raises("RuntimeError", rbo(ss, **flags))
@@ -623,15 +650,15 @@ def g_r5_routes():
             rwc = lambda it, pwc: (lambda: WO.run_with_config(   # noqa: E731
                 config_file=cfgf, lottery_file="/nonexistent.json", max_seeds=1000,
                 iterations=it, use_persistent_workers=pwc))
-            expect_raises("Step1RouteStartUnsupportedError", rwc(2, True))
-            for it, pwc in ((1, True), (2, False)):
+            # [PWC-STAGE3] a PWC plan of two iterations is no longer refused
+            for it, pwc in ((1, True), (2, True), (2, False)):
                 e = expect_raises("RuntimeError", rwc(it, pwc))
                 ok_("TRIPWIRE" in str(e), f"run_with_config it={it} pwc={pwc}: {e}")
     finally:
         C.MultiGPUCoordinator, WO.MultiGPUCoordinator, WO.COORDINATOR_AVAILABLE = saved
-    out.append("child entry: PWC/ZMQ at 2^31 refused before the coordinator; miner and "
-               "legacy at 2^31, PWC/ZMQ at 0 reach it; run_with_config PWC x2 iterations "
-               "refused as a plan, x1 and legacy x2 reach it")
+    out.append("child entry: ZMQ at 2^31 refused before the coordinator; miner, legacy and "
+               "PWC at 2^31, PWC/ZMQ at 0 reach it; run_with_config PWC x1/x2 and legacy x2 "
+               "reach it [PWC-STAGE3]")
     return "; ".join(out)
 
 
@@ -861,7 +888,7 @@ GATES = [
     ("G-LEASE hybrid lease expiry keeps the start", g_lease),
     ("G-R2-ENDS interval wall endpoints; coordinator fail-closed start", g_r2_ends),
     ("G-R3-EVID evidence credits a real non-zero run; mutations refuse", g_r3_evid),
-    ("G-R5-ROUTES PWC/ZMQ refuse non-zero before dispatch; 0 unchanged", g_r5_routes),
+    ("G-R5-ROUTES ZMQ refuses non-zero before dispatch; PWC carries the start (stage 3); 0 unchanged", g_r5_routes),
     ("G-R7-ZERO seed_start 0 byte-equal to the base control", g_r7_zero),
     ("G-E2E WATCHER -> coordinator -> credit -> history COMPLETE", g_e2e),
 ]
@@ -884,18 +911,19 @@ MUTANT_SPECS = [
     ("M5 integration domain wall removed", I_MOD, "run_bidirectional_test",
      "        _s145_trial_wall(seed_start, seed_count,\n",
      "        (lambda *a, **k: None)(seed_start, seed_count,\n", g_r2_ends),
-    ("M6 PWC branch guard removed", I_MOD, "run_bidirectional_test",
-     '        _route_start_guard(seed_start, route="pwc",\n',
-     '        (lambda *a, **k: None)(seed_start, route="pwc",\n', g_r5_routes),
+    # [PWC-STAGE3] the PWC guard call is gone (ruling 3); M6 now drops the start PWC is handed
+    ("M6 PWC branch drops seed_start= (stage 3)", I_MOD, "run_bidirectional_test",
+     "            seed_start        = seed_start,                                   # [PWC-STAGE3 ruling 3]\n",
+     "", g_r5_routes),
     ("M7 ZMQ branch guard removed", I_MOD, "run_bidirectional_test",
      '        _route_start_guard(seed_start, route="zmq",\n',
      '        (lambda *a, **k: None)(seed_start, route="zmq",\n', g_r5_routes),
     ("M8 guard predicate ignores ZMQ", WO_MOD, "assert_step1_route_seed_start_supported",
-     "    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):\n",
-     "    if seed_start != 0 and use_persistent_workers:\n", g_r5_routes),
-    ("M9 run_with_config plan guard removed", WO_MOD, "run_with_config",
-     "        assert_step1_route_seed_start_supported(\n            _rs_i * max_seeds,",
-     "        (lambda *a, **k: None)(\n            _rs_i * max_seeds,", g_r5_routes),
+     "    if seed_start != 0 and use_zmq_sqlite:\n",
+     "    if False:\n", g_r5_routes),
+    # [PWC-STAGE3] M9 (run_with_config plan guard removed) is retired: run_with_config
+    # takes no ZMQ flag, so after ruling 3 its guard can no longer fire on any route and
+    # the mutant would be an invalid experiment (VIR-2), not a survivor.
     ("M10 evidence reader accepts non-done stripes", I_MOD, "_step1_miner_sweep_evidence",
      '        if any(st != "done" for _, _, st in items):\n',
      "        if False:\n", g_r3_evid),

@@ -1,0 +1,181 @@
+==============================================================================
+S172 Phase 5 D6 — 3.A production-adapter gates
+==============================================================================
+  [[91mFAIL[0m] G-INGRESS: assembly records -> accumulator, identical + real counts: trial_context for 'ing' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-INGRESS/builder: the same through _build_test_result_from_miner: trial_context for 'ingb' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-NO-PWZ-INGRESS: D3.25 four-map ingress never reached (AST+runtime): trial_context for 'nopwz' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-FINALIZE: certified 22-array generation; Ruling E holds: trial_context for 'fin' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-FAILCLOSED: absent publication result raises, never a zero result: trial_context for 'uncommitted' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-TESTRESULT: Step-1 contract kept; PWC/ZMQ builders byte-identical: trial_context for 'tr' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-BACKEND-DEFAULT: serial_reference default; process_sharded explicit: trial_context for 'bk' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+  [[91mFAIL[0m] G-FLUSH-CADENCE: one flush per trial, same label, same threshold: trial_context for 'flush' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+------------------------------------------------------------------------------
+MUTATION PROOF (four-part rule)
+------------------------------------------------------------------------------
+  [[91mFAIL[0m] MUTANTS: every injected defect is caught: POSITIVE CONTROL FAILED for G-INGRESS: the detector reds against the UNMUTATED module (MinerMetadataError: trial_context for 'ing' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).) — any kill it records would be unattributable
+
+==============================================================================
+0/9 D6 gate checks green (0 mutants killed)
+==============================================================================
+FAILURES (DO NOT COMMIT):
+
+--- G-INGRESS: assembly records -> accumulator, identical + real counts ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1382, in <lambda>
+    lambda: g_ingress(SI))
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 367, in g_ingress
+    return _g_ingress_impl(module)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 374, in _g_ingress_impl
+    _sink, assembly, _res = _committed_run(tmp, "ing")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'ing' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-INGRESS/builder: the same through _build_test_result_from_miner ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 437, in g_ingress_through_builder
+    sink, assembly, res = _committed_run(tmp, "ingb")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'ingb' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-NO-PWZ-INGRESS: D3.25 four-map ingress never reached (AST+runtime) ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1386, in <lambda>
+    lambda: g_no_pwz_ingress())
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 543, in g_no_pwz_ingress
+    sink, _assembly, res = _committed_run(tmp, "nopwz")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'nopwz' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-FINALIZE: certified 22-array generation; Ruling E holds ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1388, in <lambda>
+    lambda: g_finalize(SI))
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 564, in g_finalize
+    return _g_finalize_impl(module)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 571, in _g_finalize_impl
+    sink, assembly, res = _committed_run(tmp, "fin")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'fin' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-FAILCLOSED: absent publication result raises, never a zero result ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1390, in <lambda>
+    lambda: g_failclosed(SI))
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 624, in g_failclosed
+    return _g_failclosed_impl(module)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 659, in _g_failclosed_impl
+    _build_run(tmp, sink, "uncommitted")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'uncommitted' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-TESTRESULT: Step-1 contract kept; PWC/ZMQ builders byte-identical ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1392, in <lambda>
+    lambda: g_testresult())
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 727, in g_testresult
+    sink, _assembly, res = _committed_run(tmp, "tr")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'tr' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-BACKEND-DEFAULT: serial_reference default; process_sharded explicit ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1394, in <lambda>
+    lambda: g_backend_default(SI))
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 771, in g_backend_default
+    return _g_backend_default_impl(module)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 815, in _g_backend_default_impl
+    _build_run(tmp, sink, "bk")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'bk' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- G-FLUSH-CADENCE: one flush per trial, same label, same threshold ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1396, in <lambda>
+    lambda: g_flush_cadence())
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 942, in g_flush_cadence
+    sink, _assembly, res = _committed_run(tmp, "flush")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'flush' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- MUTANTS: every injected defect is caught ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1113, in _positive_control
+    detector()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1155, in <lambda>
+    _positive_control("G-INGRESS", lambda: g_ingress(SI))
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 367, in g_ingress
+    return _g_ingress_impl(module)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 374, in _g_ingress_impl
+    _sink, assembly, _res = _committed_run(tmp, "ing")
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 301, in _committed_run
+    _build_run(tmp, sink, run_id, phases=phases, dbname=dbname)
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 265, in _build_run
+    coord.ledger.set_trial_context(run_id, dict(CTX))
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'ing' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 204, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1155, in run_mutants
+    _positive_control("G-INGRESS", lambda: g_ingress(SI))
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_production_adapter.py", line 1115, in _positive_control
+    raise AssertionError(
+AssertionError: POSITIVE CONTROL FAILED for G-INGRESS: the detector reds against the UNMUTATED module (MinerMetadataError: trial_context for 'ing' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).) — any kill it records would be unattributable
+

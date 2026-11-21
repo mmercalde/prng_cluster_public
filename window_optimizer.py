@@ -699,11 +699,14 @@ def assert_step1_route_seed_start_supported(seed_start, *, route="",
     The S7 interval guard (credit only when swept == requested) is separate and
     unchanged.
     """
+    # [PWC-STAGE3 ruling 3, owner 2026-11-19] PWC is no longer refused: it partitions
+    # [seed_start, seed_start + seed_count) since PWC Stage 1 (S2) and the integration
+    # hands it seed_start. `use_persistent_workers` and route="pwc" are still accepted
+    # so no caller changes; for PWC this is a no-op. ZMQ is unchanged.
     if route:
-        use_persistent_workers = use_persistent_workers or route == "pwc"
         use_zmq_sqlite = use_zmq_sqlite or route == "zmq"
-    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):
-        name = "PWC" if use_persistent_workers else "ZMQ"
+    if seed_start != 0 and use_zmq_sqlite:
+        name = "ZMQ"
         raise Step1RouteStartUnsupportedError(
             f"STEP1_ROUTE_START_UNSUPPORTED ({context}): refusing a {name} ({name.lower()}) "
             f"Step 1 run at seed_start={seed_start}. The {name} route is handed "
@@ -756,6 +759,7 @@ def run_bayesian_optimization(
     staging_high_water_bytes: int = 16 * 1024 ** 3,
     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
     step1_search_id: str = '',              # [STEP1-SEARCH stage 1] hop 2 of 3
+    pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -866,6 +870,10 @@ def run_bayesian_optimization(
     coordinator.use_zmq_sqlite = use_zmq_sqlite
     coordinator.pwc_transport   = pwc_transport    # S162
     coordinator.pwc_min_workers = pwc_min_workers  # S162
+    if use_persistent_workers:
+        # [PWC-STAGE3] set only on a PWC run, so a RANGE-MINER or legacy coordinator
+        # carries exactly the attributes it carried before
+        coordinator.pwc_coordinator_address = pwc_coordinator_address
     if use_zmq_sqlite:
         print(f"   [S158D] ZMQ-SQLite coordinator ENABLED")
     coordinator.worker_pool_size        = worker_pool_size
@@ -1198,6 +1206,7 @@ def run_with_config(
     seed_cap_nvidia: int = 5_000_000,       # [S170-PARITY-2] execution sizing
     worker_pool_size: int = 8,              # [S170-PARITY-2] execution sizing
     min_workers: int = 1,                   # [S170-PARITY-2] execution sizing
+    pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
 ) -> Dict[str, Any]:
     """
     Run sieves with an existing optimal configuration.
@@ -1316,6 +1325,8 @@ def run_with_config(
     # legacy SSH distribution regardless of CLI flags.
     coordinator.use_persistent_workers = use_persistent_workers
     coordinator.pwc_transport          = pwc_transport
+    if use_persistent_workers:
+        coordinator.pwc_coordinator_address = pwc_coordinator_address   # [PWC-STAGE3]
 
     # [S170-PARITY-2] propagate execution sizing — match Bayesian/PWC path
     # Without these, --config-file mode silently falls back to default chunk caps
@@ -1566,6 +1577,11 @@ def main():
     parser.add_argument('--pwc-transport', default='tcp',
                        help='[S162] PWC transport: ssh | tcp. tcp=10x faster, '
                             '26-GPU validated at 2.24M sps. (default: tcp)')
+    parser.add_argument('--pwc-coordinator-address', type=str, default=None,
+                       help='[PWC-STAGE3] Address the PWC TCP rig workers dial back to '
+                            '(this coordinator, e.g. the dev box). No default: a PWC run '
+                            'with rigs refuses without it, as the miner launcher requires '
+                            'its coordinator host.')
     parser.add_argument('--min-workers', type=int, default=24,
                        help='[S162] Minimum workers reaching ready state before dispatch. '
                             'Default 24 = full 3-rig AMD cluster.')
@@ -1896,6 +1912,9 @@ def main():
             miner_backed=bool(getattr(args, 'use_range_miner', False)),
             remote_execution=_xset.remote_execution,
             execution_set=_xset,
+            # [PWC-STAGE3] PWC fails closed on a missing provisioning manifest, as the
+            # miner does; for every other route this is the function's own default
+            require_fleet=bool(getattr(args, 'use_persistent_workers', False)),
         )
     except (_dsauth.DatasetAuthorityError, _DatasetProvErr) as _p05_err:
         parser.error(f"DATASET_AUTHORITY_P0_5: {_p05_err}")
@@ -1931,6 +1950,7 @@ def main():
             use_zmq_sqlite=getattr(args, 'use_zmq_sqlite', False),                      # S158D
             pwc_transport=getattr(args, 'pwc_transport', 'tcp'),                    # S162
             pwc_min_workers=getattr(args, 'min_workers', 24),                       # S162
+            pwc_coordinator_address=getattr(args, 'pwc_coordinator_address', None),  # PWC-STAGE3
             worker_pool_size=getattr(args, 'worker_pool_size', 8),                  # S134
             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),            # S137
             seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),                  # S137
@@ -2053,6 +2073,7 @@ def main():
             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),
             worker_pool_size=getattr(args, 'worker_pool_size', 8),
             min_workers=getattr(args, 'min_workers', 1),
+            pwc_coordinator_address=getattr(args, 'pwc_coordinator_address', None),  # PWC-STAGE3
         )
 
         print("\n✅ Sieve execution complete!")

@@ -1,0 +1,1849 @@
+diff --git a/agent_manifests/window_optimizer.json b/agent_manifests/window_optimizer.json
+index ceebef2..52317d2 100644
+--- a/agent_manifests/window_optimizer.json
++++ b/agent_manifests/window_optimizer.json
+@@ -41,6 +41,7 @@
+         "seed-start": "seed_start",
+         "use-zmq-sqlite": "use_zmq_sqlite",
+         "pwc-transport": "pwc_transport",
++        "pwc-coordinator-address": "pwc_coordinator_address",
+         "warm-start-window": "warm_start_window",
+         "warm-start-offset": "warm_start_offset",
+         "warm-start-skip-min": "warm_start_skip_min",
+@@ -212,8 +213,8 @@
+     },
+     "use_range_miner": {
+       "type": "bool",
+-      "default": false,
+-      "description": "[S172 Phase 1] Enable RANGE-MINER stripe backend. Mutually exclusive with use_persistent_workers and use_zmq_sqlite. Phase 1 is scaffolding-only: setting true will raise NotImplementedError until Phases 2-5 land. Do not enable in production until Phase 7 acceptance completes.",
++      "default": true,
++      "description": "[S172] RANGE-MINER stripe backend: the default Step 1 engine (owner ruling 2026-11-20 15:53 PST, \"Yes, range miner is the new default\"; docs/PWC_BACKUP_OWNER_RULINGS_20261119.md). Mutually exclusive with use_persistent_workers and use_zmq_sqlite: a PWC run sets use_persistent_workers true AND use_range_miner false.",
+       "optimized_by": "Manual",
+       "effect": "Replaces chunk-dispatch Step 1 with miner-style long-lived GPU daemons (v1.4.4 §3)."
+     },
+@@ -259,15 +260,16 @@
+     "trse_context": "trse_context.json",
+     "enable_pruning": true,
+     "n_parallel": 1,
+-    "use_persistent_workers": true,
++    "use_persistent_workers": false,
+     "worker_pool_size": 8,
+     "seed_cap_nvidia": 5000000,
+     "seed_cap_amd": 2000000,
+     "seed_start": 0,
+     "use_zmq_sqlite": false,
+     "pwc_transport": "tcp",
++    "pwc_coordinator_address": null,
+     "min_workers": 24,
+-    "use_range_miner": false,
++    "use_range_miner": true,
+     "miner_stripe_size": 67108864,
+     "miner_substripes": 8,
+     "miner_output_dir": null,
+diff --git a/agents/watcher_agent.py b/agents/watcher_agent.py
+index 836efde..6f42fac 100644
+--- a/agents/watcher_agent.py
++++ b/agents/watcher_agent.py
+@@ -2122,6 +2122,8 @@ class WatcherAgent:
+                         miner_backed=bool(final_params.get("use_range_miner")),
+                         remote_execution=None,
+                         context=f"watcher_step{step}",
++                        # [PWC-STAGE3] PWC fails closed like the miner; False otherwise
++                        require_fleet=bool(final_params.get("use_persistent_workers")),
+                     )
+                     logger.warning(
+                         "[P0.5] provisioning manifest %s (%s) — per-node dataset "
+diff --git a/tests/test_s172_miner_seed_start.py b/tests/test_s172_miner_seed_start.py
+index cadc487..2ca4a40 100644
+--- a/tests/test_s172_miner_seed_start.py
++++ b/tests/test_s172_miner_seed_start.py
+@@ -571,10 +571,36 @@ def _canon_calls(rec):
+     return json.dumps(out, sort_keys=True, default=str)
+ 
+ 
++# [PWC-STAGE3] Owner ruling 3 (2026-11-19, docs/PWC_BACKUP_OWNER_RULINGS_20261119.md):
++# PWC is no longer refused at a non-zero start; it is handed seed_start. Stage 3 also
++# hands it pwc_coordinator_address and min_workers. ZMQ is unchanged.
++_PWC_STAGE3_ADDED_KW = ("seed_start", "pwc_coordinator_address", "min_workers")
++
++
++def _canon_calls_without(rec, drop):
++    return _canon_calls({"calls": [(n, {k: v for k, v in kw.items() if k not in drop})
++                                   for n, kw in rec["calls"]]})
++
++
+ def g_r5_routes():
+     import window_optimizer as WO
+     out = []
+-    for route in ("pwc", "zmq"):
++    # PWC [PWC-STAGE3]: a non-zero start is dispatched, carrying the start
++    rec, exc = _route_call("pwc", 1000)
++    ok_(exc is None, f"pwc at 1000 raised: {type(exc).__name__}: {exc}")
++    ok_(len(rec["calls"]) == 1 and rec["calls"][0][0] == "run_trial_persistent"
++        and rec["calls"][0][1].get("seed_start") == 1000,
++        f"pwc at 1000 did not dispatch with seed_start=1000: {_canon_calls(rec)}")
++    live, e1 = _route_call("pwc", 0)
++    base, e2 = _route_call("pwc", 0, base=True)
++    ok_(e1 is None and e2 is None, f"pwc at 0 raised: {e1!r} / {e2!r}")
++    ok_(live["calls"] and live["calls"][0][1].get("seed_start") == 0
++        and _canon_calls_without(live, _PWC_STAGE3_ADDED_KW) == _canon_calls(base),
++        f"pwc at 0 differs from {BASE[:7]} beyond the stage-3 keywords:\n live "
++        f"{_canon_calls(live)}\n base {_canon_calls(base)}")
++    out.append(f"pwc: 1000 dispatched with seed_start=1000; 0 = {BASE[:7]} plus "
++               f"{list(_PWC_STAGE3_ADDED_KW)}")
++    for route in ("zmq",):
+         rec, exc = _route_call(route, 1000)
+         ok_(type(exc).__name__ == "Step1RouteStartUnsupportedError",
+             f"{route} at 1000: {type(exc).__name__}: {exc}")
+@@ -608,9 +634,10 @@ def g_r5_routes():
+ 
+     try:
+         with quiet():
+-            for flags in ({"use_persistent_workers": True}, {"use_zmq_sqlite": True}):
++            for flags in ({"use_zmq_sqlite": True},):          # [PWC-STAGE3] PWC not refused
+                 expect_raises("Step1RouteStartUnsupportedError", rbo(T31, **flags))
+             for ss, flags in ((T31, {"use_range_miner": True}), (T31, {}),
++                              (T31, {"use_persistent_workers": True}),   # [PWC-STAGE3]
+                               (0, {"use_persistent_workers": True}),
+                               (0, {"use_zmq_sqlite": True})):
+                 e = expect_raises("RuntimeError", rbo(ss, **flags))
+@@ -623,15 +650,15 @@ def g_r5_routes():
+             rwc = lambda it, pwc: (lambda: WO.run_with_config(   # noqa: E731
+                 config_file=cfgf, lottery_file="/nonexistent.json", max_seeds=1000,
+                 iterations=it, use_persistent_workers=pwc))
+-            expect_raises("Step1RouteStartUnsupportedError", rwc(2, True))
+-            for it, pwc in ((1, True), (2, False)):
++            # [PWC-STAGE3] a PWC plan of two iterations is no longer refused
++            for it, pwc in ((1, True), (2, True), (2, False)):
+                 e = expect_raises("RuntimeError", rwc(it, pwc))
+                 ok_("TRIPWIRE" in str(e), f"run_with_config it={it} pwc={pwc}: {e}")
+     finally:
+         C.MultiGPUCoordinator, WO.MultiGPUCoordinator, WO.COORDINATOR_AVAILABLE = saved
+-    out.append("child entry: PWC/ZMQ at 2^31 refused before the coordinator; miner and "
+-               "legacy at 2^31, PWC/ZMQ at 0 reach it; run_with_config PWC x2 iterations "
+-               "refused as a plan, x1 and legacy x2 reach it")
++    out.append("child entry: ZMQ at 2^31 refused before the coordinator; miner, legacy and "
++               "PWC at 2^31, PWC/ZMQ at 0 reach it; run_with_config PWC x1/x2 and legacy x2 "
++               "reach it [PWC-STAGE3]")
+     return "; ".join(out)
+ 
+ 
+@@ -861,7 +888,7 @@ GATES = [
+     ("G-LEASE hybrid lease expiry keeps the start", g_lease),
+     ("G-R2-ENDS interval wall endpoints; coordinator fail-closed start", g_r2_ends),
+     ("G-R3-EVID evidence credits a real non-zero run; mutations refuse", g_r3_evid),
+-    ("G-R5-ROUTES PWC/ZMQ refuse non-zero before dispatch; 0 unchanged", g_r5_routes),
++    ("G-R5-ROUTES ZMQ refuses non-zero before dispatch; PWC carries the start (stage 3); 0 unchanged", g_r5_routes),
+     ("G-R7-ZERO seed_start 0 byte-equal to the base control", g_r7_zero),
+     ("G-E2E WATCHER -> coordinator -> credit -> history COMPLETE", g_e2e),
+ ]
+@@ -884,18 +911,19 @@ MUTANT_SPECS = [
+     ("M5 integration domain wall removed", I_MOD, "run_bidirectional_test",
+      "        _s145_trial_wall(seed_start, seed_count,\n",
+      "        (lambda *a, **k: None)(seed_start, seed_count,\n", g_r2_ends),
+-    ("M6 PWC branch guard removed", I_MOD, "run_bidirectional_test",
+-     '        _route_start_guard(seed_start, route="pwc",\n',
+-     '        (lambda *a, **k: None)(seed_start, route="pwc",\n', g_r5_routes),
++    # [PWC-STAGE3] the PWC guard call is gone (ruling 3); M6 now drops the start PWC is handed
++    ("M6 PWC branch drops seed_start= (stage 3)", I_MOD, "run_bidirectional_test",
++     "            seed_start        = seed_start,                                   # [PWC-STAGE3 ruling 3]\n",
++     "", g_r5_routes),
+     ("M7 ZMQ branch guard removed", I_MOD, "run_bidirectional_test",
+      '        _route_start_guard(seed_start, route="zmq",\n',
+      '        (lambda *a, **k: None)(seed_start, route="zmq",\n', g_r5_routes),
+     ("M8 guard predicate ignores ZMQ", WO_MOD, "assert_step1_route_seed_start_supported",
+-     "    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):\n",
+-     "    if seed_start != 0 and use_persistent_workers:\n", g_r5_routes),
+-    ("M9 run_with_config plan guard removed", WO_MOD, "run_with_config",
+-     "        assert_step1_route_seed_start_supported(\n            _rs_i * max_seeds,",
+-     "        (lambda *a, **k: None)(\n            _rs_i * max_seeds,", g_r5_routes),
++     "    if seed_start != 0 and use_zmq_sqlite:\n",
++     "    if False:\n", g_r5_routes),
++    # [PWC-STAGE3] M9 (run_with_config plan guard removed) is retired: run_with_config
++    # takes no ZMQ flag, so after ruling 3 its guard can no longer fire on any route and
++    # the mutant would be an invalid experiment (VIR-2), not a survivor.
+     ("M10 evidence reader accepts non-done stripes", I_MOD, "_step1_miner_sweep_evidence",
+      '        if any(st != "done" for _, _, st in items):\n',
+      "        if False:\n", g_r3_evid),
+diff --git a/tests/test_s172_phase1_scaffolding.py b/tests/test_s172_phase1_scaffolding.py
+index db0eb17..b62d914 100644
+--- a/tests/test_s172_phase1_scaffolding.py
++++ b/tests/test_s172_phase1_scaffolding.py
+@@ -175,10 +175,15 @@ def gate5_watcher_manifest():
+         assert key in bounds, f"parameter_bounds missing miner key {key!r}"
+ 
+     defaults = m['default_params']
+-    # Phase 1: use_range_miner MUST default to False in the manifest (spec §7 —
+-    # only set true after TB approves miner production readiness at Phase 7).
+-    assert defaults.get('use_range_miner') is False, (
+-        "default_params.use_range_miner must be false in Phase 1 (spec §7 comment)"
++    # [PWC-STAGE3] Owner ruling 2026-11-20 15:53 PST, "Yes, range miner is the new
++    # default" (docs/PWC_BACKUP_OWNER_RULINGS_20261119.md), replaces the Phase-1 rule
++    # (spec §7: default false until Phase 7). RANGE-MINER is the default Step 1 engine
++    # and PWC is chosen only by its flag.
++    assert defaults.get('use_range_miner') is True, (
++        "default_params.use_range_miner must be true (owner ruling 2026-11-20 15:53)"
++    )
++    assert defaults.get('use_persistent_workers') is False, (
++        "default_params.use_persistent_workers must be false (owner ruling 2026-11-20 15:53)"
+     )
+     assert defaults.get('miner_stripe_size') == 67108864
+     assert defaults.get('miner_substripes')  == 8
+diff --git a/tests/test_step1_search_record_stage1.py b/tests/test_step1_search_record_stage1.py
+index 2efaf89..37eeba9 100644
+--- a/tests/test_step1_search_record_stage1.py
++++ b/tests/test_step1_search_record_stage1.py
+@@ -884,18 +884,29 @@ def g1_pwc_zmq_refused():
+     import ast
+     import window_optimizer_integration_final as W
+     from utils.step1_search_ledger import credit_decision
+-    for route in ("pwc", "zmq"):
++    # [PWC-STAGE3 ruling 2] ZMQ is still refused. PWC is credited only from its own
++    # per-pass completion record (tests/test_pwc_backup_stage3.py); here: a PWC result
++    # without that record earns nothing, and the branch is wired to the PWC builder.
++    for route in ("zmq",):
+         ev = W._step1_unaccounted_route_evidence(route, "suite")
+         okc, code, det, _ = credit_decision(requested_interval=(0, 1000),
+                                             required_phases=(1, 2, 3, 4),
+                                             evidence_by_trial={0: ev},
+                                             trial_states={0: "COMPLETE"})
+         ok_(not okc and code == "no_sweep_evidence", f"{route}: {code} {det}")
++    ev = W._step1_pwc_sweep_evidence({"pwc_trial_complete": False}, "java_lcg", True)
++    okc, code, det, _ = credit_decision(requested_interval=(0, 1000),
++                                        required_phases=(1, 2, 3, 4),
++                                        evidence_by_trial={0: ev},
++                                        trial_states={0: "COMPLETE"})
++    ok_(ev is None and not okc, f"pwc without completion evidence: {ev} {code} {det}")
+     src = open(_MOD_PATHS["window_optimizer_integration_final"], encoding="utf-8").read()
+-    for var in ("_pw_tr", "_zmq_tr"):
+-        ok_(f"{var}.step1_sweep_evidence = _step1_unaccounted_route_evidence(" in src,
+-            f"{var} does not use the refusal evidence")
+-    return "PWC and ZMQ evidence has no swept interval -> no credit; both branches wired"
++    ok_("_zmq_tr.step1_sweep_evidence = _step1_unaccounted_route_evidence(" in src,
++        "_zmq_tr does not use the refusal evidence")
++    ok_("_pw_tr.step1_sweep_evidence = _step1_pwc_sweep_evidence(" in src,
++        "_pw_tr does not use the PWC completion evidence")
++    return ("ZMQ evidence has no swept interval -> no credit; PWC without completion "
++            "evidence -> no credit; both branches wired")
+ 
+ 
+ def _gen_dirs(d):
+@@ -1533,17 +1544,20 @@ def run4_shape():
+         WO.assert_step1_route_seed_start_supported(
+             ss, use_persistent_workers="--use-persistent-workers" in argv,
+             use_zmq_sqlite="--use-zmq-sqlite" in argv, context="run4 argv")
++        # [PWC-STAGE3 ruling 3] the same start is accepted on PWC; ZMQ still refuses it
++        WO.assert_step1_route_seed_start_supported(
++            ss, use_persistent_workers=True, context="run4 argv on PWC")
+         expect_raises("Step1RouteStartUnsupportedError",
+                       lambda: WO.assert_step1_route_seed_start_supported(
+-                          ss, use_persistent_workers=True, context="run4 argv on PWC"))
++                          ss, use_zmq_sqlite=True, context="run4 argv on ZMQ"))
+         return ("--seed-start 2147483648 --max-seeds 2147483648 + 7 pins; different pins refused; "
+-                "the child's route guard accepts this miner argv and refuses it on PWC")
++                "the child's route guard accepts this miner argv and PWC, and refuses it on ZMQ")
+ 
+ 
+ def g_miner_start():
+     """[MINER SEED-START] Successor of G-MINER-START: the route guard at the child's entry.
+-    The miner and the legacy route at 2^31 reach the coordinator; PWC and ZMQ at 2^31 are
+-    refused before it exists; PWC and ZMQ at 0 reach it."""
++    The miner and the legacy route at 2^31 reach the coordinator; ZMQ at 2^31 is refused
++    before it exists; PWC at 2^31 reaches it [PWC-STAGE3 ruling 3]; PWC and ZMQ at 0 reach it."""
+     import window_optimizer as WO
+     import coordinator as C
+ 
+@@ -1561,10 +1575,11 @@ def g_miner_start():
+             seed_count=1000, seed_start=ss, **flags)
+     try:
+         with quiet():
+-            for flags in ({"use_persistent_workers": True}, {"use_zmq_sqlite": True}):
++            for flags in ({"use_zmq_sqlite": True},):          # [PWC-STAGE3] PWC not refused
+                 expect_raises("Step1RouteStartUnsupportedError", rbo(T31, **flags))
+             for ss, flags in ((T31, {"use_range_miner": True}), (0, {"use_range_miner": True}),
+                               (T31, {}), (0, {"use_persistent_workers": True}),
++                              (T31, {"use_persistent_workers": True}),   # [PWC-STAGE3]
+                               (0, {"use_zmq_sqlite": True})):
+                 try:
+                     rbo(ss, **flags)()
+@@ -1574,8 +1589,8 @@ def g_miner_start():
+                     raise Fail(f"seed_start={ss} {flags}: neither refused nor reached the coordinator")
+     finally:
+         C.MultiGPUCoordinator, WO.MultiGPUCoordinator, WO.COORDINATOR_AVAILABLE = saved
+-    return ("PWC/ZMQ + seed_start 2^31 refused before the coordinator exists; miner at 2^31 "
+-            "and 0, legacy at 2^31, PWC/ZMQ at 0 pass the guard")
++    return ("ZMQ + seed_start 2^31 refused before the coordinator exists; miner at 2^31 "
++            "and 0, legacy and PWC at 2^31, PWC/ZMQ at 0 pass the guard [PWC-STAGE3]")
+ 
+ 
+ # ===========================================================================
+@@ -1589,7 +1604,7 @@ GATES = [
+     ("G1 a required phase not finished -> no credit", g1_missing_phase),
+     ("G1 miner evidence read from the run's stripe rows", g1_miner_evidence_reads_ledger),
+     ("G1/Beta Q1 real legacy route: failed jobs -> no credit; success control credited", g1_legacy_failed_jobs_not_credited),
+-    ("G1/Beta Q1 PWC and ZMQ refused certification", g1_pwc_zmq_refused),
++    ("G1/Beta Q1 ZMQ refused certification; PWC only on its completion evidence", g1_pwc_zmq_refused),
+     ("G2 M1 case: met budget -> refused before dispatch, counts named", g2_m1_case_refused),
+     ("G2 FAIL-only chunk -> no credit", g2_fail_only),
+     ("G2 PRUNED-only chunk (no search) -> no credit", g2_pruned_only_no_search),
+@@ -1723,7 +1738,7 @@ MUTANT_SPECS = [
+      "                     and r.study_identity == ch[\"study_name\"]\n",
+      "                     and True\n", g4_reconstruction_binds_only_this_chunk),
+     ("M-ROUTE-START guard removed (successor of M-MINER-START)", WO_MOD,
+-     "    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):\n", "    if False:\n",
++     "    if seed_start != 0 and use_zmq_sqlite:\n", "    if False:\n",
+      g_miner_start),
+ ]
+ 
+diff --git a/window_optimizer.py b/window_optimizer.py
+index 547181e..e1f5dfe 100755
+--- a/window_optimizer.py
++++ b/window_optimizer.py
+@@ -699,11 +699,14 @@ def assert_step1_route_seed_start_supported(seed_start, *, route="",
+     The S7 interval guard (credit only when swept == requested) is separate and
+     unchanged.
+     """
++    # [PWC-STAGE3 ruling 3, owner 2026-11-19] PWC is no longer refused: it partitions
++    # [seed_start, seed_start + seed_count) since PWC Stage 1 (S2) and the integration
++    # hands it seed_start. `use_persistent_workers` and route="pwc" are still accepted
++    # so no caller changes; for PWC this is a no-op. ZMQ is unchanged.
+     if route:
+-        use_persistent_workers = use_persistent_workers or route == "pwc"
+         use_zmq_sqlite = use_zmq_sqlite or route == "zmq"
+-    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):
+-        name = "PWC" if use_persistent_workers else "ZMQ"
++    if seed_start != 0 and use_zmq_sqlite:
++        name = "ZMQ"
+         raise Step1RouteStartUnsupportedError(
+             f"STEP1_ROUTE_START_UNSUPPORTED ({context}): refusing a {name} ({name.lower()}) "
+             f"Step 1 run at seed_start={seed_start}. The {name} route is handed "
+@@ -756,6 +759,7 @@ def run_bayesian_optimization(
+     staging_high_water_bytes: int = 16 * 1024 ** 3,
+     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
+     step1_search_id: str = '',              # [STEP1-SEARCH stage 1] hop 2 of 3
++    pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
+ ) -> Dict[str, Any]:
+     """
+     Run Bayesian optimization to find optimal window parameters
+@@ -866,6 +870,10 @@ def run_bayesian_optimization(
+     coordinator.use_zmq_sqlite = use_zmq_sqlite
+     coordinator.pwc_transport   = pwc_transport    # S162
+     coordinator.pwc_min_workers = pwc_min_workers  # S162
++    if use_persistent_workers:
++        # [PWC-STAGE3] set only on a PWC run, so a RANGE-MINER or legacy coordinator
++        # carries exactly the attributes it carried before
++        coordinator.pwc_coordinator_address = pwc_coordinator_address
+     if use_zmq_sqlite:
+         print(f"   [S158D] ZMQ-SQLite coordinator ENABLED")
+     coordinator.worker_pool_size        = worker_pool_size
+@@ -1198,6 +1206,7 @@ def run_with_config(
+     seed_cap_nvidia: int = 5_000_000,       # [S170-PARITY-2] execution sizing
+     worker_pool_size: int = 8,              # [S170-PARITY-2] execution sizing
+     min_workers: int = 1,                   # [S170-PARITY-2] execution sizing
++    pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
+ ) -> Dict[str, Any]:
+     """
+     Run sieves with an existing optimal configuration.
+@@ -1316,6 +1325,8 @@ def run_with_config(
+     # legacy SSH distribution regardless of CLI flags.
+     coordinator.use_persistent_workers = use_persistent_workers
+     coordinator.pwc_transport          = pwc_transport
++    if use_persistent_workers:
++        coordinator.pwc_coordinator_address = pwc_coordinator_address   # [PWC-STAGE3]
+ 
+     # [S170-PARITY-2] propagate execution sizing — match Bayesian/PWC path
+     # Without these, --config-file mode silently falls back to default chunk caps
+@@ -1566,6 +1577,11 @@ def main():
+     parser.add_argument('--pwc-transport', default='tcp',
+                        help='[S162] PWC transport: ssh | tcp. tcp=10x faster, '
+                             '26-GPU validated at 2.24M sps. (default: tcp)')
++    parser.add_argument('--pwc-coordinator-address', type=str, default=None,
++                       help='[PWC-STAGE3] Address the PWC TCP rig workers dial back to '
++                            '(this coordinator, e.g. the dev box). No default: a PWC run '
++                            'with rigs refuses without it, as the miner launcher requires '
++                            'its coordinator host.')
+     parser.add_argument('--min-workers', type=int, default=24,
+                        help='[S162] Minimum workers reaching ready state before dispatch. '
+                             'Default 24 = full 3-rig AMD cluster.')
+@@ -1896,6 +1912,9 @@ def main():
+             miner_backed=bool(getattr(args, 'use_range_miner', False)),
+             remote_execution=_xset.remote_execution,
+             execution_set=_xset,
++            # [PWC-STAGE3] PWC fails closed on a missing provisioning manifest, as the
++            # miner does; for every other route this is the function's own default
++            require_fleet=bool(getattr(args, 'use_persistent_workers', False)),
+         )
+     except (_dsauth.DatasetAuthorityError, _DatasetProvErr) as _p05_err:
+         parser.error(f"DATASET_AUTHORITY_P0_5: {_p05_err}")
+@@ -1931,6 +1950,7 @@ def main():
+             use_zmq_sqlite=getattr(args, 'use_zmq_sqlite', False),                      # S158D
+             pwc_transport=getattr(args, 'pwc_transport', 'tcp'),                    # S162
+             pwc_min_workers=getattr(args, 'min_workers', 24),                       # S162
++            pwc_coordinator_address=getattr(args, 'pwc_coordinator_address', None),  # PWC-STAGE3
+             worker_pool_size=getattr(args, 'worker_pool_size', 8),                  # S134
+             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),            # S137
+             seed_cap_amd=getattr(args, 'seed_cap_amd', 2_000_000),                  # S137
+@@ -2053,6 +2073,7 @@ def main():
+             seed_cap_nvidia=getattr(args, 'seed_cap_nvidia', 5_000_000),
+             worker_pool_size=getattr(args, 'worker_pool_size', 8),
+             min_workers=getattr(args, 'min_workers', 1),
++            pwc_coordinator_address=getattr(args, 'pwc_coordinator_address', None),  # PWC-STAGE3
+         )
+ 
+         print("\n✅ Sieve execution complete!")
+diff --git a/window_optimizer_integration_final.py b/window_optimizer_integration_final.py
+index afe903c..15543fb 100644
+--- a/window_optimizer_integration_final.py
++++ b/window_optimizer_integration_final.py
+@@ -1403,6 +1403,86 @@ def _step1_unaccounted_route_evidence(route, why):
+             "swept_intervals": {}, "certification_refused": True}
+ 
+ 
++# [PWC-STAGE3] PWC Step-1 evidence and walls. Rulings: docs/PWC_BACKUP_OWNER_RULINGS_20261119.md
++# (2: PWC earns credit; 3: no seed-start refusal; default rule: PWC does what RANGE-MINER
++# does). Used only by the `if _use_pw:` branch of run_bidirectional_test.
++class PwcTrialIncompleteError(RuntimeError):
++    """[PWC-STAGE3, Beta X-PWC-STAGE2B R1 Q5] A PWC trial whose chunk coverage is not
++    complete is refused BEFORE its populations reach the accumulator or Optuna sees a
++    score, as RANGE-MINER refuses a trial with no committed assembly
++    (miner/step1_ingress.py `require_assembly`, MinerIngressError)."""
++
++
++class PwcThresholdProvenanceError(RuntimeError):
++    """[PWC-STAGE3] A PWC pass whose threshold record does not prove the requested
++    threshold was used, refused before ingress, as RANGE-MINER refuses a trial without
++    a validated threshold provenance record (`_build_test_result_from_miner`)."""
++
++
++_PWC_TRIAL_COMPLETION_SCHEMA = "pwc_trial_completion_v1"   # persistent_worker_coordinator.py:667
++
++
++def _pwc_required_passes(prng_base, test_both_modes):
++    return tuple(str(p) for p in _step1_required_phases(prng_base, test_both_modes))
++
++
++def _pwc_require_complete_trial(pw_result, prng_base, test_both_modes, trial_number):
++    """Fail closed unless every pass the trial requires ran, on TCP, and is complete."""
++    comp = pw_result.get("pwc_completion") if isinstance(pw_result, dict) else None
++    if not isinstance(comp, dict) or comp.get("schema") != _PWC_TRIAL_COMPLETION_SCHEMA:
++        raise PwcTrialIncompleteError(
++            f"PWC trial {trial_number}: no {_PWC_TRIAL_COMPLETION_SCHEMA} record "
++            f"(got {type(comp).__name__}); a result without completion accounting is "
++            f"not a complete trial")
++    if pw_result.get("pwc_trial_complete") is not True or comp.get("trial_complete") is not True:
++        raise PwcTrialIncompleteError(
++            f"PWC trial {trial_number}: chunk coverage incomplete (passes "
++            f"{comp.get('incomplete_passes')}); refused before the accumulator and "
++            f"before Optuna scores it")
++    passes = comp.get("passes") or {}
++    for ph in _pwc_required_passes(prng_base, test_both_modes):
++        p = passes.get(ph) or {}
++        acc = p.get("accounting") or {}
++        if p.get("status") != "complete":
++            raise PwcTrialIncompleteError(
++                f"PWC trial {trial_number}: required pass {ph} is {p.get('status')!r}")
++        if acc.get("transport") != "tcp":
++            raise PwcTrialIncompleteError(
++                f"PWC trial {trial_number}: pass {ph} ran on {acc.get('transport')!r}, "
++                f"not TCP; only the TCP route reports what it swept and used")
++    return comp
++
++
++def _pwc_require_threshold_provenance(comp, prng_base, test_both_modes, trial_number):
++    for ph in _pwc_required_passes(prng_base, test_both_modes):
++        rec = ((comp.get("passes") or {}).get(ph) or {}).get("accounting", {}).get("threshold")
++        if not (isinstance(rec, dict) and rec.get("agree") is True and rec.get("verified") is True):
++            raise PwcThresholdProvenanceError(
++                f"PWC trial {trial_number}: pass {ph} has no verified threshold record "
++                f"({rec!r}); refused before ingress")
++
++
++def _step1_pwc_sweep_evidence(pw_result, prng_base, test_both_modes):
++    """[PWC-STAGE3 ruling 2] The interval each required PWC pass ACTUALLY swept, from
++    PWC's own completion record (`swept_intervals` holds complete passes only). Returns
++    None (no credit) unless the trial is complete, every required pass ran on TCP and
++    has a verified threshold record. `credit_decision` is not edited."""
++    try:
++        comp = _pwc_require_complete_trial(pw_result, prng_base, test_both_modes, -1)
++        _pwc_require_threshold_provenance(comp, prng_base, test_both_modes, -1)
++    except (PwcTrialIncompleteError, PwcThresholdProvenanceError):
++        return None
++    swept = comp.get("swept_intervals") or {}
++    out = {}
++    for ph in _pwc_required_passes(prng_base, test_both_modes):
++        iv = swept.get(ph)
++        if not (isinstance(iv, (list, tuple)) and len(iv) == 2):
++            return None
++        out[ph] = [int(iv[0]), int(iv[1])]
++    return {"route": "pwc", "source": "pwc_completion.swept_intervals",
++            "swept_intervals": out}
++
++
+ def _step1_legacy_jobs_complete(result):
+     """(ok, why) for one legacy `execute_distributed_analysis` result: ok only if the
+     coordinator's metadata shows at least one planned job, every planned job successful and
+@@ -1953,14 +2033,9 @@ def run_bidirectional_test(coordinator,
+     # ========================================================================
+     _use_pw = getattr(coordinator, 'use_persistent_workers', False)
+     if _use_pw:
+-        # [MINER SEED-START R5, owner decision 2026-11-14] PWC partitions from a fixed
+-        # 0 (persistent_worker_coordinator.py:1276); it is handed total_seeds only. A
+-        # non-zero start is refused HERE, before the route builds or dispatches
+-        # anything. At seed_start == 0 this is a no-op and the route is unchanged.
+-        from window_optimizer import (
+-            assert_step1_route_seed_start_supported as _route_start_guard)
+-        _route_start_guard(seed_start, route="pwc",
+-                           context=f"run_bidirectional_test trial {trial_number}")
++        # [PWC-STAGE3 ruling 3] The seed-start refusal that stood here is removed: PWC
++        # partitions [seed_start, seed_start + seed_count) since Stage 1 (S2) and is
++        # handed seed_start below, as the miner branch hands it to run_trial_miner.
+         if run_trial_persistent is None:
+             raise ImportError("persistent_worker_coordinator.py not found — cannot use --use-persistent-workers")
+         # [S163-KARG-FIX1] Hops 5→8: pass pwc_host and pwc_port so PersistentWorkerCoordinator
+@@ -1983,27 +2058,28 @@ def run_bidirectional_test(coordinator,
+             pwc_host          = getattr(coordinator, 'pwc_host', '0.0.0.0'),  # [S163-KARG-FIX1] hop 5
+             pwc_port          = getattr(coordinator, 'pwc_port', 5600),       # [S163-KARG-FIX1] hop 5
+             node_allowlist    = getattr(coordinator, 'node_allowlist', None), # [S163-KARG-PWC] hop 6
++            seed_start        = seed_start,                                   # [PWC-STAGE3 ruling 3]
++            # [PWC-STAGE3] the dial address rig workers use; no default (PWC refuses unset)
++            pwc_coordinator_address = getattr(coordinator, 'pwc_coordinator_address', None),
++            # [PWC-STAGE3 Q-9] the coordinator's ready gate; was never passed, so PWC used 1
++            min_workers       = getattr(coordinator, 'pwc_min_workers',
++                                        getattr(coordinator, 'min_workers', 1)),
+         )
+-        if _pw_result.get("pruned"):
+-            # Return minimal pruned TestResult — only fields TestResult accepts
+-            return TestResult(
+-                config              = config,
+-                forward_count       = 0,
+-                reverse_count       = 0,
+-                bidirectional_count = 0,
+-                iteration           = trial_number,
+-            )
++        # [PWC-STAGE3, Beta X-PWC-STAGE2B R1 Q5] Fail closed BEFORE anything reaches the
++        # accumulator or Optuna: an incomplete trial raises, as RANGE-MINER's does
++        # (require_assembly -> MinerIngressError, via _build_test_result_from_miner).
++        # A `pruned` result has no complete passes, so it is refused here too.
++        _pw_comp = _pwc_require_complete_trial(_pw_result, prng_base, test_both_modes,
++                                               trial_number)
++        # [PWC-STAGE3] threshold provenance wall, as the miner's (:1330-1346)
++        _pwc_require_threshold_provenance(_pw_comp, prng_base, test_both_modes, trial_number)
+         # Build TestResult from persistent worker result
+         _pw_tr = _build_test_result_from_pw(_pw_result, accumulator, config,
+                                             prng_base, trial_number, optuna_trial)
+-        # [STEP1-SEARCH S7] PWC is handed total_seeds only and partitions from 0
+-        # (persistent_worker_coordinator.py:1276-1280): the interval it is handed is
+-        # [0, seed_count), whatever seed_start is.
+-        _pw_tr.step1_sweep_evidence = _step1_unaccounted_route_evidence(
+-            "pwc", "run_trial_persistent's result carries no per-trial completion accounting "
+-                   "to this layer (failed_chunks stays at pass level), and it is handed "
+-                   "total_seeds only with a partition origin of 0 "
+-                   "(persistent_worker_coordinator.py:1276-1280)")
++        # [PWC-STAGE3 ruling 2] what the trial actually swept, from PWC's own per-pass
++        # completion record — NOT the requested interval (as the miner's evidence).
++        _pw_tr.step1_sweep_evidence = _step1_pwc_sweep_evidence(
++            _pw_result, prng_base, test_both_modes)
+         return _pw_tr
+     # ========================================================================
+     # END PERSISTENT WORKER PATH — original path continues unchanged below
+diff --git a/tests/test_pwc_backup_stage3.py b/tests/test_pwc_backup_stage3.py
+new file mode 100644
+index 0000000..44334f9
+--- /dev/null
++++ b/tests/test_pwc_backup_stage3.py
+@@ -0,0 +1,751 @@
++#!/usr/bin/env python3
++"""test_pwc_backup_stage3.py — PWC full backup, Stage 3b (shared launch side).
++
++Files under test: window_optimizer.py, window_optimizer_integration_final.py,
++agent_manifests/window_optimizer.json. Base: main b2efdef. Plan:
++docs/drafts/pwc_backup_stage3_v1/PLAN.md (S3-1..S3-5, S3-8, S3-12; Beta X-PWC-STAGE2B R1 Q5).
++
++Two kinds of gate:
++
++RANGE-MINER UNCHANGED (the owner's "DO NOT break range miner"):
++  G-MINER-SUBTREE   statement-level AST: every statement of run_bidirectional_test except
++                    the single `if _use_pw:` block is identical to the base, including the
++                    whole `if _use_miner:` subtree and the preamble.
++  G-MINER-DEFS      every definition the miner path reaches (_miner_residues_for_config,
++                    _build_test_result_from_miner, _step1_miner_sweep_evidence, …) and every
++                    other definition and top-level statement in both files is identical, except
++                    the named edited functions and the named added PWC helpers.
++  G-WO-FUNCS        inside the edited window_optimizer.py functions, the new AST minus the
++                    declared PWC insertions equals the base AST, statement for statement.
++  G-MINER-SETTINGS  RUNTIME: run_bayesian_optimization(use_range_miner=True, Run-4 shape)
++                    builds a coordinator with exactly the same attributes and values as the
++                    base, captured when optimize_window is called.
++  G-MINER-JOBS      RUNTIME: run_bidirectional_test with use_range_miner=True hands
++                    run_trial_miner exactly the same arguments as the base.
++  G-MANIFEST        JSON key-path diff: only the ruled default flip and the added PWC key.
++
++PWC BEHAVIOUR (rulings 2, 3, 15:53 PST default; Beta Q5):
++  G-GUARD, G-PWC-CALL, G-INCOMPLETE, G-PROV, G-CREDIT, G-CLI, G-FLEET.
++
++Every gate is also run against MUTANTS (textual edits of the live source); a mutant is
++killed only if the edit applies once, the detector passes on the live source, and the
++detector fails on the mutant with its own AssertionError (VIR-2).
++
++CPU only. No GPU, no rig, no network, no live ledger, no dataset read (the dataset readers
++are replaced). Run from the repository root: python3 -u tests/test_pwc_backup_stage3.py
++"""
++import ast
++import contextlib
++import copy
++import importlib.util
++import io
++import json
++import os
++import subprocess
++import sys
++import traceback
++import types
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++os.chdir(ROOT)
++BASE = "b2efdef"
++WO_PATH = os.path.join(ROOT, "window_optimizer.py")
++WOI_PATH = os.path.join(ROOT, "window_optimizer_integration_final.py")
++MAN_PATH = os.path.join(ROOT, "agent_manifests", "window_optimizer.json")
++
++
++def git_show(rel):
++    return subprocess.check_output(["git", "-C", ROOT, "show", f"{BASE}:{rel}"], text=True)
++
++
++def live(path):
++    return open(path, encoding="utf-8").read()
++
++
++def load_module(src, name, path):
++    spec = importlib.util.spec_from_loader(name, loader=None, origin=path)
++    mod = importlib.util.module_from_spec(spec)
++    mod.__file__ = path
++    sys.modules[name] = mod
++    with contextlib.redirect_stdout(io.StringIO()):
++        exec(compile(src, path, "exec"), mod.__dict__)
++    return mod
++
++
++def dump(node):
++    return ast.dump(node, include_attributes=False)
++
++
++def func(tree, name):
++    for n in ast.walk(tree):
++        if isinstance(n, ast.FunctionDef) and n.name == name:
++            return n
++    raise AssertionError(f"function {name} not found")
++
++
++@contextlib.contextmanager
++def quiet():
++    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++        yield
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# RANGE-MINER unchanged — static
++# ═════════════════════════════════════════════════════════════════════════════
++def _is_use_pw_if(stmt):
++    return isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Name) and stmt.test.id == "_use_pw"
++
++
++def d_miner_subtree(woi_src=None):
++    base = func(ast.parse(git_show("window_optimizer_integration_final.py")), "run_bidirectional_test")
++    new = func(ast.parse(woi_src or live(WOI_PATH)), "run_bidirectional_test")
++    assert dump(base.args) == dump(new.args), "run_bidirectional_test signature changed"
++    bi = [i for i, s in enumerate(base.body) if _is_use_pw_if(s)]
++    ni = [i for i, s in enumerate(new.body) if _is_use_pw_if(s)]
++    assert len(bi) == 1 and len(ni) == 1, f"`if _use_pw:` blocks: base {bi}, new {ni}"
++    bpre, npre = base.body[:bi[0]], new.body[:ni[0]]
++    assert len(bpre) == len(npre), f"preamble statement count {len(bpre)} -> {len(npre)}"
++    for k, (a, b) in enumerate(zip(bpre, npre)):
++        assert dump(a) == dump(b), (f"statement {k} before `if _use_pw:` differs "
++                                    f"(line {b.lineno}): {ast.unparse(b)[:120]!r}")
++    mi = [s for s in npre if isinstance(s, ast.If) and getattr(s.test, "id", "") == "_use_miner"]
++    assert len(mi) == 1, "the `if _use_miner:` block is not where it was"
++    bpost, npost = base.body[bi[0] + 1:], new.body[ni[0] + 1:]
++    assert [dump(s) for s in bpost] == [dump(s) for s in npost], "statements after `if _use_pw:` differ"
++    return (f"run_bidirectional_test: {len(npre)} statements before `if _use_pw:` (incl. the "
++            f"`if _use_miner:` subtree, {sum(1 for _ in ast.walk(mi[0]))} AST nodes) and "
++            f"{len(npost)} after it are identical to {BASE}; signature identical")
++
++
++# Edited and added names, declared. Everything else in both files must be identical.
++WOI_EDITED = ["run_bidirectional_test"]
++WOI_ADDED = ["PwcTrialIncompleteError", "PwcThresholdProvenanceError",
++             "_PWC_TRIAL_COMPLETION_SCHEMA", "_pwc_required_passes",
++             "_pwc_require_complete_trial", "_pwc_require_threshold_provenance",
++             "_step1_pwc_sweep_evidence"]
++WO_EDITED = ["assert_step1_route_seed_start_supported", "run_bayesian_optimization",
++             "run_with_config", "main"]
++MINER_REACHED = ["_miner_residues_for_config", "_build_test_result_from_miner",
++                 "_step1_miner_sweep_evidence", "_step1_required_phases",
++                 "_step1_ledger_rows_via_copy", "_get_residues_for_config",
++                 "extract_survivor_records", "resolve_directional_threshold"]
++
++
++def _prove(base_src, new_src, allow, allow_added):
++    spec = importlib.util.spec_from_file_location("prove_unchanged_outside",
++                                                  os.path.join(ROOT, "scripts", "prove_unchanged_outside.py"))
++    P = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(P)
++    rep = P.compare(base_src, new_src, allow, allow_added)
++    return rep
++
++
++def d_miner_defs(woi_src=None, wo_src=None):
++    r1 = _prove(git_show("window_optimizer_integration_final.py"), woi_src or live(WOI_PATH),
++                WOI_EDITED, WOI_ADDED)
++    assert r1["ok"], f"integration file: {json.dumps(r1['problems'])[:400]}"
++    r2 = _prove(git_show("window_optimizer.py"), wo_src or live(WO_PATH), WO_EDITED, [])
++    assert r2["ok"], f"window_optimizer.py: {json.dumps(r2['problems'])[:400]}"
++    tree = ast.parse(woi_src or live(WOI_PATH))
++    btree = ast.parse(git_show("window_optimizer_integration_final.py"))
++    for name in MINER_REACHED:
++        assert dump(func(btree, name)) == dump(func(tree, name)), f"{name} changed"
++    return (f"integration: {r1['checked_definitions']} definitions identical outside "
++            f"{WOI_EDITED} + added {len(WOI_ADDED)} PWC names; window_optimizer.py: "
++            f"{r2['checked_definitions']} identical outside {WO_EDITED}; miner-reached "
++            f"{MINER_REACHED[:3]}… identical")
++
++
++# ── inside the edited window_optimizer.py functions: new minus declared insertions == base
++_PWC_KW = {"pwc_coordinator_address", "require_fleet"}
++
++
++class _StripPwc(ast.NodeTransformer):
++    """Remove exactly the declared Stage-3 insertions from a window_optimizer.py AST."""
++
++    def visit_Call(self, node):
++        self.generic_visit(node)
++        node.keywords = [k for k in node.keywords if k.arg not in _PWC_KW]
++        return node
++
++    def visit_arguments(self, node):
++        keep = [(a, d) for a, d in zip(node.args[len(node.args) - len(node.defaults):], node.defaults)]
++        n_no_default = len(node.args) - len(node.defaults)
++        args = node.args[:n_no_default] + [a for a, _ in keep if a.arg != "pwc_coordinator_address"]
++        defaults = [d for a, d in keep if a.arg != "pwc_coordinator_address"]
++        node.args, node.defaults = args, defaults
++        return node
++
++    def _filter(self, body):
++        out = []
++        for s in body:
++            # the inserted `if use_persistent_workers: coordinator.pwc_coordinator_address = …`
++            if (isinstance(s, ast.If) and isinstance(s.test, ast.Name)
++                    and s.test.id == "use_persistent_workers" and len(s.body) == 1
++                    and isinstance(s.body[0], ast.Assign)
++                    and isinstance(s.body[0].targets[0], ast.Attribute)
++                    and s.body[0].targets[0].attr == "pwc_coordinator_address"):
++                continue
++            # the inserted argparse flag
++            if (isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
++                    and getattr(s.value.func, "attr", "") == "add_argument" and s.value.args
++                    and isinstance(s.value.args[0], ast.Constant)
++                    and s.value.args[0].value == "--pwc-coordinator-address"):
++                continue
++            out.append(s)
++        return out
++
++    def generic_visit(self, node):
++        for field in ("body", "orelse", "finalbody"):
++            if isinstance(getattr(node, field, None), list):
++                setattr(node, field, self._filter(getattr(node, field)))
++        return super().generic_visit(node)
++
++
++def d_wo_funcs(wo_src=None):
++    btree = ast.parse(git_show("window_optimizer.py"))
++    ntree = ast.parse(wo_src or live(WO_PATH))
++    out = []
++    for name in ["run_bayesian_optimization", "run_with_config", "main"]:
++        b, n = func(btree, name), func(ntree, name)
++        ns = _StripPwc().visit(copy.deepcopy(n))
++        assert dump(b) == dump(ns), (f"{name}: differs from {BASE} beyond the declared PWC "
++                                     f"insertions (dial-address parameter/attribute/flag/keywords, "
++                                     f"require_fleet)")
++        out.append(name)
++    # the guard: only its condition and comments changed; behaviour table in G-GUARD
++    return f"{', '.join(out)}: new AST minus the declared PWC insertions == {BASE}"
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# RANGE-MINER unchanged — runtime
++# ═════════════════════════════════════════════════════════════════════════════
++class _Captured(Exception):
++    pass
++
++
++def _settings(wo_mod, **kw):
++    """Run run_bayesian_optimization until it hands off to optimize_window; return the
++    coordinator's attributes at that moment."""
++    seen = {}
++
++    class Coord:
++        def __init__(self, *a, **k):
++            self._ctor = (a, tuple(sorted(k.items())))
++
++        def optimize_window(self, **k):
++            seen["attrs"] = dict(vars(self))
++            seen["optimize_kwargs"] = {x: (y if isinstance(y, (int, float, str, bool, type(None)))
++                                           else type(y).__name__) for x, y in k.items()}
++            raise _Captured()
++    # run_bayesian_optimization imports add_window_optimizer_to_coordinator from the
++    # integration module inside the function (window_optimizer.py), so it is replaced there
++    import window_optimizer_integration_final as WOI
++    saved = (wo_mod.MultiGPUCoordinator, wo_mod.COORDINATOR_AVAILABLE,
++             WOI.add_window_optimizer_to_coordinator)
++    wo_mod.MultiGPUCoordinator, wo_mod.COORDINATOR_AVAILABLE = Coord, True
++    WOI.add_window_optimizer_to_coordinator = lambda: None
++    try:
++        with quiet():
++            try:
++                wo_mod.run_bayesian_optimization(lottery_file="/nonexistent.json", trials=1,
++                                                 output_config="/dev/null", **kw)
++            except _Captured:
++                pass
++    finally:
++        (wo_mod.MultiGPUCoordinator, wo_mod.COORDINATOR_AVAILABLE,
++         WOI.add_window_optimizer_to_coordinator) = saved
++    assert "attrs" in seen, "optimize_window was never reached"
++    return seen
++
++
++RUN4_SHAPE = dict(seed_count=2147483648, seed_start=2147483648, prng_type="java_lcg",
++                  test_both_modes=True, use_range_miner=True, worker_pool_size=25,
++                  miner_stripe_size=67108864, n_parallel=1, staging_dir="/nonexistent/staging")
++
++
++def d_miner_settings(wo_mod=None):
++    base = load_module(git_show("window_optimizer.py"), "wo_base_s3", WO_PATH)
++    new = wo_mod or __import__("window_optimizer")
++    a, b = _settings(base, **RUN4_SHAPE), _settings(new, **RUN4_SHAPE)
++    assert a["attrs"] == b["attrs"], (
++        f"RANGE-MINER coordinator settings differ: only base "
++        f"{sorted(set(a['attrs']) - set(b['attrs']))}, only new "
++        f"{sorted(set(b['attrs']) - set(a['attrs']))}, changed "
++        f"{sorted(k for k in set(a['attrs']) & set(b['attrs']) if a['attrs'][k] != b['attrs'][k])}")
++    assert a["optimize_kwargs"] == b["optimize_kwargs"], "optimize_window arguments differ"
++    # control: the PWC run DOES differ, by exactly the dial address
++    pa = _settings(base, seed_count=1000, use_persistent_workers=True)["attrs"]
++    pb = _settings(new, seed_count=1000, use_persistent_workers=True,
++                   pwc_coordinator_address="192.168.3.177")["attrs"]
++    assert set(pb) - set(pa) == {"pwc_coordinator_address"} and pb["pwc_coordinator_address"] == "192.168.3.177", \
++        (sorted(set(pb) - set(pa)))
++    return (f"use_range_miner=True (Run-4 shape): {len(b['attrs'])} coordinator attributes and the "
++            f"optimize_window arguments identical to {BASE}; control: a PWC run gains exactly "
++            f"pwc_coordinator_address")
++
++
++def _cfg():
++    from window_optimizer import WindowConfig
++    return WindowConfig(window_size=8, offset=0, sessions=["evening"], skip_min=0, skip_max=16,
++                        forward_threshold=0.5, reverse_threshold=0.5)
++
++
++def _canon(v):
++    if isinstance(v, (int, float, str, bool, type(None))):
++        return v
++    if isinstance(v, (list, tuple)):
++        return [_canon(x) for x in v]
++    if isinstance(v, dict):
++        return {k: _canon(x) for k, x in sorted(v.items())}
++    if hasattr(v, "__dict__"):
++        return {"__type__": type(v).__name__, **{k: _canon(x) for k, x in sorted(vars(v).items())}}
++    return type(v).__name__
++
++
++def _miner_jobs(woi_mod):
++    rec = []
++
++    def run_trial_miner(**kw):
++        rec.append(_canon(kw))
++        return {"pruned": True}
++    saved = {k: getattr(woi_mod, k) for k in ("run_trial_miner", "build_assembling_sink",
++                                              "resolve_assembly_backend", "_miner_residues_for_config")}
++    woi_mod.run_trial_miner = run_trial_miner
++    woi_mod.build_assembling_sink = lambda backend: types.SimpleNamespace(backend=backend)
++    woi_mod.resolve_assembly_backend = lambda name, **kw: f"backend:{name}:{sorted(kw)}"
++    woi_mod._miner_residues_for_config = lambda config, path: [1, 2, 3, 4, 5, 6, 7, 8]
++    coord = types.SimpleNamespace(use_range_miner=True, use_persistent_workers=False,
++                                  use_zmq_sqlite=False, config_file="distributed_config.json",
++                                  worker_pool_size=25, miner_stripe_size=67108864,
++                                  staging_dir="/nonexistent/staging", seed_cap_amd=2_000_000)
++    try:
++        with quiet():
++            woi_mod.run_bidirectional_test(coord, _cfg(), "/nonexistent/daily3.json",
++                                           seed_start=2147483648, seed_count=2147483648,
++                                           prng_base="java_lcg", test_both_modes=True,
++                                           forward_threshold=0.5, reverse_threshold=0.5,
++                                           trial_number=3, accumulator=None)
++    finally:
++        for k, v in saved.items():
++            setattr(woi_mod, k, v)
++    return rec
++
++
++def d_miner_jobs(woi_mod=None):
++    base = load_module(git_show("window_optimizer_integration_final.py"), "woi_base_s3", WOI_PATH)
++    new = woi_mod or __import__("window_optimizer_integration_final")
++    a, b = _miner_jobs(base), _miner_jobs(new)
++    assert len(a) == len(b) == 1, (len(a), len(b))
++    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True), (
++        "run_trial_miner arguments differ: " +
++        str(sorted(k for k in set(a[0]) | set(b[0]) if a[0].get(k) != b[0].get(k))))
++    return f"use_range_miner=True: run_trial_miner got the same {len(b[0])} arguments as {BASE}"
++
++
++def d_manifest():
++    base = json.loads(git_show("agent_manifests/window_optimizer.json"))
++    new = json.loads(live(MAN_PATH))
++
++    def flat(d, p=""):
++        out = {}
++        if isinstance(d, dict):
++            for k, v in d.items():
++                out.update(flat(v, f"{p}/{k}"))
++        elif isinstance(d, list):
++            for i, v in enumerate(d):
++                out.update(flat(v, f"{p}[{i}]"))
++        else:
++            out[p] = d
++        return out
++    fb, fn = flat(base), flat(new)
++    changed = sorted(k for k in set(fb) & set(fn) if fb[k] != fn[k])
++    added, removed = sorted(set(fn) - set(fb)), sorted(set(fb) - set(fn))
++    want_changed = ["/default_params/use_persistent_workers", "/default_params/use_range_miner",
++                    "/parameter_bounds/use_range_miner/default",
++                    "/parameter_bounds/use_range_miner/description"]
++    want_added = ["/actions[0]/args_map/pwc-coordinator-address", "/default_params/pwc_coordinator_address"]
++    assert changed == want_changed and added == want_added and not removed, (changed, added, removed)
++    assert fn["/default_params/use_range_miner"] is True and fn["/default_params/use_persistent_workers"] is False
++    assert fn["/default_params/pwc_coordinator_address"] is None
++    # what a Run-4 launch merges: WATCHER starts from default_params and overrides the
++    # declared keys (agents/watcher_agent.py run_step); Run 4 names both engine flags
++    run4 = {"use_persistent_workers": False, "use_range_miner": True, "worker_pool_size": 25,
++            "seed_start": 0, "max_seeds": 2147483648, "miner_stripe_size": 67108864,
++            "test_both_modes": True, "prng_type": "java_lcg", "window_trials": 1, "n_parallel": 1}
++
++    def merge(dp):
++        f = dict(dp)
++        f.update({k: v for k, v in run4.items() if k in dp})
++        return f
++    mb, mn = merge(base["default_params"]), merge(new["default_params"])
++    diff = sorted(k for k in set(mb) | set(mn) if mb.get(k, "<absent>") != mn.get(k, "<absent>"))
++    assert diff == ["pwc_coordinator_address"] and mn["pwc_coordinator_address"] is None, diff
++    wsrc = live(os.path.join(ROOT, "agents", "watcher_agent.py"))
++    assert "if value is None or value == '':\n                    continue" in wsrc, \
++        "WATCHER no longer skips None params; a null key would reach argv"
++    return ("manifest: only the ruled default flip (+ use_range_miner spec) and one added null "
++            "PWC key; Run-4 params merge to the same values except that null key, which WATCHER "
++            "skips (agents/watcher_agent.py run_step, `if value is None`)")
++
++
++# ═════════════════════════════════════════════════════════════════════════════
++# PWC behaviour
++# ═════════════════════════════════════════════════════════════════════════════
++def d_guard(wo_mod=None):
++    WO = wo_mod or __import__("window_optimizer")
++    T31 = 2 ** 31
++    rows = []
++    for ss in (0, T31):
++        for route, kw in (("miner", {}), ("pwc", {"use_persistent_workers": True}),
++                          ("zmq", {"use_zmq_sqlite": True}), ("legacy", {})):
++            for form in ("flags", "route"):
++                args = kw if form == "flags" else ({"route": route} if route in ("pwc", "zmq") else {})
++                try:
++                    WO.assert_step1_route_seed_start_supported(ss, context="t", **args)
++                    raised = False
++                except WO.Step1RouteStartUnsupportedError:
++                    raised = True
++                want = (route == "zmq" and ss != 0)
++                assert raised == want, f"seed_start={ss} route={route} ({form}): raised={raised}"
++                rows.append((ss, route, raised))
++    return "only ZMQ at 2^31 refuses; PWC, miner and legacy at 0 and 2^31 pass (flags and route=)"
++
++
++def _complete_result(transport="tcp", phases=("1", "2", "3", "4"), lo=2 ** 31, hi=2 ** 31 + 1000,
++                     verified=True, survivors=True):
++    passes = {}
++    for ph in ("1", "2", "3", "4"):
++        if ph in phases:
++            passes[ph] = {"status": "complete", "accounting": {
++                "transport": transport, "complete": True,
++                "threshold": {"agree": True, "verified": verified}}}
++        else:
++            passes[ph] = {"status": "not_run", "accounting": None}
++    comp = {"schema": "pwc_trial_completion_v1", "trial_complete": True, "passes": passes,
++            "incomplete_passes": [], "swept_intervals": {ph: [lo, hi] for ph in phases}}
++    m = {7: 0.9} if survivors else {}
++    return {"pwc_completion": comp, "pwc_trial_complete": True,
++            "forward_map_constant": dict(m), "reverse_map_constant": dict(m),
++            "forward_map_variable": {}, "reverse_map_variable": {}}
++
++
++def _pwc_drive(woi_mod, result, *, seed_start=2 ** 31, both=True, coord_over=None):
++    calls = {"rtp": [], "builder": []}
++    saved = {k: getattr(woi_mod, k) for k in ("run_trial_persistent", "_build_test_result_from_pw",
++                                              "_get_residues_for_config")}
++
++    def rtp(**kw):
++        calls["rtp"].append(kw)
++        return copy.deepcopy(result)
++
++    def builder(pw_result, accumulator, *a, **k):
++        calls["builder"].append(pw_result)
++        if accumulator is not None:
++            accumulator["bidirectional"].append("x")
++        return types.SimpleNamespace()
++    woi_mod.run_trial_persistent, woi_mod._build_test_result_from_pw = rtp, builder
++    woi_mod._get_residues_for_config = lambda config, path: [1, 2, 3]
++    coord = types.SimpleNamespace(use_range_miner=False, use_persistent_workers=True,
++                                  use_zmq_sqlite=False, config_file="distributed_config.json",
++                                  pwc_coordinator_address="192.168.3.177", pwc_min_workers=24)
++    for k, v in (coord_over or {}).items():
++        setattr(coord, k, v)
++    acc = {"bidirectional": [], "forward": [], "reverse": []}
++    exc, tr = None, None
++    try:
++        with quiet():
++            tr = woi_mod.run_bidirectional_test(coord, _cfg(), "/nonexistent/daily3.json",
++                                                seed_start=seed_start, seed_count=1000,
++                                                prng_base="java_lcg", test_both_modes=both,
++                                                forward_threshold=0.5, reverse_threshold=0.5,
++                                                trial_number=5, accumulator=acc)
++    except Exception as e:                                          # noqa: BLE001
++        exc = e
++    finally:
++        for k, v in saved.items():
++            setattr(woi_mod, k, v)
++    return calls, acc, exc, tr
++
++
++def d_pwc_call(woi_mod=None):
++    W = woi_mod or __import__("window_optimizer_integration_final")
++    calls, acc, exc, tr = _pwc_drive(W, _complete_result())
++    assert exc is None, f"{type(exc).__name__}: {exc}"
++    kw = calls["rtp"][0]
++    assert kw.get("seed_start") == 2 ** 31, f"seed_start not handed on: {kw.get('seed_start')}"
++    assert kw.get("pwc_coordinator_address") == "192.168.3.177", kw.get("pwc_coordinator_address")
++    assert kw.get("min_workers") == 24, kw.get("min_workers")
++    assert kw.get("total_seeds") == 1000
++    return "PWC at seed_start 2^31: dispatched with seed_start, the dial address and min_workers=24"
++
++
++def d_incomplete(woi_mod=None):
++    W = woi_mod or __import__("window_optimizer_integration_final")
++    bad = {}
++    r = _complete_result(); r["pwc_trial_complete"] = False; r["pwc_completion"]["trial_complete"] = False
++    r["pwc_completion"]["incomplete_passes"] = ["3"]; bad["trial incomplete"] = r
++    r = _complete_result(); del r["pwc_completion"]; bad["no completion record"] = r
++    bad["pruned (old build)"] = {"pruned": True, "reason": "forward_zero"}
++    r = _complete_result(); r["pwc_completion"]["passes"]["4"]["status"] = "incomplete"; bad["pass 4 incomplete"] = r
++    r = _complete_result(transport="ssh"); bad["ssh pass"] = r
++    for name, res in bad.items():
++        calls, acc, exc, tr = _pwc_drive(W, res)
++        assert isinstance(exc, W.PwcTrialIncompleteError), f"{name}: {type(exc).__name__}: {exc}"
++        assert not calls["builder"] and acc["bidirectional"] == [], f"{name}: reached the accumulator"
++    calls, acc, exc, tr = _pwc_drive(W, _complete_result())
++    assert exc is None and len(calls["builder"]) == 1, (exc, calls["builder"])
++    # constant-only: passes 3-4 not run is complete
++    calls, acc, exc, tr = _pwc_drive(W, _complete_result(phases=("1", "2")), both=False)
++    assert exc is None and len(calls["builder"]) == 1, exc
++    return (f"{len(bad)} incomplete shapes refused before the accumulator and before a score; "
++            f"complete four-pass and constant-only trials go through")
++
++
++def d_prov(woi_mod=None):
++    W = woi_mod or __import__("window_optimizer_integration_final")
++    calls, acc, exc, tr = _pwc_drive(W, _complete_result(verified=False))
++    assert isinstance(exc, W.PwcThresholdProvenanceError), f"{type(exc).__name__}: {exc}"
++    assert not calls["builder"] and acc["bidirectional"] == []
++    return "a pass without a verified threshold record is refused before ingress"
++
++
++def d_credit(woi_mod=None):
++    W = woi_mod or __import__("window_optimizer_integration_final")
++    from utils.step1_search_ledger import credit_decision
++    lo, hi = 2 ** 31, 2 ** 31 + 1000
++
++    def credit(ev, phases):
++        return credit_decision(requested_interval=(lo, hi), required_phases=phases,
++                               evidence_by_trial={0: ev}, trial_states={0: "COMPLETE"})
++    ev = W._step1_pwc_sweep_evidence(_complete_result(), "java_lcg", True)
++    ok, code, det, _ = credit(ev, (1, 2, 3, 4))
++    assert ok, f"complete four-pass trial not credited: {code} {det} {ev}"
++    ev = W._step1_pwc_sweep_evidence(_complete_result(survivors=False), "java_lcg", True)
++    assert credit(ev, (1, 2, 3, 4))[0], "zero-survivor complete trial not credited"
++    ev = W._step1_pwc_sweep_evidence(_complete_result(phases=("1", "2")), "java_lcg", False)
++    assert credit(ev, (1, 2))[0], "constant-only complete trial not credited"
++    for name, res in (("ssh", _complete_result(transport="ssh")),
++                      ("unverified", _complete_result(verified=False)),
++                      ("short interval", _complete_result(hi=hi - 1))):
++        ev = W._step1_pwc_sweep_evidence(res, "java_lcg", True)
++        assert not credit(ev, (1, 2, 3, 4))[0], f"{name} credited: {ev}"
++    r = _complete_result(); r["pwc_trial_complete"] = False
++    assert W._step1_pwc_sweep_evidence(r, "java_lcg", True) is None
++    # wired: the branch stamps this evidence on the trial result
++    calls, acc, exc, tr = _pwc_drive(W, _complete_result())
++    assert tr.step1_sweep_evidence["swept_intervals"]["4"] == [lo, hi], tr.step1_sweep_evidence
++    return ("complete four-pass, zero-survivor and constant-only trials credited by the unchanged "
++            "credit_decision; SSH, unverified and short-interval trials not; wired on the trial")
++
++
++def d_cli(wo_src=None):
++    tree = ast.parse(wo_src or live(WO_PATH))
++    m = func(tree, "main")
++    flags = [n for n in ast.walk(m) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "add_argument"
++             and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "--pwc-coordinator-address"]
++    assert len(flags) == 1, "no --pwc-coordinator-address flag"
++    dflt = [k.value for k in flags[0].keywords if k.arg == "default"]
++    assert dflt and isinstance(dflt[0], ast.Constant) and dflt[0].value is None, "flag has a default"
++    # only the calls that can select PWC (they pass use_persistent_workers); main's random,
++    # grid and evolutionary calls pass no engine flag at all (pre-existing, not stage 3)
++    calls = [n for n in ast.walk(m) if isinstance(n, ast.Call)
++             and getattr(n.func, "id", "") in ("run_bayesian_optimization", "run_with_config")
++             and any(k.arg == "use_persistent_workers" for k in n.keywords)]
++    assert len(calls) == 2, f"expected the two PWC-capable calls, found {len(calls)}"
++    for c in calls:
++        assert any(k.arg == "pwc_coordinator_address" for k in c.keywords), \
++            f"{c.func.id} call does not pass the dial address"
++    return "--pwc-coordinator-address (no default) is passed by main to both entry points"
++
++
++def d_fleet(wo_src=None):
++    tree = ast.parse(wo_src or live(WO_PATH))
++    calls = [n for n in ast.walk(func(tree, "main")) if isinstance(n, ast.Call)
++             and getattr(n.func, "attr", "") == "run_start_dataset_gate"]
++    assert len(calls) == 1
++    kw = {k.arg: k.value for k in calls[0].keywords}
++    assert "require_fleet" in kw and "use_persistent_workers" in ast.unparse(kw["require_fleet"]), \
++        "run_start_dataset_gate is not told to require the fleet for PWC"
++    assert "use_range_miner" in ast.unparse(kw["miner_backed"]), "miner_backed changed"
++    from miner import dataset_authority as DA          # read-only use of the unchanged function
++    for miner_backed, require_fleet, raises in ((True, False, True), (False, True, True),
++                                                (False, False, False)):
++        try:
++            DA.resolve_absent_fleet_status(None, manifest_path="/nonexistent", miner_backed=miner_backed,
++                                           require_fleet=require_fleet, context="t")
++            r = False
++        except Exception:                                           # noqa: BLE001
++            r = True
++        assert r == raises, (miner_backed, require_fleet, r)
++    return ("main passes require_fleet=use_persistent_workers; the unchanged authority then fails "
++            "a PWC run closed on a missing provisioning manifest, as it does the miner")
++
++
++WATCHER_PATH = os.path.join(ROOT, "agents", "watcher_agent.py")
++
++
++def d_watcher_fleet(w_src=None):
++    """[PWC-STAGE3 S3-9, owner yes 2026-11-20] WATCHER passes require_fleet for PWC at its
++    one resolve_absent_fleet_status call. Removing exactly that keyword must give a module
++    AST-identical to the base: nothing else in WATCHER moved."""
++    base = ast.parse(git_show("agents/watcher_agent.py"))
++    new = ast.parse(w_src or live(WATCHER_PATH))
++    calls = [n for n in ast.walk(new) if isinstance(n, ast.Call)
++             and getattr(n.func, "attr", "") == "resolve_absent_fleet_status"]
++    assert len(calls) == 1, f"{len(calls)} resolve_absent_fleet_status calls"
++    kw = {k.arg: k.value for k in calls[0].keywords}
++    assert "require_fleet" in kw and "use_persistent_workers" in ast.unparse(kw["require_fleet"]), \
++        "WATCHER does not require the fleet for PWC"
++    assert ast.unparse(kw["miner_backed"]) == "bool(final_params.get('use_range_miner'))", "miner_backed changed"
++
++    class Strip(ast.NodeTransformer):
++        def visit_Call(self, node):
++            self.generic_visit(node)
++            if getattr(node.func, "attr", "") == "resolve_absent_fleet_status":
++                node.keywords = [k for k in node.keywords if k.arg != "require_fleet"]
++            return node
++    assert dump(Strip().visit(new)) == dump(base), "agents/watcher_agent.py differs beyond the one keyword"
++    return ("WATCHER: require_fleet=use_persistent_workers on its one fleet-status call; the "
++            "module minus that keyword is AST-identical to " + BASE)
++
++
++GATES = [
++    ("G-MINER-SUBTREE", d_miner_subtree),
++    ("G-MINER-DEFS", d_miner_defs),
++    ("G-WO-FUNCS", d_wo_funcs),
++    ("G-MINER-SETTINGS", d_miner_settings),
++    ("G-MINER-JOBS", d_miner_jobs),
++    ("G-MANIFEST", d_manifest),
++    ("G-GUARD", d_guard),
++    ("G-PWC-CALL", d_pwc_call),
++    ("G-INCOMPLETE", d_incomplete),
++    ("G-PROV", d_prov),
++    ("G-CREDIT", d_credit),
++    ("G-CLI", d_cli),
++    ("G-FLEET", d_fleet),
++    ("G-WATCHER-FLEET", d_watcher_fleet),
++]
++
++# (label, file, old, new, detector, how)  how: "woi_src" | "wo_src" | "woi_mod" | "wo_mod"
++MUTANTS = [
++    ("M-MINER-1 miner subtree: serve_timeout default changed", WOI_PATH,
++     "            serve_timeout          = getattr(coordinator, 'serve_timeout', None),\n",
++     "            serve_timeout          = getattr(coordinator, 'serve_timeout', 30),\n",
++     d_miner_subtree, "woi_src"),
++    ("M-MINER-2a preamble: the miner switch's default changed", WOI_PATH,
++     "    _use_miner = getattr(coordinator, 'use_range_miner', False)\n",
++     "    _use_miner = getattr(coordinator, 'use_range_miner', None)\n",
++     d_miner_subtree, "woi_src"),
++    ("M-MINER-2b miner subtree: trial wall context changed", WOI_PATH,
++     '                         context=f"run_bidirectional_test miner trial {trial_number}")\n',
++     '                         context=f"miner trial {trial_number}")\n',
++     d_miner_subtree, "woi_src"),
++    ("M-MINER-3 _miner_residues_for_config changed", WOI_PATH,
++     "def _miner_residues_for_config(config, dataset_path: str):\n",
++     "def _miner_residues_for_config(config, dataset_path: str = ''):\n",
++     d_miner_defs, "woi_src"),
++    ("M-MINER-4 miner wiring in run_bayesian_optimization changed", WO_PATH,
++     "    coordinator.miner_substripes  = miner_substripes\n",
++     "    coordinator.miner_substripes  = miner_substripes + 0\n",
++     d_wo_funcs, "wo_src"),
++    ("M-MINER-5 main: miner_backed keyword changed", WO_PATH,
++     "            miner_backed=bool(getattr(args, 'use_range_miner', False)),\n",
++     "            miner_backed=bool(getattr(args, 'use_range_miner', True)),\n",
++     d_wo_funcs, "wo_src"),
++    ("M-MINER-6 dial address set on every coordinator (runtime)", WO_PATH,
++     "    if use_persistent_workers:\n        # [PWC-STAGE3] set only on a PWC run,",
++     "    if True:\n        # [PWC-STAGE3] set only on a PWC run,",
++     d_miner_settings, "wo_mod"),
++    ("M-MINER-7 run_trial_miner argument changed (runtime)", WOI_PATH,
++     "            miner_substripes       = getattr(coordinator, 'miner_substripes', 8),\n",
++     "            miner_substripes       = getattr(coordinator, 'miner_substripes', 9),\n",
++     d_miner_jobs, "woi_mod"),
++    ("M-PWC-1 seed-start guard still refuses PWC", WO_PATH,
++     "    if seed_start != 0 and use_zmq_sqlite:\n",
++     "    if seed_start != 0 and (use_zmq_sqlite or use_persistent_workers):\n",
++     d_guard, "wo_mod"),
++    ("M-PWC-2 PWC not handed seed_start", WOI_PATH,
++     "            seed_start        = seed_start,                                   # [PWC-STAGE3 ruling 3]\n",
++     "", d_pwc_call, "woi_mod"),
++    ("M-PWC-3 completeness check removed (Beta Q5)", WOI_PATH,
++     "        _pw_comp = _pwc_require_complete_trial(_pw_result, prng_base, test_both_modes,\n"
++     "                                               trial_number)\n",
++     "        _pw_comp = (_pw_result.get('pwc_completion') or {'passes': {}})\n",
++     d_incomplete, "woi_mod"),
++    ("M-PWC-4 provenance check removed", WOI_PATH,
++     "        _pwc_require_threshold_provenance(_pw_comp, prng_base, test_both_modes, trial_number)\n",
++     "", d_prov, "woi_mod"),
++    ("M-PWC-5 transport not checked", WOI_PATH,
++     '        if acc.get("transport") != "tcp":\n',
++     '        if False:\n', d_credit, "woi_mod"),
++    ("M-PWC-6 evidence built from the requested interval", WOI_PATH,
++     "        out[ph] = [int(iv[0]), int(iv[1])]\n",
++     "        out[ph] = [2 ** 31, 2 ** 31 + 1000]\n", d_credit, "woi_mod"),
++    ("M-PWC-7 require_fleet not passed", WO_PATH,
++     "            require_fleet=bool(getattr(args, 'use_persistent_workers', False)),\n",
++     "", d_fleet, "wo_src"),
++    ("M-WATCHER-1 require_fleet keyword dropped", WATCHER_PATH,
++     "                        require_fleet=bool(final_params.get(\"use_persistent_workers\")),\n",
++     "", d_watcher_fleet, "w_src"),
++    ("M-WATCHER-2 another WATCHER line changed", WATCHER_PATH,
++     "                        context=f\"watcher_step{step}\",\n                        # [PWC-STAGE3]",
++     "                        context=f\"watcher-step{step}\",\n                        # [PWC-STAGE3]",
++     d_watcher_fleet, "w_src"),
++    ("M-PWC-8 dial address not passed by main", WO_PATH,
++     "            pwc_coordinator_address=getattr(args, 'pwc_coordinator_address', None),  # PWC-STAGE3\n        )",
++     "        )", d_cli, "wo_src"),
++]
++
++
++def run_mutant(label, path, old, new, detector, how):
++    src = live(path)
++    n = src.count(old)
++    assert n == 1, f"mutant anchor occurs {n} times: {old[:80]!r}"
++    msrc = src.replace(old, new)
++    detector()                                                      # positive control
++    if how.endswith("_src"):
++        arg = msrc
++    else:
++        name = "woi_mut_s3" if path == WOI_PATH else "wo_mut_s3"
++        arg = load_module(msrc, name, path)
++    try:
++        with quiet():
++            detector(arg)
++    except AssertionError as exc:
++        return f"killed: {str(exc).splitlines()[0][:110]}"
++    except Exception as exc:                                        # noqa: BLE001
++        raise AssertionError(f"UNATTRIBUTABLE kill: {type(exc).__name__}: {exc}")
++    raise AssertionError(f"SURVIVED: {label}")
++
++
++def main():
++    import logging
++    logging.disable(logging.CRITICAL)
++    print("VERIFICATION test_pwc_backup_stage3 START", flush=True)
++    passed = 0
++    for name, fn in GATES:
++        try:
++            print(f"[PASS] {name}: {fn()}", flush=True)
++            passed += 1
++        except Exception as exc:                                    # noqa: BLE001
++            print(f"[FAIL] {name}: {type(exc).__name__}: {exc}", flush=True)
++            traceback.print_exc()
++    killed = 0
++    for m in MUTANTS:
++        try:
++            print(f"[PASS] {m[0]} -> {run_mutant(*m)}", flush=True)
++            killed += 1
++        except Exception as exc:                                    # noqa: BLE001
++            print(f"[FAIL] {m[0]}: {type(exc).__name__}: {exc}", flush=True)
++    print(f"\nGATES {passed}/{len(GATES)} PASS")
++    print(f"MUTANTS {killed}/{len(MUTANTS)} killed")
++    ok = passed == len(GATES) and killed == len(MUTANTS)
++    print("RESULT: PASS" if ok else "RESULT: FAIL")
++    print("VERIFICATION test_pwc_backup_stage3 COMPLETE", flush=True)
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/compare_engine_outputs.py b/scripts/compare_engine_outputs.py
+new file mode 100644
+index 0000000..11a9289
+--- /dev/null
++++ b/scripts/compare_engine_outputs.py
+@@ -0,0 +1,293 @@
++#!/usr/bin/env python3
++"""compare_engine_outputs.py — the same Step 1 job, run by RANGE-MINER and by PWC:
++are the outputs the same?
++
++Owner requirement, 2026-11-20 15:55 PST: "And once finished your testing should run each
++and verify the results are the same" (docs/PWC_BACKUP_OWNER_RULINGS_20261119.md).
++Design: docs/drafts/pwc_backup_stage3_v1/PLAN.md §F (F2 inputs, F3 outputs).
++
++It reads two ENGINE OUTPUT BUNDLES (below) and reports, field by field, EQUAL or
++DIFFERENT. It exits non-zero on any difference outside the fields F3 allows to differ.
++Read-only. CPU only. It imports no engine code: only numpy and the frozen 22-array
++contract (`utils.canonical_arrays.CANONICAL_ARRAY_CONTRACT`).
++
++Why `tests/phase6/wall_ab_gate.py` `compare_bundles` is NOT imported
++-------------------------------------------------------------------
++- Importing that module pulls in `window_optimizer`, `utils.run_finalizer` and
++  `utils.survivor_loader` at module load (its top-level imports) for one function.
++- Its verdict requires equal `artifact_sha256` (`compare_bundles`, `:709-713`). Between
++  two ENGINES the artifact's sidecar/provenance may legitimately differ (F3), so that
++  rule is wrong here.
++Its method is kept: every array compared exactly, and a difference is localized (array,
++first differing index, both values), never only summarized to a boolean.
++
++Bundle format (`engine_output_bundle_v1`) — one JSON file, plus the NPZ it names
++-------------------------------------------------------------------------------
++{
++  "schema":  "engine_output_bundle_v1",
++  "inputs":  {...},                        # MUST be equal: the same job (F2)
++  "phases":  {"1": {"seeds": [...], "match_rates": [...]}, "2": ..., "3": ..., "4": ...},
++  "bidirectional": {"constant": [...], "variable": [...]},
++  "phase_counts":  {"1": {...}, ...},       # per-phase counters, compared key by key
++  "credit":  {"granted": bool, "swept_intervals": {"1": [s, e], ...}},
++  "npz":     "path/to/survivors.npz",      # relative to the bundle file
++  # allowed to differ (F3), never compared:
++  "engine", "run_id", "search_id", "study_id", "created_at", "finished_at",
++  "duration_s", "provenance", "logs", "worker_ids", "job_ids", "geometry",
++  "artifact_sha256"
++}
++Any other top-level key is UNCLASSIFIED and counts as a difference, so a new field can
++never be ignored by accident. Writing a bundle from each engine's real output is Stage 4
++work (an extractor per engine); this tool only compares.
++
++Exit status: 0 = the same (outside the allowed fields); 1 = outputs differ;
++             2 = not comparable (inputs differ) or a usage/format error.
++"""
++import argparse
++import json
++import os
++import sys
++import zipfile
++from collections import Counter
++
++import numpy as np
++
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if _ROOT not in sys.path:
++    sys.path.insert(0, _ROOT)
++from utils.canonical_arrays import CANONICAL_ARRAY_CONTRACT   # noqa: E402
++
++SCHEMA = "engine_output_bundle_v1"
++PHASES = ("1", "2", "3", "4")
++COMPARED_KEYS = ("schema", "inputs", "phases", "bidirectional", "phase_counts", "credit", "npz")
++ALLOWED_TO_DIFFER = frozenset({
++    "engine", "run_id", "search_id", "study_id", "created_at", "finished_at",
++    "duration_s", "provenance", "logs", "worker_ids", "job_ids", "geometry",
++    "artifact_sha256",
++})
++ARRAY_NAMES = tuple(n for n, _ in CANONICAL_ARRAY_CONTRACT)
++ARRAY_DTYPES = {n: d for n, d in CANONICAL_ARRAY_CONTRACT}
++_SHOW = 5          # differing items listed per field
++
++
++class BundleError(Exception):
++    pass
++
++
++# --------------------------------------------------------------------------- loading
++def load_bundle(path):
++    try:
++        with open(path, encoding="utf-8") as f:
++            b = json.load(f)
++    except (OSError, ValueError) as exc:
++        raise BundleError(f"cannot read bundle {path}: {exc}") from exc
++    if not isinstance(b, dict) or b.get("schema") != SCHEMA:
++        raise BundleError(f"{path}: schema is not {SCHEMA!r}")
++    missing = [k for k in COMPARED_KEYS if k not in b]
++    if missing:
++        raise BundleError(f"{path}: missing required section(s) {missing}")
++    b["_dir"] = os.path.dirname(os.path.abspath(path))
++    return b
++
++
++def load_npz(bundle):
++    """(ordered names, {name: array}) — order is the order of the arrays in the file."""
++    path = os.path.join(bundle["_dir"], bundle["npz"])
++    try:
++        with zipfile.ZipFile(path) as z:
++            order = [n[:-4] for n in z.namelist() if n.endswith(".npy")]
++        with np.load(path, allow_pickle=False) as d:
++            arrays = {n: d[n] for n in d.files}
++    except (OSError, ValueError, zipfile.BadZipFile) as exc:
++        raise BundleError(f"cannot read NPZ {path}: {exc}") from exc
++    return order, arrays
++
++
++# --------------------------------------------------------------------------- compare
++def _row(field, equal, detail=""):
++    return {"field": field, "equal": bool(equal), "detail": detail}
++
++
++def compare_inputs(a, b):
++    rows = []
++    for k in sorted(set(a) | set(b)):
++        va, vb = a.get(k, "<absent>"), b.get(k, "<absent>")
++        rows.append(_row(f"inputs.{k}", va == vb, "" if va == vb else f"A={va!r} B={vb!r}"))
++    return rows
++
++
++def _phase_map(phase, field):
++    seeds = phase.get("seeds", [])
++    rates = phase.get("match_rates", [])
++    if len(seeds) != len(rates):
++        raise BundleError(f"{field}: {len(seeds)} seeds but {len(rates)} match rates")
++    return seeds, rates
++
++
++def compare_phases(a, b):
++    rows = []
++    for ph in PHASES:
++        fa, fb = a.get(ph), b.get(ph)
++        base = f"phases.{ph}"
++        if fa is None or fb is None:
++            rows.append(_row(f"{base}", fa is None and fb is None,
++                             "" if fa is None and fb is None else
++                             f"present in {'A' if fa is not None else 'B'} only"))
++            continue
++        sa, ra = _phase_map(fa, f"A {base}")
++        sb, rb = _phase_map(fb, f"B {base}")
++        ca, cb = Counter(sa), Counter(sb)
++        only_a = sorted((ca - cb).elements())
++        only_b = sorted((cb - ca).elements())
++        dup = sorted({s for s, n in ca.items() if n > 1} | {s for s, n in cb.items() if n > 1})
++        same = not only_a and not only_b
++        detail = []
++        if only_a:
++            detail.append(f"{len(only_a)} only in A, e.g. {only_a[:_SHOW]}")
++        if only_b:
++            detail.append(f"{len(only_b)} only in B, e.g. {only_b[:_SHOW]}")
++        if dup:
++            detail.append(f"repeated seeds {dup[:_SHOW]}")
++        rows.append(_row(f"{base}.survivors", same, "; ".join(detail) or f"{len(sa)} seeds"))
++        # match rates, per seed, exact (first occurrence; a repeated seed is shown above)
++        ma, mb = {}, {}
++        for s, r in zip(sa, ra):
++            ma.setdefault(s, r)
++        for s, r in zip(sb, rb):
++            mb.setdefault(s, r)
++        diff = [(s, ma[s], mb[s]) for s in sorted(set(ma) & set(mb)) if ma[s] != mb[s]]
++        rows.append(_row(f"{base}.match_rates", not diff,
++                         "" if not diff else f"{len(diff)} differ, e.g. " +
++                         ", ".join(f"seed {s}: A={x!r} B={y!r}" for s, x, y in diff[:_SHOW])))
++    extra = sorted((set(a) | set(b)) - set(PHASES))
++    if extra:
++        rows.append(_row("phases.<unknown>", False, f"unexpected phase keys {extra}"))
++    return rows
++
++
++def compare_sets(a, b, prefix):
++    rows = []
++    for k in sorted(set(a) | set(b)):
++        sa, sb = set(a.get(k, [])), set(b.get(k, []))
++        oa, ob = sorted(sa - sb), sorted(sb - sa)
++        rows.append(_row(f"{prefix}.{k}", not oa and not ob,
++                         f"{len(sa)} seeds" if not oa and not ob else
++                         f"only A {oa[:_SHOW]} ({len(oa)}); only B {ob[:_SHOW]} ({len(ob)})"))
++    return rows
++
++
++def compare_mapping(a, b, prefix):
++    rows = []
++    for k in sorted(set(a) | set(b)):
++        va, vb = a.get(k, "<absent>"), b.get(k, "<absent>")
++        if isinstance(va, dict) and isinstance(vb, dict):
++            rows.extend(compare_mapping(va, vb, f"{prefix}.{k}"))
++        else:
++            rows.append(_row(f"{prefix}.{k}", va == vb, "" if va == vb else f"A={va!r} B={vb!r}"))
++    return rows
++
++
++def _first_diff(x, y):
++    xf, yf = x.reshape(-1), y.reshape(-1)
++    xb = xf.view(np.uint8).reshape(xf.size, -1) if xf.size else xf
++    yb = yf.view(np.uint8).reshape(yf.size, -1) if yf.size else yf
++    neq = np.flatnonzero(np.any(xb != yb, axis=1)) if xf.size else np.array([], int)
++    return neq
++
++
++def compare_npz(order_a, arr_a, order_b, arr_b):
++    rows = []
++    want = list(ARRAY_NAMES)
++    for label, order in (("A", order_a), ("B", order_b)):
++        rows.append(_row(f"npz.order[{label}]", order == want,
++                         "" if order == want else
++                         f"file order {order} is not the frozen contract order"))
++    for name in ARRAY_NAMES:
++        x, y = arr_a.get(name), arr_b.get(name)
++        f = f"npz.{name}"
++        if x is None or y is None:
++            rows.append(_row(f, False, f"MISSING in {'A' if x is None else ''}{'B' if y is None else ''}"))
++            continue
++        problems = []
++        for label, arr in (("A", x), ("B", y)):
++            if arr.dtype != ARRAY_DTYPES[name]:
++                problems.append(f"{label} dtype {arr.dtype}, contract {ARRAY_DTYPES[name]}")
++        if x.dtype != y.dtype or x.shape != y.shape:
++            problems.append(f"A {x.dtype}{x.shape} vs B {y.dtype}{y.shape}")
++        else:
++            neq = _first_diff(x, y)        # bit-exact (NaN-safe, -0.0 vs 0.0 differ)
++            if neq.size:
++                j = int(neq[0])
++                problems.append(f"first differing index {j}: A={x.reshape(-1)[j]!r} "
++                                f"B={y.reshape(-1)[j]!r} ({neq.size} of {x.size} differ)")
++        rows.append(_row(f, not problems, "; ".join(problems) or f"{x.dtype} {x.shape}"))
++    extra = sorted((set(arr_a) | set(arr_b)) - set(ARRAY_NAMES))
++    if extra:
++        rows.append(_row("npz.<extra arrays>", False, f"not in the frozen contract: {extra}"))
++    return rows
++
++
++def compare(bundle_a, bundle_b):
++    """Pure comparison of two loaded bundles. Returns the report dict."""
++    report = {"inputs": compare_inputs(bundle_a["inputs"], bundle_b["inputs"])}
++    report["comparable"] = all(r["equal"] for r in report["inputs"])
++    rows = []
++    keys = (set(bundle_a) | set(bundle_b)) - {"_dir"}
++    unclassified = sorted(keys - set(COMPARED_KEYS) - ALLOWED_TO_DIFFER)
++    for k in unclassified:
++        rows.append(_row(f"<unclassified>.{k}", False,
++                         "top-level key neither compared nor allowed to differ"))
++    rows += compare_phases(bundle_a["phases"], bundle_b["phases"])
++    rows += compare_sets(bundle_a["bidirectional"], bundle_b["bidirectional"], "bidirectional")
++    rows += compare_mapping(bundle_a["phase_counts"], bundle_b["phase_counts"], "phase_counts")
++    rows += compare_mapping(bundle_a["credit"], bundle_b["credit"], "credit")
++    oa, aa = load_npz(bundle_a)
++    ob, ab = load_npz(bundle_b)
++    rows += compare_npz(oa, aa, ob, ab)
++    report["outputs"] = rows
++    report["ignored"] = sorted(keys & ALLOWED_TO_DIFFER)
++    report["same"] = report["comparable"] and all(r["equal"] for r in rows)
++    return report
++
++
++def _print(report, a_label, b_label):
++    print(f"A = {a_label}")
++    print(f"B = {b_label}")
++    print("INPUTS (must be the same job):")
++    for r in report["inputs"]:
++        print(f"  {'EQUAL    ' if r['equal'] else 'DIFFERENT'}  {r['field']}  {r['detail']}")
++    print("OUTPUTS:")
++    for r in report["outputs"]:
++        print(f"  {'EQUAL    ' if r['equal'] else 'DIFFERENT'}  {r['field']}  {r['detail']}")
++    print(f"IGNORED (allowed to differ): {', '.join(report['ignored']) or '(none present)'}")
++    n_diff = sum(not r["equal"] for r in report["outputs"])
++    if not report["comparable"]:
++        print("VERDICT: NOT COMPARABLE — the inputs differ, so this is not the same job")
++    else:
++        print(f"VERDICT: {'SAME' if report['same'] else 'DIFFERENT'} "
++              f"({n_diff} differing output field(s) of {len(report['outputs'])})")
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
++    ap.add_argument("bundle_a", help="engine output bundle JSON (e.g. RANGE-MINER)")
++    ap.add_argument("bundle_b", help="engine output bundle JSON (e.g. PWC)")
++    ap.add_argument("--json", action="store_true", help="print the report as JSON")
++    a = ap.parse_args(argv)
++    try:
++        ba, bb = load_bundle(a.bundle_a), load_bundle(a.bundle_b)
++        report = compare(ba, bb)
++    except BundleError as exc:
++        print(f"compare_engine_outputs: {exc}", file=sys.stderr)
++        return 2
++    if a.json:
++        print(json.dumps(report, indent=2, default=str))
++    else:
++        _print(report, a.bundle_a, a.bundle_b)
++    if not report["comparable"]:
++        return 2
++    return 0 if report["same"] else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/test_compare_engine_outputs.py b/tests/test_compare_engine_outputs.py
+new file mode 100644
+index 0000000..beaa456
+--- /dev/null
++++ b/tests/test_compare_engine_outputs.py
+@@ -0,0 +1,239 @@
++#!/usr/bin/env python3
++"""test_compare_engine_outputs.py — scripts/compare_engine_outputs.py on small synthetic
++bundles. CPU only; no engine code, no GPU, no rig. Files go under <root>/logs/ (ignored).
++
++Run from the repository root:   python3 -u tests/test_compare_engine_outputs.py
++
++Clean controls: two bundles that differ only in fields F3 allows to differ (engine name,
++run id, timestamps, provenance, artifact sha) must compare SAME, exit 0.
++Mutants (each is ONE change to the B bundle, applied to a fresh copy of the clean pair;
++each must be caught, with exit 1, by the named field and only by expected fields):
++  M1 one changed survivor            M2 one changed match rate
++  M3 two NPZ arrays in swapped order M4 one NPZ array missing
++  plus: one changed NPZ value, one changed credit interval, one changed bidirectional
++  set, one changed phase count, an unclassified top-level key, rows reordered inside an
++  NPZ array, and inputs that differ (exit 2: not the same job).
++"""
++import contextlib
++import copy
++import io
++import json
++import os
++import shutil
++import subprocess
++import sys
++
++import numpy as np
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++os.chdir(ROOT)
++OUT = os.path.join(ROOT, "logs", "test_compare_engine_outputs")
++TOOL = os.path.join(ROOT, "scripts", "compare_engine_outputs.py")
++
++import importlib.util                                                   # noqa: E402
++_spec = importlib.util.spec_from_file_location("compare_engine_outputs", TOOL)
++CEO = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(CEO)
++
++N = 4
++
++
++def arrays():
++    rng = np.random.default_rng(7)
++    out = {}
++    for name, dt in CEO.CANONICAL_ARRAY_CONTRACT:
++        if dt.kind == "u":
++            out[name] = np.arange(10, 10 + N, dtype=dt)
++        elif dt.kind == "i":
++            out[name] = np.full(N, 8, dtype=dt)
++        else:
++            out[name] = rng.random(N).astype(dt)
++    return out
++
++
++def bundle_json(engine):
++    return {
++        "schema": CEO.SCHEMA,
++        "engine": engine, "run_id": f"run-{engine}", "created_at": f"2026-11-20T00:00:{len(engine):02d}Z",
++        "provenance": {"engine": engine}, "artifact_sha256": engine * 4,
++        "inputs": {"prng_base": "java_lcg", "seed_start": 2147483648, "seed_end": 2147483648 + 1000,
++                   "window_size": 8, "window_anchor": 0, "generator_phase": 0, "sessions": ["evening"],
++                   "dataset_sha256": "ab" * 32, "forward_threshold": 0.5, "reverse_threshold": 0.5,
++                   "constant_skip_range": [0, 16], "strategies": ["s1", "s2", "s3", "s4", "s5"],
++                   "test_both_modes": True},
++        "phases": {"1": {"seeds": [10, 11, 12, 13], "match_rates": [0.5, 0.625, 0.75, 0.5]},
++                   "2": {"seeds": [11, 12, 20], "match_rates": [0.5, 0.875, 0.5]},
++                   "3": {"seeds": [12], "match_rates": [0.625]},
++                   "4": {"seeds": [12, 30], "match_rates": [0.75, 0.5]}},
++        "bidirectional": {"constant": [11, 12], "variable": [12]},
++        "phase_counts": {"1": {"survivors": 4}, "2": {"survivors": 3}, "3": {"survivors": 1},
++                         "4": {"survivors": 2}},
++        "credit": {"granted": True, "swept_intervals": {p: [2147483648, 2147483648 + 1000]
++                                                        for p in ("1", "2", "3", "4")}},
++        "npz": "survivors.npz",
++    }
++
++
++def write(dirname, bj, arrs, order=None):
++    d = os.path.join(OUT, dirname)
++    os.makedirs(d, exist_ok=True)
++    order = order or [n for n, _ in CEO.CANONICAL_ARRAY_CONTRACT]
++    # np.savez keeps keyword order in the zip, which is the order the tool checks
++    np.savez(os.path.join(d, "survivors.npz"), **{n: arrs[n] for n in order if n in arrs})
++    p = os.path.join(d, "bundle.json")
++    with open(p, "w") as f:
++        json.dump(bj, f)
++    return p
++
++
++def run(pa, pb):
++    buf = io.StringIO()
++    with contextlib.redirect_stdout(buf):
++        rc = CEO.main([pa, pb])
++    rep = CEO.compare(CEO.load_bundle(pa), CEO.load_bundle(pb))
++    return rc, rep, buf.getvalue()
++
++
++def differing(rep):
++    return sorted(r["field"] for r in rep["outputs"] if not r["equal"])
++
++
++def clean_pair(tag):
++    a = write(f"{tag}_A", bundle_json("range_miner"), arrays())
++    return a, bundle_json("pwc"), arrays()
++
++
++def g_clean():
++    a, bj, arrs = clean_pair("clean")
++    b = write("clean_B", bj, arrs)
++    rc, rep, txt = run(a, b)
++    assert rc == 0 and rep["same"] and rep["comparable"], (rc, differing(rep), txt[-400:])
++    assert set(rep["ignored"]) >= {"engine", "run_id", "created_at", "provenance", "artifact_sha256"}, rep["ignored"]
++    assert "VERDICT: SAME" in txt
++    n_npz = sum(1 for r in rep["outputs"] if r["field"].startswith("npz.") and "order" not in r["field"])
++    assert n_npz == 22, n_npz
++    return f"clean pair (only allowed fields differ): exit 0, SAME; all 22 arrays compared"
++
++
++def mutant(tag, mutate, expect_fields, expect_rc=1):
++    """Apply ONE change to B. The clean pair is the positive control (it must be SAME)."""
++    g_clean()
++    a, bj, arrs = clean_pair(tag)
++    order = [n for n, _ in CEO.CANONICAL_ARRAY_CONTRACT]
++    bj, arrs, order = mutate(copy.deepcopy(bj), {k: v.copy() for k, v in arrs.items()}, order[:])
++    b = write(f"{tag}_B", bj, arrs, order)
++    rc, rep, txt = run(a, b)
++    got = differing(rep)
++    assert rc == expect_rc, f"{tag}: exit {rc}, want {expect_rc}; differing={got}"
++    for f in expect_fields:
++        assert f in got, f"{tag}: {f} not reported; differing={got}"
++    return f"caught (exit {rc}): {', '.join(got) or 'inputs'}"
++
++
++def m1_survivor(bj, arrs, order):
++    bj["phases"]["3"]["seeds"][0] = 99                    # one changed survivor
++    return bj, arrs, order
++
++
++def m2_match_rate(bj, arrs, order):
++    bj["phases"]["1"]["match_rates"][2] = 0.7500001      # one changed match rate
++    return bj, arrs, order
++
++
++def m3_reordered_array(bj, arrs, order):
++    i, j = order.index("forward_matches"), order.index("reverse_matches")
++    order[i], order[j] = order[j], order[i]               # same data, swapped file order
++    return bj, arrs, order
++
++
++def m4_missing_array(bj, arrs, order):
++    del arrs["score"]
++    return bj, arrs, order
++
++
++def m5_npz_value(bj, arrs, order):
++    arrs["forward_matches"][1] = np.float32(arrs["forward_matches"][1] + 1e-3)
++    return bj, arrs, order
++
++
++def m6_credit(bj, arrs, order):
++    bj["credit"]["swept_intervals"]["4"][1] -= 1
++    return bj, arrs, order
++
++
++def m7_bidirectional(bj, arrs, order):
++    bj["bidirectional"]["constant"] = [11]
++    return bj, arrs, order
++
++
++def m8_phase_count(bj, arrs, order):
++    bj["phase_counts"]["2"]["survivors"] = 4
++    return bj, arrs, order
++
++
++def m9_unclassified(bj, arrs, order):
++    bj["new_field_nobody_classified"] = 1
++    return bj, arrs, order
++
++
++def m10_rows_reordered(bj, arrs, order):
++    arrs["seeds"] = arrs["seeds"][::-1].copy()            # rows reordered inside one array
++    return bj, arrs, order
++
++
++def m11_inputs(bj, arrs, order):
++    bj["inputs"]["constant_skip_range"] = [6, 99]         # not the same job
++    return bj, arrs, order
++
++
++def g_subprocess_exit():
++    a, bj, arrs = clean_pair("sub")
++    b = write("sub_B", bj, arrs)
++    r = subprocess.run([sys.executable, TOOL, a, b], capture_output=True, text=True, timeout=60)
++    assert r.returncode == 0 and "VERDICT: SAME" in r.stdout, (r.returncode, r.stderr[-300:])
++    bj2 = copy.deepcopy(bj); bj2["phases"]["3"]["seeds"][0] = 99
++    b2 = write("sub_B2", bj2, arrs)
++    r = subprocess.run([sys.executable, TOOL, a, b2], capture_output=True, text=True, timeout=60)
++    assert r.returncode == 1 and "VERDICT: DIFFERENT" in r.stdout, (r.returncode, r.stdout[-300:])
++    return "as a program: exit 0 on SAME, exit 1 on a changed survivor"
++
++
++GATES = [
++    ("G-CLEAN", g_clean),
++    ("M1 one changed survivor", lambda: mutant("m1", m1_survivor, ["phases.3.survivors"])),
++    ("M2 one changed match rate", lambda: mutant("m2", m2_match_rate, ["phases.1.match_rates"])),
++    ("M3 one reordered array", lambda: mutant("m3", m3_reordered_array, ["npz.order[B]"])),
++    ("M4 one missing array", lambda: mutant("m4", m4_missing_array, ["npz.score"])),
++    ("M5 one changed NPZ value", lambda: mutant("m5", m5_npz_value, ["npz.forward_matches"])),
++    ("M6 one changed credit interval", lambda: mutant("m6", m6_credit, ["credit.swept_intervals.4"])),
++    ("M7 one changed bidirectional set", lambda: mutant("m7", m7_bidirectional, ["bidirectional.constant"])),
++    ("M8 one changed phase count", lambda: mutant("m8", m8_phase_count, ["phase_counts.2.survivors"])),
++    ("M9 an unclassified top-level key", lambda: mutant("m9", m9_unclassified,
++                                                        ["<unclassified>.new_field_nobody_classified"])),
++    ("M10 rows reordered inside an NPZ array", lambda: mutant("m10", m10_rows_reordered, ["npz.seeds"])),
++    ("M11 inputs differ (not the same job)", lambda: mutant("m11", m11_inputs, [], expect_rc=2)),
++    ("G-SUBPROCESS-EXIT", g_subprocess_exit),
++]
++
++
++def main():
++    if os.path.isdir(OUT):
++        shutil.rmtree(OUT)
++    os.makedirs(OUT)
++    print("VERIFICATION test_compare_engine_outputs START", flush=True)
++    passed = 0
++    for name, fn in GATES:
++        try:
++            print(f"[PASS] {name}: {fn()}", flush=True)
++            passed += 1
++        except Exception as exc:                                    # noqa: BLE001
++            print(f"[FAIL] {name}: {type(exc).__name__}: {exc}", flush=True)
++    print(f"\n{passed}/{len(GATES)} PASS")
++    print("RESULT: PASS" if passed == len(GATES) else "RESULT: FAIL")
++    print("VERIFICATION test_compare_engine_outputs COMPLETE", flush=True)
++    return 0 if passed == len(GATES) else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())

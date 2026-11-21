@@ -1,0 +1,18 @@
+# compare_checks.py: suites whose rc or failing-check set changed (before = clean b2efdef, after = final Stage 3a)
+DIFF  tests/test_s172_attempt6_remediation.py: rc 1 -> 1
+      newly failing: ['FAIR-1   count pressure (many cheap)']
+      no longer failing: []
+DIFF  tests/test_s172_phase4_coordinator.py: rc 0 -> 1
+      newly failing: ['Gate 22']
+      no longer failing: []
+NEW   tests/test_pwc_stage3a.py: rc 0, failing=[]
+
+76 suites in after; 2 differ from before (rc or failing-check set)
+
+# FAIR-1 re-run alone (logs/pwc_stage3a_v1/after_fair1_rerun/attempt6.log), same env, same code:
+  [FAIL] RXP-3/6  GREEN ordering (no REGISTER before release): only 0 REGISTER frames arrived after release
+  [FAIL] RXP-3/7  THE EARLY-REGISTER MUTANT: MUTANT SURVIVED (await_session_release removed from main) — the gate did not detect it, so it is vacuous and proves nothing
+  [PASS] FAIR-1   count pressure (many cheap)
+76/78 checks green
+COMPLETION SENTINEL: FAIL — DO NOT COMMIT
+rc=1

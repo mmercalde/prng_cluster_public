@@ -1,0 +1,7 @@
+# SUPERSEDED: after-pass ran WITH S3-13 (withdrawn 2026-11-20 21:32-21:35 PST). Before-pass valid; fresh after-pass pending.
+DIFF  tests/test_s172_phase4_coordinator.py: rc 0 -> 1
+      newly failing: ['Gate 22']
+      no longer failing: []
+NEW   tests/test_pwc_stage3a.py: rc 0, failing=[]
+
+76 suites in after; 1 differ from before (rc or failing-check set)

@@ -1,0 +1,150 @@
+## prove_unchanged_outside.py (Stage 3a tool, final 00:32 version, sha256 c208d641a9583272), subtree mode, window_optimizer_integration_final.py, b2efdef vs working tree
+$ python3 scripts/prove_unchanged_outside.py --base b2efdef --file window_optimizer_integration_final.py --allow run_bidirectional_test --allow-added PwcTrialIncompleteError PwcThresholdProvenanceError _PWC_TRIAL_COMPLETION_SCHEMA _pwc_required_passes _pwc_require_complete_trial _pwc_require_threshold_provenance _step1_pwc_sweep_evidence --keep-block run_bidirectional_test::if\ _use_miner:
+file      window_optimizer_integration_final.py
+base      b2efdef:window_optimizer_integration_final.py
+new       working tree:window_optimizer_integration_final.py
+allowed   run_bidirectional_test
+added     PwcThresholdProvenanceError, PwcTrialIncompleteError, _PWC_TRIAL_COMPLETION_SCHEMA, _pwc_require_complete_trial, _pwc_require_threshold_provenance, _pwc_required_passes, _step1_pwc_sweep_evidence
+AST       top-level statements base=80 new=87; definitions compared base=63 new=63; checked (not allowed)=59
+  allowed run_bidirectional_test: base x1, new x1, changed=True
+  kept block run_bidirectional_test::if _use_miner:: identical, with preamble
+  added (allowed) PwcThresholdProvenanceError: in base=False, new x1
+  added (allowed) PwcTrialIncompleteError: in base=False, new x1
+  added (allowed) _PWC_TRIAL_COMPLETION_SCHEMA: in base=False, new x1
+  added (allowed) _pwc_require_complete_trial: in base=False, new x1
+  added (allowed) _pwc_require_threshold_provenance: in base=False, new x1
+  added (allowed) _pwc_required_passes: in base=False, new x1
+  added (allowed) _step1_pwc_sweep_evidence: in base=False, new x1
+bytes     base 200937 B sha256 4a98c471c796523b; new 205405 B sha256 c78d94be7ae6852a; 5 hunk(s), +101/-25 lines
+  <module>                                 +17   -0    NOT ALLOWED
+  PwcThresholdProvenanceError              +4    -0    allowed
+  PwcTrialIncompleteError                  +5    -0    allowed
+  _PWC_TRIAL_COMPLETION_SCHEMA             +1    -0    allowed
+  _pwc_require_complete_trial              +25   -0    allowed
+  _pwc_require_threshold_provenance        +7    -0    allowed
+  _pwc_required_passes                     +2    -0    allowed
+  _step1_pwc_sweep_evidence                +19   -0    allowed
+  run_bidirectional_test                   +21   -25   allowed
+  changed lines outside allowed definitions:
+    new:1406 [<module>] # [PWC-STAGE3] PWC Step-1 evidence and walls. Rulings: docs/PWC_BACKUP_OWNER_RULINGS_20261119.md
+    new:1407 [<module>] # (2: PWC earns credit; 3: no seed-start refusal; default rule: PWC does what RANGE-MINER
+    new:1408 [<module>] # does). Used only by the `if _use_pw:` branch of run_bidirectional_test.
+    new:1414 [<module>] 
+    new:1415 [<module>] 
+    new:1420 [<module>] 
+    new:1421 [<module>] 
+    new:1423 [<module>] 
+    new:1424 [<module>] 
+    new:1427 [<module>] 
+    new:1428 [<module>] 
+    new:1454 [<module>] 
+    new:1455 [<module>] 
+    new:1463 [<module>] 
+    new:1464 [<module>] 
+    new:1484 [<module>] 
+    new:1485 [<module>] 
+verdict   UNCHANGED OUTSIDE ALLOWED
+rc=0
+
+## control mutant A (must FAIL): line 1843 'if run_trial_miner is None:' -> 'is not None:' (inside if _use_miner:)
+file      window_optimizer_integration_final.py
+base      b2efdef:window_optimizer_integration_final.py
+new       logs/pwc_stage3b_v1/subtree_mutants/mutA_miner_block.py
+allowed   run_bidirectional_test
+added     PwcThresholdProvenanceError, PwcTrialIncompleteError, _PWC_TRIAL_COMPLETION_SCHEMA, _pwc_require_complete_trial, _pwc_require_threshold_provenance, _pwc_required_passes, _step1_pwc_sweep_evidence
+AST       top-level statements base=80 new=87; definitions compared base=63 new=63; checked (not allowed)=59
+  allowed run_bidirectional_test: base x1, new x1, changed=True
+  ERROR kept-block-differs: run_bidirectional_test :: if _use_miner:
+  kept block run_bidirectional_test::if _use_miner:: DIFFERS
+  added (allowed) PwcThresholdProvenanceError: in base=False, new x1
+  added (allowed) PwcTrialIncompleteError: in base=False, new x1
+  added (allowed) _PWC_TRIAL_COMPLETION_SCHEMA: in base=False, new x1
+  added (allowed) _pwc_require_complete_trial: in base=False, new x1
+  added (allowed) _pwc_require_threshold_provenance: in base=False, new x1
+  added (allowed) _pwc_required_passes: in base=False, new x1
+  added (allowed) _step1_pwc_sweep_evidence: in base=False, new x1
+bytes     base 200937 B sha256 4a98c471c796523b; new 205409 B sha256 dfa26637bcf7bc34; 6 hunk(s), +102/-26 lines
+  <module>                                 +17   -0    NOT ALLOWED
+  PwcThresholdProvenanceError              +4    -0    allowed
+  PwcTrialIncompleteError                  +5    -0    allowed
+  _PWC_TRIAL_COMPLETION_SCHEMA             +1    -0    allowed
+  _pwc_require_complete_trial              +25   -0    allowed
+  _pwc_require_threshold_provenance        +7    -0    allowed
+  _pwc_required_passes                     +2    -0    allowed
+  _step1_pwc_sweep_evidence                +19   -0    allowed
+  run_bidirectional_test                   +22   -26   allowed
+  changed lines outside allowed definitions:
+    new:1406 [<module>] # [PWC-STAGE3] PWC Step-1 evidence and walls. Rulings: docs/PWC_BACKUP_OWNER_RULINGS_20261119.md
+    new:1407 [<module>] # (2: PWC earns credit; 3: no seed-start refusal; default rule: PWC does what RANGE-MINER
+    new:1408 [<module>] # does). Used only by the `if _use_pw:` branch of run_bidirectional_test.
+    new:1414 [<module>] 
+    new:1415 [<module>] 
+    new:1420 [<module>] 
+    new:1421 [<module>] 
+    new:1423 [<module>] 
+    new:1424 [<module>] 
+    new:1427 [<module>] 
+    new:1428 [<module>] 
+    new:1454 [<module>] 
+    new:1455 [<module>] 
+    new:1463 [<module>] 
+    new:1464 [<module>] 
+    new:1484 [<module>] 
+    new:1485 [<module>] 
+verdict   UNEXPECTED DIFFERENCE
+rc=1
+
+## control mutant B (must FAIL): line 1841 _use_miner getattr default False -> True (preamble)
+file      window_optimizer_integration_final.py
+base      b2efdef:window_optimizer_integration_final.py
+new       logs/pwc_stage3b_v1/subtree_mutants/mutB_preamble.py
+allowed   run_bidirectional_test
+added     PwcThresholdProvenanceError, PwcTrialIncompleteError, _PWC_TRIAL_COMPLETION_SCHEMA, _pwc_require_complete_trial, _pwc_require_threshold_provenance, _pwc_required_passes, _step1_pwc_sweep_evidence
+AST       top-level statements base=80 new=87; definitions compared base=63 new=63; checked (not allowed)=59
+  allowed run_bidirectional_test: base x1, new x1, changed=True
+  ERROR kept-block-preamble-differs: run_bidirectional_test :: if _use_miner:
+  kept block run_bidirectional_test::if _use_miner:: DIFFERS
+  added (allowed) PwcThresholdProvenanceError: in base=False, new x1
+  added (allowed) PwcTrialIncompleteError: in base=False, new x1
+  added (allowed) _PWC_TRIAL_COMPLETION_SCHEMA: in base=False, new x1
+  added (allowed) _pwc_require_complete_trial: in base=False, new x1
+  added (allowed) _pwc_require_threshold_provenance: in base=False, new x1
+  added (allowed) _pwc_required_passes: in base=False, new x1
+  added (allowed) _step1_pwc_sweep_evidence: in base=False, new x1
+bytes     base 200937 B sha256 4a98c471c796523b; new 205404 B sha256 35b0356beac112cd; 6 hunk(s), +102/-26 lines
+  <module>                                 +17   -0    NOT ALLOWED
+  PwcThresholdProvenanceError              +4    -0    allowed
+  PwcTrialIncompleteError                  +5    -0    allowed
+  _PWC_TRIAL_COMPLETION_SCHEMA             +1    -0    allowed
+  _pwc_require_complete_trial              +25   -0    allowed
+  _pwc_require_threshold_provenance        +7    -0    allowed
+  _pwc_required_passes                     +2    -0    allowed
+  _step1_pwc_sweep_evidence                +19   -0    allowed
+  run_bidirectional_test                   +22   -26   allowed
+  changed lines outside allowed definitions:
+    new:1406 [<module>] # [PWC-STAGE3] PWC Step-1 evidence and walls. Rulings: docs/PWC_BACKUP_OWNER_RULINGS_20261119.md
+    new:1407 [<module>] # (2: PWC earns credit; 3: no seed-start refusal; default rule: PWC does what RANGE-MINER
+    new:1408 [<module>] # does). Used only by the `if _use_pw:` branch of run_bidirectional_test.
+    new:1414 [<module>] 
+    new:1415 [<module>] 
+    new:1420 [<module>] 
+    new:1421 [<module>] 
+    new:1423 [<module>] 
+    new:1424 [<module>] 
+    new:1427 [<module>] 
+    new:1428 [<module>] 
+    new:1454 [<module>] 
+    new:1455 [<module>] 
+    new:1463 [<module>] 
+    new:1464 [<module>] 
+    new:1484 [<module>] 
+    new:1485 [<module>] 
+verdict   UNEXPECTED DIFFERENCE
+rc=1
+
+## Summary
+- working tree: UNCHANGED OUTSIDE ALLOWED; kept block `if _use_miner:` identical with preamble; rc=0
+- mutant A (inside the miner block): UNEXPECTED DIFFERENCE, rc=1
+- mutant B (preamble): UNEXPECTED DIFFERENCE, rc=1
+- an earlier, invalid mutant A (line 2034, after the PWC block, outside the kept block) is not counted
+- statements after the PWC block (ZMQ, legacy) are covered by miner_subtree_statement_comparison.txt

@@ -1,0 +1,226 @@
+
+============================================================
+Persistent Worker Coordinator — Dry Run Harness
+============================================================
+
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T01
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T02
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T03
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T04
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T05
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] ERROR Spawn failed 192.168.3.120:GPU0: SSH failed
+  ✅ PASS T06
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] WARNING Worker 192.168.3.120:GPU0 dead — respawning
+  ✅ PASS T07
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T08
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] WARNING [legacy-ipc] ?:GPU? — worker sent legacy dict-list format (expected slim_v1)
+  ✅ PASS T09
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T10
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] INFO [java_lcg] 500,000 seeds → 2 chunks (250,000/chunk) across 2 workers
+[PWC] INFO [S158B] Bounded dispatch: 2 chunks → pool_size=2 (num_workers=2)
+[PWC] ERROR [S158B] Chunk 0 future raised: 'prng_type'
+[PWC] INFO [S163-ZEUS] chunk=1 gpu_slot=0 CUDA_VISIBLE_DEVICES=0
+[PWC] INFO   ✅ Chunk 1: 250,000 seeds → 1 survivors
+[PWC] INFO [S158B] Executor shut down — peak_threads=2 timed_out=False
+[PWC] WARNING Chunk 0 failed: 'prng_type'
+[PWC] WARNING 1/2 chunks failed for java_lcg
+[PWC] ERROR [PWC-BACKUP S1] PASS INCOMPLETE [java_lcg] 1/2 chunks completed (failed=1 timed_out=0 not_dispatched=0 missing=0) over [0, 500000) — the result is marked incomplete
+[PWC] WARNING [PWC-BACKUP S6] [java_lcg] effective threshold not reported by 1 completed chunk(s); requested/payload agree (0.25) but the worker-side value is unverified
+[PWC] INFO Results saved: /tmp/harness_T11.json (1 survivors)
+  ✅ PASS T11
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] INFO [java_lcg_reverse] 500,000 seeds → 2 chunks (250,000/chunk) across 2 workers
+[PWC] INFO [S158B] Bounded dispatch: 2 chunks → pool_size=2 (num_workers=2)
+[PWC] ERROR [S158B] Chunk 0 future raised: 'prng_type'
+[PWC] INFO [S163-ZEUS] chunk=1 gpu_slot=0 CUDA_VISIBLE_DEVICES=0
+[PWC] INFO   ✅ Chunk 1: 250,000 seeds → 0 survivors
+[PWC] INFO [S158B] Executor shut down — peak_threads=2 timed_out=False
+[PWC] WARNING Chunk 0 failed: 'prng_type'
+[PWC] WARNING 1/2 chunks failed for java_lcg_reverse
+[PWC] ERROR [PWC-BACKUP S1] PASS INCOMPLETE [java_lcg_reverse] 1/2 chunks completed (failed=1 timed_out=0 not_dispatched=0 missing=0) over [0, 500000) — the result is marked incomplete
+[PWC] WARNING [PWC-BACKUP S6] [java_lcg_reverse] effective threshold not reported by 1 completed chunk(s); requested/payload agree (0.25) but the worker-side value is unverified
+[PWC] INFO Results saved: /tmp/harness_T12.json (0 survivors)
+  ✅ PASS T12
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T13
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T14
+[PWC] WARNING [PWC-BACKUP S4] worker_pool_size not set by the caller — using the legacy default 8. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+
+    Running FORWARD sieve (java_lcg) [CONSTANT SKIP] [PERSISTENT]...
+      Forward: 0 survivors
+    Running REVERSE sieve (java_lcg_reverse) [CONSTANT SKIP] [PERSISTENT]...
+      Reverse: 0 survivors
+      ✨ Bidirectional (constant): 0 survivors
+    Running FORWARD sieve (java_lcg_hybrid) [VARIABLE SKIP] [PERSISTENT]...
+      Forward (variable): 0 survivors
+    Running REVERSE sieve (java_lcg_hybrid_reverse) [VARIABLE SKIP] [PERSISTENT]...
+      Reverse (variable): 0 survivors
+      ✨ Bidirectional (variable): 0 survivors
+      📊 Total bidirectional: 0
+[PWC] ERROR [PWC-BACKUP S1] TRIAL 0 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 500000] — marked in pwc_completion; the result must not be read as complete
+  ✅ PASS T15
+[PWC] WARNING [PWC-BACKUP S4] worker_pool_size not set by the caller — using the legacy default 8. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+
+    Running FORWARD sieve (java_lcg) [CONSTANT SKIP] [PERSISTENT]...
+      Forward: 10 survivors
+    Running REVERSE sieve (java_lcg_reverse) [CONSTANT SKIP] [PERSISTENT]...
+      Reverse: 10 survivors
+      ✨ Bidirectional (constant): 10 survivors
+    Running FORWARD sieve (java_lcg_hybrid) [VARIABLE SKIP] [PERSISTENT]...
+      Forward (variable): 10 survivors
+    Running REVERSE sieve (java_lcg_hybrid_reverse) [VARIABLE SKIP] [PERSISTENT]...
+      Reverse (variable): 10 survivors
+      ✨ Bidirectional (variable): 10 survivors
+      📊 Total bidirectional: 20
+[PWC] ERROR [PWC-BACKUP S1] TRIAL 1 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 500000] — marked in pwc_completion; the result must not be read as complete
+  ✅ PASS T16
+[PWC] WARNING [PWC-BACKUP S4] worker_pool_size not set by the caller — using the legacy default 8. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+
+    Running FORWARD sieve (java_lcg) [CONSTANT SKIP] [PERSISTENT]...
+      Forward: 2 survivors
+    Running REVERSE sieve (java_lcg_reverse) [CONSTANT SKIP] [PERSISTENT]...
+      Reverse: 2 survivors
+      ✨ Bidirectional (constant): 2 survivors
+      📊 Total bidirectional: 2
+[PWC] ERROR [PWC-BACKUP S1] TRIAL 0 INCOMPLETE: passes ['1', '2'] not complete over [0, 500000] — marked in pwc_completion; the result must not be read as complete
+  ✅ PASS T17
+  ✅ PASS T18
+  ✅ PASS T19
+  ✅ PASS T20
+  ✅ PASS T21
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] INFO Shutting down persistent workers...
+[PWC] INFO All workers shut down
+  ✅ PASS T22
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+  ✅ PASS T23
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_nvidia not set by the caller — using the legacy default 5,000,000. The stable-envelope check still applies.
+[PWC] WARNING [PWC-BACKUP S4] seed_cap_amd not set by the caller — using the legacy default 2,000,000. The stable-envelope check still applies.
+[PWC] INFO Node loaded: localhost (2× RTX 3080 Ti)
+[PWC] INFO Node loaded: 192.168.3.120 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.154 (8× RX 6600)
+[PWC] INFO Node loaded: 192.168.3.162 (8× RX 6600)
+[PWC] INFO [java_lcg] 100,000 seeds → 1 chunks (100,000/chunk) across 1 workers
+[PWC] INFO [S158B] Bounded dispatch: 1 chunks → pool_size=1 (num_workers=1)
+[PWC] INFO [S163-ZEUS] chunk=0 gpu_slot=0 CUDA_VISIBLE_DEVICES=0
+[PWC] INFO   ✅ Chunk 0: 100,000 seeds → 0 survivors
+[PWC] INFO [S158B] Executor shut down — peak_threads=2 timed_out=False
+[PWC] WARNING [PWC-BACKUP S6] [java_lcg] effective threshold not reported by 1 completed chunk(s); requested/payload agree (0.25) but the worker-side value is unverified
+[PWC] INFO Results saved: /tmp/harness_T24.json (0 survivors)
+  ✅ PASS T24
+  ✅ PASS T25
+
+============================================================
+Results: 25/25 passed  — all clear ✅
+============================================================
+

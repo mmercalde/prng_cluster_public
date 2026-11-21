@@ -1,0 +1,70 @@
+$ python3 scripts/prove_unchanged_outside.py --base b2efdef --file persistent_worker_coordinator.py --allow PersistentWorkerCoordinator._startup_refusals
+file      persistent_worker_coordinator.py
+base      b2efdef:persistent_worker_coordinator.py
+new       working tree:persistent_worker_coordinator.py
+allowed   PersistentWorkerCoordinator._startup_refusals
+added     (none)
+AST       top-level statements base=82 new=82; definitions compared base=65 new=65; checked (not allowed)=64
+  allowed PersistentWorkerCoordinator._startup_refusals: base x1, new x1, changed=True
+bytes     base 157583 B sha256 ceca9be7d4aaea51; new 158349 B sha256 e3dcac38d8db721a; 1 hunk(s), +12/-0 lines
+  PersistentWorkerCoordinator._startup_refusals +12   -0    allowed
+verdict   UNCHANGED OUTSIDE ALLOWED
+rc=0
+
+$ git diff b2efdef -- persistent_worker_coordinator.py
+diff --git a/persistent_worker_coordinator.py b/persistent_worker_coordinator.py
+index 335dad7..9e973c7 100644
+--- a/persistent_worker_coordinator.py
++++ b/persistent_worker_coordinator.py
+@@ -1059,6 +1059,18 @@ class PersistentWorkerCoordinator:
+           bounds, so a run judged inside here cannot be outside at dispatch;
+           run_sieve_pass re-checks the exact values anyway."""
+         validate_pwc_transport(self.pwc_transport)
++        # [PWC-STAGE3 R1 3b-Q3] a nonpositive chunk cap cuts no seeds (cap 0) or
++        # walks the cursor backwards (cap < 0), so run_sieve_pass's chunk loop
++        # never ends. Refuse it here, before any worker is touched, as RANGE-MINER
++        # refuses a nonpositive size (miner/range_miner_coordinator.py:769-770,
++        # :789-790; miner/range_miner_worker.py:681-682). The envelope below
++        # judges upper bounds only.
++        for _cap_name in ("seed_cap_amd", "seed_cap_nvidia"):
++            _cap = getattr(self, _cap_name)
++            if int(_cap) <= 0:
++                raise PwcSettingRefused(
++                    f"[startup, before any worker is spawned] {_cap_name} must be "
++                    f"positive, got {_cap!r}. No override exists.")
+         rigs = self._remote_rocm_nodes()
+         if self.pwc_transport == "tcp" and rigs:
+             self.pwc_coordinator_address = validate_pwc_coordinator_address(
+
+## control: same proof allowing a different method (startup) must refuse
+$ python3 scripts/prove_unchanged_outside.py --base b2efdef --file persistent_worker_coordinator.py --allow PersistentWorkerCoordinator.startup
+file      persistent_worker_coordinator.py
+base      b2efdef:persistent_worker_coordinator.py
+new       working tree:persistent_worker_coordinator.py
+allowed   PersistentWorkerCoordinator.startup
+added     (none)
+AST       top-level statements base=82 new=82; definitions compared base=65 new=65; checked (not allowed)=64
+  allowed PersistentWorkerCoordinator.startup: base x1, new x1, changed=False
+  UNEXPECTED top-level statements:
+    [replace] base #78: ClassDef PersistentWorkerCoordinator
+    [replace] new  #78: ClassDef PersistentWorkerCoordinator
+  UNEXPECTED definitions:
+    changed: PersistentWorkerCoordinator (a nested definition also changed)
+    changed: PersistentWorkerCoordinator._startup_refusals
+bytes     base 157583 B sha256 ceca9be7d4aaea51; new 158349 B sha256 e3dcac38d8db721a; 1 hunk(s), +12/-0 lines
+  PersistentWorkerCoordinator._startup_refusals +12   -0    NOT ALLOWED
+  changed lines outside allowed definitions:
+    new:1062 [PersistentWorkerCoordinator._startup_refusals]         # [PWC-STAGE3 R1 3b-Q3] a nonpositive chunk cap cuts no seeds (cap 0) or
+    new:1063 [PersistentWorkerCoordinator._startup_refusals]         # walks the cursor backwards (cap < 0), so run_sieve_pass's chunk loop
+    new:1064 [PersistentWorkerCoordinator._startup_refusals]         # never ends. Refuse it here, before any worker is touched, as RANGE-MINER
+    new:1065 [PersistentWorkerCoordinator._startup_refusals]         # refuses a nonpositive size (miner/range_miner_coordinator.py:769-770,
+    new:1066 [PersistentWorkerCoordinator._startup_refusals]         # :789-790; miner/range_miner_worker.py:681-682). The envelope below
+    new:1067 [PersistentWorkerCoordinator._startup_refusals]         # judges upper bounds only.
+    new:1068 [PersistentWorkerCoordinator._startup_refusals]         for _cap_name in ("seed_cap_amd", "seed_cap_nvidia"):
+    new:1069 [PersistentWorkerCoordinator._startup_refusals]             _cap = getattr(self, _cap_name)
+    new:1070 [PersistentWorkerCoordinator._startup_refusals]             if int(_cap) <= 0:
+    new:1071 [PersistentWorkerCoordinator._startup_refusals]                 raise PwcSettingRefused(
+    new:1072 [PersistentWorkerCoordinator._startup_refusals]                     f"[startup, before any worker is spawned] {_cap_name} must be "
+    new:1073 [PersistentWorkerCoordinator._startup_refusals]                     f"positive, got {_cap!r}. No override exists.")
+verdict   UNEXPECTED DIFFERENCE
+rc=1

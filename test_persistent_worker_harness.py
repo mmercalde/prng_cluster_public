@@ -763,13 +763,26 @@ def T20_integration_gate_uses_pwc():
         # [PWC-STAGE1 A4] v2 result (D3.25), built by the producer's builder.
         from utils.canonical_records import build_trial_populations
         _m = {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.5}
-        mock_rtp.return_value = build_trial_populations(
+        _res = build_trial_populations(
             forward_map_constant=_m, reverse_map_constant=_m,
             forward_map_variable={}, reverse_map_variable={},
             bidirectional_constant={1, 2, 3, 4, 5}, bidirectional_variable=set(),
             pruned=False,
             extra={"forward_records": [], "reverse_records": [],
                    "forward_records_hybrid": [], "reverse_records_hybrid": []})
+        # [PWC-STAGE3 Q5] a PWC result is scored only with a complete completion
+        # record: every required pass complete, on TCP, threshold verified.
+        import window_optimizer_integration_final as _woi
+        _ph = _woi._pwc_required_passes("java_lcg", True)
+        _res["pwc_trial_complete"] = True
+        _res["pwc_completion"] = {
+            "schema": _woi._PWC_TRIAL_COMPLETION_SCHEMA, "trial_complete": True,
+            "passes": {p: {"status": "complete",
+                           "accounting": {"transport": "tcp",
+                                          "threshold": {"agree": True, "verified": True}}}
+                       for p in _ph},
+            "swept_intervals": {p: [0, 500_000] for p in _ph}}
+        mock_rtp.return_value = _res
 
         from window_optimizer_integration_final import run_bidirectional_test
         from window_optimizer import WindowConfig

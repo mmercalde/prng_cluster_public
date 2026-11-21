@@ -1059,6 +1059,18 @@ class PersistentWorkerCoordinator:
           bounds, so a run judged inside here cannot be outside at dispatch;
           run_sieve_pass re-checks the exact values anyway."""
         validate_pwc_transport(self.pwc_transport)
+        # [PWC-STAGE3 R1 3b-Q3] a nonpositive chunk cap cuts no seeds (cap 0) or
+        # walks the cursor backwards (cap < 0), so run_sieve_pass's chunk loop
+        # never ends. Refuse it here, before any worker is touched, as RANGE-MINER
+        # refuses a nonpositive size (miner/range_miner_coordinator.py:769-770,
+        # :789-790; miner/range_miner_worker.py:681-682). The envelope below
+        # judges upper bounds only.
+        for _cap_name in ("seed_cap_amd", "seed_cap_nvidia"):
+            _cap = getattr(self, _cap_name)
+            if int(_cap) <= 0:
+                raise PwcSettingRefused(
+                    f"[startup, before any worker is spawned] {_cap_name} must be "
+                    f"positive, got {_cap!r}. No override exists.")
         rigs = self._remote_rocm_nodes()
         if self.pwc_transport == "tcp" and rigs:
             self.pwc_coordinator_address = validate_pwc_coordinator_address(

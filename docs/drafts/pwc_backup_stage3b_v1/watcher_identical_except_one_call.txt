@@ -1,0 +1,8 @@
+resolve_absent_fleet_status calls in the new file: 1 (line 2119)
+   manifest_path = _dsauth.default_provisioning_manifest_path()
+   miner_backed = bool(final_params.get('use_range_miner'))
+   remote_execution = None
+   context = f'watcher_step{step}'
+   require_fleet = bool(final_params.get('use_persistent_workers'))
+new module with only that require_fleet keyword removed == b2efdef module: True
+top-level statements: base 83, new 83

@@ -1,0 +1,8 @@
+tests/test_s172_phase1_scaffolding.py: 8 definitions identical outside ['gate5_watcher_manifest'] + added []: OK
+tests/test_s172_miner_seed_start.py: 49 definitions identical outside ['g_r5_routes'] + added ['_PWC_STAGE3_ADDED_KW', '_canon_calls_without']: OK
+   GATES: 9 entries identical; removed/changed ['G-R5-ROUTES PWC/ZMQ refuse non-zero before dispatch; 0 unchanged']; added/changed ['G-R5-ROUTES ZMQ refuses non-zero before dispatch; PWC carries the start (stage 3); 0 unchanged']
+   MUTANT_SPECS: 8 entries identical; removed/changed ['M6 PWC branch guard removed', 'M8 guard predicate ignores ZMQ', 'M9 run_with_config plan guard removed']; added/changed ['M6 PWC branch drops seed_start= (stage 3)', 'M8 guard predicate ignores ZMQ']
+tests/test_step1_search_record_stage1.py: 95 definitions identical outside ['g1_pwc_zmq_refused', 'g_miner_start', 'run4_shape'] + added []: OK
+   GATES: 38 entries identical; removed/changed ['G1/Beta Q1 PWC and ZMQ refused certification']; added/changed ['G1/Beta Q1 ZMQ refused certification; PWC only on its completion evidence']
+   MUTANT_SPECS: 32 entries identical; removed/changed ['M-ROUTE-START guard removed (successor of M-MINER-START)']; added/changed ['M-ROUTE-START guard removed (successor of M-MINER-START)']
+RESULT: PASS

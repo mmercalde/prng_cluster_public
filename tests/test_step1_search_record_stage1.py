@@ -884,18 +884,29 @@ def g1_pwc_zmq_refused():
     import ast
     import window_optimizer_integration_final as W
     from utils.step1_search_ledger import credit_decision
-    for route in ("pwc", "zmq"):
+    # [PWC-STAGE3 ruling 2] ZMQ is still refused. PWC is credited only from its own
+    # per-pass completion record (tests/test_pwc_backup_stage3.py); here: a PWC result
+    # without that record earns nothing, and the branch is wired to the PWC builder.
+    for route in ("zmq",):
         ev = W._step1_unaccounted_route_evidence(route, "suite")
         okc, code, det, _ = credit_decision(requested_interval=(0, 1000),
                                             required_phases=(1, 2, 3, 4),
                                             evidence_by_trial={0: ev},
                                             trial_states={0: "COMPLETE"})
         ok_(not okc and code == "no_sweep_evidence", f"{route}: {code} {det}")
+    ev = W._step1_pwc_sweep_evidence({"pwc_trial_complete": False}, "java_lcg", True)
+    okc, code, det, _ = credit_decision(requested_interval=(0, 1000),
+                                        required_phases=(1, 2, 3, 4),
+                                        evidence_by_trial={0: ev},
+                                        trial_states={0: "COMPLETE"})
+    ok_(ev is None and not okc, f"pwc without completion evidence: {ev} {code} {det}")
     src = open(_MOD_PATHS["window_optimizer_integration_final"], encoding="utf-8").read()
-    for var in ("_pw_tr", "_zmq_tr"):
-        ok_(f"{var}.step1_sweep_evidence = _step1_unaccounted_route_evidence(" in src,
-            f"{var} does not use the refusal evidence")
-    return "PWC and ZMQ evidence has no swept interval -> no credit; both branches wired"
+    ok_("_zmq_tr.step1_sweep_evidence = _step1_unaccounted_route_evidence(" in src,
+        "_zmq_tr does not use the refusal evidence")
+    ok_("_pw_tr.step1_sweep_evidence = _step1_pwc_sweep_evidence(" in src,
+        "_pw_tr does not use the PWC completion evidence")
+    return ("ZMQ evidence has no swept interval -> no credit; PWC without completion "
+            "evidence -> no credit; both branches wired")
 
 
 def _gen_dirs(d):
@@ -1533,17 +1544,20 @@ def run4_shape():
         WO.assert_step1_route_seed_start_supported(
             ss, use_persistent_workers="--use-persistent-workers" in argv,
             use_zmq_sqlite="--use-zmq-sqlite" in argv, context="run4 argv")
+        # [PWC-STAGE3 ruling 3] the same start is accepted on PWC; ZMQ still refuses it
+        WO.assert_step1_route_seed_start_supported(
+            ss, use_persistent_workers=True, context="run4 argv on PWC")
         expect_raises("Step1RouteStartUnsupportedError",
                       lambda: WO.assert_step1_route_seed_start_supported(
-                          ss, use_persistent_workers=True, context="run4 argv on PWC"))
+                          ss, use_zmq_sqlite=True, context="run4 argv on ZMQ"))
         return ("--seed-start 2147483648 --max-seeds 2147483648 + 7 pins; different pins refused; "
-                "the child's route guard accepts this miner argv and refuses it on PWC")
+                "the child's route guard accepts this miner argv and PWC, and refuses it on ZMQ")
 
 
 def g_miner_start():
     """[MINER SEED-START] Successor of G-MINER-START: the route guard at the child's entry.
-    The miner and the legacy route at 2^31 reach the coordinator; PWC and ZMQ at 2^31 are
-    refused before it exists; PWC and ZMQ at 0 reach it."""
+    The miner and the legacy route at 2^31 reach the coordinator; ZMQ at 2^31 is refused
+    before it exists; PWC at 2^31 reaches it [PWC-STAGE3 ruling 3]; PWC and ZMQ at 0 reach it."""
     import window_optimizer as WO
     import coordinator as C
 
@@ -1561,10 +1575,11 @@ def g_miner_start():
             seed_count=1000, seed_start=ss, **flags)
     try:
         with quiet():
-            for flags in ({"use_persistent_workers": True}, {"use_zmq_sqlite": True}):
+            for flags in ({"use_zmq_sqlite": True},):          # [PWC-STAGE3] PWC not refused
                 expect_raises("Step1RouteStartUnsupportedError", rbo(T31, **flags))
             for ss, flags in ((T31, {"use_range_miner": True}), (0, {"use_range_miner": True}),
                               (T31, {}), (0, {"use_persistent_workers": True}),
+                              (T31, {"use_persistent_workers": True}),   # [PWC-STAGE3]
                               (0, {"use_zmq_sqlite": True})):
                 try:
                     rbo(ss, **flags)()
@@ -1574,8 +1589,8 @@ def g_miner_start():
                     raise Fail(f"seed_start={ss} {flags}: neither refused nor reached the coordinator")
     finally:
         C.MultiGPUCoordinator, WO.MultiGPUCoordinator, WO.COORDINATOR_AVAILABLE = saved
-    return ("PWC/ZMQ + seed_start 2^31 refused before the coordinator exists; miner at 2^31 "
-            "and 0, legacy at 2^31, PWC/ZMQ at 0 pass the guard")
+    return ("ZMQ + seed_start 2^31 refused before the coordinator exists; miner at 2^31 "
+            "and 0, legacy and PWC at 2^31, PWC/ZMQ at 0 pass the guard [PWC-STAGE3]")
 
 
 # ===========================================================================
@@ -1589,7 +1604,7 @@ GATES = [
     ("G1 a required phase not finished -> no credit", g1_missing_phase),
     ("G1 miner evidence read from the run's stripe rows", g1_miner_evidence_reads_ledger),
     ("G1/Beta Q1 real legacy route: failed jobs -> no credit; success control credited", g1_legacy_failed_jobs_not_credited),
-    ("G1/Beta Q1 PWC and ZMQ refused certification", g1_pwc_zmq_refused),
+    ("G1/Beta Q1 ZMQ refused certification; PWC only on its completion evidence", g1_pwc_zmq_refused),
     ("G2 M1 case: met budget -> refused before dispatch, counts named", g2_m1_case_refused),
     ("G2 FAIL-only chunk -> no credit", g2_fail_only),
     ("G2 PRUNED-only chunk (no search) -> no credit", g2_pruned_only_no_search),
@@ -1723,7 +1738,7 @@ MUTANT_SPECS = [
      "                     and r.study_identity == ch[\"study_name\"]\n",
      "                     and True\n", g4_reconstruction_binds_only_this_chunk),
     ("M-ROUTE-START guard removed (successor of M-MINER-START)", WO_MOD,
-     "    if seed_start != 0 and (use_persistent_workers or use_zmq_sqlite):\n", "    if False:\n",
+     "    if seed_start != 0 and use_zmq_sqlite:\n", "    if False:\n",
      g_miner_start),
 ]
 

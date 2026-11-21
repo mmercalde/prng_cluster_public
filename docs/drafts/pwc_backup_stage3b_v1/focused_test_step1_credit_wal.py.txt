@@ -1,0 +1,25 @@
+==============================================================================
+STEP1-CREDIT-WAL — S7 evidence reader with a non-empty ledger -wal
+==============================================================================
+sqlite 3.37.2, python 3.10.12
+  [PASS] G-RED: base reader: None, UNAVAILABLE, credit_decision -> no_sweep_evidence
+  [PASS] G-GREEN: 32 committed rows -> ['1', '2', '3', '4'] all [2147483648,2155872256); credited; directory byte-identical ['miner_ledger.db', 'miner_ledger.db-shm', 'miner_ledger.db-wal']; scratch removed
+  [PASS] G-NOSHM: -shm absent: credited; directory unchanged ['miner_ledger.db', 'miner_ledger.db-wal']
+  [PASS] G-STALE: immutable sees 0 rows; new reader returns all 4 phases
+  [PASS] R-PHASE-MISSING: refused: no_sweep_evidence trial 0: phases [4] not finished
+  [PASS] R-NOT-DONE: refused: no_sweep_evidence trial 0: phases [2] not finished
+  [PASS] R-LIVE-WRITER: immutable view: phase 1 8/8 done (stale positive); reader: phases ['2', '3', '4']; refused: no_sweep_evidence trial 0: phases [1] not finished
+  [PASS] R-GAP: refused: no_sweep_evidence trial 0: phases [3] not finished
+  [PASS] R-NOT-COMMITTED: refused: no_sweep_evidence trial 0: COMPLETE in the study but no sweep evidence from this chunk
+  [PASS] R-UNREADABLE: refused: no_sweep_evidence trial 0: COMPLETE in the study but no sweep evidence from this chunk
+  [PASS] R-JOURNAL: refused: no_sweep_evidence trial 0: COMPLETE in the study but no sweep evidence from this chunk
+  [PASS] R-MOVING: source -wal grew during copy -> None, reason printed, scratch removed
+MUTANTS (each must turn its gate RED)
+  [RED (detected)] M1 base reader (refuses any non-empty -wal) -> G-GREEN: RED: Fail: no evidence: '   [STEP1-SEARCH S7] miner sweep evidence UNAVAILABLE: /home/michael/tfm_worktrees/pwc-backup/data/step1_credit_wal/suite_tmp/green_n7ocxwzj/miner_ledger.db-wal is non-empty (931152 bytes); an immutable read would be stale — no credit\n'
+  [RED (detected)] M2 plain mode=ro on the original -> G-GREEN: RED: Fail: the read changed the ledger directory:
+ before {'miner_ledger.db': (94208, 1795232815925684232, '74c0b150f3b7c538951ea08fc1963b5fa40a1d561879915dd78b5a65a11ff209'), 'miner_ledger.db-shm': (32768, 1795232815928684225, 'e2ad7482d6f25b840ef4a0623d1ee8675ad58d9a8f9df0ecaad9d4c3e37e9456'), 'miner_ledger.
+  [RED (detected)] M3 immutable=1 on the original -> G-STALE: RED: Fail: new reader did not return the committed rows: {'route': 'range_miner', 'run_id': 'credwal_t1_0000', 'source': 'miner ledger stripe rows (state done, contiguous) for this run_id', 'swept_intervals': {}} ''
+  [RED (detected)] M4 copy without the stability check -> R-MOVING: RED: Fail: evidence returned from a moving source: {'route': 'range_miner', 'run_id': 'credwal_t1_0000', 'source': 'miner ledger stripe rows (state done, contiguous) for this run_id', 'swept_intervals': {'1': [2147483648, 2155872256], '2': [2147483648, 2155872256], '3': [2147483648, 2155872256], '4': [21474836
+  [RED (detected)] M5 immutable=1 on the original -> R-LIVE-WRITER (stale positive): RED: Fail: phase 1 credited: {'route': 'range_miner', 'run_id': 'credwal_t1_0000', 'source': 'miner ledger stripe rows (state done, contiguous) for this run_id', 'swept_intervals': {'1': [2147483648, 2155872256], '2': [2147483648, 2155872256], '3': [2147483648, 2155872256], '4': [2147483648, 2155872256]}}
+GATES 12/12  MUTANTS 5/5 detected
+COMPLETION SENTINEL: PASS

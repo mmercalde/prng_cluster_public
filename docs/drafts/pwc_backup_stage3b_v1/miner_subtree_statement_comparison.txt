@@ -1,0 +1,59 @@
+file: window_optimizer_integration_final.py   base: b2efdef   new: working tree
+signature identical: True
+  # base line new line  identical             statement
+  0      1741     1821  yes                   '\n    Run forward + reverse sieve and ACCUMULATE survivors with metad  [2 AST nodes]
+  1      1761     1841  yes                   _use_miner = getattr(coordinator, 'use_range_miner', False)  [10 AST nodes]
+  2      1762     1842  yes                   if _use_miner:  [401 AST nodes]
+  3      1954     2034  yes                   _use_pw = getattr(coordinator, 'use_persistent_workers', False)  [10 AST nodes]
+  4      1955     2035  PWC BLOCK (allowed)   if _use_pw:  [202 AST nodes]
+  5      2016     2092  yes                   _use_zmq = getattr(coordinator, 'use_zmq_sqlite', False)  [10 AST nodes]
+  6      2017     2093  yes                   if _use_zmq:  [237 AST nodes]
+  7      2083     2159  yes                   class Args:  [137 AST nodes]
+  8      2106     2182  yes                   print(f'\n  Testing: {config.description()}')  [12 AST nodes]
+  9      2112     2188  yes                   print(f'    Running FORWARD sieve ({prng_base}) [CONSTANT SKIP]...')  [10 AST nodes]
+ 10      2113     2189  yes                   forward_args = Args()  [6 AST nodes]
+ 11      2114     2190  yes                   forward_args.step_name = f'Forward Sieve ({prng_base})'  [11 AST nodes]
+ 12      2115     2191  yes                   forward_args.prng_type = prng_base  [7 AST nodes]
+ 13      2117     2193  yes                   forward_result = coordinator.execute_distributed_analysis(forward_args  [39 AST nodes]
+ 14      2128     2204  yes                   forward_records = extract_survivor_records(forward_result)  [8 AST nodes]
+ 15      2129     2205  yes                   print(f'      Forward: {len(forward_records):,} survivors')  [15 AST nodes]
+ 16      2133     2209  yes                   if optuna_trial is not None and enable_pruning:  [73 AST nodes]
+ 17      2142     2218  yes                   print(f'    Running REVERSE sieve ({prng_base}_reverse) [CONSTANT SKIP  [10 AST nodes]
+ 18      2143     2219  yes                   reverse_args = Args()  [6 AST nodes]
+ 19      2144     2220  yes                   reverse_args.prng_type = prng_base + '_reverse'  [10 AST nodes]
+ 20      2145     2221  yes                   reverse_args.threshold = reverse_threshold  [7 AST nodes]
+ 21      2146     2222  yes                   reverse_args.step_name = f'Reverse Sieve ({prng_base})'  [11 AST nodes]
+ 22      2148     2224  yes                   reverse_result = coordinator.execute_distributed_analysis(reverse_args  [39 AST nodes]
+ 23      2158     2234  yes                   reverse_records = extract_survivor_records(reverse_result)  [8 AST nodes]
+ 24      2159     2235  yes                   print(f'      Reverse: {len(reverse_records):,} survivors')  [15 AST nodes]
+ 25      2162     2238  yes                   forward_map = {r['seed']: r['match_rate'] for r in forward_records}  [19 AST nodes]
+ 26      2163     2239  yes                   reverse_map = {r['seed']: r['match_rate'] for r in reverse_records}  [19 AST nodes]
+ 27      2165     2241  yes                   forward_set = set(forward_map.keys())  [11 AST nodes]
+ 28      2166     2242  yes                   reverse_set = set(reverse_map.keys())  [11 AST nodes]
+ 29      2167     2243  yes                   bidirectional_constant = forward_set & reverse_set  [9 AST nodes]
+ 30      2169     2245  yes                   print(f'      ✨ Bidirectional (constant): {len(bidirectional_constant)  [15 AST nodes]
+ 31      2172     2248  yes                   if hasattr(coordinator, '_progress_writer') and coordinator._progress_  [141 AST nodes]
+ 32      2196     2272  yes                   if accumulator is not None:  [279 AST nodes]
+ 33      2247     2323  yes                   _variable_bidi_count = 0  [4 AST nodes]
+ 34      2248     2324  yes                   if test_both_modes and (not prng_base.endswith('_hybrid')):  [616 AST nodes]
+ 35      2347     2423  yes                   if accumulator is not None:  [58 AST nodes]
+ 36      2354     2430  yes                   _total_bidi = len(bidirectional_constant) + _variable_bidi_count  [12 AST nodes]
+ 37      2355     2431  yes                   _legacy_tr = TestResult(config=config, forward_count=len(forward_recor  [27 AST nodes]
+ 38      2371     2447  yes                   _legacy_phase_results = {1: forward_result, 2: reverse_result}  [10 AST nodes]
+ 39      2372     2448  yes                   if test_both_modes and (not prng_base.endswith('_hybrid')):  [47 AST nodes]
+ 40      2376     2452  yes                   (_legacy_done, _legacy_why) = ({}, {})  [11 AST nodes]
+ 41      2377     2453  yes                   for (_p, _res) in _legacy_phase_results.items():  [68 AST nodes]
+ 42      2383     2459  yes                   _legacy_tr.step1_sweep_evidence = {'route': 'legacy', 'source': 'coord  [16 AST nodes]
+ 43      2391     2467  yes                   return _legacy_tr  [3 AST nodes]
+
+statements before `if _use_pw:`: base 4, new 4; after: base 39, new 39
+
+Functions the RANGE-MINER path reaches (whole definition, AST-identical?):
+  _miner_residues_for_config           True
+  _build_test_result_from_miner        True
+  _step1_miner_sweep_evidence          True
+  _step1_required_phases               True
+  _step1_ledger_rows_via_copy          True
+  _get_residues_for_config             True
+  extract_survivor_records             True
+  resolve_directional_threshold        True

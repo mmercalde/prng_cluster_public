@@ -1403,6 +1403,86 @@ def _step1_unaccounted_route_evidence(route, why):
             "swept_intervals": {}, "certification_refused": True}
 
 
+# [PWC-STAGE3] PWC Step-1 evidence and walls. Rulings: docs/PWC_BACKUP_OWNER_RULINGS_20261119.md
+# (2: PWC earns credit; 3: no seed-start refusal; default rule: PWC does what RANGE-MINER
+# does). Used only by the `if _use_pw:` branch of run_bidirectional_test.
+class PwcTrialIncompleteError(RuntimeError):
+    """[PWC-STAGE3, Beta X-PWC-STAGE2B R1 Q5] A PWC trial whose chunk coverage is not
+    complete is refused BEFORE its populations reach the accumulator or Optuna sees a
+    score, as RANGE-MINER refuses a trial with no committed assembly
+    (miner/step1_ingress.py `require_assembly`, MinerIngressError)."""
+
+
+class PwcThresholdProvenanceError(RuntimeError):
+    """[PWC-STAGE3] A PWC pass whose threshold record does not prove the requested
+    threshold was used, refused before ingress, as RANGE-MINER refuses a trial without
+    a validated threshold provenance record (`_build_test_result_from_miner`)."""
+
+
+_PWC_TRIAL_COMPLETION_SCHEMA = "pwc_trial_completion_v1"   # persistent_worker_coordinator.py:667
+
+
+def _pwc_required_passes(prng_base, test_both_modes):
+    return tuple(str(p) for p in _step1_required_phases(prng_base, test_both_modes))
+
+
+def _pwc_require_complete_trial(pw_result, prng_base, test_both_modes, trial_number):
+    """Fail closed unless every pass the trial requires ran, on TCP, and is complete."""
+    comp = pw_result.get("pwc_completion") if isinstance(pw_result, dict) else None
+    if not isinstance(comp, dict) or comp.get("schema") != _PWC_TRIAL_COMPLETION_SCHEMA:
+        raise PwcTrialIncompleteError(
+            f"PWC trial {trial_number}: no {_PWC_TRIAL_COMPLETION_SCHEMA} record "
+            f"(got {type(comp).__name__}); a result without completion accounting is "
+            f"not a complete trial")
+    if pw_result.get("pwc_trial_complete") is not True or comp.get("trial_complete") is not True:
+        raise PwcTrialIncompleteError(
+            f"PWC trial {trial_number}: chunk coverage incomplete (passes "
+            f"{comp.get('incomplete_passes')}); refused before the accumulator and "
+            f"before Optuna scores it")
+    passes = comp.get("passes") or {}
+    for ph in _pwc_required_passes(prng_base, test_both_modes):
+        p = passes.get(ph) or {}
+        acc = p.get("accounting") or {}
+        if p.get("status") != "complete":
+            raise PwcTrialIncompleteError(
+                f"PWC trial {trial_number}: required pass {ph} is {p.get('status')!r}")
+        if acc.get("transport") != "tcp":
+            raise PwcTrialIncompleteError(
+                f"PWC trial {trial_number}: pass {ph} ran on {acc.get('transport')!r}, "
+                f"not TCP; only the TCP route reports what it swept and used")
+    return comp
+
+
+def _pwc_require_threshold_provenance(comp, prng_base, test_both_modes, trial_number):
+    for ph in _pwc_required_passes(prng_base, test_both_modes):
+        rec = ((comp.get("passes") or {}).get(ph) or {}).get("accounting", {}).get("threshold")
+        if not (isinstance(rec, dict) and rec.get("agree") is True and rec.get("verified") is True):
+            raise PwcThresholdProvenanceError(
+                f"PWC trial {trial_number}: pass {ph} has no verified threshold record "
+                f"({rec!r}); refused before ingress")
+
+
+def _step1_pwc_sweep_evidence(pw_result, prng_base, test_both_modes):
+    """[PWC-STAGE3 ruling 2] The interval each required PWC pass ACTUALLY swept, from
+    PWC's own completion record (`swept_intervals` holds complete passes only). Returns
+    None (no credit) unless the trial is complete, every required pass ran on TCP and
+    has a verified threshold record. `credit_decision` is not edited."""
+    try:
+        comp = _pwc_require_complete_trial(pw_result, prng_base, test_both_modes, -1)
+        _pwc_require_threshold_provenance(comp, prng_base, test_both_modes, -1)
+    except (PwcTrialIncompleteError, PwcThresholdProvenanceError):
+        return None
+    swept = comp.get("swept_intervals") or {}
+    out = {}
+    for ph in _pwc_required_passes(prng_base, test_both_modes):
+        iv = swept.get(ph)
+        if not (isinstance(iv, (list, tuple)) and len(iv) == 2):
+            return None
+        out[ph] = [int(iv[0]), int(iv[1])]
+    return {"route": "pwc", "source": "pwc_completion.swept_intervals",
+            "swept_intervals": out}
+
+
 def _step1_legacy_jobs_complete(result):
     """(ok, why) for one legacy `execute_distributed_analysis` result: ok only if the
     coordinator's metadata shows at least one planned job, every planned job successful and
@@ -1953,14 +2033,9 @@ def run_bidirectional_test(coordinator,
     # ========================================================================
     _use_pw = getattr(coordinator, 'use_persistent_workers', False)
     if _use_pw:
-        # [MINER SEED-START R5, owner decision 2026-11-14] PWC partitions from a fixed
-        # 0 (persistent_worker_coordinator.py:1276); it is handed total_seeds only. A
-        # non-zero start is refused HERE, before the route builds or dispatches
-        # anything. At seed_start == 0 this is a no-op and the route is unchanged.
-        from window_optimizer import (
-            assert_step1_route_seed_start_supported as _route_start_guard)
-        _route_start_guard(seed_start, route="pwc",
-                           context=f"run_bidirectional_test trial {trial_number}")
+        # [PWC-STAGE3 ruling 3] The seed-start refusal that stood here is removed: PWC
+        # partitions [seed_start, seed_start + seed_count) since Stage 1 (S2) and is
+        # handed seed_start below, as the miner branch hands it to run_trial_miner.
         if run_trial_persistent is None:
             raise ImportError("persistent_worker_coordinator.py not found — cannot use --use-persistent-workers")
         # [S163-KARG-FIX1] Hops 5→8: pass pwc_host and pwc_port so PersistentWorkerCoordinator
@@ -1983,27 +2058,25 @@ def run_bidirectional_test(coordinator,
             pwc_host          = getattr(coordinator, 'pwc_host', '0.0.0.0'),  # [S163-KARG-FIX1] hop 5
             pwc_port          = getattr(coordinator, 'pwc_port', 5600),       # [S163-KARG-FIX1] hop 5
             node_allowlist    = getattr(coordinator, 'node_allowlist', None), # [S163-KARG-PWC] hop 6
+            seed_start        = seed_start,                                   # [PWC-STAGE3 ruling 3]
+            # [PWC-STAGE3] the dial address rig workers use; no default (PWC refuses unset)
+            pwc_coordinator_address = getattr(coordinator, 'pwc_coordinator_address', None),
         )
-        if _pw_result.get("pruned"):
-            # Return minimal pruned TestResult — only fields TestResult accepts
-            return TestResult(
-                config              = config,
-                forward_count       = 0,
-                reverse_count       = 0,
-                bidirectional_count = 0,
-                iteration           = trial_number,
-            )
+        # [PWC-STAGE3, Beta X-PWC-STAGE2B R1 Q5] Fail closed BEFORE anything reaches the
+        # accumulator or Optuna: an incomplete trial raises, as RANGE-MINER's does
+        # (require_assembly -> MinerIngressError, via _build_test_result_from_miner).
+        # A `pruned` result has no complete passes, so it is refused here too.
+        _pw_comp = _pwc_require_complete_trial(_pw_result, prng_base, test_both_modes,
+                                               trial_number)
+        # [PWC-STAGE3] threshold provenance wall, as the miner's (:1330-1346)
+        _pwc_require_threshold_provenance(_pw_comp, prng_base, test_both_modes, trial_number)
         # Build TestResult from persistent worker result
         _pw_tr = _build_test_result_from_pw(_pw_result, accumulator, config,
                                             prng_base, trial_number, optuna_trial)
-        # [STEP1-SEARCH S7] PWC is handed total_seeds only and partitions from 0
-        # (persistent_worker_coordinator.py:1276-1280): the interval it is handed is
-        # [0, seed_count), whatever seed_start is.
-        _pw_tr.step1_sweep_evidence = _step1_unaccounted_route_evidence(
-            "pwc", "run_trial_persistent's result carries no per-trial completion accounting "
-                   "to this layer (failed_chunks stays at pass level), and it is handed "
-                   "total_seeds only with a partition origin of 0 "
-                   "(persistent_worker_coordinator.py:1276-1280)")
+        # [PWC-STAGE3 ruling 2] what the trial actually swept, from PWC's own per-pass
+        # completion record — NOT the requested interval (as the miner's evidence).
+        _pw_tr.step1_sweep_evidence = _step1_pwc_sweep_evidence(
+            _pw_result, prng_base, test_both_modes)
         return _pw_tr
     # ========================================================================
     # END PERSISTENT WORKER PATH — original path continues unchanged below

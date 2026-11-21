@@ -1,0 +1,85 @@
+test files with pinned executable source: 18; candidate (rev,path) arms: 162
+arms whose historical source names a changed module AND one of its changed names: 46
+  HIT tests/test_owner_land.py HEAD:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_owner_land.py HEAD:window_optimizer.py modules ['window_optimizer.py'] names ['assert_step1_route_seed_start_supported', 'main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_pwc_backup_stage3.py HEAD:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_pwc_backup_stage3.py HEAD:watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_pwc_backup_stage3.py HEAD:window_optimizer.py modules ['window_optimizer.py'] names ['assert_step1_route_seed_start_supported', 'main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_pwc_backup_stage3.py HEAD:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_pwc_backup_stage3.py b2efdef:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_pwc_backup_stage3.py b2efdef:watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_pwc_backup_stage3.py b2efdef:window_optimizer.py modules ['window_optimizer.py'] names ['assert_step1_route_seed_start_supported', 'main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_pwc_backup_stage3.py b2efdef:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_pwc_backup_step1.py 27eb991:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_backup_step1.py 7444aea:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_backup_step1.py HEAD:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_backup_step1.py ee39404:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_stage2b_anchor_phase.py 0caeaf9:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_stage2b_anchor_phase.py HEAD:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_stage3a.py HEAD:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_pwc_stage3a.py b2efdef:sieve_filter.py modules ['sieve_filter.py'] names ['execute_sieve_job']
+  HIT tests/test_s172_miner_seed_start.py HEAD:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_miner_seed_start.py b11b6fde7:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_phase5_d6_production_adapter.py 2a6e0f8:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_phase5_d6_production_adapter.py HEAD:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py 2389b61:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py 2389b61:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py 42bdbb1:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py 42bdbb1:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py 4b1aad6:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py 4b1aad6:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py 4b1aad6dd:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py 4b1aad6dd:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py 7c4f11b:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py 7c4f11b:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py 7c4f11b1b:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py 7c4f11b1b:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py HEAD:window_optimizer.py modules ['window_optimizer.py'] names ['assert_step1_route_seed_start_supported', 'main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py HEAD:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_staging_backpressure.py e9ca800:window_optimizer.py modules ['window_optimizer.py'] names ['main', 'run_bayesian_optimization', 'run_with_config']
+  HIT tests/test_s172_staging_backpressure.py e9ca800:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_window_anchor_brief_i.py 48a8705:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_s172_window_anchor_brief_i.py HEAD:window_optimizer_integration_final.py modules ['window_optimizer_integration_final.py'] names ['run_bidirectional_test']
+  HIT tests/test_watcher_followup_repairs.py HEAD:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_watcher_followup_repairs.py b6cb789:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_watcher_safety_repairs.py 741822b:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_watcher_safety_repairs.py 741822b:watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_watcher_safety_repairs.py HEAD:agents/watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+  HIT tests/test_watcher_safety_repairs.py HEAD:watcher_agent.py modules ['agents/watcher_agent.py'] names ['run_step']
+
+## Classification (Alpha, by reading the changed names; the hits above are an over-approximation:
+## a historical copy of a changed file always names its own definitions)
+
+Signature changes (the only kind that can break a pinned caller by itself):
+- run_bayesian_optimization, run_with_config (window_optimizer.py): ONE new trailing keyword,
+  pwc_coordinator_address=None. Positional order is unchanged; with the default, nothing is set on the
+  coordinator unless use_persistent_workers. Every pinned caller (2389b61, 42bdbb1, 4b1aad6, 7c4f11b, e9ca800
+  window_optimizer.py main) stays call-compatible.
+- No other changed name has a new signature: assert_step1_route_seed_start_supported, run_bidirectional_test,
+  execute_sieve_job (3a), run_step, prove_unchanged_outside.compare/main keep theirs.
+
+Behaviour-contract changes. Each affects a pinned arm only if the arm drives the PWC route through the live
+name, except the last, prove_unchanged_outside, whose caller sees stricter behaviour whatever the route (see the
+correction at the end):
+- assert_step1_route_seed_start_supported: PWC no longer refused at a nonzero start (ruling 3). ZMQ unchanged.
+- run_bidirectional_test, PWC branch only: needs a complete pwc_trial_completion_v1 record (Beta 2B Q5).
+- run_step (WATCHER): PWC params now fail closed on a missing provisioning manifest.
+- execute_sieve_job new-key branch (3a, Finding 2): one dataset read.
+- prove_unchanged_outside.compare (3a, Q8): refuses more.
+
+Present compatibility (executed): the full Stage 3b before/after pass ran all 18 arm files; every one has the same
+failing-check set before and after. The only PWC-route break in the pass was T20 of test_persistent_worker_harness.py,
+which is not a pinned arm (live code, live mock) and was edited by owner approval. Stage 3a's own pass covers its
+two names. Combined-tree (3a+3b) evidence is the focused set only; the combined tree has had no full pass.
+Per EXEC-PIN-1 this is evidence of present compatibility, not proof of permanent isolation. No bridge was needed
+or added.
+
+## CORRECTION 2026-11-21 (Beta X-PWC-STAGE3 R1 C-Q1, docs/exchange/from_beta/X-PWC-STAGE3_R1_BETA_REVIEW.md:107)
+- "prove_unchanged_outside.compare/main keep theirs" above is WRONG for compare. It gained one optional trailing
+  parameter, keep_blocks=() (b2efdef:scripts/prove_unchanged_outside.py:161 -> scripts/prove_unchanged_outside.py:433).
+  Positional order is unchanged and the default keeps the old behaviour, so every pinned caller stays call-compatible.
+- "only if it drives the PWC route" does not hold for prove_unchanged_outside. Any caller of the tool sees its
+  stricter checks, whatever the engine.
+- R1 fixes (2026-11-21): no signature changed. persistent_worker_coordinator._startup_refusals now refuses a
+  nonpositive seed cap (the PWC route only). run_bidirectional_test's PWC call no longer passes min_workers, which is
+  b2efdef's call shape.

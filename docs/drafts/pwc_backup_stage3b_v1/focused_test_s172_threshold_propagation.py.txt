@@ -1,0 +1,84 @@
+==============================================================================
+S172 THRESHOLD PROPAGATION — acceptance gates
+repo: /home/michael/tfm_worktrees/pwc-backup
+oracles (hand-transcribed): forward=0.73 reverse=0.31
+==============================================================================
+[[92mPASS[0m] G-ROUTE-A: sampled 0.73/0.31 reached run_bidirectional_test intact
+[[92mPASS[0m] G-ROUTE-B: sampled 0.73/0.31 survived Route B; override removed
+[[93mUNAVAILABLE[0m] G-KERNEL: UNAVAILABLE: G-KERNEL needs cupy + a visible device to read the effective threshold AT THE EXECUTOR (cudaErrorNoDevice: no CUDA-capable device is detected). A threshold gate that cannot reach the kernel has not tested the thing that broke.
+[[91mFAIL[0m] G-MINER-UNCHANGED: D6-threshold harness regressed (rc=1). Tail:
+rees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 550, in _provenance_fixture
+    coord, run_id, _ds, _res, sent = _dispatch_assignments(
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 225, in _dispatch_assignments
+    coord.ledger.set_trial_context(run_id, {
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_coordinator.py", line 1853, in set_trial_context
+    raise MinerMetadataError(
+miner.range_miner_coordinator.MinerMetadataError: trial_context for 'run_thresh' missing mandatory field(s) ['window_anchor', 'generator_phase']; refusing to persist an incomplete immutable context (fail-closed).
+
+--- R1-R3: identical ordered residues both sides (both / midday / evening) ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 150, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 730, in r_identical_residues
+    worker = resolver.resolve({
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_worker.py", line 988, in resolve
+    reject_legacy_offset_key(payload, where="ResidueResolver.resolve")
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_worker.py", line 823, in reject_legacy_offset_key
+    raise ResidueResolutionError(
+miner.range_miner_worker.ResidueResolutionError: ResidueResolver.resolve: payload carries the RETIRED key 'offset'. The window-anchor / generator-phase separation replaced it with two independent REQUIRED keys — 'window_anchor' (which observed records form the residue window; host-side) and 'generator_phase' (how many generator advances precede the first comparison; device-side). 'offset' is NOT mapped to either, not read as a fallback, and not accepted alongside them. See docs/PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md §4.1.
+
+--- R4: parent residue_sha256 verifies on the worker in every case ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 150, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 750, in r4_assignment_roundtrip
+    payload = coord.build_stripe_assign_payload(
+TypeError: RangeMinerCoordinator.build_stripe_assign_payload() missing 1 required keyword-only argument: 'generator_phase'
+
+--- MUTANTS: every injected defect is caught ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 814, in _positive_control
+    detector()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 945, in <lambda>
+    _positive_control("G8", lambda: g8_no_silent_fallback())
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 460, in g8_no_silent_fallback
+    direct = coord.build_stripe_assign_payload(
+TypeError: RangeMinerCoordinator.build_stripe_assign_payload() missing 1 required keyword-only argument: 'generator_phase'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 150, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 945, in run_mutants
+    _positive_control("G8", lambda: g8_no_silent_fallback())
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase5_d6_threshold_path.py", line 816, in _positive_control
+    raise AssertionError(
+AssertionError: POSITIVE CONTROL FAILED for G8: the detector reds against the UNMUTATED module (TypeError: RangeMinerCoordinator.build_stripe_assign_payload() missing 1 required keyword-only argument: 'generator_phase') — any kill it records would be unattributable
+
+
+[PWC-BACKUP S1] TRIAL 1 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[[92mPASS[0m] G-PWC-HYBRID: variable-skip passes carry the trial's directional threshold (0.73 -> P3, 0.31 -> P4, both keys); a hybrid pass with no threshold refuses before dispatch; the D3.25 v2 shape path completes
+
+------------------------------------------------------------------------------
+MUTANTS (four-part kill rule)
+------------------------------------------------------------------------------
+[[92mPASS[0m] M1 restore bounds.default_* in test_config -> G-ROUTE-A
+        applies-once : applies-once verified on 3 anchors
+        executed     : mutated test_config executed; run_bidirectional_test got 0.3/0.3
+        detector     : FIRED — forward dropped
+[[92mPASS[0m] M2 restore _local_bounds override in _local_test -> G-ROUTE-B
+        applies-once : applies-once verified (1+1 substitutions)
+        executed     : mutated _local_test executed; _wbt got 0.3/0.3
+        detector     : FIRED — forward dropped
+[PWC-BACKUP S1] TRIAL 1 INCOMPLETE: passes ['1', '2', '3', '4'] not complete over [0, 1000] — marked in pwc_completion; the result must not be read as complete
+[[92mPASS[0m] M3 restore the PWC hybrid threshold defect -> G-PWC-HYBRID
+        applies-once : applies-once verified at both seams
+        executed     : mutated run_sieve_pass reached dispatch; mutated run_trial_persistent ran phase 3 without the trial's threshold
+        detector     : FIRED — run_sieve_pass 0.5 default -> AttributeError: '_Self' object has no attribute 'pwc_transport' | phase-3 threshold dropped -> phase 3 was not handed the forward threshold as both keys: (0.73, None)
+
+==============================================================================
+GATES 3/5 PASS · 1 FAIL · 1 UNAVAILABLE
+MUTANTS 3/3 killed
+COMPLETION SENTINEL: FAIL
+==============================================================================

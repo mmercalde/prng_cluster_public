@@ -1,0 +1,258 @@
+==========================================================================
+S172 Phase 6-P0.5 — dataset authority acceptance harness
+==========================================================================
+  ❌ Gate  1: [req1] real pointer resolves + self-verifies (CLEAN)
+  ❌ Gate  2: [req3] alias resolves to the immutable version
+  ✅ Gate  3: [neg] pointer missing → refuse
+  ✅ Gate  4: [neg] pointer unparseable → refuse
+  ✅ Gate  5: [req8] pointer naming daily3.json → refuse
+  ✅ Gate  6: [req8] pointer naming an absolute path → refuse
+  ✅ Gate  7: [req8] pointer traversal → refuse
+  ✅ Gate  8: [req8] non-conforming filename → refuse (6 forms)
+  ✅ Gate  9: [neg] pointer target does not exist → refuse
+  ✅ Gate 10: [schema] version_id/filename disagreement → refuse
+  ✅ Gate 11: [schema] filename digest prefix disagreement → refuse
+  ✅ Gate 12: [identity] digest mismatch → refuse
+  ✅ Gate 13: [identity] size mismatch → refuse
+  ✅ Gate 14: [identity] record-count mismatch → refuse
+  ✅ Gate 15: [schema] unsupported manifest schema → refuse
+  ✅ Gate 16: [schema] missing required field → refuse
+[P0.5] /tmp/tmpj1vc48g3/daily3.json frozen as an UNPUBLISHED alias (no pointer manifest at /tmp/tmpj1vc48g3/daily3_current.json) — permitted only outside the certifying path
+  ✅ Gate 17: [req3] unpublished bare alias → refuse
+  ❌ Gate 18: [req2] freeze is one-time + idempotent
+  ❌ Gate 19: [req2] conflicting second freeze → raise
+  ✅ Gate 20: [req7] pointer moved MID-RUN → run unaffected
+  ✅ Gate 21: [§2.1] coordinator digest run-scoped, not trial-scoped
+  ❌ Gate 22: [req2] frozen digest scoped to the frozen path
+  ✅ Gate 23: [Beta §3] absent dataset classified + chained + named
+  ❌ Gate 24: [Beta §3] CLEAN control — good reads still succeed
+  ✅ Gate 25: [req5] per-node verify: PASS / mismatch / absent
+  ❌ Gate 26: [VIR-5] unreachable node → UNAVAILABLE, still fails
+  ✅ Gate 27: [req4] fleet preflight reports all, then fails closed
+  ✅ Gate 28: [req5] absent manifest ≠ empty manifest
+  ❌ Gate 29: [req6] run provenance carries the frozen values
+2026-11-20 19:45:55 [INFO] Dispatch methods bound to WatcherAgent: dispatch_selfplay, dispatch_learning_loop, process_chapter_13_request, _scan_watcher_requests, _validate_selfplay_request, _evaluate_step_via_bundle, _archive_request, _log_dispatch_decision
+  ❌ Gate 30: [req1/3] WATCHER resolves pointer → absolute path
+  ❌ Gate 31: [scope] published artifacts byte-unmodified
+  ✅ Gate 32: [scope] hybrid skip NOT wired in
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [WARNING] [P0.5] provisioning manifest missing at /tmp/tmp86a6brbu/no_such_manifest.json — per-node dataset verification did NOT run for daily3. Recorded as UNAVAILABLE.
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [WARNING] [P0.5] provisioning manifest declares no nodes at /tmp/tmp86a6brbu/empty_nodes.json — per-node dataset verification did NOT run for daily3. Recorded as UNAVAILABLE.
+2026-11-20 19:45:55 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp86a6brbu/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:55 [WARNING] [P0.5] provisioning manifest declares no nodes at /tmp/tmp86a6brbu/empty_other.json — per-node dataset verification did NOT run for daily3. Recorded as UNAVAILABLE.
+  ✅ Gate 33: [Beta closure] miner + unusable manifest → FATAL (4 conditions)
+  ❌ Gate 34: [Beta closure] no coordinator, no process, no dispatch
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [WARNING] [P0.5] provisioning manifest missing at /tmp/tmp5eou0tqe/no_manifest.json — per-node dataset verification did NOT run for daily3. Recorded as NOT_APPLICABLE.
+2026-11-20 19:45:56 [INFO] [P0.5] run provenance written: /tmp/tmp5eou0tqe/dataset_provenance/gate35_na.json
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [WARNING] [P0.5] provisioning manifest missing at /tmp/tmp5eou0tqe/no_manifest.json — per-node dataset verification did NOT run for daily3. Recorded as UNAVAILABLE.
+2026-11-20 19:45:56 [INFO] [P0.5] run provenance written: /tmp/tmp5eou0tqe/dataset_provenance/gate35_remote.json
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [WARNING] [P0.5] provisioning manifest missing at /tmp/tmp5eou0tqe/no_manifest.json — per-node dataset verification did NOT run for daily3. Recorded as UNAVAILABLE.
+2026-11-20 19:45:56 [INFO] [P0.5] run provenance written: /tmp/tmp5eou0tqe/dataset_provenance/gate35_unknown.json
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmp5eou0tqe/daily3-20260801T145551443433Z-adef83176dfe.json
+  ✅ Gate 35: [Beta closure] NOT_APPLICABLE routed, distinct from UNAVAILABLE
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmpr01d835e/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmpr01d835e/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run provenance written: /tmp/tmpr01d835e/dataset_provenance/gate36_miner.json
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmpr01d835e/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmpr01d835e/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run provenance written: /tmp/tmpr01d835e/dataset_provenance/gate36_plain.json
+  ✅ Gate 36: [CLEAN] successful-manifest path unchanged
+2026-11-20 19:45:56 [INFO] [P0.5] pointer resolved: daily3.json -> daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmpzn9efs63/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [INFO] [P0.5] run dataset FROZEN: daily3-20260801T145551443433Z-adef83176dfe sha256=adef83176dfe… 448 bytes / 8 records at /tmp/tmpzn9efs63/daily3-20260801T145551443433Z-adef83176dfe.json
+2026-11-20 19:45:56 [WARNING] [P0.5] provisioning manifest missing at /tmp/tmpzn9efs63/no_manifest.json — per-node dataset verification did NOT run for daily3. Recorded as UNAVAILABLE.
+  ❌ Gate 37: [VIR-2] fault injection — revert the hard-fail, gates red
+==========================================================================
+
+25/37 checks green (without the live-fleet gate)
+
+FAILURES (DO NOT COMMIT):
+
+--- Gate  1: [req1] real pointer resolves + self-verifies (CLEAN) ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 128, in gate01_real_pointer_resolves
+    f = D.resolve_pointer(REAL_POINTER)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 393, in resolve_pointer
+    manifest = read_pointer_manifest(pointer_path)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 332, in read_pointer_manifest
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: pointer manifest not found: '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. Phase 6-P0 publishes it; a tree without it is not a published tree.
+
+
+--- Gate  2: [req3] alias resolves to the immutable version ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 143, in gate02_alias_resolves_to_version
+    f = D.resolve_dataset_path(REAL_ALIAS)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 520, in resolve_dataset_path
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+--- Gate 18: [req2] freeze is one-time + idempotent ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 365, in gate18_freeze_is_one_time_and_idempotent
+    a = D.freeze_for_run(REAL_ALIAS, run_label="gate18")
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 650, in freeze_for_run
+    frozen = resolve_dataset_path(
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 520, in resolve_dataset_path
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+--- Gate 19: [req2] conflicting second freeze → raise ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 378, in gate19_conflicting_freeze_raises
+    D.freeze_for_run(REAL_ALIAS, run_label="gate19")
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 650, in freeze_for_run
+    frozen = resolve_dataset_path(
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 520, in resolve_dataset_path
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+--- Gate 22: [req2] frozen digest scoped to the frozen path ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 475, in gate22_frozen_digest_scoped_to_the_frozen_path
+    D.freeze_for_run(REAL_ALIAS, run_label="gate22")
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 650, in freeze_for_run
+    frozen = resolve_dataset_path(
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 520, in resolve_dataset_path
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+--- Gate 24: [Beta §3] CLEAN control — good reads still succeed ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_worker.py", line 797, in _sha256_file
+    f = open(path, "rb")
+FileNotFoundError: [Errno 2] No such file or directory: '/home/michael/tfm_worktrees/pwc-backup/daily3.json'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 518, in gate24_present_dataset_still_hashes
+    assert _sha256_file(REAL_ALIAS) == D.sha256_file(REAL_ALIAS)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/range_miner_worker.py", line 801, in _sha256_file
+    raise _dataset_absent(path, exc, "cannot hash missing dataset") from exc
+miner.range_miner_worker.DatasetProvisioningError: dataset unavailable on node 'zeus-ubuntu-vm': cannot hash missing dataset '/home/michael/tfm_worktrees/pwc-backup/daily3.json' (FileNotFoundError: [Errno 2] No such file or directory: '/home/michael/tfm_worktrees/pwc-backup/daily3.json'). This node was not provisioned with the run's frozen dataset, or the file was removed after provisioning. See docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md §2-§4.
+
+
+--- Gate 26: [VIR-5] unreachable node → UNAVAILABLE, still fails ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 570, in gate26_unreachable_node_is_unavailable_not_clean
+    frozen = D.resolve_pointer(REAL_POINTER)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 393, in resolve_pointer
+    manifest = read_pointer_manifest(pointer_path)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 332, in read_pointer_manifest
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: pointer manifest not found: '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. Phase 6-P0 publishes it; a tree without it is not a published tree.
+
+
+--- Gate 29: [req6] run provenance carries the frozen values ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 640, in gate29_run_provenance_records_the_frozen_values
+    frozen = D.freeze_for_run(REAL_ALIAS, run_label="gate29")
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 650, in freeze_for_run
+    frozen = resolve_dataset_path(
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 520, in resolve_dataset_path
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+--- Gate 30: [req1/3] WATCHER resolves pointer → absolute path ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 673, in gate30_watcher_resolves_pointer_to_absolute_path
+    out = W.p05_resolve_dataset_path(os.path.join(W.REPO_ROOT, "daily3.json"))
+  File "/home/michael/tfm_worktrees/pwc-backup/agents/watcher_agent.py", line 920, in p05_resolve_dataset_path
+    return p05_freeze_dataset().path
+  File "/home/michael/tfm_worktrees/pwc-backup/agents/watcher_agent.py", line 904, in p05_freeze_dataset
+    return _dsauth.freeze_for_run(alias, run_label=run_label)
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 650, in freeze_for_run
+    frozen = resolve_dataset_path(
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 520, in resolve_dataset_path
+    raise PointerResolutionError(
+miner.dataset_authority.PointerResolutionError: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+--- Gate 31: [scope] published artifacts byte-unmodified ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 699, in gate31_published_artifacts_unmodified
+    assert D.sha256_file(version) == published_sha, "VERSION FILE MODIFIED"
+  File "/home/michael/tfm_worktrees/pwc-backup/miner/dataset_authority.py", line 188, in sha256_file
+    with open(path, "rb") as f:
+FileNotFoundError: [Errno 2] No such file or directory: '/home/michael/tfm_worktrees/pwc-backup/daily3-20260801T145551443433Z-513648160d35.json'
+
+
+--- Gate 34: [Beta closure] no coordinator, no process, no dispatch ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1031, in gate34_no_construction_no_process_no_dispatch
+    assert "FAIL BEFORE DISPATCH" in v["stderr"], v["stderr"][-1500:]
+AssertionError:  [--warm-start-fwd-thresh WARM_START_FWD_THRESH]
+                           [--warm-start-rev-thresh WARM_START_REV_THRESH]
+                           [--warm-start-session-idx WARM_START_SESSION_IDX]
+                           [--rig-profile {baremetal,proxmox}]
+                           [--execution-set-nodes EXECUTION_SET_NODES]
+                           [--use-range-miner]
+                           [--miner-stripe-size MINER_STRIPE_SIZE]
+                           [--miner-substripes MINER_SUBSTRIPES]
+                           [--miner-output-dir MINER_OUTPUT_DIR]
+                           [--staging-dir STAGING_DIR]
+                           [--staging-workers STAGING_WORKERS]
+                           [--staging-queue-depth STAGING_QUEUE_DEPTH]
+                           [--staging-deferred-max STAGING_DEFERRED_MAX]
+                           [--staging-capacity-timeout STAGING_CAPACITY_TIMEOUT]
+                           [--staging-high-water-files STAGING_HIGH_WATER_FILES]
+                           [--staging-high-water-bytes STAGING_HIGH_WATER_BYTES]
+window_optimizer.py: error: DATASET_AUTHORITY_P0_5: refusing to dispatch the bare compatibility alias '/home/michael/tfm_worktrees/pwc-backup/daily3.json': no pointer manifest at '/home/michael/tfm_worktrees/pwc-backup/daily3_current.json' on node 'zeus-ubuntu-vm'. The alias is mutable and version-less; after Phase 6-P0.5 the authoritative dataset is the immutable version the pointer names (requirement 3, §2.2).
+
+
+
+--- Gate 37: [VIR-2] fault injection — revert the hard-fail, gates red ---
+Traceback (most recent call last):
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1220, in _check
+    fn()
+  File "/home/michael/tfm_worktrees/pwc-backup/tests/test_s172_phase6_p05_dataset_authority.py", line 1182, in gate37_fault_injection_control
+    assert v["tripwires"], (
+AssertionError: the reverted run fired no tripwire — gate 34 cannot distinguish a run that stopped from a run that never started (VACUOUS DETECTOR)
+
+
+RESULT: FAIL

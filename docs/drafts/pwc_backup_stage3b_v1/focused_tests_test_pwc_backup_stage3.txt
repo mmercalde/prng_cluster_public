@@ -1,0 +1,38 @@
+VERIFICATION test_pwc_backup_stage3 START
+[PASS] G-MINER-SUBTREE: run_bidirectional_test: 4 statements before `if _use_pw:` (incl. the `if _use_miner:` subtree, 401 AST nodes) and 39 after it are identical to b2efdef; signature identical
+[PASS] G-MINER-DEFS: integration: 59 definitions identical outside ['run_bidirectional_test'] + added 7 PWC names; window_optimizer.py: 53 identical outside ['assert_step1_route_seed_start_supported', 'run_bayesian_optimization', 'run_with_config', 'main']; miner-reached ['_miner_residues_for_config', '_build_test_result_from_miner', '_step1_miner_sweep_evidence']… identical
+[PASS] G-WO-FUNCS: run_bayesian_optimization, run_with_config, main: new AST minus the declared PWC insertions == b2efdef
+[PASS] G-MINER-SETTINGS: use_range_miner=True (Run-4 shape): 19 coordinator attributes and the optimize_window arguments identical to b2efdef; control: a PWC run gains exactly pwc_coordinator_address
+[PASS] G-MINER-JOBS: use_range_miner=True: run_trial_miner got the same 40 arguments as b2efdef
+[PASS] G-MANIFEST: manifest: only the ruled default flip (+ use_range_miner spec) and one added null PWC key; Run-4 params merge to the same values except that null key, which WATCHER skips (agents/watcher_agent.py run_step, `if value is None`)
+[PASS] G-GUARD: only ZMQ at 2^31 refuses; PWC, miner and legacy at 0 and 2^31 pass (flags and route=)
+[PASS] G-PWC-CALL: PWC at seed_start 2^31: dispatched with seed_start, the dial address and min_workers=24
+[PASS] G-INCOMPLETE: 5 incomplete shapes refused before the accumulator and before a score; complete four-pass and constant-only trials go through
+[PASS] G-PROV: a pass without a verified threshold record is refused before ingress
+[PASS] G-CREDIT: complete four-pass, zero-survivor and constant-only trials credited by the unchanged credit_decision; SSH, unverified and short-interval trials not; wired on the trial
+[PASS] G-CLI: --pwc-coordinator-address (no default) is passed by main to both entry points
+[PASS] G-FLEET: main passes require_fleet=use_persistent_workers; the unchanged authority then fails a PWC run closed on a missing provisioning manifest, as it does the miner
+[PASS] G-WATCHER-FLEET: WATCHER: require_fleet=use_persistent_workers on its one fleet-status call; the module minus that keyword is AST-identical to b2efdef
+[PASS] M-MINER-1 miner subtree: serve_timeout default changed -> killed: statement 2 before `if _use_pw:` differs (line 1842): "if _use_miner:\n    if run_trial_miner is None:\n      
+[PASS] M-MINER-2a preamble: the miner switch's default changed -> killed: statement 1 before `if _use_pw:` differs (line 1841): "_use_miner = getattr(coordinator, 'use_range_miner', No
+[PASS] M-MINER-2b miner subtree: trial wall context changed -> killed: statement 2 before `if _use_pw:` differs (line 1842): "if _use_miner:\n    if run_trial_miner is None:\n      
+[PASS] M-MINER-3 _miner_residues_for_config changed -> killed: integration file: [{"kind": "top-level-statements-differ", "hunks": [{"op": "replace", "base": [{"index": 18, 
+[PASS] M-MINER-4 miner wiring in run_bayesian_optimization changed -> killed: run_bayesian_optimization: differs from b2efdef beyond the declared PWC insertions (dial-address parameter/att
+[PASS] M-MINER-5 main: miner_backed keyword changed -> killed: main: differs from b2efdef beyond the declared PWC insertions (dial-address parameter/attribute/flag/keywords,
+[PASS] M-MINER-6 dial address set on every coordinator (runtime) -> killed: RANGE-MINER coordinator settings differ: only base [], only new ['pwc_coordinator_address'], changed []
+[PASS] M-MINER-7 run_trial_miner argument changed (runtime) -> killed: run_trial_miner arguments differ: ['miner_substripes']
+[PASS] M-PWC-1 seed-start guard still refuses PWC -> killed: seed_start=2147483648 route=pwc (flags): raised=True
+[PASS] M-PWC-2 PWC not handed seed_start -> killed: seed_start not handed on: None
+[PASS] M-PWC-3 completeness check removed (Beta Q5) -> killed: trial incomplete: NoneType: None
+[PASS] M-PWC-4 provenance check removed -> killed: NoneType: None
+[PASS] M-PWC-5 transport not checked -> killed: ssh credited: {'route': 'pwc', 'source': 'pwc_completion.swept_intervals', 'swept_intervals': {'1': [214748364
+[PASS] M-PWC-6 evidence built from the requested interval -> killed: short interval credited: {'route': 'pwc', 'source': 'pwc_completion.swept_intervals', 'swept_intervals': {'1':
+[PASS] M-PWC-7 require_fleet not passed -> killed: run_start_dataset_gate is not told to require the fleet for PWC
+[PASS] M-WATCHER-1 require_fleet keyword dropped -> killed: WATCHER does not require the fleet for PWC
+[PASS] M-WATCHER-2 another WATCHER line changed -> killed: agents/watcher_agent.py differs beyond the one keyword
+[PASS] M-PWC-8 dial address not passed by main -> killed: run_with_config call does not pass the dial address
+
+GATES 14/14 PASS
+MUTANTS 18/18 killed
+RESULT: PASS
+VERIFICATION test_pwc_backup_stage3 COMPLETE
