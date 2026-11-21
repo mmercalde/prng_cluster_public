@@ -2122,6 +2122,8 @@ class WatcherAgent:
                         miner_backed=bool(final_params.get("use_range_miner")),
                         remote_execution=None,
                         context=f"watcher_step{step}",
+                        # [PWC-STAGE3] PWC fails closed like the miner; False otherwise
+                        require_fleet=bool(final_params.get("use_persistent_workers")),
                     )
                     logger.warning(
                         "[P0.5] provisioning manifest %s (%s) — per-node dataset "
