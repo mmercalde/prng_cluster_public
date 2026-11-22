@@ -2767,6 +2767,51 @@ def workflow_phase_semantics(phase: int) -> Tuple[str, str]:
         )
 
 
+# [SKIP-DELIVERY SWITCH] (docs/drafts/miner_skip_switch_v1/PLAN.md; owner 2026-11-21
+# 09:54 PST "sounds resonalble", 16:54 PST "yes"). The worker records each constant
+# candidate's winning skip in a uint8 `best_skips` slot (miner/range_miner_worker.py
+# :1382), so a delivered bound above 255 would serialize wrongly (Beta X-SKIP-F1 R1 Q4).
+CONSTANT_SKIP_DELIVERY_MAX = 255
+SKIP_DELIVERY_PARAM = "deliver_skip_range"
+
+
+def validate_skip_delivery(value: Any, *pair: Any, where: str) -> bool:
+    """THE one validator of the skip-delivery switch, used by every entry point: the
+    CLI (window_optimizer.py), WATCHER params and search open
+    (utils/step1_search_ledger.presented_configuration), the Step 1 child
+    (window_optimizer_integration_final.py), the volume estimator
+    (utils/survivor_volume_estimator.validate_geometry) and the coordinator
+    (run_trial_miner, build_stripe_assign_payload). Beta X-MINER-SKIP-SWITCH R1 Q4.
+
+    `value` is the switch: exactly `True` or `False`. A caller passes `False` when the
+    key is ABSENT, so absent and false are the same off state; anything else (None, "",
+    "true", 1, ...) is REFUSED, never read as off. When on and a `pair` (skip_min,
+    skip_max) is given, it must be plain ints with 0 <= skip_min <= skip_max <= 255:
+    the worker records each constant candidate's winning skip in a uint8 `best_skips`
+    slot (miner/range_miner_worker.py:1382). Off, the pair is not examined, so the
+    baseline is unchanged. Returns the switch. Raises MinerMetadataError."""
+    if value is not True and value is not False:
+        raise MinerMetadataError(
+            f"{where}: {SKIP_DELIVERY_PARAM} must be a bool (true or false); got "
+            f"{value!r} ({type(value).__name__}). Refused, never read as off.")
+    if not value or not pair:
+        return value
+    if len(pair) != 2:
+        raise MinerMetadataError(f"{where}: expected (skip_min, skip_max), got {pair!r}")
+    skip_min, skip_max = pair
+    for name, v in (("skip_min", skip_min), ("skip_max", skip_max)):
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise MinerMetadataError(
+                f"{where}: {name} must be a plain int to be delivered (got {v!r}, "
+                f"{type(v).__name__}); nothing was created or dispatched")
+    if not 0 <= skip_min <= skip_max <= CONSTANT_SKIP_DELIVERY_MAX:
+        raise MinerMetadataError(
+            f"{where}: delivered skip range [{skip_min}, {skip_max}] is outside "
+            f"0 <= skip_min <= skip_max <= {CONSTANT_SKIP_DELIVERY_MAX} (best_skips is "
+            f"uint8); nothing was created or dispatched")
+    return value
+
+
 def derive_trial_metadata(
     trial_ctx: Dict[str, Any], stripe: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -9217,7 +9262,7 @@ class RangeMinerCoordinator:
         self, dataset_path: str, window_size: int, sessions, window_anchor: int,
         residues, dataset_sha256: Optional[str] = None,
         *, phase: int, forward_threshold: float, reverse_threshold: float,
-        generator_phase: int,
+        generator_phase: int, skip_range: Optional[Tuple[int, int]] = None,
     ) -> Dict[str, Any]:
         """Every StripeAssignMessage.payload MUST carry `dataset`, `dataset_sha256`
         (coordinator-computed), `window_size`, `sessions`, `window_anchor`,
@@ -9364,6 +9409,15 @@ class RangeMinerCoordinator:
                 f"D6 stripe payload (got {payload['min_match_threshold']!r} vs "
                 f"{payload['phase2_threshold']!r}); the miner runs ONE kernel with "
                 "ONE threshold per stripe — see the threshold contract above.")
+        # [SKIP-DELIVERY SWITCH] Off (None, the default): no key, so the payload is
+        # byte-identical to the baseline and the worker keeps its [0, 16]
+        # (miner/range_miner_worker.py:1293). On: the trial's own pair, for the
+        # CONSTANT phases only — the hybrid kernels take no skip bound (phases 3-4
+        # stay byte-identical either way).
+        if skip_range is not None and _skip_mode == "constant":
+            lo, hi = tuple(skip_range)
+            validate_skip_delivery(True, lo, hi, where="build_stripe_assign_payload")
+            payload["skip_range"] = [int(lo), int(hi)]
         return payload
 
     # ----- real framed-TCP serve loop (Beta-required Phase-4 deliverable) ---
@@ -12020,7 +12074,10 @@ class RangeMinerCoordinator:
                 dataset_sha256=dataset_sha256, phase=phase,
                 forward_threshold=forward_threshold,
                 reverse_threshold=reverse_threshold,
-                generator_phase=generator_phase)
+                generator_phase=generator_phase,
+                # [SKIP-DELIVERY SWITCH] set by run_trial_miner only when the switch is
+                # on; absent -> None -> the baseline payload.
+                skip_range=(getattr(self, "_constant_skip_delivery", None) or {}).get(run_id))
             # Provenance leg 2 of 3: what the payload ACTUALLY carried, recorded
             # per (stripe, attempt) and marked D6-generated EXPLICITLY — this
             # assignment now owes the parent an effective-threshold report, and
@@ -12455,6 +12512,12 @@ def run_trial_miner(
     phase5_sink: Optional[Phase5Sink] = None,
     listen_sock=None,
     _serve=None,
+    # [SKIP-DELIVERY SWITCH] Off by default: phases 1-2 keep the worker's [0, 16]
+    # exactly as before. On: they sieve the trial's own [skip_min, skip_max]
+    # (docs/drafts/miner_skip_switch_v1/PLAN.md). KEYWORD-ONLY, so no existing
+    # positional slot moves (Beta X-MINER-SKIP-SWITCH R1 finding 4).
+    *,
+    deliver_skip_range: bool = False,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -12495,6 +12558,21 @@ def run_trial_miner(
             f"an omitted start is refused rather than read as 0, because reading it as "
             f"0 is how a non-zero Step 1 request was swept from 0. Nothing was created "
             f"or dispatched.")
+    # [SKIP-DELIVERY SWITCH] Validated as early as the seed start, before anything
+    # exists. Off: nothing new is checked, so the baseline is unchanged.
+    _skip_delivery = None
+    if validate_skip_delivery(deliver_skip_range, skip_min, skip_max,
+                              where="run_trial_miner"):
+        _skip_delivery = (int(skip_min), int(skip_max))
+        _hyp = _skip_delivery[1] - _skip_delivery[0] + 1
+        logger.info("[SKIP-DELIVERY] ON: phases 1-2 sieve skip %s (baseline [0, 16])",
+                    list(_skip_delivery))
+        if _hyp > 17:
+            logger.warning(
+                "[SKIP-DELIVERY] %d skip hypotheses per seed against the baseline's 17 "
+                "(%.2fx); phase 1-2 time, lease renewal gaps and survivor volume were "
+                "measured only at [0, 16] — measure them for this geometry",
+                _hyp, _hyp / 17.0)
     # [S172 Staging Part B §1.1/§1.3, Beta binding ruling] Resolve the canonical
     # coordinator staging directory and VALIDATE it HERE — before build_coordinator,
     # before the ledger exists, before the trial is created, and therefore before
@@ -12541,6 +12619,9 @@ def run_trial_miner(
     stem = os.path.splitext(os.path.basename(str(coordinator_cfg)))[0] or "trial"
     run_id = f"{stem}_t{trial_number}_{uuid.uuid4().hex[:8]}"
     coordinator.ledger.create_trial(run_id, trial_number)
+    if _skip_delivery is not None:
+        # read by _dispatch_pending for this run only
+        coordinator._constant_skip_delivery = {run_id: _skip_delivery}
 
     # Defect 6: resolve the workflow's family/phase STAGES. An explicit
     # family_name/workflow_phase override (used by the serve-path gate) collapses
@@ -12621,5 +12702,12 @@ def run_trial_miner(
     # Default: the REAL serve loop (bound method, takes context). Injected test
     # serve keeps the (coordinator, context) shape.
     if _serve is None:
-        return coordinator.serve_trial(context)
-    return _serve(coordinator, context)
+        result = coordinator.serve_trial(context)
+    else:
+        result = _serve(coordinator, context)
+    if _skip_delivery is not None and isinstance(result, dict):
+        # visible on the run record only when on; off leaves the result untouched
+        result["constant_skip_delivery"] = {
+            "requested": [skip_min, skip_max], "effective": list(_skip_delivery),
+            "phases": [1, 2]}
+    return result

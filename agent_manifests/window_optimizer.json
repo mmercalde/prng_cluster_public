@@ -270,6 +270,7 @@
     "pwc_coordinator_address": null,
     "min_workers": 24,
     "use_range_miner": true,
+    "deliver_skip_range": false,
     "miner_stripe_size": 67108864,
     "miner_substripes": 8,
     "miner_output_dir": null,
