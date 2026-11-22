@@ -149,6 +149,30 @@ def _modes_tuple(modes: Iterable[str]) -> Tuple[str, ...]:
 # ---------------------------------------------------------------------------
 # the presented configuration — ONE function for opening and for every dispatch
 # ---------------------------------------------------------------------------
+def skip_delivery_can_sample(pinned: bool, trials: Any, resume_study: bool) -> bool:
+    """[SKIP-DELIVERY SWITCH] THE one rule, used by search open and by the Step 1 child
+    (Beta X-MINER-SKIP-SWITCH-2 R1 Q4), for whether a switched run can SAMPLE skip bounds.
+    Only a FRESH run with all seven pins and a one-trial budget cannot: its single trial is
+    the enqueued pin (docs/TB_RULING_RUN4_ROUTING_AND_PINNED_GEOMETRY.md:121). A resumed
+    study enqueues no pin (window_optimizer_bayesian.py, `if not _resume`), so it samples."""
+    return not (pinned and trials is not None and int(trials) == 1 and not resume_study)
+
+
+def validate_skip_sampling_domains(min_skip_min, max_skip_min, min_skip_max, max_skip_max,
+                                   where: str) -> None:
+    """[SKIP-DELIVERY SWITCH] The full sampling domains, through the one validator
+    (miner.range_miner_coordinator.validate_skip_delivery): each range is plain ints in
+    0..255 with lo <= hi, and skip_min.max <= skip_max.max. Optuna draws skip_max from
+    [max(skip_min, skip_max.min), skip_max.max] (window_optimizer_bayesian.py), so the
+    ordering is exactly what keeps every draw non-empty and every pair legal. Raises
+    MinerMetadataError."""
+    from miner.range_miner_coordinator import validate_skip_delivery
+    validate_skip_delivery(True, min_skip_min, max_skip_min, where=f"{where} (skip_min range)")
+    validate_skip_delivery(True, min_skip_max, max_skip_max, where=f"{where} (skip_max range)")
+    validate_skip_delivery(True, max_skip_min, max_skip_max,
+                           where=f"{where} (skip_min.max <= skip_max.max)")
+
+
 def presented_configuration(final_params: Mapping[str, Any],
                             pin_bundle: Optional[Mapping[str, Any]],
                             bounds: Mapping[str, Any],
@@ -195,6 +219,40 @@ def presented_configuration(final_params: Mapping[str, Any],
         space = {"kind": "bounds",
                  "bounds": {k: dict(v) for k, v in sorted(bounds.items())},
                  "generator_phase": 0}
+    # [SKIP-DELIVERY SWITCH] The one validator (miner.range_miner_coordinator), here for
+    # both WATCHER paths that reach a search: opening it and every dispatch (S4). An
+    # absent key and `false` are the same off state; any other value (null, "", "true",
+    # 1) is REFUSED, never read as off. When on, the pinned pair, or the extremes of the
+    # sampled bounds, must lie in 0..255 BEFORE a search is opened (Beta R1 Q4).
+    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
+    _sd_value = final_params["deliver_skip_range"] if "deliver_skip_range" in final_params \
+        else False
+    try:
+        if pin_bundle:
+            _sd_on = validate_skip_delivery(
+                _sd_value, pin_bundle["warm_start_skip_min"], pin_bundle["warm_start_skip_max"],
+                where="presented_configuration")
+        else:
+            _sd_on = validate_skip_delivery(_sd_value, where="presented_configuration")
+        # A search that can SAMPLE uses the live bounds after the enqueued pin: the full
+        # domains are checked under the same rule the Step 1 child applies (Beta
+        # X-MINER-SKIP-SWITCH R3 Q4, X-MINER-SKIP-SWITCH-2 R1 Q4).
+        # The EFFECTIVE resume flag: under WATCHER a Step 1 search resumes exactly when a
+        # study is named (agents/watcher_agent.py, "Study continuity": resume_study =
+        # bool(study_name), assigned AFTER this check), so search open and the child see
+        # the same flag (Beta X-MINER-SKIP-SWITCH-2 R2 Q4; pinned by G-SW3-RESUME-RULE).
+        if _sd_on and skip_delivery_can_sample(bool(pin_bundle), final_params.get("window_trials"),
+                                               bool(final_params.get("study_name"))):
+            _smin, _smax = bounds.get("skip_min") or {}, bounds.get("skip_max") or {}
+            validate_skip_sampling_domains(_smin.get("min"), _smin.get("max"), _smax.get("min"),
+                                           _smax.get("max"),
+                                           where="presented_configuration (sampling bounds)")
+    except MinerMetadataError as exc:
+        raise Step1SearchRefused(str(exc)) from exc
+    if _sd_on:
+        # Only when on, so every baseline digest and search id is unchanged; a
+        # switched-on run therefore opens, and must use, a search of its own.
+        space["constant_skip_delivery"] = "trial_range"
     trials = final_params.get("window_trials")
     chunk = final_params.get("max_seeds")
     return {

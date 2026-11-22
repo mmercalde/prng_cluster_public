@@ -546,12 +546,27 @@ class OptunaBayesianSearch:
             session_idx = trial.suggest_int('session_idx', 
                                            0, 
                                            len(bounds.session_options) - 1)
-            skip_min = trial.suggest_int('skip_min', 
-                                        bounds.min_skip_min, 
-                                        bounds.max_skip_min)
-            skip_max = trial.suggest_int('skip_max', 
-                                        max(skip_min, bounds.min_skip_max),
-                                        bounds.max_skip_max)
+            # [SKIP-DELIVERY SWITCH] A switched, fresh, one-trial, fully pinned run carries
+            # `skip_delivery_exact_pin` (set ONLY then, by the Step 1 child): its one trial is
+            # the enqueued pin, consumed EXACTLY through single-point distributions, so no
+            # sampled skip distribution is built (a legal pin such as [251, 255] would make
+            # `suggest_int('skip_max', 251, 250)` raise before the objective; Beta
+            # X-MINER-SKIP-SWITCH-2 R2 Q4). Absent key: the original two calls, unchanged.
+            _exact_pin = (trial_history_context or {}).get('skip_delivery_exact_pin')
+            if _exact_pin is not None:
+                if trial.number != 0:
+                    raise RuntimeError(
+                        f"[SKIP-DELIVERY] skip_delivery_exact_pin is for the single enqueued "
+                        f"trial 0 only; trial {trial.number} would be pinned without sampling")
+                skip_min = trial.suggest_int('skip_min', int(_exact_pin[0]), int(_exact_pin[0]))
+                skip_max = trial.suggest_int('skip_max', int(_exact_pin[1]), int(_exact_pin[1]))
+            else:
+                skip_min = trial.suggest_int('skip_min',
+                                            bounds.min_skip_min,
+                                            bounds.max_skip_min)
+                skip_max = trial.suggest_int('skip_max',
+                                            max(skip_min, bounds.min_skip_max),
+bounds.max_skip_max)
 
             # Suggest thresholds (Optuna optimizes these!)
             forward_threshold = trial.suggest_float('forward_threshold',
@@ -696,6 +711,15 @@ class OptunaBayesianSearch:
                         study_name=_candidate_name,
                         storage=_candidate_storage
                     )
+                    # [SKIP-DELIVERY SWITCH] AUTOMATIC selection never picks a switched-on
+                    # study (its user attribute is set on its first trial). A switched run
+                    # cannot reach automatic selection at all (it is refused in the Step 1
+                    # child), so this only keeps a baseline run off the switched arm's
+                    # studies; a named study is unaffected (Beta X-MINER-SKIP-SWITCH R3 Q2).
+                    if not study_name and (_candidate_study.user_attrs or {}).get(
+                            "constant_skip_delivery"):
+                        print(f"   📊 Study {_candidate_name}: switched-on arm — skipping")
+                        continue
                     _candidate_completed = len([
                         t for t in _candidate_study.trials
                         if t.state.name == "COMPLETE"

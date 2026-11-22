@@ -760,6 +760,8 @@ def run_bayesian_optimization(
     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
     step1_search_id: str = '',              # [STEP1-SEARCH stage 1] hop 2 of 3
     pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
+    *,
+    deliver_skip_range: bool = False,       # [SKIP-DELIVERY SWITCH] hop 2 of 3; keyword-only
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -781,7 +783,6 @@ def run_bayesian_optimization(
     Returns:
         Dictionary with optimization results
     """
-
     # [S145] PRE-DISPATCH SEED-DOMAIN WALL — the CLI entry point.
     #
     # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE
@@ -815,6 +816,12 @@ def run_bayesian_optimization(
         print("   Refused BEFORE dispatch: no fleet work assignment, no sieve "
               "execution, no staging, no coverage mutation.")
         raise
+
+    # [SKIP-DELIVERY SWITCH] the one validator, right after the S145 wall (which must stay
+    # the first statement) and before any coordinator exists: True or False only; None,
+    # "true", 1, ... are refused, never read as off (Beta X-MINER-SKIP-SWITCH R3 Q4)
+    from miner.range_miner_coordinator import validate_skip_delivery as _vsd
+    _vsd(deliver_skip_range, where="run_bayesian_optimization")
 
     # [MINER SEED-START R4/R5] G-MINER-START is replaced: the RANGE-MINER route now
     # carries seed_start and is not refused; PWC and ZMQ, which partition from 0, are
@@ -886,6 +893,11 @@ def run_bayesian_optimization(
     # [S172 Phase 1] Wire miner flags onto coordinator so the integration-final gate
     # (window_optimizer_integration_final.py:_use_miner) can read them.
     coordinator.use_range_miner   = use_range_miner
+    if deliver_skip_range is True:
+        # [SKIP-DELIVERY SWITCH] set ONLY when on: a baseline coordinator is unchanged
+        coordinator.deliver_skip_range = True
+        print("   [SKIP-DELIVERY] ON: RANGE-MINER phases 1-2 sieve each trial's own "
+              "[skip_min, skip_max] (baseline: [0, 16])")
     coordinator.miner_stripe_size = miner_stripe_size
     coordinator.miner_substripes  = miner_substripes
     coordinator.miner_output_dir  = miner_output_dir
@@ -1635,6 +1647,11 @@ def main():
     # Phases 2-5 land. See docs/PROPOSAL_S172_RANGE_MINER_v1_4_4.md.
     parser.add_argument('--use-range-miner', action='store_true', default=False,
                         help='[S172] Use RANGE-MINER stripe backend (opt-in, mutex vs PWC/ZMQ)')
+    parser.add_argument('--deliver-skip-range', action='store_true', default=False,
+                        help='[SKIP-DELIVERY SWITCH] RANGE-MINER phases 1-2 sieve the '
+                             "trial's own [skip_min, skip_max] instead of the baseline "
+                             '[0, 16]. Off by default; needs --use-range-miner and a '
+                             'Step 1 search opened with deliver_skip_range: true')
     parser.add_argument('--miner-stripe-size', type=int, default=67_108_864,
                         help='[S172 §6.2] Seeds per stripe per GPU (default 64M)')
     parser.add_argument('--miner-substripes', type=int, default=8,
@@ -1779,6 +1796,26 @@ def main():
             f"only one of --use-persistent-workers, --use-zmq-sqlite, "
             f"--use-range-miner may be set (got: {', '.join('--' + n.replace('_','-') for n in _enabled)})"
         )
+
+    if getattr(args, 'deliver_skip_range', False) and not args.use_range_miner:
+        parser.error("--deliver-skip-range applies to the RANGE-MINER route only "
+                     "(--use-range-miner); PWC already sends the trial's skip range")
+    if getattr(args, 'deliver_skip_range', False):
+        # [SKIP-DELIVERY SWITCH] the one validator (miner.range_miner_coordinator); a
+        # pinned pair is checked HERE, before any search, study or dispatch
+        from miner.range_miner_coordinator import (
+            validate_skip_delivery as _vsd, MinerMetadataError as _MME)
+        _pins = (getattr(args, 'warm_start_skip_min', None),
+                 getattr(args, 'warm_start_skip_max', None))
+        try:
+            _vsd(True, *_pins, where="--deliver-skip-range") if _pins != (None, None) \
+                else _vsd(True, where="--deliver-skip-range")
+        except _MME as _e:
+            parser.error(str(_e))
+        if getattr(args, 'config_file', None):
+            parser.error("--deliver-skip-range is not carried by the --config-file route; "
+                         "refused rather than dropped (use the Bayesian search route with "
+                         "a Step 1 search opened with deliver_skip_range: true)")
 
     # ========================================================================
     # [RESOLVED EXECUTION SET] RUN-START FLEET AUTHORITY — resolve once, freeze
@@ -1963,6 +2000,7 @@ def main():
             warm_start_session_idx=getattr(args, 'warm_start_session_idx', None),
             # [S172 Phase 1]
             use_range_miner=getattr(args, 'use_range_miner', False),
+            deliver_skip_range=getattr(args, 'deliver_skip_range', False),  # SKIP-DELIVERY
             miner_stripe_size=getattr(args, 'miner_stripe_size', 67_108_864),
             miner_substripes=getattr(args, 'miner_substripes', 8),
             miner_output_dir=getattr(args, 'miner_output_dir', None),

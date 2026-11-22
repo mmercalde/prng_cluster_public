@@ -1,0 +1,737 @@
+diff --git a/agent_manifests/window_optimizer.json b/agent_manifests/window_optimizer.json
+index 52317d2..41f02db 100644
+--- a/agent_manifests/window_optimizer.json
++++ b/agent_manifests/window_optimizer.json
+@@ -270,6 +270,7 @@
+     "pwc_coordinator_address": null,
+     "min_workers": 24,
+     "use_range_miner": true,
++    "deliver_skip_range": false,
+     "miner_stripe_size": 67108864,
+     "miner_substripes": 8,
+     "miner_output_dir": null,
+diff --git a/miner/range_miner_coordinator.py b/miner/range_miner_coordinator.py
+index 9fcf2f1..8722f1f 100644
+--- a/miner/range_miner_coordinator.py
++++ b/miner/range_miner_coordinator.py
+@@ -2767,6 +2767,51 @@ def workflow_phase_semantics(phase: int) -> Tuple[str, str]:
+         )
+ 
+ 
++# [SKIP-DELIVERY SWITCH] (docs/drafts/miner_skip_switch_v1/PLAN.md; owner 2026-11-21
++# 09:54 PST "sounds resonalble", 16:54 PST "yes"). The worker records each constant
++# candidate's winning skip in a uint8 `best_skips` slot (miner/range_miner_worker.py
++# :1382), so a delivered bound above 255 would serialize wrongly (Beta X-SKIP-F1 R1 Q4).
++CONSTANT_SKIP_DELIVERY_MAX = 255
++SKIP_DELIVERY_PARAM = "deliver_skip_range"
++
++
++def validate_skip_delivery(value: Any, *pair: Any, where: str) -> bool:
++    """THE one validator of the skip-delivery switch, used by every entry point: the
++    CLI (window_optimizer.py), WATCHER params and search open
++    (utils/step1_search_ledger.presented_configuration), the Step 1 child
++    (window_optimizer_integration_final.py), the volume estimator
++    (utils/survivor_volume_estimator.validate_geometry) and the coordinator
++    (run_trial_miner, build_stripe_assign_payload). Beta X-MINER-SKIP-SWITCH R1 Q4.
++
++    `value` is the switch: exactly `True` or `False`. A caller passes `False` when the
++    key is ABSENT, so absent and false are the same off state; anything else (None, "",
++    "true", 1, ...) is REFUSED, never read as off. When on and a `pair` (skip_min,
++    skip_max) is given, it must be plain ints with 0 <= skip_min <= skip_max <= 255:
++    the worker records each constant candidate's winning skip in a uint8 `best_skips`
++    slot (miner/range_miner_worker.py:1382). Off, the pair is not examined, so the
++    baseline is unchanged. Returns the switch. Raises MinerMetadataError."""
++    if value is not True and value is not False:
++        raise MinerMetadataError(
++            f"{where}: {SKIP_DELIVERY_PARAM} must be a bool (true or false); got "
++            f"{value!r} ({type(value).__name__}). Refused, never read as off.")
++    if not value or not pair:
++        return value
++    if len(pair) != 2:
++        raise MinerMetadataError(f"{where}: expected (skip_min, skip_max), got {pair!r}")
++    skip_min, skip_max = pair
++    for name, v in (("skip_min", skip_min), ("skip_max", skip_max)):
++        if isinstance(v, bool) or not isinstance(v, int):
++            raise MinerMetadataError(
++                f"{where}: {name} must be a plain int to be delivered (got {v!r}, "
++                f"{type(v).__name__}); nothing was created or dispatched")
++    if not 0 <= skip_min <= skip_max <= CONSTANT_SKIP_DELIVERY_MAX:
++        raise MinerMetadataError(
++            f"{where}: delivered skip range [{skip_min}, {skip_max}] is outside "
++            f"0 <= skip_min <= skip_max <= {CONSTANT_SKIP_DELIVERY_MAX} (best_skips is "
++            f"uint8); nothing was created or dispatched")
++    return value
++
++
+ def derive_trial_metadata(
+     trial_ctx: Dict[str, Any], stripe: Dict[str, Any]
+ ) -> Dict[str, Any]:
+@@ -9217,7 +9262,7 @@ class RangeMinerCoordinator:
+         self, dataset_path: str, window_size: int, sessions, window_anchor: int,
+         residues, dataset_sha256: Optional[str] = None,
+         *, phase: int, forward_threshold: float, reverse_threshold: float,
+-        generator_phase: int,
++        generator_phase: int, skip_range: Optional[Tuple[int, int]] = None,
+     ) -> Dict[str, Any]:
+         """Every StripeAssignMessage.payload MUST carry `dataset`, `dataset_sha256`
+         (coordinator-computed), `window_size`, `sessions`, `window_anchor`,
+@@ -9364,6 +9409,15 @@ class RangeMinerCoordinator:
+                 f"D6 stripe payload (got {payload['min_match_threshold']!r} vs "
+                 f"{payload['phase2_threshold']!r}); the miner runs ONE kernel with "
+                 "ONE threshold per stripe — see the threshold contract above.")
++        # [SKIP-DELIVERY SWITCH] Off (None, the default): no key, so the payload is
++        # byte-identical to the baseline and the worker keeps its [0, 16]
++        # (miner/range_miner_worker.py:1293). On: the trial's own pair, for the
++        # CONSTANT phases only — the hybrid kernels take no skip bound (phases 3-4
++        # stay byte-identical either way).
++        if skip_range is not None and _skip_mode == "constant":
++            lo, hi = tuple(skip_range)
++            validate_skip_delivery(True, lo, hi, where="build_stripe_assign_payload")
++            payload["skip_range"] = [int(lo), int(hi)]
+         return payload
+ 
+     # ----- real framed-TCP serve loop (Beta-required Phase-4 deliverable) ---
+@@ -12020,7 +12074,10 @@ class RangeMinerCoordinator:
+                 dataset_sha256=dataset_sha256, phase=phase,
+                 forward_threshold=forward_threshold,
+                 reverse_threshold=reverse_threshold,
+-                generator_phase=generator_phase)
++                generator_phase=generator_phase,
++                # [SKIP-DELIVERY SWITCH] set by run_trial_miner only when the switch is
++                # on; absent -> None -> the baseline payload.
++                skip_range=(getattr(self, "_constant_skip_delivery", None) or {}).get(run_id))
+             # Provenance leg 2 of 3: what the payload ACTUALLY carried, recorded
+             # per (stripe, attempt) and marked D6-generated EXPLICITLY — this
+             # assignment now owes the parent an effective-threshold report, and
+@@ -12455,6 +12512,12 @@ def run_trial_miner(
+     phase5_sink: Optional[Phase5Sink] = None,
+     listen_sock=None,
+     _serve=None,
++    # [SKIP-DELIVERY SWITCH] Off by default: phases 1-2 keep the worker's [0, 16]
++    # exactly as before. On: they sieve the trial's own [skip_min, skip_max]
++    # (docs/drafts/miner_skip_switch_v1/PLAN.md). KEYWORD-ONLY, so no existing
++    # positional slot moves (Beta X-MINER-SKIP-SWITCH R1 finding 4).
++    *,
++    deliver_skip_range: bool = False,
+     **kwargs,
+ ) -> Dict[str, Any]:
+     """
+@@ -12495,6 +12558,21 @@ def run_trial_miner(
+             f"an omitted start is refused rather than read as 0, because reading it as "
+             f"0 is how a non-zero Step 1 request was swept from 0. Nothing was created "
+             f"or dispatched.")
++    # [SKIP-DELIVERY SWITCH] Validated as early as the seed start, before anything
++    # exists. Off: nothing new is checked, so the baseline is unchanged.
++    _skip_delivery = None
++    if validate_skip_delivery(deliver_skip_range, skip_min, skip_max,
++                              where="run_trial_miner"):
++        _skip_delivery = (int(skip_min), int(skip_max))
++        _hyp = _skip_delivery[1] - _skip_delivery[0] + 1
++        logger.info("[SKIP-DELIVERY] ON: phases 1-2 sieve skip %s (baseline [0, 16])",
++                    list(_skip_delivery))
++        if _hyp > 17:
++            logger.warning(
++                "[SKIP-DELIVERY] %d skip hypotheses per seed against the baseline's 17 "
++                "(%.2fx); phase 1-2 time, lease renewal gaps and survivor volume were "
++                "measured only at [0, 16] — measure them for this geometry",
++                _hyp, _hyp / 17.0)
+     # [S172 Staging Part B §1.1/§1.3, Beta binding ruling] Resolve the canonical
+     # coordinator staging directory and VALIDATE it HERE — before build_coordinator,
+     # before the ledger exists, before the trial is created, and therefore before
+@@ -12541,6 +12619,9 @@ def run_trial_miner(
+     stem = os.path.splitext(os.path.basename(str(coordinator_cfg)))[0] or "trial"
+     run_id = f"{stem}_t{trial_number}_{uuid.uuid4().hex[:8]}"
+     coordinator.ledger.create_trial(run_id, trial_number)
++    if _skip_delivery is not None:
++        # read by _dispatch_pending for this run only
++        coordinator._constant_skip_delivery = {run_id: _skip_delivery}
+ 
+     # Defect 6: resolve the workflow's family/phase STAGES. An explicit
+     # family_name/workflow_phase override (used by the serve-path gate) collapses
+@@ -12621,5 +12702,12 @@ def run_trial_miner(
+     # Default: the REAL serve loop (bound method, takes context). Injected test
+     # serve keeps the (coordinator, context) shape.
+     if _serve is None:
+-        return coordinator.serve_trial(context)
+-    return _serve(coordinator, context)
++        result = coordinator.serve_trial(context)
++    else:
++        result = _serve(coordinator, context)
++    if _skip_delivery is not None and isinstance(result, dict):
++        # visible on the run record only when on; off leaves the result untouched
++        result["constant_skip_delivery"] = {
++            "requested": [skip_min, skip_max], "effective": list(_skip_delivery),
++            "phases": [1, 2]}
++    return result
+diff --git a/scripts/extract_miner_bundle.py b/scripts/extract_miner_bundle.py
+index b92126c..5b4058c 100644
+--- a/scripts/extract_miner_bundle.py
++++ b/scripts/extract_miner_bundle.py
+@@ -326,7 +326,7 @@ def phase_counts(stripes, shards, phases, na):
+     return out
+ 
+ 
+-def read_skip_range_code(code_root):
++def read_skip_range_code(code_root, durable_switch=None):
+     """Provenance only: which constant skip range this tree's code makes phases 1-2 run
+     (F-1). The worker's `payload.get("skip_range", <default>)` literal, and whether the
+     coordinator's payload builder names `skip_range` at all."""
+@@ -346,6 +346,12 @@ def read_skip_range_code(code_root):
+             if isinstance(node, ast.FunctionDef) and node.name == "build_stripe_assign_payload":
+                 delivered = any(isinstance(n, ast.Constant) and n.value == "skip_range"
+                                 for n in ast.walk(node))
++                # [SKIP-DELIVERY SWITCH] a keyword-only `skip_range` defaulting to None is
++                # the switch (docs/drafts/miner_skip_switch_v1/PLAN.md), not an
++                # unconditional delivery
++                switch = any(a.arg == "skip_range" and isinstance(d, ast.Constant)
++                             and d.value is None
++                             for a, d in zip(node.args.kwonlyargs, node.args.kw_defaults))
+                 note["payload_builder_line"] = f"miner/range_miner_coordinator.py:{node.lineno}"
+         note["sha256"] = {"miner/range_miner_worker.py": _sha256(wpath),
+                           "miner/range_miner_coordinator.py": _sha256(cpath)}
+@@ -353,6 +359,24 @@ def read_skip_range_code(code_root):
+         note["error"] = str(exc)
+     if default is None or delivered is None:
+         note["effective"], note["why"] = None, "worker default or payload builder not found"
++    elif delivered and switch:
++        # the switch's state comes from the run's durable search record (B2b)
++        if durable_switch is None:
++            note["switch"] = "unverified"
++            note["effective"], note["why"] = None, (
++                "the builder carries the delivery switch and no durable record of its state "
++                "was found (no search link for this generation); left unverified, never "
++                "inferred from params")
++        elif durable_switch:
++            note["switch"] = "on"
++            note["effective"], note["why"] = "requested", (
++                "the run's search record carries the switch on: phases 1-2 run the trial's "
++                "own range")
++        else:
++            note["switch"] = "off"
++            note["effective"] = list(default)
++            note["why"] = ("the run's search record carries the switch off: phases 1-2 run "
++                           "the worker default")
+     elif delivered:
+         note["effective"], note["why"] = None, ("the payload builder names skip_range; which "
+                                                 "range this run delivered is not recorded")
+@@ -467,7 +491,12 @@ def collect(staging_dir, output_root, params_json, run_id, ledger_db, live_paths
+                 "generation_id FROM certified_coverage WHERE artifact_sha256=?", (sha,)),
+         "link": ("SELECT seed_start, seed_end_exclusive, search_id, coverage_id FROM "
+                  "step1_chunk_link WHERE generation_id=?", (prov.get("generation_id"),)),
+-    }, scratch, optional=("link",))            # no search tables: a run outside a search
++        # [SKIP-DELIVERY SWITCH] the durable record of the switch: the linked search's
++        # search space (utils/step1_search_ledger.presented_configuration)
++        "space": ("SELECT s.search_space_json FROM step1_chunk_link l JOIN step1_search s "
++                  "ON s.search_id = l.search_id WHERE l.generation_id=?",
++                  (prov.get("generation_id"),)),
++    }, scratch, optional=("link", "space"))    # no search tables: a run outside a search
+     cov_rows, link_rows = lr["cov"] or [], lr["link"] or []
+     if len(cov_rows) > 1 or len(link_rows) > 1:
+         raise ExtractRefused(f"{len(cov_rows)} coverage rows / {len(link_rows)} link rows for "
+@@ -492,7 +521,22 @@ def collect(staging_dir, output_root, params_json, run_id, ledger_db, live_paths
+             raise ExtractRefused(f"B8: link (coverage {link[3]!r}, {[link[0], link[1]]}) != "
+                                  f"coverage ({cov[3]!r}, {[cov[0], cov[1]]})")
+ 
+-    skip_code = read_skip_range_code(code_root)
++    # B2b [SKIP-DELIVERY SWITCH, Beta R1 finding 3] the switch comes from DURABLE run
++    # evidence — the linked search record — never from the params file alone. Params that
++    # disagree with the record are refused; with no record the effective range is left
++    # unverified, never inferred from params.
++    durable_switch = None
++    space_rows = lr.get("space") or []
++    if space_rows:
++        durable_switch = json.loads(space_rows[0][0]).get("constant_skip_delivery") == "trial_range"
++        if params.get("deliver_skip_range", False) is not durable_switch:
++            raise ExtractRefused(
++                f"B2b: params deliver_skip_range={params.get('deliver_skip_range', False)!r} but "
++                f"the run's search record says the switch was "
++                f"{'on' if durable_switch else 'off'}")
++    skip_code = read_skip_range_code(code_root, durable_switch)
++    if skip_code.get("effective") == "requested":
++        skip_code["effective"] = [ctx["skip_min"], ctx["skip_max"]]
+     if skip_code.get("effective") is not None and skip_code["effective"] != [ctx["skip_min"],
+                                                                                ctx["skip_max"]]:
+         checks.append(f"WARNING F-1: phases 1-2 ran the worker default {skip_code['effective']} "
+diff --git a/scripts/survivor_volume_gate.py b/scripts/survivor_volume_gate.py
+index b770522..253eb2e 100644
+--- a/scripts/survivor_volume_gate.py
++++ b/scripts/survivor_volume_gate.py
+@@ -274,6 +274,10 @@ def evaluate(params_arg, *, repo_root=REPO_ROOT, runner=None, sampler=None,
+         params = _parse_params(params_arg)
+     except Exception as exc:                                        # noqa: BLE001
+         return done(V_REFUSE, [f"--params unparseable: {exc}"])
++    if isinstance(params, dict) and params.get("deliver_skip_range") is False:
++        # [SKIP-DELIVERY SWITCH] off is ONE state: an explicit false is recorded and
++        # sampled exactly as an absent key (Beta X-MINER-SKIP-SWITCH R1 Q1)
++        params = {k: v for k, v in params.items() if k != "deliver_skip_range"}
+     rec["params"] = params
+     try:
+         geometry, s, e = split_params(params)
+diff --git a/utils/step1_search_ledger.py b/utils/step1_search_ledger.py
+index 46ccff7..bbcd4b7 100644
+--- a/utils/step1_search_ledger.py
++++ b/utils/step1_search_ledger.py
+@@ -195,6 +195,35 @@ def presented_configuration(final_params: Mapping[str, Any],
+         space = {"kind": "bounds",
+                  "bounds": {k: dict(v) for k, v in sorted(bounds.items())},
+                  "generator_phase": 0}
++    # [SKIP-DELIVERY SWITCH] The one validator (miner.range_miner_coordinator), here for
++    # both WATCHER paths that reach a search: opening it and every dispatch (S4). An
++    # absent key and `false` are the same off state; any other value (null, "", "true",
++    # 1) is REFUSED, never read as off. When on, the pinned pair, or the extremes of the
++    # sampled bounds, must lie in 0..255 BEFORE a search is opened (Beta R1 Q4).
++    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
++    _sd_value = final_params["deliver_skip_range"] if "deliver_skip_range" in final_params \
++        else False
++    try:
++        if pin_bundle:
++            _sd_on = validate_skip_delivery(
++                _sd_value, pin_bundle["warm_start_skip_min"], pin_bundle["warm_start_skip_max"],
++                where="presented_configuration")
++        else:
++            _sd_on = validate_skip_delivery(_sd_value, where="presented_configuration")
++        _trials = final_params.get("window_trials")
++        # A search that can SAMPLE uses the live bounds after the enqueued pin (Beta R3 Q4):
++        # an unpinned search always samples; a pinned one samples when it has more than
++        # one trial (or no stated budget).
++        if _sd_on and (not pin_bundle or _trials is None or int(_trials) > 1):
++            validate_skip_delivery(True, (bounds.get("skip_min") or {}).get("min"),
++                                   (bounds.get("skip_max") or {}).get("max"),
++                                   where="presented_configuration (sampling bounds)")
++    except MinerMetadataError as exc:
++        raise Step1SearchRefused(str(exc)) from exc
++    if _sd_on:
++        # Only when on, so every baseline digest and search id is unchanged; a
++        # switched-on run therefore opens, and must use, a search of its own.
++        space["constant_skip_delivery"] = "trial_range"
+     trials = final_params.get("window_trials")
+     chunk = final_params.get("max_seeds")
+     return {
+diff --git a/utils/survivor_volume_estimator.py b/utils/survivor_volume_estimator.py
+index c7f29cc..8d2c08a 100644
+--- a/utils/survivor_volume_estimator.py
++++ b/utils/survivor_volume_estimator.py
+@@ -78,6 +78,9 @@ GEOMETRY_KEYS = (
+     "forward_threshold", "reverse_threshold", "skip_min", "skip_max",
+     "dataset", "test_both_modes",
+ )
++# [SKIP-DELIVERY SWITCH] optional, and only ever present as `true`-or-`false` when the
++# caller states it: a baseline geometry without it keeps its request digest unchanged.
++OPTIONAL_GEOMETRY_KEYS = ("deliver_skip_range",)
+ _INT_KEYS = ("window_size", "window_anchor", "generator_phase", "skip_min", "skip_max")
+ _NUM_KEYS = ("forward_threshold", "reverse_threshold")
+ 
+@@ -140,7 +143,7 @@ def validate_geometry(geometry: Dict[str, Any]) -> Dict[str, Any]:
+     missing = [k for k in GEOMETRY_KEYS if k not in geometry]
+     if missing:
+         raise GeometryError(f"geometry parameter(s) missing: {missing}")
+-    extra = sorted(set(geometry) - set(GEOMETRY_KEYS))
++    extra = sorted(set(geometry) - set(GEOMETRY_KEYS) - set(OPTIONAL_GEOMETRY_KEYS))
+     if extra:
+         raise GeometryError(f"unknown geometry parameter(s) {extra}: an unknown "
+                             f"parameter is never assumed harmless")
+@@ -169,6 +172,19 @@ def validate_geometry(geometry: Dict[str, Any]) -> Dict[str, Any]:
+         raise GeometryError("window_size must be >= 1 and window_anchor >= 0")
+     if g["skip_min"] > g["skip_max"]:
+         raise GeometryError(f"skip_min {g['skip_min']} > skip_max {g['skip_max']}")
++    # [SKIP-DELIVERY SWITCH] The one validator (miner.range_miner_coordinator), BEFORE any
++    # GPU probe or dataset work (Beta R1 Q4). Off is ONE state: an explicit `false` is
++    # dropped here, so it gives the same digest, sample and record bytes as an absent
++    # key (Beta R1 Q1). A non-bool is refused, never read as off.
++    if "deliver_skip_range" in g:
++        from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
++        try:
++            on = validate_skip_delivery(g["deliver_skip_range"], g["skip_min"], g["skip_max"],
++                                        where="volume geometry")
++        except MinerMetadataError as exc:
++            raise GeometryError(str(exc)) from exc
++        if not on:
++            del g["deliver_skip_range"]
+     return g
+ 
+ 
+@@ -512,7 +528,11 @@ def _phase_payloads(g: Dict[str, Any]):
+                 g["window_anchor"], residues, dataset_sha256=dataset_sha,
+                 phase=phase, forward_threshold=g["forward_threshold"],
+                 reverse_threshold=g["reverse_threshold"],
+-                generator_phase=g["generator_phase"])
++                generator_phase=g["generator_phase"],
++                # [SKIP-DELIVERY SWITCH] the same effective choice as dispatch; absent
++                # or false -> None -> the baseline payload, exactly as before
++                **({"skip_range": (g["skip_min"], g["skip_max"])}
++                   if g.get("deliver_skip_range") is True else {}))
+             out.append((family, phase, payload))
+     except EstimatorError:
+         raise
+@@ -658,9 +678,13 @@ def estimate_volume(geometry: Dict[str, Any], seed_start: int, seed_end_exclusiv
+         "seed_end_exclusive": seed_end_exclusive, "range_size": range_size,
+         "request_digest": digest, "dataset_sha256": dataset_sha,
+         "residue_sha256": expected_residue, "window_residues": list(residues),
+-        "skip_bounds_note": ("skip_min/skip_max are recorded geometry; the production "
+-                             "assign payload carries no skip_range "
+-                             "(build_stripe_assign_payload), so they do not reach the "
+-                             "sampled kernels — exactly as in a run"),
++        "skip_bounds_note": (("deliver_skip_range is on: phases 1-2 were sampled at "
++                              "the delivered skip_range [skip_min, skip_max], as a "
++                              "switched-on run dispatches them")
++                             if g.get("deliver_skip_range") is True else
++                             ("skip_min/skip_max are recorded geometry; the production "
++                              "assign payload carries no skip_range "
++                              "(build_stripe_assign_payload), so they do not reach the "
++                              "sampled kernels — exactly as in a run")),
+         "phases": per_phase,
+     }
+diff --git a/window_optimizer.py b/window_optimizer.py
+index e1f5dfe..2ccf0f0 100755
+--- a/window_optimizer.py
++++ b/window_optimizer.py
+@@ -760,6 +760,8 @@ def run_bayesian_optimization(
+     resume_checkpoint: str = '',            # [S172 Phase-5 D6.2] hop 2 of 3
+     step1_search_id: str = '',              # [STEP1-SEARCH stage 1] hop 2 of 3
+     pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
++    *,
++    deliver_skip_range: bool = False,       # [SKIP-DELIVERY SWITCH] hop 2 of 3; keyword-only
+ ) -> Dict[str, Any]:
+     """
+     Run Bayesian optimization to find optimal window parameters
+@@ -781,7 +783,6 @@ def run_bayesian_optimization(
+     Returns:
+         Dictionary with optimization results
+     """
+-
+     # [S145] PRE-DISPATCH SEED-DOMAIN WALL — the CLI entry point.
+     #
+     # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE
+@@ -816,6 +817,12 @@ def run_bayesian_optimization(
+               "execution, no staging, no coverage mutation.")
+         raise
+ 
++    # [SKIP-DELIVERY SWITCH] the one validator, right after the S145 wall (which must stay
++    # the first statement) and before any coordinator exists: True or False only; None,
++    # "true", 1, ... are refused, never read as off (Beta X-MINER-SKIP-SWITCH R3 Q4)
++    from miner.range_miner_coordinator import validate_skip_delivery as _vsd
++    _vsd(deliver_skip_range, where="run_bayesian_optimization")
++
+     # [MINER SEED-START R4/R5] G-MINER-START is replaced: the RANGE-MINER route now
+     # carries seed_start and is not refused; PWC and ZMQ, which partition from 0, are
+     # refused at a non-zero start (owner decision 2026-11-14). Before the coordinator
+@@ -886,6 +893,11 @@ def run_bayesian_optimization(
+     # [S172 Phase 1] Wire miner flags onto coordinator so the integration-final gate
+     # (window_optimizer_integration_final.py:_use_miner) can read them.
+     coordinator.use_range_miner   = use_range_miner
++    if deliver_skip_range is True:
++        # [SKIP-DELIVERY SWITCH] set ONLY when on: a baseline coordinator is unchanged
++        coordinator.deliver_skip_range = True
++        print("   [SKIP-DELIVERY] ON: RANGE-MINER phases 1-2 sieve each trial's own "
++              "[skip_min, skip_max] (baseline: [0, 16])")
+     coordinator.miner_stripe_size = miner_stripe_size
+     coordinator.miner_substripes  = miner_substripes
+     coordinator.miner_output_dir  = miner_output_dir
+@@ -1635,6 +1647,11 @@ def main():
+     # Phases 2-5 land. See docs/PROPOSAL_S172_RANGE_MINER_v1_4_4.md.
+     parser.add_argument('--use-range-miner', action='store_true', default=False,
+                         help='[S172] Use RANGE-MINER stripe backend (opt-in, mutex vs PWC/ZMQ)')
++    parser.add_argument('--deliver-skip-range', action='store_true', default=False,
++                        help='[SKIP-DELIVERY SWITCH] RANGE-MINER phases 1-2 sieve the '
++                             "trial's own [skip_min, skip_max] instead of the baseline "
++                             '[0, 16]. Off by default; needs --use-range-miner and a '
++                             'Step 1 search opened with deliver_skip_range: true')
+     parser.add_argument('--miner-stripe-size', type=int, default=67_108_864,
+                         help='[S172 §6.2] Seeds per stripe per GPU (default 64M)')
+     parser.add_argument('--miner-substripes', type=int, default=8,
+@@ -1780,6 +1797,26 @@ def main():
+             f"--use-range-miner may be set (got: {', '.join('--' + n.replace('_','-') for n in _enabled)})"
+         )
+ 
++    if getattr(args, 'deliver_skip_range', False) and not args.use_range_miner:
++        parser.error("--deliver-skip-range applies to the RANGE-MINER route only "
++                     "(--use-range-miner); PWC already sends the trial's skip range")
++    if getattr(args, 'deliver_skip_range', False):
++        # [SKIP-DELIVERY SWITCH] the one validator (miner.range_miner_coordinator); a
++        # pinned pair is checked HERE, before any search, study or dispatch
++        from miner.range_miner_coordinator import (
++            validate_skip_delivery as _vsd, MinerMetadataError as _MME)
++        _pins = (getattr(args, 'warm_start_skip_min', None),
++                 getattr(args, 'warm_start_skip_max', None))
++        try:
++            _vsd(True, *_pins, where="--deliver-skip-range") if _pins != (None, None) \
++                else _vsd(True, where="--deliver-skip-range")
++        except _MME as _e:
++            parser.error(str(_e))
++        if getattr(args, 'config_file', None):
++            parser.error("--deliver-skip-range is not carried by the --config-file route; "
++                         "refused rather than dropped (use the Bayesian search route with "
++                         "a Step 1 search opened with deliver_skip_range: true)")
++
+     # ========================================================================
+     # [RESOLVED EXECUTION SET] RUN-START FLEET AUTHORITY — resolve once, freeze
+     # ========================================================================
+@@ -1963,6 +2000,7 @@ def main():
+             warm_start_session_idx=getattr(args, 'warm_start_session_idx', None),
+             # [S172 Phase 1]
+             use_range_miner=getattr(args, 'use_range_miner', False),
++            deliver_skip_range=getattr(args, 'deliver_skip_range', False),  # SKIP-DELIVERY
+             miner_stripe_size=getattr(args, 'miner_stripe_size', 67_108_864),
+             miner_substripes=getattr(args, 'miner_substripes', 8),
+             miner_output_dir=getattr(args, 'miner_output_dir', None),
+diff --git a/window_optimizer_bayesian.py b/window_optimizer_bayesian.py
+index bcc01d5..cea52ea 100644
+--- a/window_optimizer_bayesian.py
++++ b/window_optimizer_bayesian.py
+@@ -696,6 +696,15 @@ class OptunaBayesianSearch:
+                         study_name=_candidate_name,
+                         storage=_candidate_storage
+                     )
++                    # [SKIP-DELIVERY SWITCH] AUTOMATIC selection never picks a switched-on
++                    # study (its user attribute is set on its first trial). A switched run
++                    # cannot reach automatic selection at all (it is refused in the Step 1
++                    # child), so this only keeps a baseline run off the switched arm's
++                    # studies; a named study is unaffected (Beta X-MINER-SKIP-SWITCH R3 Q2).
++                    if not study_name and (_candidate_study.user_attrs or {}).get(
++                            "constant_skip_delivery"):
++                        print(f"   📊 Study {_candidate_name}: switched-on arm — skipping")
++                        continue
+                     _candidate_completed = len([
+                         t for t in _candidate_study.trials
+                         if t.state.name == "COMPLETE"
+diff --git a/window_optimizer_integration_final.py b/window_optimizer_integration_final.py
+index 3007351..625e12a 100644
+--- a/window_optimizer_integration_final.py
++++ b/window_optimizer_integration_final.py
+@@ -961,7 +961,7 @@ def _checkpoint_execution_set_id():
+ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
+                                     skip_modes_executed, seed_start: int,
+                                     seed_count: int, resume_checkpoint: str,
+-                                    resume_study: bool):
++                                    resume_study: bool, skip_delivery_on: bool = False):
+     """Build the D6.2 run context, honouring §4.4's combination matrix.
+ 
+     Returns `(context, resume_record_ordinal_floor_or_None)` — the second value
+@@ -1012,6 +1012,11 @@ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
+         seed_count=int(seed_count),
+         execution_set_id=_checkpoint_execution_set_id(),
+     )
++    if skip_delivery_on:
++        # [SKIP-DELIVERY SWITCH] the arm is part of the run's identity ONLY when on, so a
++        # baseline digest is unchanged and recovery refuses the other arm's checkpoint
++        # (utils/checkpoint_d6_2.py _require_context; Beta R1 Q2)
++        _components = dict(_components, **{SKIP_DELIVERY_CHECKPOINT_KEY: SKIP_DELIVERY_ON})
+     _digest = _build_run_context_digest(_components)
+ 
+     if not resume_checkpoint:
+@@ -1732,6 +1737,162 @@ def _step1_search_preflight(*, step1_search_id, prng_base, test_both_modes, seed
+             "interval": (int(seed_start), int(seed_start) + int(seed_count))}
+ 
+ 
++SKIP_DELIVERY_SEARCH_KEY = "constant_skip_delivery"      # utils/step1_search_ledger.py
++SKIP_DELIVERY_STUDY_ATTR = "constant_skip_delivery"      # Optuna study user attribute
++SKIP_DELIVERY_CHECKPOINT_KEY = "constant_skip_delivery"  # D6.2 run-context component
++SKIP_DELIVERY_ON = "trial_range"
++
++
++def _skip_delivery_on(coordinator):
++    """The run's switch through the ONE validator (miner.range_miner_coordinator.
++    validate_skip_delivery): an absent attribute and `False` are off, `True` is on, any
++    other value is refused before any study or dispatch."""
++    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
++    try:
++        return validate_skip_delivery(getattr(coordinator, 'deliver_skip_range', False),
++                                      where="Step 1 child")
++    except MinerMetadataError as exc:
++        raise Step1SearchPreflightError(str(exc)) from exc
++
++
++def _step1_skip_delivery_preflight(search_ctx, deliver_on, resume_study=False,
++                                   study_name=''):
++    """[SKIP-DELIVERY SWITCH] Switched-on trials never share a search, a study or (see
++    `_prepare_checkpoint_run_context`) a checkpoint with baseline trials
++    (docs/drafts/miner_skip_switch_v1/PLAN.md §4; Beta X-MINER-SKIP-SWITCH R1 Q2).
++    Raises Step1SearchPreflightError BEFORE any study is created or loaded and before any
++    checkpoint is recovered; refuses, never adopts."""
++    recorded = None
++    if search_ctx is not None:
++        space = search_ctx["record"].search_space or {}
++        recorded = space.get(SKIP_DELIVERY_SEARCH_KEY) if isinstance(space, dict) else None
++    if deliver_on and search_ctx is None:
++        raise Step1SearchPreflightError(
++            "--deliver-skip-range needs a Step 1 search (--step1-search-id) opened with "
++            "deliver_skip_range: true, so its trials get a study of their own")
++    if deliver_on and recorded != SKIP_DELIVERY_ON:
++        raise Step1SearchPreflightError(
++            f"--deliver-skip-range: search {search_ctx['record'].search_id} was opened "
++            f"without it (search_space.{SKIP_DELIVERY_SEARCH_KEY}={recorded!r}); open a "
++            f"separate search with deliver_skip_range: true")
++    if not deliver_on and recorded is not None:
++        raise Step1SearchPreflightError(
++            f"search {search_ctx['record'].search_id} was opened with "
++            f"deliver_skip_range ({SKIP_DELIVERY_SEARCH_KEY}={recorded!r}); a baseline "
++            f"run may not add trials to it")
++    # the study: an existing study carries its arm as a user attribute, set on the
++    # first trial of a switched study (_skip_delivery_study_check); a legacy or baseline
++    # study has none
++    if deliver_on and resume_study and not study_name:
++        raise Step1SearchPreflightError(
++            "--deliver-skip-range with --resume-study but no --study-name: automatic "
++            "selection could pick a baseline study; name the switched study or start fresh")
++    if resume_study and study_name and os.path.exists(f"optuna_studies/{study_name}.db"):
++        import optuna as _op
++        tag = (_op.load_study(study_name=study_name,
++                              storage=_step1_storage_url(study_name)).user_attrs or {}
++               ).get(SKIP_DELIVERY_STUDY_ATTR)
++        if deliver_on and tag != SKIP_DELIVERY_ON:
++            raise Step1SearchPreflightError(
++                f"--deliver-skip-range: study {study_name!r} was not created by a "
++                f"switched-on run ({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a switched search "
++                f"never adopts a baseline or legacy study")
++        if not deliver_on and tag is not None:
++            raise Step1SearchPreflightError(
++                f"study {study_name!r} belongs to a switched-on run "
++                f"({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a baseline run may not resume it")
++
++
++def _skip_delivery_study_check(study, deliver_on, trial_number):
++    """[SKIP-DELIVERY SWITCH] The backstop at the first trial, before its sieve, for the
++    study the optimizer actually opened (this also covers automatic resume selection).
++    On: a fresh study is tagged; an untagged study with earlier trials is refused. Off:
++    a tagged study is refused; nothing is written."""
++    tag = (study.user_attrs or {}).get(SKIP_DELIVERY_STUDY_ATTR)
++    if deliver_on:
++        if tag == SKIP_DELIVERY_ON:
++            return
++        earlier = [t for t in study.trials if t.number < int(trial_number)]
++        if tag is None and not earlier:
++            study.set_user_attr(SKIP_DELIVERY_STUDY_ATTR, SKIP_DELIVERY_ON)
++            return
++        raise Step1SearchPreflightError(
++            f"--deliver-skip-range: study {study.study_name!r} holds {len(earlier)} trial(s) "
++            f"of another arm ({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); refused before the sieve")
++    if tag is not None:
++        raise Step1SearchPreflightError(
++            f"study {study.study_name!r} belongs to a switched-on run "
++            f"({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a baseline run may not add trials to it")
++
++
++SKIP_DELIVERY_ROOT_MARKER = os.path.join(".s172_accumulator", "skip_delivery_arm")
++
++
++def _step1_skip_delivery_root_arm(deliver_on, output_root=None, create=False):
++    """[SKIP-DELIVERY SWITCH] ONE OUTPUT ROOT PER ARM (Beta X-MINER-SKIP-SWITCH R1 finding 2,
++    R3 Q2). The finalizer merges whatever generation is current in the output root, and a
++    generation becomes current BEFORE its coverage and link rows exist
++    (docs/PROPOSAL_STEP1_SEARCH_RECORD_AND_RERUN_v1_1.md §2.3), so no rule that reads the
++    link can know a generation's arm in time. The arm is therefore a property of the ROOT:
++    a switched run marks `<root>/.s172_accumulator/skip_delivery_arm` (ignored by git,
++    never read by the finalizer) before its first trial, and every generation ever
++    published there is switched. Reads no SQLite at all, so no WAL can make it stale.
++
++      on : marker present   -> must say trial_range
++           marker absent    -> a current generation means a baseline root: refused;
++                               an empty root is marked (only when `create`); at the
++                               pre-publication recheck (`create=False`) it is refused
++      off: marker present   -> refused (a switched root)
++           marker absent    -> nothing read but the marker's existence, nothing written:
++                               exactly as before
++    Called at preflight (create=True) and again immediately before finalize_run, against
++    the root whose current generation the finalizer is about to merge."""
++    root = output_root or os.getcwd()
++    marker = os.path.join(root, SKIP_DELIVERY_ROOT_MARKER)
++    current = os.path.join(root, ".s172_accumulator", "current")
++    if not deliver_on:
++        if os.path.lexists(marker):
++            raise Step1SearchPreflightError(
++                f"the output root {root} belongs to the switched-on arm ({marker}); a baseline "
++                f"run may not publish into it. Use a separate output root per arm")
++        return
++    if os.path.lexists(marker):
++        with open(marker, encoding="utf-8") as fh:
++            arm = fh.read().strip()
++        if arm != SKIP_DELIVERY_ON:
++            raise Step1SearchPreflightError(f"{marker} says {arm!r}, not {SKIP_DELIVERY_ON!r}")
++        return
++    if os.path.lexists(current):
++        raise Step1SearchPreflightError(
++            f"--deliver-skip-range: the output root {root} already holds a generation "
++            f"published without the switch; the finalizer would merge it. Use a separate, "
++            f"empty output root for the switched arm")
++    if not create:
++        raise Step1SearchPreflightError(
++            f"--deliver-skip-range: {marker} is missing at publication; the root was not "
++            f"marked for the switched arm")
++    os.makedirs(os.path.dirname(marker), exist_ok=True)
++    tmp = f"{marker}.tmp-{os.getpid()}"
++    with open(tmp, "x", encoding="utf-8") as fh:
++        fh.write(SKIP_DELIVERY_ON + "\n")
++    os.replace(tmp, marker)
++
++
++def _step1_skip_delivery_bounds_check(deliver_on):
++    """[SKIP-DELIVERY SWITCH] Beta R3 Q4: a switched run that can sample checks the
++    sampling bounds it will actually use, before any study is opened."""
++    if not deliver_on:
++        return
++    from window_optimizer import SearchBounds as _SB
++    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
++    b = _SB.from_config()
++    try:
++        validate_skip_delivery(True, b.min_skip_min, b.max_skip_max,
++                               where="Step 1 child (sampling bounds)")
++    except MinerMetadataError as exc:
++        raise Step1SearchPreflightError(str(exc)) from exc
++
++
+ class Step1ChunkState:
+     """The per-process chunk state: which trials ran here, their evidence, the chunk-open."""
+ 
+@@ -1757,6 +1918,8 @@ class Step1ChunkState:
+         self.seen.append(n)
+         if self.study_name is None:
+             self.study_name = optuna_trial.study.study_name
++            _skip_delivery_study_check(optuna_trial.study,
++                                       getattr(self, "skip_delivery_on", False), n)
+             if self.search_ctx is not None:
+                 prior = sum(1 for t in optuna_trial.study.trials if t.number < n)
+                 self.chunk = self.search_ctx["ledger"].chunk_open(
+@@ -2002,6 +2165,8 @@ def run_bidirectional_test(coordinator,
+             # the coordinator's commit, and the result is fetched below by
+             # run_id. Passing None here is what made this path inert.
+             phase5_sink            = _miner_sink,
++            # [SKIP-DELIVERY SWITCH] passed ONLY when on, so a baseline call is unchanged
++            **({"deliver_skip_range": True} if _skip_delivery_on(coordinator) else {}),
+         )
+         if _miner_result.get("pruned"):
+             return TestResult(
+@@ -2564,10 +2729,16 @@ def add_window_optimizer_to_coordinator():
+             test_both_modes=test_both_modes, seed_start=seed_start, seed_count=seed_count,
+             max_iterations=max_iterations, resume_study=resume_study,
+             study_name=study_name, n_parallel=n_parallel)
++        _s1_skip_delivery_on = _skip_delivery_on(self)
++        _step1_skip_delivery_preflight(_s1_search_ctx, _s1_skip_delivery_on,
++                                       resume_study=resume_study, study_name=study_name)
++        _step1_skip_delivery_bounds_check(_s1_skip_delivery_on)
++        _step1_skip_delivery_root_arm(_s1_skip_delivery_on, create=True)
+         _step1_budget_preflight(resume_study=resume_study, study_name=study_name,
+                                 max_iterations=max_iterations)
+         _s1_chunk = Step1ChunkState(_s1_search_ctx, prng_base, test_both_modes,
+                                     seed_start, seed_count, max_iterations, None)
++        _s1_chunk.skip_delivery_on = _s1_skip_delivery_on
+         # S115 M1/M4: Partition map (IPs from distributed_config.json)
+         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
+         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
+@@ -3239,6 +3410,7 @@ def add_window_optimizer_to_coordinator():
+                 seed_count=int(seed_count),
+                 resume_checkpoint=resume_checkpoint,
+                 resume_study=resume_study,
++                skip_delivery_on=_s1_skip_delivery_on,
+             )
+         _install_flush_run_context(_d6_2_context)
+         _s1_chunk.checkpoint_run_id = _d6_2_context.run_id   # [STEP1-SEARCH S8]
+@@ -3573,6 +3745,9 @@ def add_window_optimizer_to_coordinator():
+             else ('constant',)
+         )
+ 
++        # [SKIP-DELIVERY SWITCH] the arm, rechecked against the root whose current
++        # generation the finalizer merges (Beta R3 Q2)
++        _step1_skip_delivery_root_arm(_s1_skip_delivery_on)
+         _artifact_d3_5 = _finalize_run_d3_5(
+             _raw_candidates_d3_5,
+             output_root=_Path_d3_5.cwd(),

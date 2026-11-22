@@ -2162,12 +2162,17 @@ DECLARED_CHANGED = {
     # The anchor does NOT move and `changed == DECLARED_CHANGED` stays EXACT.
     "RangeMinerCoordinator._serve_dispatch",
 }
-# EMPTY, AND NOT BY ACCIDENT. MP-1's certified `gate_e2_ast_scope_proof`
+# EMPTY for R-1 itself, AND NOT BY ACCIDENT. MP-1's certified `gate_e2_ast_scope_proof`
 # asserts this module's ADDED-definition set EXACTLY against its own pinned
 # anchor, so any new `def` here — including a well-named recorder method — reds
 # a certified gate. The high-water update is therefore INLINE in
 # `_pump_deferred`, which both MP-1 and R-1 already declare changed.
-DECLARED_ADDED: set = set()
+#
+# [SKIP-DELIVERY SWITCH] NOT R-1's change. SR-1: the one validator of the switch
+# (Beta X-MINER-SKIP-SWITCH R1 Q4: one validator used by every entry point, the
+# coordinator among them) is a module-level def; it is declared here and in MP-1's
+# DECLARED_ADDED. The anchor does NOT move and both sets stay EXACT.
+DECLARED_ADDED: set = {"validate_skip_delivery"}
 
 
 def gate_scope_proof():

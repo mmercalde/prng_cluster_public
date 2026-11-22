@@ -274,6 +274,10 @@ def evaluate(params_arg, *, repo_root=REPO_ROOT, runner=None, sampler=None,
         params = _parse_params(params_arg)
     except Exception as exc:                                        # noqa: BLE001
         return done(V_REFUSE, [f"--params unparseable: {exc}"])
+    if isinstance(params, dict) and params.get("deliver_skip_range") is False:
+        # [SKIP-DELIVERY SWITCH] off is ONE state: an explicit false is recorded and
+        # sampled exactly as an absent key (Beta X-MINER-SKIP-SWITCH R1 Q1)
+        params = {k: v for k, v in params.items() if k != "deliver_skip_range"}
     rec["params"] = params
     try:
         geometry, s, e = split_params(params)

@@ -1464,6 +1464,9 @@ DECLARED_ADDED = {
     "RangeMinerCoordinator._census_row",
     "RangeMinerCoordinator.reset_drain_service_window",
     "RangeMinerCoordinator.maybe_emit_serve_loop_window",
+    # [SKIP-DELIVERY SWITCH] NOT MP-1's change. SR-1: the switch's one validator
+    # (Beta X-MINER-SKIP-SWITCH R1 Q4), declared here and in R-1's DECLARED_ADDED.
+    "validate_skip_delivery",
 }
 
 

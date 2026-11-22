@@ -170,10 +170,28 @@ def build_generation(root, prior=False, certify=True, link=True, maps=None, ctx=
                         ("l1", cov_id, "srch1", "chunk1", "java_lcg", '["constant","variable"]',
                          S0, S0 + seed_count, res.generation_id, 1, 0, 0, 0,
                          "2026-11-21T00:00:00Z"))
+            write_search_record(con, "srch1", SWITCH["on"])
         con.commit()
         con.close()
     _checkpoint(db)
     return res
+
+
+def write_search_record(con, search_id, switch):
+    """The linked search's record, with the REAL DDL: its search space carries the
+    switch exactly as utils/step1_search_ledger.presented_configuration writes it."""
+    con.execute(SSL._DDL[SSL.T_SEARCH])
+    space = {"kind": "pinned"}
+    if switch:
+        space["constant_skip_delivery"] = "trial_range"
+    con.execute(f"INSERT INTO {SSL.T_SEARCH} VALUES ({','.join('?' * 26)})",
+                (search_id, 1, "{}", "java_lcg", '["constant","variable"]', "java_lcg|constant,variable",
+                 0, 2 ** 32, "daily3-v1", DSHA, "ef" * 32, "lineage", "[]", "v1", json.dumps(space),
+                 "d" * 64, "{}", 0, None, 1, N, "operator", "test", None, "2026-11-21T00:00:00Z",
+                 "0" * 40))
+
+
+SWITCH = {"on": False}
 
 
 def build_run(tag, **kw):
@@ -183,6 +201,7 @@ def build_run(tag, **kw):
     staging, outroot = os.path.join(base, "staging"), os.path.join(base, "outroot")
     gen_kw = {k: kw.pop(k) for k in ("prior", "certify", "link", "maps", "ctx", "seed_count")
               if k in kw}
+    SWITCH["on"] = kw.pop("switch", False)           # the search record's switch
     pover = kw.pop("params", {})
     build_ledger(staging, **kw)
     res = build_generation(outroot, **gen_kw)
@@ -386,6 +405,7 @@ def forge_credit(run, mutate=lambda c, l: True):
                     f"({','.join('?' * len(cov))})", tuple(cov.values()))
     con.execute(f"INSERT INTO {SSL.T_LINK} ({','.join(lnk)}) VALUES "
                 f"({','.join('?' * len(lnk))})", tuple(lnk.values()))
+    write_search_record(con, lnk["search_id"], SWITCH["on"])
     con.commit()
     con.close()
     _checkpoint(db)
@@ -448,7 +468,26 @@ def g_f1_warning():
     assert b2["provenance"]["constant_skip_range_code_reading"]["effective"] is None
     assert b2["provenance"]["job_identity"]["constant_skip_range_effective"] is None
     assert any("not known" in c for c in b2["provenance"]["self_checks"])
-    return "F-1 warning: code reading [0, 16] vs requested [6, 99]; a payload naming skip_range: 'not known'"
+    # [SKIP-DELIVERY SWITCH] this tree's builder carries the switch; a run whose params
+    # turn it on ran the trial's own range, so no F-1 warning
+    assert sc.get("switch") == "off", sc
+    run3 = build_run("f1_switch_on", params={"deliver_skip_range": True}, switch=True)
+    _, b3 = extract(run3)
+    sc3 = b3["provenance"]["constant_skip_range_code_reading"]
+    assert sc3["switch"] == "on" and sc3["effective"] == [6, 99], sc3
+    assert not any("F-1" in c for c in b3["provenance"]["self_checks"]), b3["provenance"]["self_checks"]
+    # [Beta R1 finding 3] the switch comes from the durable search record, never the params alone
+    run4 = build_run("f1_params_flipped", params={"deliver_skip_range": True})     # record: off
+    refused(lambda: extract(run4), "B2b")
+    run5 = build_run("f1_record_on_params_absent", switch=True)                    # params: absent
+    refused(lambda: extract(run5), "B2b")
+    run6 = build_run("f1_no_link", link=False)
+    _, b6 = extract(run6)
+    sc6 = b6["provenance"]["constant_skip_range_code_reading"]
+    assert sc6["switch"] == "unverified" and sc6["effective"] is None, sc6
+    return ("F-1: switch off by the search record -> [0, 16] with the warning; on -> [6, 99], no "
+            "warning; params that disagree with the record refused (B2b); no record -> unverified; "
+            "a builder naming skip_range unconditionally: 'not known'")
 
 
 def g_credit():
@@ -807,6 +846,12 @@ MUTANTS = [
      "if False:", g_non_done),
     ("MU26 phase set not checked", "if sorted(by_phase) != sorted(required):", "if False:",
      g_phase_set),
+    ("MU38 B2b params trusted over the search record",
+     '        if params.get("deliver_skip_range", False) is not durable_switch:',
+     "        if False:", g_f1_warning),
+    ("MU39 switch state inferred from params when no record exists",
+     "        if durable_switch is None:\n            note[\"switch\"] = \"unverified\"",
+     "        if False:\n            note[\"switch\"] = \"unverified\"", g_f1_warning),
 ]
 
 

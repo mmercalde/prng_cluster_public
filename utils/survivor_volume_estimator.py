@@ -78,6 +78,9 @@ GEOMETRY_KEYS = (
     "forward_threshold", "reverse_threshold", "skip_min", "skip_max",
     "dataset", "test_both_modes",
 )
+# [SKIP-DELIVERY SWITCH] optional, and only ever present as `true`-or-`false` when the
+# caller states it: a baseline geometry without it keeps its request digest unchanged.
+OPTIONAL_GEOMETRY_KEYS = ("deliver_skip_range",)
 _INT_KEYS = ("window_size", "window_anchor", "generator_phase", "skip_min", "skip_max")
 _NUM_KEYS = ("forward_threshold", "reverse_threshold")
 
@@ -140,7 +143,7 @@ def validate_geometry(geometry: Dict[str, Any]) -> Dict[str, Any]:
     missing = [k for k in GEOMETRY_KEYS if k not in geometry]
     if missing:
         raise GeometryError(f"geometry parameter(s) missing: {missing}")
-    extra = sorted(set(geometry) - set(GEOMETRY_KEYS))
+    extra = sorted(set(geometry) - set(GEOMETRY_KEYS) - set(OPTIONAL_GEOMETRY_KEYS))
     if extra:
         raise GeometryError(f"unknown geometry parameter(s) {extra}: an unknown "
                             f"parameter is never assumed harmless")
@@ -169,6 +172,19 @@ def validate_geometry(geometry: Dict[str, Any]) -> Dict[str, Any]:
         raise GeometryError("window_size must be >= 1 and window_anchor >= 0")
     if g["skip_min"] > g["skip_max"]:
         raise GeometryError(f"skip_min {g['skip_min']} > skip_max {g['skip_max']}")
+    # [SKIP-DELIVERY SWITCH] The one validator (miner.range_miner_coordinator), BEFORE any
+    # GPU probe or dataset work (Beta R1 Q4). Off is ONE state: an explicit `false` is
+    # dropped here, so it gives the same digest, sample and record bytes as an absent
+    # key (Beta R1 Q1). A non-bool is refused, never read as off.
+    if "deliver_skip_range" in g:
+        from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
+        try:
+            on = validate_skip_delivery(g["deliver_skip_range"], g["skip_min"], g["skip_max"],
+                                        where="volume geometry")
+        except MinerMetadataError as exc:
+            raise GeometryError(str(exc)) from exc
+        if not on:
+            del g["deliver_skip_range"]
     return g
 
 
@@ -512,7 +528,11 @@ def _phase_payloads(g: Dict[str, Any]):
                 g["window_anchor"], residues, dataset_sha256=dataset_sha,
                 phase=phase, forward_threshold=g["forward_threshold"],
                 reverse_threshold=g["reverse_threshold"],
-                generator_phase=g["generator_phase"])
+                generator_phase=g["generator_phase"],
+                # [SKIP-DELIVERY SWITCH] the same effective choice as dispatch; absent
+                # or false -> None -> the baseline payload, exactly as before
+                **({"skip_range": (g["skip_min"], g["skip_max"])}
+                   if g.get("deliver_skip_range") is True else {}))
             out.append((family, phase, payload))
     except EstimatorError:
         raise
@@ -658,9 +678,13 @@ def estimate_volume(geometry: Dict[str, Any], seed_start: int, seed_end_exclusiv
         "seed_end_exclusive": seed_end_exclusive, "range_size": range_size,
         "request_digest": digest, "dataset_sha256": dataset_sha,
         "residue_sha256": expected_residue, "window_residues": list(residues),
-        "skip_bounds_note": ("skip_min/skip_max are recorded geometry; the production "
-                             "assign payload carries no skip_range "
-                             "(build_stripe_assign_payload), so they do not reach the "
-                             "sampled kernels — exactly as in a run"),
+        "skip_bounds_note": (("deliver_skip_range is on: phases 1-2 were sampled at "
+                              "the delivered skip_range [skip_min, skip_max], as a "
+                              "switched-on run dispatches them")
+                             if g.get("deliver_skip_range") is True else
+                             ("skip_min/skip_max are recorded geometry; the production "
+                              "assign payload carries no skip_range "
+                              "(build_stripe_assign_payload), so they do not reach the "
+                              "sampled kernels — exactly as in a run")),
         "phases": per_phase,
     }

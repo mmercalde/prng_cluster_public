@@ -12,3 +12,7 @@ Written only by `scripts/beta_relay.py`. One row per `OBJECTION` that Beta label
 | X-PWC-STAGE4 | R2 | R2-Q5 PWC extractor WAL, accounting, threshold, link, membership and out-dir | 2026-11-21 13:21 PST | The late generation-file guard permits a read through a symlink to a live root, which requires a path layout outside the planned fresh trees. |
 | X-PWC-SHUTDOWN | R1 | Q3 Can the reap hit a non-leftover worker | 2026-11-21 14:49 PST | A second PWC coordinator must start on a rig while the first is still shutting down, outside the serialized Stage 4 procedure. |
 | X-PWC-SHUTDOWN | R1 | Q5 Extractor record ordinal | 2026-11-21 14:49 PST | Accepting a foreign pass set requires mixed or modified evidence outside the prescribed fresh single-trial tree. |
+| X-MINER-SKIP-SWITCH | R1 | Q3 · Stage 3 guard allowance | 2026-11-21 18:17 PST | The checked-in guard is in the right place, but a later relocation can leave the current proofs green. |
+| X-MINER-SKIP-SWITCH | R3 | Q3 · Anchored allowance | 2026-11-21 19:35 PST | The submitted CLI guard runs early, but the static checks accept a future move of the guard after optimization. |
+| X-MINER-SKIP-SWITCH-2 | R1 | Q2 · Isolation | 2026-11-21 21:16 PST | Two overlapping Step 1 publishers in the same initially unmarked root can merge across arms after the baseline recheck. |
+| X-MINER-SKIP-SWITCH-2 | R1 | Q4 · Validation | 2026-11-21 21:16 PST | A non-current configuration with `skip_min.max=256` and `skip_max.max=250` can pass both preflights and fail inside Optuna when it reaches that endpoint. |

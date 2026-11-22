@@ -326,7 +326,7 @@ def phase_counts(stripes, shards, phases, na):
     return out
 
 
-def read_skip_range_code(code_root):
+def read_skip_range_code(code_root, durable_switch=None):
     """Provenance only: which constant skip range this tree's code makes phases 1-2 run
     (F-1). The worker's `payload.get("skip_range", <default>)` literal, and whether the
     coordinator's payload builder names `skip_range` at all."""
@@ -346,6 +346,12 @@ def read_skip_range_code(code_root):
             if isinstance(node, ast.FunctionDef) and node.name == "build_stripe_assign_payload":
                 delivered = any(isinstance(n, ast.Constant) and n.value == "skip_range"
                                 for n in ast.walk(node))
+                # [SKIP-DELIVERY SWITCH] a keyword-only `skip_range` defaulting to None is
+                # the switch (docs/drafts/miner_skip_switch_v1/PLAN.md), not an
+                # unconditional delivery
+                switch = any(a.arg == "skip_range" and isinstance(d, ast.Constant)
+                             and d.value is None
+                             for a, d in zip(node.args.kwonlyargs, node.args.kw_defaults))
                 note["payload_builder_line"] = f"miner/range_miner_coordinator.py:{node.lineno}"
         note["sha256"] = {"miner/range_miner_worker.py": _sha256(wpath),
                           "miner/range_miner_coordinator.py": _sha256(cpath)}
@@ -353,6 +359,24 @@ def read_skip_range_code(code_root):
         note["error"] = str(exc)
     if default is None or delivered is None:
         note["effective"], note["why"] = None, "worker default or payload builder not found"
+    elif delivered and switch:
+        # the switch's state comes from the run's durable search record (B2b)
+        if durable_switch is None:
+            note["switch"] = "unverified"
+            note["effective"], note["why"] = None, (
+                "the builder carries the delivery switch and no durable record of its state "
+                "was found (no search link for this generation); left unverified, never "
+                "inferred from params")
+        elif durable_switch:
+            note["switch"] = "on"
+            note["effective"], note["why"] = "requested", (
+                "the run's search record carries the switch on: phases 1-2 run the trial's "
+                "own range")
+        else:
+            note["switch"] = "off"
+            note["effective"] = list(default)
+            note["why"] = ("the run's search record carries the switch off: phases 1-2 run "
+                           "the worker default")
     elif delivered:
         note["effective"], note["why"] = None, ("the payload builder names skip_range; which "
                                                 "range this run delivered is not recorded")
@@ -467,7 +491,12 @@ def collect(staging_dir, output_root, params_json, run_id, ledger_db, live_paths
                 "generation_id FROM certified_coverage WHERE artifact_sha256=?", (sha,)),
         "link": ("SELECT seed_start, seed_end_exclusive, search_id, coverage_id FROM "
                  "step1_chunk_link WHERE generation_id=?", (prov.get("generation_id"),)),
-    }, scratch, optional=("link",))            # no search tables: a run outside a search
+        # [SKIP-DELIVERY SWITCH] the durable record of the switch: the linked search's
+        # search space (utils/step1_search_ledger.presented_configuration)
+        "space": ("SELECT s.search_space_json FROM step1_chunk_link l JOIN step1_search s "
+                  "ON s.search_id = l.search_id WHERE l.generation_id=?",
+                  (prov.get("generation_id"),)),
+    }, scratch, optional=("link", "space"))    # no search tables: a run outside a search
     cov_rows, link_rows = lr["cov"] or [], lr["link"] or []
     if len(cov_rows) > 1 or len(link_rows) > 1:
         raise ExtractRefused(f"{len(cov_rows)} coverage rows / {len(link_rows)} link rows for "
@@ -492,7 +521,22 @@ def collect(staging_dir, output_root, params_json, run_id, ledger_db, live_paths
             raise ExtractRefused(f"B8: link (coverage {link[3]!r}, {[link[0], link[1]]}) != "
                                  f"coverage ({cov[3]!r}, {[cov[0], cov[1]]})")
 
-    skip_code = read_skip_range_code(code_root)
+    # B2b [SKIP-DELIVERY SWITCH, Beta R1 finding 3] the switch comes from DURABLE run
+    # evidence — the linked search record — never from the params file alone. Params that
+    # disagree with the record are refused; with no record the effective range is left
+    # unverified, never inferred from params.
+    durable_switch = None
+    space_rows = lr.get("space") or []
+    if space_rows:
+        durable_switch = json.loads(space_rows[0][0]).get("constant_skip_delivery") == "trial_range"
+        if params.get("deliver_skip_range", False) is not durable_switch:
+            raise ExtractRefused(
+                f"B2b: params deliver_skip_range={params.get('deliver_skip_range', False)!r} but "
+                f"the run's search record says the switch was "
+                f"{'on' if durable_switch else 'off'}")
+    skip_code = read_skip_range_code(code_root, durable_switch)
+    if skip_code.get("effective") == "requested":
+        skip_code["effective"] = [ctx["skip_min"], ctx["skip_max"]]
     if skip_code.get("effective") is not None and skip_code["effective"] != [ctx["skip_min"],
                                                                                ctx["skip_max"]]:
         checks.append(f"WARNING F-1: phases 1-2 ran the worker default {skip_code['effective']} "

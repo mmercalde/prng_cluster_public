@@ -1,0 +1,22 @@
+diff --git a/tests/test_extract_miner_bundle.py b/tests/test_extract_miner_bundle.py
+index f54f9e9..59e3d26 100644
+--- a/tests/test_extract_miner_bundle.py
++++ b/tests/test_extract_miner_bundle.py
+@@ -448,7 +448,16 @@ def g_f1_warning():
+     assert b2["provenance"]["constant_skip_range_code_reading"]["effective"] is None
+     assert b2["provenance"]["job_identity"]["constant_skip_range_effective"] is None
+     assert any("not known" in c for c in b2["provenance"]["self_checks"])
+-    return "F-1 warning: code reading [0, 16] vs requested [6, 99]; a payload naming skip_range: 'not known'"
++    # [SKIP-DELIVERY SWITCH] this tree's builder carries the switch; a run whose params
++    # turn it on ran the trial's own range, so no F-1 warning
++    assert sc.get("switch") == "off", sc
++    run3 = build_run("f1_switch_on", params={"deliver_skip_range": True})
++    _, b3 = extract(run3)
++    sc3 = b3["provenance"]["constant_skip_range_code_reading"]
++    assert sc3["switch"] == "on" and sc3["effective"] == [6, 99], sc3
++    assert not any("F-1" in c for c in b3["provenance"]["self_checks"]), b3["provenance"]["self_checks"]
++    return ("F-1 warning: switch off, code reading [0, 16] vs requested [6, 99]; switch on in the "
++            "params: effective [6, 99], no warning; a builder naming skip_range unconditionally: 'not known'")
+ 
+ 
+ def g_credit():

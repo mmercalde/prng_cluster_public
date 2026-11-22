@@ -1,0 +1,194 @@
+--- r2/window_optimizer.py
++++ r3/window_optimizer.py
+@@ -783,7 +783,6 @@
+     Returns:
+         Dictionary with optimization results
+     """
+-
+     # [S145] PRE-DISPATCH SEED-DOMAIN WALL — the CLI entry point.
+     #
+     # Team Beta ruling "S145 / SEED-DOMAIN SWEEP TERMINUS AND COVERAGE
+@@ -818,6 +817,12 @@
+               "execution, no staging, no coverage mutation.")
+         raise
+ 
++    # [SKIP-DELIVERY SWITCH] the one validator, right after the S145 wall (which must stay
++    # the first statement) and before any coordinator exists: True or False only; None,
++    # "true", 1, ... are refused, never read as off (Beta X-MINER-SKIP-SWITCH R3 Q4)
++    from miner.range_miner_coordinator import validate_skip_delivery as _vsd
++    _vsd(deliver_skip_range, where="run_bayesian_optimization")
++
+     # [MINER SEED-START R4/R5] G-MINER-START is replaced: the RANGE-MINER route now
+     # carries seed_start and is not refused; PWC and ZMQ, which partition from 0, are
+     # refused at a non-zero start (owner decision 2026-11-14). Before the coordinator
+--- r2/window_optimizer_integration_final.py
++++ r3/window_optimizer_integration_final.py
+@@ -1825,46 +1825,72 @@
+             f"({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a baseline run may not add trials to it")
+ 
+ 
+-def _step1_skip_delivery_output_root_check(deliver_on, output_root=None):
+-    """[SKIP-DELIVERY SWITCH] Beta R1 finding 2: the finalizer merges the output root's
+-    current generation, so a run never publishes on top of the other arm's generation.
+-    The arm of the current generation is read from durable records: its
+-    step1_chunk_link row names the search, whose search space carries the switch. On: a
+-    current generation that is not provably switched is refused. Off: a switched one is
+-    refused; an unlinked or baseline one is allowed, exactly as before."""
++SKIP_DELIVERY_ROOT_MARKER = os.path.join(".s172_accumulator", "skip_delivery_arm")
++
++
++def _step1_skip_delivery_root_arm(deliver_on, output_root=None, create=False):
++    """[SKIP-DELIVERY SWITCH] ONE OUTPUT ROOT PER ARM (Beta X-MINER-SKIP-SWITCH R1 finding 2,
++    R3 Q2). The finalizer merges whatever generation is current in the output root, and a
++    generation becomes current BEFORE its coverage and link rows exist
++    (docs/PROPOSAL_STEP1_SEARCH_RECORD_AND_RERUN_v1_1.md §2.3), so no rule that reads the
++    link can know a generation's arm in time. The arm is therefore a property of the ROOT:
++    a switched run marks `<root>/.s172_accumulator/skip_delivery_arm` (ignored by git,
++    never read by the finalizer) before its first trial, and every generation ever
++    published there is switched. Reads no SQLite at all, so no WAL can make it stale.
++
++      on : marker present   -> must say trial_range
++           marker absent    -> a current generation means a baseline root: refused;
++                               an empty root is marked (only when `create`); at the
++                               pre-publication recheck (`create=False`) it is refused
++      off: marker present   -> refused (a switched root)
++           marker absent    -> nothing read but the marker's existence, nothing written:
++                               exactly as before
++    Called at preflight (create=True) and again immediately before finalize_run, against
++    the root whose current generation the finalizer is about to merge."""
+     root = output_root or os.getcwd()
+-    prov = os.path.join(root, ".s172_accumulator", "current", "provenance.json")
+-    if not os.path.isfile(prov):
++    marker = os.path.join(root, SKIP_DELIVERY_ROOT_MARKER)
++    current = os.path.join(root, ".s172_accumulator", "current")
++    if not deliver_on:
++        if os.path.lexists(marker):
++            raise Step1SearchPreflightError(
++                f"the output root {root} belongs to the switched-on arm ({marker}); a baseline "
++                f"run may not publish into it. Use a separate output root per arm")
+         return
+-    with open(prov, encoding="utf-8") as fh:
+-        gen_id = json.load(fh).get("generation_id")
+-    arm = None
+-    db = os.path.join(root, "prng_analysis.db")
+-    if os.path.isfile(db):
+-        import sqlite3 as _sq
+-        # immutable: creates no -wal/-shm beside the run's ledger (an untracked sidecar
+-        # would fail the finalizer's clean-tree check). A stale read can only make the
+-        # arm unknown, which refuses an ON run and allows an OFF one, as before.
+-        con = _sq.connect(f"file:{os.path.abspath(db)}?mode=ro&immutable=1", uri=True)
+-        try:
+-            rows = con.execute(
+-                "SELECT s.search_space_json FROM step1_chunk_link l JOIN step1_search s "
+-                "ON s.search_id = l.search_id WHERE l.generation_id = ?", (gen_id,)).fetchall()
+-        except _sq.OperationalError:
+-            rows = []
+-        finally:
+-            con.close()
+-        arms = {json.loads(r[0]).get(SKIP_DELIVERY_SEARCH_KEY) for r in rows}
+-        arm = arms.pop() if len(arms) == 1 else ("mixed" if arms else None)
+-    if deliver_on and arm != SKIP_DELIVERY_ON:
++    if os.path.lexists(marker):
++        with open(marker, encoding="utf-8") as fh:
++            arm = fh.read().strip()
++        if arm != SKIP_DELIVERY_ON:
++            raise Step1SearchPreflightError(f"{marker} says {arm!r}, not {SKIP_DELIVERY_ON!r}")
++        return
++    if os.path.lexists(current):
+         raise Step1SearchPreflightError(
+-            f"--deliver-skip-range: the output root {root} holds generation {gen_id!r} "
+-            f"that is not provably switched (arm={arm!r}); the finalizer would merge it. "
+-            f"Use a separate output root per arm")
+-    if not deliver_on and arm == SKIP_DELIVERY_ON:
++            f"--deliver-skip-range: the output root {root} already holds a generation "
++            f"published without the switch; the finalizer would merge it. Use a separate, "
++            f"empty output root for the switched arm")
++    if not create:
+         raise Step1SearchPreflightError(
+-            f"the output root {root} holds switched-on generation {gen_id!r}; a baseline "
+-            f"run may not publish on top of it. Use a separate output root per arm")
++            f"--deliver-skip-range: {marker} is missing at publication; the root was not "
++            f"marked for the switched arm")
++    os.makedirs(os.path.dirname(marker), exist_ok=True)
++    tmp = f"{marker}.tmp-{os.getpid()}"
++    with open(tmp, "x", encoding="utf-8") as fh:
++        fh.write(SKIP_DELIVERY_ON + "\n")
++    os.replace(tmp, marker)
++
++
++def _step1_skip_delivery_bounds_check(deliver_on):
++    """[SKIP-DELIVERY SWITCH] Beta R3 Q4: a switched run that can sample checks the
++    sampling bounds it will actually use, before any study is opened."""
++    if not deliver_on:
++        return
++    from window_optimizer import SearchBounds as _SB
++    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
++    b = _SB.from_config()
++    try:
++        validate_skip_delivery(True, b.min_skip_min, b.max_skip_max,
++                               where="Step 1 child (sampling bounds)")
++    except MinerMetadataError as exc:
++        raise Step1SearchPreflightError(str(exc)) from exc
+ 
+ 
+ class Step1ChunkState:
+@@ -2706,7 +2732,8 @@
+         _s1_skip_delivery_on = _skip_delivery_on(self)
+         _step1_skip_delivery_preflight(_s1_search_ctx, _s1_skip_delivery_on,
+                                        resume_study=resume_study, study_name=study_name)
+-        _step1_skip_delivery_output_root_check(_s1_skip_delivery_on)
++        _step1_skip_delivery_bounds_check(_s1_skip_delivery_on)
++        _step1_skip_delivery_root_arm(_s1_skip_delivery_on, create=True)
+         _step1_budget_preflight(resume_study=resume_study, study_name=study_name,
+                                 max_iterations=max_iterations)
+         _s1_chunk = Step1ChunkState(_s1_search_ctx, prng_base, test_both_modes,
+@@ -3718,6 +3745,9 @@
+             else ('constant',)
+         )
+ 
++        # [SKIP-DELIVERY SWITCH] the arm, rechecked against the root whose current
++        # generation the finalizer merges (Beta R3 Q2)
++        _step1_skip_delivery_root_arm(_s1_skip_delivery_on)
+         _artifact_d3_5 = _finalize_run_d3_5(
+             _raw_candidates_d3_5,
+             output_root=_Path_d3_5.cwd(),
+--- r2/window_optimizer_bayesian.py
++++ r3/window_optimizer_bayesian.py
+@@ -696,6 +696,15 @@
+                         study_name=_candidate_name,
+                         storage=_candidate_storage
+                     )
++                    # [SKIP-DELIVERY SWITCH] AUTOMATIC selection never picks a switched-on
++                    # study (its user attribute is set on its first trial). A switched run
++                    # cannot reach automatic selection at all (it is refused in the Step 1
++                    # child), so this only keeps a baseline run off the switched arm's
++                    # studies; a named study is unaffected (Beta X-MINER-SKIP-SWITCH R3 Q2).
++                    if not study_name and (_candidate_study.user_attrs or {}).get(
++                            "constant_skip_delivery"):
++                        print(f"   📊 Study {_candidate_name}: switched-on arm — skipping")
++                        continue
+                     _candidate_completed = len([
+                         t for t in _candidate_study.trials
+                         if t.state.name == "COMPLETE"
+--- r2/utils/step1_search_ledger.py
++++ r3/utils/step1_search_ledger.py
+@@ -210,11 +210,14 @@
+                 where="presented_configuration")
+         else:
+             _sd_on = validate_skip_delivery(_sd_value, where="presented_configuration")
+-            if _sd_on:
+-                _b = space["bounds"]
+-                validate_skip_delivery(True, (_b.get("skip_min") or {}).get("min"),
+-                                       (_b.get("skip_max") or {}).get("max"),
+-                                       where="presented_configuration (sampled bounds)")
++        _trials = final_params.get("window_trials")
++        # A search that can SAMPLE uses the live bounds after the enqueued pin (Beta R3 Q4):
++        # an unpinned search always samples; a pinned one samples when it has more than
++        # one trial (or no stated budget).
++        if _sd_on and (not pin_bundle or _trials is None or int(_trials) > 1):
++            validate_skip_delivery(True, (bounds.get("skip_min") or {}).get("min"),
++                                   (bounds.get("skip_max") or {}).get("max"),
++                                   where="presented_configuration (sampling bounds)")
+     except MinerMetadataError as exc:
+         raise Step1SearchRefused(str(exc)) from exc
+     if _sd_on:

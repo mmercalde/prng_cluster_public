@@ -961,7 +961,7 @@ def _checkpoint_execution_set_id():
 def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
                                     skip_modes_executed, seed_start: int,
                                     seed_count: int, resume_checkpoint: str,
-                                    resume_study: bool):
+                                    resume_study: bool, skip_delivery_on: bool = False):
     """Build the D6.2 run context, honouring §4.4's combination matrix.
 
     Returns `(context, resume_record_ordinal_floor_or_None)` — the second value
@@ -1012,6 +1012,11 @@ def _prepare_checkpoint_run_context(*, dataset_path: str, prng_base: str,
         seed_count=int(seed_count),
         execution_set_id=_checkpoint_execution_set_id(),
     )
+    if skip_delivery_on:
+        # [SKIP-DELIVERY SWITCH] the arm is part of the run's identity ONLY when on, so a
+        # baseline digest is unchanged and recovery refuses the other arm's checkpoint
+        # (utils/checkpoint_d6_2.py _require_context; Beta R1 Q2)
+        _components = dict(_components, **{SKIP_DELIVERY_CHECKPOINT_KEY: SKIP_DELIVERY_ON})
     _digest = _build_run_context_digest(_components)
 
     if not resume_checkpoint:
@@ -1732,6 +1737,201 @@ def _step1_search_preflight(*, step1_search_id, prng_base, test_both_modes, seed
             "interval": (int(seed_start), int(seed_start) + int(seed_count))}
 
 
+SKIP_DELIVERY_SEARCH_KEY = "constant_skip_delivery"      # utils/step1_search_ledger.py
+SKIP_DELIVERY_STUDY_ATTR = "constant_skip_delivery"      # Optuna study user attribute
+SKIP_DELIVERY_CHECKPOINT_KEY = "constant_skip_delivery"  # D6.2 run-context component
+SKIP_DELIVERY_ON = "trial_range"
+
+
+def _skip_delivery_on(coordinator):
+    """The run's switch through the ONE validator (miner.range_miner_coordinator.
+    validate_skip_delivery): an absent attribute and `False` are off, `True` is on, any
+    other value is refused before any study or dispatch."""
+    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
+    try:
+        return validate_skip_delivery(getattr(coordinator, 'deliver_skip_range', False),
+                                      where="Step 1 child")
+    except MinerMetadataError as exc:
+        raise Step1SearchPreflightError(str(exc)) from exc
+
+
+def _step1_skip_delivery_preflight(search_ctx, deliver_on, resume_study=False,
+                                   study_name=''):
+    """[SKIP-DELIVERY SWITCH] Switched-on trials never share a search, a study or (see
+    `_prepare_checkpoint_run_context`) a checkpoint with baseline trials
+    (docs/drafts/miner_skip_switch_v1/PLAN.md §4; Beta X-MINER-SKIP-SWITCH R1 Q2).
+    Raises Step1SearchPreflightError BEFORE any study is created or loaded and before any
+    checkpoint is recovered; refuses, never adopts."""
+    recorded = None
+    if search_ctx is not None:
+        space = search_ctx["record"].search_space or {}
+        recorded = space.get(SKIP_DELIVERY_SEARCH_KEY) if isinstance(space, dict) else None
+    if deliver_on and search_ctx is None:
+        raise Step1SearchPreflightError(
+            "--deliver-skip-range needs a Step 1 search (--step1-search-id) opened with "
+            "deliver_skip_range: true, so its trials get a study of their own")
+    if deliver_on and recorded != SKIP_DELIVERY_ON:
+        raise Step1SearchPreflightError(
+            f"--deliver-skip-range: search {search_ctx['record'].search_id} was opened "
+            f"without it (search_space.{SKIP_DELIVERY_SEARCH_KEY}={recorded!r}); open a "
+            f"separate search with deliver_skip_range: true")
+    if not deliver_on and recorded is not None:
+        raise Step1SearchPreflightError(
+            f"search {search_ctx['record'].search_id} was opened with "
+            f"deliver_skip_range ({SKIP_DELIVERY_SEARCH_KEY}={recorded!r}); a baseline "
+            f"run may not add trials to it")
+    # the study: an existing study carries its arm as a user attribute, set on the
+    # first trial of a switched study (_skip_delivery_study_check); a legacy or baseline
+    # study has none
+    if deliver_on and resume_study and not study_name:
+        raise Step1SearchPreflightError(
+            "--deliver-skip-range with --resume-study but no --study-name: automatic "
+            "selection could pick a baseline study; name the switched study or start fresh")
+    if resume_study and study_name and os.path.exists(f"optuna_studies/{study_name}.db"):
+        import optuna as _op
+        tag = (_op.load_study(study_name=study_name,
+                              storage=_step1_storage_url(study_name)).user_attrs or {}
+               ).get(SKIP_DELIVERY_STUDY_ATTR)
+        if deliver_on and tag != SKIP_DELIVERY_ON:
+            raise Step1SearchPreflightError(
+                f"--deliver-skip-range: study {study_name!r} was not created by a "
+                f"switched-on run ({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a switched search "
+                f"never adopts a baseline or legacy study")
+        if not deliver_on and tag is not None:
+            raise Step1SearchPreflightError(
+                f"study {study_name!r} belongs to a switched-on run "
+                f"({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a baseline run may not resume it")
+
+
+def _skip_delivery_study_check(study, deliver_on, trial_number):
+    """[SKIP-DELIVERY SWITCH] The backstop at the first trial, before its sieve, for the
+    study the optimizer actually opened (this also covers automatic resume selection).
+    On: a fresh study is tagged; an untagged study with earlier trials is refused. Off:
+    a tagged study is refused; nothing is written."""
+    tag = (study.user_attrs or {}).get(SKIP_DELIVERY_STUDY_ATTR)
+    if deliver_on:
+        if tag == SKIP_DELIVERY_ON:
+            return
+        earlier = [t for t in study.trials if t.number < int(trial_number)]
+        if tag is None and not earlier:
+            study.set_user_attr(SKIP_DELIVERY_STUDY_ATTR, SKIP_DELIVERY_ON)
+            return
+        raise Step1SearchPreflightError(
+            f"--deliver-skip-range: study {study.study_name!r} holds {len(earlier)} trial(s) "
+            f"of another arm ({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); refused before the sieve")
+    if tag is not None:
+        raise Step1SearchPreflightError(
+            f"study {study.study_name!r} belongs to a switched-on run "
+            f"({SKIP_DELIVERY_STUDY_ATTR}={tag!r}); a baseline run may not add trials to it")
+
+
+SKIP_DELIVERY_ROOT_MARKER = os.path.join(".s172_accumulator", "skip_delivery_arm")
+
+
+def _step1_skip_delivery_root_arm(deliver_on, output_root=None, create=False):
+    """[SKIP-DELIVERY SWITCH] ONE OUTPUT ROOT PER ARM (Beta X-MINER-SKIP-SWITCH R1 finding 2,
+    R3 Q2). The finalizer merges whatever generation is current in the output root, and a
+    generation becomes current BEFORE its coverage and link rows exist
+    (docs/PROPOSAL_STEP1_SEARCH_RECORD_AND_RERUN_v1_1.md §2.3), so no rule that reads the
+    link can know a generation's arm in time. The arm is therefore a property of the ROOT:
+    a switched run marks `<root>/.s172_accumulator/skip_delivery_arm` (ignored by git,
+    never read by the finalizer) before its first trial, and every generation ever
+    published there is switched. Reads no SQLite at all, so no WAL can make it stale.
+
+      on : marker present   -> must say trial_range
+           marker absent    -> a current generation means a baseline root: refused;
+                               an empty root is marked (only when `create`); at the
+                               pre-publication recheck (`create=False`) it is refused
+      off: marker present   -> refused (a switched root)
+           marker absent    -> nothing read but the marker's existence, nothing written:
+                               exactly as before
+    Called at preflight (create=True) and again immediately before finalize_run, against
+    the root whose current generation the finalizer is about to merge.
+
+    SCOPE OF THE ISOLATION CLAIM (Beta X-MINER-SKIP-SWITCH-2 R1 Q2; owner path: state the
+    limit, no lock): it holds for SEPARATE output roots per arm with ONE publisher at a
+    time, as Stage 4 ran (docs/drafts/pwc_backup_stage4_v1/SESSION_RUNBOOK.md). Two Step 1
+    publishers overlapping in one initially unmarked root are NOT isolated: the finalizer
+    selects its merge parent from `current` independently of this check. Any backup or
+    restore of the root must carry the marker; a root restored without it admits off."""
+    root = output_root or os.getcwd()
+    marker = os.path.join(root, SKIP_DELIVERY_ROOT_MARKER)
+    current = os.path.join(root, ".s172_accumulator", "current")
+    if not deliver_on:
+        if os.path.lexists(marker):
+            raise Step1SearchPreflightError(
+                f"the output root {root} belongs to the switched-on arm ({marker}); a baseline "
+                f"run may not publish into it. Use a separate output root per arm, one publisher "
+                f"at a time (the switch's isolation holds only so)")
+        return
+    if os.path.lexists(marker):
+        with open(marker, encoding="utf-8") as fh:
+            arm = fh.read().strip()
+        if arm != SKIP_DELIVERY_ON:
+            raise Step1SearchPreflightError(f"{marker} says {arm!r}, not {SKIP_DELIVERY_ON!r}")
+        return
+    if os.path.lexists(current):
+        raise Step1SearchPreflightError(
+            f"--deliver-skip-range: the output root {root} already holds a generation "
+            f"published without the switch; the finalizer would merge it. Use a separate, "
+            f"empty output root for the switched arm, one publisher at a time")
+    if not create:
+        raise Step1SearchPreflightError(
+            f"--deliver-skip-range: {marker} is missing at publication; the root was not "
+            f"marked for the switched arm")
+    print(f"[SKIP-DELIVERY] marking {root} as the switched-on arm's output root. Isolation "
+          f"holds only with a separate output root per arm and ONE publisher at a time: no "
+          f"baseline Step 1 may publish into this root while this run is live. Any backup or "
+          f"restore of this root must carry {SKIP_DELIVERY_ROOT_MARKER}.", flush=True)
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    tmp = f"{marker}.tmp-{os.getpid()}"
+    with open(tmp, "x", encoding="utf-8") as fh:
+        fh.write(SKIP_DELIVERY_ON + "\n")
+    os.replace(tmp, marker)
+
+
+def _step1_skip_delivery_exact_pin(deliver_on, pinned, trials, resume_study, skip_min, skip_max):
+    """[SKIP-DELIVERY SWITCH] Beta X-MINER-SKIP-SWITCH-2 R2 Q4: a switched run that cannot
+    sample (THE rule, utils.step1_search_ledger.skip_delivery_can_sample) consumes its pin
+    EXACTLY: returns [skip_min, skip_max], checked by the one validator, for the study
+    body (window_optimizer_bayesian.py) to draw as single-point distributions. Every
+    other run, and every off run, returns None and the study body is unchanged."""
+    if not deliver_on:
+        return None
+    from utils.step1_search_ledger import skip_delivery_can_sample
+    if skip_delivery_can_sample(pinned, trials, resume_study):
+        return None
+    from miner.range_miner_coordinator import validate_skip_delivery, MinerMetadataError
+    try:
+        validate_skip_delivery(True, skip_min, skip_max, where="Step 1 child (exact pin)")
+    except MinerMetadataError as exc:
+        raise Step1SearchPreflightError(str(exc)) from exc
+    return [int(skip_min), int(skip_max)]
+
+
+def _step1_skip_delivery_bounds_check(deliver_on, pinned=False, trials=None,
+                                     resume_study=False):
+    """[SKIP-DELIVERY SWITCH] Before any study is opened or loaded: a switched run that can
+    sample checks the full sampling domains under THE rule search open uses
+    (utils.step1_search_ledger.skip_delivery_can_sample / validate_skip_sampling_domains;
+    Beta X-MINER-SKIP-SWITCH-2 R1 Q4), so the two cannot disagree. Returns the CHECKED
+    SearchBounds object, which the caller hands to the sampler; off returns None and the
+    caller loads its bounds exactly as before."""
+    if not deliver_on:
+        return None
+    from window_optimizer import SearchBounds as _SB
+    from miner.range_miner_coordinator import MinerMetadataError
+    from utils.step1_search_ledger import skip_delivery_can_sample, validate_skip_sampling_domains
+    b = _SB.from_config()
+    if skip_delivery_can_sample(pinned, trials, resume_study):
+        try:
+            validate_skip_sampling_domains(b.min_skip_min, b.max_skip_min, b.min_skip_max,
+                                           b.max_skip_max, where="Step 1 child (sampling bounds)")
+        except MinerMetadataError as exc:
+            raise Step1SearchPreflightError(str(exc)) from exc
+    return b
+
+
 class Step1ChunkState:
     """The per-process chunk state: which trials ran here, their evidence, the chunk-open."""
 
@@ -1757,6 +1957,8 @@ class Step1ChunkState:
         self.seen.append(n)
         if self.study_name is None:
             self.study_name = optuna_trial.study.study_name
+            _skip_delivery_study_check(optuna_trial.study,
+                                       getattr(self, "skip_delivery_on", False), n)
             if self.search_ctx is not None:
                 prior = sum(1 for t in optuna_trial.study.trials if t.number < n)
                 self.chunk = self.search_ctx["ledger"].chunk_open(
@@ -2002,6 +2204,8 @@ def run_bidirectional_test(coordinator,
             # the coordinator's commit, and the result is fetched below by
             # run_id. Passing None here is what made this path inert.
             phase5_sink            = _miner_sink,
+            # [SKIP-DELIVERY SWITCH] passed ONLY when on, so a baseline call is unchanged
+            **({"deliver_skip_range": True} if _skip_delivery_on(coordinator) else {}),
         )
         if _miner_result.get("pruned"):
             return TestResult(
@@ -2564,10 +2768,25 @@ def add_window_optimizer_to_coordinator():
             test_both_modes=test_both_modes, seed_start=seed_start, seed_count=seed_count,
             max_iterations=max_iterations, resume_study=resume_study,
             study_name=study_name, n_parallel=n_parallel)
+        _s1_skip_delivery_on = _skip_delivery_on(self)
+        # the bounds first: before the named-study check loads any store
+        _s1_pinned = None not in (warm_start_window, warm_start_offset, warm_start_skip_min,
+                                  warm_start_skip_max, warm_start_fwd_thresh,
+                                  warm_start_rev_thresh, warm_start_session_idx)
+        _s1_skip_bounds = _step1_skip_delivery_bounds_check(
+            _s1_skip_delivery_on, pinned=_s1_pinned,
+            trials=max_iterations, resume_study=resume_study)
+        _s1_skip_exact_pin = _step1_skip_delivery_exact_pin(
+            _s1_skip_delivery_on, _s1_pinned, max_iterations, resume_study,
+            warm_start_skip_min, warm_start_skip_max)
+        _step1_skip_delivery_preflight(_s1_search_ctx, _s1_skip_delivery_on,
+                                       resume_study=resume_study, study_name=study_name)
+        _step1_skip_delivery_root_arm(_s1_skip_delivery_on, create=True)
         _step1_budget_preflight(resume_study=resume_study, study_name=study_name,
                                 max_iterations=max_iterations)
         _s1_chunk = Step1ChunkState(_s1_search_ctx, prng_base, test_both_modes,
                                     seed_start, seed_count, max_iterations, None)
+        _s1_chunk.skip_delivery_on = _s1_skip_delivery_on
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -3239,13 +3458,16 @@ def add_window_optimizer_to_coordinator():
                 seed_count=int(seed_count),
                 resume_checkpoint=resume_checkpoint,
                 resume_study=resume_study,
+                skip_delivery_on=_s1_skip_delivery_on,
             )
         _install_flush_run_context(_d6_2_context)
         _s1_chunk.checkpoint_run_id = _d6_2_context.run_id   # [STEP1-SEARCH S8]
 
         if not _np2_complete:
             optimizer = WindowOptimizer(self, dataset_path)
-            bounds = SearchBounds.from_config()
+            # [SKIP-DELIVERY SWITCH] on: the bounds object checked at preflight is the one
+            # the sampler uses; off: loaded exactly as before
+            bounds = _s1_skip_bounds if _s1_skip_bounds is not None else SearchBounds.from_config()
             # [S172 D6.2 §4.4] The record's `trial_number` comes from THIS
             # counter (see `test_config` below), not from `trial.number`. It is
             # a process-local RECORD ORDINAL, 1-based, that restarts at 1 every
@@ -3379,6 +3601,9 @@ def add_window_optimizer_to_coordinator():
             'warm_start_rev_thresh': warm_start_rev_thresh,
             'warm_start_session_idx': warm_start_session_idx,  # [S166] required by Optuna
         }
+        if _s1_skip_exact_pin is not None:
+            # [SKIP-DELIVERY SWITCH] only a switched run that cannot sample carries it
+            _trial_history_ctx['skip_delivery_exact_pin'] = _s1_skip_exact_pin
 
         if not _np2_complete:  # [S142-B] skip single-process search for NP2
             try:
@@ -3573,6 +3798,9 @@ def add_window_optimizer_to_coordinator():
             else ('constant',)
         )
 
+        # [SKIP-DELIVERY SWITCH] the arm, rechecked against the root whose current
+        # generation the finalizer merges (Beta R3 Q2)
+        _step1_skip_delivery_root_arm(_s1_skip_delivery_on)
         _artifact_d3_5 = _finalize_run_d3_5(
             _raw_candidates_d3_5,
             output_root=_Path_d3_5.cwd(),
