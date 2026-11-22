@@ -46,6 +46,8 @@ record. Live code was read at every anchor cited.
 | `docs/VERIFICATION_INTEGRITY_STANDARD.md:30-47`, `:68-107`; `docs/exchange/from_beta/X-PWC-STAGE1_R1_BETA_REVIEW.md:42-44` | Cleanup observation (a probe that cannot see is not "none"), test skips and reporter safety; Beta required it for PWC cleanup | ALREADY RECORDED (Beta X-PWC-SHUTDOWN R1 Finding 1). C5b and `tests/test_pwc_shutdown_reap.py` follow it |
 | `docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:82-90`, `:115-126`, `:156-167` | On-target digest verification and retained per-node provisioning evidence | ALREADY RECORDED (Finding 1). A2b keeps the provisioner's log and a per-tree `provision.ok` |
 | `docs/PWC_BACKUP_OWNER_RULINGS_20261119.md:47-50`; `docs/drafts/pwc_backup_stage3_v1/PLAN.md:299-325` | The owner's serial two-engine comparison and the same-job (F2) and comparison (F3) criteria | ALREADY RECORDED (Finding 1). The serial order is why the reap's exclusive-use assumption holds |
+| `docs/drafts/pwc_backup_stage4_v1/REDEPLOY_AND_SESSION_PLAN.md:186-201`, `:228-249` | The redeploy procedure. Its literal export pins `6d75f71` and four files | ALREADY RECORDED (Beta X-PWC-SHUTDOWN R2 Finding 1). A4b gives its own one-file export from the trees' commit |
+| `docs/CLAUDE_CODE_INSTRUCTIONS_BINDING_ADDENDUM_BETA_R1_20261113.md:24-44` | The retained-WAL rule: a stable copy, never a main-file-only read | ALREADY RECORDED (R2 Finding 1). C6 follows it |
 | `docs/exchange/from_beta/X-PWC-STAGE4_R1_BETA_REVIEW.md` | Beta's review of the Stage 4 tooling: six LIVE objections (Q2, Q3, Q5, Q6, Q7, Q8), Finding 1 | ALREADY RECORDED. This revision answers Q2, Q3 (PWC side), Q5, Q7, Q8 and Finding 1; Q6 and Q3's miner side are agent 2's |
 
 **Labels for what this runbook raises:**
@@ -258,30 +260,52 @@ at `agents/watcher_agent.py:2148`).
   `docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md` §4).
 ```bash
 # --- A2B-PROVISION BEGIN ---
+(                                      # a subshell: `exit` below ends only the block
+A2B_RC=0
 for T in $TM $TP; do
-  mkdir -p "$T/logs/stage4" || { echo "$T: cannot create logs/stage4 - STOP"; break; }
-  if cd "$T"; then
-    PYTHONPATH=. python3 -u scripts/provision_dataset_fleet.py 2>&1 | tee logs/stage4/provision.log
-    rc=("${PIPESTATUS[@]}")
-    echo "$T provisioner rc=${rc[0]} log-writer rc=${rc[1]}"
-    if [ "${rc[0]}" -eq 0 ] && [ "${rc[1]}" -eq 0 ] && [ -s logs/stage4/provision.log ]; then
-      echo "PROVISION_OK $(date -u +%FT%TZ) $(sha256sum logs/stage4/provision.log)" > logs/stage4/provision.ok
-    else
-      echo "$T: provisioning NOT confirmed - STOP"; break
-    fi
+  rm -f "$T/logs/stage4/provision.ok"  # an earlier attempt's receipt never counts for this one
+done
+for T in $TM $TP; do
+  if ! mkdir -p "$T/logs/stage4" || ! cd "$T"; then
+    echo "$T: cannot create logs/stage4 or enter the tree - STOP"; A2B_RC=1; break
+  fi
+  rm -f logs/stage4/provision.log
+  PYTHONPATH=. python3 -u scripts/provision_dataset_fleet.py 2>&1 | tee logs/stage4/provision.log
+  rc=("${PIPESTATUS[@]}")
+  echo "$T provisioner rc=${rc[0]} log-writer rc=${rc[1]}"
+  h=""
+  if [ "${rc[0]}" -eq 0 ] && [ "${rc[1]}" -eq 0 ] && [ -s logs/stage4/provision.log ] \
+     && h=$(sha256sum logs/stage4/provision.log | cut -d' ' -f1) && [ -n "$h" ] \
+     && echo "PROVISION_OK $(date -u +%FT%TZ) log_sha256=$h" > logs/stage4/provision.ok \
+     && /bin/grep -q "log_sha256=$h" logs/stage4/provision.ok; then
+    echo "$T: provisioned, receipt names log sha256 $h"
   else
-    echo "$T: cd failed - STOP"; break
+    rm -f logs/stage4/provision.ok
+    echo "$T: provisioning NOT confirmed - STOP"; A2B_RC=1; break
   fi
 done
+exit $A2B_RC
+)
+A2B_STATUS=$?
 # --- A2B-PROVISION END ---
-ls -la $TM/logs/stage4/provision.ok $TP/logs/stage4/provision.ok      # both must exist
+echo "A2b status=$A2B_STATUS"                                       # must be 0
+for T in $TM $TP; do                                                # each receipt names ITS current log
+  h=$(sha256sum "$T/logs/stage4/provision.log" | cut -d' ' -f1)
+  /bin/grep -q "log_sha256=$h" "$T/logs/stage4/provision.ok" && echo "$T receipt current" || echo "$T receipt NOT current - STOP"
+done
 ```
 - **Revised after Beta X-PWC-SHUTDOWN R1 Q7.** The first version ran before A3 created `logs/stage4/`, so `tee` lost
   both logs while still printing `rc=0`. The directory is now created first, and both the provisioner's and the log
-  writer's exit codes are checked. Success is recorded per tree in `provision.ok`.
+  writer's exit codes are checked.
+- **Revised after Beta X-PWC-SHUTDOWN R2 Q7 (LIVE).**
+  - A failed retry kept the previous attempt's `provision.ok` files and the block still returned 0. Now every
+    attempt first deletes both receipts.
+  - Each receipt records the sha256 of the log written by this attempt, and is checked against it after writing.
+  - The block's status, `A2B_STATUS`, is non-zero if either tree fails.
+  - `tests/test_stage4_miner_launch.py` A2B-RETRY runs this exact block twice (success, then a failing retry).
 - The retained per-node evidence is the contract's (`docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:82-90`,
   `:115-126`, `:156-167`).
-- **Pass:** both `provision.ok` files exist, meaning every declared node PASS (`scripts/provision_dataset_fleet.py:31`,
+- **Pass:** `A2b status=0` and both receipts current, meaning every declared node PASS (`scripts/provision_dataset_fleet.py:31`,
   `:85-95`). Otherwise stop. WATCHER still enforces its execution set before dispatch (`agents/watcher_agent.py:2112-2154`).
 - It copies the already-published immutable version and verifies the digest on each node; it never publishes and
   never moves the pointer (`:22-24`).
@@ -362,8 +386,26 @@ is launched, so no card is working. This is the only `rocm-smi` in the session, 
 `persistent/pwc_worker_service.py`, which is in the PWC TCP parity pin (`scripts/pwc_parity_gate.py:107-122`).
 - **sha256:** `f50d5489…` deployed on 2026-11-21 → `31927811fe39d14122b2afc6fa33ec926084ea059eabcc115143e855eb5c47d9`
   once the fix lands.
-- **Procedure:** the plan's §2 deploy (`REDEPLOY_AND_SESSION_PLAN.md` §2: `git archive` of the landed commit,
-  `cp -p` rollback copy, `mkdir -p`, `scp -p`, verify), for this one file, to all three CT100s.
+- **Procedure (one file, exported from the run trees' own commit).** Do NOT reuse the plan's §2 command literally: it
+  exports `6d75f71` and lists four files (`REDEPLOY_AND_SESSION_PLAN.md:186-201`, `:228-249`). That would copy the old
+  worker bytes, and A5 would refuse them (Beta X-PWC-SHUTDOWN R2 Q7).
+```bash
+STAMP=$(date -u +%Y%m%dT%H%M%SZ); EXP=/home/michael/stage4_worker_export_$STAMP; mkdir -p "$EXP"
+WANT=$(git -C $TM show $COMMIT:persistent/pwc_worker_service.py | sha256sum | cut -d' ' -f1)
+git -C $TM archive $COMMIT persistent/pwc_worker_service.py | tar -x -C "$EXP"
+[ "$(sha256sum "$EXP/persistent/pwc_worker_service.py" | cut -d' ' -f1)" = "$WANT" ] && echo "export ok $WANT" || echo "export MISMATCH - STOP"
+for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
+  ssh -n -o BatchMode=yes michael@$ip "mkdir -p /home/michael/rig_archive/pre_worker_$STAMP/persistent && \
+    cp -p /home/michael/distributed_prng_analysis/persistent/pwc_worker_service.py /home/michael/rig_archive/pre_worker_$STAMP/persistent/" \
+    || { echo "$ip: rollback copy failed - STOP"; break; }
+  scp -p "$EXP/persistent/pwc_worker_service.py" michael@$ip:/home/michael/distributed_prng_analysis/persistent/ \
+    || { echo "$ip: copy failed - STOP"; break; }
+  got=$(ssh -n -o BatchMode=yes michael@$ip "sha256sum /home/michael/distributed_prng_analysis/persistent/pwc_worker_service.py" | cut -d' ' -f1)
+  [ "$got" = "$WANT" ] && echo "$ip: worker $got" || { echo "$ip: on-rig sha256 $got != $WANT - STOP"; break; }
+done
+```
+  Then A5's PWC parity gate must PASS, and so must C2's. `$COMMIT` is the trees' commit (`b9b990c` or later), so `WANT`
+  is `31927811…` there.
 - **Approval:** it is a rig write and needs the owner's go.
 - **Unaffected:** RANGE-MINER's ten gate12 files and `miner/` (byte-identical), so gate12 parity is unaffected.
 - **If the trees use a commit without the fix:** skip A4b, and the deployed `f50d5489…` must match instead.
@@ -571,15 +613,31 @@ cd $TP
 # The check prints exactly one marker per host: PWC_NONE | PWC_FOUND (plus the processes) | PROBE_UNAVAILABLE.
 # It carries the probe-control token literally, so pgrep must find its own shell, or the probe is broken.
 CHECK='pgrep -f "PWC_PROBE_CONTROL_7f3a" >/dev/null 2>&1 || { echo PROBE_UNAVAILABLE; exit 7; }; out=$(pgrep -af "[p]wc_worker_service"); r=$?; if [ $r -eq 1 ]; then echo PWC_NONE; elif [ $r -eq 0 ]; then printf "%s\n" "$out"; echo PWC_FOUND; exit 6; else echo PROBE_UNAVAILABLE; exit 7; fi'
-res_local=$(bash -c "$CHECK"); echo "VM101 rc=$? $res_local"
+# --- C5B-STATUS BEGIN ---
+pwc_status() {   # $1 exit code, $2 output -> NONE | FOUND | UNAVAILABLE (exact marker AND its exit code)
+  local rc="$1" out="$2" last
+  last=$(printf '%s\n' "$out" | tail -n 1)
+  if [ "$rc" = "0" ] && [ "$out" = "PWC_NONE" ]; then echo NONE
+  elif [ "$rc" = "6" ] && [ "$last" = "PWC_FOUND" ] \
+       && ! printf '%s\n' "$out" | /bin/grep -qx 'PWC_NONE\|PROBE_UNAVAILABLE'; then echo FOUND
+  else echo UNAVAILABLE; fi
+}
+# --- C5B-STATUS END ---
+res_local=$(bash -c "$CHECK"); rc=$?; st=$(pwc_status "$rc" "$res_local")
+echo "VM101 rc=$rc status=$st"; printf '%s\n' "$res_local"
 for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
   res=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 michael@$ip "$CHECK"); rc=$?
-  case "$res" in *PWC_NONE*) st=NONE;; *PWC_FOUND*) st=FOUND;; *) st=UNAVAILABLE;; esac
-  [ $rc -eq 255 ] && st=UNAVAILABLE                     # ssh itself failed: no result from this rig
+  st=$(pwc_status "$rc" "$res")                         # ssh exit 255 or any mismatch -> UNAVAILABLE
   echo "$ip rc=$rc status=$st"; printf '%s\n' "$res"
 done
 ```
-- **Pass:** `VM101 … PWC_NONE`, and `status=NONE` on all three rigs.
+- **Revised after Beta X-PWC-SHUTDOWN R2 Q7 (LIVE).**
+  - **The rule:** a host is NONE only when its output is exactly `PWC_NONE` with exit 0, and FOUND only when the last
+    line is `PWC_FOUND` with exit 6 and no conflicting marker. Anything else is UNAVAILABLE: `PWC_NONE` with exit 7,
+    both markers at once, SSH exit 255, or no marker.
+  - **Before:** a `PWC_NONE` substring passed whatever the exit code.
+  - **Test:** `tests/test_stage4_miner_launch.py` C5B-STATUS runs `pwc_status` from this block.
+- **Pass:** `VM101 … status=NONE`, and `status=NONE` on all three rigs.
 - **Any `UNAVAILABLE`:** stop and report. That covers a probe error, SSH exit 255, or no marker.
 - **`FOUND` on VM101:** stop and escalate to the owner. There is no automatic kill on the dev box. With the fix, VM101's
   local workers are reaped through their own process handles.
@@ -591,7 +649,15 @@ if [ -n "$TOK" ] && REAP=$(python3 -c "from persistent_worker_coordinator import
   for ip in <each FOUND rig>; do
     out=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 michael@$ip "$REAP"); rc=$?
     if [ $rc -eq 0 ] && [ "$(printf '%s\n' "$out" | tail -1)" = "PWC_STALE_KILL_OK" ]; then
-      echo "$ip: reaped, none left"
+      # the token reap clears only THIS coordinator's workers: re-probe for ANY PWC worker
+      res=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 michael@$ip "$CHECK"); rc2=$?
+      st2=$(pwc_status "$rc2" "$res")
+      if [ "$st2" = "NONE" ]; then
+        echo "$ip: this coordinator's workers reaped; fresh probe: no PWC worker left"
+      else
+        echo "$ip: fresh probe status=$st2 after the token reap - a PWC worker NOT from this coordinator, or no observation - STOP and escalate to the owner"
+        printf '%s\n' "$res"
+      fi
     else
       echo "$ip: reap NOT confirmed (rc=$rc) - STOP"; printf '%s\n' "$out"
     fi
@@ -600,7 +666,9 @@ else
   echo "no launch token in the log (a coordinator without the fix) - STOP and ask the owner"
 fi
 ```
-- **Success** requires both `rc=0` and the `PWC_STALE_KILL_OK` marker. `rc=6` (survivor), `rc=7` (probe unavailable),
+- **Success** requires `rc=0`, the `PWC_STALE_KILL_OK` marker, and then a fresh all-PWC probe reading NONE. The token reap
+  only shows that this coordinator's workers are gone. A worker with another token, or none, is escalated, never
+  killed here (Beta X-PWC-SHUTDOWN R2 Q7). `rc=6` (survivor), `rc=7` (probe unavailable),
   SSH failure and a missing marker are all stop conditions (§9 item 12).
 - **No token** means the workers came from a coordinator without the fix. A host-wide `[p]wc_worker_service` kill
   would hit every PWC worker on that rig, including another coordinator's, so it is the owner's decision. It comes only
@@ -620,11 +688,13 @@ python3 -u scripts/extract_pwc_bundle.py --run-dir $TP --params-json $TP/logs/st
 - **Record ordinal:** the extractor no longer assumes `_t0`. It discovers the pass files' single shared `_t<N>`
   (expected 1) and binds it to the credited trial by evidence:
   - the chunk link must record exactly one complete trial;
-  - the NPZ `trial_number` rows must equal N;
+  - when the NPZ has rows, their `trial_number` must equal N. With no rows that check is UNAVAILABLE, and `--run-log`
+    is required;
   - with `--run-log`, the log must record saving each of the four files.
 
-  An ambiguous, split or mismatched ordinal is refused. The 2026-11-21 real extraction (without `--run-log`) gave
-  rc 0, ordinal 1.
+  An ambiguous, split or mismatched ordinal is refused.
+- **History:** the 2026-11-21 extraction of Run 2 (rc 0, ordinal 1, without `--run-log`) predates the zero-row rule.
+  The current extractor refuses that same invocation for an empty NPZ and requires the log (Beta X-PWC-SHUTDOWN R2 Q7).
 - **Pass:** `BUNDLE_WRITTEN …/bundle_pwc/bundle.json`, plus the check line `NPZ seeds == union of bidirectional sets`.
 - The extractor reads `$TP` and never writes there. Its ledger reads follow
   `docs/CLAUDE_CODE_INSTRUCTIONS_BINDING_ADDENDUM_BETA_R1_20261113.md` §A:

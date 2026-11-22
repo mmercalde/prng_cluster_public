@@ -26,6 +26,7 @@ Beta X-PWC-STAGE4 R1 Q8/Q7/Q9:
                missing, malformed or RANGE-MINER params file, or a failed cd, starts
                NOTHING; a valid PWC params file reaches nohup with that JSON
 """
+import hashlib
 import json
 import os
 import shutil
@@ -270,36 +271,84 @@ def a2b_block():
     return src[src.index("# --- A2B-PROVISION BEGIN ---"):src.index("# --- A2B-PROVISION END ---")]
 
 
-def a2b_case(tag, rc_tm, rc_tp):
+def a2b_trees(tag):
     base = os.path.join(OUT, "a2b_" + tag)
-    trees = {}
+    trees = {n: os.path.join(base, n) for n in ("tm", "tp")}
+    for t_ in trees.values():
+        os.makedirs(os.path.join(t_, "scripts"), exist_ok=True)       # NO logs/stage4: a fresh tree
+    return base, trees
+
+
+def a2b_run(base, trees, rc_tm, rc_tp, attempt):
     for name, rc in (("tm", rc_tm), ("tp", rc_tp)):
-        t = os.path.join(base, name)
-        os.makedirs(os.path.join(t, "scripts"))                 # NO logs/stage4: a fresh tree
-        with open(os.path.join(t, "scripts", "provision_dataset_fleet.py"), "w") as f:
-            f.write(f"print('node rrig6600: PASS (stub)'); raise SystemExit({rc})\n")
-        trees[name] = t
-    script = os.path.join(base, "a2b.sh")
+        with open(os.path.join(trees[name], "scripts", "provision_dataset_fleet.py"), "w") as f:
+            f.write(f"print('attempt {attempt} node rrig6600: stub'); raise SystemExit({rc})\n")
+    script = os.path.join(base, f"a2b_{attempt}.sh")
     with open(script, "w") as f:
-        f.write(a2b_block())
+        f.write(a2b_block() + 'echo "A2B_STATUS=$A2B_STATUS"\n')
     env = dict(os.environ, TM=trees["tm"], TP=trees["tp"])
     r = subprocess.run(["bash", script], cwd=base, capture_output=True, text=True, timeout=60, env=env)
-    ok = {n: os.path.exists(os.path.join(t, "logs", "stage4", "provision.ok")) for n, t in trees.items()}
-    logs = {n: os.path.exists(os.path.join(t, "logs", "stage4", "provision.log")) for n, t in trees.items()}
-    return r, ok, logs
+    st = [l for l in r.stdout.splitlines() if l.startswith("A2B_STATUS=")]
+    assert st, r.stdout[-400:]
+    status = int(st[-1].split("=")[1])
+    ok, current = {}, {}
+    for n, t_ in trees.items():
+        okp, logp = (os.path.join(t_, "logs", "stage4", x) for x in ("provision.ok", "provision.log"))
+        ok[n] = os.path.exists(okp)
+        current[n] = (ok[n] and os.path.exists(logp) and
+                      hashlib.sha256(open(logp, "rb").read()).hexdigest() in open(okp).read())
+    return r, status, ok, current
 
 
 def a2b_ok():
-    r, ok, logs = a2b_case("ok", 0, 0)
-    assert ok == {"tm": True, "tp": True} and logs == {"tm": True, "tp": True}, (ok, logs, r.stdout)
-    return "fresh trees (no logs/stage4): both logs kept, both provision.ok written"
+    base, trees = a2b_trees("ok")
+    r, status, ok, current = a2b_run(base, trees, 0, 0, 1)
+    assert status == 0 and ok == {"tm": True, "tp": True} and current == {"tm": True, "tp": True}, \
+        (status, ok, current, r.stdout[-300:])
+    return "fresh trees: status 0, both receipts name their current log's sha256"
 
 
 def a2b_fail():
-    r, ok, logs = a2b_case("fail", 1, 0)
-    assert ok == {"tm": False, "tp": False}, (ok, r.stdout)
-    assert "NOT confirmed - STOP" in r.stdout and logs["tm"], r.stdout
-    return "provisioner rc 1 on the first tree: STOP, no provision.ok anywhere, its log kept"
+    base, trees = a2b_trees("fail")
+    r, status, ok, _ = a2b_run(base, trees, 1, 0, 1)
+    assert status != 0 and ok == {"tm": False, "tp": False}, (status, ok, r.stdout[-300:])
+    assert "NOT confirmed - STOP" in r.stdout
+    return f"provisioner rc 1 on the first tree: status {status}, no receipt anywhere"
+
+
+def a2b_retry():
+    """[Beta X-PWC-SHUTDOWN R2 Q7] success, then a retry whose first tree fails: the old
+    receipts must not survive, and the block must report failure."""
+    base, trees = a2b_trees("retry")
+    _, s1, ok1, cur1 = a2b_run(base, trees, 0, 0, 1)
+    assert s1 == 0 and all(ok1.values()) and all(cur1.values()), (s1, ok1, cur1)
+    r, s2, ok2, _ = a2b_run(base, trees, 1, 0, 2)
+    assert s2 != 0, f"retry status {s2}"
+    assert ok2 == {"tm": False, "tp": False}, f"a stale receipt survived the failed retry: {ok2}"
+    return f"attempt 1 ok; failing retry: status {s2}, both earlier receipts removed"
+
+
+def c5b_status_fn():
+    src = open(RUNBOOK).read()
+    return src[src.index("# --- C5B-STATUS BEGIN ---"):src.index("# --- C5B-STATUS END ---")]
+
+
+def c5b_status():
+    """[Beta X-PWC-SHUTDOWN R2 Q7] exact marker AND its exit code; Beta's two stub cases
+    (PWC_NONE with exit 7; PWC_NONE and PWC_FOUND together with exit 6) are UNAVAILABLE."""
+    cases = [("0", "PWC_NONE", "NONE"), ("7", "PWC_NONE", "UNAVAILABLE"),
+             ("6", "PWC_NONE\nPWC_FOUND", "UNAVAILABLE"), ("6", "123 pwc_worker_service x\nPWC_FOUND", "FOUND"),
+             ("255", "", "UNAVAILABLE"), ("0", "PWC_NONEX", "UNAVAILABLE"), ("0", "", "UNAVAILABLE"),
+             ("7", "PROBE_UNAVAILABLE", "UNAVAILABLE"), ("6", "PROBE_UNAVAILABLE\nPWC_FOUND", "UNAVAILABLE"),
+             ("0", "x\nPWC_NONE", "UNAVAILABLE")]
+    bad = []
+    for rc, out, want in cases:
+        r = subprocess.run(["bash", "-c", c5b_status_fn() + f'\npwc_status {rc} "$(printf "{out}")"'],
+                           capture_output=True, text=True, timeout=30)
+        if r.stdout.strip() != want:
+            bad.append((rc, out, r.stdout.strip(), want))
+    assert not bad, bad
+    return f"{len(cases)} (exit code, output) cases classified, incl. Beta's two stub cases"
 
 
 GATES = [
@@ -334,6 +383,8 @@ GATES = [
     ("C5B-CHECK probe (Beta X-PWC-SHUTDOWN R1 Q7)", c5b_check),
     ("A2B-OK fresh trees keep their logs", a2b_ok),
     ("A2B-FAIL provisioner failure stops", a2b_fail),
+    ("A2B-RETRY failed retry leaves no stale receipt (Beta R2 Q7)", a2b_retry),
+    ("C5B-STATUS exact marker and exit code (Beta R2 Q7)", c5b_status),
 ]
 
 

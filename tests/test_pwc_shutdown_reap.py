@@ -18,7 +18,11 @@ Worker (persistent/pwc_worker_service.py — a rig file):
   W4 unplanned loss BEFORE any session -> keeps retrying (the recorded behaviour)
   W-MUTANT-A / -B controlled mutations of the CURRENT source (not git HEAD, so a clean
      checkout after landing still exercises them): A removes the planned-shutdown exit
-     (W1 must fail), B moves `_had_session = True` back after `_main_loop()` (W3 must fail)
+     (W1 must fail), B moves `_had_session = True` back after `_main_loop()` (W3 must fail).
+     [Beta R2 Q8] the mutant is built OUTSIDE the detector's handler; a missing or duplicate
+     anchor raises MutationNotApplied (not an AssertionError) and FAILS the gate
+  W-MUTANT-SELFTEST a whitespace-broken and a duplicated anchor are reported as
+     MutationNotApplied, never credited as a detection
 Coordinator (persistent_worker_coordinator.py — VM101 only):
   C1 classify_shutdown_reap: exited / killed / survivor / unavailable / error
   C2 shutdown(): transport stop, THEN the token-bound reap of every launch-attempted rig and
@@ -156,10 +160,17 @@ MUT_B = ('''                _had_session = True
                 _had_session = True''')
 
 
-def mutated(*edits):
-    src = open(WORKER_SRC).read()
+class MutationNotApplied(Exception):
+    """A mutation anchor is missing or not unique: the mutant was NOT built. Deliberately not
+    an AssertionError, so a detector's handler can never count it as a detection (VIR-2)."""
+
+
+def mutated(*edits, src=None):
+    src = open(WORKER_SRC).read() if src is None else src
     for old, new in edits:
-        assert src.count(old) == 1, f"mutation anchor not found exactly once: {old[:60]!r}"
+        n = src.count(old)
+        if n != 1:
+            raise MutationNotApplied(f"anchor found {n} times (need exactly 1): {old[:60]!r}")
         src = src.replace(old, new)
     mod = types.ModuleType("pwc_worker_service_mutant")
     mod.__file__ = WORKER_SRC
@@ -167,20 +178,47 @@ def mutated(*edits):
     return mod
 
 
-def w_mutant_a():
+def run_mutant(edits, detector, src=None):
+    """[Beta X-PWC-SHUTDOWN R2 Q8] Build the mutant FIRST, outside any handler: a missing or
+    duplicated anchor raises MutationNotApplied and fails the gate. Only then run the
+    detector, and only its AssertionError counts as a detection."""
+    mod = mutated(*edits, src=src)
     try:
-        w1(mutated(MUT_A, MUT_A2))
-    except AssertionError:
-        return "without the planned-shutdown exit, W1 fails (the worker reconnects)"
-    raise AssertionError("W1 passed against the mutant: it does not test the exit")
+        detector(mod)
+    except AssertionError as exc:
+        return str(exc)[:80]
+    raise AssertionError(f"{detector.__name__} passed against the mutant: it does not detect it")
+
+
+def w_mutant_a():
+    run_mutant((MUT_A, MUT_A2), w1)
+    return "without the planned-shutdown exit, W1 fails (the worker reconnects)"
 
 
 def w_mutant_b():
-    try:
-        w3(mutated(MUT_B))
-    except AssertionError:
-        return "with _had_session set only after _main_loop returns, W3 fails (retries forever)"
-    raise AssertionError("W3 passed against the mutant: it does not test the session timing")
+    run_mutant((MUT_B,), w3)
+    return "with _had_session set only after _main_loop returns, W3 fails (retries forever)"
+
+
+def w_mutant_selftest():
+    """Beta's case: a whitespace-only source edit breaks a mutation anchor. That, and a
+    duplicated anchor, must FAIL the mutant gate (MutationNotApplied), never be credited as
+    a detection."""
+    src = open(WORKER_SRC).read()
+    old_a = "            if self._shutdown_requested:\n                log.info("
+    old_b = "                _had_session = True\n"
+    assert src.count(old_a) == 1 and src.count(old_b) == 1, "self-test anchors moved"
+    broken_a = src.replace(old_a, old_a.replace("if self.", "if  self."))      # whitespace only
+    broken_b = src.replace(old_b, old_b.replace("_had_session = True", "_had_session  = True"))
+    duplicated = ((("self.worker_id", "self.worker_id"),), w3)                 # occurs many times
+    for edits, det, text in (((MUT_A, MUT_A2), w1, broken_a), ((MUT_B,), w3, broken_b),
+                             (duplicated[0], duplicated[1], src)):
+        try:
+            run_mutant(edits, det, src=text)
+        except MutationNotApplied:
+            continue
+        raise AssertionError(f"a broken or duplicated anchor for {det.__name__} was credited")
+    return "whitespace-broken anchors (A, B) and a duplicated anchor FAIL as MutationNotApplied"
 
 
 def c1():
@@ -433,6 +471,7 @@ GATES = [
     ("W4 no session yet -> keeps retrying (unchanged)", w4),
     ("W-MUTANT-A no planned-shutdown exit -> W1 fails", w_mutant_a),
     ("W-MUTANT-B session counted after main loop -> W3 fails", w_mutant_b),
+    ("W-MUTANT-SELFTEST broken or duplicated anchor fails the gate", w_mutant_selftest),
     ("C1 reap result classification", c1),
     ("C2 shutdown(): stop, token-bound reap, faults recorded", c2),
     ("C3 reap shell on real bash: exited/killed/survivor/unavailable", c3),

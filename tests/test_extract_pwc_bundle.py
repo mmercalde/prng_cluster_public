@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """test_extract_pwc_bundle.py — scripts/extract_pwc_bundle.py on a synthetic PWC run tree.
-CPU only; no GPU, no rig, no live tree. Files go under <root>/logs/ (git-ignored).
+CPU only; no GPU, no rig, no live tree. Files go under a tempfile.mkdtemp() directory,
+outside any repository and every live path (checked first), removed on PASS.
 
 Run from the repository root:   python3 -u tests/test_extract_pwc_bundle.py
 
@@ -34,6 +35,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -41,7 +43,12 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
-OUT = os.path.join(ROOT, "logs", "test_extract_pwc_bundle")
+# [b9b990c defect, 2026-11-21] The scratch run trees live OUTSIDE any repository tree. Under
+# <repo>/logs/ they were under the live path when the suite ran from the main tree
+# (~/distributed_prng_analysis), and G-SUBPROCESS, which runs the CLI with its DEFAULT live
+# paths, was correctly refused: 44/45 on main, 45/45 only in a worktree. main() checks the
+# location before any gate runs.
+OUT = tempfile.mkdtemp(prefix="test_extract_pwc_bundle_")
 TOOL = os.path.join(ROOT, "scripts", "extract_pwc_bundle.py")
 CMP = os.path.join(ROOT, "scripts", "compare_engine_outputs.py")
 
@@ -707,11 +714,25 @@ GATES = [
 ]
 
 
+def scratch_outside_repo_and_live():
+    """The suite's scratch must be outside this repository and outside every path the
+    extractor treats as live (X.LIVE_PATHS), or G-SUBPROCESS tests the wrong thing."""
+    o = os.path.realpath(OUT)
+    for root in (ROOT,) + tuple(X.LIVE_PATHS):
+        r = os.path.realpath(root)
+        if o == r or o.startswith(r + os.sep):
+            return f"scratch {o} is inside {r}"
+    return None
+
+
 def main():
-    if os.path.isdir(OUT):
-        shutil.rmtree(OUT)
-    os.makedirs(OUT)
     print("VERIFICATION test_extract_pwc_bundle START", flush=True)
+    bad = scratch_outside_repo_and_live()
+    if bad:
+        print(f"[FAIL] scratch location: {bad}")
+        print("RESULT: FAIL")
+        return 1
+    print(f"scratch: {OUT} (outside the repository and every live path)", flush=True)
     passed = 0
     for name, fn in GATES:
         try:
@@ -721,6 +742,10 @@ def main():
             print(f"[FAIL] {name}: {type(exc).__name__}: {exc}", flush=True)
     print(f"\n{passed}/{len(GATES)} PASS")
     print("RESULT: PASS" if passed == len(GATES) else "RESULT: FAIL")
+    if passed == len(GATES):
+        shutil.rmtree(OUT, ignore_errors=True)      # kept on failure, for inspection
+    else:
+        print(f"scratch kept for inspection: {OUT}")
     print("VERIFICATION test_extract_pwc_bundle COMPLETE", flush=True)
     return 0 if passed == len(GATES) else 1
 
