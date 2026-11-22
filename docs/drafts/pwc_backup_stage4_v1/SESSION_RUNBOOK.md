@@ -390,20 +390,63 @@ is launched, so no card is working. This is the only `rocm-smi` in the session, 
   exports `6d75f71` and lists four files (`REDEPLOY_AND_SESSION_PLAN.md:186-201`, `:228-249`). That would copy the old
   worker bytes, and A5 would refuse them (Beta X-PWC-SHUTDOWN R2 Q7).
 ```bash
-STAMP=$(date -u +%Y%m%dT%H%M%SZ); EXP=/home/michael/stage4_worker_export_$STAMP; mkdir -p "$EXP"
+# --- A4B-REDEPLOY BEGIN ---
+(                                      # a subshell: `exit` below ends only the block
+set -o pipefail                        # a failed `git archive` fails the export, not only `tar`
+STAMP=$(date -u +%Y%m%dT%H%M%SZ); EXP=/home/michael/stage4_worker_export_$STAMP
 WANT=$(git -C $TM show $COMMIT:persistent/pwc_worker_service.py | sha256sum | cut -d' ' -f1)
-git -C $TM archive $COMMIT persistent/pwc_worker_service.py | tar -x -C "$EXP"
-[ "$(sha256sum "$EXP/persistent/pwc_worker_service.py" | cut -d' ' -f1)" = "$WANT" ] && echo "export ok $WANT" || echo "export MISMATCH - STOP"
+if ! git -C $TM cat-file -e $COMMIT:persistent/pwc_worker_service.py || [ -z "$WANT" ] || ! mkdir -p "$EXP" \
+   || ! git -C $TM archive $COMMIT persistent/pwc_worker_service.py | tar -x -C "$EXP" \
+   || [ "$(sha256sum "$EXP/persistent/pwc_worker_service.py" 2>/dev/null | cut -d' ' -f1)" != "$WANT" ]; then
+  echo "export failed or digest != $WANT - STOP: no rig was touched"; exit 1
+fi
+echo "export ok $WANT"
+A4B_RC=0
 for ip in 192.168.3.122 192.168.3.156 192.168.3.164; do
-  ssh -n -o BatchMode=yes michael@$ip "mkdir -p /home/michael/rig_archive/pre_worker_$STAMP/persistent && \
-    cp -p /home/michael/distributed_prng_analysis/persistent/pwc_worker_service.py /home/michael/rig_archive/pre_worker_$STAMP/persistent/" \
-    || { echo "$ip: rollback copy failed - STOP"; break; }
-  scp -p "$EXP/persistent/pwc_worker_service.py" michael@$ip:/home/michael/distributed_prng_analysis/persistent/ \
-    || { echo "$ip: copy failed - STOP"; break; }
+  if ! ssh -n -o BatchMode=yes michael@$ip "mkdir -p /home/michael/rig_archive/pre_worker_$STAMP/persistent && \
+       cp -p /home/michael/distributed_prng_analysis/persistent/pwc_worker_service.py /home/michael/rig_archive/pre_worker_$STAMP/persistent/"; then
+    echo "$ip: rollback copy failed - STOP"; A4B_RC=1; break
+  fi
+  if ! scp -p "$EXP/persistent/pwc_worker_service.py" michael@$ip:/home/michael/distributed_prng_analysis/persistent/; then
+    echo "$ip: copy failed - STOP (restore from /home/michael/rig_archive/pre_worker_$STAMP if the file changed)"; A4B_RC=1; break
+  fi
   got=$(ssh -n -o BatchMode=yes michael@$ip "sha256sum /home/michael/distributed_prng_analysis/persistent/pwc_worker_service.py" | cut -d' ' -f1)
-  [ "$got" = "$WANT" ] && echo "$ip: worker $got" || { echo "$ip: on-rig sha256 $got != $WANT - STOP"; break; }
+  if [ "$got" != "$WANT" ]; then
+    echo "$ip: on-rig sha256 '$got' != $WANT - STOP"; A4B_RC=1; break
+  fi
+  echo "$ip: worker $got"
 done
+exit $A4B_RC
+)
+A4B_STATUS=$?
+# --- A4B-REDEPLOY END ---
+echo "A4b status=$A4B_STATUS"          # must be 0 before A5; non-zero: stop, report, do not launch
 ```
+- **Revised after Beta X-PWC-SHUTDOWN R3 Q7 (LIVE).** Beta stubbed `tar` to leave a partial file and exit 2. The old
+  block printed `export MISMATCH - STOP` and still entered the copy loop, which could overwrite a deployed worker, and
+  then exited 0.
+- **Now:**
+  - the copy loop is reached only after a successful export, `pipefail` included, whose digest equals `WANT`. Otherwise
+    the block exits 1 before any rig is touched;
+  - any failed rig step (the rollback copy, the copy, or the on-rig digest) sets `A4B_STATUS` non-zero and stops the
+    loop;
+  - each rig's rollback copy is taken before its file is replaced.
+- **Dry-run only, never on rigs.** The block was run locally (2026-11-21) with `ssh`, `scp` and `tar` replaced by stubs
+  and `TM` set to a checkout at `ab2d330`:
+
+  | Case | `A4B_STATUS` | Rig calls |
+  |---|---|---|
+  | Partial `tar` export, exit 2 (Beta's case) | 1 | none |
+  | Unknown commit | 1 | none |
+  | Clean | 0 | all |
+  | `scp` fails | 1 | stopped at the first rig |
+  | Wrong on-rig digest | 1 | stopped at the first rig |
+
+  No test file encodes this, since the change was documents only. The thread is out of review rounds, so Beta has not
+  reviewed this revision.
+- **Governing records:** the on-target digest and retained-evidence rules (`docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:82-90`,
+  `:115-126`, `:156-167`), applied here to the worker file. A check that cannot observe is not a pass
+  (`docs/VERIFICATION_INTEGRITY_STANDARD.md:30-47`, `:68-107`). Both were Beta's R3 Finding 1 citations.
   Then A5's PWC parity gate must PASS, and so must C2's. `$COMMIT` is the trees' commit (`b9b990c` or later), so `WANT`
   is `31927811…` there.
 - **Approval:** it is a rig write and needs the owner's go.

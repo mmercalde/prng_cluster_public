@@ -1,7 +1,8 @@
 # RESULT: PWC full backup, Stage 4: the first two-engine session (2026-11-21)
 
 A plain record of what ran, what it showed and what is open. Written by Claude (Team Alpha, agent 1) in
-`/home/michael/tfm_worktrees/pwc-backup`, at `b9b990c` plus uncommitted fixes.
+`/home/michael/tfm_worktrees/pwc-backup`. First written at `b9b990c` and landed in `ab2d330`; revised afterwards
+(uncommitted at the time of writing) for Beta R3 Finding 2 and the measured facts in §7a.
 
 The run trees and `logs/stage4_session` were read, read-only. Items the Alpha lead reported but this session could not
 read are marked **(lead-reported)**.
@@ -30,6 +31,8 @@ read are marked **(lead-reported)**.
 | `docs/exchange/from_beta/X-PWC-STAGE4_R1_BETA_REVIEW.md`, `_R2_…`; `X-PWC-SHUTDOWN_R1_BETA_REVIEW.md`, `_R2_…` | Beta's reviews of the tooling and the shutdown fix | ALREADY RECORDED |
 | `docs/exchange/from_beta/X-PWC-STAGE2_R1_BETA_REVIEW.md:26`, `:58-62` | Q3 "Five strategies on the rigs": NEEDS EVIDENCE, with the measurements Beta asked for | ALREADY RECORDED, open (§8) |
 | `docs/PROPOSAL_S96B_PERSISTENT_GPU_WORKERS_v1_0.md:64-70`; `docs/PROPOSAL_PWC_LIFECYCLE_FIX_S156_v2_0.md:271-293` | The worker exits on shutdown; an explicit reap at shutdown | ALREADY RECORDED; implemented in `b9b990c` (§5) |
+| `docs/VERIFICATION_INTEGRITY_STANDARD.md:30-47`, `:68-107` | Mutant independence; a cleanup observation that cannot see is not a pass | ALREADY RECORDED (Beta X-PWC-SHUTDOWN R3 Finding 1) |
+| `docs/RUNTIME_DATASET_PROVISIONING_CONTRACT.md:82-90`, `:115-126`, `:156-167` | On-target digest verification and retained per-node evidence (§1's remedy) | ALREADY RECORDED (R3 Finding 1) |
 | `docs/TFM_SESSION_HANDOFF_20261114.md:76-80` (F-1) | RANGE-MINER's constant phases never receive the trial's skip range | ALREADY RECORDED, open (§8) |
 
 - **NEW:** this record; the rig-6600 reset as an observation (§7).
@@ -116,8 +119,11 @@ RANGE-MINER, which would close the NOT COMPARED fields, is parked (agent 2:
   - a session counts from READY;
   - the coordinator reaps, after the transport stops, only the workers carrying its own `--launch-token`;
   - reap targets are recorded at the launch attempt.
-- **Review:** Beta X-PWC-SHUTDOWN R1 and R2 accepted the code. R2's two LIVE items were in the runbook and tests, and
-  are fixed uncommitted.
+- **Review:** Beta X-PWC-SHUTDOWN R1 and R2 accepted the code. R2's two LIVE items were in the runbook and tests; their
+  fixes are in `ab2d330` (owner, 16:51 PST: "yes").
+  - Beta's R3 (`docs/exchange/from_beta/X-PWC-SHUTDOWN_R3_BETA_REVIEW.md`) raised one more LIVE item, runbook A4b's
+    partial-export case. It is fixed in the runbook, uncommitted at the time of writing.
+  - The thread is out of rounds, so that fix is not reviewed.
 - **Redeploy** (owner-approved, 15:46-15:59 PST): `persistent/pwc_worker_service.py` copied to the rigs.
   - PWC parity before (`logs/stage4_session/pwc_parity_pre_redeploy.json`, 23:46 UTC): rrig6600b and rrig6600c 12
     MATCH plus 1 MISMATCH each (the worker file); **rrig6600 13 UNAVAILABLE (`ssh_transport_failure`)**, see §7.
@@ -155,6 +161,36 @@ RANGE-MINER, which would close the NOT COMPARED fields, is parked (agent 2:
 - **Recorded as an observation, not a lead conclusion.** Whether it relates to the open rig GPU-fault leads
   (`docs/LEADS.md` L-6, L-7) is not assessed here.
 
+## 7a. Further measured facts, with their limits
+
+- **Kernel logs (lead-reported; this session could not read the hosts):**
+  - **When and where:** at 17:11 PST, on the Proxmox hosts of rig-6600b and rig-6600c, for the windows 13:35-13:56
+    (Run 2) and 16:05-16:16 (confirmation run).
+  - **What was searched for:** GCVM, PROTECTION_FAULT, page fault, ring timeout, GPU reset, `*ERROR*`, AER,
+    Hardware Error, MES fail.
+  - **Result:** 0 fault-like lines. The windows held 17 and 1 kernel lines on one host and 16 and 1 on the other.
+  - **Not read:** rig-6600's host.
+  - **Limits:** an absence of those strings in those windows on two of three hosts. It is not a health claim, and it
+    says nothing about rig-6600.
+- **CuPy cache reset before launch** (verified in the logs). Both PWC runs logged `[PWC-CACHE-RESET] <rig>:
+  /tmp/cupy_cache_gpu_0..7 emptied and verified` for all three rigs before any worker launched:
+  - Run 2, 13:45:43-13:45:55 (`~/stage4_run_pwc/logs/stage4/pwc_run.log:150`, `:188`, `:226`);
+  - the confirmation run, 16:08:10-16:08:23 (`~/stage4_run_pwc2/logs/stage4/pwc_run.log:152`, `:190`, `:228`).
+- **Wall times** (verified in the logs):
+
+  | Run | From | To | Duration |
+  |---|---|---|---|
+  | RANGE-MINER | all 25 workers registered 13:39:07.9 (`~/stage4_run_miner/logs/gate12_20261121_133719.log:151`; the first registered at 13:39:05.4, `:127`) | trial commit cleanup done 13:40:57.8 (`:200`) | about 1 min 50 s (1 min 52 s from the first registration) |
+  | PWC Run 2 | `25 workers launched` 13:45:58.7 (`~/stage4_run_pwc/logs/stage4/pwc_run.log:262`) | `transport stopped` 13:50:49.3 (`:86243`) | 4 min 50.6 s |
+  | PWC confirmation | 16:08:26.5 (`~/stage4_run_pwc2/logs/stage4/pwc_run.log:264`) | 16:13:27.5 (`:86245`) | 5 min 1 s |
+
+  **Not a full-size speed comparison:**
+  - PWC ran inside its stable envelope: 8 workers per rig, 25,000 seeds per chunk, 10,738 chunks per pass (the pass
+    files' `pwc_pass_accounting`).
+  - RANGE-MINER ran only 4 stripes per phase, 2^26 seeds each (`logs/stage4_session/bundle_miner/bundle.json` geometry
+    `miner_stripes_per_phase`), so at most 4 of its workers held a stripe at once.
+  - The two engines' times at full size are not measured here.
+
 ## 8. Open items
 
 1. **Beta's X-PWC-STAGE2 R1 Q3, five strategies on the rigs** (NEEDS EVIDENCE, `X-PWC-STAGE2_R1_BETA_REVIEW.md:58-62`).
@@ -184,8 +220,10 @@ RANGE-MINER, which would close the NOT COMPARED fields, is parked (agent 2:
 4. **RANGE-MINER constant skip range (F-1), next.** The miner's constant phases ignore the trial's skip range and use
    the worker default (`miner/range_miner_worker.py:1293`). This comparison matched only because the trial was pinned
    to `[0,16]`, which equals that default. The skip-range switch is the next item.
-5. **Uncommitted:** the Beta X-PWC-SHUTDOWN R2 fixes (runbook and tests) and `tests/test_extract_pwc_bundle.py`'s
-   tempfile scratch. They are in `pwc-backup`, as listed in the R3 closing note draft.
+5. **Landed and open review state:**
+   - **Landed in `ab2d330`:** the Beta X-PWC-SHUTDOWN R2 fixes (runbook and tests) and `tests/test_extract_pwc_bundle.py`'s
+     tempfile scratch.
+   - **Uncommitted at the time of writing:** the R3 A4b fix (§5).
 
 ## Owner's words this session (PST, verbatim)
 
