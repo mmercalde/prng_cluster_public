@@ -324,6 +324,31 @@ def test_duplicate_record():
 
 
 @gate
+def test_repeated_draw():
+    """R26 (Beta X-E2E-GRADER-LANDED R1 Q2): row 250 copied to index 251; a pool for each index
+    holding the outcome, bound to the bad snapshot's digest. Must exit 2, name both indices,
+    and create no output. Two sessions on one date stay legal (every fixture day has both)."""
+    c = Case("same_date_two_sessions")
+    check(c.dataset[250]["date"] == c.dataset[251]["date"] and
+          c.dataset[250]["session"] != c.dataset[251]["session"], "A-R26-FIXTURE", "fixture day lacks two sessions")
+    c.fill("A0", lambda t, y: excl(y, 2))
+    rc = c.run()
+    check(rc == 0, "A-R26-SESSION", f"two sessions of one date refused: rc={rc} {c.stderr}")
+    ds = make_dataset()
+    ds[251] = dict(ds[250])
+    c = Case("repeated_draw", dataset=ds)
+    c.fill("A0", lambda t, y: incl(y, 3))
+    dk = lambda r: (r["target"]["combined_index"], r["target"]["date"], r["target"]["session"])
+    check(dk(c.records[50])[0] == 250 and dk(c.records[51])[0] == 251 and
+          dk(c.records[50])[1:] == dk(c.records[51])[1:] and
+          all(r["dataset_sha256"] == c.ds_sha for r in c.records), "A-R26-FIXTURE", "fixture not as Beta built it")
+    rc = c.run()
+    check(rc == 2 and "dataset rows 250 and 251: repeated (date, session)" in c.stderr, "A-R26-REFUSE",
+          f"rc={rc} {c.stderr}")
+    check(not c.out.exists(), "A-R26-NOOUT", f"{c.out} was created")
+
+
+@gate
 def test_missing():
     c = Case("missing")
     c.fill("A0", lambda t, y: excl(y, 2))
@@ -697,7 +722,9 @@ def _equiv_case(name, setup, extra):
 @gate
 def test_counted_default_equivalence():
     """R22: with defaults (counted, no detail) the grader's outputs equal the authorised
-    a4d96fe7 grader's, apart from the timestamp, provenance and the recorded mode fields."""
+    a4d96fe7 grader's, apart from the timestamp, provenance and the recorded mode fields, on
+    datasets with unique (date, session) (A-EQUIV-DOMAIN); on a repeat the reference grades and
+    the current grader refuses (R26, A-EQUIV-R26)."""
     check(REFERENCE.is_file() and G.sha256_file(REFERENCE) == REFERENCE_SHA, "A-EQUIV-REF",
           f"reference grader missing or changed: {REFERENCE}")
 
@@ -743,6 +770,20 @@ def test_counted_default_equivalence():
               "A-EQUIV-STDOUT", f"{name}: stdout differs")
         check(json.loads((no / "summary.json").read_text())["mode"] == "COUNTED", "A-EQUIV-MODE",
               "counted summary must record mode COUNTED")
+        keys = [(r["date"], r["session"]) for r in c.dataset]
+        check(len(set(keys)) == len(keys), "A-EQUIV-DOMAIN", f"{name}: equivalence case has a repeated draw")
+    # R26: the one intended difference. On a dataset with a repeated (date, session) the
+    # reference graded both rows; the current grader refuses (exit 2, nothing written).
+    ds = make_dataset()
+    ds[251] = dict(ds[250])
+    c2 = Case("equiv_r26_dup", dataset=ds)
+    c2.fill("A0", lambda t, y: incl(y, 3))
+    c2.run()
+    shutil.rmtree(c2.out, ignore_errors=True)
+    ref = _subrun(REFERENCE, c2.argv, c2.dir / "out_ref")
+    new = _subrun(GRADER_PATH, c2.argv, c2.dir / "out_new")
+    check(ref.returncode == 0 and new.returncode == 2 and not (c2.dir / "out_new").exists(),
+          "A-EQUIV-R26", f"repeated draw: ref rc {ref.returncode}, new rc {new.returncode} {new.stderr[-200:]}")
 
 
 def _inspected_case(name):

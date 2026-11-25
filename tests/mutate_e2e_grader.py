@@ -179,6 +179,12 @@ MUTANTS = [
     ("M50", "                e[\"rank_tie_size\"] = int((rk == rk[y]).sum())",
      "                e[\"rank_tie_size\"] = (_MUT_HIT(\"M50\") and 1)",
      "test_rank_detail", "A-RANK-TIESIZE", "tie-group size of the drawn number not reported"),
+    ("M51", "        if key in seen:                                                       # R26",
+     "        if _MUT_HIT(\"M51\") and False:",
+     "test_repeated_draw", "A-R26-REFUSE", "repeated (date, session) accepted: one draw graded twice (R26)"),
+    ("M52", "        key = (str(d[\"date\"]), str(d[\"session\"]))",
+     "        key = (_MUT_HIT(\"M52\") and str(d[\"date\"]))",
+     "test_repeated_draw", "A-R26-SESSION", "the two sessions of one date refused as a repeat (R26)"),
 ]
 
 # ---- compare_settings.py (LL-4) mutants: (id, original, mutated, gate, tag, what) ----

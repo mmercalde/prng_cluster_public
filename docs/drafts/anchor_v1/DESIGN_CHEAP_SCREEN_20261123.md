@@ -368,7 +368,7 @@ File `docs/drafts/anchor_v1/screen_manifest_registry_DRAFT.diff`. It is a `diff 
 
 | ID | Item | Anchor |
 |---|---|---|
-| TODO-SCREEN-1 | The grader is a draft in another worktree, pinned by sha256 `c7fe48bf…` (the development pin, TASK_LOOP_ADDENDUM_3). Repin when it lands | `utils/step1_screen.py` `load_grader` |
+| TODO-SCREEN-1 | The grader is a draft in another worktree, pinned by sha256 `c7fe48bf…` (the development pin, TASK_LOOP_ADDENDUM_3). Repin when it lands. **Update 2026-11-24:** landed at `76234eb` as `scripts/diagnostics/e2e_grader.py`; R26 (repeated date/session refused, Beta X-E2E-GRADER-LANDED R1 Q2) changes it to sha256 `3ab8ce2a…`; `tests/test_step1_screen.py:53-54` now reads the landed path with that pin (`docs/drafts/e2e_v1/READY_GRADER_DUP_DRAW_20261124.md`). A screen config must name the new hash | `utils/step1_screen.py` `load_grader` |
 | TODO-SCREEN-2 | The objective is bound to the Optuna study (tag) but not yet to the Step 1 search ledger's search space (Brief II added `window_anchor_domain` there; `utils/step1_search_ledger.py`) | `screen_study_check` |
 | TODO-SCREEN-3 | The WF driver has no check that its grade range starts at or after a screen study's `selection_end_max`; the operator passes `--range-start` and `--previously-inspected` (§3). WF file not edited (read only) | `e2e_walk_forward.py` `build_declaration` |
 | TODO-SCREEN-4 | Variable-mode survivors vote with the base `prng_type`, as Step 6 does; counted per kind in the trial record | `ScreenPlan.score` |

@@ -50,8 +50,8 @@ SCRATCH = os.path.join(ROOT, "data", "test_step1_screen")
 sys.path.insert(0, ROOT)
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
-GRADER = os.path.expanduser("~/tfm_worktrees/e2e-grader/scripts/diagnostics/e2e_grader.py")
-GRADER_SHA = "c7fe48bf102daa42b284713f4b2c2508d7f21c9613a01f063be443c881fd9ace"
+GRADER = os.path.join(ROOT, "scripts", "diagnostics", "e2e_grader.py")   # landed 76234eb; was the e2e-grader worktree copy
+GRADER_SHA = "3ab8ce2a5330fe36ae638e8bf2915e23bdce08bcefc0221eb47e21177fc8f341"
 HARNESS = os.path.expanduser("~/tfm_worktrees/e2e-vote/scripts/diagnostics/e2e_vote_harness.py")
 S_STAR = 987654321
 N_ROWS, PLANT = 2000, (500, 1100)

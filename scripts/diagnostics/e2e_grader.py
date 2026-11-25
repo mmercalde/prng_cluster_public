@@ -146,6 +146,13 @@ Sources, read 2026-11-23 at 41ad509:
      grade block separately, DESCRIPTIVE and unadjusted; the arm's own result is the pooled
      one. The counted-test rule (owner ruling 08:08) is not changed: m and the verdict
      use the declared grade block only.
+ R26 One draw, one row. A dataset in which a (date, session) pair occurs at two row indices
+     is an ERROR naming both indices; it exits 2 before any output is created.
+     [Beta X-E2E-GRADER-LANDED R1 Q2, LIVE; docs/DAILY3_CONSUMER_CONTRACT_v1.md:435-449
+     (unique date/session); owner yes 2026-11-24 18:57] -> load_dataset.
+     It is the one counted-default difference from a4d96fe7 (R22): on a dataset with unique
+     (date, session) the outputs are unchanged; on one with a repeat, a4d96fe7 graded both
+     rows and this grader refuses.
 
 Controls run on every invocation (R18, map §2.7):
   - uniform-random pools of the same k_t, through the same grading path, R reps;
@@ -316,12 +323,17 @@ def load_dataset(path, expected_sha256, draw_space):
     if not isinstance(data, list) or not data:
         raise GraderError("dataset must be a non-empty list of {date, session, draw}")
     rows = []
+    seen = {}
     for i, d in enumerate(data):
         if not isinstance(d, dict) or not {"date", "session", "draw"} <= set(d):
             raise GraderError(f"dataset row {i}: needs date, session, draw")
         v = d["draw"]
         if not _is_int(v) or v < 0 or v > draw_space - 1:
             raise GraderError(f"dataset row {i}: draw {v!r} not an integer in [0, {draw_space - 1}]")
+        key = (str(d["date"]), str(d["session"]))
+        if key in seen:                                                       # R26
+            raise GraderError(f"dataset rows {seen[key]} and {i}: repeated (date, session) {key}")
+        seen[key] = i
         rows.append((str(d["date"]), str(d["session"]), v))
     return rows, actual
 
