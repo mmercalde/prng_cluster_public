@@ -1,0 +1,42 @@
+{
+ "status": "DRAFT, not applied. agent_manifests/ is HAND_LANDED_DIRS (scripts/owner_land.py): the owner lands it by hand.",
+ "fragments": {
+  "agent_manifests/reinforcement.json": {
+   "default_params": {
+    "diagnostics_level": "legacy",
+    "gradient_probe_rows": null,
+    "exclude_features": null,
+    "include_feature_groups": null,
+    "exclude_feature_groups": null
+   },
+   "args_map_primary_action": {},
+   "notes": [
+    "diagnostics_level: declares the existing default; WATCHER would then pass it explicitly",
+    "gradient_probe_rows: declares the existing default; WATCHER would then pass it explicitly",
+    "exclude_features: declares the existing default; WATCHER would then pass it explicitly",
+    "include_feature_groups: declares the existing default; WATCHER would then pass it explicitly",
+    "exclude_feature_groups: declares the existing default; WATCHER would then pass it explicitly"
+   ]
+  },
+  "agent_manifests/prediction.json": {
+   "default_params": {
+    "schema_check": null
+   },
+   "args_map_primary_action": {},
+   "notes": [
+    "schema_check: declares the existing default; WATCHER would then pass it explicitly"
+   ]
+  },
+  "agent_manifests/window_optimizer.json": {
+   "default_params": {
+    "derived_anchor_domain": false,
+    "anchor_holdout_guard": false
+   },
+   "args_map_primary_action": {},
+   "notes": [
+    "derived_anchor_domain: declares the existing default; WATCHER would then pass it explicitly",
+    "anchor_holdout_guard: declares the existing default; WATCHER would then pass it explicitly"
+   ]
+  }
+ }
+}

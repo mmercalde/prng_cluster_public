@@ -1,0 +1,1873 @@
+{
+ "categories": {
+  "R": "changes results",
+  "P": "path / input / output name",
+  "L": "logging, test, dry-run, report-only",
+  "I": "id, provenance or metadata only",
+  "F": "infrastructure / performance (result-neutral by design; not verified here)",
+  "G": "guard (aborts or fail-closed check; changes whether a result is produced, not its value)",
+  "N": "not run by the step (checker R1 attribution: the wrapper only names or copies the file)"
+ },
+ "rows": [
+  {
+   "step": 0,
+   "file": "trse_step0.py",
+   "line": 811,
+   "tree": "main",
+   "flag": "--lottery-data",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 0,
+   "file": "trse_step0.py",
+   "line": 812,
+   "tree": "main",
+   "flag": "--output",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 0,
+   "file": "trse_step0.py",
+   "line": 813,
+   "tree": "main",
+   "flag": "--k-clusters",
+   "category": "R",
+   "basis": "number of regime clusters; the context narrows Step 1 bounds",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 0,
+   "file": "trse_step0.py",
+   "line": 814,
+   "tree": "main",
+   "flag": "--recommended-window-size",
+   "category": "R",
+   "basis": "window recommended in the context read by Step 1",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 0,
+   "file": "trse_step0.py",
+   "line": 815,
+   "tree": "main",
+   "flag": "--force",
+   "category": "L",
+   "basis": "re-run even if fresh",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 0,
+   "file": "trse_step0.py",
+   "line": 816,
+   "tree": "main",
+   "flag": "--quiet",
+   "category": "L",
+   "basis": "logging",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1507,
+   "tree": "main",
+   "flag": "--config-file",
+   "category": "R",
+   "basis": "switches the procedure: runs the sieve on an existing config and skips the Optuna search",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1511,
+   "tree": "main",
+   "flag": "--lottery-file",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1517,
+   "tree": "main",
+   "flag": "--output",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1523,
+   "tree": "main",
+   "flag": "--iterations",
+   "category": "R",
+   "basis": "number of sieve iterations in config mode",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1525,
+   "tree": "main",
+   "flag": "--output-survivors",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1527,
+   "tree": "main",
+   "flag": "--output-train",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1529,
+   "tree": "main",
+   "flag": "--output-holdout",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1538,
+   "tree": "main",
+   "flag": "--forward-threshold",
+   "category": "G",
+   "basis": "UNWIRED: passing it aborts the run",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1543,
+   "tree": "main",
+   "flag": "--reverse-threshold",
+   "category": "G",
+   "basis": "UNWIRED: passing it aborts the run",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1549,
+   "tree": "main",
+   "flag": "--resume-study",
+   "category": "R",
+   "basis": "continues an existing Optuna study, so the trial history and the chosen window differ",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1553,
+   "tree": "main",
+   "flag": "--study-name",
+   "category": "I",
+   "basis": "names the study --resume-study continues",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1557,
+   "tree": "main",
+   "flag": "--resume-checkpoint",
+   "category": "F",
+   "basis": "resume from a canonical checkpoint; designed result-equal to an uninterrupted run",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1569,
+   "tree": "main",
+   "flag": "--step1-search-id",
+   "category": "I",
+   "basis": "search provenance id",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1576,
+   "tree": "main",
+   "flag": "--enable-pruning",
+   "category": "R",
+   "basis": "prunes forward_count==0 trials; changes the study's trial set (help says speed)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1578,
+   "tree": "main",
+   "flag": "--n-parallel",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1580,
+   "tree": "main",
+   "flag": "--trse-context",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1584,
+   "tree": "main",
+   "flag": "--use-persistent-workers",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1587,
+   "tree": "main",
+   "flag": "--use-zmq-sqlite",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1589,
+   "tree": "main",
+   "flag": "--pwc-transport",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1592,
+   "tree": "main",
+   "flag": "--pwc-coordinator-address",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1597,
+   "tree": "main",
+   "flag": "--min-workers",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1600,
+   "tree": "main",
+   "flag": "--worker-pool-size",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1602,
+   "tree": "main",
+   "flag": "--seed-cap-nvidia",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1604,
+   "tree": "main",
+   "flag": "--seed-cap-amd",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1606,
+   "tree": "main",
+   "flag": "--seed-start",
+   "category": "R",
+   "basis": "which seeds are searched",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1610,
+   "tree": "main",
+   "flag": "--warm-start-window",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1612,
+   "tree": "main",
+   "flag": "--warm-start-offset",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1614,
+   "tree": "main",
+   "flag": "--warm-start-skip-min",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1616,
+   "tree": "main",
+   "flag": "--warm-start-skip-max",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1618,
+   "tree": "main",
+   "flag": "--warm-start-fwd-thresh",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1620,
+   "tree": "main",
+   "flag": "--warm-start-rev-thresh",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1622,
+   "tree": "main",
+   "flag": "--warm-start-session-idx",
+   "category": "R",
+   "basis": "enqueues this value as Optuna trial 0 (operator-only pin, STEP1_EXPLICIT_PIN_KEYS)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1626,
+   "tree": "main",
+   "flag": "--rig-profile",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1635,
+   "tree": "main",
+   "flag": "--execution-set-nodes",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1648,
+   "tree": "main",
+   "flag": "--use-range-miner",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1650,
+   "tree": "main",
+   "flag": "--deliver-skip-range",
+   "category": "R",
+   "basis": "RANGE-MINER sieves the trial's own skip range instead of the baseline",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1655,
+   "tree": "main",
+   "flag": "--miner-stripe-size",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1657,
+   "tree": "main",
+   "flag": "--miner-substripes",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1662,
+   "tree": "main",
+   "flag": "--miner-output-dir",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1677,
+   "tree": "main",
+   "flag": "--staging-dir",
+   "category": "P",
+   "basis": "path or output name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1687,
+   "tree": "main",
+   "flag": "--staging-workers",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1689,
+   "tree": "main",
+   "flag": "--staging-queue-depth",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1693,
+   "tree": "main",
+   "flag": "--staging-deferred-max",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1698,
+   "tree": "main",
+   "flag": "--staging-capacity-timeout",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1708,
+   "tree": "main",
+   "flag": "--staging-high-water-files",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1717,
+   "tree": "main",
+   "flag": "--staging-high-water-bytes",
+   "category": "F",
+   "basis": "backend, transport, sizing or capacity",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1735,
+   "tree": "anchor-brief2",
+   "flag": "--derived-anchor-domain",
+   "category": "R",
+   "basis": "Optuna samples the anchor over a data-derived domain",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1743,
+   "tree": "anchor-brief2",
+   "flag": "--anchor-holdout-guard",
+   "category": "R",
+   "basis": "caps the anchor so the sieve window ends before the holdout",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1748,
+   "tree": "anchor-brief2",
+   "flag": "--step1-objective",
+   "category": "R",
+   "basis": "what Optuna maximises (default bidirectional_count = today)",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 1,
+   "file": "window_optimizer.py",
+   "line": 1756,
+   "tree": "anchor-brief2",
+   "flag": "--screen-config",
+   "category": "P",
+   "basis": "path or output name; the screen settings file used with --step1-objective",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 2,
+   "file": "backups/step6_restoration_20251223_213936/reinforcement_engine.py",
+   "line": 1102,
+   "tree": "main",
+   "flag": "--config",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2 (backups/ copy)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "backups/step6_restoration_20251223_213936/reinforcement_engine.py",
+   "line": 1105,
+   "tree": "main",
+   "flag": "--lottery-data",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2 (backups/ copy)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "backups/step6_restoration_20251223_213936/reinforcement_engine.py",
+   "line": 1107,
+   "tree": "main",
+   "flag": "--test",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2 (backups/ copy)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "backups/step6_restoration_20251223_213936/reinforcement_engine.py",
+   "line": 1109,
+   "tree": "main",
+   "flag": "--distributed",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2 (backups/ copy)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "convert_survivors_to_binary.py",
+   "line": 276,
+   "tree": "main",
+   "flag": "(positional)",
+   "category": "P",
+   "basis": "input file",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "convert_survivors_to_binary.py",
+   "line": 277,
+   "tree": "main",
+   "flag": "--output -o",
+   "category": "P",
+   "basis": "output file",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 76,
+   "tree": "main",
+   "flag": "--trials",
+   "category": "R",
+   "basis": "number of Optuna trials for the scorer search",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 77,
+   "tree": "main",
+   "flag": "--survivors",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 78,
+   "tree": "main",
+   "flag": "--train-history",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 79,
+   "tree": "main",
+   "flag": "--holdout-history",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 80,
+   "tree": "main",
+   "flag": "--study-name",
+   "category": "I",
+   "basis": "study name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 81,
+   "tree": "main",
+   "flag": "--study-db",
+   "category": "P",
+   "basis": "storage",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 82,
+   "tree": "main",
+   "flag": "--output",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 83,
+   "tree": "main",
+   "flag": "--legacy-scoring",
+   "category": "R",
+   "basis": "legacy batch_score() instead of vectorized (scorer_trial_worker.py:557); equivalence not verified",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "generate_scorer_jobs.py",
+   "line": 85,
+   "tree": "main",
+   "flag": "--sample-size",
+   "category": "R",
+   "basis": "number of seeds sampled for training",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "reinforcement_engine.py",
+   "line": 1044,
+   "tree": "main",
+   "flag": "--config",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "reinforcement_engine.py",
+   "line": 1047,
+   "tree": "main",
+   "flag": "--lottery-data",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "reinforcement_engine.py",
+   "line": 1049,
+   "tree": "main",
+   "flag": "--test",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "reinforcement_engine.py",
+   "line": 1051,
+   "tree": "main",
+   "flag": "--distributed",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "reinforcement_engine.py",
+   "line": 1053,
+   "tree": "main",
+   "flag": "--enable-diagnostics",
+   "category": "N",
+   "basis": "copied to the nodes by run_scorer_meta_optimizer.sh (:259); its CLI is not run by Step 2",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "run_scorer_meta_optimizer.sh",
+   "line": 42,
+   "tree": "step2-repair",
+   "flag": "--min-collected",
+   "category": "R",
+   "basis": "lets a study complete on fewer returned trials (only when trials are lost)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "run_scorer_meta_optimizer.sh",
+   "line": 175,
+   "tree": "main",
+   "flag": "--sample-size",
+   "category": "R",
+   "basis": "forwarded to generate_scorer_jobs.py",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "run_scorer_meta_optimizer.sh",
+   "line": 179,
+   "tree": "main",
+   "flag": "--legacy-scoring",
+   "category": "R",
+   "basis": "forwarded to generate_scorer_jobs.py",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1142,
+   "tree": "main",
+   "flag": "--jobs-file",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1144,
+   "tree": "main",
+   "flag": "--config",
+   "category": "P",
+   "basis": "cluster config",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1146,
+   "tree": "main",
+   "flag": "--output-dir",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1148,
+   "tree": "main",
+   "flag": "--preserve-paths",
+   "category": "P",
+   "basis": "path rewriting",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1150,
+   "tree": "main",
+   "flag": "--max-retries",
+   "category": "F",
+   "basis": "retries",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1152,
+   "tree": "main",
+   "flag": "--dry-run",
+   "category": "L",
+   "basis": "dry run",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 2,
+   "file": "scripts_coordinator.py",
+   "line": 1154,
+   "tree": "main",
+   "flag": "--verbose -v",
+   "category": "L",
+   "basis": "logging",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 522,
+   "tree": "main",
+   "flag": "--seeds-file",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 524,
+   "tree": "main",
+   "flag": "--train-history",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 526,
+   "tree": "main",
+   "flag": "--output-file",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 530,
+   "tree": "main",
+   "flag": "--prng-type",
+   "category": "R",
+   "basis": "PRNG used to regenerate and score each seed",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 532,
+   "tree": "main",
+   "flag": "--mod",
+   "category": "R",
+   "basis": "modulus used in scoring",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 534,
+   "tree": "main",
+   "flag": "--gpu-id",
+   "category": "F",
+   "basis": "device",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 536,
+   "tree": "main",
+   "flag": "--batch-size",
+   "category": "L",
+   "basis": "progress reporting batch size",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 540,
+   "tree": "main",
+   "flag": "--forward-survivors",
+   "category": "P",
+   "basis": "input (metadata merge)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 542,
+   "tree": "main",
+   "flag": "--reverse-survivors",
+   "category": "P",
+   "basis": "input (metadata merge)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 546,
+   "tree": "main",
+   "flag": "--holdout-history",
+   "category": "P",
+   "basis": "input (y-label)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 549,
+   "tree": "main",
+   "flag": "--verbose -v",
+   "category": "L",
+   "basis": "logging",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 553,
+   "tree": "step2-repair",
+   "flag": "--scorer-config-json",
+   "category": "I",
+   "basis": "Step 2 settings recorded on every row, not applied (Stage 1)",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 570,
+   "tree": "ch14-learn",
+   "flag": "--per-seed-sieve-features",
+   "category": "R",
+   "basis": "adds two per-seed features (schema v2)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 570,
+   "tree": "e2e-map",
+   "flag": "--per-seed-sieve-features",
+   "category": "R",
+   "basis": "adds two per-seed features (schema v2)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 573,
+   "tree": "ch14-learn",
+   "flag": "--fallback-metadata-merge",
+   "category": "R",
+   "basis": "which metadata the sequential fallback merges",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "full_scoring_worker.py",
+   "line": 573,
+   "tree": "e2e-map",
+   "flag": "--fallback-metadata-merge",
+   "category": "R",
+   "basis": "which metadata the sequential fallback merges",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_full_scoring_jobs.py",
+   "line": 24,
+   "tree": "main",
+   "flag": "--survivors",
+   "category": "N",
+   "basis": "manifest action script, but run_step3_full_scoring.sh runs generate_step3_scoring_jobs.py (:160) instead",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_full_scoring_jobs.py",
+   "line": 25,
+   "tree": "main",
+   "flag": "--config",
+   "category": "N",
+   "basis": "manifest action script, but run_step3_full_scoring.sh runs generate_step3_scoring_jobs.py (:160) instead",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_full_scoring_jobs.py",
+   "line": 26,
+   "tree": "main",
+   "flag": "--train-history",
+   "category": "N",
+   "basis": "manifest action script, but run_step3_full_scoring.sh runs generate_step3_scoring_jobs.py (:160) instead",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_full_scoring_jobs.py",
+   "line": 27,
+   "tree": "main",
+   "flag": "--holdout-history",
+   "category": "N",
+   "basis": "manifest action script, but run_step3_full_scoring.sh runs generate_step3_scoring_jobs.py (:160) instead",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_full_scoring_jobs.py",
+   "line": 28,
+   "tree": "main",
+   "flag": "--chunk-size",
+   "category": "N",
+   "basis": "manifest action script, but run_step3_full_scoring.sh runs generate_step3_scoring_jobs.py (:160) instead",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_full_scoring_jobs.py",
+   "line": 29,
+   "tree": "main",
+   "flag": "--jobs-file",
+   "category": "N",
+   "basis": "manifest action script, but run_step3_full_scoring.sh runs generate_step3_scoring_jobs.py (:160) instead",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 297,
+   "tree": "main",
+   "flag": "--survivors",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 299,
+   "tree": "main",
+   "flag": "--train-history",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 303,
+   "tree": "main",
+   "flag": "--config",
+   "category": "P",
+   "basis": "Step 2 config path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 305,
+   "tree": "main",
+   "flag": "--chunk-size",
+   "category": "F",
+   "basis": "job sizing",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 307,
+   "tree": "main",
+   "flag": "--num-gpus",
+   "category": "F",
+   "basis": "job sizing",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 309,
+   "tree": "main",
+   "flag": "--prng-type",
+   "category": "R",
+   "basis": "PRNG if not in config",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 311,
+   "tree": "main",
+   "flag": "--mod",
+   "category": "R",
+   "basis": "modulus if not in config",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 313,
+   "tree": "main",
+   "flag": "--output-file -o",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 315,
+   "tree": "main",
+   "flag": "--remote-base-path",
+   "category": "P",
+   "basis": "remote path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 317,
+   "tree": "main",
+   "flag": "--timeout",
+   "category": "F",
+   "basis": "job timeout",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 321,
+   "tree": "main",
+   "flag": "--forward-survivors",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 323,
+   "tree": "main",
+   "flag": "--reverse-survivors",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 325,
+   "tree": "main",
+   "flag": "--holdout-history",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "generate_step3_scoring_jobs.py",
+   "line": 338,
+   "tree": "step2-repair",
+   "flag": "--step2-config-mode",
+   "category": "R",
+   "basis": "pin applies Step 2's tuned settings (default off = today)",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 88,
+   "tree": "main",
+   "flag": "--survivors",
+   "category": "P",
+   "basis": "input path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 92,
+   "tree": "main",
+   "flag": "--train-history",
+   "category": "P",
+   "basis": "input path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 96,
+   "tree": "main",
+   "flag": "--holdout-history",
+   "category": "P",
+   "basis": "input path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 100,
+   "tree": "main",
+   "flag": "--config",
+   "category": "P",
+   "basis": "input path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 104,
+   "tree": "main",
+   "flag": "--chunk-size",
+   "category": "F",
+   "basis": "job sizing",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 108,
+   "tree": "main",
+   "flag": "--forward-survivors",
+   "category": "P",
+   "basis": "input path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 112,
+   "tree": "main",
+   "flag": "--reverse-survivors",
+   "category": "P",
+   "basis": "input path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 116,
+   "tree": "main",
+   "flag": "--dry-run",
+   "category": "L",
+   "basis": "dry run",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 3,
+   "file": "run_step3_full_scoring.sh",
+   "line": 127,
+   "tree": "step2-repair",
+   "flag": "--step2-config-mode",
+   "category": "R",
+   "basis": "forwarded Step 2 config mode",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 4,
+   "file": "adaptive_meta_optimizer.py",
+   "line": 1101,
+   "tree": "main",
+   "flag": "--config",
+   "category": "P",
+   "basis": "config path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 4,
+   "file": "adaptive_meta_optimizer.py",
+   "line": 1108,
+   "tree": "main",
+   "flag": "--window-results",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 4,
+   "file": "adaptive_meta_optimizer.py",
+   "line": 1110,
+   "tree": "main",
+   "flag": "--lottery-data",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 4,
+   "file": "adaptive_meta_optimizer.py",
+   "line": 1112,
+   "tree": "main",
+   "flag": "--apply",
+   "category": "R",
+   "basis": "writes the result into reinforcement_engine_config.json (:1171), which later steps read",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 4,
+   "file": "adaptive_meta_optimizer.py",
+   "line": 1114,
+   "tree": "main",
+   "flag": "--test",
+   "category": "L",
+   "basis": "self-test",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3041,
+   "tree": "main",
+   "flag": "--survivors",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3043,
+   "tree": "main",
+   "flag": "--lottery-data",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3049,
+   "tree": "main",
+   "flag": "--test-holdout",
+   "category": "R",
+   "basis": "share held out as the test set",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3051,
+   "tree": "main",
+   "flag": "--study-name",
+   "category": "I",
+   "basis": "study name",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3053,
+   "tree": "main",
+   "flag": "--storage",
+   "category": "P",
+   "basis": "storage",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3057,
+   "tree": "main",
+   "flag": "--model-type",
+   "category": "R",
+   "basis": "model family trained",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3060,
+   "tree": "main",
+   "flag": "--compare-models",
+   "category": "R",
+   "basis": "trains all families and keeps the best",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3064,
+   "tree": "main",
+   "flag": "--output-dir",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3066,
+   "tree": "main",
+   "flag": "--device",
+   "category": "F",
+   "basis": "device",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3070,
+   "tree": "main",
+   "flag": "--prng-type",
+   "category": "I",
+   "basis": "data_context fingerprint only (:1498-1505)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3072,
+   "tree": "main",
+   "flag": "--mod",
+   "category": "I",
+   "basis": "data_context fingerprint only (:1498-1505)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3074,
+   "tree": "main",
+   "flag": "--holdout-draws",
+   "category": "I",
+   "basis": "data_context metadata only (:1498-1505)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3076,
+   "tree": "main",
+   "flag": "--parent-run-id",
+   "category": "I",
+   "basis": "provenance",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3080,
+   "tree": "main",
+   "flag": "--enable-diagnostics",
+   "category": "L",
+   "basis": "diagnostics report",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3086,
+   "tree": "main",
+   "flag": "--normalize-features",
+   "category": "R",
+   "basis": "StandardScaler before NN",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3088,
+   "tree": "main",
+   "flag": "--use-leaky-relu",
+   "category": "R",
+   "basis": "activation",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3090,
+   "tree": "main",
+   "flag": "--dropout",
+   "category": "R",
+   "basis": "dropout override",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3093,
+   "tree": "main",
+   "flag": "--persistent-workers",
+   "category": "F",
+   "basis": "workers",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3096,
+   "tree": "main",
+   "flag": "--enable-vmap",
+   "category": "F",
+   "basis": "batching",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3100,
+   "tree": "main",
+   "flag": "--no-persistent-workers",
+   "category": "F",
+   "basis": "workers",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3103,
+   "tree": "main",
+   "flag": "--allow-inline-nn-fallback",
+   "category": "F",
+   "basis": "fallback trainer on subprocess failure",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3119,
+   "tree": "step2-repair",
+   "flag": "--step2-config-mode",
+   "category": "R",
+   "basis": "pin applies Step 2's tuned settings (default off = today)",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3121,
+   "tree": "step2-repair",
+   "flag": "--step2-config",
+   "category": "P",
+   "basis": "Step 2 config path",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3128,
+   "tree": "ch14-learn",
+   "flag": "--exclude-features",
+   "category": "R",
+   "basis": "training columns",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3128,
+   "tree": "e2e-map",
+   "flag": "--exclude-features",
+   "category": "R",
+   "basis": "training columns",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3131,
+   "tree": "ch14-learn",
+   "flag": "--include-feature-groups",
+   "category": "R",
+   "basis": "training columns",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3131,
+   "tree": "e2e-map",
+   "flag": "--include-feature-groups",
+   "category": "R",
+   "basis": "training columns",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3134,
+   "tree": "ch14-learn",
+   "flag": "--exclude-feature-groups",
+   "category": "R",
+   "basis": "training columns",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3134,
+   "tree": "e2e-map",
+   "flag": "--exclude-feature-groups",
+   "category": "R",
+   "basis": "training columns",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3156,
+   "tree": "ch14-diag",
+   "flag": "--diagnostics-level",
+   "category": "L",
+   "basis": "report content (training unchanged)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3161,
+   "tree": "ch14-diag",
+   "flag": "--gradient-probe-rows",
+   "category": "L",
+   "basis": "diagnostic probe",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3165,
+   "tree": "ch14-diag",
+   "flag": "--diagnostics-run-id",
+   "category": "I",
+   "basis": "report id",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3168,
+   "tree": "ch14-diag",
+   "flag": "--diagnostics-run-started-at",
+   "category": "I",
+   "basis": "report time",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3170,
+   "tree": "ch14-diag",
+   "flag": "--dead-unit-definition",
+   "category": "L",
+   "basis": "diagnostic metric",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3173,
+   "tree": "ch14-diag",
+   "flag": "--unused-gradient-epsilon",
+   "category": "L",
+   "basis": "diagnostic threshold",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 5,
+   "file": "meta_prediction_optimizer_anti_overfit.py",
+   "line": 3176,
+   "tree": "ch14-diag",
+   "flag": "--feature-manifest",
+   "category": "P",
+   "basis": "manifest naming run-level columns for diagnostics",
+   "in_yesterdays_174": false
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 951,
+   "tree": "ch14-learn",
+   "flag": "--schema-check",
+   "category": "G",
+   "basis": "checks the sidecar schema; refuses instead of zero-filling",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 965,
+   "tree": "main",
+   "flag": "--config",
+   "category": "P",
+   "basis": "config path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 968,
+   "tree": "main",
+   "flag": "--survivors-forward",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 970,
+   "tree": "main",
+   "flag": "--survivors-reverse",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 972,
+   "tree": "main",
+   "flag": "--lottery-history",
+   "category": "P",
+   "basis": "input",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 974,
+   "tree": "main",
+   "flag": "--models-dir",
+   "category": "P",
+   "basis": "model path",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 976,
+   "tree": "main",
+   "flag": "--parent-run-id",
+   "category": "I",
+   "basis": "lineage",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 978,
+   "tree": "main",
+   "flag": "--no-require-schema",
+   "category": "R",
+   "basis": "allows prediction without the feature schema (zero-filled features)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 980,
+   "tree": "main",
+   "flag": "--k",
+   "category": "R",
+   "basis": "number of top predictions (the pool)",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 982,
+   "tree": "main",
+   "flag": "--output-dir",
+   "category": "P",
+   "basis": "output",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 983,
+   "tree": "main",
+   "flag": "--log-level",
+   "category": "L",
+   "basis": "logging",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 985,
+   "tree": "main",
+   "flag": "--test",
+   "category": "L",
+   "basis": "self-test",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 986,
+   "tree": "main",
+   "flag": "--dry-run",
+   "category": "L",
+   "basis": "show config only",
+   "in_yesterdays_174": true
+  },
+  {
+   "step": 6,
+   "file": "prediction_generator.py",
+   "line": 999,
+   "tree": "e2e-map",
+   "flag": "--schema-check",
+   "category": "G",
+   "basis": "checks the sidecar schema; refuses instead of zero-filling",
+   "in_yesterdays_174": true
+  }
+ ]
+}
