@@ -35,6 +35,24 @@ baseline. An objection framed on the state-recovery standard is THEORETICAL by d
 This does not excuse softening findings. Full record:
 `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
 
+### The learning loop (owner intent, 2026-11-24)
+
+TFM is a learning system built to run on its own. As new draws arrive, the steps extract and
+learn in a loop that is meant to improve over time. The target is an edge over `k/1000`, not
+100%. The full description is in `CLAUDE.md`, section "The learning loop". Read it.
+
+For a review this means:
+
+- A result from one window, searched once and trained once, is **one frozen pass**. It is not
+  a measurement of the loop, and it is not grounds for an objection about whether TFM works.
+- **Regime change is expected.** When what was working stops working, the designed answer is
+  a new window search (Steps 1-3).
+- **Selfplay** is separate from the main code, is meant to run continuously, and only reports.
+  **Walk-forward on back draws is the gate** for what it finds. The owner amendment of
+  2026-11-24 at the top of `docs/CONTRACT_SELFPLAY_CHAPTER13_AUTHORITY_v1_0.md` governs over
+  that contract's body.
+- No model family is dropped for poor health. A poor result gets a why-report (Chapter 14).
+
 ### Prior record (owner rule, 2026-11-13)
 
 Every request you receive must open with a `## Prior record` section: the searches the author
