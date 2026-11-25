@@ -18,8 +18,8 @@ Gates
                 distribution is [0, N - w] for its own window and sessions; record attached
   G-PIN         a hand pin anywhere in the derived domain runs; one past it, or a window size
                 outside search_bounds.window_size, is refused before the objective is called
-  G-DEFAULT-OBJ setting off: trial params of a seeded study are identical to HEAD's code
-  G-DEFAULT-SEARCH setting off/absent: presented_configuration identical to HEAD's code
+  G-DEFAULT-OBJ setting off: trial params of a seeded study are identical to the pre-change base (827f4b4)
+  G-DEFAULT-SEARCH setting off/absent: presented_configuration identical to the pre-change base (827f4b4)
   G-ARM         a study or search made by one mode refuses the other; untagged studies are
                 unaffected in the bounded mode
   G-ROUTE       three hops: manifest default_params + args_map, CLI flag, signatures
@@ -307,11 +307,25 @@ def gate_pin(fx, counts):
     return created
 
 
-def _head_source(rel):
-    # base, not HEAD: HEAD may be a WIP snapshot of this change (b78a15c, 2026-11-23 20:44)
-    base = os.environ.get("TFM_IDENTITY_BASE") or subprocess.check_output(
-        ["git", "-C", ROOT, "merge-base", "HEAD", "main"]).decode().strip()
-    return subprocess.check_output(["git", "-C", ROOT, "show", f"{base}:{rel}"]).decode()
+# The pre-change base, pinned by name. 827f4b4 is the last main commit before Brief II
+# landed (bd5eb56, abdf9f7; lead answers 2026-11-24 18:18); its .py files are those of 41ad509.
+# Not HEAD or merge-base(HEAD, main): once landed, either is the changed code itself and the
+# identity gates would compare the live file with itself. Override: TFM_IDENTITY_BASE.
+PRE_CHANGE_BASE = "827f4b4fb5cf430e2dc42d23e230e7c12e33f19b"
+
+
+def _identity_base():
+    base = os.environ.get("TFM_IDENTITY_BASE") or PRE_CHANGE_BASE
+    return subprocess.check_output(
+        ["git", "-C", ROOT, "rev-parse", "--verify", f"{base}^{{commit}}"]).decode().strip()
+
+
+def _head_source(rel, check_id):
+    base = _identity_base()
+    src = subprocess.check_output(["git", "-C", ROOT, "show", f"{base}:{rel}"]).decode()
+    check(src != open(os.path.join(ROOT, rel)).read(), check_id,
+          f"{rel}: base {base} equals the live file, so identity would prove nothing")
+    return src
 
 
 _DEFAULT_OBJ_CHILD = r'''
@@ -339,7 +353,7 @@ def gate_default_obj(created):
     hs = os.path.join(SCRATCH, "head_src"); os.makedirs(os.path.join(hs, "optuna_studies"),
                                                          exist_ok=True)
     for rel in ("window_optimizer.py", "window_optimizer_bayesian.py"):
-        open(os.path.join(hs, rel), "w").write(_head_source(rel))
+        open(os.path.join(hs, rel), "w").write(_head_source(rel, "DEFOBJ-nonvacuous"))
     child = os.path.join(SCRATCH, "default_obj_child.py")
     open(child, "w").write(_DEFAULT_OBJ_CHILD)
     res = {}
@@ -369,7 +383,7 @@ def gate_default_search():
     import importlib.util
     hs = os.path.join(SCRATCH, "head_src"); os.makedirs(hs, exist_ok=True)
     hp = os.path.join(hs, "step1_search_ledger_head.py")
-    open(hp, "w").write(_head_source("utils/step1_search_ledger.py"))
+    open(hp, "w").write(_head_source("utils/step1_search_ledger.py", "DEFSEARCH-nonvacuous"))
     spec = importlib.util.spec_from_file_location("step1_search_ledger_head", hp)
     head = importlib.util.module_from_spec(spec)
     sys.modules["step1_search_ledger_head"] = head

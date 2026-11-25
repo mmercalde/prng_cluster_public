@@ -18,7 +18,7 @@ Gates
   G-PLANTED-OPT    the real OptunaBayesianSearch with ScreenScorer: the best trial's selection
                    block lies in the planted rows and beats every trial whose block does not
   G-DEFAULT-OBJ    default objective: trial params AND trial user-attr keys of a seeded study
-                   identical to the base commit's code (merge-base HEAD main = 41ad509)
+                   identical to the pre-change base's code (PRE_CHANGE_BASE = 827f4b4)
   G-DEFAULT-WIRING default: optimize_window keeps BidirectionalCountScorer(), keeps records off
   G-OVERLAP        a confirmation block that a selection block could overlap is refused at
                    load; an overlapping or later selection block is refused per trial
@@ -77,14 +77,19 @@ def hit():
     getattr(builtins, "_MUT_HIT", lambda: None)()
 
 
+# The pre-change base, pinned by name. 827f4b4 is the last main commit before the screen
+# landed (bd5eb56, abdf9f7; lead task 2026-11-24 17:48); its .py files are those of 41ad509.
+# Not merge-base(HEAD, main): once landed, that is the changed code itself and the identity
+# gate would compare the live file with itself (DEFOBJ-nonvacuous refuses that).
+PRE_CHANGE_BASE = "827f4b4fb5cf430e2dc42d23e230e7c12e33f19b"
+
+
 def base_commit():
-    """The commit the off-path identity is proved against: merge-base of HEAD and main
-    (41ad509 for this worktree), NOT HEAD, which may be a WIP snapshot holding this very
-    change (b78a15c, 2026-11-23 20:44). Override: TFM_IDENTITY_BASE."""
-    env = os.environ.get("TFM_IDENTITY_BASE")
-    if env:
-        return env
-    return subprocess.check_output(["git", "-C", ROOT, "merge-base", "HEAD", "main"]).decode().strip()
+    """The commit the off-path identity is proved against: PRE_CHANGE_BASE.
+    Override: TFM_IDENTITY_BASE."""
+    base = os.environ.get("TFM_IDENTITY_BASE") or PRE_CHANGE_BASE
+    return subprocess.check_output(
+        ["git", "-C", ROOT, "rev-parse", "--verify", f"{base}^{{commit}}"]).decode().strip()
 
 
 # ---------------------------------------------------------------- fixtures --------
