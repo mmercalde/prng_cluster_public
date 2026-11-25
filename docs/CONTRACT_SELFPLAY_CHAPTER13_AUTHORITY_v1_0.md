@@ -7,6 +7,29 @@
 
 ---
 
+> **OWNER AMENDMENT, 2026-11-24 (v1.2) — read before citing anything below.**
+> The body of this contract is unchanged. Where it conflicts with the three points here, these
+> govern (owner statements of 2026-11-24, word for word in project doc
+> `claude/TFM_LEARNING_LOOP_OWNER_INTENT_20261124.md`).
+>
+> 1. **The promotion gate is walk-forward on back draws.** A selfplay candidate is judged by
+>    replaying it on historical draws selfplay did not score itself on, against the active
+>    settings. This replaces "REAL draws" / "real-draw validation" as the promotion test in
+>    Invariant 1, Invariant 3, the Complete Flow step 3 and the Enforcement checklist.
+>    Chapter 13 still grades every live draw afterwards and still detects the regime change.
+>    Prior record: S176/S179 hold the KPI triggers audit-only "until a walk-forward baseline
+>    exists" (`docs/CHAPTER_13_AUDIT.md:90`, `:192`).
+> 2. **Selfplay is meant to run continuously**, not only when triggered. The trigger table
+>    stays valid as the list of events that can also start or redirect it.
+> 3. **Selfplay may be rewarded by hits on historical draws it is allowed to use.** The proxy
+>    reward table stays as additional signals. Invariant 2 is unchanged: selfplay never sees
+>    live outcomes, and never the back draws reserved for the gate.
+>
+> "Approved By: Team Beta + User" and "Binding" below predate the owner rulings of 2026-11-11:
+> Michael is the final authority and Beta's reviews are not binding (`CLAUDE.md`).
+
+---
+
 ## The One-Sentence Rule
 
 **Selfplay explores. Chapter 13 decides. WATCHER enforces.**
@@ -268,6 +291,7 @@ Code reviews MUST verify:
 |---------|------|---------|
 | 1.0 | 2026-01-29 | Initial contract ratified |
 | 1.1 | 2026-01-29 | Team Beta improvements: Tightened Invariant 5, added Invariant 6 (Safe Fallback) |
+| 1.2 | 2026-11-24 | Owner amendment (notice at top): walk-forward on back draws is the promotion gate; selfplay runs continuously; reward by hits on permitted historical draws. Body unchanged |
 
 ---
 

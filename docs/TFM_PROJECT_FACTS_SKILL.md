@@ -5,7 +5,9 @@ description: Foundational model, verified as-built facts, superseded-artifact li
 
 # TFM — Foundations, Verified Facts & Verification Procedure
 
-**Currency:** v27.2, 2026-11-17 — **the yardstick rule added as §0.0, §0.1 reworded, §9 item 23
+**Currency:** v27.3, 2026-11-24 — **two lines in §0.4 corrected (the CA draw-procedures PDF is in the
+repo) and a pointer added to `CLAUDE.md` "The learning loop"; nothing else re-verified.** The rest of
+this line is v27.2's. v27.2, 2026-11-17 — **the yardstick rule added as §0.0, §0.1 reworded, §9 item 23
 added, and the "PREDATES THE 2026-11-11 RULINGS" notice below added** (`docs/DOC_FIX_LIST_20261113.md`
 item A6). Nothing else in the body was re-verified for v27.2; the rest of this line is v27.1's.
 **v27.1, 2026-08-23.** **§6 BOOT-SELECTOR RECOVERY RULE ADDED** — a rebooted rig returns as Ubuntu, not Proxmox; `boot-proxmox` is required and no agent reboots a host unasked. **GATE-12 IS PASSED AND BETA-ACCEPTED** — attempt 9, run
@@ -165,8 +167,9 @@ The published draw sequence is **not** an uninterrupted PRNG output stream. Per 
   **never published.**
   *(Corrected 2026-08-01: previously "two pre-test draws run before every live draw" — an
   Alpha misreading. The "two test draws" language applies to **manual SuperLotto Plus
-  equipment**. Only the count was wrong; skip remains physically motivated. Citation
-  `UNAVAILABLE` — the PDF is not in the repo.)*
+  equipment**. Only the count was wrong; skip remains physically motivated. Citation:
+  `docs/reference/CA_DAILY_SLP_DRAW_PROCEDURES_20210609.pdf`. Corrected 2026-11-24: this line
+  said the PDF was not in the repo. It is.)*
 - **Draw equipment is selected per session** by an RNG program, auditor-verified (§II).
   Midday and evening are separate sessions with separate equipment selection.
 - Evening draws **D3, D4, Fantasy 5 and Daily Derby together** — other games' outputs sit
@@ -204,7 +207,10 @@ carries `// Initial guess` (`prng_registry_pre_registry.py:696`) — a **guess, 
 `strategy_tolerances` is the half-width of the per-draw **matching** window
 (`hybrid_strategy.py:20`), not generation. **No coherence scoring exists** — only `match_rate`.
 
-*(The CA draw-procedures PDF is **not in the repo** — open item.)*
+*(Corrected 2026-11-24: the CA draw-procedures PDF **is in the repo**, at
+`docs/reference/CA_DAILY_SLP_DRAW_PROCEDURES_20210609.pdf`. It also records two RNGs, A and B,
+and a primary and an alternate draw machine: `docs/CLAUDE_CODE_REPORT_ATTACK_PLAN_FROM_PROCEDURES.md`
+§A.4. The owner's design expects regime change from this; see `CLAUDE.md` "The learning loop".)*
 
 > **Standing rule.** Before recommending removal, demotion or simplification of ANY component,
 > find and cite the document explaining why it exists. **Absence of a working implementation

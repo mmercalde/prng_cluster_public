@@ -40,6 +40,38 @@ Michael's design. Where one conflicts with his stated intent, his intent governs
 This rule does not excuse softening findings. Measured problems are reported with full
 force, as facts tied to hit rate. Full record: `docs/PITFALL_STATE_RECOVERY_YARDSTICK.md`.
 
+## The learning loop (owner intent, 2026-11-24 — READ BEFORE PLANNING ANY WORK)
+
+TFM is a learning system built to run on its own. As new draws arrive, Steps 1-6 extract and
+learn in a loop, and the loop is meant to get better over time. The target is an edge over
+`k/1000`. It is not 100%.
+
+1. **Sieve** (Step 1, with Step 0 regime context) keeps the survivors of a window.
+2. **Scoring and features** (Steps 2-3) extract heuristics from the survivors.
+3. **Trees and the NN** (Steps 4-5) learn which survivors to trust. No model family is dropped
+   for poor health; a poor result gets a why-report (owner ruling, 2026-11-24).
+4. **Pools** (Step 6): the survivors vote.
+5. **Chapter 13** grades each new draw. When what was working stops working, that is the
+   **regime change**, and the answer is a new window search (Steps 1-3), not more training on
+   the old window.
+6. **Chapter 14** watches the training itself and says why a model is or is not learning.
+7. **Selfplay** is separate from the main code and is meant to run continuously, replaying
+   history to find windows of opportunity and better settings. It reports. It does not change
+   the main code.
+8. **Walk-forward on back draws is the gate.** What selfplay finds is judged on historical
+   draws it did not score itself on, against the current settings.
+9. **WATCHER** applies what passes. A person approves each change for now.
+
+A result from one window, searched once and trained once, is one frozen pass. It is not a
+measurement of the loop. Regime change is expected from the draw procedures
+(`docs/reference/CA_DAILY_SLP_DRAW_PROCEDURES_20210609.pdf`;
+`docs/CLAUDE_CODE_REPORT_ATTACK_PLAN_FROM_PROCEDURES.md` §A.4).
+
+This section records Michael's intent. It does not say every link is wired. Status of each
+link and his statements word for word: project doc
+`claude/TFM_LEARNING_LOOP_OWNER_INTENT_20261124.md`. Earlier record of the same picture:
+`docs/TB_UPDATE_SELFPLAY_REFRAMING_2026-07-28.md`.
+
 ## Prior record first (READ BEFORE WRITING ANY PROPOSAL, BRIEF, REPORT OR REVIEW REQUEST)
 
 Owner rule, 2026-11-13. It binds Team Alpha in chat, every Claude Code session, and Beta.
