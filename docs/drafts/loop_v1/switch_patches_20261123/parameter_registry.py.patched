@@ -1,0 +1,3001 @@
+#!/usr/bin/env python3
+"""
+Parameter Registry - Script parameter bounds for AI agents.
+
+Enables LLM introspection of legal parameter bounds, allowing
+AI agents to make informed decisions about parameter adjustments.
+
+Version: 3.2.0
+"""
+
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Optional, Union
+from enum import Enum
+
+
+class ParamType(str, Enum):
+    """Parameter data types."""
+    INT = "int"
+    FLOAT = "float"
+    STRING = "string"
+    BOOL = "bool"
+    LIST = "list"
+    CHOICE = "choice"
+
+
+class ParameterSpec(BaseModel):
+    """
+    Specification for a single configurable parameter.
+    
+    Defines the name, type, bounds, and description of a parameter
+    that can be adjusted by AI agents.
+    """
+    
+    name: str = Field(
+        ...,
+        description="Parameter name (matches CLI arg without dashes)"
+    )
+    
+    param_type: ParamType = Field(
+        default=ParamType.STRING,
+        description="Data type of the parameter"
+    )
+    
+    description: str = Field(
+        default="",
+        description="Human-readable description"
+    )
+    
+    # Bounds for numeric types
+    min_value: Optional[float] = Field(
+        default=None,
+        description="Minimum allowed value (for int/float)"
+    )
+    
+    max_value: Optional[float] = Field(
+        default=None,
+        description="Maximum allowed value (for int/float)"
+    )
+    
+    # Choices for enum types
+    choices: List[Any] = Field(
+        default_factory=list,
+        description="Allowed values (for choice type)"
+    )
+    
+    # Default value
+    default: Optional[Any] = Field(
+        default=None,
+        description="Default value if not specified"
+    )
+    
+    # Metadata
+    required: bool = Field(
+        default=False,
+        description="Whether this parameter is required"
+    )
+    
+    affects_runtime: bool = Field(
+        default=False,
+        description="Whether changing this affects runtime significantly"
+    )
+    
+    cli_flag: str = Field(
+        default="",
+        description="CLI flag format (e.g., '--trials')"
+    )
+    
+    def validate_value(self, value: Any) -> tuple[bool, Optional[str]]:
+        """
+        Check if value is within legal bounds.
+        
+        Args:
+            value: Value to validate
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if value is None and not self.required:
+            return True, None
+        
+        if value is None and self.required:
+            return False, f"{self.name} is required"
+        
+        if self.param_type == ParamType.INT:
+            if not isinstance(value, int):
+                try:
+                    value = int(value)
+                except (ValueError, TypeError):
+                    return False, f"{self.name} must be an integer"
+            
+            if self.min_value is not None and value < self.min_value:
+                return False, f"{self.name}={value} below minimum {self.min_value}"
+            
+            if self.max_value is not None and value > self.max_value:
+                return False, f"{self.name}={value} above maximum {self.max_value}"
+        
+        elif self.param_type == ParamType.FLOAT:
+            if not isinstance(value, (int, float)):
+                try:
+                    value = float(value)
+                except (ValueError, TypeError):
+                    return False, f"{self.name} must be a number"
+            
+            if self.min_value is not None and value < self.min_value:
+                return False, f"{self.name}={value} below minimum {self.min_value}"
+            
+            if self.max_value is not None and value > self.max_value:
+                return False, f"{self.name}={value} above maximum {self.max_value}"
+        
+        elif self.param_type == ParamType.CHOICE:
+            if self.choices and value not in self.choices:
+                return False, f"{self.name}={value} not in allowed choices {self.choices}"
+        
+        elif self.param_type == ParamType.BOOL:
+            if not isinstance(value, bool):
+                if str(value).lower() not in ('true', 'false', '0', '1', 'yes', 'no'):
+                    return False, f"{self.name} must be a boolean"
+        
+        return True, None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Return parameter spec as clean dict for LLM context."""
+        result = {
+            "name": self.name,
+            "type": self.param_type.value,
+        }
+        
+        if self.cli_flag:
+            result["cli_flag"] = self.cli_flag
+        
+        if self.min_value is not None:
+            result["min"] = self.min_value
+        
+        if self.max_value is not None:
+            result["max"] = self.max_value
+        
+        if self.choices:
+            result["choices"] = self.choices
+        
+        if self.default is not None:
+            result["default"] = self.default
+        
+        if self.description:
+            result["description"] = self.description
+        
+        if self.affects_runtime:
+            result["affects_runtime"] = True
+        
+        return result
+    
+    def to_prompt_line(self) -> str:
+        """DEPRECATED: Use to_dict() instead."""
+        import json
+        return json.dumps(self.to_dict())
+
+
+class ScriptParameterRegistry(BaseModel):
+    """
+    Registry of parameters for a specific script.
+    
+    Contains all configurable parameters that an AI agent
+    can adjust when recommending retries.
+    """
+    
+    script_name: str = Field(
+        ...,
+        description="Name of the script file"
+    )
+    
+    description: str = Field(
+        default="",
+        description="Description of what the script does"
+    )
+    
+    parameters: List[ParameterSpec] = Field(
+        default_factory=list,
+        description="List of configurable parameters"
+    )
+    
+    def get_param(self, name: str) -> Optional[ParameterSpec]:
+        """
+        Get parameter spec by name.
+        
+        Args:
+            name: Parameter name (with or without dashes)
+            
+        Returns:
+            ParameterSpec or None
+        """
+        # Normalize name
+        clean_name = name.lstrip('-').replace('-', '_')
+        
+        for p in self.parameters:
+            p_clean = p.name.lstrip('-').replace('-', '_')
+            if p_clean == clean_name:
+                return p
+        
+        return None
+    
+    def validate_adjustments(self, adjustments: Dict[str, Any]) -> List[str]:
+        """
+        Validate a set of parameter adjustments.
+        
+        Args:
+            adjustments: Dict of param_name -> new_value
+            
+        Returns:
+            List of error messages (empty if all valid)
+        """
+        errors = []
+        
+        for name, value in adjustments.items():
+            spec = self.get_param(name)
+            
+            if spec is None:
+                errors.append(f"Unknown parameter: {name}")
+                continue
+            
+            is_valid, error = spec.validate_value(value)
+            if not is_valid:
+                errors.append(error)
+        
+        return errors
+    
+    def to_context_dict(self) -> Dict[str, Any]:
+        """Return registry as clean dict for LLM context."""
+        return {
+            "script": self.script_name,
+            "description": self.description,
+            "parameters": [p.to_dict() for p in self.parameters]
+        }
+    
+    def to_prompt_section(self) -> str:
+        """DEPRECATED: Use to_context_dict() instead."""
+        import json
+        return json.dumps(self.to_context_dict(), indent=2)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PRE-DEFINED REGISTRIES FOR ALL PIPELINE SCRIPTS
+# ════════════════════════════════════════════════════════════════════════════════
+
+PARAMETER_REGISTRIES: Dict[str, ScriptParameterRegistry] = {
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 1: Window Optimizer
+    # ══════════════════════════════════════════════════════════════════════
+    "window_optimizer.py": ScriptParameterRegistry(
+        script_name="window_optimizer.py",
+        description="Bayesian window optimization for bidirectional sieve analysis",
+        parameters=[
+            ParameterSpec(
+                name="window_size",
+                cli_flag="--window-size",
+                param_type=ParamType.INT,
+                description="Number of lottery draws to analyze",
+                min_value=50,
+                max_value=2000,
+                default=512
+            ),
+            ParameterSpec(
+                name="offset",
+                cli_flag="--offset",
+                param_type=ParamType.INT,
+                description="Starting position in dataset",
+                min_value=0,
+                max_value=500,
+                default=0
+            ),
+            ParameterSpec(
+                name="skip_min",
+                cli_flag="--skip-min",
+                param_type=ParamType.INT,
+                description="Minimum PRNG skip value to test",
+                min_value=0,
+                max_value=50,
+                default=0
+            ),
+            ParameterSpec(
+                name="skip_max",
+                cli_flag="--skip-max",
+                param_type=ParamType.INT,
+                description="Maximum PRNG skip value to test",
+                min_value=1,
+                max_value=100,
+                default=20
+            ),
+            ParameterSpec(
+                name="trials",
+                cli_flag="--trials",
+                param_type=ParamType.INT,
+                description="Number of Optuna optimization trials",
+                min_value=3,
+                max_value=500,
+                default=50,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name="max_seeds",
+                cli_flag="--max-seeds",
+                param_type=ParamType.INT,
+                description="Maximum seeds to test per trial",
+                min_value=100000,
+                max_value=10000000000,
+                default=10000000,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name="prng_type",
+                cli_flag="--prng-type",
+                param_type=ParamType.CHOICE,
+                description="PRNG algorithm to analyze",
+                choices=["java_lcg", "mt19937", "xorshift32", "xorshift64", "pcg32", "lcg64"],
+                default="java_lcg"
+            ),
+            ParameterSpec(
+                name="strategy",
+                cli_flag="--strategy",
+                param_type=ParamType.CHOICE,
+                description="Optimization search strategy",
+                choices=["bayesian", "grid", "random", "evolutionary"],
+                default="bayesian"
+            ),
+            ParameterSpec(
+                name="test_both_modes",
+                cli_flag="--test-both-modes",
+                param_type=ParamType.BOOL,
+                description="Test both constant and variable skip modes",
+                default=False,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name='derived_anchor_domain',
+                cli_flag='--derived-anchor-domain',
+                param_type=ParamType.BOOL,
+                description='[WINDOW-ANCHOR BRIEF II] Optuna samples the window anchor over the domain derived from the data after the session filter, [min, N_filtered - window_size] (search_bounds.window_anchor, default min 0, no cap), instead of search_bounds.offset; every trial, sampled or pinned, is validated, never clamped. Off by default; needs --use-range-miner, --strategy bayesian, --n-parallel 1, no --resume-checkpoint, no --config-file',
+                default=False,
+                # generated by switch_check.py from window_optimizer.py:1686 (anchor-brief2)
+            ),
+            ParameterSpec(
+                name='anchor_holdout_guard',
+                cli_flag='--anchor-holdout-guard',
+                param_type=ParamType.BOOL,
+                description='[WINDOW-ANCHOR BRIEF II] with --derived-anchor-domain only: cap the anchor so the whole sieve window ends before the first holdout record of the Step 1 train/holdout split for that session filter (validated, never clamped). Off by default',
+                default=False,
+                # generated by switch_check.py from window_optimizer.py:1694 (anchor-brief2)
+            ),
+        ]
+    ),
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 2: Scorer Meta Optimizer
+    # ══════════════════════════════════════════════════════════════════════
+    "scorer_meta_optimizer.py": ScriptParameterRegistry(
+        script_name="scorer_meta_optimizer.py",
+        description="Distributed Optuna optimization for scoring parameters",
+        parameters=[
+            ParameterSpec(
+                name="n_trials",
+                cli_flag="--n-trials",
+                param_type=ParamType.INT,
+                description="Number of Optuna trials",
+                min_value=10,
+                max_value=500,
+                default=100,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name="threshold_min",
+                cli_flag="--threshold-min",
+                param_type=ParamType.FLOAT,
+                description="Minimum threshold to search",
+                min_value=0.001,
+                max_value=0.05,
+                default=0.005
+            ),
+            ParameterSpec(
+                name="threshold_max",
+                cli_flag="--threshold-max",
+                param_type=ParamType.FLOAT,
+                description="Maximum threshold to search",
+                min_value=0.01,
+                max_value=0.2,
+                default=0.1
+            ),
+            ParameterSpec(
+                name="k_folds",
+                cli_flag="--k-folds",
+                param_type=ParamType.CHOICE,
+                description="Cross-validation folds",
+                choices=[3, 5, 7, 10],
+                default=5
+            ),
+            ParameterSpec(
+                name="distributed",
+                cli_flag="--distributed",
+                param_type=ParamType.BOOL,
+                description="Run in distributed mode across cluster",
+                default=True
+            ),
+        ]
+    ),
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 3: Full Scoring
+    # ══════════════════════════════════════════════════════════════════════
+    "full_scoring.py": ScriptParameterRegistry(
+        script_name="full_scoring.py",
+        description="Score all survivors using optimized parameters",
+        parameters=[
+            ParameterSpec(
+                name="batch_size",
+                cli_flag="--batch-size",
+                param_type=ParamType.INT,
+                description="Batch size for GPU processing",
+                min_value=100,
+                max_value=10000,
+                default=1000
+            ),
+            ParameterSpec(
+                name="distributed",
+                cli_flag="--distributed",
+                param_type=ParamType.BOOL,
+                description="Run in distributed mode",
+                default=True
+            ),
+        ]
+    ),
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 4: ML Meta Optimizer / Adaptive Meta Optimizer
+    # ══════════════════════════════════════════════════════════════════════
+    "adaptive_meta_optimizer.py": ScriptParameterRegistry(
+        script_name="adaptive_meta_optimizer.py",
+        description="Optimize ML model architecture using Optuna",
+        parameters=[
+            ParameterSpec(
+                name="trials",
+                cli_flag="--trials",
+                param_type=ParamType.INT,
+                description="Architecture search trials",
+                min_value=10,
+                max_value=200,
+                default=50,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name="min_layers",
+                cli_flag="--min-layers",
+                param_type=ParamType.INT,
+                description="Minimum hidden layers",
+                min_value=1,
+                max_value=4,
+                default=2
+            ),
+            ParameterSpec(
+                name="max_layers",
+                cli_flag="--max-layers",
+                param_type=ParamType.INT,
+                description="Maximum hidden layers",
+                min_value=2,
+                max_value=8,
+                default=5
+            ),
+            ParameterSpec(
+                name="mode",
+                cli_flag="--mode",
+                param_type=ParamType.CHOICE,
+                description="Optimization mode",
+                choices=["quick", "full", "deep"],
+                default="full"
+            ),
+        ]
+    ),
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 5: Anti-Overfit Training
+    # ══════════════════════════════════════════════════════════════════════
+    "meta_prediction_optimizer_anti_overfit.py": ScriptParameterRegistry(
+        script_name="meta_prediction_optimizer_anti_overfit.py",
+        description="K-fold anti-overfit model training",
+        parameters=[
+            ParameterSpec(
+                name="trials",
+                cli_flag="--trials",
+                param_type=ParamType.INT,
+                description="Optuna trials for training optimization",
+                min_value=10,
+                max_value=200,
+                default=50,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name="k_folds",
+                cli_flag="--k-folds",
+                param_type=ParamType.INT,
+                description="Number of cross-validation folds",
+                min_value=3,
+                max_value=10,
+                default=5
+            ),
+            ParameterSpec(
+                name="epochs",
+                cli_flag="--epochs",
+                param_type=ParamType.INT,
+                description="Training epochs per fold",
+                min_value=10,
+                max_value=500,
+                default=100,
+                affects_runtime=True
+            ),
+            ParameterSpec(
+                name="dropout_min",
+                cli_flag="--dropout-min",
+                param_type=ParamType.FLOAT,
+                description="Minimum dropout rate to search",
+                min_value=0.0,
+                max_value=0.5,
+                default=0.1
+            ),
+            ParameterSpec(
+                name="dropout_max",
+                cli_flag="--dropout-max",
+                param_type=ParamType.FLOAT,
+                description="Maximum dropout rate to search",
+                min_value=0.2,
+                max_value=0.7,
+                default=0.5
+            ),
+            ParameterSpec(
+                name="distributed",
+                cli_flag="--distributed",
+                param_type=ParamType.BOOL,
+                description="Run in distributed mode across cluster",
+                default=True
+            ),
+            ParameterSpec(
+                name='diagnostics_level',
+                cli_flag='--diagnostics-level',
+                param_type=ParamType.CHOICE,
+                description='Chapter 14 report content: legacy (default, unchanged) or full (named features, NN gradient probe, tree reports on the final inline path, column classes, compare-models winner pointer)',
+                choices=['legacy', 'full'],
+                default='legacy',
+                # generated by switch_check.py from meta_prediction_optimizer_anti_overfit.py:3146 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='gradient_probe_rows',
+                cli_flag='--gradient-probe-rows',
+                param_type=ParamType.INT,
+                description='[CH14-DIAG CD-03] NN probe rows passed to train_single_trial.py (default: its own default; level full only)',
+                # generated by switch_check.py from meta_prediction_optimizer_anti_overfit.py:3151 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='exclude_features',
+                cli_flag='--exclude-features',
+                param_type=ParamType.STRING,
+                description='[LL-3] comma list replacing the default exclude list (score,confidence,holdout_hits,holdout_quality)',
+                # generated by switch_check.py from meta_prediction_optimizer_anti_overfit.py:3128 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='include_feature_groups',
+                cli_flag='--include-feature-groups',
+                param_type=ParamType.STRING,
+                description='[LL-3] comma list of models/feature_manifest.json groups or aliases to train on; all others dropped. Default: all',
+                # generated by switch_check.py from meta_prediction_optimizer_anti_overfit.py:3131 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='exclude_feature_groups',
+                cli_flag='--exclude-feature-groups',
+                param_type=ParamType.STRING,
+                description='[LL-3] comma list of manifest groups or aliases to drop (e.g. global,dead). Default: none',
+                # generated by switch_check.py from meta_prediction_optimizer_anti_overfit.py:3134 (ch14-learn)
+            ),
+        ]
+    ),
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 6: Prediction
+    # ══════════════════════════════════════════════════════════════════════
+    "prediction_generator.py": ScriptParameterRegistry(
+        script_name="prediction_generator.py",
+        description="Generate prediction pool from trained model",
+        parameters=[
+            ParameterSpec(
+                name="pool_size",
+                cli_flag="--pool-size",
+                param_type=ParamType.INT,
+                description="Number of predictions to generate",
+                min_value=10,
+                max_value=1000,
+                default=200
+            ),
+            ParameterSpec(
+                name="confidence_threshold",
+                cli_flag="--confidence-threshold",
+                param_type=ParamType.FLOAT,
+                description="Minimum confidence for inclusion",
+                min_value=0.0,
+                max_value=1.0,
+                default=0.5
+            ),
+            ParameterSpec(
+                name="diversity_weight",
+                cli_flag="--diversity-weight",
+                param_type=ParamType.FLOAT,
+                description="Weight for prediction diversity",
+                min_value=0.0,
+                max_value=1.0,
+                default=0.3
+            ),
+            ParameterSpec(
+                name='schema_check',
+                cli_flag='--schema-check',
+                param_type=ParamType.CHOICE,
+                description="[LL-1] check the sidecar feature schema against the input rows (no zero-fill). Default: the config's value, else 'off'",
+                choices=['off', 'warn', 'fail'],
+                # generated by switch_check.py from prediction_generator.py:951 (ch14-learn)
+            ),
+        ]
+    ),
+    "attribution_cycle.py": ScriptParameterRegistry(
+        script_name="attribution_cycle.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='spec',
+                cli_flag='--spec',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/attribution_cycle.py:191 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='new directory under <worktree>/data/',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/attribution_cycle.py:192 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='miss_report',
+                cli_flag='--miss-report',
+                param_type=ParamType.STRING,
+                description='',
+                # default not a literal in the code: str(MISS_REPORT_DEFAULT)
+                # generated by switch_check.py from scripts/diagnostics/attribution_cycle.py:193 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='miss_report_sha256',
+                cli_flag='--miss-report-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                default='ec7c7ad16b25362e1800258c7a3667e1f8150b73739e08b43b5522f028116d76',
+                # generated by switch_check.py from scripts/diagnostics/attribution_cycle.py:194 (ch14-learn)
+            ),
+        ]
+    ),
+    "chapter_13_acceptance.py": ScriptParameterRegistry(
+        script_name="chapter_13_acceptance.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='selfplay_validation',
+                cli_flag='--selfplay-validation',
+                param_type=ParamType.CHOICE,
+                description="expr:f'Selfplay gate (default {VALIDATION_MODE_DEFAULT}; hit_rate_shadow needs --hit-evidence from chapter_13_hit_validation.py)'",
+                choices=['r2_legacy', 'hit_rate_shadow'],
+                # generated by switch_check.py from chapter_13_acceptance.py:1088 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='promote_lineage',
+                cli_flag='--promote-lineage',
+                param_type=ParamType.CHOICE,
+                description="expr:f'Carry transforms/parent/fingerprint on promotion (default {PROMOTE_LINEAGE_DEFAULT})'",
+                choices=['drop', 'keep'],
+                # generated by switch_check.py from chapter_13_acceptance.py:1091 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='hit_evidence',
+                cli_flag='--hit-evidence',
+                param_type=ParamType.STRING,
+                description="expr:'hit_rate_shadow evidence JSON (schema ' + HIT_EVIDENCE_SCHEMA + ')'",
+                # generated by switch_check.py from chapter_13_acceptance.py:1093 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='active_file',
+                cli_flag='--active-file',
+                param_type=ParamType.STRING,
+                description="expr:f'Active policy read for the evidence check and written on promotion (default {SELFPLAY_ACTIVE_FILE})'",
+                default='learned_policy_active.json',
+                # generated by switch_check.py from chapter_13_acceptance.py:1095 (selfplay-nn)
+            ),
+        ]
+    ),
+    "chapter_13_hit_validation.py": ScriptParameterRegistry(
+        script_name="chapter_13_hit_validation.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='candidate',
+                cli_flag='--candidate',
+                param_type=ParamType.STRING,
+                description='learned_policy_candidate.json',
+                required=True,
+                # generated by switch_check.py from chapter_13_hit_validation.py:766 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='active',
+                cli_flag='--active',
+                param_type=ParamType.STRING,
+                description='learned_policy_active.json (a missing file means the empty baseline)',
+                required=True,
+                # generated by switch_check.py from chapter_13_hit_validation.py:767 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='spec',
+                cli_flag='--spec',
+                param_type=ParamType.STRING,
+                description="expr:f'spec JSON ({SPEC_SCHEMA}); with --wf-run, a JSON object of overrides'",
+                required=True,
+                # generated by switch_check.py from chapter_13_hit_validation.py:769 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='new directory',
+                required=True,
+                # generated by switch_check.py from chapter_13_hit_validation.py:771 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='wf_run',
+                cli_flag='--wf-run',
+                param_type=ParamType.STRING,
+                description='walk-forward run directory (read only)',
+                # generated by switch_check.py from chapter_13_hit_validation.py:772 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='wf_origin',
+                cli_flag='--wf-origin',
+                param_type=ParamType.INT,
+                description='walk-forward origin i (validates on i-1)',
+                # generated by switch_check.py from chapter_13_hit_validation.py:773 (selfplay-nn)
+            ),
+        ]
+    ),
+    "chapter_13_orchestrator.py": ScriptParameterRegistry(
+        script_name="chapter_13_orchestrator.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='c13_model_loader',
+                cli_flag='--c13-model-loader',
+                param_type=ParamType.CHOICE,
+                description="[LL-6] root-cause model loader: 'legacy' (default, unchanged) or 'canonical' (the Step 6 loader as one inference bundle, with the NN scaler)",
+                choices=['legacy', 'canonical'],
+                default='legacy',
+                # generated by switch_check.py from chapter_13_orchestrator.py:1074 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='c13_models_dir',
+                cli_flag='--c13-models-dir',
+                param_type=ParamType.STRING,
+                description='[LL-6] models dir for --c13-model-loader canonical',
+                default='models/reinforcement',
+                # generated by switch_check.py from chapter_13_orchestrator.py:1077 (ch14-learn)
+            ),
+        ]
+    ),
+    "compare_settings.py": ScriptParameterRegistry(
+        script_name="compare_settings.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='declaration',
+                cli_flag='--declaration',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:453 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='declaration_sha256',
+                cli_flag='--declaration-sha256',
+                param_type=ParamType.STRING,
+                description='C1: sha256 of the declaration',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:454 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='grader',
+                cli_flag='--grader',
+                param_type=ParamType.STRING,
+                description='path to e2e_grader.py',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:455 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='grader_sha256',
+                cli_flag='--grader-sha256',
+                param_type=ParamType.STRING,
+                description='C2: pinned grader sha256',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:456 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='dataset',
+                cli_flag='--dataset',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:457 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='dataset_sha256',
+                cli_flag='--dataset-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:458 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='NEW directory (must not exist)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:459 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='mode',
+                cli_flag='--mode',
+                param_type=ParamType.CHOICE,
+                description='passed to the grader (R22); development must be chosen explicitly',
+                choices=['counted', 'development'],
+                default='counted',
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:460 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='per_draw_detail',
+                cli_flag='--per-draw-detail',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:462 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='repo_root',
+                cli_flag='--repo-root',
+                param_type=ParamType.STRING,
+                description='',
+                # default not a literal in the code: str(Path(__file__).resolve().parents[2])
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:463 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='no_provenance',
+                cli_flag='--no-provenance',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/compare_settings.py:464 (e2e-grader)
+            ),
+        ]
+    ),
+    "e2e_build_run_copy.py": ScriptParameterRegistry(
+        script_name="e2e_build_run_copy.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='npz',
+                cli_flag='--npz',
+                param_type=ParamType.STRING,
+                description='survivor NPZ (symlink allowed; the real file is copied)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:393 (e2e-map)
+            ),
+            ParameterSpec(
+                name='generation_digest',
+                cli_flag='--generation-digest',
+                param_type=ParamType.STRING,
+                description='expected sha256 of the NPZ file (generation artifact_sha256)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:394 (e2e-map)
+            ),
+            ParameterSpec(
+                name='train_history',
+                cli_flag='--train-history',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:396 (e2e-map)
+            ),
+            ParameterSpec(
+                name='holdout_history',
+                cli_flag='--holdout-history',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:397 (e2e-map)
+            ),
+            ParameterSpec(
+                name='dataset',
+                cli_flag='--dataset',
+                param_type=ParamType.STRING,
+                description='the dated, sessioned record list the split was cut from (daily3.json)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:398 (e2e-map)
+            ),
+            ParameterSpec(
+                name='dataset_digest',
+                cli_flag='--dataset-digest',
+                param_type=ParamType.STRING,
+                description="expected sha256 of --dataset (e.g. the generation receipt's dataset_sha256)",
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:400 (e2e-map)
+            ),
+            ParameterSpec(
+                name='config',
+                cli_flag='--config',
+                param_type=ParamType.STRING,
+                description='config file to copy into configs/ (repeatable)',
+                default=[],
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:402 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_start',
+                cli_flag='--label-start',
+                param_type=ParamType.INT,
+                description='holdout index where the label block starts (only 0 is accepted)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:404 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_count',
+                cli_flag='--label-count',
+                param_type=ParamType.INT,
+                description='number of holdout draws in the label block (owner Q1)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:406 (e2e-map)
+            ),
+            ParameterSpec(
+                name='grade_start',
+                cli_flag='--grade-start',
+                param_type=ParamType.INT,
+                description='holdout index where the grade block starts (default: label end)',
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:408 (e2e-map)
+            ),
+            ParameterSpec(
+                name='grade_sessions',
+                cli_flag='--grade-sessions',
+                param_type=ParamType.STRING,
+                description="comma list of sessions listed for grading: midday,evening or 'all' (owner Q1)",
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:410 (e2e-map)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='created; must lie under <worktree>/data/',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:412 (e2e-map)
+            ),
+            ParameterSpec(
+                name='forbid_root',
+                cli_flag='--forbid-root',
+                param_type=ParamType.STRING,
+                description='extra forbidden output root (repeatable; adds to the defaults)',
+                default=[],
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:413 (e2e-map)
+            ),
+            ParameterSpec(
+                name='allow_duplicate_seeds',
+                cli_flag='--allow-duplicate-seeds',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_build_run_copy.py:415 (e2e-map)
+            ),
+        ]
+    ),
+    "e2e_grader.py": ScriptParameterRegistry(
+        script_name="e2e_grader.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='pools',
+                cli_flag='--pools',
+                param_type=ParamType.STRING,
+                description='per-draw pools JSONL (tfm.e2e.pool.v1)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1347 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='pools_sha256',
+                cli_flag='--pools-sha256',
+                param_type=ParamType.STRING,
+                description='optional expected sha256 of --pools',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1348 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='dataset',
+                cli_flag='--dataset',
+                param_type=ParamType.STRING,
+                description='frozen dataset JSON [{date,session,draw}]',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1349 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='dataset_sha256',
+                cli_flag='--dataset-sha256',
+                param_type=ParamType.STRING,
+                description='expected sha256 of --dataset',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1350 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='grade_block',
+                cli_flag='--grade-block',
+                param_type=ParamType.STRING,
+                description='grade block definition JSON',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1351 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='arms',
+                cli_flag='--arms',
+                param_type=ParamType.STRING,
+                description='declared arm list JSON',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1352 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='abstention',
+                cli_flag='--abstention',
+                param_type=ParamType.STRING,
+                description='declared abstention rule JSON',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1353 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='NEW directory to write (must not exist)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1354 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='run_label',
+                cli_flag='--run-label',
+                param_type=ParamType.STRING,
+                description='free-text label recorded in the summary',
+                default='',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1355 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='draw_space',
+                cli_flag='--draw-space',
+                param_type=ParamType.INT,
+                description='',
+                default=1000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1356 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='duplicate_rule',
+                cli_flag='--duplicate-rule',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['error', 'first_in_file', 'max_data_cutoff'],
+                default='error',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1357 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='out_of_block_records',
+                cli_flag='--out-of-block-records',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['error', 'exclude_and_count'],
+                default='error',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1359 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='allow_record_without_dataset_sha256',
+                cli_flag='--allow-record-without-dataset-sha256',
+                param_type=ParamType.BOOL,
+                description='accept pool records that omit dataset_sha256 (a present one must match)',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1361 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='multiplicity_family',
+                cli_flag='--multiplicity-family',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['all_declared_tests', 'arms_only'],
+                default='all_declared_tests',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1363 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='control_reps',
+                cli_flag='--control-reps',
+                param_type=ParamType.INT,
+                description='',
+                default=200,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1365 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='control_seed',
+                cli_flag='--control-seed',
+                param_type=ParamType.INT,
+                description='',
+                default=20261123,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1366 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='control_tolerance_z',
+                cli_flag='--control-tolerance-z',
+                param_type=ParamType.FLOAT,
+                description='',
+                default=4.0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1367 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='workers',
+                cli_flag='--workers',
+                param_type=ParamType.INT,
+                description='processes for the uniform-random control (multi-core)',
+                # default not a literal in the code: max(1, min(4, (os.cpu_count() or 1) - 1))
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1368 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='descriptive_ci_level',
+                cli_flag='--descriptive-ci-level',
+                param_type=ParamType.FLOAT,
+                description='',
+                default=0.95,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1370 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='repo_root',
+                cli_flag='--repo-root',
+                param_type=ParamType.STRING,
+                description="repository whose commit is recorded (default: this file's repo)",
+                # default not a literal in the code: str(Path(__file__).resolve().parents[2])
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1371 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='mode',
+                cli_flag='--mode',
+                param_type=ParamType.CHOICE,
+                description='counted (default) or development (R22: must be chosen explicitly; never a counted verdict)',
+                choices=['counted', 'development'],
+                default='counted',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1373 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='per_draw_detail',
+                cli_flag='--per-draw-detail',
+                param_type=ParamType.CHOICE,
+                description='on: also write per_draw_detail.jsonl (R23)',
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1376 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='rank_summary',
+                cli_flag='--rank-summary',
+                param_type=ParamType.CHOICE,
+                description='on: per-arm rank of the drawn number vs uniform (R24, descriptive)',
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1378 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='rank_source',
+                cli_flag='--rank-source',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['record_or_pool', 'record_only', 'pool_only'],
+                default='record_or_pool',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1380 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='rank_test_reps',
+                cli_flag='--rank-test-reps',
+                param_type=ParamType.INT,
+                description='',
+                default=10000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1381 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='rank_test_seed',
+                cli_flag='--rank-test-seed',
+                param_type=ParamType.INT,
+                description='',
+                default=20261123,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1382 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='per_session_report',
+                cli_flag='--per-session-report',
+                param_type=ParamType.CHOICE,
+                description='on: each session on its own beside the pooled result (R25, descriptive)',
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1383 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='no_provenance',
+                cli_flag='--no-provenance',
+                param_type=ParamType.BOOL,
+                description='non-authoritative run: do not resolve git state',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_grader.py:1385 (e2e-grader)
+            ),
+        ]
+    ),
+    "e2e_miss_report.py": ScriptParameterRegistry(
+        script_name="e2e_miss_report.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='spec',
+                cli_flag='--spec',
+                param_type=ParamType.STRING,
+                description='Declared spec JSON (inputs, rules, seeds).',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_miss_report.py:481 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='New directory; must not exist.',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_miss_report.py:482 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='workers',
+                cli_flag='--workers',
+                param_type=ParamType.INT,
+                description='Forked workers (default 6).',
+                default=6,
+                # generated by switch_check.py from scripts/diagnostics/e2e_miss_report.py:483 (e2e-vote)
+            ),
+        ]
+    ),
+    "e2e_step3_harness.py": ScriptParameterRegistry(
+        script_name="e2e_step3_harness.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='run_copy',
+                cli_flag='--run-copy',
+                param_type=ParamType.STRING,
+                description='directory built by e2e_build_run_copy.py',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:560 (e2e-map)
+            ),
+            ParameterSpec(
+                name='npz',
+                cli_flag='--npz',
+                param_type=ParamType.STRING,
+                description='relative to --run-copy unless absolute; must be in its record',
+                default='bidirectional_survivors_binary.npz',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:561 (e2e-map)
+            ),
+            ParameterSpec(
+                name='train_history',
+                cli_flag='--train-history',
+                param_type=ParamType.STRING,
+                description='',
+                default='train_history.json',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:563 (e2e-map)
+            ),
+            ParameterSpec(
+                name='holdout_history',
+                cli_flag='--holdout-history',
+                param_type=ParamType.STRING,
+                description="must be the run copy's label block (the grade block is refused)",
+                default='label_block_history.json',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:564 (e2e-map)
+            ),
+            ParameterSpec(
+                name='config',
+                cli_flag='--config',
+                param_type=ParamType.STRING,
+                description='scorer config passed to generate_jobs (e.g. configs/optimal_scorer_config.json); only prng_type/mod are read (Ch4 B5, TODO-E2E-2)',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:566 (e2e-map)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='created; must lie under <worktree>/data/',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:569 (e2e-map)
+            ),
+            ParameterSpec(
+                name='chunk_size',
+                cli_flag='--chunk-size',
+                param_type=ParamType.INT,
+                description='rows per chunk (launcher default 1000, run_step3_full_scoring.sh:70)',
+                min_value=500,
+                max_value=20000,
+                default=1000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:570 (e2e-map)
+            ),
+            ParameterSpec(
+                name='chunks',
+                cli_flag='--chunks',
+                param_type=ParamType.STRING,
+                description="'all' or a selection such as '0', '0-3', '0,5'",
+                default='all',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:572 (e2e-map)
+            ),
+            ParameterSpec(
+                name='prng_type',
+                cli_flag='--prng-type',
+                param_type=ParamType.STRING,
+                description='generate_jobs default; config overrides',
+                default='java_lcg',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:573 (e2e-map)
+            ),
+            ParameterSpec(
+                name='mod',
+                cli_flag='--mod',
+                param_type=ParamType.INT,
+                description='generate_jobs default; config overrides',
+                default=1000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:574 (e2e-map)
+            ),
+            ParameterSpec(
+                name='batch_size',
+                cli_flag='--batch-size',
+                param_type=ParamType.INT,
+                description='score_survivors progress interval',
+                min_value=64,
+                max_value=1024,
+                default=100,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:575 (e2e-map)
+            ),
+            ParameterSpec(
+                name='workers',
+                cli_flag='--workers',
+                param_type=ParamType.INT,
+                description='parallel chunk processes (one fresh spawned process per chunk)',
+                default=1,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:576 (e2e-map)
+            ),
+            ParameterSpec(
+                name='torch_threads',
+                cli_flag='--torch-threads',
+                param_type=ParamType.INT,
+                description='torch.set_num_threads per process',
+                default=1,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:578 (e2e-map)
+            ),
+            ParameterSpec(
+                name='device',
+                cli_flag='--device',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['cpu', 'cuda'],
+                default='cpu',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:579 (e2e-map)
+            ),
+            ParameterSpec(
+                name='gpu_ids',
+                cli_flag='--gpu-ids',
+                param_type=ParamType.STRING,
+                description='for --device cuda: comma list, round-robin per chunk',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:580 (e2e-map)
+            ),
+            ParameterSpec(
+                name='min_features',
+                cli_flag='--min-features',
+                param_type=ParamType.INT,
+                description='Phase 6 floor (launcher: 46)',
+                default=46,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:581 (e2e-map)
+            ),
+            ParameterSpec(
+                name='forbid_root',
+                cli_flag='--forbid-root',
+                param_type=ParamType.STRING,
+                description='',
+                default=[],
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:582 (e2e-map)
+            ),
+            ParameterSpec(
+                name='allow_sequential_fallback',
+                cli_flag='--allow-sequential-fallback',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:583 (e2e-map)
+            ),
+            ParameterSpec(
+                name='allow_cpu_generate_fallback',
+                cli_flag='--allow-cpu-generate-fallback',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:584 (e2e-map)
+            ),
+            ParameterSpec(
+                name='allow_holdout_quality_failure',
+                cli_flag='--allow-holdout-quality-failure',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:585 (e2e-map)
+            ),
+            ParameterSpec(
+                name='allow_seed_errors',
+                cli_flag='--allow-seed-errors',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:586 (e2e-map)
+            ),
+            ParameterSpec(
+                name='allow_global_feature_failure',
+                cli_flag='--allow-global-feature-failure',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:587 (e2e-map)
+            ),
+            ParameterSpec(
+                name='per_seed_sieve_features',
+                cli_flag='--per-seed-sieve-features',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:589 (e2e-map)
+            ),
+            ParameterSpec(
+                name='fallback_metadata_merge',
+                cli_flag='--fallback-metadata-merge',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['legacy6', 'shared'],
+                default='legacy6',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step3_harness.py:590 (e2e-map)
+            ),
+        ]
+    ),
+    "e2e_step5_check.py": ScriptParameterRegistry(
+        script_name="e2e_step5_check.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='run_dir',
+                cli_flag='--run-dir',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_check.py:70 (e2e-map)
+            ),
+            ParameterSpec(
+                name='family',
+                cli_flag='--family',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['neural_net', 'lightgbm', 'xgboost', 'catboost'],
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_check.py:71 (e2e-map)
+            ),
+            ParameterSpec(
+                name='expected_trials',
+                cli_flag='--expected-trials',
+                param_type=ParamType.INT,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_check.py:72 (e2e-map)
+            ),
+            ParameterSpec(
+                name='out',
+                cli_flag='--out',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_check.py:73 (e2e-map)
+            ),
+        ]
+    ),
+    "e2e_step5_ranker.py": ScriptParameterRegistry(
+        script_name="e2e_step5_ranker.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='survivors',
+                cli_flag='--survivors',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:116 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_history',
+                cli_flag='--label-history',
+                param_type=ParamType.STRING,
+                description="the run copy's label_block_history.json",
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:117 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_start',
+                cli_flag='--label-start',
+                param_type=ParamType.INT,
+                description='T = combined index of the first label draw',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:118 (e2e-map)
+            ),
+            ParameterSpec(
+                name='expect_label_sha256',
+                cli_flag='--expect-label-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:119 (e2e-map)
+            ),
+            ParameterSpec(
+                name='sidecar_template',
+                cli_flag='--sidecar-template',
+                param_type=ParamType.STRING,
+                description='a Step 5 best_model.meta.json of this origin',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:120 (e2e-map)
+            ),
+            ParameterSpec(
+                name='pg_config',
+                cli_flag='--pg-config',
+                param_type=ParamType.STRING,
+                description='prediction_generator_config.json (prng_type, mod, default_skip)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:121 (e2e-map)
+            ),
+            ParameterSpec(
+                name='objective',
+                cli_flag='--objective',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['catboost_yetirank', 'lgbm_lambdarank', 'xgb_rank_ndcg', 'xgb_rank_pairwise'],
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:122 (e2e-map)
+            ),
+            ParameterSpec(
+                name='seed',
+                cli_flag='--seed',
+                param_type=ParamType.INT,
+                description='',
+                default=42,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:123 (e2e-map)
+            ),
+            ParameterSpec(
+                name='groups',
+                cli_flag='--groups',
+                param_type=ParamType.INT,
+                description='label draws sampled as groups (0 = all)',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:124 (e2e-map)
+            ),
+            ParameterSpec(
+                name='negatives_per_group',
+                cli_flag='--negatives-per-group',
+                param_type=ParamType.INT,
+                description='0 = all items',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:125 (e2e-map)
+            ),
+            ParameterSpec(
+                name='drop_empty_groups',
+                cli_flag='--drop-empty-groups',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['on', 'off'],
+                default='on',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:126 (e2e-map)
+            ),
+            ParameterSpec(
+                name='valid_fraction',
+                cli_flag='--valid-fraction',
+                param_type=ParamType.FLOAT,
+                description='',
+                default=0.2,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:127 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ndcg_k',
+                cli_flag='--ndcg-k',
+                param_type=ParamType.INT,
+                description='',
+                default=20,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:128 (e2e-map)
+            ),
+            ParameterSpec(
+                name='n_estimators',
+                cli_flag='--n-estimators',
+                param_type=ParamType.INT,
+                description='',
+                default=200,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:129 (e2e-map)
+            ),
+            ParameterSpec(
+                name='max_depth',
+                cli_flag='--max-depth',
+                param_type=ParamType.INT,
+                description='',
+                default=6,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:130 (e2e-map)
+            ),
+            ParameterSpec(
+                name='learning_rate',
+                cli_flag='--learning-rate',
+                param_type=ParamType.FLOAT,
+                description='',
+                default=0.1,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:131 (e2e-map)
+            ),
+            ParameterSpec(
+                name='device',
+                cli_flag='--device',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['cpu', 'cuda'],
+                default='cpu',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:132 (e2e-map)
+            ),
+            ParameterSpec(
+                name='workers',
+                cli_flag='--workers',
+                param_type=ParamType.INT,
+                description='',
+                default=4,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:133 (e2e-map)
+            ),
+            ParameterSpec(
+                name='max_rows',
+                cli_flag='--max-rows',
+                param_type=ParamType.INT,
+                description='refuse above this many training rows',
+                default=5000000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:134 (e2e-map)
+            ),
+            ParameterSpec(
+                name='save_votes',
+                cli_flag='--save-votes',
+                param_type=ParamType.CHOICE,
+                description="on: write votes.npy (N x L int16) for the self-test's equality gate",
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:135 (e2e-map)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_ranker.py:137 (e2e-map)
+            ),
+        ]
+    ),
+    "e2e_step5_shim.py": ScriptParameterRegistry(
+        script_name="e2e_step5_shim.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='split_seed',
+                cli_flag='--split-seed',
+                param_type=ParamType.INT,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_shim.py:118 (e2e-map)
+            ),
+            ParameterSpec(
+                name='capture_dir',
+                cli_flag='--capture-dir',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_shim.py:119 (e2e-map)
+            ),
+            ParameterSpec(
+                name='script',
+                cli_flag='--script',
+                param_type=ParamType.STRING,
+                description='path to meta_prediction_optimizer_anti_overfit.py',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_shim.py:120 (e2e-map)
+            ),
+            ParameterSpec(
+                name='target_field',
+                cli_flag='--target-field',
+                param_type=ParamType.STRING,
+                description='Step 5 training target (default holdout_quality = today, no rewrite); or holdout_hits, holdout_features.<name>',
+                default='holdout_quality',
+                # generated by switch_check.py from scripts/diagnostics/e2e_step5_shim.py:121 (e2e-map)
+            ),
+        ]
+    ),
+    "e2e_vote_harness.py": ScriptParameterRegistry(
+        script_name="e2e_vote_harness.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='survivors',
+                cli_flag='--survivors',
+                param_type=ParamType.STRING,
+                description='Step 3 survivors_with_scores.json (list of dicts with seed+features).',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:991 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='dataset',
+                cli_flag='--dataset',
+                param_type=ParamType.STRING,
+                description='Frozen dataset, list of {date, session, draw}; row index = combined index. Its sha256 goes on every record (the grader binds it). Supplies target.date/target.session.',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:993 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='history',
+                cli_flag='--history',
+                param_type=ParamType.STRING,
+                description="Optional history file(s) as Step 6 would read them, concatenated in order (e.g. train_history.json holdout_history.json). Must equal the dataset's draws value for value. Default: the dataset's draws.",
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:997 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='seal_from',
+                cli_flag='--seal-from',
+                param_type=ParamType.INT,
+                description='Seal the dataset from this combined index on (TODO-E2E-V10): the draw values of rows >= INDEX are discarded at parse time and never held. --history must then cover exactly [0, INDEX). Votes past it get a None-padded history of the right length (the module reads only its length). Default: no seal.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1001 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='expect_sidecar_sha256',
+                cli_flag='--expect-sidecar-sha256',
+                param_type=ParamType.STRING,
+                description='Fail closed unless the loaded best_model.meta.json has this sha256.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1007 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='expect_checkpoint_sha256',
+                cli_flag='--expect-checkpoint-sha256',
+                param_type=ParamType.STRING,
+                description='Fail closed unless the checkpoint the module loaded has this sha256.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1009 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='data_cutoff_index',
+                cli_flag='--data-cutoff-index',
+                param_type=ParamType.STRING,
+                description="Declared data_cutoff_index written on every record: an integer (must be <= every target in the block) or the literal 't' (cutoff = the target index, i.e. history[:t]). No default: it is a declaration.",
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1011 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='pending_date',
+                cli_flag='--pending-date',
+                param_type=ParamType.STRING,
+                description='target.date for t = len(dataset) (pending). Required if the block includes it.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1015 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='pending_session',
+                cli_flag='--pending-session',
+                param_type=ParamType.STRING,
+                description='target.session for t = len(dataset) (pending). Required likewise.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1018 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='block_start',
+                cli_flag='--block-start',
+                param_type=ParamType.INT,
+                description='First combined index t (inclusive).',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1020 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='block_end',
+                cli_flag='--block-end',
+                param_type=ParamType.INT,
+                description="End combined index (exclusive). May be len(dataset)+1, so the CLI's own next-draw pool (t = len(dataset), pending) is included.",
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1022 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='config',
+                cli_flag='--config',
+                param_type=ParamType.STRING,
+                description="Step 6 config JSON, as the CLI's --config. Must exist.",
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1025 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='models_dir',
+                cli_flag='--models-dir',
+                param_type=ParamType.STRING,
+                description="Directory holding best_model.meta.json (ranking=sidecar). Default: the config's models_dir.",
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1027 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='k',
+                cli_flag='--k',
+                param_type=ParamType.INT,
+                description="Same as the CLI --k. Default: the config's k.",
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1030 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='pool_size',
+                cli_flag='--pool-size',
+                param_type=ParamType.INT,
+                description="Same as the CLI --pool-size. Default: the config's pool_size.",
+                min_value=5,
+                max_value=100,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1032 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='no_require_schema',
+                cli_flag='--no-require-schema',
+                param_type=ParamType.BOOL,
+                description='Same as the CLI flag (UNSAFE in the module).',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1034 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='ranking',
+                cli_flag='--ranking',
+                param_type=ParamType.CHOICE,
+                description='Ranking source. sidecar = learned Step 5 model (default). file_order / seed_asc / field_sum = unlearned keys (arm A0).',
+                choices=['sidecar', 'file_order', 'seed_asc', 'field_sum'],
+                default='sidecar',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1036 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='ranking_fields',
+                cli_flag='--ranking-fields',
+                param_type=ParamType.STRING,
+                description='Comma list for field_sum, e.g. forward_matches,reverse_matches.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1039 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='ranking_npz',
+                cli_flag='--ranking-npz',
+                param_type=ParamType.STRING,
+                description='Optional Step 1 NPZ. field_sum fields absent from the rows are read from it by seed (utils.survivor_loader.load_survivors).',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1041 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='tie_break',
+                cli_flag='--tie-break',
+                param_type=ParamType.CHOICE,
+                description='How equal ranking scores are ordered. module = numpy argsort as Step 6 does (:836), the default and the only CLI-identical choice. seed_asc / file_order = declared secondary key.',
+                choices=['module', 'seed_asc', 'file_order'],
+                default='module',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1044 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='on_missing_feature',
+                cli_flag='--on-missing-feature',
+                param_type=ParamType.CHOICE,
+                description='Rows lacking a sidecar schema feature: fail (default) or record and let the module zero-fill as the CLI does (:798).',
+                choices=['fail', 'record'],
+                default='fail',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1048 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='vote_arm',
+                cli_flag='--vote-arm',
+                param_type=ParamType.CHOICE,
+                description='Vote-position arm. step6_baseline = Step 6 convention (default). per_skip = every survivor votes at --arm-skip. midday_stream_index = declared hook, not implemented.',
+                choices=['step6_baseline', 'per_skip', 'midday_stream_index'],
+                default='step6_baseline',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1051 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='arm_skip',
+                cli_flag='--arm-skip',
+                param_type=ParamType.INT,
+                description='Skip for --vote-arm per_skip.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1055 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='arm_id',
+                cli_flag='--arm-id',
+                param_type=ParamType.STRING,
+                description='Arm label written on every line. Default: <ranking>/<vote-arm>[/skipN].',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1056 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='emit_ranked_predictions',
+                cli_flag='--emit-ranked-predictions',
+                param_type=ParamType.CHOICE,
+                description="LL-5 (TODO-E2E-V11): off (default, today's behaviour) or on = also write ranked_predictions.jsonl, one Chapter 13 reader-shaped object per target: seed, rank, prediction, score, name-keyed feature map, draw_id, model id, feature-schema hash. Pools and config_id are the same either way.",
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1058 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='ranked_predictions_depth',
+                cli_flag='--ranked-predictions-depth',
+                param_type=ParamType.INT,
+                description='Ranked entries per target when on (default 20: Chapter 13 reads the top 20, chapter_13_orchestrator.py:690). Must be <= k and <= pool size.',
+                default=20,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1063 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='ranked_draw_id_rule',
+                cli_flag='--ranked-draw-id-rule',
+                param_type=ParamType.CHOICE,
+                description='draw_id per target (default c13_fallback = draw_<t+1>, chapter_13_diagnostics.py:163).',
+                choices=['c13_fallback'],
+                default='c13_fallback',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1066 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='emit_value_ordering',
+                cli_flag='--emit-value-ordering',
+                param_type=ParamType.CHOICE,
+                description="TODO-E2E-V12: off (default) or full_vote = every pool record also carries value_scores (grader R24): all values ordered by Step 6's vote over all survivors, proven against the pool per draw. Enters config_id when on.",
+                choices=['off', 'full_vote'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1069 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='ranking_key_round_decimals',
+                cli_flag='--ranking-key-round-decimals',
+                param_type=ParamType.INT,
+                description='TODO-E2E-V13: field_sum only. Round the key to D decimals before ranking (default off). Enters config_id when given.',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1073 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='workers',
+                cli_flag='--workers',
+                param_type=ParamType.INT,
+                description='Forked worker processes for draws after the first (default 1).',
+                default=1,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1076 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='New directory. Must not exist.',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1078 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='allow_gpu',
+                cli_flag='--allow-gpu',
+                param_type=ParamType.BOOL,
+                description="Do not hide CUDA (default: CUDA_VISIBLE_DEVICES='' before imports).",
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1079 (e2e-vote)
+            ),
+            ParameterSpec(
+                name='log_level',
+                cli_flag='--log-level',
+                param_type=ParamType.CHOICE,
+                description='Module log level (default WARNING; INFO logs every draw).',
+                choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                default='WARNING',
+                # generated by switch_check.py from scripts/diagnostics/e2e_vote_harness.py:1081 (e2e-vote)
+            ),
+        ]
+    ),
+    "e2e_walk_forward.py": ScriptParameterRegistry(
+        script_name="e2e_walk_forward.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='dataset',
+                cli_flag='--dataset',
+                param_type=ParamType.STRING,
+                description='frozen [{date, session, draw}]; the only draw source',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:387 (e2e-map)
+            ),
+            ParameterSpec(
+                name='dataset_sha256',
+                cli_flag='--dataset-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:388 (e2e-map)
+            ),
+            ParameterSpec(
+                name='npz',
+                cli_flag='--npz',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:389 (e2e-map)
+            ),
+            ParameterSpec(
+                name='generation_digest',
+                cli_flag='--generation-digest',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:390 (e2e-map)
+            ),
+            ParameterSpec(
+                name='scorer_config',
+                cli_flag='--scorer-config',
+                param_type=ParamType.STRING,
+                description='passed to the run-copy builder as --config (repeatable); Step 3 reads configs/<basename of the first>',
+                default=[],
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:391 (e2e-map)
+            ),
+            ParameterSpec(
+                name='sieve_window_end_index',
+                cli_flag='--sieve-window-end-index',
+                param_type=ParamType.INT,
+                description='combined index one past the last draw the Step 1 sieve saw (a property of the generation; run H: 1112 = 2002-12-10 midday + 1)',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:394 (e2e-map)
+            ),
+            ParameterSpec(
+                name='range_start',
+                cli_flag='--range-start',
+                param_type=ParamType.STRING,
+                description='first origin block start: combined index, YYYY-MM-DD (first row on/after), or auto = the earliest workable origin (see --min-train-draws, --label-draws)',
+                default='auto',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:398 (e2e-map)
+            ),
+            ParameterSpec(
+                name='range_end',
+                cli_flag='--range-end',
+                param_type=ParamType.STRING,
+                description='exclusive end: index, date, or end = dataset end',
+                default='end',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:401 (e2e-map)
+            ),
+            ParameterSpec(
+                name='block_length',
+                cli_flag='--block-length',
+                param_type=ParamType.INT,
+                description='about this many draws per block',
+                default=600,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:402 (e2e-map)
+            ),
+            ParameterSpec(
+                name='blocks',
+                cli_flag='--blocks',
+                param_type=ParamType.INT,
+                description='override: exact block count (0 = from length)',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:403 (e2e-map)
+            ),
+            ParameterSpec(
+                name='block_cut',
+                cli_flag='--block-cut',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['date', 'index'],
+                default='date',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:404 (e2e-map)
+            ),
+            ParameterSpec(
+                name='origins',
+                cli_flag='--origins',
+                param_type=ParamType.STRING,
+                description="'all' or comma list of block numbers (0-based)",
+                default='all',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:405 (e2e-map)
+            ),
+            ParameterSpec(
+                name='origin_stride',
+                cli_flag='--origin-stride',
+                param_type=ParamType.INT,
+                description='every n-th block of the selection',
+                default=1,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:406 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_window',
+                cli_flag='--label-window',
+                param_type=ParamType.CHOICE,
+                description='fixed: labels [b-L, b), train [0, b-L) (train end moves with the origin); expanding: labels [--label-start-index, b), train [0, label start)',
+                choices=['fixed', 'expanding'],
+                default='fixed',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:407 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_draws',
+                cli_flag='--label-draws',
+                param_type=ParamType.INT,
+                description='L for fixed (run H label block: 1807)',
+                default=1807,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:410 (e2e-map)
+            ),
+            ParameterSpec(
+                name='label_start_index',
+                cli_flag='--label-start-index',
+                param_type=ParamType.STRING,
+                description='expanding: first label index (default the sieve window end)',
+                default='sieve_end',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:411 (e2e-map)
+            ),
+            ParameterSpec(
+                name='min_train_draws',
+                cli_flag='--min-train-draws',
+                param_type=ParamType.INT,
+                description='refuse an origin whose train history is shorter (2000 = every global_* feature computed: global_state_tracker.py:156 (<100 -> defaults), :264 (regime features need 2 x 1000))',
+                default=2000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:413 (e2e-map)
+            ),
+            ParameterSpec(
+                name='labels_after_sieve',
+                cli_flag='--labels-after-sieve',
+                param_type=ParamType.CHOICE,
+                description='on: refuse a label window that overlaps the sieve window',
+                choices=['on', 'off'],
+                default='on',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:417 (e2e-map)
+            ),
+            ParameterSpec(
+                name='grade_sessions',
+                cli_flag='--grade-sessions',
+                param_type=ParamType.STRING,
+                description="sessions graded and reported, each alone; 'pooled' = all of them together (ADDENDUM_1 item 3, default both and pooled)",
+                default='midday,evening,pooled',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:419 (e2e-map)
+            ),
+            ParameterSpec(
+                name='pool_sizes',
+                cli_flag='--pool-sizes',
+                param_type=ParamType.STRING,
+                description='comma list; each is --k N --pool-size N',
+                default='20',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:422 (e2e-map)
+            ),
+            ParameterSpec(
+                name='previously_inspected',
+                cli_flag='--previously-inspected',
+                param_type=ParamType.STRING,
+                description='START:END (half-open) already looked at; recorded per arm by the grader',
+                default=[],
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:423 (e2e-map)
+            ),
+            ParameterSpec(
+                name='target_field',
+                cli_flag='--target-field',
+                param_type=ParamType.STRING,
+                description='Step 5 target via the shim (default holdout_quality = today; holdout_hits; holdout_features.<name>)',
+                default='holdout_quality',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:426 (e2e-map)
+            ),
+            ParameterSpec(
+                name='families',
+                cli_flag='--families',
+                param_type=ParamType.STRING,
+                description='',
+                # default not a literal in the code: ','.join(FAMILY_TIE_ORDER)
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:429 (e2e-map)
+            ),
+            ParameterSpec(
+                name='split_seeds',
+                cli_flag='--split-seeds',
+                param_type=ParamType.STRING,
+                description='comma list; one learned arm per seed',
+                default='42',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:430 (e2e-map)
+            ),
+            ParameterSpec(
+                name='trials',
+                cli_flag='--trials',
+                param_type=ParamType.INT,
+                description='',
+                min_value=10,
+                max_value=200,
+                default=20,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:431 (e2e-map)
+            ),
+            ParameterSpec(
+                name='k_folds',
+                cli_flag='--k-folds',
+                param_type=ParamType.INT,
+                description='',
+                min_value=3,
+                max_value=20,
+                default=20,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:432 (e2e-map)
+            ),
+            ParameterSpec(
+                name='nn_args',
+                cli_flag='--nn-args',
+                param_type=ParamType.STRING,
+                description='extra module args for neural_net (compare-models Option A, :240-245)',
+                default='--normalize-features --use-leaky-relu',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:433 (e2e-map)
+            ),
+            ParameterSpec(
+                name='step5_extra_args',
+                cli_flag='--step5-extra-args',
+                param_type=ParamType.STRING,
+                description='',
+                default='--enable-diagnostics',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:435 (e2e-map)
+            ),
+            ParameterSpec(
+                name='step5_cuda',
+                cli_flag='--step5-cuda',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['visible', 'hidden'],
+                default='visible',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:436 (e2e-map)
+            ),
+            ParameterSpec(
+                name='on_family_failure',
+                cli_flag='--on-family-failure',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['stop', 'exclude'],
+                default='stop',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:437 (e2e-map)
+            ),
+            ParameterSpec(
+                name='model_choice',
+                cli_flag='--model-choice',
+                param_type=ParamType.CHOICE,
+                description="cv = the declared run H winner rule (default). prev_block_* = every family is voted and graded on each block; origin i picks the family with the most hits / the lowest mean rank on the previous graded origin's block (always before b_i); the first origin falls back to cv",
+                choices=['cv', 'prev_block_hits', 'prev_block_rank'],
+                default='cv',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:438 (e2e-map)
+            ),
+            ParameterSpec(
+                name='choice_pool_size',
+                cli_flag='--choice-pool-size',
+                param_type=ParamType.INT,
+                description='0 = the largest pool size',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:443 (e2e-map)
+            ),
+            ParameterSpec(
+                name='choice_session',
+                cli_flag='--choice-session',
+                param_type=ParamType.STRING,
+                description='',
+                default='pooled',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:444 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_arms',
+                cli_flag='--ranker-arms',
+                param_type=ParamType.STRING,
+                description='ADDENDUM_2: comma list of ranker Step 5 arms (xgb_rank_ndcg, xgb_rank_pairwise, lgbm_lambdarank, catboost_yetirank); each is its own learned arm, voted and graded at every pool size; default none = today',
+                default='',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:445 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_groups',
+                cli_flag='--ranker-groups',
+                param_type=ParamType.INT,
+                description='label draws sampled as groups (0 = all)',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:449 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_negatives',
+                cli_flag='--ranker-negatives',
+                param_type=ParamType.INT,
+                description='negatives kept per group (0 = all)',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:450 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_n_estimators',
+                cli_flag='--ranker-n-estimators',
+                param_type=ParamType.INT,
+                description='',
+                default=200,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:451 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_max_depth',
+                cli_flag='--ranker-max-depth',
+                param_type=ParamType.INT,
+                description='',
+                default=6,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:452 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_learning_rate',
+                cli_flag='--ranker-learning-rate',
+                param_type=ParamType.FLOAT,
+                description='',
+                default=0.1,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:453 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_device',
+                cli_flag='--ranker-device',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['cpu', 'cuda'],
+                default='cpu',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:454 (e2e-map)
+            ),
+            ParameterSpec(
+                name='ranker_max_rows',
+                cli_flag='--ranker-max-rows',
+                param_type=ParamType.INT,
+                description='',
+                default=5000000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:455 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_all_families',
+                cli_flag='--vote-all-families',
+                param_type=ParamType.CHOICE,
+                description='auto = on when --model-choice is prev_block_*; family arms vote at the choice pool size',
+                choices=['auto', 'on', 'off'],
+                default='auto',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:456 (e2e-map)
+            ),
+            ParameterSpec(
+                name='step3_device',
+                cli_flag='--step3-device',
+                param_type=ParamType.CHOICE,
+                description='',
+                choices=['cpu', 'cuda'],
+                default='cpu',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:460 (e2e-map)
+            ),
+            ParameterSpec(
+                name='step3_workers',
+                cli_flag='--step3-workers',
+                param_type=ParamType.INT,
+                description='',
+                default=4,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:461 (e2e-map)
+            ),
+            ParameterSpec(
+                name='step3_chunk_size',
+                cli_flag='--step3-chunk-size',
+                param_type=ParamType.INT,
+                description='',
+                default=1000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:462 (e2e-map)
+            ),
+            ParameterSpec(
+                name='step3_extra_args',
+                cli_flag='--step3-extra-args',
+                param_type=ParamType.STRING,
+                description='',
+                default='',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:463 (e2e-map)
+            ),
+            ParameterSpec(
+                name='unlearned_fields',
+                cli_flag='--unlearned-fields',
+                param_type=ParamType.STRING,
+                description='',
+                default='forward_matches,reverse_matches',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:465 (e2e-map)
+            ),
+            ParameterSpec(
+                name='unlearned_tie_break',
+                cli_flag='--unlearned-tie-break',
+                param_type=ParamType.STRING,
+                description='',
+                default='seed_asc',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:466 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_harness',
+                cli_flag='--vote-harness',
+                param_type=ParamType.STRING,
+                description='',
+                # default not a literal in the code: str(Path('~/tfm_worktrees/e2e-vote/scripts/diagnostics/e2e_vote_harness.py').expanduser())
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:468 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_harness_sha256',
+                cli_flag='--vote-harness-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:470 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_config',
+                cli_flag='--vote-config',
+                param_type=ParamType.STRING,
+                description='',
+                # default not a literal in the code: str(WT / 'prediction_generator_config.json')
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:471 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_config_sha256',
+                cli_flag='--vote-config-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:472 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_workers',
+                cli_flag='--vote-workers',
+                param_type=ParamType.INT,
+                description='',
+                default=6,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:473 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_allow_gpu',
+                cli_flag='--vote-allow-gpu',
+                param_type=ParamType.BOOL,
+                description='needed for a neural_net arm (vote READY E2E-V6)',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:474 (e2e-map)
+            ),
+            ParameterSpec(
+                name='grader',
+                cli_flag='--grader',
+                param_type=ParamType.STRING,
+                description='',
+                # default not a literal in the code: str(Path('~/tfm_worktrees/e2e-grader/scripts/diagnostics/e2e_grader.py').expanduser())
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:476 (e2e-map)
+            ),
+            ParameterSpec(
+                name='grader_sha256',
+                cli_flag='--grader-sha256',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:478 (e2e-map)
+            ),
+            ParameterSpec(
+                name='grader_workers',
+                cli_flag='--grader-workers',
+                param_type=ParamType.INT,
+                description='',
+                default=4,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:479 (e2e-map)
+            ),
+            ParameterSpec(
+                name='control_reps',
+                cli_flag='--control-reps',
+                param_type=ParamType.INT,
+                description='',
+                default=200,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:480 (e2e-map)
+            ),
+            ParameterSpec(
+                name='rank_test_reps',
+                cli_flag='--rank-test-reps',
+                param_type=ParamType.INT,
+                description='grader R24 Monte Carlo reps',
+                default=10000,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:481 (e2e-map)
+            ),
+            ParameterSpec(
+                name='vote_value_ordering',
+                cli_flag='--vote-value-ordering',
+                param_type=ParamType.CHOICE,
+                description="full_vote: the vote harness emits every value's score from the module's own vote over all survivors (MISS agent, TODO-E2E-V12) on the rank-depth pool, and the grader ranks the drawn number in it (R24); off = rank censored at the largest pool",
+                choices=['off', 'full_vote'],
+                default='off',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:482 (e2e-map)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='new, under <worktree>/data/',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:487 (e2e-map)
+            ),
+            ParameterSpec(
+                name='gpu_id',
+                cli_flag='--gpu-id',
+                param_type=ParamType.STRING,
+                description='',
+                default='0',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:488 (e2e-map)
+            ),
+            ParameterSpec(
+                name='gpu_allowed_procs',
+                cli_flag='--gpu-allowed-procs',
+                param_type=ParamType.STRING,
+                description='',
+                default='sunshine',
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:489 (e2e-map)
+            ),
+            ParameterSpec(
+                name='gpu_min_free_mib',
+                cli_flag='--gpu-min-free-mib',
+                param_type=ParamType.INT,
+                description='',
+                default=8192,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:490 (e2e-map)
+            ),
+            ParameterSpec(
+                name='mem_floor_mib',
+                cli_flag='--mem-floor-mib',
+                param_type=ParamType.INT,
+                description='',
+                default=2048,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:491 (e2e-map)
+            ),
+            ParameterSpec(
+                name='card_ceiling_mib',
+                cli_flag='--card-ceiling-mib',
+                param_type=ParamType.INT,
+                description='0 = off',
+                default=0,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:492 (e2e-map)
+            ),
+            ParameterSpec(
+                name='resume',
+                cli_flag='--resume',
+                param_type=ParamType.BOOL,
+                description='',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:493 (e2e-map)
+            ),
+            ParameterSpec(
+                name='plan_only',
+                cli_flag='--plan-only',
+                param_type=ParamType.BOOL,
+                description='write run_record.json and PLAN.md and stop (reads dates/sessions only)',
+                default=False,
+                # generated by switch_check.py from scripts/diagnostics/e2e_walk_forward.py:494 (e2e-map)
+            ),
+        ]
+    ),
+    "full_scoring_worker.py": ScriptParameterRegistry(
+        script_name="full_scoring_worker.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='per_seed_sieve_features',
+                cli_flag='--per-seed-sieve-features',
+                param_type=ParamType.CHOICE,
+                description="[LL-2] 'on' merges the NPZ per-seed forward_matches/reverse_matches as two features (schema v2). Default 'off' = unchanged.",
+                choices=['off', 'on'],
+                default='off',
+                # generated by switch_check.py from full_scoring_worker.py:570 (ch14-learn)
+            ),
+            ParameterSpec(
+                name='fallback_metadata_merge',
+                cli_flag='--fallback-metadata-merge',
+                param_type=ParamType.CHOICE,
+                description="[LL-2] sequential-fallback merge list: 'legacy6' (default, unchanged) or 'shared' (the batch path's 18 names; F-PARITY).",
+                choices=['legacy6', 'shared'],
+                default='legacy6',
+                # generated by switch_check.py from full_scoring_worker.py:573 (ch14-learn)
+            ),
+        ]
+    ),
+    "inner_episode_trainer.py": ScriptParameterRegistry(
+        script_name="inner_episode_trainer.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='device_profile',
+                cli_flag='--device-profile',
+                param_type=ParamType.CHOICE,
+                description='cpu (default) | gpu: NN, XGBoost, CatBoost on CUDA in subprocesses, LightGBM on CPU. GPU profile fixture-tested only (TODO-E2E-NN-6)',
+                choices=['cpu', 'gpu'],
+                # generated by switch_check.py from inner_episode_trainer.py:1324 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='model_device',
+                cli_flag='--model-device',
+                param_type=ParamType.STRING,
+                description='Per-model device override, e.g. neural_net=cuda:0 (repeatable)',
+                # generated by switch_check.py from inner_episode_trainer.py:1327 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='gpu_fallback',
+                cli_flag='--gpu-fallback',
+                param_type=ParamType.CHOICE,
+                description='On a GPU failure: fail (default) or fall back to CPU, recorded',
+                choices=['fail', 'cpu'],
+                # generated by switch_check.py from inner_episode_trainer.py:1329 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='nn_options',
+                cli_flag='--nn-options',
+                param_type=ParamType.STRING,
+                description='JSON merged over NN_OPTION_DEFAULTS, e.g. \'{"params": {"epochs": 50}, "seed": 7}\'',
+                # generated by switch_check.py from inner_episode_trainer.py:1331 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='subprocess_work_dir',
+                cli_flag='--subprocess-work-dir',
+                param_type=ParamType.STRING,
+                description='Fold subprocess work dir (default <cwd>/data/selfplay_subprocess_work)',
+                # generated by switch_check.py from inner_episode_trainer.py:1334 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='subprocess_timeout_s',
+                cli_flag='--subprocess-timeout-s',
+                param_type=ParamType.FLOAT,
+                description='Per-fold subprocess timeout in seconds (default 900)',
+                # generated by switch_check.py from inner_episode_trainer.py:1336 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='catboost_gpu_ram_part',
+                cli_flag='--catboost-gpu-ram-part',
+                param_type=ParamType.FLOAT,
+                description='Share of card memory CatBoost GPU reserves (default 0.2)',
+                # generated by switch_check.py from inner_episode_trainer.py:1338 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='top_features_n',
+                cli_flag='--top-features-n',
+                param_type=ParamType.INT,
+                description='Features kept in top_features per model (default 5)',
+                # generated by switch_check.py from inner_episode_trainer.py:1340 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='keep_subprocess_artifacts',
+                cli_flag='--keep-subprocess-artifacts',
+                param_type=ParamType.BOOL,
+                description='Keep fold npz, checkpoint and worker logs after success',
+                # generated by switch_check.py from inner_episode_trainer.py:1342 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='model_types',
+                cli_flag='--model-types',
+                param_type=ParamType.STRING,
+                description='Comma list for --compare-all (default: lightgbm,xgboost,catboost)',
+                # generated by switch_check.py from inner_episode_trainer.py:1429 (selfplay-nn)
+            ),
+        ]
+    ),
+    "practice_streams.py": ScriptParameterRegistry(
+        script_name="practice_streams.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='spec',
+                cli_flag='--spec',
+                param_type=ParamType.STRING,
+                description='JSON spec file (merged onto DEFAULT_SPEC)',
+                required=True,
+                # generated by switch_check.py from scripts/practice/practice_streams.py:697 (practice-streams)
+            ),
+            ParameterSpec(
+                name='out_dir',
+                cli_flag='--out-dir',
+                param_type=ParamType.STRING,
+                description='output directory under data/',
+                required=True,
+                # generated by switch_check.py from scripts/practice/practice_streams.py:698 (practice-streams)
+            ),
+            ParameterSpec(
+                name='controls_seed',
+                cli_flag='--controls-seed',
+                param_type=ParamType.INT,
+                description='also write shuffled and uniform controls from this seed',
+                # generated by switch_check.py from scripts/practice/practice_streams.py:699 (practice-streams)
+            ),
+        ]
+    ),
+    "selfplay_fold_worker.py": ScriptParameterRegistry(
+        script_name="selfplay_fold_worker.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='spec',
+                cli_flag='--spec',
+                param_type=ParamType.STRING,
+                description='',
+                required=True,
+                # generated by switch_check.py from selfplay_fold_worker.py:204 (selfplay-nn)
+            ),
+        ]
+    ),
+    "selfplay_orchestrator.py": ScriptParameterRegistry(
+        script_name="selfplay_orchestrator.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='model_types',
+                cli_flag='--model-types',
+                param_type=ParamType.STRING,
+                description='Override config model_types, comma list, e.g. lightgbm,xgboost,catboost,neural_net',
+                # generated by switch_check.py from selfplay_orchestrator.py:1392 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='proposer',
+                cli_flag='--proposer',
+                param_type=ParamType.CHOICE,
+                description="Episode proposer (config 'proposer', default inherit = today)",
+                choices=['inherit', 'local_search', 'attribution_prior'],
+                # generated by switch_check.py from selfplay_orchestrator.py:1399 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='proposer_seed',
+                cli_flag='--proposer-seed',
+                param_type=ParamType.INT,
+                description="Proposer RNG seed (config 'proposer_seed')",
+                # generated by switch_check.py from selfplay_orchestrator.py:1401 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='proposer_options',
+                cli_flag='--proposer-options',
+                param_type=ParamType.STRING,
+                description='JSON object merged over selfplay_proposer.PROPOSER_DEFAULTS',
+                # generated by switch_check.py from selfplay_orchestrator.py:1403 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='target_field',
+                cli_flag='--target-field',
+                param_type=ParamType.STRING,
+                description="Training target (default: today's chain holdout_hits/score/label)",
+                # generated by switch_check.py from selfplay_orchestrator.py:1405 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='feature_set',
+                cli_flag='--feature-set',
+                param_type=ParamType.CHOICE,
+                description='legacy_all (default, every features key) or step5_mirror',
+                choices=['legacy_all', 'step5_mirror'],
+                # generated by switch_check.py from selfplay_orchestrator.py:1407 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='exclude_features',
+                cli_flag='--exclude-features',
+                param_type=ParamType.STRING,
+                description='Comma list of feature names dropped from X',
+                # generated by switch_check.py from selfplay_orchestrator.py:1409 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='episode_record',
+                cli_flag='--episode-record',
+                param_type=ParamType.STRING,
+                description='Write every EpisodeResult (all models, devices, NN fold records) and the resolved config to this JSON path (default: not written)',
+                # generated by switch_check.py from selfplay_orchestrator.py:1411 (selfplay-nn)
+            ),
+        ]
+    ),
+    "switch_check.py": ScriptParameterRegistry(
+        script_name="switch_check.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='main_repo',
+                cli_flag='--main-repo',
+                param_type=ParamType.STRING,
+                description='main tree (read at --commit with git cat-file)',
+                # default not a literal in the code: str(Path('~/distributed_prng_analysis').expanduser())
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1312 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='commit',
+                cli_flag='--commit',
+                param_type=ParamType.STRING,
+                description='commit of the main tree to read',
+                default='41ad509',
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1314 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='worktrees_root',
+                cli_flag='--worktrees-root',
+                param_type=ParamType.STRING,
+                description="directory whose subdirectories are worktrees ('' to skip)",
+                # default not a literal in the code: str(Path('~/tfm_worktrees').expanduser())
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1315 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='out_json',
+                cli_flag='--out-json',
+                param_type=ParamType.STRING,
+                description='NEW file',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1317 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='out_md',
+                cli_flag='--out-md',
+                param_type=ParamType.STRING,
+                description='NEW file',
+                required=True,
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1318 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='patch_dir',
+                cli_flag='--patch-dir',
+                param_type=ParamType.STRING,
+                description='NEW directory for the draft patch set (R8); omitted = none',
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1319 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='new_since',
+                cli_flag='--new-since',
+                param_type=ParamType.STRING,
+                description="R8: a worktree's added switch enters the patch set if its file was modified on/after this date",
+                default='2026-11-23',
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1320 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='rules',
+                cli_flag='--rules',
+                param_type=ParamType.STRING,
+                description='JSON overriding DEFAULT_RULES keys',
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1322 (e2e-grader)
+            ),
+            ParameterSpec(
+                name='max_record_mb',
+                cli_flag='--max-record-mb',
+                param_type=ParamType.FLOAT,
+                description='largest run-record file read',
+                default=20.0,
+                # generated by switch_check.py from scripts/diagnostics/switch_check.py:1323 (e2e-grader)
+            ),
+        ]
+    ),
+    "train_single_trial.py": ScriptParameterRegistry(
+        script_name="train_single_trial.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='diagnostics_level',
+                cli_flag='--diagnostics-level',
+                param_type=ParamType.CHOICE,
+                description='Chapter 14 report content: legacy (default, unchanged) or full (named features, NN gradient probe, tree curves, column classes)',
+                choices=['legacy', 'full'],
+                default='legacy',
+                # generated by switch_check.py from train_single_trial.py:935 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='gradient_probe_rows',
+                cli_flag='--gradient-probe-rows',
+                param_type=ParamType.INT,
+                description='[CH14-DIAG CD-03] rows of the fixed training slice for the NN eval-mode input-gradient probe (level full; 0 = no probe)',
+                default=512,
+                # generated by switch_check.py from train_single_trial.py:939 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='scale_guard',
+                cli_flag='--scale-guard',
+                param_type=ParamType.CHOICE,
+                description='NN input scale guard: value_constant (default) or legacy_zero_std (pre-2026-11-23 == 0 rule, for comparison runs)',
+                choices=['value_constant', 'legacy_zero_std'],
+                # generated by switch_check.py from train_single_trial.py:913 (selfplay-nn)
+            ),
+            ParameterSpec(
+                name='near_constant_rel_spread',
+                cli_flag='--near-constant-rel-spread',
+                param_type=ParamType.FLOAT,
+                description='value_constant only: treat (max-min) <= t*max|x| as constant (scale 1.0). Default OFF',
+                # generated by switch_check.py from train_single_trial.py:917 (selfplay-nn)
+            ),
+        ]
+    ),
+    "training_health_check.py": ScriptParameterRegistry(
+        script_name="training_health_check.py",
+        description="(generated by switch_check.py; description to be written)",
+        parameters=[
+            ParameterSpec(
+                name='regrade',
+                cli_flag='--regrade',
+                param_type=ParamType.STRING,
+                description='Re-grade every report under these files/dirs (read-only), legacy vs fixed',
+                # generated by switch_check.py from training_health_check.py:1521 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='out',
+                cli_flag='--out',
+                param_type=ParamType.STRING,
+                description='--regrade: JSON output path (must not exist, not under an input)',
+                # generated by switch_check.py from training_health_check.py:1523 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='policies',
+                cli_flag='--policies',
+                param_type=ParamType.STRING,
+                description='--regrade: watcher_policies.json to read bounds from (read-only)',
+                default='watcher_policies.json',
+                # generated by switch_check.py from training_health_check.py:1525 (ch14-diag)
+            ),
+            ParameterSpec(
+                name='match_window_hours',
+                cli_flag='--match-window-hours',
+                param_type=ParamType.FLOAT,
+                description='--regrade: max hours between a compare-models run start and an archived check',
+                default=6.0,
+                # generated by switch_check.py from training_health_check.py:1527 (ch14-diag)
+            ),
+        ]
+    ),
+}
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# LOOKUP FUNCTIONS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def get_registry(script_name: str) -> Optional[ScriptParameterRegistry]:
+    """
+    Get parameter registry for a script.
+    
+    Args:
+        script_name: Name of the script (with or without .py)
+        
+    Returns:
+        ScriptParameterRegistry or None
+    """
+    # Normalize name
+    if not script_name.endswith('.py'):
+        script_name = f"{script_name}.py"
+    
+    return PARAMETER_REGISTRIES.get(script_name)
+
+
+def get_registry_for_agent(agent_name: str) -> Optional[ScriptParameterRegistry]:
+    """
+    Get parameter registry based on agent name.
+    
+    Maps agent names to their corresponding scripts.
+    
+    Args:
+        agent_name: Name of the agent
+        
+    Returns:
+        ScriptParameterRegistry or None
+    """
+    # Normalize
+    agent_name = agent_name.lower().strip()
+    
+    # Direct mapping
+    agent_to_script = {
+        # Step 1
+        "window_optimizer_agent": "window_optimizer.py",
+        "window_optimizer": "window_optimizer.py",
+        
+        # Step 2
+        "scorer_meta_agent": "scorer_meta_optimizer.py",
+        "scorer_meta_optimizer": "scorer_meta_optimizer.py",
+        "scorer_meta": "scorer_meta_optimizer.py",
+        
+        # Step 3
+        "full_scoring_agent": "full_scoring.py",
+        "full_scoring": "full_scoring.py",
+        
+        # Step 4
+        "ml_meta_agent": "adaptive_meta_optimizer.py",
+        "ml_meta_optimizer": "adaptive_meta_optimizer.py",
+        "ml_meta": "adaptive_meta_optimizer.py",
+        "adaptive_meta_optimizer": "adaptive_meta_optimizer.py",
+        
+        # Step 5
+        "anti_overfit_agent": "meta_prediction_optimizer_anti_overfit.py",
+        "reinforcement_agent": "meta_prediction_optimizer_anti_overfit.py",
+        "anti_overfit": "meta_prediction_optimizer_anti_overfit.py",
+        
+        # Step 6
+        "prediction_agent": "prediction_generator.py",
+        "prediction": "prediction_generator.py",
+    }
+    
+    script = agent_to_script.get(agent_name)
+    if script:
+        return get_registry(script)
+    
+    # Fuzzy match
+    for key, script in agent_to_script.items():
+        if key in agent_name or agent_name in key:
+            return get_registry(script)
+    
+    return None
+
+
+def list_all_registries() -> List[str]:
+    """Get list of all registered script names."""
+    return list(PARAMETER_REGISTRIES.keys())
