@@ -62,7 +62,9 @@
         "staging-high-water-files": "staging_high_water_files",
         "staging-high-water-bytes": "staging_high_water_bytes",
         "resume-checkpoint": "resume_checkpoint",
-        "step1-search-id": "step1_search_id"
+        "step1-search-id": "step1_search_id",
+        "derived-anchor-domain": "derived_anchor_domain",
+        "anchor-holdout-guard": "anchor_holdout_guard"
       },
       "distributed": true,
       "timeout_minutes": 1440
@@ -271,6 +273,8 @@
     "min_workers": 24,
     "use_range_miner": true,
     "deliver_skip_range": false,
+    "derived_anchor_domain": false,
+    "anchor_holdout_guard": false,
     "miner_stripe_size": 67108864,
     "miner_substripes": 8,
     "miner_output_dir": null,
@@ -345,6 +349,18 @@
       "type": "str",
       "default": "",
       "description": "[STEP1-SEARCH stage 1] The Step 1 search this chunk belongs to (utils/step1_search_ledger.py). NEVER supplied by the operator for a run: WATCHER sets it from the one open search for the family and mode set, and refuses a different value. Declared HERE because WATCHER's step-scoped filter drops an undeclared key; hop 1 of 3 (hop 2 window_optimizer.py --step1-search-id, hop 3 optimize_window(step1_search_id=...)). Opening a search is NOT a parameter: only the operator's WATCHER CLI (--step1-search-open) opens one.",
+      "optimized_by": "Manual"
+    },
+    "derived_anchor_domain": {
+      "type": "bool",
+      "default": false,
+      "description": "[WINDOW-ANCHOR BRIEF II] false (default) = Optuna samples the window anchor from search_bounds.offset, as before. true = it samples from the domain derived from the data after the session filter, [min, N_filtered - window_size] (search_bounds.window_anchor, declared defaults min 0, max_cap null), and every trial, sampled or operator-pinned, is validated against that domain and against search_bounds.window_size, never clamped. Hop 1 of 3 (hop 2 window_optimizer.py --derived-anchor-domain, hop 3 optimize_window(derived_anchor_domain=...)). Bool: true emits the flag, false omits it, so a default run's argv is unchanged. A search or study opened in one mode refuses the other. generator_phase stays 0 and is not touched.",
+      "optimized_by": "Manual"
+    },
+    "anchor_holdout_guard": {
+      "type": "bool",
+      "default": false,
+      "description": "[WINDOW-ANCHOR BRIEF II] Only with derived_anchor_domain true (refused otherwise). true = the anchor is capped so the whole sieve window [anchor, anchor + window_size) ends before the first holdout record of Step 1's train/holdout split for that session filter: effective_max = min(effective_max, N_train(sessions) - window_size), with the split from window_optimizer.step1_holdout_split_point. Validated, never clamped; recorded in the run and trial records; a guarded search or study refuses an unguarded run and the reverse. Hop 1 of 3 (hop 2 --anchor-holdout-guard, hop 3 optimize_window(anchor_holdout_guard=...)).",
       "optimized_by": "Manual"
     }
   }
