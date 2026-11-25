@@ -1,0 +1,76 @@
+diff -ru a/agent_manifests/window_optimizer.json b/agent_manifests/window_optimizer.json
+--- a/agent_manifests/window_optimizer.json	2026-11-23 20:51:16.608076601 -0800
++++ b/agent_manifests/window_optimizer.json	2026-11-23 20:51:16.622076531 -0800
+@@ -64,7 +64,9 @@
+         "resume-checkpoint": "resume_checkpoint",
+         "step1-search-id": "step1_search_id",
+         "derived-anchor-domain": "derived_anchor_domain",
+-        "anchor-holdout-guard": "anchor_holdout_guard"
++        "anchor-holdout-guard": "anchor_holdout_guard",
++        "step1-objective": "step1_objective",
++        "screen-config": "screen_config"
+       },
+       "distributed": true,
+       "timeout_minutes": 1440
+@@ -275,6 +277,8 @@
+     "deliver_skip_range": false,
+     "derived_anchor_domain": false,
+     "anchor_holdout_guard": false,
++    "step1_objective": "",
++    "screen_config": "",
+     "miner_stripe_size": 67108864,
+     "miner_substripes": 8,
+     "miner_output_dir": null,
+@@ -362,6 +366,19 @@
+       "default": false,
+       "description": "[WINDOW-ANCHOR BRIEF II] Only with derived_anchor_domain true (refused otherwise). true = the anchor is capped so the whole sieve window [anchor, anchor + window_size) ends before the first holdout record of Step 1's train/holdout split for that session filter: effective_max = min(effective_max, N_train(sessions) - window_size), with the split from window_optimizer.step1_holdout_split_point. Validated, never clamped; recorded in the run and trial records; a guarded search or study refuses an unguarded run and the reverse. Hop 1 of 3 (hop 2 --anchor-holdout-guard, hop 3 optimize_window(anchor_holdout_guard=...)).",
+       "optimized_by": "Manual"
++    },
++    "step1_objective": {
++      "type": "choice",
++      "choices": ["", "bidirectional_count", "screen_rank", "screen_hits"],
++      "default": "",
++      "description": "[STEP1 CHEAP SCREEN] What Step 1's Optuna maximises. \"\" (default) = the flag is omitted (WATCHER skips empty strings, S167) and window_optimizer.py uses its CLI default bidirectional_count (survivor count), so a default run's argv is unchanged. screen_hits / screen_rank = each trial is scored by its own unlearned Step 6 pools on a selection block right after its window, against the pinned grader's exact null (utils/step1_screen.py; DEVELOPMENT evidence only). A screen needs derived_anchor_domain true, anchor_holdout_guard true and screen_config. A study tagged by one objective or screen setting refuses another. Hop 1 of 3 (hop 2 window_optimizer.py --step1-objective, hop 3 optimize_window(step1_objective=...)).",
++      "optimized_by": "Manual"
++    },
++    "screen_config": {
++      "type": "string",
++      "default": "",
++      "description": "[STEP1 CHEAP SCREEN] Path of the screen settings JSON (schema tfm.step1_screen.v1: grader_path and grader_sha256 required; pool_size, selection_draws, selection_gap, selection_sessions, selection_end_max, confirmation_blocks, ranking_fields, tie_break, default_skip, rank_survivor_cap, workers and the rest default as utils/step1_screen.py SCREEN_DEFAULTS). Read only with a screen step1_objective; refused otherwise. Its resolved settings and sha256 are bound to the study. Hop 1 of 3 (hop 2 --screen-config, hop 3 optimize_window(screen_config=...)).",
++      "optimized_by": "Manual"
+     }
+   }
+ }
+diff -ru a/agents/registry/parameter_registry.py b/agents/registry/parameter_registry.py
+--- a/agents/registry/parameter_registry.py	2026-11-23 20:51:16.610076591 -0800
++++ b/agents/registry/parameter_registry.py	2026-11-23 20:51:16.622076531 -0800
+@@ -349,6 +349,29 @@
+                 default=False,
+                 affects_runtime=True
+             ),
++            # [STEP1 CHEAP SCREEN] DRAFT (owner decision whether an agent may propose it):
++            # changing the objective changes WHICH windows Step 1 prefers.
++            ParameterSpec(
++                name="step1_objective",
++                cli_flag="--step1-objective",
++                param_type=ParamType.CHOICE,
++                description=("What Step 1 maximises: bidirectional_count (survivor count, "
++                             "default) or a cheap screen of each trial's own unlearned pools "
++                             "on a selection block after its window (screen_hits, screen_rank; "
++                             "development evidence; needs --derived-anchor-domain, "
++                             "--anchor-holdout-guard and --screen-config)"),
++                choices=["bidirectional_count", "screen_rank", "screen_hits"],
++                default="bidirectional_count",
++                affects_runtime=True
++            ),
++            ParameterSpec(
++                name="screen_config",
++                cli_flag="--screen-config",
++                param_type=ParamType.STRING,
++                description=("Screen settings JSON (tfm.step1_screen.v1; grader pin required). "
++                             "Read only with a screen step1_objective"),
++                default=""
++            ),
+         ]
+     ),
+     

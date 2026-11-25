@@ -1276,7 +1276,8 @@ def _build_test_result_from_pw(pw_result: dict, accumulator, config,
 
 def _build_test_result_from_miner(miner_result: dict, accumulator, config,
                                    prng_base: str, trial_number: int,
-                                   optuna_trial=None, phase5_sink=None):
+                                   optuna_trial=None, phase5_sink=None,
+                                   keep_screen_records: bool = False):
     """
     TestResult for the RANGE-MINER path — candidate ingress is D6's, not D3.25's.
 
@@ -1362,13 +1363,19 @@ def _build_test_result_from_miner(miner_result: dict, accumulator, config,
         # [S152] Same call, same place, same cadence as every other backend.
         _flush_npz_incremental(accumulator, label=f"chunk/trial-{trial_number}")
 
-    return TestResult(
+    _tr = TestResult(
         config             = config,
         forward_count      = _counts.forward_constant,
         reverse_count      = _counts.reverse_constant,
         bidirectional_count= _counts.bidirectional_total,
         iteration          = trial_number,
     )
+    if keep_screen_records:
+        # [STEP1 CHEAP SCREEN] the trial's own records, as the assembly holds them (the same
+        # lists ingest_assembly appended, miner/step1_ingress.py:219-220); read-only use.
+        _tr.screen_records = (list(_assembly.canonical_records_constant)
+                              + list(_assembly.canonical_records_variable))
+    return _tr
 
 
 # ============================================================================
@@ -1737,6 +1744,21 @@ def _step1_search_preflight(*, step1_search_id, prng_base, test_both_modes, seed
             "interval": (int(seed_start), int(seed_start) + int(seed_count))}
 
 
+def _attach_step1_screen_record(results, plan):
+    """[STEP1 CHEAP SCREEN] `plan` None (the default objective) leaves `results` untouched."""
+    if plan is not None and isinstance(results, dict):
+        results['step1_screen'] = plan.run_record()
+    return results
+
+
+def _attach_window_anchor_domain_record(results, domain):
+    """[WINDOW-ANCHOR BRIEF II] Put the resolved anchor domain's run record on the results
+    dict. `domain` None (the bounded run) leaves `results` untouched."""
+    if domain is not None and isinstance(results, dict):
+        results['window_anchor_domain'] = domain.run_record()
+    return results
+
+
 SKIP_DELIVERY_SEARCH_KEY = "constant_skip_delivery"      # utils/step1_search_ledger.py
 SKIP_DELIVERY_STUDY_ATTR = "constant_skip_delivery"      # Optuna study user attribute
 SKIP_DELIVERY_CHECKPOINT_KEY = "constant_skip_delivery"  # D6.2 run-context component
@@ -1959,6 +1981,13 @@ class Step1ChunkState:
             self.study_name = optuna_trial.study.study_name
             _skip_delivery_study_check(optuna_trial.study,
                                        getattr(self, "skip_delivery_on", False), n)
+            # [WINDOW-ANCHOR BRIEF II] same arm separation for the anchor domain
+            from utils.window_anchor_domain import anchor_domain_study_check
+            anchor_domain_study_check(optuna_trial.study,
+                                      getattr(self, "anchor_domain_tag", None), n)
+            # [STEP1 CHEAP SCREEN] same arm separation for the objective
+            from utils.step1_screen import screen_study_check
+            screen_study_check(optuna_trial.study, getattr(self, "screen_tag", None), n)
             if self.search_ctx is not None:
                 prior = sum(1 for t in optuna_trial.study.trials if t.number < n)
                 self.chunk = self.search_ctx["ledger"].chunk_open(
@@ -2220,7 +2249,10 @@ def run_bidirectional_test(coordinator,
         # already-canonical records in, off the sink's stored assembly.
         _miner_tr = _build_test_result_from_miner(_miner_result, accumulator, config,
                                                   prng_base, trial_number, optuna_trial,
-                                                  phase5_sink=_miner_sink)
+                                                  phase5_sink=_miner_sink,
+                                                  **({'keep_screen_records': True}
+                                                     if getattr(coordinator, '_step1_screen_on', False)
+                                                     else {}))
         # [STEP1-SEARCH S7] what this trial actually swept, read from the miner's own
         # stripe rows — NOT the requested interval (see _step1_miner_sweep_evidence).
         _miner_tr.step1_sweep_evidence = _step1_miner_sweep_evidence(
@@ -2678,6 +2710,7 @@ def add_window_optimizer_to_coordinator():
                                    RandomSearch, GridSearch,
                                    BayesianOptimization, EvolutionarySearch,
                                    BidirectionalCountScorer,
+                                   ScreenScorer,                 # [STEP1 CHEAP SCREEN]
                                    require_supported_strategy)   # [S178 P0-2]
 
     def optimize_window(self,
@@ -2702,7 +2735,11 @@ def add_window_optimizer_to_coordinator():
                         warm_start_rev_thresh: float = None,
                         warm_start_session_idx: int = None,
                         resume_checkpoint: str = '',   # [S172 D6.2] hop 3 of 3
-                        step1_search_id: str = ''):    # [STEP1-SEARCH stage 1] hop 3 of 3
+                        step1_search_id: str = '',     # [STEP1-SEARCH stage 1] hop 3 of 3
+                        derived_anchor_domain: bool = False,   # [WINDOW-ANCHOR II] hop 3 of 3
+                        anchor_holdout_guard: bool = False,    # [WINDOW-ANCHOR II] hop 3 of 3
+                        step1_objective: str = 'bidirectional_count',  # [SCREEN] hop 3 of 3
+                        screen_config: str = None):                    # [SCREEN] hop 3 of 3
         # ── [S172 Phase-5 D6.2 §4.1] THE SELECTOR IS A RUN ID. ONE API. ──────
         # `resume_checkpoint` is a CHECKPOINT RUN ID, never a path and never a
         # handle. Empty means no resume. It is resolved EXCLUSIVELY beneath
@@ -2782,11 +2819,65 @@ def add_window_optimizer_to_coordinator():
         _step1_skip_delivery_preflight(_s1_search_ctx, _s1_skip_delivery_on,
                                        resume_study=resume_study, study_name=study_name)
         _step1_skip_delivery_root_arm(_s1_skip_delivery_on, create=True)
+        # [WINDOW-ANCHOR BRIEF II] the setting's one validator and its fail-closed edges,
+        # before any study is created or loaded and before any dispatch. Off: the only effect
+        # is that a search opened WITH the setting refuses a bounded run (precedent: the
+        # skip-delivery switch); pre-existing searches carry no key.
+        from utils.window_anchor_domain import (
+            validate_derived_anchor_domain as _wad_validate,
+            validate_anchor_holdout_guard as _wad_validate_guard,
+            anchor_domain_tag as _wad_tag,
+            anchor_domain_search_check as _wad_search_check,
+            WindowAnchorDomainError as _WADError)
+        _s1_anchor_derived = _wad_validate(derived_anchor_domain, where="optimize_window")
+        _s1_anchor_guard = _wad_validate_guard(anchor_holdout_guard, _s1_anchor_derived,
+                                               where="optimize_window")
+        _s1_anchor_tag = _wad_tag(_s1_anchor_derived, _s1_anchor_guard)
+        # Bound HERE, at function level, before any branch: every later read is
+        # `_wad_domain is not None`, so no path can reach it unbound (lead point 1).
+        _wad_domain = None
+        if _s1_anchor_derived:
+            _wad_why = []
+            if not getattr(self, 'use_range_miner', False):
+                _wad_why.append("only the RANGE-MINER route validates the derived domain "
+                                "end to end (ZMQ/legacy jobs clamp at sieve_filter.py:184; "
+                                "PWC is an owner question)")
+            if strategy_name != 'bayesian':
+                _wad_why.append(f"strategy {strategy_name!r} does not use the Optuna objective")
+            if int(n_parallel) != 1:
+                _wad_why.append(f"n_parallel={n_parallel}: the NP2 objective is a second "
+                                f"sampling site and is not migrated")
+            if resume_checkpoint:
+                _wad_why.append("resume_checkpoint: the D6.2 run context does not carry the "
+                                "anchor-domain arm")
+            if _wad_why:
+                raise _WADError("--derived-anchor-domain refused before any study or "
+                                "dispatch: " + "; ".join(_wad_why))
+        if _s1_search_ctx is not None:
+            _wad_search_check(_s1_search_ctx["record"].search_space or {}, _s1_anchor_tag,
+                              _s1_search_ctx["record"].search_id)
         _step1_budget_preflight(resume_study=resume_study, study_name=study_name,
                                 max_iterations=max_iterations)
         _s1_chunk = Step1ChunkState(_s1_search_ctx, prng_base, test_both_modes,
                                     seed_start, seed_count, max_iterations, None)
         _s1_chunk.skip_delivery_on = _s1_skip_delivery_on
+        _s1_chunk.anchor_domain_tag = _s1_anchor_tag      # [WINDOW-ANCHOR BRIEF II]
+        # [STEP1 CHEAP SCREEN] validated here, before any study or dispatch. Default: nothing
+        # is set, and the scorer below is BidirectionalCountScorer() as before.
+        from utils.step1_screen import (validate_step1_objective as _s1o_validate,
+                                        load_screen_config as _s1o_load,
+                                        Step1ScreenError as _S1SErr)
+        _s1_objective = _s1o_validate(step1_objective, where="optimize_window")
+        _s1_screen_plan = None
+        _s1_screen_cfg = None
+        if _s1_objective != 'bidirectional_count':
+            if not (_s1_anchor_derived and _s1_anchor_guard):
+                raise _S1SErr(f"step1_objective={_s1_objective!r} needs derived_anchor_domain "
+                              f"and anchor_holdout_guard; refused before any study or dispatch")
+            _s1_screen_cfg, _ = _s1o_load(screen_config)
+        elif screen_config:
+            raise _S1SErr("screen_config given with step1_objective='bidirectional_count' "
+                          "(refused rather than ignored)")
         # S115 M1/M4: Partition map (IPs from distributed_config.json)
         # P0: localhost+192.168.3.120 (10 GPUs, ~141 TFLOPS)
         # P1: 192.168.3.154+192.168.3.162 (16 GPUs, ~142 TFLOPS)
@@ -3583,6 +3674,50 @@ def add_window_optimizer_to_coordinator():
         # is read and ENFORCED in the Optuna study body (the loaded-study wall,
         # §1.3.5) — it is not an advisory that dies in an override dict.
         strategy._d6_2_require_loaded_study = bool(resume_checkpoint)
+        # [WINDOW-ANCHOR BRIEF II] set ONLY when on, so a bounded run's strategy object is
+        # unchanged and the objective takes its original branch. Resolved ONCE, from the
+        # dataset the run sieves, against the run's frozen digest when one exists.
+        if _s1_anchor_derived and not _np2_complete:
+            from utils.window_anchor_domain import (resolve_anchor_domain as _wad_resolve,
+                                                    load_window_anchor_bounds as _wad_bounds)
+            from miner.dataset_authority import get_frozen_dataset as _wad_gfd
+            from window_optimizer import step1_holdout_split_point as _wad_split
+            _wad_frozen = _wad_gfd()
+            _wad_domain = _wad_resolve(
+                dataset_path, bounds.session_options,
+                window_size_min=bounds.min_window_size,
+                window_size_max=bounds.max_window_size,
+                bounded_anchor_max=bounds.max_offset,
+                anchor_bounds=_wad_bounds(),
+                expected_sha256=None if _wad_frozen is None else _wad_frozen.sha256,
+                holdout_guard=_s1_anchor_guard,
+                holdout_split_point_fn=_wad_split)
+            if _s1_screen_cfg is not None:
+                # [STEP1 CHEAP SCREEN] resolved once, from the same dataset and frozen digest;
+                # the anchor domain is narrowed so every selection block fits (never clamped)
+                import dataclasses as _s1_dc
+                from utils.step1_screen import build_screen_plan as _s1o_build
+                _s1_screen_plan = _s1o_build(
+                    _s1_objective, _s1_screen_cfg, dataset_path, bounds.session_options,
+                    split_point_fn=_wad_split,
+                    expected_sha256=None if _wad_frozen is None else _wad_frozen.sha256)
+                _wad_domain = _s1_dc.replace(_wad_domain,
+                                             anchor_max_hook=_s1_screen_plan.anchor_max)
+                _s1_chunk.screen_tag = _s1_screen_plan.tag()
+                self._step1_screen_on = True
+                print(f"   [STEP1 SCREEN] objective {_s1_objective} ON (DEVELOPMENT): "
+                      f"{json.dumps(_s1_screen_plan.run_record(), sort_keys=True)}")
+            strategy._window_anchor_domain = _wad_domain
+            print(f"   [WINDOW-ANCHOR] derived anchor domain ON: "
+                  f"{json.dumps(_wad_domain.run_record(), sort_keys=True)}")
+        if _s1_anchor_derived and _wad_domain is None and not _np2_complete:
+            # fail closed: the switch is on and no domain was resolved for the search below
+            raise _WADError("--derived-anchor-domain is on but no anchor domain was resolved "
+                            "before the search; refused before any trial")
+        if _s1_screen_cfg is not None and _s1_screen_plan is None:
+            # [STEP1 CHEAP SCREEN] fail closed: a screen objective with no resolved plan
+            raise _S1SErr(f"step1_objective={_s1_objective!r} is on but no screen plan was "
+                          f"resolved before the search; refused before any trial")
 
         # [S140b] trial history context — flows to Optuna callback
         _trial_history_ctx = {
@@ -3611,7 +3746,8 @@ def add_window_optimizer_to_coordinator():
                     strategy=strategy,
                     bounds=bounds,
                     max_iterations=max_iterations,
-                    scorer=BidirectionalCountScorer(),
+                    scorer=(BidirectionalCountScorer() if _s1_screen_plan is None
+                            else ScreenScorer(_s1_screen_plan)),     # [STEP1 CHEAP SCREEN]
                     seed_start=seed_start,
                     seed_count=seed_count,
                     resume_study=resume_study,              # S116-Bug5 confirmed
@@ -3626,6 +3762,10 @@ def add_window_optimizer_to_coordinator():
                     "search_raised", f"{type(_s1_search_exc).__name__}: {_s1_search_exc}")
                 raise
 
+            # [WINDOW-ANCHOR BRIEF II] the record is attached BEFORE the save, so the saved
+            # results file and optimal_window_config.json both carry it (lead point 2)
+            _attach_step1_screen_record(results, _s1_screen_plan)   # [STEP1 CHEAP SCREEN]
+            _attach_window_anchor_domain_record(results, _wad_domain)
             optimizer.save_results(results, output_file)
 
         print(f"\n{'='*80}")

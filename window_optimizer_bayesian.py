@@ -538,14 +538,34 @@ class OptunaBayesianSearch:
             """Optuna objective function"""
             # Sample parameters from search space
             window_size = trial.suggest_int('window_size',
-                                           bounds.min_window_size, 
+                                           bounds.min_window_size,
                                            bounds.max_window_size)
-            offset = trial.suggest_int('offset', 
-                                      bounds.min_offset, 
-                                      bounds.max_offset)
-            session_idx = trial.suggest_int('session_idx', 
-                                           0, 
-                                           len(bounds.session_options) - 1)
+            # [WINDOW-ANCHOR BRIEF II] `_window_anchor_domain` is set (by optimize_window)
+            # ONLY when derived_anchor_domain is on; off, the two original calls run unchanged.
+            _anchor_domain = getattr(self, '_window_anchor_domain', None)
+            if _anchor_domain is None:
+                offset = trial.suggest_int('offset',
+                                          bounds.min_offset,
+                                          bounds.max_offset)
+                session_idx = trial.suggest_int('session_idx',
+                                               0,
+                                               len(bounds.session_options) - 1)
+            else:
+                # On: the anchor's range depends on the window size and the session filter,
+                # so both are drawn first. `offset` keeps its legacy name (= window_anchor,
+                # as canonical array 4 does). A pinned (enqueued) value is a fixed param and
+                # Optuna would only WARN when it is out of range, so every choice, sampled or
+                # pinned, is validated by the one route before WindowConfig exists.
+                session_idx = trial.suggest_int('session_idx',
+                                               0,
+                                               len(bounds.session_options) - 1)
+                _ad_sessions = bounds.session_options[session_idx]
+                _anchor_domain.check_window_size(window_size, _ad_sessions)
+                _ad_lo, _ad_hi = _anchor_domain.effective_range(window_size, _ad_sessions)
+                offset = trial.suggest_int('offset', _ad_lo, _ad_hi)
+                _anchor_domain.check_window_choice(window_size, offset, _ad_sessions)
+                trial.set_user_attr('window_anchor_domain',
+                                    _anchor_domain.trial_record(window_size, _ad_sessions))
             # [SKIP-DELIVERY SWITCH] A switched, fresh, one-trial, fully pinned run carries
             # `skip_delivery_exact_pin` (set ONLY then, by the Step 1 child): its one trial is
             # the enqueued pin, consumed EXACTLY through single-point distributions, so no
@@ -605,6 +625,9 @@ bounds.max_skip_max)
             else:
                 trial.set_user_attr("bidirectional_survivors", [])  # empty — NPZ has full data
             trial.set_user_attr("result_dict", result.to_dict())
+            # [STEP1 CHEAP SCREEN] present only when a screen objective scored this trial
+            if getattr(result, 'screen_record', None) is not None:
+                trial.set_user_attr("step1_screen", result.screen_record)
             
             # Track best
             nonlocal best_result, best_score

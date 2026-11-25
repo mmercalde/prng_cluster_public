@@ -253,6 +253,29 @@ def presented_configuration(final_params: Mapping[str, Any],
         # Only when on, so every baseline digest and search id is unchanged; a
         # switched-on run therefore opens, and must use, a search of its own.
         space["constant_skip_delivery"] = "trial_range"
+    # [WINDOW-ANCHOR BRIEF II] same rule: the key exists only when the setting is on, so
+    # every bounded search digest is unchanged and a derived run opens a search of its own.
+    from utils.window_anchor_domain import (validate_derived_anchor_domain,
+                                            validate_anchor_holdout_guard,
+                                            anchor_domain_tag,
+                                            WindowAnchorDomainError,
+                                            ANCHOR_DOMAIN_SEARCH_KEY,
+                                            load_window_anchor_bounds)
+    try:
+        _ad_on = validate_derived_anchor_domain(
+            final_params["derived_anchor_domain"] if "derived_anchor_domain" in final_params
+            else False, where="presented_configuration")
+        _ad_guard = validate_anchor_holdout_guard(
+            final_params["anchor_holdout_guard"] if "anchor_holdout_guard" in final_params
+            else False, _ad_on, where="presented_configuration")
+        if _ad_on:
+            space[ANCHOR_DOMAIN_SEARCH_KEY] = anchor_domain_tag(_ad_on, _ad_guard)
+            import os as _os
+            space["window_anchor_bounds"] = load_window_anchor_bounds(_os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                "distributed_config.json"))
+    except WindowAnchorDomainError as exc:
+        raise Step1SearchRefused(str(exc)) from exc
     trials = final_params.get("window_trials")
     chunk = final_params.get("max_seeds")
     return {

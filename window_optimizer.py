@@ -314,6 +314,38 @@ class BidirectionalCountScorer(ScoringFunction):
     def name(self) -> str:
         return "bidirectional_count"
 
+
+class ScreenScorer(ScoringFunction):
+    """[STEP1 CHEAP SCREEN] --step1-objective screen_rank | screen_hits (default off).
+
+    Scores a trial by its OWN survivors' unlearned Step 6 pools on a selection block after
+    its sieve window (utils/step1_screen.py; design
+    docs/drafts/anchor_v1/DESIGN_CHEAP_SCREEN_20261123.md). The trial's records arrive on
+    the TestResult as `screen_records` (RANGE-MINER ingress, only when the screen is on).
+    A result with survivors but no records is refused; a pruned or empty trial scores 0
+    (empty pools: exact p = 1, no rank spread). DEVELOPMENT evidence only."""
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def score(self, result: TestResult) -> float:
+        from utils.step1_screen import Step1ScreenError
+        records = getattr(result, 'screen_records', None)
+        if records is None:
+            if int(result.bidirectional_count) != 0:
+                raise Step1ScreenError(
+                    f"screen: trial {result.iteration} has {result.bidirectional_count} "
+                    f"survivors but no records reached the scorer (refused, not scored as 0)")
+            records = []
+        cfg = result.config
+        value, rec = self.plan.score(records, int(cfg.offset), int(cfg.window_size),
+                                     list(cfg.sessions))
+        result.screen_record = rec
+        return value
+
+    def name(self) -> str:
+        return self.plan.objective
+
 # ============================================================================
 # SEARCH STRATEGIES
 # ============================================================================
@@ -459,6 +491,10 @@ class BayesianOptimization(SearchStrategy):
             if hasattr(self, '_d6_2_require_loaded_study'):
                 self.optuna_search._d6_2_require_loaded_study = \
                     self._d6_2_require_loaded_study
+            # [WINDOW-ANCHOR BRIEF II] same seam, same reason; present only when the
+            # derived anchor domain is on, so a bounded run's inner object is unchanged.
+            if hasattr(self, '_window_anchor_domain'):
+                self.optuna_search._window_anchor_domain = self._window_anchor_domain
             # Use real Optuna implementation
             return self.optuna_search.search(objective_function, bounds, max_iterations, scorer,
                                              resume_study=resume_study, study_name=study_name,
@@ -671,6 +707,17 @@ except ImportError:
 # MAIN FUNCTIONS
 # ============================================================================
 
+# [WINDOW-ANCHOR BRIEF II] Step 1's train/holdout split, named once so the holdout guard
+# (utils/window_anchor_domain.py) reads the same split the files are written from. The
+# value and the formula are the ones this file has always used (`int(len * 0.8)`).
+STEP1_TRAIN_FRACTION = 0.8
+
+
+def step1_holdout_split_point(n_records: int) -> int:
+    """Combined-record index of the first holdout record: train = [:split], holdout = [split:]."""
+    return int(n_records * STEP1_TRAIN_FRACTION)
+
+
 class Step1RouteStartUnsupportedError(RuntimeError):
     """A Step 1 route that cannot sweep from a non-zero seed_start was asked to."""
 
@@ -762,6 +809,10 @@ def run_bayesian_optimization(
     pwc_coordinator_address: str = None,    # [PWC-STAGE3] dial address; PWC only
     *,
     deliver_skip_range: bool = False,       # [SKIP-DELIVERY SWITCH] hop 2 of 3; keyword-only
+    derived_anchor_domain: bool = False,    # [WINDOW-ANCHOR BRIEF II] hop 2 of 3; keyword-only
+    anchor_holdout_guard: bool = False,     # [WINDOW-ANCHOR BRIEF II] hop 2 of 3; keyword-only
+    step1_objective: str = 'bidirectional_count',  # [STEP1 CHEAP SCREEN] hop 2 of 3
+    screen_config: Optional[str] = None,           # [STEP1 CHEAP SCREEN] hop 2 of 3
 ) -> Dict[str, Any]:
     """
     Run Bayesian optimization to find optimal window parameters
@@ -822,6 +873,19 @@ def run_bayesian_optimization(
     # "true", 1, ... are refused, never read as off (Beta X-MINER-SKIP-SWITCH R3 Q4)
     from miner.range_miner_coordinator import validate_skip_delivery as _vsd
     _vsd(deliver_skip_range, where="run_bayesian_optimization")
+    # [WINDOW-ANCHOR BRIEF II] the setting's one validator, same placement and rule
+    from utils.window_anchor_domain import (validate_derived_anchor_domain as _vad,
+                                            validate_anchor_holdout_guard as _vag)
+    _vad(derived_anchor_domain, where="run_bayesian_optimization")
+    _vag(anchor_holdout_guard, derived_anchor_domain is True, where="run_bayesian_optimization")
+    # [STEP1 CHEAP SCREEN] the setting's one validator; a screen needs both Brief II settings
+    from utils.step1_screen import (validate_step1_objective as _v1o,
+                                    Step1ScreenError as _S1SErr)
+    _v1o(step1_objective, where="run_bayesian_optimization")
+    if step1_objective != 'bidirectional_count' and not (
+            derived_anchor_domain is True and anchor_holdout_guard is True):
+        raise _S1SErr(f"step1_objective={step1_objective!r} needs derived_anchor_domain and "
+                      f"anchor_holdout_guard (the selection block lies in the train region)")
 
     # [MINER SEED-START R4/R5] G-MINER-START is replaced: the RANGE-MINER route now
     # carries seed_start and is not refused; PWC and ZMQ, which partition from 0, are
@@ -983,6 +1047,13 @@ def run_bayesian_optimization(
         # [STEP1-SEARCH stage 1] HOP 2 OF 3 — without this explicit kwarg the value
         # never reaches optimize_window (hop 3).
         step1_search_id=step1_search_id,
+        # [WINDOW-ANCHOR BRIEF II] HOP 2 OF 3, passed ONLY when on so a bounded run's call
+        # is the same call as before
+        **({'derived_anchor_domain': True} if derived_anchor_domain is True else {}),
+        **({'anchor_holdout_guard': True} if anchor_holdout_guard is True else {}),
+        # [STEP1 CHEAP SCREEN] HOP 2 OF 3, passed ONLY when not the default
+        **({'step1_objective': step1_objective, 'screen_config': screen_config}
+           if step1_objective != 'bidirectional_count' else {}),
     )
 
     # [S140] SEED COVERAGE WRITE-BACK — log this run's range to exhaustive_progress
@@ -1036,7 +1107,16 @@ def run_bayesian_optimization(
         'reverse_count': reverse_count,
         'bidirectional_count': bidirectional_count
     }
-    
+    # [WINDOW-ANCHOR BRIEF II] recorded only when on; a bounded run's file is unchanged.
+    # `offset` above keeps its legacy name and means window_anchor.
+    if derived_anchor_domain is True:
+        _wad = results.get('window_anchor_domain')
+        optimal_config['window_anchor_domain'] = _wad if _wad is not None else {'mode': 'derived'}
+    # [STEP1 CHEAP SCREEN] recorded only when on
+    if step1_objective != 'bidirectional_count':
+        optimal_config['step1_screen'] = results.get('step1_screen') or {
+            'objective': step1_objective}
+
     # === MERGE INCREMENTAL OUTPUT FIELDS (Patch 2026-01-18) ===
     # Preserve fields from incremental saves (crash recovery data)
     if Path(output_config).exists():
@@ -1167,7 +1247,7 @@ def run_bayesian_optimization(
                 full_history = lottery_data
         else:
             full_history = lottery_data
-    split_point = int(len(full_history) * 0.8)
+    split_point = step1_holdout_split_point(len(full_history))   # == int(len * 0.8)
     train_data = full_history[:split_point]
     holdout_data = full_history[split_point:]
     with open("train_history.json", "w") as f:
@@ -1467,7 +1547,7 @@ def run_with_config(
         else:
             full_history = lottery_data
 
-    split_point = int(len(full_history) * 0.8)
+    split_point = step1_holdout_split_point(len(full_history))   # == int(len * 0.8)
     train_data = full_history[:split_point]
     holdout_data = full_history[split_point:]
 
@@ -1652,6 +1732,31 @@ def main():
                              "trial's own [skip_min, skip_max] instead of the baseline "
                              '[0, 16]. Off by default; needs --use-range-miner and a '
                              'Step 1 search opened with deliver_skip_range: true')
+    parser.add_argument('--derived-anchor-domain', action='store_true', default=False,
+                        help='[WINDOW-ANCHOR BRIEF II] Optuna samples the window anchor over '
+                             'the domain derived from the data after the session filter, '
+                             '[min, N_filtered - window_size] (search_bounds.window_anchor, '
+                             'default min 0, no cap), instead of search_bounds.offset; every '
+                             'trial, sampled or pinned, is validated, never clamped. Off by '
+                             'default; needs --use-range-miner, --strategy bayesian, '
+                             '--n-parallel 1, no --resume-checkpoint, no --config-file')
+    parser.add_argument('--anchor-holdout-guard', action='store_true', default=False,
+                        help='[WINDOW-ANCHOR BRIEF II] with --derived-anchor-domain only: cap '
+                             'the anchor so the whole sieve window ends before the first '
+                             'holdout record of the Step 1 train/holdout split for that '
+                             'session filter (validated, never clamped). Off by default')
+    parser.add_argument('--step1-objective', default='bidirectional_count',
+                        choices=['bidirectional_count', 'screen_rank', 'screen_hits'],
+                        help='[STEP1 CHEAP SCREEN] what Optuna maximises. Default '
+                             'bidirectional_count (survivor count, today). screen_hits / '
+                             'screen_rank score each trial by its own unlearned Step 6 pools on '
+                             'a selection block after its window (exact null of the pinned '
+                             'grader; development evidence). Needs --derived-anchor-domain, '
+                             '--anchor-holdout-guard and --screen-config')
+    parser.add_argument('--screen-config', default=None,
+                        help='[STEP1 CHEAP SCREEN] JSON of screen settings (schema '
+                             'tfm.step1_screen.v1; grader_path and grader_sha256 required; other '
+                             'keys default as utils/step1_screen.py SCREEN_DEFAULTS)')
     parser.add_argument('--miner-stripe-size', type=int, default=67_108_864,
                         help='[S172 §6.2] Seeds per stripe per GPU (default 64M)')
     parser.add_argument('--miner-substripes', type=int, default=8,
@@ -1816,6 +1921,37 @@ def main():
             parser.error("--deliver-skip-range is not carried by the --config-file route; "
                          "refused rather than dropped (use the Bayesian search route with "
                          "a Step 1 search opened with deliver_skip_range: true)")
+
+    if getattr(args, 'anchor_holdout_guard', False) and not getattr(args, 'derived_anchor_domain', False):
+        parser.error("--anchor-holdout-guard caps the derived domain only; it needs "
+                     "--derived-anchor-domain (refused rather than ignored)")
+    if getattr(args, 'derived_anchor_domain', False):
+        # [WINDOW-ANCHOR BRIEF II] the same edges optimize_window enforces, here so a refused
+        # run stops before fleet or dataset verification; --config-file never reaches it
+        _wad_why = []
+        if getattr(args, 'config_file', None):
+            _wad_why.append("--config-file (that route takes its window from the file)")
+        if not args.use_range_miner:
+            _wad_why.append("a route other than --use-range-miner")
+        if getattr(args, 'strategy', 'bayesian') != 'bayesian':
+            _wad_why.append(f"--strategy {args.strategy}")
+        if int(getattr(args, 'n_parallel', 1)) != 1:
+            _wad_why.append(f"--n-parallel {args.n_parallel}")
+        if getattr(args, 'resume_checkpoint', ''):
+            _wad_why.append("--resume-checkpoint")
+        if _wad_why:
+            parser.error("--derived-anchor-domain is refused with: " + "; ".join(_wad_why))
+    if getattr(args, 'step1_objective', 'bidirectional_count') != 'bidirectional_count':
+        # [STEP1 CHEAP SCREEN] refused before fleet or dataset verification
+        if not (getattr(args, 'derived_anchor_domain', False)
+                and getattr(args, 'anchor_holdout_guard', False)):
+            parser.error(f"--step1-objective {args.step1_objective} needs "
+                         f"--derived-anchor-domain and --anchor-holdout-guard")
+        if not getattr(args, 'screen_config', None):
+            parser.error(f"--step1-objective {args.step1_objective} needs --screen-config")
+    elif getattr(args, 'screen_config', None):
+        parser.error("--screen-config is read only with a screen --step1-objective "
+                     "(refused rather than ignored)")
 
     # ========================================================================
     # [RESOLVED EXECUTION SET] RUN-START FLEET AUTHORITY — resolve once, freeze
@@ -2001,6 +2137,10 @@ def main():
             # [S172 Phase 1]
             use_range_miner=getattr(args, 'use_range_miner', False),
             deliver_skip_range=getattr(args, 'deliver_skip_range', False),  # SKIP-DELIVERY
+            derived_anchor_domain=getattr(args, 'derived_anchor_domain', False),  # WINDOW-ANCHOR II
+            anchor_holdout_guard=getattr(args, 'anchor_holdout_guard', False),    # WINDOW-ANCHOR II
+            step1_objective=getattr(args, 'step1_objective', 'bidirectional_count'),  # SCREEN
+            screen_config=getattr(args, 'screen_config', None),                       # SCREEN
             miner_stripe_size=getattr(args, 'miner_stripe_size', 67_108_864),
             miner_substripes=getattr(args, 'miner_substripes', 8),
             miner_output_dir=getattr(args, 'miner_output_dir', None),
