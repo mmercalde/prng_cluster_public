@@ -1,0 +1,29 @@
+{
+ "status": "DRAFT, not applied. agent_manifests/ is HAND_LANDED_DIRS (scripts/owner_land.py): the owner lands it by hand.",
+ "fragments": {
+  "agent_manifests/reinforcement.json": {
+   "default_params": {
+    "exclude_features": null,
+    "include_feature_groups": null,
+    "exclude_feature_groups": null,
+    "allow_target_columns_as_features": false
+   },
+   "args_map_primary_action": {},
+   "notes": [
+    "exclude_features: declares the existing default; at this value WATCHER's command builder leaves the flag off argv (None and '' are skipped, False is omitted; agents/watcher_agent.py named-args loop), so a default run's argv is unchanged; a value supplied in params is then passed",
+    "include_feature_groups: declares the existing default; at this value WATCHER's command builder leaves the flag off argv (None and '' are skipped, False is omitted; agents/watcher_agent.py named-args loop), so a default run's argv is unchanged; a value supplied in params is then passed",
+    "exclude_feature_groups: declares the existing default; at this value WATCHER's command builder leaves the flag off argv (None and '' are skipped, False is omitted; agents/watcher_agent.py named-args loop), so a default run's argv is unchanged; a value supplied in params is then passed",
+    "allow_target_columns_as_features: declares the existing default; at this value WATCHER's command builder leaves the flag off argv (None and '' are skipped, False is omitted; agents/watcher_agent.py named-args loop), so a default run's argv is unchanged; a value supplied in params is then passed"
+   ]
+  },
+  "agent_manifests/prediction.json": {
+   "default_params": {
+    "schema_check": null
+   },
+   "args_map_primary_action": {},
+   "notes": [
+    "schema_check: declares the existing default; at this value WATCHER's command builder leaves the flag off argv (None and '' are skipped, False is omitted; agents/watcher_agent.py named-args loop), so a default run's argv is unchanged; a value supplied in params is then passed"
+   ]
+  }
+ }
+}

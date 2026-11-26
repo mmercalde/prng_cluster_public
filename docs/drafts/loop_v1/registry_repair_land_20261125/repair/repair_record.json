@@ -1,0 +1,245 @@
+{
+ "decisions": {
+  "path": "/home/michael/tfm_worktrees/registry-repair/docs/drafts/loop_v1/REGISTRY_REPAIR_DECISIONS_20261124.json",
+  "sha256": "9cdffbb53d152971e1e04d8e7c0747bcc349cc87a8b70dcafe0b22c1cce02f6b"
+ },
+ "dropped": [
+  {
+   "row": 14,
+   "script": "adaptive_meta_optimizer.py",
+   "name": "max_layers",
+   "old_flag": "--max-layers",
+   "live_accepts": "no such flag (adaptive_meta_optimizer.py argparse :1101-1114 has --config, --mode, --window-results, --lottery-data, --apply, --test only)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning (CHAPTER_5_AUDIT :272).",
+   "registry_line": 460
+  },
+  {
+   "row": 13,
+   "script": "adaptive_meta_optimizer.py",
+   "name": "min_layers",
+   "old_flag": "--min-layers",
+   "live_accepts": "no such flag (adaptive_meta_optimizer.py argparse :1101-1114 has --config, --mode, --window-results, --lottery-data, --apply, --test only)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning (CHAPTER_5_AUDIT :272).",
+   "registry_line": 451
+  },
+  {
+   "row": 12,
+   "script": "adaptive_meta_optimizer.py",
+   "name": "trials",
+   "old_flag": "--trials",
+   "live_accepts": "no such flag (adaptive_meta_optimizer.py argparse :1101-1114 has --config, --mode, --window-results, --lottery-data, --apply, --test only)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning (also CHAPTER_5_AUDIT :272). The registry's script description 'Optimize ML model architecture using Optuna' is stale too; it is kept unchanged here (outside this ruling).",
+   "registry_line": 441
+  },
+  {
+   "row": 10,
+   "script": "full_scoring.py",
+   "name": "batch_size",
+   "old_flag": "--batch-size",
+   "live_accepts": "full_scoring_worker.py --batch-size (:536) exists but means 'Progress reporting batch size (default: 100)'; the nearest sizing option is --chunk-size (survivors per job) in generate_step3_scoring_jobs.py (:305) and generate_full_scoring_jobs.py (:28)",
+   "live_job_script": "Step 3 = run_step3_full_scoring.sh, which runs generate_step3_scoring_jobs.py (:160) and scripts_coordinator.py (:226) to run full_scoring_worker.py; the full_scoring.json primary action script is generate_full_scoring_jobs.py, which the wrapper does not run",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- full_scoring.py is empty; CHAPTER_10_AUDIT B1). The live --batch-size has a different meaning (progress reporting, default 100) from this spec (GPU batch 100-10000, default 1000), so it is not an equivalent.",
+   "registry_line": 415
+  },
+  {
+   "row": 11,
+   "script": "full_scoring.py",
+   "name": "distributed",
+   "old_flag": "--distributed",
+   "live_accepts": "no switch: Step 3 always dispatches through scripts_coordinator.py (run_step3_full_scoring.sh:226)",
+   "live_job_script": "Step 3 = run_step3_full_scoring.sh, which runs generate_step3_scoring_jobs.py (:160) and scripts_coordinator.py (:226) to run full_scoring_worker.py; the full_scoring.json primary action script is generate_full_scoring_jobs.py, which the wrapper does not run",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- full_scoring.py is empty; CHAPTER_10_AUDIT B1). No equivalent; Step 3 is always distributed.",
+   "registry_line": 424
+  },
+  {
+   "row": 18,
+   "script": "meta_prediction_optimizer_anti_overfit.py",
+   "name": "distributed",
+   "old_flag": "--distributed",
+   "live_accepts": "no such flag (argparse :3041-3103)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No equivalent.",
+   "registry_line": 534
+  },
+  {
+   "row": 17,
+   "script": "meta_prediction_optimizer_anti_overfit.py",
+   "name": "dropout_max",
+   "old_flag": "--dropout-max",
+   "live_accepts": "no range flag; see dropout_min (--dropout :3090, trial parameter :909)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning (see row 16).",
+   "registry_line": 525
+  },
+  {
+   "row": 16,
+   "script": "meta_prediction_optimizer_anti_overfit.py",
+   "name": "dropout_min",
+   "old_flag": "--dropout-min",
+   "live_accepts": "no range flag; one single-value override --dropout (:3090, 'Override dropout value for NN'), and dropout is otherwise a trial parameter (:909)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning: a range bound is not a single override value. --dropout is one of the six Step-5 LLM whitelist names under the CHAPTER_14_AUDIT S1 ruling (:248); registering it is not part of this repair.",
+   "registry_line": 516
+  },
+  {
+   "row": 15,
+   "script": "meta_prediction_optimizer_anti_overfit.py",
+   "name": "epochs",
+   "old_flag": "--epochs",
+   "live_accepts": "no such flag (argparse :3041-3103); epochs is a trial parameter inside the NN path (params.get('epochs', 100), :912)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning.",
+   "registry_line": 506
+  },
+  {
+   "row": 19,
+   "script": "prediction_generator.py",
+   "name": "confidence_threshold",
+   "old_flag": "--confidence-threshold",
+   "live_accepts": "no such flag (argparse :965-986); a config-file key: prediction_generator_config.json:9 confidence_threshold 0.7, read at prediction_generator.py:172 (passed with --config)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning; the registry describes CLI flags (ParameterSpec.name 'matches CLI arg without dashes', parameter_registry.py:34-37). The value is set through the --config file.",
+   "registry_line": 560
+  },
+  {
+   "row": 20,
+   "script": "prediction_generator.py",
+   "name": "diversity_weight",
+   "old_flag": "--diversity-weight",
+   "live_accepts": "no such flag and no config key in any script (git grep: only agents/contexts/prediction_context.py:144-171, which reads it from results and SUGGESTS changing it)",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No equivalent anywhere in a pipeline script. Note: prediction_context.py:170-171 still suggests a parameter no script accepts (left unchanged; outside this ruling).",
+   "registry_line": 569
+  },
+  {
+   "row": 9,
+   "script": "scorer_meta_optimizer.py",
+   "name": "distributed",
+   "old_flag": "--distributed",
+   "live_accepts": "no switch: Step 2 always dispatches through scripts_coordinator.py (run_scorer_meta_optimizer.sh:266)",
+   "live_job_script": "Step 2 = run_scorer_meta_optimizer.sh (STEP_SCRIPTS, watcher_agent.py:405-413), which runs generate_scorer_jobs.py (:229, :239; also the scorer_meta.json primary action script) and scripts_coordinator.py (:266) to run scorer_trial_worker.py",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- scorer_meta_optimizer.py is empty; CHAPTER_10_AUDIT B1). No equivalent; Step 2 is always distributed.",
+   "registry_line": 398
+  },
+  {
+   "row": 8,
+   "script": "scorer_meta_optimizer.py",
+   "name": "k_folds",
+   "old_flag": "--k-folds",
+   "live_accepts": "no fold option in generate_scorer_jobs.py or scorer_trial_worker.py (git grep 'fold': no hit)",
+   "live_job_script": "Step 2 = run_scorer_meta_optimizer.sh (STEP_SCRIPTS, watcher_agent.py:405-413), which runs generate_scorer_jobs.py (:229, :239; also the scorer_meta.json primary action script) and scripts_coordinator.py (:266) to run scorer_trial_worker.py",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- scorer_meta_optimizer.py is empty; CHAPTER_10_AUDIT B1). No equivalent.",
+   "registry_line": 390
+  },
+  {
+   "row": 5,
+   "script": "scorer_meta_optimizer.py",
+   "name": "n_trials",
+   "old_flag": "--n-trials",
+   "live_accepts": "run_scorer_meta_optimizer.sh takes the trial count as its positional TRIALS (:184-192; scorer_meta.json arg_style positional, positional_args ['trials']) and passes it to generate_scorer_jobs.py --trials (:76)",
+   "live_job_script": "Step 2 = run_scorer_meta_optimizer.sh (STEP_SCRIPTS, watcher_agent.py:405-413), which runs generate_scorer_jobs.py (:229, :239; also the scorer_meta.json primary action script) and scripts_coordinator.py (:266) to run scorer_trial_worker.py",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- scorer_meta_optimizer.py is empty; CHAPTER_10_AUDIT B1). The live equivalent is in another script; registering it there is a new registration (generate_scorer_jobs.py --trials is among the unregistered options), not a correction of this entry.",
+   "registry_line": 362
+  },
+  {
+   "row": 7,
+   "script": "scorer_meta_optimizer.py",
+   "name": "threshold_max",
+   "old_flag": "--threshold-max",
+   "live_accepts": "no flag; same hard-coded range, generate_scorer_jobs.py:60",
+   "live_job_script": "Step 2 = run_scorer_meta_optimizer.sh (STEP_SCRIPTS, watcher_agent.py:405-413), which runs generate_scorer_jobs.py (:229, :239; also the scorer_meta.json primary action script) and scripts_coordinator.py (:266) to run scorer_trial_worker.py",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- scorer_meta_optimizer.py is empty; CHAPTER_10_AUDIT B1). No flag anywhere with this meaning.",
+   "registry_line": 381
+  },
+  {
+   "row": 6,
+   "script": "scorer_meta_optimizer.py",
+   "name": "threshold_min",
+   "old_flag": "--threshold-min",
+   "live_accepts": "no flag; the scorer's confidence threshold is a hard-coded Optuna range in generate_scorer_jobs.py:60 (min_confidence_threshold 0.05-0.25)",
+   "live_job_script": "Step 2 = run_scorer_meta_optimizer.sh (STEP_SCRIPTS, watcher_agent.py:405-413), which runs generate_scorer_jobs.py (:229, :239; also the scorer_meta.json primary action script) and scripts_coordinator.py (:266) to run scorer_trial_worker.py",
+   "action": "DROPPED",
+   "why": "The named script never existed (git log --all -- scorer_meta_optimizer.py is empty; CHAPTER_10_AUDIT B1). No flag anywhere with this meaning.",
+   "registry_line": 372
+  },
+  {
+   "row": 2,
+   "script": "window_optimizer.py",
+   "name": "offset",
+   "old_flag": "--offset",
+   "live_accepts": "no such flag. offset is searched over distributed_config.json search_bounds (:72-102), read by load_search_bounds_from_config (window_optimizer.py:67): 0-100; trial-0 pin --warm-start-offset (:1612), operator-only trial-0 pin; STEP1_EXPLICIT_PIN_KEYS agents/watcher_agent.py:511; Ch12 :1409-1414 'origin, not presence, carries authority'",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning. The approved design renames offset to window_anchor (PROPOSAL_WINDOW_ANCHOR_GENERATOR_PHASE_SEPARATION_v1_1.md \u00a74.6 :156-161: min 0, no static max, delegated to the resolver), held for Brief II (S172_WINDOW_ANCHOR_BRIEF_I.md:360-361; CHAPTER_10_AUDIT S1). No --window-anchor flag exists, so it is NOT renamed here: registering window_anchor is Brief II's when it gives the anchor a CLI route.",
+   "registry_line": 281
+  },
+  {
+   "row": 4,
+   "script": "window_optimizer.py",
+   "name": "skip_max",
+   "old_flag": "--skip-max",
+   "live_accepts": "no such flag. skip_max is searched over distributed_config.json search_bounds (:72-102), read by load_search_bounds_from_config (window_optimizer.py:67): 10-250; trial-0 pin --warm-start-skip-max (:1616), operator-only trial-0 pin; STEP1_EXPLICIT_PIN_KEYS agents/watcher_agent.py:511; Ch12 :1409-1414 'origin, not presence, carries authority'",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning; the registry describes CLI flags (ParameterSpec.name 'matches CLI arg without dashes', parameter_registry.py:34-37). The spec's max 100 also contradicts search_bounds 10-250.",
+   "registry_line": 299
+  },
+  {
+   "row": 3,
+   "script": "window_optimizer.py",
+   "name": "skip_min",
+   "old_flag": "--skip-min",
+   "live_accepts": "no such flag. skip_min is searched over distributed_config.json search_bounds (:72-102), read by load_search_bounds_from_config (window_optimizer.py:67): 0-10; trial-0 pin --warm-start-skip-min (:1614), operator-only trial-0 pin; STEP1_EXPLICIT_PIN_KEYS agents/watcher_agent.py:511; Ch12 :1409-1414 'origin, not presence, carries authority'",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning; the registry describes CLI flags (ParameterSpec.name 'matches CLI arg without dashes', parameter_registry.py:34-37).",
+   "registry_line": 290
+  },
+  {
+   "row": 1,
+   "script": "window_optimizer.py",
+   "name": "window_size",
+   "old_flag": "--window-size",
+   "live_accepts": "no such flag (window_optimizer.py argparse :1502-1717). Window size is searched by Optuna over distributed_config.json search_bounds (:72-102), read by load_search_bounds_from_config (window_optimizer.py:67): window_size 6-50, default 12; trial 0 can be pinned with --warm-start-window (:1610), operator-only trial-0 pin; STEP1_EXPLICIT_PIN_KEYS agents/watcher_agent.py:511; Ch12 :1409-1414 'origin, not presence, carries authority'",
+   "live_job_script": null,
+   "action": "DROPPED",
+   "why": "No flag with this meaning; the registry describes CLI flags (ParameterSpec.name 'matches CLI arg without dashes', parameter_registry.py:34-37). The spec's 50-2000 / default 512 also contradicts search_bounds 6-50 / 12. window_size is in FROZEN_PARAMETERS (chapter_13_acceptance.py:72).",
+   "registry_line": 272
+  }
+ ],
+ "kept": [
+  "adaptive_meta_optimizer.py:mode",
+  "meta_prediction_optimizer_anti_overfit.py:k_folds",
+  "meta_prediction_optimizer_anti_overfit.py:trials",
+  "prediction_generator.py:pool_size",
+  "window_optimizer.py:max_seeds",
+  "window_optimizer.py:prng_type",
+  "window_optimizer.py:strategy",
+  "window_optimizer.py:test_both_modes",
+  "window_optimizer.py:trials"
+ ],
+ "registries_removed": [
+  "full_scoring.py",
+  "scorer_meta_optimizer.py"
+ ],
+ "n_specs_before": 29,
+ "n_specs_after": 9
+}
