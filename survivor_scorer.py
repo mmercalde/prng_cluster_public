@@ -50,6 +50,92 @@ from prng_registry import (
     get_kernel_info
 )
 
+# ── [LL-2, Ch14 learning loop, 2026-11-23] ONE metadata merge list ──────────
+# The 18 names the batch path has always merged, in the order it always merged
+# them (was an inline literal in extract_ml_features_batch). The sequential
+# fallback in full_scoring_worker.py merged only LEGACY_FALLBACK_MERGE_FIELDS
+# (system map v1.2 §7.3 item 2, "F-PARITY"); it can now use this list too, by
+# setting (fallback_metadata_merge='shared'). Default stays 'legacy6'.
+# The names are checked against models/feature_manifest.json by
+# tests/test_ll_feature_settings.py; do not edit one without the other.
+METADATA_MERGE_FIELDS = (
+    'forward_count', 'reverse_count', 'bidirectional_count',
+    'intersection_count', 'intersection_ratio', 'survivor_overlap_ratio',
+    'skip_min', 'skip_max', 'skip_range', 'skip_mean', 'skip_std',
+    'skip_entropy', 'bidirectional_selectivity', 'survivor_velocity',
+    'velocity_acceleration', 'intersection_weight',
+    'forward_only_count', 'reverse_only_count',
+)
+# The fallback's own list until now (full_scoring_worker.py, sequential path).
+LEGACY_FALLBACK_MERGE_FIELDS = (
+    'forward_count', 'reverse_count', 'bidirectional_count',
+    'skip_min', 'skip_max', 'skip_range',
+)
+# Five merge names with no producer anywhere (system map v1.2 §7.1, §8.3).
+# They stay zero under every schema version here; nothing writes them.
+DEAD_PLACEHOLDER_FIELDS = (
+    'skip_mean', 'skip_std', 'skip_entropy', 'survivor_velocity', 'velocity_acceleration',
+)
+# Per-seed sieve match rates (NPZ arrays 1-2). Merged ONLY when the setting
+# per_seed_sieve_features == 'on' (system map v1.2 §7.3 item 3, Option A).
+PER_SEED_SIEVE_FIELDS = ('forward_matches', 'reverse_matches')
+PER_SEED_SIEVE_SETTINGS = ('off', 'on')
+FALLBACK_MERGE_SETTINGS = ('legacy6', 'shared')
+
+
+def metadata_merge_fields(path: str, per_seed_sieve_features: str = 'off',
+                          fallback_metadata_merge: str = 'legacy6') -> tuple:
+    """The metadata names a scoring path merges, for the declared settings.
+
+    path: 'batch' or 'fallback'. Defaults reproduce the pre-LL-2 behaviour
+    exactly: batch -> the 18 names; fallback -> the legacy 6.
+    """
+    if per_seed_sieve_features not in PER_SEED_SIEVE_SETTINGS:
+        raise ValueError(f"per_seed_sieve_features={per_seed_sieve_features!r} "
+                         f"not in {PER_SEED_SIEVE_SETTINGS}")
+    if fallback_metadata_merge not in FALLBACK_MERGE_SETTINGS:
+        raise ValueError(f"fallback_metadata_merge={fallback_metadata_merge!r} "
+                         f"not in {FALLBACK_MERGE_SETTINGS}")
+    if path == 'batch':
+        base = METADATA_MERGE_FIELDS
+    elif path == 'fallback':
+        base = (METADATA_MERGE_FIELDS if fallback_metadata_merge == 'shared'
+                else LEGACY_FALLBACK_MERGE_FIELDS)
+    else:
+        raise ValueError(f"path={path!r} not in ('batch', 'fallback')")
+    if per_seed_sieve_features == 'on':
+        base = base + PER_SEED_SIEVE_FIELDS
+    return base
+
+
+def merge_survivor_metadata(features: dict, meta: dict, fields) -> dict:
+    """Copy each named, non-None metadata value into features as float.
+    The same rule both paths always used (`if field in meta and meta[field] is not None`)."""
+    for field in fields:
+        if field in meta and meta[field] is not None:
+            features[field] = float(meta[field])
+    return features
+
+
+def check_per_seed_sieve_metadata(seeds, survivor_metadata) -> None:
+    """Fail closed before scoring when per_seed_sieve_features='on': every seed
+    must carry a finite value for both PER_SEED_SIEVE_FIELDS. No silent zero."""
+    import math
+    if not survivor_metadata:
+        raise ValueError("per_seed_sieve_features='on' but survivor_metadata is empty")
+    bad = []
+    for s in seeds:
+        m = survivor_metadata.get(s)
+        for f in PER_SEED_SIEVE_FIELDS:
+            v = None if m is None else m.get(f)
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+            if not ok:
+                bad.append((s, f, v))
+    if bad:
+        raise ValueError(f"per_seed_sieve_features='on' but {len(bad)} seed/field values are "
+                         f"missing or non-finite; first: {bad[:3]}")
+
+
 try:
     import torch
     TORCH_AVAILABLE = True
@@ -546,16 +632,21 @@ class SurvivorScorer:
 
     def extract_ml_features_batch(self, seeds: List[int], lottery_history: List[int], 
                                    forward_survivors=None, reverse_survivors=None, 
-                                   survivor_metadata=None) -> List[Dict[str, float]]:
+                                   survivor_metadata=None,
+                                   per_seed_sieve_features: str = 'off') -> List[Dict[str, float]]:
         """
         GPU-BATCHED ML feature extraction - CRYPTO MINER STYLE
+        [LL-2] per_seed_sieve_features: 'off' (default, unchanged) | 'on' merges
+        forward_matches / reverse_matches from survivor_metadata as two features.
         Processes ALL seeds in parallel on GPU, single CPU transfer at end.
         
         Returns: List of feature dicts, one per seed
         """
+        # [LL-2] resolved first so a bad setting value raises before any work
+        _merge_fields = metadata_merge_fields('batch', per_seed_sieve_features)
         if not lottery_history or not seeds:
             return [self._empty_ml_features() for _ in seeds]
-        
+
         batch_size = len(seeds)
         n = len(lottery_history)
         device = self.device
@@ -770,15 +861,9 @@ class SurvivorScorer:
             # Add metadata if available
             seed = seeds_list[i]
             if survivor_metadata and seed in survivor_metadata:
-                meta = survivor_metadata[seed]
-                for field in ['forward_count', 'reverse_count', 'bidirectional_count',
-                             'intersection_count', 'intersection_ratio', 'survivor_overlap_ratio',
-                             'skip_min', 'skip_max', 'skip_range', 'skip_mean', 'skip_std', 
-                             'skip_entropy', 'bidirectional_selectivity', 'survivor_velocity',
-                             'velocity_acceleration', 'intersection_weight', 
-                             'forward_only_count', 'reverse_only_count']:
-                    if field in meta and meta[field] is not None:
-                        features[field] = float(meta[field])
+                # [LL-2] the inline 18-name literal is now METADATA_MERGE_FIELDS
+                # (same names, same order); the per-seed sieve pair only when 'on'.
+                merge_survivor_metadata(features, survivor_metadata[seed], _merge_fields)
             
             # Fill defaults for any missing keys
             for k in ['skip_entropy','skip_mean','skip_std','skip_range',

@@ -35,10 +35,17 @@ from pathlib import Path
 LL2_PARAMS = ("per_seed_sieve_features", "fallback_metadata_merge")
 LL2_DEFAULTS = {"--per-seed-sieve-features": "off", "--fallback-metadata-merge": "legacy6"}
 LL3_FLAGS = ("--exclude-features", "--include-feature-groups", "--exclude-feature-groups")
+LL3_BOOL = "--allow-target-columns-as-features"     # store_true (lead TASK_LL_SWITCHES_ADDENDUM_2)
+LL3_SIDECAR_KEYS = {"--exclude-features": "exclude_features", "--include-feature-groups": "include_groups",
+                    "--exclude-feature-groups": "exclude_groups"}
 
 
 class MissingSwitch(Exception):
     """A requested setting needs a pipeline switch the pipeline file does not have."""
+
+
+class BadSwitchRequest(Exception):
+    """A switch request that the pipeline would refuse or misread (an empty value)."""
 
 
 def _tree(path: Path):
@@ -113,7 +120,7 @@ def capabilities(root) -> dict:
         for n in ast.walk(m5):
             if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "add_argument"):
                 declared |= {a.value for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
-        for fl in LL3_FLAGS:
+        for fl in LL3_FLAGS + (LL3_BOOL,):
             if fl not in declared:
                 lack.append(f"{m5_path}: no {fl} option")
     if "resolve_step5_exclusions" not in fm:
@@ -143,9 +150,58 @@ def requested_ll2(step3_args) -> dict:
     return req
 
 
+def _ll3_csv(v):
+    """The optimizer's own split (meta_prediction_optimizer_anti_overfit._ll3_csv)."""
+    return [x.strip() for x in v.split(",") if x.strip()]
+
+
 def requested_ll3(step5_args) -> dict:
+    """LL-3 values asked for in one argument string; the last occurrence wins, as in argparse.
+    A supplied empty value ('' or ',') is refused here, never reported as applied (Beta
+    X-LL-SWITCHES R1 Q2; lead TASK_LL_SWITCHES_ADDENDUM_2 Fix 2)."""
     toks = shlex.split(step5_args) if isinstance(step5_args, str) else list(step5_args)
-    return {fl: _opt_values(toks, fl)[-1] for fl in LL3_FLAGS if _opt_values(toks, fl)}
+    req = {fl: _opt_values(toks, fl)[-1] for fl in LL3_FLAGS if _opt_values(toks, fl)}
+    for fl, v in req.items():
+        if not _ll3_csv(v):
+            raise BadSwitchRequest(f"LL-3 {fl} was given an empty value {v!r}; omit it for the default; "
+                                   f"refused, nothing run")
+    if LL3_BOOL in toks:
+        req[LL3_BOOL] = True
+    return req
+
+
+def requested_ll3_by_family(step5_args, nn_args, families) -> dict:
+    """[LL-3] per family: --step5-extra-args go to every family, --nn-args are appended after them
+    for neural_net only (e2e_walk_forward.run_origin), so for neural_net a flag in both is the
+    --nn-args value. {} when nothing is requested."""
+    every, nn = requested_ll3(step5_args), requested_ll3(nn_args)
+    if not every and not nn:
+        return {}
+    per = {f: ({**every, **nn} if f == "neural_net" else dict(every)) for f in families}
+    return {"step5_extra_args (every family)": every, "nn_args (neural_net only)": nn, "per_family": per}
+
+
+def expected_ll3_selection(fam_req: dict):
+    """What the Step 5 sidecar's feature_schema.feature_selection.requested must hold for one
+    family's request; None = no LL-3 setting, so the sidecar must carry no feature_selection."""
+    if not fam_req:
+        return None
+    out = {k: (_ll3_csv(fam_req[fl]) if fl in fam_req else None) for fl, k in LL3_SIDECAR_KEYS.items()}
+    out["allow_target_columns_as_features"] = bool(fam_req.get(LL3_BOOL, False))
+    return out
+
+
+def check_ll3_sidecar(sidecar_path, fam_req: dict) -> dict:
+    """Compare one trained family's sidecar with the recorded request (after training)."""
+    try:
+        side = json.load(open(sidecar_path))
+    except (OSError, ValueError) as e:
+        return {"ok": False, "expected": expected_ll3_selection(fam_req), "found": f"unreadable: {e}"}
+    sel = (side.get("feature_schema") or {}).get("feature_selection")
+    exp = expected_ll3_selection(fam_req)
+    found = None if sel is None else sel.get("requested", "missing 'requested'")
+    return {"ok": found == exp, "expected": exp, "found": found,
+            "trained_feature_count": (side.get("feature_schema") or {}).get("feature_count")}
 
 
 def requested_ll1(vote_config_path) -> dict:

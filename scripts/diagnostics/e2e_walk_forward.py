@@ -50,7 +50,10 @@ labels, training or model choice for origin i. Runtime checks (fail closed, exit
   L6 every grade is of block i only, with upstream_unseen_from_index = b_i and
      frequency_control_block [0, b_i)
 Exit codes: 0 done; 2 refused before anything ran; 3 a step failed (stop, no retry);
-            4 a leak check failed; 5 a guard stopped a step (memory, card).
+            4 a leak check failed; 5 a guard stopped a step (memory, card);
+            6 a switch check failed: a trained family's sidecar does not hold the LL-3 feature
+            selection its run record names (per family: --step5-extra-args for every family,
+            --nn-args added for neural_net; lead TASK_LL_SWITCHES_ADDENDUM_2 Fix 2).
 """
 from __future__ import annotations
 
@@ -120,6 +123,10 @@ class LeakCheck(Exception):
 
 class GuardStop(Exception):
     pass
+
+
+class SwitchCheck(Exception):
+    """A trained family's sidecar does not hold the switch setting the run record names."""
 
 
 def mutant():
@@ -580,7 +587,7 @@ def pipeline_switches(a) -> dict:
     spec.loader.exec_module(caps)
     requests = {"LL-1": caps.requested_ll1(Path(a.vote_config).expanduser()),
                 "LL-2": caps.requested_ll2(a.step3_extra_args),
-                "LL-3": caps.requested_ll3(a.step5_extra_args + " " + a.nn_args)}
+                "LL-3": ll3_request(caps, a)}
     roots = {"LL-1": Path(a.vote_harness).expanduser().resolve().parents[2],   # the vote harness imports its repo's prediction_generator
              "LL-2": WT,                                                       # the Step 3 harness imports this repo's full_scoring_worker
              "LL-3": MODULE5.parent}                                           # Step 5 runs this repo's module
@@ -588,6 +595,23 @@ def pipeline_switches(a) -> dict:
         return caps.check(requests, roots)
     except caps.MissingSwitch as e:
         raise Refused(f"pipeline switch missing, nothing run: {e}")
+
+
+def ll3_request(caps, a) -> dict:
+    """[LL-3] the request per family (lead TASK_LL_SWITCHES_ADDENDUM_2 Fix 2, Beta X-LL-SWITCHES
+    R1 Q2): what --step5-extra-args gives every family and what --nn-args adds for neural_net.
+    An empty value refuses here, before any write."""
+    fams = csv_list(a.families)
+    try:
+        if mut("ll3_flat_record"):      # self-test mutant: the old record (last value of both strings)
+            flat = caps.requested_ll3(a.step5_extra_args + " " + a.nn_args)
+            return {} if not flat else {"step5_extra_args (every family)": flat, "nn_args (neural_net only)": {},
+                                        "per_family": {f: dict(flat) for f in fams}}
+        return caps.requested_ll3_by_family(a.step5_extra_args, a.nn_args, fams)
+    except caps.BadSwitchRequest as e:
+        if mut("ll3_empty_ignored"):    # self-test mutant: the empty value is dropped silently
+            return {}
+        raise Refused(f"pipeline switch request refused, nothing run: {e}")
 
 
 def build_declaration(a, plan_only=False):
@@ -1018,6 +1042,16 @@ def run_origin(R: Runner, a, decl, i, idx, draws, prev_rec):
             if not (surv_ok and lot_ok) and not mut("nocheck"):
                 raise LeakCheck(f"L3 origin {i} s{seed}/{fam}: Step 5 inputs are not this origin's "
                                 f"labels and train history")
+            # [LL-3] the trained sidecar must hold exactly this family's recorded selection
+            ll3_rec = decl["pipeline_switches"]["LL-3"]
+            fam_req = ((ll3_rec.get("requested") or {}).get("per_family") or {}).get(fam, {})
+            if mut("ll3_sidecar_differs"):    # self-test mutant: the record names another setting
+                fam_req = {**fam_req, "--exclude-feature-groups": "global"}
+            sc = _caps().check_ll3_sidecar(rd / "models" / "reinforcement" / "best_model.meta.json", fam_req)
+            rec.setdefault("switch_checks", {}).setdefault("LL3_sidecar_selection", {})[f"s{seed}/{fam}"] = sc
+            if not sc["ok"] and not mut("nocheck"):
+                raise SwitchCheck(f"LL-3 origin {i} s{seed}/{fam}: the trained sidecar's feature selection "
+                                  f"{sc['found']} is not the recorded request {sc['expected']}")
             fam_res[fam] = {"eligible": ck.get("status") == "ok" and ck.get("cv_score") is not None
                             and math.isfinite(ck["cv_score"]),
                             "cv_score": ck.get("cv_score"), "check_status": ck.get("status"),
@@ -1518,6 +1552,9 @@ def main(argv=None) -> int:
     except LeakCheck as e:
         R.say(f"LEAK CHECK FAILED: {e}")
         return 4
+    except SwitchCheck as e:
+        R.say(f"SWITCH CHECK FAILED: {e}")
+        return 6
     except GuardStop as e:
         R.say(f"GUARD STOP: {e}")
         return 5

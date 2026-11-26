@@ -1,0 +1,17 @@
+{
+ "what": "inputs of g_leak_runH without draw data: the window settings, the train length, and the sha256 of each run H file",
+ "window_config": {
+  "window_size": 12,
+  "sessions": [
+   "midday"
+  ],
+  "offset": 25
+ },
+ "window_config_source": "~/skipsw_run_thr3030/optimal_window_config.json",
+ "window_config_source_sha256": "f917353e8d90d7e9051f0f48699190c1c2058acb4982061139fcd385d93ab7a9",
+ "train_history_source": "data/e2e_runH/copy/train_history.json",
+ "train_history_sha256": "0fe05436c1a0bbae4c7f1cca7443cd17e469db4ca47ed479a03dcd3e14b8db1d",
+ "train_len": 14454,
+ "dataset_source": "~/skipsw_run_thr3030/daily3.json",
+ "dataset_sha256": "513648160d356617c22a1e543ae1c9c65f4921ec21718989308b1f70c00768f6"
+}

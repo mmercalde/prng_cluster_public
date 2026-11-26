@@ -319,7 +319,9 @@ def score_survivors(
     reverse_survivors: Optional[List[int]] = None,
     scorer_class = None,
     survivor_metadata: Dict[int, Dict] = None,  # v1.8.2: seed -> metadata mapping
-    holdout_history: Optional[List[int]] = None  # v2.0: For computing holdout_hits (y-label)
+    holdout_history: Optional[List[int]] = None,  # v2.0: For computing holdout_hits (y-label)
+    per_seed_sieve_features: str = 'off',  # [LL-2] 'off' = unchanged | 'on'
+    fallback_metadata_merge: str = 'legacy6',  # [LL-2] 'legacy6' = unchanged | 'shared'
 ) -> List[Dict[str, Any]]:
     """
     Score all seeds with full 50-feature extraction.
@@ -339,6 +341,18 @@ def score_survivors(
     """
     if scorer_class is None:
         raise RuntimeError("SurvivorScorer class not provided")
+
+    # [LL-2] settings resolved and checked before any scoring (fail closed).
+    from survivor_scorer import (metadata_merge_fields, merge_survivor_metadata,
+                                 check_per_seed_sieve_metadata)
+    _fallback_fields = metadata_merge_fields('fallback', per_seed_sieve_features,
+                                             fallback_metadata_merge)
+    if per_seed_sieve_features == 'on':
+        check_per_seed_sieve_metadata(seeds, survivor_metadata)
+        logger.info("[LL-2] per_seed_sieve_features=on: forward_matches, reverse_matches "
+                    "merged as features (feature schema v2)")
+    if fallback_metadata_merge != 'legacy6':
+        logger.info(f"[LL-2] fallback_metadata_merge={fallback_metadata_merge}")
     
     # Initialize scorer
     scorer = scorer_class(prng_type=prng_type, mod=mod)
@@ -377,7 +391,8 @@ def score_survivors(
             lottery_history=train_history,
             forward_survivors=forward_survivors,
             reverse_survivors=reverse_survivors,
-            survivor_metadata=survivor_metadata
+            survivor_metadata=survivor_metadata,
+            per_seed_sieve_features=per_seed_sieve_features,
         )
         
         # Build result objects from batch results
@@ -449,11 +464,8 @@ def score_survivors(
                     reverse_survivors=reverse_survivors
                 )
                 if survivor_metadata and seed in survivor_metadata:
-                    meta = survivor_metadata[seed]
-                    for field in ['forward_count', 'reverse_count', 'bidirectional_count',
-                                 'skip_min', 'skip_max', 'skip_range']:
-                        if field in meta and meta[field] is not None:
-                            features[field] = float(meta[field])
+                    # [LL-2] legacy 6 by default (unchanged); 'shared' = the batch list
+                    merge_survivor_metadata(features, survivor_metadata[seed], _fallback_fields)
                 score = features.get('score', features.get('confidence', 0.0))
                 # Merge global features (14 features with global_ prefix)
                 for gkey, gval in global_features.items():
@@ -498,6 +510,15 @@ def score_survivors(
                 elapsed = time.time() - start_time
                 rate = (i + 1) / elapsed if elapsed > 0 else 0
                 logger.info(f"[FALLBACK] Progress: {i+1}/{total} ({100*(i+1)/total:.1f}%) | {rate:.1f} seeds/sec")
+
+    # [LL-1/LL-2] stamp the declared settings on every row, ONLY when a setting is
+    # not the default, so default output stays byte-identical to before.
+    if per_seed_sieve_features != 'off' or fallback_metadata_merge != 'legacy6':
+        _stamp = {"per_seed_sieve_features": per_seed_sieve_features,
+                  "fallback_metadata_merge": fallback_metadata_merge,
+                  "feature_schema_version": "v2" if per_seed_sieve_features == 'on' else "v1"}
+        for r in results:
+            r["feature_settings"] = dict(_stamp)
     
     return results
 
@@ -545,6 +566,13 @@ Example:
     # v2.0: Holdout data for y-label
     parser.add_argument('--holdout-history', default=None,
                        help='JSON file with holdout lottery draws for computing holdout_hits (y-label)')
+    # [LL-2] declared settings; defaults = behaviour before LL-2
+    parser.add_argument('--per-seed-sieve-features', choices=['off', 'on'], default='off',
+                       help="[LL-2] 'on' merges the NPZ per-seed forward_matches/reverse_matches "
+                            "as two features (schema v2). Default 'off' = unchanged.")
+    parser.add_argument('--fallback-metadata-merge', choices=['legacy6', 'shared'], default='legacy6',
+                       help="[LL-2] sequential-fallback merge list: 'legacy6' (default, unchanged) "
+                            "or 'shared' (the batch path's 18 names; F-PARITY).")
     # Verbose mode
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
@@ -649,7 +677,9 @@ Example:
             reverse_survivors=reverse_survivors,
             scorer_class=SurvivorScorer,  # Pass the class imported after GPU setup
             survivor_metadata=survivor_metadata,  # v1.8.2: pass metadata for merging
-            holdout_history=holdout_history  # v2.0: for computing y-label
+            holdout_history=holdout_history,  # v2.0: for computing y-label
+            per_seed_sieve_features=args.per_seed_sieve_features,  # [LL-2]
+            fallback_metadata_merge=args.fallback_metadata_merge,  # [LL-2]
         )
         
         elapsed = time.time() - start_time

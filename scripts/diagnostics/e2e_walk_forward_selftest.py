@@ -35,8 +35,9 @@ Gates:
       value ordering plumbing; the selfplay_window interface
   W10 pipeline switches (owner, TASK_LAND_WF_VOTE_20261125_ADDENDUM_1): for LL-1, LL-2 and LL-3,
       (a) the capability check refuses each switch on pipeline files that lack it (git show of
-      --caps-without-rev, default HEAD), naming the switch and the file; (b) non-vacuity: the
-      same requests pass on files that have it (--caps-with-root, default the e2e-map worktree);
+      --caps-without-rev, default 50cd683, pinned), naming the switch and the file; (b) non-vacuity: the
+      same requests pass on files that have it (--caps-with-root, default this tree when it has
+      all three switches, else the e2e-map worktree);
       (c) the driver on THIS tree: refuses (exit 2, nothing created, switch and file named) when
       this tree lacks the switch, and records it as applied (--plan-only) when it has it;
       (d) the Step 3 harness run directly with --per-seed-sieve-features on refuses before its
@@ -55,6 +56,11 @@ Gates:
       regression: through the real shim and main's own optimizer parser body, a holdout_hits run
       reads the derived file (target 2, not the source's 0.045) with the declared folds, and a
       trailing --survivors=SRC is refused by the shim; one mutant per guard
+  W13 LL-3 family scope (lead TASK_LL_SWITCHES_ADDENDUM_2 Fix 2, Beta X-LL-SWITCHES R1 Q2): the
+      record is per family (dead via --step5-extra-args for lightgbm, global via --nn-args for
+      neural_net; --plan-only); an empty LL-3 value ('' or ',') refuses before any write; after
+      training each family's sidecar holds the recorded selection (W1 with none, a real run with
+      dead), and a sidecar that differs fails the run with exit 6; one mutant per guard
   W7  no-write: git status of the main tree and the vote and grader worktrees unchanged, no
       new __pycache__ there, pinned files unchanged
 """
@@ -256,6 +262,20 @@ def all_json_label(out: Path):
     return bad
 
 
+# W10/W11/G19 "without" side: main at the commit before the LL-1/2/3 pipeline landing (full sha).
+# Pinned, not HEAD: after that landing HEAD has the switches (lead TASK_LL_SWITCHES_ADDENDUM_1).
+CAPS_WITHOUT_REV = "50cd6837abda2821277fc1cf6cc5f2d0e8f35a9a"
+CAPS_FALLBACK_WITH_ROOT = Path("~/tfm_worktrees/e2e-map").expanduser()
+
+
+def default_caps_with_root() -> Path:
+    """The tree under test when its own pipeline files have all three switches; else the e2e-map
+    worktree (the only tree with them before the LL landing)."""
+    caps = load(HERE / "e2e_pipeline_caps.py", "e2e_pipeline_caps_default_root")
+    c = caps.capabilities(WT)
+    return WT if all(c[k]["present"] for k in ("LL-1", "LL-2", "LL-3")) else CAPS_FALLBACK_WITH_ROOT
+
+
 CAPS_FILES = ["prediction_generator.py", "full_scoring_worker.py", "survivor_scorer.py",
               "meta_prediction_optimizer_anti_overfit.py", "models/feature_manifest.py"]
 
@@ -280,9 +300,11 @@ def w10_switches(C, fx, base, A, w1):
     wi = Path(A.caps_with_root)
     cw, cwi, here = caps.capabilities(wo), caps.capabilities(wi), caps.capabilities(WT)
     for sw, (req, over) in REQ.items():
-        gate(f"W10 precondition: {A.caps_without_rev} lacks {sw} and {wi} has it",
+        gate(f"W10 precondition: {A.caps_without_rev[:12]} lacks {sw} and {wi} has it",
              not cw[sw]["present"] and cwi[sw]["present"],
-             f"without lacks {cw[sw]['lacks'][:1]}; with has it: {cwi[sw]['present']}")
+             (f"without lacks {cw[sw]['lacks'][:1]}; with has it: {cwi[sw]['present']}" if not cw[sw]["present"]
+              else f"PINNED REVISION {A.caps_without_rev} HAS {sw}: the refusal side would test nothing; "
+                   f"pass --caps-without-rev a revision without it"))
         try:
             caps.check({sw: req}, {k: wo for k in REQ})
             ok, det = False, "no refusal"
@@ -306,7 +328,10 @@ def w10_switches(C, fx, base, A, w1):
         else:
             p = run_driver(driver_args(C, fx, out, origins="1", families="lightgbm", **over) + ["--plan-only"])
             rr = json.load(open(out / "run_record.json")) if (out / "run_record.json").exists() else {}
-            ok = p.returncode == 0 and rr.get("pipeline_switches", {}).get(sw, {}).get("applied") == req
+            # LL-3 is recorded per family (lead TASK_LL_SWITCHES_ADDENDUM_2 Fix 2)
+            want = req if sw != "LL-3" else {"step5_extra_args (every family)": req,
+                                             "nn_args (neural_net only)": {}, "per_family": {"lightgbm": req}}
+            ok = p.returncode == 0 and rr.get("pipeline_switches", {}).get(sw, {}).get("applied") == want
             gate(f"W10 {sw} present in this tree: the driver plans it and records it applied",
                  ok, f"rc {p.returncode}: {rr.get('pipeline_switches', {}).get(sw)}")
     if not here["LL-2"]["present"]:
@@ -318,6 +343,75 @@ def w10_switches(C, fx, base, A, w1):
              ok, f"rc {p.returncode}: {p.stderr.strip()[-160:]}")
     else:
         print("INFO  W10 this tree has LL-2: the direct-harness refusal case does not apply", flush=True)
+
+
+def w13_ll3_family(C, fx, base, w1):
+    """Lead TASK_LL_SWITCHES_ADDENDUM_2 Fix 2 (Beta X-LL-SWITCHES R1 Q2): the LL-3 record is per
+    family, an empty LL-3 value refuses before any write, and after training each family's
+    sidecar must hold the recorded selection or the run fails (exit 6)."""
+    caps_here = load(HERE / "e2e_pipeline_caps.py", "e2e_pipeline_caps")
+    if not caps_here.capabilities(WT)["LL-3"]["present"]:
+        print("INFO  W13 this tree lacks LL-3: the family-scope cases do not apply", flush=True)
+        return
+    dead = {"--exclude-feature-groups": "dead"}
+    glob = {"--exclude-feature-groups": "global"}
+    fam_over = {"--families": "neural_net,lightgbm", "--vote-allow-gpu": True,
+                "--step5-extra-args": "--enable-diagnostics --exclude-feature-groups dead",
+                "--nn-args": "--exclude-feature-groups global"}
+    want = {"step5_extra_args (every family)": dead, "nn_args (neural_net only)": glob,
+            "per_family": {"neural_net": glob, "lightgbm": dead}}
+
+    def plan(name, mutant=None, **over):
+        out = base / f"w13_{name}"
+        p = run_driver(driver_args(C, fx, out, origins="1", **over) + ["--plan-only"], mutant=mutant)
+        rr = json.load(open(out / "run_record.json")) if (out / "run_record.json").exists() else {}
+        return p, out, rr.get("pipeline_switches", {}).get("LL-3", {}).get("applied")
+
+    p, out, got = plan("family_scope", **fam_over)
+    gate("W13 LL-3 per family: dead via --step5-extra-args for lightgbm, global via --nn-args for neural_net",
+         p.returncode == 0 and got == want, f"rc {p.returncode}: {got} {p.stderr.strip()[-160:]}")
+    p, out, got = plan("family_scope_mut", mutant="ll3_flat_record", **fam_over)
+    gate("W13 MUTANT ll3_flat_record (the old last-value record) killed", got != want,
+         f"rc {p.returncode}: recorded {got}")
+    for name, s5 in (("include_blank", "--enable-diagnostics --include-feature-groups ''"),
+                     ("exclude_groups_comma", "--enable-diagnostics --exclude-feature-groups ,")):
+        out = base / f"w13_{name}"
+        p = run_driver(driver_args(C, fx, out, origins="1", families="lightgbm",
+                                   **{"--step5-extra-args": s5}) + ["--plan-only"])
+        gate(f"W13 empty LL-3 value refused before any write ({name}: exit 2, no out-dir)",
+             p.returncode == 2 and "empty value" in p.stderr and not out.exists(),
+             f"rc {p.returncode}: {p.stderr.strip()[-160:]}")
+        out = base / f"w13_{name}_mut"
+        p = run_driver(driver_args(C, fx, out, origins="1", families="lightgbm",
+                                   **{"--step5-extra-args": s5}) + ["--plan-only"], mutant="ll3_empty_ignored")
+        gate(f"W13 MUTANT ll3_empty_ignored killed ({name})",
+             not (p.returncode == 2 and not out.exists()), f"rc {p.returncode}; out-dir exists {out.exists()}")
+    # after training: the default run (W1) checked every family's sidecar holds no selection
+    recs = [json.load(open(f)) for f in sorted(w1.glob("origin_*/origin_summary.json"))]
+    chk = [v for r in recs for v in (r.get("switch_checks", {}).get("LL3_sidecar_selection") or {}).values()]
+    gate("W13 W1 (no LL-3): every trained family's sidecar checked, no feature selection, all ok",
+         bool(chk) and all(v["ok"] and v["expected"] is None and v["found"] is None for v in chk),
+         f"{len(chk)} family sidecars checked in {len(recs)} origins")
+    # a real run with LL-3 on: the sidecar holds the recorded selection
+    run_kw = dict(origins="1", families="lightgbm", pools="20", sessions="midday", choice="cv",
+                  **{"--step5-extra-args": "--enable-diagnostics --exclude-feature-groups dead"})
+    out = base / "w13_run_dead"
+    p = run_driver(driver_args(C, fx, out, **run_kw))
+    r1 = out / "origin_1" / "origin_summary.json"
+    sc = (json.load(open(r1)).get("switch_checks", {}).get("LL3_sidecar_selection") or {}) if r1.exists() else {}
+    v = next(iter(sc.values()), {})
+    gate("W13 LL-3 dead, real run: the trained sidecar holds the recorded selection (checked after training)",
+         p.returncode == 0 and v.get("ok") and (v.get("found") or {}).get("exclude_groups") == ["dead"],
+         f"rc {p.returncode}: {v} {p.stderr.strip()[-160:]}")
+    out = base / "w13_run_dead_differs"
+    p = run_driver(driver_args(C, fx, out, **run_kw), mutant="ll3_sidecar_differs")
+    gate("W13 a sidecar that differs from the record fails the run (exit 6, SWITCH CHECK FAILED, family named)",
+         p.returncode == 6 and "SWITCH CHECK FAILED" in (p.stdout + p.stderr) and "lightgbm" in (p.stdout + p.stderr),
+         f"rc {p.returncode}: {(p.stdout + p.stderr).strip()[-200:]}")
+    out = base / "w13_run_dead_differs_nocheck"
+    p = run_driver(driver_args(C, fx, out, **run_kw), mutant="ll3_sidecar_differs+nocheck")
+    gate("W13 MUTANT ll3_sidecar_differs+nocheck (check off) killed: the run then exits 0",
+         p.returncode == 0, f"rc {p.returncode}")
 
 
 RUNH_INPUTS = Path("~/skipsw_run_thr3030").expanduser()
@@ -405,8 +499,11 @@ def w11_wrappers(base, A):
     wi = wrapper_tree(base / "w11_with", (wi_root / "full_scoring_worker.py").read_bytes(),
                       (wi_root / "survivor_scorer.py").read_bytes())
     caps = load(HERE / "e2e_pipeline_caps.py", "e2e_pipeline_caps_w11")
+    wo_has = caps.capabilities(wo)["LL-2"]["present"]
     gate("W11 precondition: the without-tree lacks LL-2 and the with-tree has it",
-         not caps.capabilities(wo)["LL-2"]["present"] and caps.capabilities(wi)["LL-2"]["present"], "")
+         not wo_has and caps.capabilities(wi)["LL-2"]["present"],
+         f"without = {A.caps_without_rev[:12]}, with = {wi_root}" if not wo_has else
+         f"PINNED REVISION {A.caps_without_rev} HAS LL-2: pass --caps-without-rev a revision without it")
     p, f = run_wrapper(wo, "01_sieve_on", stub)
     txt = p.stdout + p.stderr
     ok = (p.returncode != 0 and "PREFLIGHT REFUSED" in txt and "LL-2" in txt and "full_scoring_worker.py" in txt
@@ -508,11 +605,16 @@ def w12_passthroughs(C, fx, base, w1):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--caps-without-rev", default="HEAD",
-                    help="W10: git revision of this tree whose pipeline files lack the LL switches")
-    ap.add_argument("--caps-with-root", default=str(Path("~/tfm_worktrees/e2e-map").expanduser()),
-                    help="W10 non-vacuity: a tree whose pipeline files have the LL switches")
+    ap.add_argument("--caps-without-rev", default=CAPS_WITHOUT_REV,
+                    help="W10/W11: a FIXED git revision whose pipeline files lack the LL switches "
+                         "(default: main before the LL landing; HEAD would have them once they land)")
+    ap.add_argument("--caps-with-root", default=None,
+                    help="W10/W11 non-vacuity: a tree whose pipeline files have the LL switches "
+                         "(default: this tree when it has all three, else ~/tfm_worktrees/e2e-map)")
     A = ap.parse_args()
+    if A.caps_with_root is None:
+        A.caps_with_root = str(default_caps_with_root())
+    print(f"W10/W11 sides: without = {A.caps_without_rev}; with = {A.caps_with_root}", flush=True)
     t_all = time.time()
     stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     base = WT / "data" / f"e2e_wf_selftest_{stamp}"
@@ -949,6 +1051,9 @@ def main() -> int:
     # ---------------------------------------------------------------- W11, W12 (ADDENDUM_4)
     w11_wrappers(base, A)
     w12_passthroughs(C, fx, base, w1)
+
+    # ---------------------------------------------------------------- W13 LL-3 family scope (ADDENDUM_2)
+    w13_ll3_family(C, fx, base, w1)
 
     # ---------------------------------------------------------------- W7 no-write
     after = {r: (git_status(r), pycaches(r)) for r in before}

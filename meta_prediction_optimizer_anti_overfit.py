@@ -1402,7 +1402,11 @@ class AntiOverfitMetaOptimizer:
         prng_type: str = 'java_lcg',
         mod: int = 1000,
         holdout_draws: int = 1000,
-        parent_run_id: str = None
+        parent_run_id: str = None,
+        exclude_features: List[str] = None,         # [LL-3] None = today's 4-name list
+        include_feature_groups: List[str] = None,   # [LL-3] None = all groups
+        exclude_feature_groups: List[str] = None,   # [LL-3] None = none
+        allow_target_columns_as_features: bool = False,  # [LL-3] off = the four default exclusions stay
     ):
         """
         Initialize anti-overfit meta-optimizer.
@@ -1435,6 +1439,9 @@ class AntiOverfitMetaOptimizer:
         self.mod = mod
         self.holdout_draws = holdout_draws
         self.parent_run_id = parent_run_id
+        # [LL-3] Step 5 feature-list settings (models/feature_manifest.py)
+        self._ll3_settings = (exclude_features, include_feature_groups, exclude_feature_groups)
+        self._ll3_allow_targets = bool(allow_target_columns_as_features)
         
         # Study persistence
         self.study_name = study_name or f"anti_overfit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -1476,11 +1483,27 @@ class AntiOverfitMetaOptimizer:
         self.logger.info("Loading survivors with features...")
         
         # Load data
+        # [LL-3] the exclude list is a setting; with none given it is the same
+        # 4-name list as before and the sidecar is unchanged.
+        _ll3_exc, _ll3_inc, _ll3_excg = getattr(self, '_ll3_settings', (None, None, None))
+        _ll3 = {"exclude": ['score', 'confidence', 'holdout_hits', 'holdout_quality'],
+                "selection": None}
+        _ll3_allow = getattr(self, '_ll3_allow_targets', False)
+        # a supplied empty value ([] from '' or ',') is a request, never "omitted": it reaches the
+        # resolver, which refuses it before any fitting
+        if _ll3_exc is not None or _ll3_inc is not None or _ll3_excg is not None or _ll3_allow:
+            from models.feature_manifest import resolve_step5_exclusions
+            _all = get_feature_schema_from_data(self.survivors_file, ['\x00'])['feature_names']
+            _ll3 = resolve_step5_exclusions(_all, _ll3_exc, _ll3_inc, _ll3_excg,
+                                            allow_target_columns=_ll3_allow)
         self.X, self.y, self.feature_schema, self.y_metadata = load_survivors_with_features(
             self.survivors_file,
             target_field='holdout_quality',
-            exclude_features=['score', 'confidence', 'holdout_hits', 'holdout_quality']
+            exclude_features=_ll3["exclude"]
         )
+        if _ll3["selection"] is not None:
+            self.feature_schema["feature_selection"] = _ll3["selection"]
+            self.logger.info(f"[LL-3] feature selection: {_ll3['selection']}")
         
         self.logger.info(f"Loaded {len(self.X)} survivors with {self.feature_schema['feature_count']} features")
         self.logger.info(f"Feature schema hash: {self.feature_schema['feature_schema_hash']}")
@@ -3034,6 +3057,13 @@ class AntiOverfitMetaOptimizer:
 # CLI
 # ============================================================================
 
+def _ll3_csv(v):
+    """[LL-3] 'a,b' -> ['a','b']; None stays None (= setting not given)."""
+    if v is None:
+        return None
+    return [x.strip() for x in v.split(',') if x.strip()]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Anti-Overfit Meta-Prediction Optimizer v3.3'
@@ -3100,6 +3130,19 @@ def main():
     parser.add_argument('--no-persistent-workers', action='store_false',
                        dest='persistent_workers',
                        help='[S96B] Disable persistent GPU workers (default)')
+    # [LL-3] Step 5 feature list as a setting. Defaults = today's list.
+    parser.add_argument('--exclude-features', type=str, default=None,
+                        help="[LL-3] comma list replacing the default exclude list "
+                             "(score,confidence,holdout_hits,holdout_quality)")
+    parser.add_argument('--include-feature-groups', type=str, default=None,
+                        help="[LL-3] comma list of models/feature_manifest.json groups or "
+                             "aliases to train on; all others dropped. Default: all")
+    parser.add_argument('--exclude-feature-groups', type=str, default=None,
+                        help="[LL-3] comma list of manifest groups or aliases to drop "
+                             "(e.g. global,dead). Default: none")
+    parser.add_argument('--allow-target-columns-as-features', action='store_true', default=False,
+                        help="[LL-3] let an --exclude-features list omit score, confidence, "
+                             "holdout_hits or holdout_quality (default off: refused); recorded in the sidecar")
     parser.add_argument('--allow-inline-nn-fallback', action='store_true',
                        help='If NN subprocess fails, fall back to inline trainer (default: OFF)')
     
@@ -3160,22 +3203,33 @@ def main():
         lottery_history = [d['draw'] if isinstance(d, dict) else d for d in lottery_data]
     
     # Run optimizer
-    optimizer = AntiOverfitMetaOptimizer(
-        survivors_file=args.survivors,
-        lottery_history=lottery_history,
-        k_folds=args.k_folds,
-        test_holdout_pct=args.test_holdout,
-        study_name=args.study_name,
-        storage=args.storage,
-        model_type=args.model_type,
-        compare_models=args.compare_models,
-        output_dir=args.output_dir,
-        device=args.device,
-        prng_type=args.prng_type,
-        mod=args.mod,
-        holdout_draws=args.holdout_draws,
-        parent_run_id=args.parent_run_id
-    )
+    try:
+        optimizer = AntiOverfitMetaOptimizer(
+            survivors_file=args.survivors,
+            lottery_history=lottery_history,
+            k_folds=args.k_folds,
+            test_holdout_pct=args.test_holdout,
+            study_name=args.study_name,
+            storage=args.storage,
+            model_type=args.model_type,
+            compare_models=args.compare_models,
+            output_dir=args.output_dir,
+            device=args.device,
+            prng_type=args.prng_type,
+            mod=args.mod,
+            holdout_draws=args.holdout_draws,
+            parent_run_id=args.parent_run_id,
+            exclude_features=_ll3_csv(args.exclude_features),              # [LL-3]
+            include_feature_groups=_ll3_csv(args.include_feature_groups),  # [LL-3]
+            exclude_feature_groups=_ll3_csv(args.exclude_feature_groups),  # [LL-3]
+            allow_target_columns_as_features=args.allow_target_columns_as_features,  # [LL-3]
+        )
+    except Exception as e:
+        # [LL-3] a refused feature-list request exits 2 with its message, before any fitting
+        if type(e).__name__ != 'ManifestError':
+            raise
+        print(f"[LL-3] REFUSED: {e}", file=sys.stderr, flush=True)
+        sys.exit(2)
     
     # Category B Phase 2.1: Thread CLI flags into optimizer (Team Beta Mod D)
     optimizer._cli_dropout = getattr(args, 'dropout', None)

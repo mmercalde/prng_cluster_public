@@ -131,6 +131,7 @@ class PredictionConfig:
     # === Model Configuration ===
     models_dir: str = "models/reinforcement"
     require_feature_schema: bool = True  # v6.0: Enforce feature schema
+    schema_check: str = 'off'  # [LL-1] 'off' (default, unchanged) | 'warn' | 'fail'
     
     # === Input Files ===
     survivors_forward_file: str = ""
@@ -193,6 +194,7 @@ class PredictionConfig:
             explanation_verbosity=config_data.get('explanation_verbosity', 'standard'),
             models_dir=config_data.get('models_dir', 'models/reinforcement'),
             require_feature_schema=config_data.get('require_feature_schema', True),
+            schema_check=config_data.get('schema_check', 'off'),  # [LL-1]
             survivors_forward_file=config_data.get('survivors_forward_file', ''),
             survivors_reverse_file=config_data.get('survivors_reverse_file', ''),
             lottery_history_file=config_data.get('lottery_history_file', ''),
@@ -221,7 +223,9 @@ class PredictionConfig:
             'skip_mode_preference': self.skip_mode_preference,
             'explanation_verbosity': self.explanation_verbosity,
             'models_dir': self.models_dir,
-            'require_feature_schema': self.require_feature_schema
+            'require_feature_schema': self.require_feature_schema,
+            # [LL-1] listed only when set, so default output is unchanged
+            **({'schema_check': self.schema_check} if self.schema_check != 'off' else {}),
         }
 
 
@@ -774,6 +778,21 @@ class PredictionGenerator:
                 "Set require_feature_schema=False to allow unsafe fallback."
             )
 
+        # [LL-1] schema check (off by default): the sidecar's names must hash to
+        # its own hash and be present in every input row (no silent 0.0 fill).
+        if getattr(self.config, 'schema_check', 'off') != 'off':
+            from models.feature_manifest import check_rows_against_schema
+            _fs = (getattr(self, 'model_meta', None) or {}).get("feature_schema", {})
+            # the hash belongs to feature_names; a legacy per_seed_feature_names
+            # list has no hash of its own, so its hash test is skipped (recorded)
+            _exp = (_fs.get("feature_schema_hash")
+                    if list(self.feature_names or []) == list(_fs.get("feature_names", []))
+                    else "n/a:per_seed_feature_names")
+            self.schema_check_report = check_rows_against_schema(
+                self.feature_names, _exp,
+                (s for s in survivors if isinstance(s, dict)),
+                mode=self.config.schema_check, logger=self.logger)
+
         # Build feature matrix with per-survivor skip tracking
         X_list = []
         survivor_data = []
@@ -977,6 +996,9 @@ def main():
                        help='Parent run ID for lineage')
     parser.add_argument('--no-require-schema', action='store_true',
                        help='Allow prediction without feature schema (UNSAFE)')
+    parser.add_argument('--schema-check', choices=['off', 'warn', 'fail'], default=None,
+                       help="[LL-1] check the sidecar feature schema against the input rows "
+                            "(no zero-fill). Default: the config's value, else 'off'")
     parser.add_argument('--k', type=int, help='Number of top predictions')
     parser.add_argument('--pool-size', type=int, help='Size of candidate pool')
     parser.add_argument('--output-dir', type=str, help='Directory for output')
@@ -1027,6 +1049,8 @@ def main():
         config.models_dir = args.models_dir
     if args.no_require_schema:
         config.require_feature_schema = False
+    if args.schema_check is not None:  # [LL-1]
+        config.schema_check = args.schema_check
     
     if args.dry_run:
         print("="*70)
