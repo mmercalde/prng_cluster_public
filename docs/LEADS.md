@@ -652,3 +652,472 @@ boot time in the register.
   WS-7 per-worker path, new WS-2f). On a simulated landed tree: D6 84/84 ×3 (base 82/82; v6 unrepaired 71/82); cache
   suite 111/111 landed, 112/112 ×3 pre-landing, 22/22 mutants. Sent as new thread X-CACHE-POLICY-D6 R1. Lead still
   OPEN; no rig run.
+
+---
+
+## L-8 — RANGE-MINER two-way (forward ∩ reverse) count exceeds the independence figure
+
+**Status: OPEN.** Filed 2026-11-22. Note: `docs/drafts/NOTE_LEAD_BIDIRECTIONAL_EXCESS_20261122.md` — **not on
+main**; on branch `pwc-offset` (WIP snapshot `9809d7e`, worktree `~/tfm_worktrees/pwc-offset`). Its instruments and
+outputs are in that worktree's `logs/lead_bidir_20261122/` (sha256s in the note's "Files" table). Brought into the
+register 2026-11-25 from the uncommitted draft entry at `pwc-offset:docs/LEADS.md:656`.
+
+**What it is.** In runs E and F (window 12, anchor 25, midday, skip [0,16], switch on, τ_f 0.47 / τ_r 0.38), the
+variable-skip two-way count was 17 and 13. The independence figures fwd × rev / 2^28 are 6.26 and 6.21. Independence
+was **assumed**.
+
+**Where found.** All runs were lead-run on 2026-11-22 at commit `00e2ee7` (present in all four bundle manifests).
+The draft entry says "owner approved each" (`pwc-offset:docs/LEADS.md:660`). Direct owner approvals were located for
+G (`logs/skipsw_session/OWNER_OVERRIDE_runG_thr3838.txt:1`) and H (`logs/skipsw_session/OWNER_OVERRIDE_runH_thr3030.txt:1`);
+approval records for E and F were not located.
+
+| Run | Thresholds (fwd/rev) | Slice | Tree | Evidence |
+|---|---|---|---|---|
+| E | 0.47 / 0.38 | [2147483648, 2415919104) | `~/skipsw_run_thr4738` | `logs/skipsw_session/bundle_thr4738` |
+| F | 0.47 / 0.38 | [2415919104, 2684354560) | `~/skipsw_run_thr4738n` | `bundle_thr4738n` |
+| G | 0.38 / 0.38 | E slice | | `bundle_thr3838` |
+| H | 0.30 / 0.30 | E slice | | `bundle_thr3030` |
+
+The blocks for E and F are in `~/skipsw_blocks/{e,f}`.
+
+**Measured rows, no verdict.** Phases 3 and 4 are the variable modes. Every published row is variable (`skip_mode` 1).
+
+| Run | Phase 3 (fwd) | Phase 4 (rev) | Two-way rows | Independence figure | Ratio |
+|---|---|---|---|---|---|
+| E | 34,454 | 48,791 | 17 | 6.26 | 2.72 |
+| F | 34,419 | 48,449 | 13 | 6.21 | 2.09 |
+| G | 326,627 | 48,791 | 167 | 59.37 | 2.81 |
+| H | 2,368,585 | 595,773 | 12,156 | 5,256.9 | 2.31 |
+
+Run H also has phase 1 = 1 and phase 2 = 2 (constant mode). The lead's "2,368,586 / 595,775" are phase 1 + 3 and
+phase 2 + 4.
+
+**Follow-ups RUN:**
+- ✅ **Recur on the neighbouring slice = run F:** 13 two-way against 6.21.
+- ✅ **CPU reproduction** (numba port of `tests/phase6/known_answer_reference.py`, validated against it). It gives
+  E, F, G and H exactly, and keeps the per-phase sets the rig run deletes.
+- ✅ **Test the mechanism** (2^24 seeds per window). The question: is the overlap sieve arithmetic alone, or does it
+  depend on the draws?
+
+  | Group | Windows | F≥6 R≥5 | F≥4 R≥4 |
+  |---|---|---|---|
+  | other real midday windows | 100 | 3.47 | 2.40 |
+  | shuffled run window | 100 | 3.91 | 2.35 |
+  | iid random values | 100 | 3.32 | 2.37 |
+  | **cross** (forward and reverse on unrelated windows) | 50 | **1.13** | **1.05** |
+
+  - **Measured, for the windows and thresholds tested:** the excess appears whenever both passes compare against the
+    same values, and does not depend on which of the tested values. It rises with repeated or mirror-equal values in
+    a window, and the run window has neither.
+  - The group comparisons are pooled by group (Σ both / Σ independence figure, note `:114`). The 2^24 sample of the
+    run window itself gave zero two-way rows at the tight threshold (F≥6 R≥5: 0 both, independence figure 0.39,
+    note `:122`).
+  - **Mechanism read from the kernels:** one output stream per seed, wide skip windows. In 26 of the 30 rows, one
+    output counts as a hit for the same draw in both passes.
+  - The anchor-25 window's excess at the run thresholds (2.41 [1.62, 3.43]) is not above the control groups'.
+- ✅ **Real-window hit-rate comparison for this frozen configuration** = L-9's counted grade (run H, A1, midday grade
+  block, k ≤ 20, 904 draws: 22 hits against 17.907 expected, p 0.1925). *(Recorded 2026-11-25, Beta X-LEADS-TIDY R1
+  Q2.)*
+- ✅ **Neighbourhood** (population description only):
+  - the 30 rows are spread across both slices (gap CV 1.09);
+  - they share no residue class mod 1000, 2^16 or 2^19;
+  - none follows from another within 2^20 steps;
+  - survivor density around them is at the slice average.
+
+**Limits** (note §2.2, §4). Measured inputs: the marginals (this window, rig and CPU) and the ratio (iid controls).
+Assumed: "that the iid ratio transfers to this window. The F≥4 R≥4 per-window spread supports that, but the
+assumption is not proven at F≥6 R≥5." No GPU and no rig for the follow-ups; everything is CPU on VM101. The evening
+session was not used. Recur over the whole record as a rig run was not run.
+
+**For hit rate against `k/1000`** (note §6). The measured outcome "predicts **nothing about pool hit rate.**" Because
+the same excess appears for shuffled and random windows, "the excess itself cannot be read as evidence for or against
+the draws containing structure." "Population size is load, not quality." Had the excess depended on the draws, it
+would have predicted that pools ranked from real-window rows beat matched pools from control-window populations on
+unseen draws; "The controls did not show that difference at the thresholds tested. **This is not a result about hit
+rate either way.**"
+
+**Follow-ups OPEN:**
+- ⬜ **Shuffled-draw rig control:** scoped in the note §5, not built. It needs the owner's go. It measures overlap
+  counts and is a separate follow-up from the hit-rate measurement.
+- ⬜ **Hit-rate measurement**, the only settling one: pools from a real-window population (run H's 12,156 rows),
+  optionally against matched shuffled-draw pools, scored on unseen draws against `k/1000`. This is the main line
+  (Step 2 on run H), not gated by this lead. *(2026-11-25: the real-window part is done for this frozen
+  configuration — L-9's counted grade, above. Still OPEN: the matched shuffled-pool comparison, and further
+  unseen-draw grading.)*
+- ⬜ Recur on other sessions and window sizes (not run; CPU-cheap).
+
+**Licensed phrasing:** its rate is consistent with the measured same-window control background. No follow-up has
+tested a hit-rate effect. It remains OPEN. Downgrading it is the operator's decision.
+
+---
+
+## L-9 — run H prediction pools against k/1000 on draws the sieve never saw
+
+**Status: OPEN.** Filed 2026-11-23. Brought into the register 2026-11-25 from the uncommitted draft entry at
+`e2e-grader:docs/LEADS.md:658` (branch `e2e-grader`, WIP snapshot `d52e84b`), which the grader landing left out
+(`docs/drafts/e2e_v1/READY_GRADER_LANDING_20261124.md:115-121`).
+- Reports (on main): `docs/drafts/e2e_v1/RESULT_E2E_GRADE_RUNH_20261123.md` (counted) and
+  `docs/drafts/e2e_v1/RESULT_E2E_FOLLOWUP_RUNH_20261123.md` (follow-ups).
+
+**What it is.** The yardstick measurement (CLAUDE.md): on draws the pipeline never saw, is the hit count of TFM's run H
+prediction pools above Σk_t/1000 (equivalently, is the hit rate per graded draw above Σk_t/1000 divided by the number of
+graded draws)?
+- **Run H:**
+  - 12,156 survivors;
+  - sieve window of 12 midday draws at offset 25, dated 2002;
+  - thresholds 0.30/0.30;
+  - 1/16 of the seed space;
+  - one trial.
+- **Step 6 vote as built:** combined index, skip 0.
+- **Arms:**
+  - A1 = the frozen Step 5 CatBoost ranking (cross-validation score +0.0019);
+  - A0 = forward_matches + reverse_matches, seed_asc tie-break.
+- **Instrument:** `scripts/diagnostics/e2e_grader.py` (sha256 `a4d96fe7…`, draft, not
+  Beta-reviewed), a non-certifying route. This description applies to the frozen instrument used for this grade.
+
+**Where found.** Dataset `daily3.json` (sha256 `513648160d35…`).
+- Grade block: combined [16261, 18068), 2023-09-07..2026-02-26, sealed until grading.
+- Label block: [14454, 16261).
+- Pools: `~/tfm_worktrees/e2e-vote/data/e2e_runH_vote/` and `…/e2e_runH_vote_followup/`.
+- Grades: `~/tfm_worktrees/e2e-grader/data/e2e_runH_grade/` and `…/e2e_runH_grade_followup/` — **untracked, worktree
+  only** (`READY_GRADER_LANDING_20261124.md:127`).
+
+**Follow-ups RUN:**
+- ✅ **Counted test, 2026-11-23 13:50 (owner go 13:44).** A1 vs chance, 904 midday grade draws,
+  one-sided 5 %, m = 1.
+  - **22 hits of 904**, against **17.907** expected; null sd 4.19; p **0.1925**.
+  - Lift 1.23, two-sided 95 % interval (descriptive) [0.77, 1.85]; one-sided lower bound 0.835.
+  - The first count reaching p ≤ 0.05 was 26.
+  - Controls passed.
+  - Not above the modelled background at this sample size.
+- ✅ **D1–D3, descriptive** (same session). None is above the modelled background.
+
+  | Run | Hits | Expected | p |
+  |---|---|---|---|
+  | D1: A0, midday | 21/904 | 17.91 | 0.2607 |
+  | D2: A1, midday, m = 3 | 22/904 | 17.91 | 0.5774 (adjusted) |
+  | D2: A0, midday, m = 3 | 21/904 | 17.91 | 0.7821 (adjusted) |
+  | D3: A1, evening | 16/903 | 17.89 | 0.7072 |
+  | D3: A0, evening | 22/903 | 17.89 | 0.1917 |
+
+  - D2's A1 vs A0 comparison was "not tested: unequal budget".
+- ✅ **Follow-ups F1 and F2, descriptive, 14 runs at m = 1 each (owner go 14:40).**
+  - F1 (extend): pools of 100 and 300 on the grade block, A1 and A0, both sessions.
+  - F2 (recur): A0 on the label block at pools of 20, 100 and 300, both sessions.
+  - All controls passed. None is above the modelled background at this sample size.
+  - Arithmetic: 10 of 14 above expected and 4 below.
+  - Smallest p 0.1416: A0, F2, midday, pool 100, 96 against 86.02.
+  - The runs are dependent (same survivors; nested pools, where within the same arm and block each smaller raw pool
+    was measured as the exact prefix of the larger; same draws), so there is no combined p.
+
+**Limits** (counted report §5; follow-up report §6). One generation (run H); the Step 6 vote as built (combined
+index, skip 0); features and target as built; a frozen CatBoost ranking for A1; a non-certifying harness route; a
+draft grader, not Beta-reviewed (the frozen instrument used for this grade). **Power:** "With 904 draws at k about 20, this test needs 26 hits, about 1.45×
+chance, to reach 5 %. A smaller real lift could exist and not be detected here."
+
+Every background figure here assumes each draw is uniform on 000–999, independent of the other draws and of the pools
+(follow-up report `:182-185`). The pool sizes, the draw counts and the hits are measured.
+
+**For hit rate against `k/1000`.** This lead *is* the hit-rate measurement. The counted result is "a measured null for
+this declared configuration: run H, A1, midday grade block, k ≤ 20, 904 draws. **It closes no lead.**" "No verdict on
+TFM either way." (counted report §6.)
+
+**Follow-ups OPEN:**
+- ⬜ A second generation with the sieve window placed just before the holdout. Run H's window is
+  dated 2002. *(Added 2026-11-25 from the record: run I, "the open follow-up of lead L-9"
+  (`logs/e2e_session/TASK_RUN_I_PREP.txt:3`): run H with the window anchor 6695, the 12 midday draws 2021-03-05 to
+  2021-03-16 (`docs/drafts/anchor_v1/RUNBOOK_RUN_I_20261123.md:10-16`). Owner go 2026-11-23 18:28, then 18:29 "Lets
+  wait for all the agents to finish -then run I" (`logs/e2e_session/OWNER_GO_run_I_20261123.txt`). Cap: owner
+  2026-11-24, "YES (one-off, run I only)" past the 50,000 survivor cap
+  (`logs/e2e_session/OWNER_RULINGS_pending_list_20261124.txt:5`). No completion result was found in the records
+  checked.)*
+- ⬜ A later untouched period, once the dataset is updated.
+- ⬜ Pools from a shuffled-draw population, as a control.
+- ⬜ The vote-position arms of map Q2.
+
+**Status: OPEN.** No follow-up listed as open has been run (as of the source, 2026-11-23). Downgrading this lead is
+the owner's decision.
+
+---
+
+## L-10 — block-0 why-report: three per-seed battery columns separated top-N voters of the drawn number from top-N non-voters (pools 100 and 300)
+
+**Status: OPEN.** Filed 2026-11-24 as proposed ID **L-why-0** in
+`docs/drafts/loop_v1/READY_WHY_BLOCK0_20261124.md` §4 (`:233-245`) — **not on main**; on branch `ch14-learn` (WIP
+snapshot `7368f34`, worktree `~/tfm_worktrees/ch14-learn`, outputs under its `data/ch14_learn/why_block0/`).
+DEVELOPMENT evidence only: one block, already graded and looked at.
+
+**What it is.** On walk-forward block 0, in the contrast C1b — top-N voters for the drawn number against top-N
+non-voters (`docs/drafts/loop_v1/READY_LOOP_MISS_20261123.md:180`) — three per-seed battery columns had a signed-
+attribution interval excluding 0 with the same sign in both sessions, as measured in the table below (`:233-239`).
+
+The source's proposed register text (draft wording), verbatim (`:245`):
+> on walk-forward block 0, among each tree family's top 100, the survivors that voted the drawn number differed in
+> signed attribution on `batt_ac_lag_01` (−, XGBoost both sessions; CatBoost and LightGBM midday),
+> `batt_cs_zero_crossings` (−, XGBoost both sessions) and `batt_fft_diff_peak` (+, LightGBM both sessions).
+
+Against the measured table: `batt_fft_diff_peak` was found for LightGBM at midday 100 **and 300** and evening 100, so
+"top 100" does not cover all of it. For `batt_ac_lag_01`, the CatBoost and LightGBM midday results are same-block F1
+results; LightGBM's midday interval excluding 0 is F1 at pool 300.
+
+**Where found.** Walk-forward block 0 = draws [3808, 4402), 2006-08-20 to 2007-06-12; run H's 12,156 survivors; LL-8
+(`scripts/diagnostics/attribution_cycle.py` `a30cc50f…`) run by hand per family, pools 20/100/300, B = 2000, seed
+20261124. For C1b and C2, counts of per-seed columns whose interval excludes 0 were mostly near the rough multiplicity
+reference ("about 2.5 of 48–52"); the two higher cells were CatBoost evening and LightGBM evening at pool 100, 10 each.
+That reference applies to C1b/C2 under a hypothetical null in which no column differed and the intervals were
+independent (`:222`); they are not independent. The source reports the different C1 contrast separately: 14–45 of
+48–52 in every cell, "mostly selection" (`:231`). Pool 20 abstains everywhere (4 to 9 hit draws per session).
+
+| Column | Where found | F1, RUN (all four families, block 0) | F2, RUN (run H miss report, raw values, different period and model) |
+|---|---|---|---|
+| `batt_fft_diff_peak` +, LightGBM | midday 100 and 300; evening 100 | CatBoost midday 100 + (interval excludes 0); XGBoost and NN mixed, intervals include 0 | 15 cells: 5 +, 10 −, none excluding 0 |
+| `batt_ac_lag_01` −, XGBoost | midday 100; evening 100 | CatBoost midday 100 and 300 − (excluding 0); LightGBM midday 300 − (excluding 0), other cells −; NN mixed | 15 cells: 9 +, 6 −, none excluding 0 |
+| `batt_cs_zero_crossings` −, XGBoost | midday 100; evening 100 | LightGBM midday 300 − (excluding 0); CatBoost and NN mixed | 15 cells: 5 +, 10 −, 1 excluding 0 |
+
+**Follow-ups RUN.**
+- ✅ F1 (other families, same block): "partial, dependent".
+- ✅ F2 (run H miss report, raw values): "mixed".
+
+**Limits** (`:241-242`, `:270-272`).
+- "families share survivors (top-300 overlap 62–187) and the same 594 draws, so agreement across families on block 0
+  is not independent recurrence."
+- F2 "measures a raw feature, not an attribution, under another model and period. It does not test the object
+  directly."
+- One block only; every number is DEVELOPMENT; cells are dependent. The NN integrated-gradients residual (1.2e-5)
+  makes its attributions approximate.
+
+**For hit rate against `k/1000`.** The source gives no directional hit-rate prediction and no graded settling
+measurement for these three columns. It records that "The effect on hits is not measured" for the variants it lists
+(`:271`). TODO-WHY-1's later-block contrast (below) tests recurrence of the attribution pattern, not hit rate. Until
+TODO-WHY-1's trigger and queue are built, the lead runs the attribution cycle by hand after each block
+(`logs/e2e_session/OWNER_RULINGS_pending_list_20261124.txt:27-28`).
+
+**Follow-ups OPEN.**
+- ⬜ "the same contrast on the next walk-forward blocks, with each block's own models. This happens automatically when
+  the lead runs LL-8 after each block (TODO-WHY-1). Nothing here closes or downgrades these leads." (`:243`)
+
+The later what-moves note did not test it: "The why-report leads (L-why-0) are unchanged; nothing here tested them."
+(`READY_WHAT_MOVES_20261124.md:208`, branch `ch14-learn`.)
+
+---
+
+## L-11 — block-0 label windows: the last 900 / 1,200 label draws gave fewer hits
+
+**Status: OPEN.** Filed 2026-11-24 as proposed ID **L-move-1** in `docs/drafts/loop_v1/READY_WHAT_MOVES_20261124.md`
+§5 (`:204`) — **not on main**; on branch `ch14-learn` (WIP snapshot `7368f34`; harness and results under that
+worktree's `data/ch14_learn/what_moves/`, every run in `what_moves_final.json` `613fb959…`). DEVELOPMENT; "a map of
+what moves block 0's numbers. It is **not a pick of a winner**".
+
+**What it is.** "Labels from the last 900 / 1,200 label draws gave fewer hits at pools 100 and 300 and a worse mean
+rank. The windows overlap; z about −2." LightGBM, target = Step 6 vote hit rate over the window, 3 splits each
+(42, 1, 2), scored on block 0 against the split-seed floor (9 runs; pool 300 mean 154.2, SD 13.1):
+
+| Window | Pool 100 | Pool 300 | Mean rank | Δ pool 100 (SD units, z) | Δ pool 300 | Δ rank | Overlap |
+|---|---|---|---|---|---|---|---|
+| last 900 [2908, 3808) | 48.3 | 139.0 | 514.3 | −7.6 (−1.49, z −2.2) | −15.2 (−1.16, z −1.7) | +14.1 (+1.34, z +2.0) | 9 |
+| last 1,200 [2608, 3808) | 48.7 | 137.3 | 515.1 | −7.2 (−1.43, z −2.1) | −16.9 (−1.29, z −1.9) | +14.9 (+1.42, z +2.1) | 9 |
+
+Pool-300 hits per run: last 900 — 138 / 144 / 135; last 1,200 — 122 / 146 / 144 (splits 42 / 1 / 2). Chance at pool
+300 is 153.9 expected hits (SD 10.7).
+
+**Where found.** Block 0 = draws [3808, 4402), LightGBM, 3 splits each.
+
+**Follow-ups RUN.**
+- ✅ The other windows: last 300 and last 600 near 0, first 900 −0.5 SD.
+
+**Limits** (`:24-25`, `:143`, `:200`, `:213`).
+- "The two windows share 900 draws, so they are not two findings."
+- "Of about 84 comparisons in table B, 6 reach |z| ≥ 2; about 4 would be expected by chance alone, and the comparisons
+  are dependent."
+- In each z, "the floor mean and SD are measured on this block; independence between runs and the normal
+  approximation are assumed."
+- "One run per variant cannot show an effect smaller than about 25 hits at pool 300, roughly 2 split-seed SDs." This
+  resolution is for pool 300 on block 0.
+- Chance SDs are binomial with the pools' distinct counts measured and the draws assumed independent and uniform
+  (`:118`).
+
+**For hit rate against `k/1000`.** The source states no prediction beyond the block-0 measurement above; it calls
+these "open leads to test on other blocks, not effects" (`:25`). The settling comparison is the named variant against
+the current baseline on later unseen blocks, with equal pool budgets, hits against `k/1000`. More splits on block 0
+only quantify run-to-run variation there. *(Beta X-LEADS-TIDY R1 Q2, adopted by the lead 2026-11-25.)*
+
+**Follow-ups OPEN.**
+- ⬜ The same windows on walk-forward blocks 1+.
+- ⬜ More splits on block 0.
+
+---
+
+## L-12 — block-0 capacity: fewer Optuna trials (5) gave more pool-300 hits; depth 4 a smaller rise
+
+**Status: OPEN.** Filed 2026-11-24 as proposed ID **L-move-2** in `READY_WHAT_MOVES_20261124.md` §5 (`:205`), branch
+`ch14-learn` (as L-11). DEVELOPMENT.
+
+**What it is.** "Fewer Optuna trials (5) gave more pool-300 hits; depth 4 gave a smaller rise." The trials comparison is
+5 trials against the 20-trial baseline. LightGBM, 3 splits (42, 1, 2), against the split-seed floor:
+
+| Variant | Pool 20 | Pool 100 | Pool 300 | Mean rank | Δ pool 20 (SD units, z) | Δ pool 100 | Δ pool 300 | Δ rank | Overlap |
+|---|---|---|---|---|---|---|---|---|---|
+| `--trials 5` | 12.7 | 58.7 | 170.7 | 487.6 | +2.1 (+0.75, z +1.1) | +2.8 (+0.55, z +0.8) | +16.4 (+1.26, z +1.9) | −12.6 (−1.20, z −1.8) | 176 |
+| `--trials 50` | 13.0 | 58.7 | 159.0 | 496.7 | +2.4 (+0.86, z +1.3) | +2.8 (+0.55, z +0.8) | +4.8 (+0.36, z +0.5) | −3.4 (−0.33, z −0.5) | 172 |
+| depth at most 4 (`--depth-max 4`) | 14.7 | 56.0 | 162.0 | 493.8 | +4.1 (+1.45, z +2.2) | +0.1 (+0.02, z +0.0) | +7.8 (+0.59, z +0.9) | −6.3 (−0.60, z −0.9) | 171 |
+
+Pool-300 hits per run: `--trials 5` — 184 / 170 / 158; depth 4 — 159 / 164 / 163 (splits 42 / 1 / 2). Chance at
+pool 300 is 153.9 (SD 10.7). `--depth-max` is an in-process patch of the harness, not a production setting (`:73`).
+
+**Where found.** Block 0, LightGBM, 3 splits.
+
+**Follow-ups RUN.**
+- ✅ trials 50: +0.4 SD at pool 300; depth 4: +0.6 SD at pool 300.
+
+**Limits.** As L-11 (`:25`, `:200`, `:213`): about 84 dependent comparisons, 6 at |z| ≥ 2 against about 4 by chance;
+independence between runs and the normal approximation assumed in each z; one run per variant cannot show an effect
+smaller than about 25 hits at pool 300 (pool 300, block 0).
+
+**For hit rate against `k/1000`.** The source states no prediction beyond the block-0 measurement above ("open leads to
+test on other blocks, not effects", `:25`). The settling comparison is the named variant against the current baseline
+on later unseen blocks, with equal pool budgets, hits against `k/1000`. More splits on block 0 only quantify run-to-run
+variation there. *(Beta X-LEADS-TIDY R1 Q2, adopted by the lead 2026-11-25.)*
+
+**Follow-ups OPEN.**
+- ⬜ More splits.
+- ⬜ Other blocks.
+- ⬜ XGBoost.
+
+---
+
+## L-13 — XGBoost and CatBoost give different results on CPU and GPU at the same split
+
+**Status: OPEN (device determinism, not a hit lead).** Filed 2026-11-24 as proposed ID **L-move-3** in
+`READY_WHAT_MOVES_20261124.md` §5 (`:206`), branch `ch14-learn` (as L-11). DEVELOPMENT.
+
+**What it is.** "XGBoost and CatBoost give different results on CPU and GPU at the same split (166→170, 150→158)."
+The frozen block-0 models were trained on the card, the retrains on CPU at the same split 42: XGBoost 166 on the card,
+170 on CPU; CatBoost 150 on the card, 158 on CPU (pool-300 hits). "LightGBM was CPU in both and matches exactly. So the
+device is itself a change for XGBoost and CatBoost." (`:130-134`)
+
+**Where found.** Block 0, split 42.
+
+**Follow-ups RUN.** None.
+
+**Limits.** At split 42, one card run (the frozen model) and one CPU run per family; CatBoost has one CPU run only, no floor (`:33`, `:116`).
+
+**For hit rate against `k/1000`.** The source labels this "device determinism, not a hit lead". It gives no
+prediction and no settling measurement for unseen-draw hit rate. The proposed repeat (below) is a check on GPU
+repeatability for this device lead.
+
+**Follow-ups OPEN.**
+- ⬜ "repeat the GPU training once, to see whether the card itself is deterministic".
+
+---
+
+## L-14 — run H miss report: `residual_*` separated top-N voters of the drawn number in 2 of 4 draw sets
+
+**Status: OPEN.** Filed 2026-11-23 in `docs/drafts/loop_v1/READY_LOOP_MISS_20261123.md` §4 (`:297-325`, on main),
+proposed there as an "L-9 sub-item" for the lead "to merge into L-9 or file as its own ID" (`:322`). The lead's
+answer: "follow-up F-a (residual_* ranking variant) is registered OPEN and will be run as a development variant on the
+walk-forward once the driver is ready; lead L-9 unchanged" (`logs/e2e_session/TASK_LOOP_ADDENDUM_3.txt:6`). Given its
+own ID 2026-11-25 (lead, `TASK_LEADS_TIDY_ADDENDUM_1_20261125.txt`). **Related: L-9** (the same run H pools and
+grades). DEVELOPMENT / DESCRIPTIVE evidence, NOT COUNTED (`:3`).
+
+**What it is.** "`residual_std` and `residual_max_abs` have a remainder interval excluding 0, with the same sign, in two
+separate draw sets" (`:299`):
+- A1, grade midday, pool 20: +0.544 and +0.386;
+- A0, label midday, pool 300: +0.100 and +0.121.
+
+The remainder is H − top-N mean, ≈ C1b (top-N voters against top-N non-voters) (`:178-180`, `:270`). The source's proposed
+register text, verbatim (`:323`):
+> `residual_*` (Step 3 per-seed) separated top-N voters of the drawn number from the rest of the top N in 2 of 4 draw
+> sets (A1 grade midday N = 20; A0 label midday N = 300). The recurrence check RAN (read-only, run3): mixed,
+> `residual_max_abs` positive in 10 of 15 dependent cells. Graded follow-ups F-a and F-b are OPEN.
+
+**Where found.** The run H miss report (window h6), over run H's A1 and A0 pools on the grade and label blocks; data in
+`~/tfm_worktrees/e2e-vote/data/e2e_loop_miss/` (untracked).
+
+**Follow-ups RUN.**
+- ✅ **Recurrence** (`data/e2e_loop_miss/followup_residual_recurrence.txt`, `5f8dc771…`; "the same features in every
+  other cell, read from run3", `:303`):
+
+  | Feature | Remainder sign over non-abstained cells | Rank-free C2 |
+  |---|---|---|
+  | `residual_std` | 7 positive, 8 negative of 15 | interval includes 0 in all 4 draw sets |
+  | `residual_abs_mean` | 7 positive, 8 negative of 15 | interval includes 0 in all 4 draw sets |
+  | `residual_max_abs` | 10 positive, 5 negative of 15 | grade midday +0.018 [−0.001, +0.036]; others include 0 |
+
+  "The recurrence check did not show a consistent sign for `residual_std` or `residual_abs_mean`. For
+  `residual_max_abs` it is mixed." (`:314-315`)
+
+**Limits.** "The cells share draws, and the pools are nested, so these counts are not independent." (`:311`) The miss
+report's overall measured fact: "at this sample size, nothing in the 51 per-seed Step 3 features separates the top-N
+survivors that voted the drawn number from those that did not" (`:280`).
+
+**For hit rate against `k/1000`.** "This does not measure whether a different ranking would hit more often. That needs
+a graded variant" (`:280`). "No graded follow-up has tested whether ranking on this group changes pool hits." (`:316`)
+The settling measurement is F-a.
+
+**Follow-ups OPEN** (`:318-320`).
+- ⬜ **(F-a)** "A declared ranking variant that adds or weights the `residual_*` group. Compare it with A1 at equal k,
+  through an LL-4-style setting comparison, on draws after 2026-02-26 or a new generation (run I)." A graded ranking
+  comparison.
+- ⬜ **(F-b)** "The same recurrence check on run I's pools, once they exist."
+
+Downgrading it is the owner's decision (`:316`).
+
+---
+
+## L-15 — block-0 feature groups: Step 5 without `battery` gave fewer pool-100 hits (z −2.0)
+
+**Status: OPEN.** From `docs/drafts/loop_v1/READY_WHAT_MOVES_20261124.md` table B (`:156-159`) — **not on main**; on
+branch `ch14-learn` (WIP snapshot `7368f34`; harness and results under that worktree's `data/ch14_learn/what_moves/`).
+DEVELOPMENT. **The source proposed no lead for it** (its lead table, `:202-206`, has L-move-1 to L-move-3 only). The
+lead first decided not to register it (`logs/e2e_session/TASK_LEADS_TIDY_ADDENDUM_1_20261125.txt`), withdrew that
+decision because it rested on a background figure, and registered it on 2026-11-25
+(`logs/e2e_session/TASK_LEADS_TIDY_ADDENDUM_2_20261125.txt`).
+
+**What it is.** One row of what-moves table B, quoted exactly with its header and group label (`:147`, `:156`, `:158`):
+
+| Variant | Runs | Pool 20 | Pool 100 | Pool 300 | Mean rank | Δ pool 20 (SD units, z) | Δ pool 100 | Δ pool 300 | Δ rank | Overlap |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **B2 features** | | | | | | | | | | |
+| without `battery` | 5 | 9.6 | 50.2 | 148.6 | 506.2 | −1.0 (−0.34, z −0.6) | −5.7 (−1.12, z −2.0) | −5.6 (−0.43, z −0.8) | +6.0 (+0.57, z +1.0) | 127 |
+
+Against the split-seed floor (9 runs, splits 42, 2–9): pool 100 55.9 (SD 5.1), pool 300 154.2 (SD 13.1) (`:149`).
+Chance at pool 100 is 56.5 expected hits (SD 7.2), at pool 300 153.9 (SD 10.7) (`:118`). Δ is the variant's mean minus
+the floor mean; SD units are Δ over the floor SD; z = Δ / (SD·√(1/n + 1/9)) (`:141-143`). Overlap 127 is the mean
+top-300 survivors shared with the same-split base, split 1 left out (`:144`). The source's summary: "without `battery`,
+127 [of 300 kept] … The changes are within about 0.5 SD at pool 300: … −5.6 hits" (`:20`).
+
+**Where found.** Walk-forward block 0 = draws [3808, 4402), LightGBM, split seeds 42, 1, 2, 3, 4 (`:138`).
+
+**Follow-ups RUN.** None. The source records none for this row.
+
+**Limits** (the source's own).
+- "Of about 84 comparisons in table B, 6 reach |z| ≥ 2; about 4 would be expected by chance alone, and the comparisons
+  are dependent." (`:25`) The source does not state the inputs of the "about 4"; it states that the comparisons are
+  dependent.
+- Measured on this block: the floor mean and SD (`:200`, `:149`) and the pools' distinct counts behind the chance SDs
+  (`:118`). Assumed: "independence between runs and the normal approximation" in each z (`:200`); draws independent and
+  uniform for the chance SDs (`:118`). The z "treats runs as independent … Runs with high overlap are positively
+  dependent, so their z is conservative" (`:143`).
+- One block; DEVELOPMENT (`:3`).
+- "One run per variant cannot show an effect smaller than about 25 hits at pool 300, roughly 2 split-seed SDs" (`:213`),
+  for pool 300 on block 0.
+
+**For hit rate against `k/1000`.** The source gives no prediction for this row. It calls table B's |z| ≥ 2 results "open
+leads to test on other blocks, not effects" (`:25`).
+
+**Follow-ups OPEN.**
+- ⬜ The same variant (`--exclude-feature-groups battery`) against the current baseline on later walk-forward blocks,
+  with equal pool budgets, hits against `k/1000`.
+- ⬜ More splits on block 0, to size run-to-run variation there.
+
+**Cross-reference only (no inference):** L-10's three columns (`batt_fft_diff_peak`, `batt_ac_lag_01`,
+`batt_cs_zero_crossings`) are `battery` columns.
+
+**Licensed phrasing:** its rate is consistent with the modelled background. No follow-up has yet tested whether it
+extends or recurs. It remains an open lead. Downgrading it is the owner's decision.
+
+---
+
+**Older ID ranges.** `docs/PROPOSAL_FINDINGS_20261113_RESOLUTION_v1_1.md:90` (WP-6) and
+`docs/TFM_SESSION_HANDOFF_20261113.md:183` name "L-4 to L-9" from a v1.0 proposal that is not in the repository; their
+mapping to this register's entries of the same numbers is not recorded, so those references are historical only.
