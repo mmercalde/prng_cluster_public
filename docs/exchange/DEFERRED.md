@@ -16,3 +16,5 @@ Written only by `scripts/beta_relay.py`. One row per `OBJECTION` that Beta label
 | X-MINER-SKIP-SWITCH | R3 | Q3 · Anchored allowance | 2026-11-21 19:35 PST | The submitted CLI guard runs early, but the static checks accept a future move of the guard after optimization. |
 | X-MINER-SKIP-SWITCH-2 | R1 | Q2 · Isolation | 2026-11-21 21:16 PST | Two overlapping Step 1 publishers in the same initially unmarked root can merge across arms after the baseline recheck. |
 | X-MINER-SKIP-SWITCH-2 | R1 | Q4 · Validation | 2026-11-21 21:16 PST | A non-current configuration with `skip_min.max=256` and `skip_max.max=250` can pass both preflights and fail inside Optuna when it reaches that endpoint. |
+| X-BENCHING-SWITCH | R1 | Q3 | 2026-11-26 08:47 PST | With hours mode and benching both enabled, an import failure makes the compare keep an expired skip active. |
+| X-BENCHING-SWITCH | R1 | Q4 | 2026-11-26 08:47 PST | Fixed grading with all-families promotion can identify the promoted family while returning the winner’s report path and freshness. |
