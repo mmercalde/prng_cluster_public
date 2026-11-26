@@ -109,9 +109,39 @@ def _write_canonical_diagnostics(src_path: str):
         pass  # best-effort, non-fatal
 
 
-def _emit_tree_diagnostics(model, model_type: str, r2: float, mse: float, enable_diagnostics: bool):
+def _diag_full(diagnostics_options) -> bool:
+    """[CH14-DIAG wave 1] True when --diagnostics-level full was requested."""
+    return bool(diagnostics_options) and diagnostics_options.get('level') == 'full'
+
+
+def _emit_tree_diagnostics_full(model, model_type, r2, mse, diagnostics_options, data, lgb_val_record=None):
+    """[CH14-DIAG CD-04/CD-05/CD-13] Level 'full' tree report, built after training (fit untouched)."""
+    import training_diagnostics as _td
+    X_train, y_train, X_val, y_val = data
+    diag = _td.build_tree_diagnostics_full(
+        model, model_type, X_train, y_train, X_val, y_val,
+        feature_names=diagnostics_options.get('feature_names'),
+        names_source=diagnostics_options.get('names_source'),
+        final_metrics={'r2': r2, 'mse': mse},
+        lgb_val_record=lgb_val_record,
+        options=diagnostics_options,  # [CH14-DIAG wave 2] run id, epsilon, feature manifest
+    )
+    os.makedirs('diagnostics_outputs', exist_ok=True)
+    diag.save(f'diagnostics_outputs/{model_type}_diagnostics.json')
+    _write_canonical_diagnostics(f'diagnostics_outputs/{model_type}_diagnostics.json')
+    print(f"[DIAG] {model_type} diagnostics saved (level full)", file=sys.stderr)
+
+
+def _emit_tree_diagnostics(model, model_type: str, r2: float, mse: float, enable_diagnostics: bool,
+                           diagnostics_options: dict = None, data: tuple = None, lgb_val_record=None):
     """Chapter 14: Emit tree model diagnostics (best-effort, non-fatal)."""
     if not enable_diagnostics:
+        return
+    if _diag_full(diagnostics_options) and data is not None:
+        try:
+            _emit_tree_diagnostics_full(model, model_type, r2, mse, diagnostics_options, data, lgb_val_record)
+        except Exception as e:
+            print(f"[DIAG] {model_type} diagnostics (full) failed (non-fatal): {e}", file=sys.stderr)
         return
     TrainingDiagnostics, TreeDiagnostics, NNDiagnostics = _lazy_import_diagnostics()
     if TrainingDiagnostics is None:
@@ -177,7 +207,8 @@ def _emit_nn_diagnostics(model, r2: float, mse: float, enable_diagnostics: bool)
         print(f"[DIAG] neural_net diagnostics failed (non-fatal): {e}", file=sys.stderr)
 
 
-def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
+def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False,
+                  diagnostics_options: dict = None) -> dict:
     """
     Train LightGBM model with GPU (OpenCL).
     
@@ -210,9 +241,14 @@ def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     }
     
     n_estimators = params.get('n_estimators', 100)
+
+    # [CH14-DIAG CD-05] level 'full': record the val curve (observer callback; the
+    # native Booster is trimmed to best_iteration, so rounds after it exist only here).
+    _lgb_evals = {}
+    _lgb_extra_cb = [lgb.record_evaluation(_lgb_evals)] if (enable_diagnostics and _diag_full(diagnostics_options)) else []
     
     try:
-        callbacks = [lgb.early_stopping(stopping_rounds=20, verbose=False)]
+        callbacks = [lgb.early_stopping(stopping_rounds=20, verbose=False)] + _lgb_extra_cb
         model = lgb.train(
             lgb_params,
             train_data,
@@ -232,9 +268,10 @@ def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str 
             train_data,
             num_boost_round=n_estimators,
             valid_sets=[val_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+            callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)] + _lgb_extra_cb
         )
         device_used = 'cpu_fallback'
+    _lgb_val_record = next(iter(_lgb_evals.get('valid_0', {}).values()), None) if _lgb_evals else None
     
     # Predictions
     train_preds = model.predict(X_train)
@@ -259,7 +296,9 @@ def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     
 
     # Chapter 14: Emit diagnostics
-    _emit_tree_diagnostics(model, 'lightgbm', r2, val_mse, enable_diagnostics)
+    _emit_tree_diagnostics(model, 'lightgbm', r2, val_mse, enable_diagnostics,
+                           diagnostics_options, (X_train, y_train, X_val, y_val),
+                           lgb_val_record=_lgb_val_record)
 
     return {
         'model_type': 'lightgbm',
@@ -274,7 +313,8 @@ def train_lightgbm(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     }
 
 
-def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
+def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False,
+                  diagnostics_options: dict = None) -> dict:
     """
     Train XGBoost model with GPU (CUDA).
     
@@ -353,7 +393,8 @@ def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str =
     
 
     # Chapter 14: Emit diagnostics
-    _emit_tree_diagnostics(model, 'xgboost', r2, val_mse, enable_diagnostics)
+    _emit_tree_diagnostics(model, 'xgboost', r2, val_mse, enable_diagnostics,
+                           diagnostics_options, (X_train, y_train, X_val, y_val))
 
     return {
         'model_type': 'xgboost',
@@ -368,7 +409,8 @@ def train_xgboost(X_train, y_train, X_val, y_val, params: dict, save_path: str =
     }
 
 
-def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False) -> dict:
+def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str = None, enable_diagnostics: bool = False,
+                  diagnostics_options: dict = None) -> dict:
     """
     Train CatBoost model with GPU (CUDA).
     
@@ -432,7 +474,8 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
     
 
     # Chapter 14: Emit diagnostics
-    _emit_tree_diagnostics(model, 'catboost', r2, val_mse, enable_diagnostics)
+    _emit_tree_diagnostics(model, 'catboost', r2, val_mse, enable_diagnostics,
+                           diagnostics_options, (X_train, y_train, X_val, y_val))
 
     return {
         'model_type': 'catboost',
@@ -450,7 +493,7 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
 def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None,
                      enable_diagnostics: bool = False, normalize_features: bool = False,
                      use_leaky_relu: bool = False, dropout_override: float = None,
-                     batch_mode: str = 'auto') -> dict:
+                     batch_mode: str = 'auto', diagnostics_options: dict = None) -> dict:
     """
     Train PyTorch Neural Net with GPU (CUDA).
     
@@ -611,7 +654,13 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         _, _, _NNDiag = _lazy_import_diagnostics()
         if DIAGNOSTICS_AVAILABLE and _NNDiag is not None:
             try:
-                _nn_diag = _NNDiag()
+                if _diag_full(diagnostics_options):
+                    # [CH14-DIAG CD-03/04/07/08/13/23] named, class-tagged, eval-mode gradient probe
+                    import training_diagnostics as _td
+                    _nn_diag = _td.make_nn_diagnostics_full(
+                        diagnostics_options, X_train, X_train_t, y_train_t, criterion)
+                else:
+                    _nn_diag = _NNDiag()
                 _nn_diag.attach(_base_model)
                 print(f"[DIAG] NNDiagnostics attached ({len(_nn_diag._layer_names)} layers)", file=sys.stderr)
             except Exception as _diag_err:
@@ -873,6 +922,26 @@ def main():
                         help='[S96A] auto=full-batch if <200MB, mini=DataLoader, full=always')
     parser.add_argument('--dropout', type=float, default=None,
                         help='Override dropout value (takes precedence over params/Optuna)')
+    # [CH14-DIAG wave 1] report-content level; training is identical at every level
+    parser.add_argument('--diagnostics-level', type=str, default='legacy',
+                        choices=['legacy', 'full'],
+                        help='Chapter 14 report content: legacy (default, unchanged) or full '
+                             '(named features, NN gradient probe, tree curves, column classes)')
+    parser.add_argument('--gradient-probe-rows', type=int, default=512,
+                        help='[CH14-DIAG CD-03] rows of the fixed training slice for the NN '
+                             'eval-mode input-gradient probe (level full; 0 = no probe)')
+    # [CH14-DIAG wave 2] level full only (same names as meta_prediction_optimizer_anti_overfit.py)
+    parser.add_argument('--diagnostics-run-id', type=str, default=None,
+                        help='[CH14-DIAG CD-07] run id stamped into the report')
+    parser.add_argument('--diagnostics-run-started-at', type=str, default=None,
+                        help='[CH14-DIAG CD-07] run start, UTC ISO, stamped into the report')
+    parser.add_argument('--dead-unit-definition', type=str, default='linear_zero',
+                        choices=['linear_zero', 'always_negative_preact'],
+                        help='[CH14-DIAG CD-23] NN dead-unit metric (default linear_zero, unchanged)')
+    parser.add_argument('--unused-gradient-epsilon', type=float, default=None,
+                        help='[CH14-DIAG CD-08] NN column unused below this mean |input gradient|')
+    parser.add_argument('--feature-manifest', type=str, default=None,
+                        help='[CH14-DIAG TODO-CH14-4] feature manifest naming the run-level columns')
     
     args = parser.parse_args()
     
@@ -894,6 +963,8 @@ def main():
         y_train = data['y_train']
         X_val = data['X_val']
         y_val = data['y_val']
+        # [CH14-DIAG CD-04] optional feature names in the private handoff NPZ
+        _npz_names = [str(n) for n in data['feature_names']] if 'feature_names' in data.files else None
     except Exception as e:
         result = {
             'success': False,
@@ -934,14 +1005,31 @@ def main():
         if args.verbose:
             print(f"[Trial {args.trial_number}] Will save model to: {save_path}", file=sys.stderr)
     
+    # [CH14-DIAG wave 1] diagnostics options (level 'legacy' = None = unchanged)
+    _diag_opts = None
+    if getattr(args, 'diagnostics_level', 'legacy') == 'full':
+        _names_ok = _npz_names is not None and len(_npz_names) == X_train.shape[1]
+        _diag_opts = {
+            'level': 'full',
+            'feature_names': _npz_names if _names_ok else None,
+            'names_source': 'npz' if _names_ok else 'positional',
+            'gradient_probe_rows': args.gradient_probe_rows,
+            # [CH14-DIAG wave 2]
+            'run_id': args.diagnostics_run_id,
+            'run_started_at': args.diagnostics_run_started_at,
+            'dead_unit_definition': args.dead_unit_definition,
+            'unused_gradient_epsilon': args.unused_gradient_epsilon,
+            'feature_manifest': args.feature_manifest,
+        }
+
     # Train based on model type
     try:
         if args.model_type == 'lightgbm':
-            result = train_lightgbm(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
+            result = train_lightgbm(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False), diagnostics_options=_diag_opts)
         elif args.model_type == 'xgboost':
-            result = train_xgboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
+            result = train_xgboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False), diagnostics_options=_diag_opts)
         elif args.model_type == 'catboost':
-            result = train_catboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))
+            result = train_catboost(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False), diagnostics_options=_diag_opts)
         elif args.model_type == 'neural_net':
             result = train_neural_net(
                 X_train, y_train, X_val, y_val, params, save_path,
@@ -950,6 +1038,7 @@ def main():
                 use_leaky_relu=getattr(args, 'use_leaky_relu', False),
                 dropout_override=getattr(args, 'dropout', None),
                 batch_mode=getattr(args, 'batch_mode', 'auto'),  # [S96A]
+                diagnostics_options=_diag_opts,  # [CH14-DIAG wave 1]
             )
         elif args.model_type == 'random_forest':
             result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))

@@ -109,11 +109,114 @@ DIAGNOSTICS_GUARDRAILS = [
 # PROMPT BUILDER (Follows advisor_bundle.py pattern)
 # =============================================================================
 
+# [CH14-DIAG CD-12, wave 2] Declared setting, watcher_policies.json ->
+# training_diagnostics.llm_prompt_fields (absent = legacy):
+#   legacy  today's summary (keys training_rounds, feature_importance.values, nn_specific)
+#   report  the fields the producer actually writes (training_summary, model_specific.*,
+#           level-full additions) with the legacy keys kept as fallback for old archives,
+#           plus every family's report found through the compare-models pointer
+LLM_PROMPT_FIELDS = ("legacy", "report")
+DEFAULT_LLM_PROMPT_FIELDS = "legacy"
+COMPARE_POINTER_FILENAME = "compare_models_summary_latest.json"
+
+
+def _llm_prompt_fields(value: Optional[str] = None, policies_path: str = "watcher_policies.json") -> str:
+    if value is None:
+        try:
+            with open(policies_path) as f:
+                value = (json.load(f).get("training_diagnostics") or {}).get(
+                    "llm_prompt_fields", DEFAULT_LLM_PROMPT_FIELDS)
+        except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+            value = DEFAULT_LLM_PROMPT_FIELDS
+    if value not in LLM_PROMPT_FIELDS:
+        raise ValueError(f"llm_prompt_fields must be one of {LLM_PROMPT_FIELDS}, got {value!r}")
+    return value
+
+
+def _top_named(block: Dict[str, Any], n: int = 10) -> List[Dict[str, Any]]:
+    out = []
+    for e in (block or {}).get("top_10", [])[:n]:
+        out.append({k: e.get(k) for k in ("feature", "importance", "magnitude", "column_class")
+                    if e.get(k) is not None})
+    return out
+
+
+def report_fields_summary(diag: Dict[str, Any]) -> Dict[str, Any]:
+    """CD-12: one report's real fields for the prompt (schema 1.1.0 producer keys, legacy fallback)."""
+    ts = diag.get("training_summary") or {}
+    ms = diag.get("model_specific") or diag.get("nn_specific") or {}
+    gh = ms.get("gradient_health") or {}
+    rounds = ts.get("rounds_captured", (diag.get("training_rounds") or {}).get("total"))
+    best = ts.get("best_val_round", ts.get("best_round", (diag.get("training_rounds") or {}).get("best")))
+    top = _top_named(ms.get("feature_importance")) or _top_named(ms.get("feature_gradients"))
+    if not top:  # legacy key, old archives
+        top = [{"feature": k} for k in list(((diag.get("feature_importance") or {}).get("values") or {}).keys())[:10]]
+    out = {
+        "model_type": diag.get("model_type", "unknown"),
+        "severity": (diag.get("diagnosis") or {}).get("severity", "unknown"),
+        "issues": (diag.get("diagnosis") or {}).get("issues", []),
+        "status": diag.get("status"),
+        "diagnostics_run_id": diag.get("diagnostics_run_id"),
+        "rounds_captured": rounds,
+        "best_val_round": best,
+        "round_index_base": diag.get("round_index_base"),
+        "rounds_run": ts.get("rounds_run"),
+        "used_rounds": ts.get("used_rounds"),
+        "final_train_loss": ts.get("final_train_loss"),
+        "final_val_loss": ts.get("final_val_loss"),
+        "best_val_loss": ts.get("best_val_loss"),
+        "overfit_gap": ts.get("overfit_gap"),
+        "top_features": top,
+        "attribution_kind": diag.get("attribution_kind"),
+        "attribution_share_by_class": diag.get("attribution_share_by_class"),
+        "unused_feature_pct": diag.get("unused_feature_pct"),
+        "column_class_counts": (diag.get("column_classes") or {}).get("counts"),
+    }
+    if gh or ms.get("layer_health"):
+        out["nn_gradient_health"] = gh
+        out["nn_layer_health"] = ms.get("layer_health", {})
+    if "feature_gradient_spread" in ms and "gradient_spread_ratio" not in gh:
+        out["nn_gradient_spread"] = ms.get("feature_gradient_spread")
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _family_summaries(diag_dir: str) -> Optional[Dict[str, Any]]:
+    """CD-12: every family's report named by the compare-models pointer (None if no pointer)."""
+    ptr = os.path.join(diag_dir, COMPARE_POINTER_FILENAME)
+    if not os.path.isfile(ptr):
+        return None
+    try:
+        with open(ptr) as f:
+            cs = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+    wbe = cs.get("winner_best_effort")
+    winner = wbe.get("model_type") if isinstance(wbe, dict) else cs.get("winner_model_type", cs.get("winner"))
+    fams = {}
+    for m in (cs.get("models") or {}):
+        fp = os.path.join(diag_dir, f"{m}_diagnostics.json")
+        if not os.path.isfile(fp):
+            fams[m] = {"severity": "absent"}
+            continue
+        try:
+            with open(fp) as f:
+                r = json.load(f)
+            s = report_fields_summary(r)
+            fams[m] = {k: s.get(k) for k in ("severity", "diagnostics_run_id", "rounds_captured", "best_val_round",
+                                              "overfit_gap", "unused_feature_pct") if k in s}
+            fams[m]["top_features"] = s.get("top_features", [])[:5]
+        except (json.JSONDecodeError, IOError):
+            fams[m] = {"severity": "unreadable"}
+    return {"winner": winner, "compare_run_id": cs.get("run_id"),
+            "pointer_diagnostics_run_id": cs.get("diagnostics_run_id"), "families": fams}
+
+
 def build_diagnostics_prompt(
     diagnostics_path: str,
     tier_comparison_path: Optional[str] = None,
     history_paths: Optional[List[str]] = None,
     token_budget: int = 8000,
+    prompt_fields: Optional[str] = None,
 ) -> str:
     """Build a structured prompt for LLM diagnostics analysis.
 
@@ -137,6 +240,7 @@ def build_diagnostics_prompt(
         Rendered prompt string for LLM.
     """
     sections: List[str] = []
+    prompt_fields = _llm_prompt_fields(prompt_fields)  # [CH14-DIAG CD-12]
 
     # ─── TIER 0: Mission + Schema + Guardrails (always included) ─────
 
@@ -205,6 +309,15 @@ def build_diagnostics_prompt(
                 'rounds_best': mdata.get('training_rounds', {}).get('best', 0),
             }
         inputs_summary['multi_model_comparison'] = model_summaries
+
+    if prompt_fields == "report":  # [CH14-DIAG CD-12] real report fields replace the legacy summary
+        inputs_summary = report_fields_summary(current_diag)
+        if models_data:
+            inputs_summary["multi_model_comparison"] = {
+                m: report_fields_summary(d) for m, d in models_data.items()}
+        fams = _family_summaries(os.path.dirname(diagnostics_path) or ".")
+        if fams is not None:
+            inputs_summary["compare_models_families"] = fams
 
     sections.append("=== STEP OUTPUT METRICS ===")
     sections.append(json.dumps(inputs_summary, indent=2, default=str))
@@ -290,6 +403,7 @@ def build_diagnostics_prompt(
             tier_comparison_path=tier_comparison_path,
             history_paths=None,
             token_budget=token_budget,
+            prompt_fields=prompt_fields,
         )
 
     logger.info(

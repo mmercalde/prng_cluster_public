@@ -206,6 +206,8 @@ def build_advisor_bundle(
     sections.append(f"Feature Drift: {signals.get('feature_drift', 0.0):.4f}")
     sections.append(f"Window Decay: {signals.get('window_decay', 0.0):.4f}")
     sections.append(f"Draws Since Last Promotion: {signals.get('draws_since_last_promotion', 0)}")
+    if signals.get('training_health'):  # [CH14-DIAG CD-11] present only when the advisor reads it
+        sections.append(f"Step 5 Training Health (recent checks): {json.dumps(signals['training_health'], sort_keys=True, default=str)}")
     sections.append("")
     
     sections.append(METRIC_THRESHOLDS)

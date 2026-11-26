@@ -170,8 +170,14 @@ def _s88_run_compare_models(args_dict):
                         .get("max_consecutive_critical", 3))
                 except Exception:
                     pass
+            try:  # [CH14-DIAG CD-09] same expiry rule as training_health_check.is_model_skipped
+                from training_health_check import skip_active as _skip_active, _load_policies as _thc_policies
+                _skip_rules = _thc_policies().get("model_skip_rules", {})
+            except ImportError:
+                _skip_active = None
             for _model, _entry in _skip_reg.items():
-                if _entry.get("consecutive_critical", 0) >= _skip_threshold:
+                if (_skip_active(_entry, _skip_rules)[0] if _skip_active is not None
+                        else _entry.get("consecutive_critical", 0) >= _skip_threshold):
                     skipped_models.append(_model)
             if skipped_models:
                 original_count = len(model_list)
@@ -236,6 +242,13 @@ def _s88_run_compare_models(args_dict):
         ]
         if enable_diagnostics:
             cmd.append("--enable-diagnostics")
+            # [CH14-DIAG waves 1-2] thread report options to the child (legacy = no flags);
+            # every child of one compare run gets the same run id (CD-07)
+            import training_diagnostics as _td
+            if "diagnostics_options" not in args_dict:  # caller without the bundle: build it once
+                from types import SimpleNamespace as _NS
+                args_dict["diagnostics_options"] = _td.diagnostics_options_from_args(_NS(**args_dict))
+            cmd.extend(_td.diagnostics_child_flags(args_dict.get("diagnostics_options")))
 
         # -- Category B: Inject NN-specific flags (Team Beta Option A) --
         # normalize_features and use_leaky_relu are ALWAYS ON for neural_net.
@@ -326,6 +339,14 @@ def _s88_run_compare_models(args_dict):
     with open(out_path, "w") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
     print(f"[S88][COMPARE] Summary written: {out_path}")
+    # [CH14-DIAG CD-06] level full: one fixed-name pointer for the health check (per-run file kept)
+    if enable_diagnostics and args_dict.get("diagnostics_level", "legacy") == "full":
+        _ptr = os.path.join(diag_root, "compare_models_summary_latest.json")
+        _dopts = args_dict.get("diagnostics_options") or {}  # [CH14-DIAG CD-07] run identity
+        with open(_ptr, "w") as f:
+            json.dump({**summary, "diagnostics_run_id": _dopts.get("run_id"),
+                       "diagnostics_run_started_at": _dopts.get("run_started_at")}, f, indent=2, sort_keys=True)
+        print(f"[CH14-DIAG] Winner pointer written: {_ptr}")
     print(f"[S88][COMPARE] Artifacts archived under: {models_root}")
 
     return 0
@@ -1857,6 +1878,7 @@ class AntiOverfitMetaOptimizer:
                 hyperparameters=self.best_config
             )
             self.best_model = result["model"]
+            self._ch14_emit_inline_tree_report(result, X_train, y_train, X_val, y_val)  # [CH14-DIAG]
         self.best_model_type = self.model_type
         self.best_metrics = self._compute_final_metrics(result["metrics"])
 
@@ -2552,9 +2574,16 @@ class AntiOverfitMetaOptimizer:
         f_tag = f"f{fold_idx}" if fold_idx is not None else "fNA"
         npz_path = os.path.join(export_dir, f"split_{t_tag}_{f_tag}_{u}.npz")
         
-        np.savez(npz_path,
-                 X_train=X_train, y_train=y_train,
-                 X_val=X_val, y_val=y_val)
+        if self._ch14_full():
+            # [CH14-DIAG CD-04] names for the worker's report (private handoff, not the NPZ contract)
+            np.savez(npz_path,
+                     X_train=X_train, y_train=y_train,
+                     X_val=X_val, y_val=y_val,
+                     feature_names=np.array(self.feature_schema['feature_names'], dtype=str))
+        else:
+            np.savez(npz_path,
+                     X_train=X_train, y_train=y_train,
+                     X_val=X_val, y_val=y_val)
         
         self.logger.info(f"[CAT-B 2.1] Exported split to NPZ: {npz_path}")
         self.logger.info(f"[CAT-B 2.1]   X_train: {X_train.shape}, X_val: {X_val.shape}")
@@ -2609,6 +2638,9 @@ class AntiOverfitMetaOptimizer:
             # Thread diagnostics flag
             if getattr(self, '_cli_enable_diagnostics', False):
                 cmd.append("--enable-diagnostics")
+                if self._ch14_full():  # [CH14-DIAG waves 1-2]
+                    import training_diagnostics as _td
+                    cmd.extend(_td.diagnostics_child_flags(getattr(self, '_cli_diagnostics_options', None)))
             
             self.logger.info("[CAT-B 2.1] Routing NN through train_single_trial.py subprocess")
             self.logger.info(f"[CAT-B 2.1] cmd: {' '.join(cmd)}")
@@ -2742,6 +2774,46 @@ class AntiOverfitMetaOptimizer:
             self.logger.error(f"[CAT-B 2.1] NPZ retained at: {npz_path}")
             raise
 
+    def _ch14_full(self) -> bool:
+        """[CH14-DIAG wave 1] diagnostics on AND --diagnostics-level full."""
+        return bool(getattr(self, '_cli_enable_diagnostics', False)) and \
+            getattr(self, '_cli_diagnostics_level', 'legacy') == 'full'
+
+    def _ch14_emit_inline_tree_report(self, result, X_train, y_train, X_val, y_val) -> None:
+        """
+        [CH14-DIAG CD-05 inline final path] Level 'full' only: report for the final inline
+        tree model (sklearn API, mpo MultiModelTrainer), built AFTER training from the fitted
+        object; the fit call is untouched. Best-effort, never fails Step 5. Writes
+        diagnostics_outputs/{model}_diagnostics.json and the canonical copy, the same paths the
+        trial worker's tree path uses (train_single_trial.py _emit_tree_diagnostics).
+        """
+        if not self._ch14_full() or self.model_type not in ('xgboost', 'lightgbm', 'catboost'):
+            return
+        try:
+            import shutil as _sh
+            import training_diagnostics as _td
+            model = result.get('model')
+            if model is None:
+                self.logger.warning("[CH14-DIAG] inline tree report skipped: no model object")
+                return
+            names = list(self.feature_schema.get('feature_names', []))
+            ok = len(names) == int(np.asarray(X_train).shape[1])
+            diag = _td.build_tree_diagnostics_full(
+                model, self.model_type, X_train, y_train, X_val, y_val,
+                feature_names=names if ok else None,
+                names_source='sidecar' if ok else 'positional',
+                final_metrics={'r2': result.get('metrics', {}).get('r2'),
+                               'mse': result.get('metrics', {}).get('val_mse')},
+                options=getattr(self, '_cli_diagnostics_options', None) or {},  # [CH14-DIAG wave 2]
+            )
+            os.makedirs('diagnostics_outputs', exist_ok=True)
+            path = os.path.join('diagnostics_outputs', f'{self.model_type}_diagnostics.json')
+            diag.save(path)
+            _sh.copyfile(path, os.path.join('diagnostics_outputs', 'training_diagnostics.json'))
+            self.logger.info(f"[CH14-DIAG] inline {self.model_type} diagnostics saved: {path}")
+        except Exception as e:
+            self.logger.warning(f"[CH14-DIAG] inline tree report failed (non-fatal): {e}")
+
     def _run_single_model(self) -> Tuple[Dict, ValidationMetrics]:
         """Train single model type."""
         
@@ -2784,6 +2856,7 @@ class AntiOverfitMetaOptimizer:
             result = self.trainer.train_model(
                 self.model_type, X_train, y_train, X_val, y_val
             )
+            self._ch14_emit_inline_tree_report(result, X_train, y_train, X_val, y_val)  # [CH14-DIAG]
         
         self.best_model = result['model']
         self.best_model_type = self.model_type
@@ -3109,6 +3182,30 @@ def main():
     # Chapter 14: Training diagnostics
     parser.add_argument('--enable-diagnostics', action='store_true',
                        help='Enable Chapter 14 training diagnostics (writes to diagnostics_outputs/)')
+    # [CH14-DIAG wave 1] report-content level; training is identical at every level
+    parser.add_argument('--diagnostics-level', type=str, default='legacy',
+                       choices=['legacy', 'full'],
+                       help='Chapter 14 report content: legacy (default, unchanged) or full '
+                            '(named features, NN gradient probe, tree reports on the final '
+                            'inline path, column classes, compare-models winner pointer)')
+    parser.add_argument('--gradient-probe-rows', type=int, default=None,
+                       help='[CH14-DIAG CD-03] NN probe rows passed to train_single_trial.py '
+                            '(default: its own default; level full only)')
+    # [CH14-DIAG wave 2] level full only; at legacy none of these is read
+    parser.add_argument('--diagnostics-run-id', type=str, default=None,
+                       help='[CH14-DIAG CD-07] run id stamped into every report and the pointer '
+                            '(default: generated at level full)')
+    parser.add_argument('--diagnostics-run-started-at', type=str, default=None,
+                       help='[CH14-DIAG CD-07] run start, UTC ISO (default: now, at level full)')
+    parser.add_argument('--dead-unit-definition', type=str, default='linear_zero',
+                       choices=['linear_zero', 'always_negative_preact'],
+                       help='[CH14-DIAG CD-23] NN dead-unit metric (default linear_zero, unchanged)')
+    parser.add_argument('--unused-gradient-epsilon', type=float, default=None,
+                       help='[CH14-DIAG CD-08] NN column unused below this mean |input gradient| '
+                            '(default 1e-8)')
+    parser.add_argument('--feature-manifest', type=str, default=None,
+                       help='[CH14-DIAG TODO-CH14-4] feature manifest naming the run-level columns '
+                            '(default models/feature_manifest.json when present)')
     
     # Category B: Neural net training enhancements (passed through to train_single_trial.py)
     # NOTE: In --compare-models mode, Option A forces these ON for neural_net
@@ -3148,6 +3245,10 @@ def main():
     
     args = parser.parse_args()
 
+    # [CH14-DIAG wave 2] one report-options bundle (run id generated here at level full; a
+    # compare child receives its parent's id by flag). None at level legacy.
+    import training_diagnostics as _td
+    _ch14_opts = _td.diagnostics_options_from_args(args)
 
     
     # S88 HOTFIX: --compare-models must run Optuna trials per model (4*N total)
@@ -3164,6 +3265,12 @@ def main():
     
             'enable_diagnostics': getattr(args, 'enable_diagnostics', False),
     
+            'diagnostics_level': getattr(args, 'diagnostics_level', 'legacy'),  # [CH14-DIAG]
+
+            'gradient_probe_rows': getattr(args, 'gradient_probe_rows', None),  # [CH14-DIAG]
+
+            'diagnostics_options': _ch14_opts,  # [CH14-DIAG wave 2] None at legacy
+
             'normalize_features': getattr(args, 'normalize_features', False),
     
             'use_leaky_relu': getattr(args, 'use_leaky_relu', False),
@@ -3236,6 +3343,9 @@ def main():
     optimizer._cli_normalize = getattr(args, 'normalize_features', False)
     optimizer._cli_leaky = getattr(args, 'use_leaky_relu', False)
     optimizer._cli_enable_diagnostics = getattr(args, 'enable_diagnostics', False)
+    optimizer._cli_diagnostics_level = getattr(args, 'diagnostics_level', 'legacy')  # [CH14-DIAG]
+    optimizer._cli_gradient_probe_rows = getattr(args, 'gradient_probe_rows', None)  # [CH14-DIAG]
+    optimizer._cli_diagnostics_options = _ch14_opts  # [CH14-DIAG wave 2] None at legacy
     # [S96B] Thread persistent-workers flag into optimizer
     optimizer._s96b_use_persistent_workers = getattr(args, 'persistent_workers', False)
     optimizer._allow_inline_nn_fallback = getattr(args, 'allow_inline_nn_fallback', False)

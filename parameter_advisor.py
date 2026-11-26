@@ -489,6 +489,31 @@ class FocusAreaClassifier:
 # DATA LOADERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _reads_training_health(watcher_policies: Dict[str, Any]) -> bool:
+    """[CH14-DIAG CD-11] watcher_policies.json training_diagnostics.advisor_reads_training_health
+    (default false: the advisor's inputs and output are unchanged)."""
+    v = ((watcher_policies or {}).get("training_diagnostics") or {}).get("advisor_reads_training_health", False)
+    if not isinstance(v, bool):
+        raise ValueError(f"advisor_reads_training_health must be true or false, got {v!r}")
+    return v
+
+
+def summarize_training_health(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """[CH14-DIAG CD-11] Per-model counts over recent health checks (records newest first)."""
+    by_model: Dict[str, Dict[str, int]] = {}
+    for r in records:
+        m = by_model.setdefault(str(r.get("model_type", "unknown")), {})
+        sev = str(r.get("severity", "absent"))
+        m[sev] = m.get(sev, 0) + 1
+    latest = records[0] if records else {}
+    return {
+        "checks": len(records),
+        "by_model": by_model,
+        "latest": {k: latest.get(k) for k in ("logged_at", "model_type", "severity", "action",
+                                              "report_run_id", "freshness", "per_family")} if latest else {},
+    }
+
+
 class DiagnosticsLoader:
     """Loads Chapter 13 diagnostics and telemetry data."""
     
@@ -546,6 +571,31 @@ class DiagnosticsLoader:
         
         return policies
     
+    # [CH14-DIAG CD-11, wave 2] reader of the one training-health log (writer:
+    # training_health_check._write_training_health_log). Read-only.
+    TRAINING_HEALTH_LOG = Path("diagnostics_outputs") / "training_health_log.jsonl"
+
+    def load_training_health(self, n: int = 20) -> List[Dict[str, Any]]:
+        """The N most recent training health check records, newest first ([] if no log)."""
+        path = self.state_dir / self.TRAINING_HEALTH_LOG
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        try:
+            with open(path) as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning("Skipping unreadable training health line in %s", path)
+        except IOError as e:
+            logger.warning("Failed to read training health log %s: %s", path, e)
+            return []
+        return list(reversed(rows[-n:])) if n > 0 else []
+
     def load_watcher_policies(self) -> Dict[str, Any]:
         """Load watcher_policies.json for bounds validation."""
         policy_path = self.state_dir / "watcher_policies.json"
@@ -653,6 +703,12 @@ class StrategyAdvisor:
         self.recommendation_path = self.state_dir / "strategy_recommendation.json"
         self.history_dir = self.state_dir / "strategy_history"
     
+    def _add_training_health(self, signals: Dict[str, Any], watcher_policies: Dict[str, Any]) -> None:
+        """[CH14-DIAG CD-11] Step 5 training health into the signals, behind a default-off setting."""
+        if _reads_training_health(watcher_policies):
+            signals["training_health"] = summarize_training_health(
+                self.loader.load_training_health(20))
+
     def can_activate(self) -> Tuple[bool, Dict[str, Any]]:
         """Check if advisor has sufficient data to activate."""
         return self.gate.check()
@@ -724,6 +780,7 @@ class StrategyAdvisor:
         
         # Extract diagnostic signals
         signals = self._extract_signals(diagnostics, telemetry, policy_history)
+        self._add_training_health(signals, watcher_policies)  # [CH14-DIAG CD-11]
         
         # Classify focus area (heuristic pre-classification for context)
         primary_focus, primary_conf, secondary_focus, secondary_conf = (

@@ -79,6 +79,144 @@ SEVERITY_THRESHOLDS = {
     "gradient_norm_min": {"warning": 1e-6, "critical": 1e-8},
 }
 
+# [CH14-DIAG wave 1, 2026-11-23] Report-content level (declared setting).
+#   legacy (default): report content exactly as before this change.
+#   full:   named features (CD-04), NN eval-mode input-gradient probe (CD-03),
+#           spread taken from the last round that carries it (CD-02 producer),
+#           tree curves/importances on the paths that run (CD-05), and a
+#           column-class tag on every attribution line (CD-13).
+# Training is never altered at either level (Design Invariant 1).
+DIAGNOSTICS_LEVELS = ("legacy", "full")
+DEFAULT_DIAGNOSTICS_LEVEL = "legacy"
+# Rows of the fixed training slice used by the NN input-gradient probe (CD-03).
+DEFAULT_GRADIENT_PROBE_ROWS = 512
+# Column classes (CD-13). Computed from the training matrix, never from a list.
+COLUMN_CLASSES = ("constant", "run", "trial", "local")
+
+
+def validate_diagnostics_level(level: Optional[str]) -> str:
+    """None -> DEFAULT_DIAGNOSTICS_LEVEL; unknown value -> ValueError (fail closed)."""
+    if level is None:
+        return DEFAULT_DIAGNOSTICS_LEVEL
+    if level not in DIAGNOSTICS_LEVELS:
+        raise ValueError(f"diagnostics level must be one of {DIAGNOSTICS_LEVELS}, got {level!r}")
+    return level
+
+
+# [CH14-DIAG wave 2, 2026-11-23] Declared settings. Every one acts at level 'full' only;
+# at level 'legacy' none of them is read, so the legacy report is unchanged.
+#   dead_unit_definition   CD-23. linear_zero (default, today's: share of exact zeros at the
+#                          nn.Linear output, td forward hook) | always_negative_preact (share of
+#                          units whose pre-activation, the input of the activation module that
+#                          follows the Linear, is <= 0 on every row of the eval-mode probe batch;
+#                          needs the CD-03 probe, else the report says linear_zero was used)
+#   unused_gradient_epsilon CD-08. NN column counted unused when its mean |input gradient| on the
+#                          probe is below this (trees: importance exactly 0)
+#   feature_manifest       TODO-CH14-4. path of the feature manifest (format tfm_feature_manifest/1);
+#                          its run_context alias names the run-level columns (CD-13 'run' class)
+#   run_id / run_started_at CD-07. stamped into every report and the compare-models pointer
+DEAD_UNIT_DEFINITIONS = ("linear_zero", "always_negative_preact")
+DEFAULT_DEAD_UNIT_DEFINITION = "linear_zero"
+DEFAULT_UNUSED_GRADIENT_EPSILON = 1e-8
+DEFAULT_FEATURE_MANIFEST_PATH = "models/feature_manifest.json"
+FEATURE_MANIFEST_FORMAT = "tfm_feature_manifest/1"
+FEATURE_MANIFEST_RUN_ALIAS = "run_context"
+
+
+def validate_dead_unit_definition(value: Optional[str]) -> str:
+    if value is None:
+        return DEFAULT_DEAD_UNIT_DEFINITION
+    if value not in DEAD_UNIT_DEFINITIONS:
+        raise ValueError(f"dead_unit_definition must be one of {DEAD_UNIT_DEFINITIONS}, got {value!r}")
+    return value
+
+
+def new_run_id(now: Optional[datetime] = None) -> Tuple[str, str]:
+    """CD-07: (run_id, run_started_at UTC ISO) for one Step 5 run."""
+    import uuid
+    from datetime import timezone
+    now = now or datetime.now(timezone.utc)
+    return f"s5-{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}", now.isoformat()
+
+
+def diagnostics_options_from_args(args) -> Optional[Dict[str, Any]]:
+    """
+    One bundle of report options from a parsed Step 5 / trial-worker namespace.
+    None at level 'legacy' (nothing downstream changes). At level 'full' a run id and start
+    time are generated when the caller did not pass them (CD-07).
+    """
+    if not getattr(args, "enable_diagnostics", False) or \
+            validate_diagnostics_level(getattr(args, "diagnostics_level", None)) != "full":
+        return None
+    run_id = getattr(args, "diagnostics_run_id", None)
+    started = getattr(args, "diagnostics_run_started_at", None)
+    if not run_id:
+        run_id, gen_started = new_run_id()
+        started = started or gen_started
+    return {
+        "level": "full",
+        "gradient_probe_rows": getattr(args, "gradient_probe_rows", None),
+        "run_id": run_id,
+        "run_started_at": started,
+        "dead_unit_definition": validate_dead_unit_definition(getattr(args, "dead_unit_definition", None)),
+        "unused_gradient_epsilon": getattr(args, "unused_gradient_epsilon", None),
+        "feature_manifest": getattr(args, "feature_manifest", None),
+    }
+
+
+def diagnostics_child_flags(opts: Optional[Dict[str, Any]]) -> List[str]:
+    """CLI flags that hand `opts` to a child (Step 5 per-model child or the trial worker). [] at legacy."""
+    if not opts or opts.get("level") != "full":
+        return []
+    flags = ["--diagnostics-level", "full"]
+    pairs = (("gradient_probe_rows", "--gradient-probe-rows", int),
+             ("run_id", "--diagnostics-run-id", str),
+             ("run_started_at", "--diagnostics-run-started-at", str),
+             ("dead_unit_definition", "--dead-unit-definition", str),
+             ("unused_gradient_epsilon", "--unused-gradient-epsilon", float),
+             ("feature_manifest", "--feature-manifest", str))
+    for key, flag, cast in pairs:
+        if opts.get(key) is not None:
+            flags.extend([flag, str(cast(opts[key]))])
+    return flags
+
+
+def load_run_level_names(path: Optional[str] = None) -> Tuple[Optional[List[str]], Dict[str, Any]]:
+    """
+    TODO-CH14-4: the run-level column names, read from the feature manifest (never a second list).
+    Uses models.feature_manifest (LL-1) when importable, else reads the JSON with the same format
+    check. Returns (names or None, source record). Missing or invalid manifest -> (None, reason).
+    """
+    import hashlib
+    path = path or DEFAULT_FEATURE_MANIFEST_PATH
+    src: Dict[str, Any] = {"path": str(path), "alias": FEATURE_MANIFEST_RUN_ALIAS}
+    if not os.path.isfile(path):
+        src["status"] = "missing"
+        return None, src
+    try:
+        raw = Path(path).read_bytes()
+        src["sha256"] = hashlib.sha256(raw).hexdigest()
+        try:
+            from models.feature_manifest import load_manifest, expand_groups  # LL-1, when landed
+            man = load_manifest(Path(path))
+            groups = expand_groups(man, [FEATURE_MANIFEST_RUN_ALIAS])
+            src["reader"] = "models.feature_manifest"
+        except ImportError:
+            man = json.loads(raw)
+            if man.get("format") != FEATURE_MANIFEST_FORMAT:
+                raise ValueError(f"format {man.get('format')!r} != {FEATURE_MANIFEST_FORMAT!r}")
+            groups = list((man.get("aliases") or {}).get(FEATURE_MANIFEST_RUN_ALIAS, []))
+            if not groups:
+                raise ValueError(f"no {FEATURE_MANIFEST_RUN_ALIAS!r} alias")
+            src["reader"] = "json"
+        names = sorted({n for g in groups for n in man["groups"][g]})
+        src.update({"status": "ok", "format": man.get("format"), "groups": sorted(groups),
+                    "count": len(names)})
+        return names, src
+    except Exception as e:
+        src.update({"status": "invalid", "error": str(e)})
+        return None, src
+
 
 # =============================================================================
 # BASE CLASS
@@ -99,16 +237,34 @@ class TrainingDiagnostics(ABC):
         feature_names: Optional[List[str]] = None,
         capture_every_n: int = 5,
         max_rounds: int = 500,
+        diagnostics_level: Optional[str] = None,
+        names_source: Optional[str] = None,
+        column_classes: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+        run_started_at: Optional[str] = None,
+        unused_gradient_epsilon: Optional[float] = None,
     ):
         """
         Args:
             feature_names: Names of input features. If None, uses generic names.
             capture_every_n: Capture detailed snapshot every N rounds.
             max_rounds: Safety cap to prevent unbounded memory growth.
+            diagnostics_level: 'legacy' (default, unchanged report) or 'full' (CH14-DIAG wave 1).
+            names_source: where feature_names came from ('npz', 'sidecar', 'caller', 'positional').
+            column_classes: output of classify_columns() for the training matrix (CD-13).
+            run_id, run_started_at: CD-07 stamp (level 'full'), from diagnostics_options_from_args.
+            unused_gradient_epsilon: CD-08 NN threshold (level 'full').
         """
         self.feature_names = feature_names or []
         self.capture_every_n = capture_every_n
         self.max_rounds = max_rounds
+        self.diagnostics_level = validate_diagnostics_level(diagnostics_level)
+        self.names_source = names_source or ("caller" if feature_names else "positional")
+        self.column_classes = column_classes
+        self.run_id = run_id
+        self.run_started_at = run_started_at
+        self.unused_gradient_epsilon = (DEFAULT_UNUSED_GRADIENT_EPSILON if unused_gradient_epsilon is None
+                                        else float(unused_gradient_epsilon))
         
         # State
         self._attached = False
@@ -199,8 +355,8 @@ class TrainingDiagnostics(ABC):
             training_summary = self._compute_training_summary()
             diagnosis = self._diagnose(training_summary)
             model_specific = self._get_model_specific()
-            
-            return {
+
+            report = {
                 "status": "complete" if self._round_data else "partial",
                 "training_summary": training_summary,
                 "diagnosis": diagnosis,
@@ -208,6 +364,10 @@ class TrainingDiagnostics(ABC):
                 "round_data_truncated": len(self._round_data) > 50,
                 "round_data_sample": self._round_data[-10:] if self._round_data else [],
             }
+            if self.diagnostics_level == "full":
+                # CH14-DIAG wave 1: additive fields only; legacy report unchanged.
+                self._add_full_report_fields(report)
+            return report
         except Exception as e:
             logger.error(f"Failed to generate report: {e}")
             return {
@@ -275,7 +435,66 @@ class TrainingDiagnostics(ABC):
     def _get_model_specific(self) -> Dict[str, Any]:
         """Return model-specific diagnostics. Override in subclasses."""
         return {}
-    
+
+    # ── CH14-DIAG wave 1 (level 'full' only) ─────────────────────────
+    def _attribution(self) -> Tuple[Optional[np.ndarray], Optional[str]]:
+        """Per-column attribution vector (positional) and its kind. Override in subclasses."""
+        return None, None
+
+    def _feature_name(self, i: int) -> str:
+        return self.feature_names[i] if i < len(self.feature_names) else f"feature_{i}"
+
+    def _settings_record(self) -> Dict[str, Any]:
+        src = (self.column_classes or {}).get("run_level_names_source") or {}
+        return {"diagnostics_level": self.diagnostics_level,
+                "unused_gradient_epsilon": self.unused_gradient_epsilon,
+                "feature_manifest": src.get("path"),
+                "feature_manifest_sha256": src.get("sha256")}
+
+    def _add_full_report_fields(self, report: Dict[str, Any]) -> None:
+        """Additive report fields for level 'full': names source, column classes, class tags."""
+        report["diagnostics_level"] = "full"
+        # CD-07: run identity, so a health check can tell this run's report from an older one.
+        # Named diagnostics_run_* because compare-models summaries already use run_id (S88 id).
+        report["diagnostics_run_id"] = self.run_id
+        report["diagnostics_run_started_at"] = self.run_started_at
+        # Run record of the report settings in force (switch register: every switch stored).
+        report["diagnostics_settings"] = self._settings_record()
+        report["round_index_base"] = 0  # best_val_round is a 0-based index into the rounds
+        report["feature_names_source"] = self.names_source
+        cc = self.column_classes or {}
+        by_feature = cc.get("by_feature", {})
+        if cc:
+            report["column_classes"] = {
+                k: v for k, v in cc.items() if k != "by_feature"
+            }
+            report["column_classes"]["by_feature"] = by_feature
+        vec, kind = self._attribution()
+        if vec is not None:
+            vec = np.asarray(vec, dtype=float)
+            report["feature_count"] = int(vec.shape[0])
+            report["attribution_kind"] = kind
+            if by_feature:
+                report["attribution_share_by_class"] = attribution_share_by_class(
+                    vec, [self._feature_name(i) for i in range(vec.shape[0])], by_feature
+                )
+            report["unused_features"] = unused_features(
+                vec, kind, [self._feature_name(i) for i in range(vec.shape[0])], by_feature,
+                self.unused_gradient_epsilon)
+            report["unused_feature_pct"] = report["unused_features"]["pct"]
+        # Tag every top-10 line with its column class (or 'unclassified').
+        ms = report.get("model_specific", {})
+        for block_key in ("feature_importance", "feature_gradients"):
+            block = ms.get(block_key)
+            if isinstance(block, dict):
+                for entry in block.get("top_10", []):
+                    entry["column_class"] = by_feature.get(entry.get("feature"), "unclassified")
+        for snap in report.get("round_data_sample", []):
+            fg = snap.get("feature_gradients")
+            if isinstance(fg, dict):
+                for entry in fg.get("top_10", []):
+                    entry["column_class"] = by_feature.get(entry.get("feature"), "unclassified")
+
     @property
     def severity(self) -> str:
         """Quick access to current severity level."""
@@ -328,8 +547,12 @@ class NNDiagnostics(TrainingDiagnostics):
     
     model_type = "neural_net"
     
-    def __init__(self, **kwargs):
+    def __init__(self, dead_unit_definition: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
+        # CD-23 (wave 2): which dead-unit definition the report uses (default = today's).
+        self.dead_unit_definition = validate_dead_unit_definition(dead_unit_definition)
+        self._dead_unit_history: Dict[str, List[float]] = defaultdict(list)
+        self._dead_unit_no_activation: List[str] = []
         
         # Hook handles (for cleanup)
         self._forward_hooks = []
@@ -347,7 +570,97 @@ class NNDiagnostics(TrainingDiagnostics):
         # Accumulated stats
         self._dead_neuron_history: Dict[str, List[float]] = defaultdict(list)
         self._gradient_norm_history: Dict[str, List[float]] = defaultdict(list)
-    
+
+        # CD-03 (level 'full'): eval-mode input-gradient probe. None = no probe (legacy).
+        self._probe: Optional[Tuple[Any, Any, Any]] = None
+        self._probing = False
+        self._last_feature_gradients: Optional[np.ndarray] = None
+        self._last_feature_gradients_round: Optional[int] = None
+
+    def set_gradient_probe(self, X_probe, y_probe, loss_fn) -> None:
+        """
+        CD-03: register a fixed training slice for the per-feature gradient probe.
+
+        On each detail round the probe runs one extra forward/backward with the model
+        in eval() mode on a requires_grad COPY of X_probe and takes
+        torch.autograd.grad(loss, x) only: no parameter .grad is written, no optimizer
+        step, BatchNorm running stats are not updated (eval), Dropout is identity
+        (eval) so no RNG draw. The model's train/eval mode is restored afterwards.
+        """
+        self._probe = (X_probe, y_probe, loss_fn)
+
+    _ACTIVATION_TYPES = ("ReLU", "LeakyReLU", "ReLU6", "PReLU", "RReLU", "ELU", "SELU", "CELU",
+                         "GELU", "SiLU")
+
+    def _preact_hooks(self, store: Dict[str, Any]) -> list:
+        """CD-23: temporary probe-only hooks on the first activation module after each Linear.
+        Records, per unit, whether its pre-activation is <= 0 on every probe row."""
+        import torch.nn as nn
+        handles, last_linear, seen = [], None, set()
+        self._dead_unit_no_activation = []
+        for name, module in self._model.named_modules():
+            if isinstance(module, nn.Linear):
+                if last_linear is not None and last_linear not in seen:
+                    self._dead_unit_no_activation.append(last_linear)
+                last_linear = name
+            elif type(module).__name__ in self._ACTIVATION_TYPES and last_linear is not None \
+                    and last_linear not in seen:
+                seen.add(last_linear)
+                def hook(mod, inp, out, _layer=last_linear):
+                    x = inp[0].detach()
+                    store[_layer] = float((x <= 0).all(dim=0).float().mean().item() * 100)
+                handles.append(module.register_forward_hook(hook))
+        if last_linear is not None and last_linear not in seen:
+            self._dead_unit_no_activation.append(last_linear)
+        return handles
+
+    def _run_gradient_probe(self):
+        import torch
+        X_probe, y_probe, loss_fn = self._probe
+        model = self._model
+        was_training = model.training
+        self._probing = True
+        preact: Dict[str, float] = {}
+        handles = self._preact_hooks(preact) if self.dead_unit_definition == "always_negative_preact" else []
+        try:
+            model.eval()
+            x = X_probe.detach().clone().requires_grad_(True)
+            out = model(x)
+            loss = loss_fn(out, y_probe)
+            (g,) = torch.autograd.grad(loss, x, retain_graph=False, create_graph=False)
+            for layer, pct in preact.items():
+                self._dead_unit_history[layer].append(pct)
+            return g.detach().abs().mean(dim=0)
+        finally:
+            for h in handles:
+                h.remove()
+            model.train(was_training)
+            self._probing = False
+
+    def _settings_record(self) -> Dict[str, Any]:
+        rec = super()._settings_record()
+        rec["dead_unit_definition"] = self.dead_unit_definition
+        rec["gradient_probe_rows"] = int(self._probe[0].shape[0]) if self._probe is not None else 0
+        return rec
+
+    def _dead_history(self) -> Tuple[Dict[str, List[float]], str]:
+        """CD-23: (per-layer dead-unit history, definition actually used)."""
+        if self.dead_unit_definition == "always_negative_preact" and self._dead_unit_history:
+            return self._dead_unit_history, "always_negative_preact"
+        return self._dead_neuron_history, "linear_zero"
+
+    def _last_round_with(self, key: str) -> Optional[Dict[str, Any]]:
+        """CD-02 producer: newest round snapshot that carries `key` (not only the last round)."""
+        for snap in reversed(self._round_data):
+            if key in snap:
+                return snap
+        return None
+
+    def _attribution(self):
+        if self._last_feature_gradients is None:
+            return None, None
+        return self._last_feature_gradients, "input_gradient_mean_abs"
+
     def attach(self, model, context: Optional[Dict] = None) -> "NNDiagnostics":
         """Register forward and backward hooks on all Linear layers."""
         try:
@@ -402,6 +715,8 @@ class NNDiagnostics(TrainingDiagnostics):
     def _make_forward_hook(self, layer_name: str):
         """Create forward hook that captures activation statistics."""
         def hook(module, input_tensor, output_tensor):
+            if self._probing:
+                return  # CD-03: the probe pass is not a training/validation pass
             try:
                 output = output_tensor.detach()
                 self._activations[layer_name] = {
@@ -417,6 +732,8 @@ class NNDiagnostics(TrainingDiagnostics):
     def _make_backward_hook(self, layer_name: str):
         """Create backward hook that captures gradient statistics."""
         def hook(module, grad_input, grad_output):
+            if self._probing:
+                return  # CD-03: probe gradients are read from autograd.grad, not hooks
             try:
                 if grad_output[0] is not None:
                     grad = grad_output[0].detach()
@@ -468,8 +785,28 @@ class NNDiagnostics(TrainingDiagnostics):
                     if "norm" in grad:
                         self._gradient_norm_history[name].append(grad["norm"])
                 
+                # CD-03 (level 'full'): eval-mode probe gradients take precedence.
+                if self._probe is not None:
+                    try:
+                        feat_grads = self._run_gradient_probe()
+                        top_k = min(10, len(feat_grads))
+                        top_indices = feat_grads.argsort(descending=True)[:top_k]
+                        self._last_feature_gradients = feat_grads.cpu().numpy().astype(float)
+                        self._last_feature_gradients_round = round_num
+                        snapshot["feature_gradients"] = {
+                            "top_10": [
+                                {"feature": self._feature_name(i),
+                                 "magnitude": float(feat_grads[i].item())}
+                                for i in top_indices.tolist()
+                            ],
+                            "spread_ratio": float(feat_grads.max().item() / (feat_grads.min().item() + 1e-10)),
+                            "source": "eval_probe",
+                            "probe_rows": int(self._probe[0].shape[0]),
+                        }
+                    except Exception as e:
+                        logger.debug(f"Gradient probe failed (non-fatal): {e}")
                 # Feature gradients (if available)
-                if self._input_gradients is not None:
+                elif self._input_gradients is not None:
                     try:
                         feat_grads = self._input_gradients.abs().mean(dim=0)
                         top_k = min(10, len(feat_grads))
@@ -508,7 +845,7 @@ class NNDiagnostics(TrainingDiagnostics):
         severity = base_diagnosis["severity"]
         
         # Check dead neurons
-        for layer_name, dead_history in self._dead_neuron_history.items():
+        for layer_name, dead_history in self._dead_history()[0].items():
             if dead_history:
                 final_dead_pct = dead_history[-1]
                 if final_dead_pct > SEVERITY_THRESHOLDS["dead_neuron_pct"]["critical"]:
@@ -535,8 +872,9 @@ class NNDiagnostics(TrainingDiagnostics):
                         severity = "warning"
         
         # Check gradient spread (feature scale imbalance)
-        if self._round_data and "feature_gradients" in self._round_data[-1]:
-            spread = self._round_data[-1]["feature_gradients"].get("spread_ratio", 1)
+        _fg_snap = self._spread_snapshot()
+        if _fg_snap is not None:
+            spread = _fg_snap["feature_gradients"].get("spread_ratio", 1)
             if spread > SEVERITY_THRESHOLDS["gradient_spread_ratio"]["critical"]:
                 issues.append(f"Feature scale imbalance: gradient spread {spread:.0f}x")
                 suggested_fixes.append("Add BatchNorm to input layer or normalize features")
@@ -567,7 +905,8 @@ class NNDiagnostics(TrainingDiagnostics):
         
         # Compute final dead neuron percentage (average across layers)
         total_dead = []
-        for layer_name, dead_history in self._dead_neuron_history.items():
+        _dead_hist, _dead_used = self._dead_history()
+        for layer_name, dead_history in _dead_hist.items():
             if dead_history:
                 model_specific["layer_health"][layer_name] = {
                     "dead_pct": dead_history[-1],
@@ -577,6 +916,13 @@ class NNDiagnostics(TrainingDiagnostics):
         
         if total_dead:
             model_specific["gradient_health"]["dead_neuron_pct"] = np.mean(total_dead)
+        if self.dead_unit_definition != DEFAULT_DEAD_UNIT_DEFINITION:
+            # CD-23: say which definition was asked for and which one the numbers use.
+            model_specific["gradient_health"]["dead_unit_definition"] = self.dead_unit_definition
+            model_specific["gradient_health"]["dead_unit_definition_effective"] = _dead_used
+            if _dead_used == "always_negative_preact":
+                model_specific["gradient_health"]["dead_unit_layers_without_activation"] = \
+                    list(self._dead_unit_no_activation)
         
         # Gradient norms
         for layer_name, grad_history in self._gradient_norm_history.items():
@@ -593,11 +939,29 @@ class NNDiagnostics(TrainingDiagnostics):
                     model_specific["gradient_health"]["exploding"] = True
         
         # Feature gradient spread
-        if self._round_data and "feature_gradients" in self._round_data[-1]:
+        _fg_snap = self._spread_snapshot()
+        if _fg_snap is not None:
             model_specific["gradient_health"]["gradient_spread_ratio"] = \
-                self._round_data[-1]["feature_gradients"].get("spread_ratio", 1.0)
+                _fg_snap["feature_gradients"].get("spread_ratio", 1.0)
+            if self.diagnostics_level == "full":
+                # CD-02/CD-03: the named per-feature gradients behind the spread.
+                model_specific["feature_gradients"] = dict(_fg_snap["feature_gradients"])
+                model_specific["feature_gradients"]["round"] = _fg_snap.get("round")
         
         return model_specific
+
+    def _spread_snapshot(self) -> Optional[Dict[str, Any]]:
+        """
+        Round snapshot the gradient spread is read from.
+        legacy: the last round only, as before (td:595-598 at 41ad509).
+        full:   the newest round that carries feature_gradients (CD-02 producer, R-61),
+                so a run whose last epoch is not a detail epoch still reports it.
+        """
+        if not self._round_data:
+            return None
+        if self.diagnostics_level == "full":
+            return self._last_round_with("feature_gradients")
+        return self._round_data[-1] if "feature_gradients" in self._round_data[-1] else None
 
 
 # =============================================================================
@@ -655,8 +1019,86 @@ class TreeDiagnostics(TrainingDiagnostics):
     def set_best_iteration(self, iteration: int) -> None:
         """Set best iteration (early stopping point)."""
         self._best_iteration = iteration
-    
+
+    # ── CH14-DIAG wave 1, CD-05 (level 'full' only) ──────────────────
+    def load_curves(self, rounds, train_curve, val_curve, used_rounds: int,
+                    curve_source: str, rounds_run: int, round_stride: int = 1) -> None:
+        """
+        Load per-round train/val MSE computed after training (staged prediction or the
+        library's own eval record). train entries may be None where the kept model has
+        no trees for that round (LightGBM trims to its best iteration).
+        used_rounds = number of rounds in the model whose predictions are scored.
+        """
+        self._round_data = []
+        for r, t, v in zip(rounds, train_curve, val_curve):
+            if len(self._round_data) >= self.max_rounds:
+                break
+            self._round_data.append({
+                "round": int(r),
+                "train_loss": None if t is None else float(t),
+                "val_loss": float(v),
+            })
+        self._used_rounds = int(used_rounds)
+        self._curve_source = curve_source
+        self._rounds_run = int(rounds_run)
+        self._round_stride = int(round_stride)
+
+    def set_importance_vector(self, vec, kind: str) -> None:
+        """Positional importance vector (all columns, zeros kept) and its kind (CD-05)."""
+        self._importance_vector = np.asarray(vec, dtype=float)
+        self._importance_kind = kind
+        self._feature_importance = {
+            self._feature_name(i): float(v) for i, v in enumerate(self._importance_vector)
+        }
+
+    def _attribution(self):
+        vec = getattr(self, "_importance_vector", None)
+        if vec is None:
+            return None, None
+        return vec, self._importance_kind
+
+    def _compute_training_summary(self) -> Dict[str, Any]:
+        if self.diagnostics_level != "full" or not getattr(self, "_curve_source", None):
+            return super()._compute_training_summary()
+        if not self._round_data:
+            return {}
+        vals = [r["val_loss"] for r in self._round_data]
+        best_idx = int(np.argmin(vals))
+        # The scored model: newest captured round inside the kept trees, with a train loss.
+        used = None
+        for snap in reversed(self._round_data):
+            if snap["round"] <= self._used_rounds - 1 and snap["train_loss"] is not None:
+                used = snap
+                break
+        final_train = used["train_loss"] if used else None
+        final_val = used["val_loss"] if used else None
+        return {
+            "rounds_captured": len(self._round_data),
+            "final_train_loss": final_train,
+            "final_val_loss": final_val,
+            "best_val_loss": float(min(vals)),
+            "best_val_round": best_idx,
+            "overfit_gap": (final_val - final_train) if used else None,
+            # additive, level 'full'
+            "best_val_round_number": int(self._round_data[best_idx]["round"]),
+            "used_round_number": int(used["round"]) if used else None,
+            "used_rounds": self._used_rounds,
+            "rounds_run": self._rounds_run,
+            "round_stride": self._round_stride,
+            "curve_source": self._curve_source,
+            "loss_metric": "mse",
+        }
+
     def _get_model_specific(self) -> Dict[str, Any]:
+        model_specific = self._get_model_specific_base()
+        if self.diagnostics_level == "full" and getattr(self, "_importance_kind", None):
+            fi = model_specific.get("feature_importance")
+            if isinstance(fi, dict):
+                fi["importance_kind"] = self._importance_kind
+                fi["zero_importance_columns"] = int(np.sum(self._importance_vector == 0))
+        return model_specific
+
+    def _get_model_specific_base(self) -> Dict[str, Any]:
         """Return tree-specific feature importance and early stopping info."""
         model_specific = {
             "early_stopping_triggered": self._best_iteration is not None,
@@ -858,6 +1300,335 @@ class MultiModelDiagnostics:
 
 
 # =============================================================================
+# CH14-DIAG WAVE 1 HELPERS (level 'full'; nothing here runs at level 'legacy')
+# =============================================================================
+
+def classify_columns(
+    X,
+    feature_names: Optional[List[str]] = None,
+    groups=None,
+    run_level_names: Optional[List[str]] = None,
+    run_level_source: Optional[Dict[str, Any]] = None,
+    trial_unavailable_reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    CD-13: tag each column of the training matrix by how many values it carries.
+
+      constant  one value over every row of X (NaN-only columns count as constant)
+      run       constant AND named in run_level_names (caller-declared run-level set)
+      trial     one value within every group of `groups` (e.g. trial id per row), not constant
+      local     anything else (varies between rows of one group, or no groups given)
+
+    Computed from the data, not from a feature list (system map §9). Without `groups`,
+    'trial' cannot be told from 'local' and trial_class is reported 'unavailable'.
+    Reads X in place; no copy of X is made.
+    """
+    import warnings
+    X = np.asarray(X)
+    n_rows, n_cols = X.shape
+    names = [feature_names[i] if feature_names and i < len(feature_names) else f"feature_{i}"
+             for i in range(n_cols)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        col_min = np.nanmin(X, axis=0) if n_rows else np.zeros(n_cols)
+        col_max = np.nanmax(X, axis=0) if n_rows else np.zeros(n_cols)
+    constant = (col_min == col_max) | (np.isnan(col_min) & np.isnan(col_max))
+    trial_const = np.zeros(n_cols, dtype=bool)
+    trial_available = groups is not None
+    if trial_available:
+        g = np.asarray(groups)
+        if g.shape[0] != n_rows:
+            raise ValueError(f"groups has {g.shape[0]} rows, X has {n_rows}")
+        order = np.argsort(g, kind="stable")
+        gs = g[order]
+        cuts = np.flatnonzero(gs[1:] != gs[:-1]) + 1
+        trial_const[:] = True
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for block in np.split(order, cuts):
+                sub = X[block]
+                trial_const &= (np.nanmin(sub, axis=0) == np.nanmax(sub, axis=0)) | np.all(np.isnan(sub), axis=0)
+    run_set = set(run_level_names or [])
+    by_feature = {}
+    for i, nm in enumerate(names):
+        if constant[i]:
+            by_feature[nm] = "run" if nm in run_set else "constant"
+        elif trial_available and trial_const[i]:
+            by_feature[nm] = "trial"
+        else:
+            by_feature[nm] = "local"
+    counts = {c: 0 for c in COLUMN_CLASSES}
+    for c in by_feature.values():
+        counts[c] += 1
+    out = {
+        "rows": int(n_rows),
+        "columns": int(n_cols),
+        "counts": counts,
+        "non_local": int(n_cols - counts["local"]),
+        "trial_class": "available" if trial_available else "unavailable",
+        "computed_from": "training_matrix",
+        "by_feature": by_feature,
+    }
+    # TODO-CH14-4 (wave 2): where the run-level set came from, and why 'trial' is unavailable.
+    if run_level_source is not None:
+        out["run_level_names_source"] = dict(run_level_source)
+        out["run_level_names_absent_from_data"] = sorted(run_set - set(names))
+    if not trial_available and trial_unavailable_reason:
+        out["trial_class_reason"] = trial_unavailable_reason
+    return out
+
+
+def attribution_share_by_class(vec, names: List[str], by_feature: Dict[str, str]) -> Dict[str, Any]:
+    """CD-13: share of total attribution (importance or |gradient|) carried by each column class."""
+    vec = np.abs(np.asarray(vec, dtype=float))
+    total = float(vec.sum())
+    share = {c: 0.0 for c in COLUMN_CLASSES}
+    share["unclassified"] = 0.0
+    for v, nm in zip(vec, names):
+        share[by_feature.get(nm, "unclassified")] += float(v)
+    if total > 0:
+        share = {k: v / total for k, v in share.items()}
+    share["total"] = total
+    return share
+
+
+def unused_features(vec, kind: Optional[str], names: List[str], by_feature: Dict[str, str],
+                    epsilon: float = DEFAULT_UNUSED_GRADIENT_EPSILON) -> Dict[str, Any]:
+    """
+    CD-08 (R-74): share of columns the model does not use, overall and per column class.
+      trees  importance exactly 0 (never split on, or zero gain)
+      NN     mean |input gradient| on the probe below `epsilon`
+    pct_excluding_constant leaves out the 'constant' and 'run' classes, which no model can use
+    within one run, so an expected zero is told from an alarming one.
+    """
+    vec = np.abs(np.asarray(vec, dtype=float))
+    if kind == "input_gradient_mean_abs":
+        unused = vec < float(epsilon)
+        rule = f"mean |input gradient| < {float(epsilon):g}"
+    else:
+        unused = vec == 0
+        rule = "importance == 0"
+    n = int(vec.shape[0])
+    by_class: Dict[str, Dict[str, Any]] = {}
+    for u, nm in zip(unused.tolist(), names):
+        c = by_feature.get(nm, "unclassified") if by_feature else "unclassified"
+        b = by_class.setdefault(c, {"columns": 0, "unused": 0})
+        b["columns"] += 1
+        b["unused"] += int(u)
+    for b in by_class.values():
+        b["pct"] = 100.0 * b["unused"] / b["columns"] if b["columns"] else None
+    keep = [not (by_feature and by_feature.get(nm) in ("constant", "run")) for nm in names]
+    n_keep = int(sum(keep))
+    u_keep = int(sum(u for u, k in zip(unused.tolist(), keep) if k))
+    return {
+        "rule": rule,
+        "attribution_kind": kind,
+        "columns": n,
+        "unused": int(unused.sum()),
+        "pct": 100.0 * float(unused.sum()) / n if n else None,
+        "pct_excluding_constant": 100.0 * u_keep / n_keep if n_keep else None,
+        "columns_excluding_constant": n_keep,
+        "by_class": by_class,
+        "unused_names": [nm for u, nm in zip(unused.tolist(), names) if u],
+    }
+
+
+def _tree_kind(model, model_type: str) -> str:
+    """'booster' (native) or 'sklearn' API object."""
+    if model_type == "xgboost":
+        return "sklearn" if hasattr(model, "get_booster") else "booster"
+    if model_type == "lightgbm":
+        return "sklearn" if hasattr(model, "booster_") else "booster"
+    return "sklearn"  # CatBoostRegressor
+
+
+def _stage_points(total: int, max_points: int) -> Tuple[List[int], int]:
+    """Rounds (1-based counts of trees) at which to evaluate, and the stride."""
+    if total <= 0:
+        return [], 1
+    stride = max(1, int(np.ceil(total / max(1, max_points))))
+    pts = list(range(stride, total + 1, stride))
+    if pts[-1] != total:
+        pts.append(total)
+    return pts, stride
+
+
+def tree_curves(model, model_type: str, X_train, y_train, X_val, y_val,
+                max_points: int = 500, lgb_val_record: Optional[List[float]] = None) -> Dict[str, Any]:
+    """
+    CD-05: per-round train and val MSE after training, without touching the fit call.
+
+      xgboost   staged prediction (iteration_range) over every boosted round; the Booster
+                keeps all rounds and its default predict uses all of them.
+      lightgbm  staged prediction (num_iteration) over the kept trees; the native Booster is
+                trimmed to its best iteration by lgb.train, so rounds after it come from
+                `lgb_val_record` (record_evaluation callback, val only) when given.
+      catboost  get_evals_result() learn/validation RMSE squared (all rounds run; the model
+                itself is trimmed to the best iteration by use_best_model).
+    """
+    y_train = np.asarray(y_train, dtype=float)
+    y_val = np.asarray(y_val, dtype=float)
+
+    def mse(p, y):
+        return float(np.mean((np.asarray(p, dtype=float).ravel() - y) ** 2))
+
+    if model_type == "xgboost":
+        import xgboost as xgb
+        booster = model.get_booster() if _tree_kind(model, model_type) == "sklearn" else model
+        total = int(booster.num_boosted_rounds())
+        pts, stride = _stage_points(total, max_points)
+        dtr, dva = xgb.DMatrix(X_train), xgb.DMatrix(X_val)
+        tr = [mse(booster.predict(dtr, iteration_range=(0, i)), y_train) for i in pts]
+        va = [mse(booster.predict(dva, iteration_range=(0, i)), y_val) for i in pts]
+        return {"rounds": [i - 1 for i in pts], "train": tr, "val": va, "used_rounds": total,
+                "rounds_run": total, "stride": stride, "source": "staged_prediction"}
+
+    if model_type == "lightgbm":
+        booster = model.booster_ if _tree_kind(model, model_type) == "sklearn" else model
+        kept = int(booster.current_iteration())
+        run = max(kept, len(lgb_val_record or []))
+        pts, stride = _stage_points(run, max_points)
+        rounds, tr, va = [], [], []
+        for i in pts:
+            rounds.append(i - 1)
+            if i <= kept:
+                tr.append(mse(booster.predict(X_train, num_iteration=i), y_train))
+                va.append(mse(booster.predict(X_val, num_iteration=i), y_val))
+            else:
+                tr.append(None)
+                va.append(float(lgb_val_record[i - 1]))
+        src = "staged_prediction" + ("+record_evaluation" if run > kept else "")
+        return {"rounds": rounds, "train": tr, "val": va, "used_rounds": kept,
+                "rounds_run": run, "stride": stride, "source": src}
+
+    if model_type == "catboost":
+        ev = model.get_evals_result() or {}
+        learn = next(iter(ev.get("learn", {}).values()), [])
+        val_key = "validation" if "validation" in ev else next((k for k in ev if k != "learn"), None)
+        val = next(iter(ev.get(val_key, {}).values()), []) if val_key else []
+        run = len(val)
+        pts, stride = _stage_points(run, max_points)
+        sq = lambda v: float(v) ** 2  # RMSE -> MSE
+        tr = [sq(learn[i - 1]) if i - 1 < len(learn) else None for i in pts]
+        va = [sq(val[i - 1]) for i in pts]
+        return {"rounds": [i - 1 for i in pts], "train": tr, "val": va,
+                "used_rounds": int(model.tree_count_), "rounds_run": run, "stride": stride,
+                "source": "get_evals_result_rmse_squared"}
+
+    raise ValueError(f"tree_curves: unsupported model_type {model_type!r}")
+
+
+def tree_importance(model, model_type: str, n_features: int) -> Tuple[np.ndarray, str]:
+    """CD-05: positional importance over all columns (never-split columns are 0)."""
+    vec = np.zeros(n_features, dtype=float)
+    if model_type == "xgboost":
+        booster = model.get_booster() if _tree_kind(model, model_type) == "sklearn" else model
+        score = booster.get_score(importance_type="gain")
+        fn = booster.feature_names
+        for k, v in score.items():
+            if fn and k in fn:
+                idx = fn.index(k)
+            elif k.startswith("f") and k[1:].isdigit():
+                idx = int(k[1:])
+            else:
+                continue
+            if idx < n_features:
+                vec[idx] = float(v)
+        return vec, "gain"
+    if model_type == "lightgbm":
+        booster = model.booster_ if _tree_kind(model, model_type) == "sklearn" else model
+        imp = np.asarray(booster.feature_importance(importance_type="gain"), dtype=float)
+        vec[: min(n_features, imp.shape[0])] = imp[:n_features]
+        return vec, "gain"
+    if model_type == "catboost":
+        imp = np.asarray(model.get_feature_importance(), dtype=float)
+        vec[: min(n_features, imp.shape[0])] = imp[:n_features]
+        return vec, "prediction_values_change"
+    raise ValueError(f"tree_importance: unsupported model_type {model_type!r}")
+
+
+def tree_best_iteration(model, model_type: str) -> Optional[int]:
+    try:
+        if model_type == "catboost":
+            return model.get_best_iteration()
+        bi = getattr(model, "best_iteration", None)
+        if bi is None and hasattr(model, "best_iteration_"):
+            bi = model.best_iteration_
+        return None if bi is None else int(bi)
+    except Exception:
+        return None
+
+
+TRIAL_ID_UNAVAILABLE_REASON = ("no trial id: the Step 5 rows (survivors_with_scores.json top-level "
+                               "keys seed, score, metadata, features, holdout_*) and the feature "
+                               "manifest carry none")
+
+
+def classify_from_options(X, feature_names: Optional[List[str]],
+                          options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """CD-13 with TODO-CH14-4: run-level set from the feature manifest named in `options`."""
+    opts = options or {}
+    names, src = load_run_level_names(opts.get("feature_manifest"))
+    return classify_columns(X, feature_names, run_level_names=names, run_level_source=src,
+                            trial_unavailable_reason=TRIAL_ID_UNAVAILABLE_REASON)
+
+
+def _stamp_kwargs(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    opts = options or {}
+    return {"run_id": opts.get("run_id"), "run_started_at": opts.get("run_started_at"),
+            "unused_gradient_epsilon": opts.get("unused_gradient_epsilon")}
+
+
+def make_nn_diagnostics_full(options: Dict[str, Any], X_train, X_probe=None, y_probe=None,
+                             loss_fn=None) -> "NNDiagnostics":
+    """Level-'full' NNDiagnostics from the options bundle (tst attach block). Probe set when rows > 0."""
+    names = options.get("feature_names")
+    diag = NNDiagnostics(
+        feature_names=names, names_source=options.get("names_source"), diagnostics_level="full",
+        column_classes=classify_from_options(X_train, names, options),
+        dead_unit_definition=options.get("dead_unit_definition"), **_stamp_kwargs(options),
+    )
+    rows = options.get("gradient_probe_rows")
+    rows = DEFAULT_GRADIENT_PROBE_ROWS if rows is None else int(rows)
+    if rows > 0 and X_probe is not None:
+        diag.set_gradient_probe(X_probe[:rows], y_probe[:rows], loss_fn)
+    return diag
+
+
+def build_tree_diagnostics_full(
+    model, model_type: str, X_train, y_train, X_val, y_val,
+    feature_names: Optional[List[str]] = None, names_source: Optional[str] = None,
+    final_metrics: Optional[Dict[str, Any]] = None, max_points: Optional[int] = None,
+    lgb_val_record: Optional[List[float]] = None, column_classes: Optional[Dict[str, Any]] = None,
+    options: Optional[Dict[str, Any]] = None,
+) -> "TreeDiagnostics":
+    """CD-05 + CD-04 + CD-13: a complete level-'full' tree report object, built after training.
+    `options` (wave 2): run id stamp (CD-07), unused epsilon (CD-08), feature manifest (TODO-CH14-4)."""
+    n_features = int(np.asarray(X_train).shape[1])
+    if column_classes is None:
+        column_classes = (classify_from_options(X_train, feature_names, options) if options is not None
+                          else classify_columns(X_train, feature_names))
+    diag = TrainingDiagnostics.create(
+        model_type, feature_names=feature_names, diagnostics_level="full",
+        names_source=names_source, column_classes=column_classes, **_stamp_kwargs(options),
+    )
+    diag.attach(model)
+    cur = tree_curves(model, model_type, X_train, y_train, X_val, y_val,
+                      max_points=max_points or diag.max_rounds, lgb_val_record=lgb_val_record)
+    diag.load_curves(cur["rounds"], cur["train"], cur["val"], used_rounds=cur["used_rounds"],
+                     curve_source=cur["source"], rounds_run=cur["rounds_run"], round_stride=cur["stride"])
+    vec, kind = tree_importance(model, model_type, n_features)
+    diag.set_importance_vector(vec, kind)
+    bi = tree_best_iteration(model, model_type)
+    if bi is not None:
+        diag.set_best_iteration(bi)
+    if final_metrics:
+        diag.set_final_metrics(final_metrics)
+    diag.detach()
+    return diag
+
+
+# =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
 
@@ -915,7 +1686,10 @@ def get_severity(path: str = None) -> str:
     return diag.get("diagnosis", {}).get("severity", "absent")
 
 
-def _prune_history_fifo(history_dir: str = DEFAULT_HISTORY_DIR, max_files: int = MAX_HISTORY_FILES) -> None:
+def _prune_history_fifo(history_dir: str = DEFAULT_HISTORY_DIR, max_files: int = MAX_HISTORY_FILES,
+                        pattern: str = "compare_models_*.json", mode: str = "delete",
+                        archive_dir: Optional[str] = None,
+                        exclude_prefixes: Tuple[str, ...] = ()) -> Optional[Dict[str, Any]]:
     """
     FIFO pruning for diagnostics history directory.
     
@@ -925,30 +1699,51 @@ def _prune_history_fifo(history_dir: str = DEFAULT_HISTORY_DIR, max_files: int =
     Args:
         history_dir: Path to history directory
         max_files: Maximum files to keep
+        pattern, mode, archive_dir, exclude_prefixes: [CH14-DIAG CD-10, wave 2] the defaults
+            are the original behaviour (compare_models_*.json, delete). mode 'move' moves the
+            oldest files into archive_dir instead of deleting them; files whose name starts
+            with one of exclude_prefixes are never candidates and are counted as 'excluded'.
+
+    Returns:
+        summary dict (candidates, kept, pruned, mode, excluded) or None when nothing to do.
     """
     try:
+        if mode not in ("delete", "move"):
+            raise ValueError(f"history prune mode must be delete or move, got {mode!r}")
         history_path = Path(history_dir)
         if not history_path.exists() or not history_path.is_dir():
-            return
+            return None
         
         # Get only compare_models history files (not other artifacts)
-        files = [(f, f.stat().st_mtime) for f in history_path.glob("compare_models_*.json")]
+        matched = list(history_path.glob(pattern))
+        excluded = [f for f in matched if f.name.startswith(tuple(exclude_prefixes))] if exclude_prefixes else []
+        files = [(f, f.stat().st_mtime) for f in matched if f not in excluded and f.is_file()]
         
         if len(files) <= max_files:
-            return  # Nothing to prune
+            return None  # Nothing to prune
         
         # Sort by mtime (oldest first)
         files.sort(key=lambda x: x[1])
         
         # Delete oldest files
         to_delete = files[:len(files) - max_files]
-        for f, _ in to_delete:
-            f.unlink()
+        if mode == "move":
+            dest = Path(archive_dir or (str(history_path).rstrip("/") + "_archive"))
+            dest.mkdir(parents=True, exist_ok=True)
+            for f, _ in to_delete:
+                os.replace(f, dest / f.name)
+        else:
+            for f, _ in to_delete:
+                f.unlink()
         
-        logger.info(f"FIFO pruned {len(to_delete)} diagnostics files (kept {max_files})")
+        logger.info(f"FIFO pruned {len(to_delete)} diagnostics files (kept {max_files})"
+                    + (f" [{mode}; {len(excluded)} excluded by prefix]" if (mode != "delete" or excluded) else ""))
+        return {"candidates": len(files), "kept": max_files, "pruned": len(to_delete), "mode": mode,
+                "excluded": len(excluded), "pruned_names": [f.name for f, _ in to_delete]}
         
     except Exception as e:
         logger.debug(f"History pruning failed (non-fatal): {e}")
+        return None
 
 
 # =============================================================================

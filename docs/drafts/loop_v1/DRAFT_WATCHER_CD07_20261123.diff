@@ -1,0 +1,40 @@
+--- a/agents/watcher_agent.py	2026-11-23 19:22:14.938503715 -0800
++++ b/agents/watcher_agent.py	2026-11-23 19:22:14.958503660 -0800
+@@ -2033,6 +2033,16 @@
+                 else:
+                     logger.debug(f"Skipping param '{key}' - not declared in step {step} manifest")
+ 
++        # [CH14-DIAG CD-07 DRAFT] Step 5 run identity. Acts only when the Step 5 manifest
++        # declares diagnostics_run_id (default_params null); WATCHER fills id and start time,
++        # Step 5 stamps them into every report (level full), and the health check compares.
++        if step == 5 and 'diagnostics_run_id' in final_params and not final_params.get('diagnostics_run_id'):
++            from training_diagnostics import new_run_id
++            final_params['diagnostics_run_id'], _ch14_started = new_run_id()
++            if 'diagnostics_run_started_at' in final_params:
++                final_params['diagnostics_run_started_at'] = _ch14_started
++            self._ch14_step5_run = (final_params['diagnostics_run_id'], _ch14_started)
++
+         # [S172 RUN-4 ROUTE-A] WALL 1 -- explicit operator pin.
+         # The seven are DECLARED-AND-ROUTABLE, never DEFAULTED: they enter
+         # `final_params` from the invocation-local operator bundle, and from
+@@ -2574,7 +2584,7 @@
+         
+         # -- PROCEED / PROCEED_WITH_NOTE --
+         if action in ("PROCEED", "PROCEED_WITH_NOTE"):
+-            if severity != "critical":
++            if severity not in ("critical", "stale"):  # [CH14-DIAG CD-07 DRAFT] stale = no evidence
+                 reset_skip_registry(model_type)
+             if action == "PROCEED_WITH_NOTE":
+                 logger.warning(
+@@ -3185,7 +3195,10 @@
+                         and not _step5_skipped):
+ 
+                     # Single health check call -- cached for both helpers
+-                    _health = check_training_health()
++                    # [CH14-DIAG CD-07 DRAFT] grade only this run's report
++                    _ch14_run = getattr(self, '_ch14_step5_run', None) or (None, None)
++                    _health = check_training_health(expected_run_id=_ch14_run[0],
++                                                    run_started_at=_ch14_run[1])
+                     _max_retries = self._get_max_training_retries()
+                     health_action = self._handle_training_health(_health)
+ 
