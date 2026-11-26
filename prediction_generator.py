@@ -394,64 +394,16 @@ class PredictionGenerator:
             checkpoint_path: Path to the .pth checkpoint that was actually loaded.
                              NOT guessed — passed from self.model_checkpoint_path.
         
-        Team Beta decisions:
-          - Store mean/scale as arrays, not pickled sklearn (portable)
-          - Best-effort: if absent (old checkpoints), proceed without transform + warn
-          - Zero-scale elements clamped to 1.0 to prevent NaN/inf
-          - Only called when model_type == 'neural_net'
+        [LL-6] The body moved, unchanged, to models.inference_bundle.load_nn_scaler
+        so Step 6 and the Chapter 13 attribution path read the scaler with ONE
+        function. Same rules, same log lines, same resulting attributes.
         """
-        try:
-            import torch
-        except ImportError:
-            self.logger.warning("[CAT-B] PyTorch not available — cannot load NN scaler")
-            return
-        
-        if not checkpoint_path or not Path(checkpoint_path).exists():
-            self.logger.warning(f"[CAT-B] NN checkpoint not found: {checkpoint_path}")
-            self.logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
-            return
-        
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        except Exception as e:
-            self.logger.warning(f"[CAT-B] Cannot read checkpoint: {e}")
-            self.logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
-            return
-        
-        if not isinstance(checkpoint, dict):
-            self.logger.info("[CAT-B] Checkpoint is not a dict — no scaler metadata")
-            return
-        
-        normalize_flag = checkpoint.get('normalize_features', False)
-        if not normalize_flag:
-            self.logger.info("[CAT-B] NN checkpoint: normalize_features=False (no scaler needed)")
-            return
-        
-        scaler_mean = checkpoint.get('scaler_mean')
-        scaler_scale = checkpoint.get('scaler_scale')
-        
-        if scaler_mean is None or scaler_scale is None:
-            self.logger.warning("[CAT-B] normalize_features=True but scaler arrays missing!")
-            self.logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
-            return
-        
-        import numpy as np
-        self._scaler_mean = np.asarray(scaler_mean, dtype=np.float32)
-        self._scaler_scale = np.asarray(scaler_scale, dtype=np.float32)
-        
-        # Fix 3A-3: Clamp zero/tiny scale to 1.0 to prevent NaN/inf
-        zero_mask = self._scaler_scale < 1e-12
-        n_clamped = int(zero_mask.sum())
-        if n_clamped > 0:
-            self._scaler_scale[zero_mask] = 1.0
-            self.logger.warning(f"[CAT-B] Clamped {n_clamped} zero-scale features to 1.0")
-        
-        self._normalize_features = True
-        
-        use_leaky = checkpoint.get('use_leaky_relu', False)
-        self.logger.info(f"[CAT-B] NN scaler loaded: {len(self._scaler_mean)} features")
-        self.logger.info(f"[CAT-B]   scale range: [{self._scaler_scale.min():.4f}, {self._scaler_scale.max():.4f}]")
-        self.logger.info(f"[CAT-B]   use_leaky_relu: {use_leaky}")
+        from models.inference_bundle import load_nn_scaler
+        sc = load_nn_scaler(checkpoint_path, self.logger)
+        if sc["normalize_features"]:
+            self._scaler_mean = sc["scaler_mean"]
+            self._scaler_scale = sc["scaler_scale"]
+            self._normalize_features = True
 
     def _get_signal_explanation(self, status: str) -> str:
         """

@@ -82,6 +82,22 @@ DEFAULT_HISTORY = "lottery_history.json"
 ORCHESTRATOR_LOG = "chapter13_orchestrator.log"
 CYCLE_HISTORY = "chapter13_cycle_history.jsonl"
 
+# [LL-6] root-cause model loader setting
+C13_MODEL_LOADERS = ("legacy", "canonical")
+
+
+def _c13_model_input(bundle, features):
+    """[LL-6] One survivor's model input through the canonical bundle: a name-keyed
+    feature map (LL-5 ranked_predictions format) is read BY NAME; a positional list
+    must have exactly the sidecar's count. Then the training scaler (Blocker 4)."""
+    if isinstance(features, dict):
+        x = bundle.vector(features)
+    else:
+        x = np.asarray(features, dtype=np.float32).reshape(-1)
+        if x.shape[0] != bundle.feature_count:
+            raise ValueError(f"positional feature list of {x.shape[0]} != {bundle.feature_count}")
+    return bundle.transform(x.reshape(1, -1))[0]
+
 # LLM server
 LLM_SERVER_SCRIPT = "llm_services/start_llm_servers.sh"
 
@@ -112,8 +128,14 @@ class Chapter13Orchestrator:
         self,
         policies_path: str = DEFAULT_POLICIES,
         use_llm: bool = True,
-        auto_start_llm: bool = False
+        auto_start_llm: bool = False,
+        c13_model_loader: str = 'legacy',              # [LL-6] 'legacy' = unchanged | 'canonical'
+        c13_models_dir: str = 'models/reinforcement',  # [LL-6] used by 'canonical'
     ):
+        if c13_model_loader not in C13_MODEL_LOADERS:
+            raise ValueError(f"c13_model_loader={c13_model_loader!r} not in {C13_MODEL_LOADERS}")
+        self.c13_model_loader = c13_model_loader
+        self.c13_models_dir = c13_models_dir
         self.policies_path = policies_path
         self.use_llm = use_llm
         self.auto_start_llm = auto_start_llm
@@ -340,6 +362,7 @@ class Chapter13Orchestrator:
                             model=model_info['model'],
                             model_type=model_info['model_type'],
                             feature_names=model_info.get('feature_names'),
+                            bundle=model_info.get('bundle'),  # [LL-6] None for legacy
                         )
                     else:
                         logger.info("  Root cause skipped — no model available")
@@ -561,6 +584,9 @@ class Chapter13Orchestrator:
             return False
 
     def _load_best_model_if_available(self) -> Optional[Dict[str, Any]]:
+        # [LL-6] declared setting; 'legacy' (default) runs the body below unchanged
+        if getattr(self, 'c13_model_loader', 'legacy') == 'canonical':
+            return self._load_model_canonical()
         """
         Attempt to load the best model from Step 5 output for attribution.
 
@@ -645,6 +671,23 @@ class Chapter13Orchestrator:
             logger.warning("Failed to load model for root cause: %s", e)
             return None
 
+    def _load_model_canonical(self) -> Optional[Dict[str, Any]]:
+        """[LL-6] Load the model the way Step 6 does, as one inference bundle
+        (models/inference_bundle.py; system map v1.2 Blocker 3 ruling). Non-fatal
+        like the legacy loader: returns None, with the reason logged."""
+        try:
+            from models.inference_bundle import load_inference_bundle
+            bundle = load_inference_bundle(getattr(self, 'c13_models_dir', 'models/reinforcement'),
+                                           device="cpu")
+        except Exception as e:
+            logger.warning("Canonical model load for root cause failed: %s", e)
+            return None
+        logger.info("Loaded %s model for root cause attribution (canonical bundle, %d features)",
+                    bundle.model_type, bundle.feature_count)
+        return {"model": bundle.attribution_model, "model_type": bundle.model_type,
+                "feature_names": list(bundle.feature_names), "bundle": bundle,
+                "loader": "canonical"}
+
     # =========================================================================
     # POST-DRAW ROOT CAUSE ANALYSIS (Chapter 14, Task 8.4)
     # =========================================================================
@@ -656,6 +699,7 @@ class Chapter13Orchestrator:
         model,
         model_type: str,
         feature_names: Optional[List[str]] = None,
+        bundle=None,  # [LL-6] canonical inference bundle; None = legacy behaviour
     ) -> Optional[Dict[str, Any]]:
         """
         Called when Chapter 13 detects Hit@20 dropped after a new draw.
@@ -702,7 +746,8 @@ class Chapter13Orchestrator:
                 attr = per_survivor_attribution(
                     model=model,
                     model_type=model_type,
-                    features=np.asarray(features, dtype=np.float32),
+                    features=(_c13_model_input(bundle, features) if bundle is not None
+                              else np.asarray(features, dtype=np.float32)),  # [LL-6]
                     feature_names=_feature_names,
                 )
                 if attr:  # non-empty (best-effort invariant)
@@ -725,7 +770,8 @@ class Chapter13Orchestrator:
                 attr = per_survivor_attribution(
                     model=model,
                     model_type=model_type,
-                    features=np.asarray(features, dtype=np.float32),
+                    features=(_c13_model_input(bundle, features) if bundle is not None
+                              else np.asarray(features, dtype=np.float32)),  # [LL-6]
                     feature_names=_feature_names,
                 )
                 if attr:
@@ -1025,6 +1071,11 @@ Examples:
                        help=f"Policies file (default: {DEFAULT_POLICIES})")
     parser.add_argument("--reason", type=str, default="Manually rejected",
                        help="Rejection reason (for --reject)")
+    parser.add_argument("--c13-model-loader", choices=["legacy", "canonical"], default="legacy",
+                        help="[LL-6] root-cause model loader: 'legacy' (default, unchanged) or "
+                             "'canonical' (the Step 6 loader as one inference bundle, with the NN scaler)")
+    parser.add_argument("--c13-models-dir", default="models/reinforcement",
+                        help="[LL-6] models dir for --c13-model-loader canonical")
     parser.add_argument("--json", action="store_true",
                        help="Output as JSON")
     
@@ -1043,7 +1094,9 @@ Examples:
     orchestrator = Chapter13Orchestrator(
         policies_path=args.policies,
         use_llm=not args.no_llm,
-        auto_start_llm=args.auto_start_llm
+        auto_start_llm=args.auto_start_llm,
+        c13_model_loader=args.c13_model_loader,  # [LL-6]
+        c13_models_dir=args.c13_models_dir,      # [LL-6]
     )
     
     try:
