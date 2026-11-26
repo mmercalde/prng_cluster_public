@@ -75,8 +75,9 @@ MUTANTS = [
      f"    return {HIT}, info\n",
      "test_cd09_expiry_clock", "CD09_EXPIRY"),
     ("W13_cd09_mpo_old_rule", "meta_prediction_optimizer_anti_overfit.py",
-     "                if (_skip_active(_entry, _skip_rules)[0] if _skip_active is not None\n",
-     f"                if ({HIT} and _entry.get('consecutive_critical', 0) >= _skip_threshold if _skip_active is not None\n",
+     # [BENCHING 2026-11-26] anchor moved: the reader now takes skip_active's info as well
+     "                    _active, _info = _skip_active(_entry, _skip_rules)\n",
+     f"                    _active, _info = ({HIT} and _entry.get('consecutive_critical', 0) >= _skip_threshold), {{}}\n",
      "test_cd09_both_readers[hours]", "CD09_MPO"),
     ("W14_cd09_thc_old_rule", "training_health_check.py",
      "        return skip_active(entry, skip_rules)[0]  # [CH14-DIAG CD-09] expiry_mode\n",

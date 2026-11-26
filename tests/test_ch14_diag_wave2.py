@@ -304,10 +304,11 @@ ENTRY = {"consecutive_critical": 3, "last_critical": T0.isoformat()}
 
 
 def test_cd09_expiry_clock():
-    hours = {"max_consecutive_critical": 3, "skip_duration_hours": 24, "expiry_mode": "hours"}
+    # [BENCHING 2026-11-26] expiry applies with benching on; the default is now off (never skipped)
+    hours = {"max_consecutive_critical": 3, "skip_duration_hours": 24, "expiry_mode": "hours", "benching": "on"}
     assert thc.skip_active(ENTRY, hours, now=T0 + timedelta(hours=23))[0] is True, credit("CD09_EXPIRY")
     assert thc.skip_active(ENTRY, hours, now=T0 + timedelta(hours=25))[0] is False, credit("CD09_EXPIRY")
-    reset = {"max_consecutive_critical": 3, "skip_duration_hours": 24}
+    reset = {"max_consecutive_critical": 3, "skip_duration_hours": 24, "benching": "on"}
     for h in (25, 1000):
         assert thc.skip_active(ENTRY, reset, now=T0 + timedelta(hours=h))[0] is True, credit("CD09_RESET")
     assert thc.skip_active({"consecutive_critical": 2}, hours)[0] is False
@@ -323,7 +324,7 @@ def test_cd09_both_readers(mode, tmp_path, monkeypatch):
     old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
     write_json(tmp_path / "diagnostics_outputs" / "model_skip_registry.json",
                {"neural_net": {"consecutive_critical": 3, "last_critical": old}})
-    rules = {"max_consecutive_critical": 3, "skip_duration_hours": 24}
+    rules = {"max_consecutive_critical": 3, "skip_duration_hours": 24, "benching": "on"}  # [BENCHING]
     if mode == "hours":
         rules["expiry_mode"] = "hours"
     write_json(tmp_path / "watcher_policies.json", {"training_diagnostics": {"model_skip_rules": rules}})
@@ -346,6 +347,9 @@ def test_cd09_skip_status_default_identical(head_dir, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     write_json(tmp_path / "diagnostics_outputs" / "model_skip_registry.json",
                {"neural_net": dict(ENTRY), "catboost": {"consecutive_critical": 1, "last_critical": None}})
+    # [BENCHING 2026-11-26] the default is now off; benching on is the setting identical to HEAD_REV
+    write_json(tmp_path / "watcher_policies.json",
+               {"training_diagnostics": {"model_skip_rules": {"benching": "on"}}})
     assert thc.get_skip_status() == head.get_skip_status(), credit("CD09_DEFAULT")
     assert thc.is_model_skipped("neural_net") == head.is_model_skipped("neural_net")
 

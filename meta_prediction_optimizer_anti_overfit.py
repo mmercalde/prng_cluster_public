@@ -159,6 +159,8 @@ def _s88_run_compare_models(args_dict):
                 _skip_reg = json.load(_sf)
             # Default threshold matches training_health_check.py DEFAULT_SKIP_RULES
             _skip_threshold = 3
+            _skip_bench = "off"   # [BENCHING] default matches training_health_check.DEFAULT_BENCHING
+            _rules_fb = {}        # [R1 F5] model_skip_rules for the import-failure fallback
             # Try to read from watcher_policies.json for consistency
             if os.path.isfile("watcher_policies.json"):
                 try:
@@ -168,6 +170,8 @@ def _s88_run_compare_models(args_dict):
                         .get("training_diagnostics", {})
                         .get("model_skip_rules", {})
                         .get("max_consecutive_critical", 3))
+                    _rules_fb = _policies.get("training_diagnostics", {}).get("model_skip_rules", {}) or {}
+                    _skip_bench = _rules_fb.get("benching", "off")
                 except Exception:
                     pass
             try:  # [CH14-DIAG CD-09] same expiry rule as training_health_check.is_model_skipped
@@ -175,10 +179,33 @@ def _s88_run_compare_models(args_dict):
                 _skip_rules = _thc_policies().get("model_skip_rules", {})
             except ImportError:
                 _skip_active = None
+                if _skip_bench not in ("off", "on"):
+                    raise ValueError(f"model_skip_rules.benching must be one of ('off', 'on'), got {_skip_bench!r}")
+            _why_models = []      # [BENCHING] off: kept in the comparison, why-report needed
             for _model, _entry in _skip_reg.items():
-                if (_skip_active(_entry, _skip_rules)[0] if _skip_active is not None
-                        else _entry.get("consecutive_critical", 0) >= _skip_threshold):
+                if _skip_active is not None:
+                    _active, _info = _skip_active(_entry, _skip_rules)
+                    _why = bool(_info.get("why_report_needed"))
+                else:
+                    _over = _entry.get("consecutive_critical", 0) >= _skip_threshold
+                    _active, _why = _over and _skip_bench == "on", _over and _skip_bench == "off"
+                    if _active and _rules_fb.get("expiry_mode") == "hours":   # [R1 F5] as skip_active
+                        try:
+                            from datetime import datetime as _dt, timezone as _tz
+                            _lc = _dt.fromisoformat(str(_entry.get("last_critical")))
+                            _lc = _lc if _lc.tzinfo else _lc.replace(tzinfo=_tz.utc)
+                            _active = (_dt.now(_tz.utc) - _lc).total_seconds() < \
+                                3600 * float(_rules_fb.get("skip_duration_hours", 24))
+                        except (TypeError, ValueError):
+                            pass  # no readable last_critical: the skip is kept, as skip_active
+                if _active:
                     skipped_models.append(_model)
+                elif _why:
+                    _why_models.append(_model)
+            if _why_models:
+                print(f"[S90][WHY-REPORT] Benching off: {_why_models} at or over "
+                      f"max_consecutive_critical; kept in the comparison; why-report needed "
+                      f"(flag file written by training_health_check)")
             if skipped_models:
                 original_count = len(model_list)
                 model_list = [m for m in model_list if m not in skipped_models]

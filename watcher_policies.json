@@ -165,7 +165,8 @@
     "model_skip_rules": {
       "max_consecutive_critical": 3,
       "skip_duration_hours": 24,
-      "description": "If a model type hits critical N times consecutively, skip it for N hours"
+      "benching": "off",
+      "description": "benching off (default, owner ruling 2026-11-24): a model type that hits critical N times consecutively is never skipped; the count is kept and a why-report flag is raised (diagnostics_outputs/why_report_flags.jsonl). benching on: skip it (until a non-critical check, or skip_duration_hours with expiry_mode hours)"
     }
   },
   "notifications": {

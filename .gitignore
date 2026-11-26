@@ -123,6 +123,13 @@ acceptance_decisions.jsonl
 chapter13_cycle_history.jsonl
 watcher_decisions.jsonl
 .history_fingerprint
+# [BENCHING 2026-11-26] why-report flags (training_health_check) and their attach record
+# (why_report_flags.py); append-only runtime records, must never dirty the tree (gate12 clean-tree gate)
+diagnostics_outputs/why_report_flags.jsonl
+diagnostics_outputs/why_report_attachments.jsonl
+diagnostics_outputs/why_report_notified.jsonl
+# [BENCHING R1 F1] skip registry temp file (write then os.replace); exists only if a write was killed
+diagnostics_outputs/.model_skip_registry.json.*.tmp
 
 # --- Runtime data files (regenerated each run) ---
 acceptance_decisions.jsonl

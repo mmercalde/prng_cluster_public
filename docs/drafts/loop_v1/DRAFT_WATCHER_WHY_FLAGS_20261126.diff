@@ -1,0 +1,34 @@
+diff --git a/agents/watcher_agent.py b/agents/watcher_agent.py
+index 6f42fac..9a85ae8 100644
+--- a/agents/watcher_agent.py
++++ b/agents/watcher_agent.py
+@@ -112,6 +112,13 @@ except ImportError:
+     reset_skip_registry = None
+     get_retry_params_suggestions = None
+ 
++# [BENCHING 2026-11-26] WATCHER looks out for why-report flags (owner ruling 07:10). Never stops a run.
++try:
++    from why_report_flags import watcher_run_start as _why_run_start, watcher_on_health as _why_on_health
++except Exception as _why_err:  # logged at every run start and health check, never swallowed
++    _why_run_start = _why_on_health = (lambda *a, _e=repr(_why_err), **k: logger.error(
++        "[WATCHER][WHY-REPORT] flag reader not available: %s", _e))
++
+ # --- S81_PHASE7_LLM_DIAGNOSTICS_IMPORT ---
+ try:
+     from diagnostics_llm_analyzer import (
+@@ -2571,6 +2578,7 @@ class WatcherAgent:
+         model_type = health.get("model_type", "unknown")
+         severity = health.get("severity", "absent")
+         issues = health.get("issues", [])
++        _why_on_health(health, logger)  # [BENCHING] one notification per new flag_id (own sender, exit checked)
+         
+         # -- PROCEED / PROCEED_WITH_NOTE --
+         if action in ("PROCEED", "PROCEED_WITH_NOTE"):
+@@ -3024,6 +3032,7 @@ class WatcherAgent:
+                 `--run-pipeline --params` seam via `split_operator_pin_params`.
+         """
+         logger.info(f"Starting pipeline from step {start_step} to {end_step}")
++        _why_run_start(logger)  # [BENCHING] open why-report flags, top of summary and log
+ 
+         # [S172 RUN-4 ROUTE-A] Capture the explicit operator pin ONCE, here,
+         # before the retry/LLM loop below can mutate anything (:2735 rebinds

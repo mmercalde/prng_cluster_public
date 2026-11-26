@@ -111,6 +111,19 @@ STALE_REPORT_ACTIONS = ("PROCEED_WITH_NOTE", "RETRY", "grade")
 DEFAULT_STALE_REPORT_ACTION = "PROCEED_WITH_NOTE"
 SKIP_EXPIRY_MODES = ("until_reset", "hours")
 DEFAULT_SKIP_EXPIRY_MODE = "until_reset"
+# [BENCHING switch, 2026-11-26] model_skip_rules.benching. Owner ruling 2026-11-24 10:47-10:50: "a poor
+# health grade never removes a model family from the comparison; it triggers a why-report. Benching stays
+# in the code as a switch, off." DEFAULT CHANGED: before this switch a family was always benched (SKIP_MODEL,
+# and left out of the compare) at max_consecutive_critical.
+#   off (default): never skip. The count is kept; at >= max_consecutive_critical the action stays RETRY,
+#                  the result carries why_report_needed, a warning is logged and one line is appended to
+#                  WHY_REPORT_FLAGS_PATH. The automatic why-report itself is not built (TODO-WHY-1).
+#   on:  the skip as before. until_reset: identical. hours: once a timed skip has expired the count
+#        restarts, so the family gets its full retries again (READY_LOOP_DIAG_2_20261123.md:229).
+BENCHING_SWITCH = ("off", "on")
+DEFAULT_BENCHING = "off"
+WHY_REPORT_FLAGS_PATH = "diagnostics_outputs/why_report_flags.jsonl"
+WHY_REPORT_FLAG_SCHEMA = "ch14_why_report_flag/1"
 HISTORY_PRUNE_SWITCH = ("off", "on")
 DEFAULT_HISTORY_PRUNE = "off"
 HISTORY_PRUNE_MODES = ("move", "delete")
@@ -133,6 +146,14 @@ def _choice(policies: Dict[str, Any], key: str, allowed, default):
     return v
 
 
+def benching_mode(skip_rules: Optional[Dict[str, Any]]) -> str:
+    """model_skip_rules.benching, validated (fail closed on an unknown value, like expiry_mode)."""
+    v = (skip_rules or {}).get('benching', DEFAULT_BENCHING)
+    if v not in BENCHING_SWITCH:
+        raise ValueError(f"model_skip_rules.benching must be one of {BENCHING_SWITCH}, got {v!r}")
+    return v
+
+
 def _wave2_settings(policies: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve and validate the CH14-DIAG wave 2 settings (fail closed on an unknown value)."""
     skip_rules = policies.get('model_skip_rules', DEFAULT_SKIP_RULES) or {}
@@ -149,6 +170,7 @@ def _wave2_settings(policies: Dict[str, Any]) -> Dict[str, Any]:
         'stale_report_action': _choice(policies, 'stale_report_action', STALE_REPORT_ACTIONS,
                                        DEFAULT_STALE_REPORT_ACTION),
         'expiry_mode': expiry,
+        'benching': benching_mode(skip_rules),
         'history_prune': _choice(policies, 'history_prune', HISTORY_PRUNE_SWITCH, DEFAULT_HISTORY_PRUNE),
         'history_prune_mode': _choice(policies, 'history_prune_mode', HISTORY_PRUNE_MODES,
                                       DEFAULT_HISTORY_PRUNE_MODE),
@@ -338,7 +360,7 @@ def _evaluate_single_model(
     model_type, severity, all_issues, fixes = _grade_single(diag, metric_bounds)
     
     # ── Map severity to action ────────────────────────────────────────
-    action, consecutive = _severity_to_action(severity, model_type, policies)
+    action, consecutive, why = _severity_to_action(severity, model_type, policies)
     
     # ── Archive diagnostics for Strategy Advisor history ──────────────
     _archive_diagnostics(diag, severity, all_issues, model_type)
@@ -352,8 +374,7 @@ def _evaluate_single_model(
         'confidence': _severity_to_confidence(severity),
     }
     
-    if action == 'SKIP_MODEL':
-        result['consecutive_critical'] = consecutive
+    _attach_skip_fields(result, action, consecutive, why)
     
     logger.info(
         "Training health check: model=%s severity=%s action=%s issues=%d",
@@ -448,8 +469,9 @@ def _evaluate_multi_model(
         )
         action = 'PROCEED_WITH_NOTE'
         severity = 'warning'
+        consecutive, why = 0, None
     else:
-        action, consecutive = _severity_to_action(winner_severity, winner, policies)
+        action, consecutive, why = _severity_to_action(winner_severity, winner, policies)
         severity = winner_severity
     
     # ── Archive ───────────────────────────────────────────────────────
@@ -466,8 +488,7 @@ def _evaluate_multi_model(
         'per_model_severity': {m: r['severity'] for m, r in model_results.items()},
     }
     
-    if action == 'SKIP_MODEL':
-        result['consecutive_critical'] = consecutive
+    _attach_skip_fields(result, action, consecutive, why)
     
     logger.info(
         "Training health check (multi-model): winner=%s severity=%s action=%s",
@@ -791,6 +812,7 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
     severity = g['severity']
     issues = list(g['issues'])
     per_family = {}
+    family_reports = {}  # G-2: each graded family's own report and grade, kept for promotion
     for m, fp in family_paths.items():
         if not os.path.isfile(fp):
             per_family[m] = {'severity': 'absent', 'path': fp}
@@ -805,30 +827,58 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
             fg = grade_report(frep, policies, 'fixed')
             per_family[m] = {'severity': fg['severity'], 'issues': fg['issues'], 'path': fp,
                              'freshness': ffr['freshness']}
+            family_reports[m] = (frep, fg, ffr)
         except Exception as e:  # one unreadable family never blocks the check
             per_family[m] = {'severity': 'absent', 'path': fp, 'error': str(e)}
     graded = {k: v for k, v in per_family.items() if v['severity'] not in ('absent', 'stale')}
     worst_family = max(graded, key=lambda k: _SEVERITY_ORDER.get(graded[k]['severity'], 0)) if graded else None
+    winner_name, promoted = model_type, None
     if per_family and settings['grade_scope'] == 'all_families' and worst_family:
         if _SEVERITY_ORDER.get(graded[worst_family]['severity'], 0) > _SEVERITY_ORDER.get(severity, 0):
             model_type, severity = worst_family, graded[worst_family]['severity']
+            promoted = worst_family
+    # G-2: a promoted family's own report, grade and issues; the winner's issues follow, prefixed.
+    # worst_family comes from `graded`, filled only after a successful load and grade, so its
+    # report is always in family_reports; the guard below reports it if that ever changes.
+    out_diag, out_g = diag, g
+    if promoted is not None:
+        if promoted in family_reports:
+            out_diag, out_g, _ = family_reports[promoted]
+            issues = list(out_g['issues']) + [f"[{winner_name}] {i}" for i in g['issues']]
+        else:
+            out_diag, out_g = {}, {}
+            issues = [f"WATCHER: report of {promoted} could not be loaded; its issues, fixes and "
+                      f"metrics are not shown"] + [f"[{winner_name}] {i}" for i in g['issues']]
     if severity == 'ok' and worst_family and graded[worst_family]['severity'] != 'ok' \
             and settings['grade_scope'] == 'winner':
-        action, consecutive, severity = 'PROCEED_WITH_NOTE', 0, 'warning'
+        action, consecutive, severity, why = 'PROCEED_WITH_NOTE', 0, 'warning', None
     else:
-        action, consecutive = _severity_to_action(severity, model_type, policies)
+        action, consecutive, why = _severity_to_action(severity, model_type, policies)
     for m, v in per_family.items():
-        if m != model_type:
+        if m != model_type and (promoted is None or m != winner_name):
             issues += [f"[{m}] {i}" for i in v.get('issues', [])]
     if fr['freshness'] != 'fresh':
-        issues.append(f"WATCHER: report freshness {fr['freshness']}: {fr['reason']}")
-    _archive_diagnostics(diag, severity, issues, model_type)
+        issues.append((f"[{winner_name}] " if promoted is not None else '')
+                      + f"WATCHER: report freshness {fr['freshness']}: {fr['reason']}")
+    _archive_diagnostics(out_diag, severity, issues, model_type)
     result = {'action': action, 'model_type': model_type, 'severity': severity, 'issues': issues,
-              'suggested_fixes': list(diag.get('diagnosis', {}).get('suggested_fixes', [])),
+              'suggested_fixes': list(out_diag.get('diagnosis', {}).get('suggested_fixes', [])),
               'confidence': _severity_to_confidence(severity), 'per_family': per_family,
-              'metrics': g.get('metrics'), 'grade_scope': settings['grade_scope'], **base}
-    if action == 'SKIP_MODEL':
-        result['consecutive_critical'] = consecutive
+              'metrics': out_g.get('metrics'), 'grade_scope': settings['grade_scope'], **base}
+    if promoted is not None:
+        result.update({'winner_model_type': winner_name, 'grade_set_by': promoted,
+                       'grade_note': f"grade set by {promoted}, not by the winner {winner_name} "
+                                     f"(grade_scope all_families)"})
+        # [R1 F4] report_path, report_source and freshness are the grade-setting family's own; the
+        # winner's are kept under winner_*. (The retry LLM still opens the canonical report itself:
+        # agents/watcher_agent.py, not changed here.)
+        result.update({'winner_report_path': base['report_path'],
+                       'winner_report_source': base['report_source'],
+                       'winner_freshness': base.get('freshness'),
+                       'report_path': per_family[promoted]['path'],
+                       'report_source': 'all_families_grade_setter_report',
+                       'freshness': family_reports[promoted][2] if promoted in family_reports else None})
+    _attach_skip_fields(result, action, consecutive, why)
     logger.info("Training health check (fixed): model=%s severity=%s action=%s source=%s",
                 model_type, severity, action, report_source)
     return result
@@ -905,14 +955,21 @@ def skip_active(entry: Dict[str, Any], skip_rules: Dict[str, Any],
       until_reset (default, today's): consecutive_critical >= max_consecutive_critical
       hours: the same AND last_critical less than skip_duration_hours ago. An entry with no
              readable last_critical stays skipped (today's behaviour) and says so.
+    [BENCHING] model_skip_rules.benching 'off' (default): never an active skip; at or over the
+    limit info carries why_report_needed=True instead. 'on': the rules above.
     """
     max_consecutive = skip_rules.get('max_consecutive_critical', DEFAULT_SKIP_RULES['max_consecutive_critical'])
     mode = skip_rules.get('expiry_mode', DEFAULT_SKIP_EXPIRY_MODE)
     if mode not in SKIP_EXPIRY_MODES:
         raise ValueError(f"model_skip_rules.expiry_mode must be one of {SKIP_EXPIRY_MODES}, got {mode!r}")
+    bench = benching_mode(skip_rules)
     consecutive = (entry or {}).get('consecutive_critical', 0)
-    info: Dict[str, Any] = {'expiry_mode': mode, 'consecutive': consecutive, 'threshold': max_consecutive}
+    info: Dict[str, Any] = {'expiry_mode': mode, 'consecutive': consecutive, 'threshold': max_consecutive,
+                            'benching': bench}
     if consecutive < max_consecutive:
+        return False, info
+    if bench == 'off':
+        info['why_report_needed'] = True
         return False, info
     if mode == 'until_reset':
         return True, info
@@ -972,6 +1029,11 @@ def _write_training_health_log(result: Dict[str, Any], diagnostics_path: str,
             'run_started_at': run_ctx.get('run_started_at'),
             'compare_run_id': result.get('compare_run_id'),
             'freshness': fr.get('freshness'),
+            # [R1 F4] promoted case only: the winner's report, kept apart from the grade setter's
+            **({k: result.get(k) for k in ('grade_set_by', 'winner_model_type', 'winner_report_path',
+                                            'winner_report_source')} if result.get('grade_set_by') else {}),
+            **({'winner_freshness': (result.get('winner_freshness') or {}).get('freshness')}
+               if result.get('grade_set_by') else {}),
             'consecutive_critical': result.get('consecutive_critical'),
             'registry_consecutive_critical': _registry_count(result.get('model_type')),
             'per_family': {k: v.get('severity') for k, v in (result.get('per_family') or {}).items()},
@@ -1000,7 +1062,7 @@ def _severity_to_action(
     Map severity to action, checking skip registry for consecutive failures.
     
     Returns:
-        tuple: (action: str, consecutive_critical: int)
+        tuple: (action: str, consecutive_critical: int, why_report_flag: dict or None)
     """
     severity_map = policies.get('severity_thresholds', {})
     policy = severity_map.get(severity, {})
@@ -1008,21 +1070,20 @@ def _severity_to_action(
     
     # Handle absent/unknown severity
     if severity in ('absent', 'unknown'):
-        return 'PROCEED', 0
+        return 'PROCEED', 0, None
     
     if severity == 'ok':
-        return 'PROCEED', 0
+        return 'PROCEED', 0, None
     
     if severity == 'warning':
-        return 'PROCEED_WITH_NOTE', 0
+        return 'PROCEED_WITH_NOTE', 0, None
     
     if severity == 'critical':
         # Check skip registry for consecutive failures
-        action, consecutive = _check_skip_registry(model_type, policies)
-        return action, consecutive
+        return _check_skip_registry(model_type, policies)
     
     # Fallback
-    return base_action, 0
+    return base_action, 0, None
 
 
 def _check_skip_registry(model_type: str, policies: Dict[str, Any]) -> tuple:
@@ -1036,11 +1097,16 @@ def _check_skip_registry(model_type: str, policies: Dict[str, Any]) -> tuple:
         "catboost": {"consecutive_critical": 0, "last_critical": null}
     }
     
+    [BENCHING] benching 'off' (default): the count is kept, the action stays RETRY at and over the
+    limit, and a why-report flag is raised (_raise_why_flag). 'on': SKIP_MODEL at the limit; with
+    expiry_mode 'hours', a critical after the timed skip expired restarts the count first.
+
     Returns:
-        tuple: (action: str, consecutive_critical: int)
+        tuple: (action: str, consecutive_critical: int, why_report_flag: dict or None)
     """
     skip_rules = policies.get('model_skip_rules', DEFAULT_SKIP_RULES)
     max_consecutive = skip_rules.get('max_consecutive_critical', 3)
+    bench = benching_mode(skip_rules)
 
     registry = {}
     if os.path.isfile(SKIP_REGISTRY_PATH):
@@ -1051,29 +1117,158 @@ def _check_skip_registry(model_type: str, policies: Dict[str, Any]) -> tuple:
             logger.warning(f"Failed to read skip registry: {e}")
 
     entry = registry.get(model_type, {'consecutive_critical': 0, 'last_critical': None})
+    if bench == 'on' and entry.get('consecutive_critical', 0) >= max_consecutive \
+            and not skip_active(entry, skip_rules)[0]:
+        # hours mode: the timed skip has expired, so the count restarts (full retries again)
+        logger.info("Model %s: timed skip expired; consecutive critical count restarts", model_type)
+        entry['consecutive_critical'] = 0
+        for k in _WHY_FLAG_ENTRY_KEYS:  # a new run of criticals: no stale flag identity (absent unless off ran)
+            entry.pop(k, None)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if bench == 'off' and entry['consecutive_critical'] == 0:
+        entry['critical_since'] = now_iso       # start of this run of criticals (for the flag)
+        entry.pop('why_flag_first_at', None)
     entry['consecutive_critical'] += 1
-    entry['last_critical'] = datetime.now(timezone.utc).isoformat()
+    entry['last_critical'] = now_iso
+    if bench == 'off' and entry['consecutive_critical'] - entry.get('why_flag_base', 0) > max_consecutive \
+            and _why_flag_attached(why_flag_id(model_type, _why_flag_anchor(entry))):
+        # [BENCHING R1 F3] the flag of this run of criticals has a why-report attached and the family is
+        # still critical: a new segment starts here, so another max_consecutive criticals with no reset
+        # raise a NEW flag (linked by previous_flag_id). A family that keeps failing never goes quiet.
+        entry['why_flag_prev'] = why_flag_id(model_type, _why_flag_anchor(entry))
+        entry['why_flag_base'] = entry['consecutive_critical'] - 1
+        entry['critical_since'] = now_iso
+        entry.pop('why_flag_first_at', None)
+    if bench == 'off' and entry['consecutive_critical'] >= max_consecutive \
+            and not entry.get('critical_since') and not entry.get('why_flag_first_at'):
+        # [BENCHING review fix c] the count started before critical_since was recorded: the first
+        # flagged_at of this run of criticals is kept so every repeat flag carries one flag_id
+        entry['why_flag_first_at'] = now_iso
 
     registry[model_type] = entry
 
     # Write updated registry
     try:
-        os.makedirs(os.path.dirname(SKIP_REGISTRY_PATH), exist_ok=True)
-        with open(SKIP_REGISTRY_PATH, 'w') as f:
-            json.dump(registry, f, indent=2)
-    except IOError as e:
+        _write_skip_registry(registry)
+    except (IOError, OSError) as e:
         logger.warning(f"Failed to write skip registry: {e}")
 
     consecutive = entry['consecutive_critical']
     
     if consecutive >= max_consecutive:
+        if bench == 'off':
+            if consecutive - entry.get('why_flag_base', 0) < max_consecutive:
+                return 'RETRY', consecutive, None   # [R1 F3] after an attached why-report, not yet again
+            return 'RETRY', consecutive, _raise_why_flag(model_type, entry, max_consecutive)
         logger.warning(
             "Model %s hit %d consecutive critical failures — SKIP_MODEL",
             model_type, consecutive
         )
-        return 'SKIP_MODEL', consecutive
+        return 'SKIP_MODEL', consecutive, None
 
-    return 'RETRY', consecutive
+    return 'RETRY', consecutive, None
+
+
+def _attach_skip_fields(result: Dict[str, Any], action: str, consecutive: int,
+                        why: Optional[Dict[str, Any]]) -> None:
+    """consecutive_critical on SKIP_MODEL (as before); with a why-report flag, the flag as well."""
+    if action == 'SKIP_MODEL' or why:
+        result['consecutive_critical'] = consecutive
+    if why:
+        result['why_report_needed'] = why
+
+
+_WHY_FLAG_ENTRY_KEYS = ('critical_since', 'why_flag_first_at', 'why_flag_base', 'why_flag_prev')
+WHY_REPORT_ATTACH_PATH = "diagnostics_outputs/why_report_attachments.jsonl"  # == why_report_flags.ATTACH_PATH
+
+
+def _write_skip_registry(registry: Dict[str, Any]) -> None:
+    """[BENCHING R1 F1] The one writer of SKIP_REGISTRY_PATH: a temp file in the same directory, then
+    os.replace, so an interrupted write leaves the previous registry intact (never truncated JSON)."""
+    d = os.path.dirname(SKIP_REGISTRY_PATH) or '.'
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, f".{os.path.basename(SKIP_REGISTRY_PATH)}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(registry, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SKIP_REGISTRY_PATH)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _why_flag_anchor(rec: Dict[str, Any]) -> Optional[str]:
+    """The anchor of a flag_id: critical_since, else why_flag_first_at. The same chain as
+    why_report_flags.flag_id_of (which falls back to flagged_at for lines older than both)."""
+    return rec.get('critical_since') or rec.get('why_flag_first_at')
+
+
+def _why_flag_attached(flag_id: str) -> bool:
+    """[BENCHING R1 F3] Does flag_id have a why-report attached (why_report_flags attach record)?
+    Unreadable lines are skipped; a missing or unreadable file means no attachment."""
+    try:
+        with open(WHY_REPORT_ATTACH_PATH) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get('flag_id') == flag_id:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def why_flag_id(model_type: str, anchor: str) -> str:
+    """[BENCHING review fix c] Stable id of one run of critical grades of one family: the family plus
+    critical_since, or the first flagged_at when critical_since is not known. Repeats share it."""
+    return f"{model_type}@{anchor}"
+
+
+def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int) -> Dict[str, Any]:
+    """
+    [BENCHING off] The family stays in the comparison; a why-report is needed. Logged at warning level
+    and appended as one JSON line to WHY_REPORT_FLAGS_PATH (append-only, one writer, like the CD-11
+    training health log). Raises the flag only: the automatic why-report is TODO-WHY-1. Never raises.
+    """
+    flagged_at = datetime.now(timezone.utc).isoformat()
+    since = entry.get('critical_since')
+    flag = {
+        'schema': WHY_REPORT_FLAG_SCHEMA,
+        'flag_id': why_flag_id(model_type, _why_flag_anchor(entry) or flagged_at),
+        'flagged_at': flagged_at,
+        # [R1 F1] the anchor is recorded, so why_report_flags.flag_id_of derives the same id from the line
+        'why_flag_first_at': entry.get('why_flag_first_at'),
+        # [R1 F3] the flag this one follows (its why-report attached, the family still critical), or None
+        'previous_flag_id': entry.get('why_flag_prev'),
+        'model_type': model_type,
+        'consecutive_critical': entry.get('consecutive_critical'),
+        'threshold': threshold,
+        # [BENCHING review fix b] None when the count started before critical_since was recorded
+        'critical_since': since,
+        'critical_since_known': since is not None,
+        'last_critical': entry.get('last_critical'),
+        'benching': 'off',
+        'flag_file': WHY_REPORT_FLAGS_PATH,
+        'note': 'why-report needed: family kept in the comparison (owner ruling 2026-11-24); '
+                'a human or AI checks it (automatic why-report not built, TODO-WHY-1)',
+        'health_check_version': MODULE_VERSION,
+    }
+    logger.warning(
+        "[WHY-REPORT] Model %s hit %d consecutive critical grades (limit %d) since %s; benching off, "
+        "family kept in the comparison; why-report needed (flag appended to %s)",
+        model_type, flag['consecutive_critical'], threshold, flag['critical_since'], WHY_REPORT_FLAGS_PATH)
+    try:
+        os.makedirs(os.path.dirname(WHY_REPORT_FLAGS_PATH) or '.', exist_ok=True)
+        with open(WHY_REPORT_FLAGS_PATH, 'a') as f:
+            f.write(json.dumps(flag, sort_keys=True, default=str) + "\n")
+    except OSError as e:  # the flag file never changes the check's outcome
+        logger.warning(f"why-report flag write failed (non-fatal): {e}")
+        flag['flag_file_error'] = str(e)
+    return flag
 
 
 def reset_skip_registry(model_type: str) -> None:
@@ -1090,10 +1285,11 @@ def reset_skip_registry(model_type: str) -> None:
 
         if model_type in registry:
             registry[model_type]['consecutive_critical'] = 0
-            with open(SKIP_REGISTRY_PATH, 'w') as f:
-                json.dump(registry, f, indent=2)
+            for k in _WHY_FLAG_ENTRY_KEYS:  # [BENCHING] the run of criticals ended; absent unless off ran
+                registry[model_type].pop(k, None)
+            _write_skip_registry(registry)   # [R1 F1] temp file + os.replace
             logger.info("Reset skip registry for %s", model_type)
-    except (json.JSONDecodeError, IOError) as e:
+    except (json.JSONDecodeError, IOError, OSError) as e:
         logger.warning(f"Failed to reset skip registry: {e}")
 
 
@@ -1287,6 +1483,9 @@ def get_skip_status() -> Dict[str, Any]:
             if info['expiry_mode'] != DEFAULT_SKIP_EXPIRY_MODE:
                 status[model_type].update({k: v for k, v in info.items()
                                            if k in ('expiry_mode', 'expires_at', 'expiry_note')})
+            if info['benching'] != 'on':   # [BENCHING] off: never skipped; say when a why-report is due
+                status[model_type].update({'benching': info['benching'],
+                                           'why_report_needed': bool(info.get('why_report_needed'))})
         
         return status
         
@@ -1580,6 +1779,8 @@ if __name__ == "__main__":
         else:
             for model, info in status.items():
                 skip_str = "SKIPPED" if info['skipped'] else "active"
+                if info.get('why_report_needed'):   # [BENCHING] off
+                    skip_str = "active, WHY-REPORT NEEDED (benching off)"
                 print(f"{model}: {skip_str} ({info['consecutive']}/{info['threshold']} critical)")
     
     elif args.reset:
