@@ -171,3 +171,10 @@ You start each session with no memory of earlier reviews. The record is your mem
 - The GPU fleet is three separate rigs. It may be powered off. You never need it.
 - Another agent (Claude Code, Team Alpha) may be editing files in this same working tree while
   you read. If a file changes under you, note the time and re-read before finishing.
+
+## 8. A second reviewer (owner ruling, 2026-11-26)
+Michael may also ask Gemini to review an item he chooses, through
+`scripts/gemini_relay.py`. Its requests and replies are in `docs/exchange/to_gemini/`
+and `docs/exchange/from_gemini/`, with its own ledger. Your role and this contract are
+unchanged. You do not write in those folders. Gemini's reviews are not binding and do
+not replace yours. If you review the same item, form your own positions first.

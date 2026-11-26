@@ -326,3 +326,16 @@ not the Ultra subscription. Read ~/claude-api-agents/README.md before first use.
 - The hard rules in section 1 apply to these agents: they never commit, push or
   launch the pipeline. Say so in each agent's prompt.
 - After a batch, report the total cost and what is left.
+
+## Gemini reviews
+Gemini (Google Antigravity CLI) is an occasional second reviewer on items Michael
+chooses (owner ruling, 2026-11-26). Beta stays the standing reviewer.
+- Only through `scripts/gemini_relay.py`; the rules are in
+  `docs/exchange/GEMINI_RELAY_PROTOCOL.md`.
+- Never run it without Michael's yes for that item. The request must quote his approval.
+- Its reviews are not binding and hold nothing. Verify each finding yourself before
+  reporting it.
+- Gemini writes no code that lands. A session never edits, moves or deletes anything
+  in `docs/exchange/from_gemini/`.
+- It spends the weekly Gemini quota (about 480k tokens for the first relay review).
+  Keep it occasional.
