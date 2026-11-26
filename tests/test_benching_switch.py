@@ -27,6 +27,7 @@ os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 import importlib.util
 import json
+import re
 import logging
 import subprocess
 import sys
@@ -309,6 +310,19 @@ def _sequence(mod, cwd, rules, monkeypatch):
     if rules is not None:
         policies(cwd, rules)
     obs = []
+    # [flake fix 2026-11-26] _archive_diagnostics names files <type>_<YYYYmmdd_HHMMSS>.json, so two archives of one
+    # type in the same wall-clock second overwrite each other and the history count depended on where the second
+    # boundary fell (base and new differ only by timing). Rename each fresh archive to a unique, ordered name
+    # right after it is written so every archive is kept and compared; file contents are untouched.
+    orig_archive, seq = mod._archive_diagnostics, [0]
+
+    def archive_kept(*a, **k):
+        orig_archive(*a, **k)
+        for p in sorted((Path(cwd) / "diagnostics_outputs" / "history").glob("*.json")):
+            if re.fullmatch(r".+_\d{8}_\d{6}\.json", p.name):
+                seq[0] += 1
+                p.rename(p.with_name(f"{p.stem.rsplit('_', 2)[0]}_{seq[0]:04d}.json"))
+    monkeypatch.setattr(mod, "_archive_diagnostics", archive_kept)
 
     def snap(r):
         obs.append({"result": r, "registry": _norm_registry(registry(cwd)),
