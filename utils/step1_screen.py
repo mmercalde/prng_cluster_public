@@ -437,6 +437,12 @@ def build_screen_plan(objective: str, user_settings: Optional[Mapping[str, Any]]
         raise Step1ScreenError(f"screen: dataset sha256 {sha} != frozen {expected_sha256}")
     with open(dataset_path) as f:
         data = json.load(f)
+    seen = {}
+    for i, r in enumerate(data):            # grader R26 (e2e_grader.py load_dataset); contract :444
+        key = (str(r["date"]), str(r["session"]))
+        if key in seen:
+            raise Step1ScreenError(f"screen: dataset rows {seen[key]} and {i}: repeated (date, session) {key}")
+        seen[key] = i
     n = len(data)
     sessions_by_row = [str(r["session"]) for r in data]
     draws = [int(r["draw"]) for r in data]

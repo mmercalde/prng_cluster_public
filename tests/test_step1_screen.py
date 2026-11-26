@@ -30,6 +30,8 @@ Gates
   G-POOL-IDENTITY  the screen's pool == PredictionGenerator._build_prediction_pool's, with ties
   G-ORDERING       value_scores_for == e2e_vote_harness.py value_scores_for
   G-GRADER-PIN     a grader with another sha256 is refused
+  G-DUP-DRAW       a repeated (date, session) is refused naming both rows, nothing written;
+                   two sessions on one date pass (grader R26)
   G-STUDY-ARM      a study tagged by one objective or screen setting refuses another
   G-HYBRID         variable-mode records (<base>_hybrid) vote with the base type; others refused
   G-CLI            CLI refusals; G-ROUTE  hops 2 and 3, manifest untouched (hand-landed)
@@ -503,6 +505,37 @@ def gate_grader_pin(fx):
         check("!= pinned" in str(e), "PIN-refused", str(e))
 
 
+def gate_dup_draw(fx):
+    """Grader R26 in the screen (test_e2e_grader.py test_repeated_draw): row 250 copied to index
+    251 must be refused, naming both rows, with nothing written; two sessions on one date stay
+    legal (every fixture day has both)."""
+    from utils.step1_screen import Step1ScreenError
+    ds = json.load(open(fx))
+    check(ds[250]["date"] == ds[251]["date"] and ds[250]["session"] != ds[251]["session"],
+          "DUP-FIXTURE", "fixture day lacks two sessions")
+    try:
+        plan_for(fx)
+    except Step1ScreenError as e:
+        raise GateFail(f"[DUP-SESSION] two sessions of one date refused: {e}")
+    d = os.path.join(SCRATCH, "dupdraw")
+    shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+    ds[251] = dict(ds[250])
+    bad = os.path.join(d, "fixture_repeated.json")
+    with open(bad, "w") as f:
+        json.dump(ds, f)
+    time.sleep(1.1)
+    before_files, before_studies = sorted(os.listdir(d)), _snap()
+    try:
+        plan_for(bad)
+        raise GateFail("[DUP-REFUSE] dataset with a repeated (date, session) accepted")
+    except Step1ScreenError as e:
+        check("dataset rows 250 and 251: repeated (date, session)" in str(e), "DUP-REFUSE", str(e))
+    new_studies = sorted(_snap() - before_studies)
+    CREATED.extend(new_studies)
+    check(sorted(os.listdir(d)) == before_files and not new_studies, "DUP-NOOUT",
+          f"files {sorted(os.listdir(d))} studies {new_studies}")
+
+
 def gate_study_arm():
     import optuna
     from utils.step1_screen import screen_study_check, Step1ScreenError
@@ -598,6 +631,12 @@ MUTANTS = {
             "            if pt is not None and pt not in allowed and _MUT_HIT():\n"),
     "S12": ("utils/step1_screen.py", "G-STUDY-ARM", "ARM-mismatch",
             "    if existing != run_tag:\n", "    if existing != run_tag and _MUT_HIT():\n"),
+    # grader R26 in the screen: the check removed; the check keyed on date alone
+    "S14": ("utils/step1_screen.py", "G-DUP-DRAW", "DUP-REFUSE",
+            "        if key in seen:\n", "        if key in seen and _MUT_HIT():\n"),
+    "S15": ("utils/step1_screen.py", "G-DUP-DRAW", "DUP-SESSION",
+            '        key = (str(r["date"]), str(r["session"]))\n',
+            '        _MUT_HIT(); key = (str(r["date"]),)\n'),
 }
 
 _MUTANT_CHILD = r'''
@@ -678,6 +717,7 @@ def main():
         ("G-POOL-IDENTITY", lambda: gate_pool_identity(fx)),
         ("G-ORDERING", gate_ordering),
         ("G-GRADER-PIN", lambda: gate_grader_pin(fx)),
+        ("G-DUP-DRAW", lambda: gate_dup_draw(fx)),
         ("G-STUDY-ARM", gate_study_arm),
         ("G-CLI", gate_cli),
         ("G-ROUTE", gate_route),
