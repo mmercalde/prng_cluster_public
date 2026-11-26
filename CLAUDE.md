@@ -313,3 +313,16 @@ follow-up experiment does. Maintain docs/LEADS.md.
 - A session never edits, moves or deletes anything in `docs/exchange/from_beta/`.
 - Before-commit review classes: coordinator, worker and kernel code, and the
   verifier and launch path for runs that count.
+
+## API-credit agents
+Self-contained agent jobs (investigation, review, tests, documentation) are
+launched with `api-agent`, so they bill to the monthly Claude API credits and
+not the Ultra subscription. Read ~/claude-api-agents/README.md before first use.
+- Opus 5.5 unless Michael says otherwise. Check `api-agent budget` first.
+- If `api-agent` refuses on budget, say so in one line and use ordinary
+  subscription agents instead.
+- Jobs that need back-and-forth with Michael stay in interactive sessions.
+- Never read, print or export the key file.
+- The hard rules in section 1 apply to these agents: they never commit, push or
+  launch the pipeline. Say so in each agent's prompt.
+- After a batch, report the total cost and what is left.
