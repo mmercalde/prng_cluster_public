@@ -180,7 +180,11 @@
     "model_type": "catboost",
     "persistent_workers": false,
     "enable_vmap": true,
-    "k_folds": 20
+    "k_folds": 20,
+    "exclude_features": null,
+    "include_feature_groups": null,
+    "exclude_feature_groups": null,
+    "allow_target_columns_as_features": false
   },
   "changelog": [
     "v1.9.0: Renamed batch_size_nn->enable_vmap (bool). Clarifies it is a feature flag not a batch dimension."

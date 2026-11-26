@@ -180,7 +180,8 @@
         "lottery_history": "daily3.json",
         "k": 20,
         "pool_size": 20,
-        "models_dir": "models/reinforcement"
+        "models_dir": "models/reinforcement",
+        "schema_check": null
     },
     "evaluation_params": {
         "confidence_formula": "pool_quality",
