@@ -3,11 +3,17 @@
 Self-test for scripts/diagnostics/switch_check.py on a FIXTURE: a small git repository with a
 WATCHER step map, manifests, configs, governance lists, a frozen list and a registry in the real
 agents/registry/parameter_registry.py format (its classes are taken from the main tree at 41ad509;
-only PARAMETER_REGISTRIES is replaced), plus two worktrees. CPU, one process; everything under
-<repo>/data/e2e_grader_selftest/ (never /tmp).
+only PARAMETER_REGISTRIES is replaced), plus two worktrees. CPU, one process.
+
+WHERE THE FIXTURE LIVES (owner ruling 2026-11-25 19:26, OWNER_RULING_fixture_commits_20261125.txt:
+"test may run `git commit` inside a temporary repository that the test itself creates outside the
+TFM tree"; lead: outside every copy or worktree of it too). The fixture makes a git commit, so its
+root is OUTSIDE every tree: default ~/tfm_test_fixtures/switch_check/sc_run_<stamp>/. The test
+refuses to start (exit 2, naming the path) if the root is inside any git work tree, or under /tmp,
+/var/tmp or /dev/shm (box rule 7; the checker also refuses /tmp outputs). See check_fixture_root.
 
 Run:  python3 tests/test_switch_check.py [--only NAME]
-Env:  E2E_SWITCH_CHECK_PATH (checker under test), E2E_SELFTEST_DIR (work dir).
+Env:  E2E_SWITCH_CHECK_PATH (checker under test), E2E_SELFTEST_DIR (fixture root; same rules).
 """
 import contextlib
 import importlib.machinery
@@ -25,9 +31,29 @@ sys.dont_write_bytecode = True     # lead note 2026-11-23: never leave a __pycac
 
 REPO = Path(__file__).resolve().parents[1]
 SC_PATH = Path(os.environ.get("E2E_SWITCH_CHECK_PATH", REPO / "scripts" / "diagnostics" / "switch_check.py"))
-WORK = Path(os.environ.get("E2E_SELFTEST_DIR", REPO / "data" / "e2e_grader_selftest" /
-                           time.strftime("sc_run_%Y%m%dT%H%M%S")))
+FIXTURE_BASE = Path("~/tfm_test_fixtures/switch_check").expanduser()
+WORK = Path(os.environ.get("E2E_SELFTEST_DIR", FIXTURE_BASE / time.strftime("sc_run_%Y%m%dT%H%M%S")))
 MAIN_TREE = Path("~/distributed_prng_analysis").expanduser()
+TMP_ROOTS = ("/tmp", "/var/tmp", "/dev/shm")
+
+
+def check_fixture_root(root):
+    """None if `root` may hold the fixture repository, else the reason it may not.
+    Refused: under /tmp, /var/tmp or /dev/shm; or inside ANY git work tree (the TFM tree, a worktree
+    or clone of it, or any other repository), judged at the nearest existing ancestor, since the
+    root itself is usually not created yet."""
+    p = Path(os.path.abspath(os.path.expanduser(str(root))))
+    rp = Path(os.path.realpath(p))
+    for t in TMP_ROOTS:
+        if rp == Path(t) or str(rp).startswith(t + "/"):
+            return f"fixture root {p} is under {t} (box rule 7)"
+    anc = rp
+    while not anc.exists():
+        anc = anc.parent
+    q = subprocess.run(["git", "-C", str(anc), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if q.returncode == 0:
+        return f"fixture root {p} is inside the git work tree {q.stdout.strip()}"
+    return None
 
 
 def _load(path, name):
@@ -447,6 +473,109 @@ def test_sc_repair_refusals():
     check(ok, "A-SC-REPAIR-FLAGCHECK", "a kept spec with no flag in its script must be refused")
 
 
+REGISTER = {"entries": [{"file": "step1.py", "flag": "--mode"}, {"file": "step1.py", "flag": "--flag"},
+                        {"file": "worker3.py", "flag": "--chunk"}],
+            "registry_descriptions": {"worker3.py": "fixture step 3 worker"}}
+
+
+def _register_run(name, register, extra_drop=()):
+    """R10 (TASK_REGISTRY_REPAIR_LAND_20261125): the fixture argv plus --register, into fresh dirs."""
+    rc0, reg0, err0, root, out, argv = result()
+    d = root / f"out_reg_{name}"
+    d.mkdir()
+    a = list(argv)
+    for flag, sub in (("--out-json", "c.json"), ("--out-md", "c.md"), ("--patch-dir", "patch"), ("--repair-dir", "repair")):
+        a[a.index(flag) + 1] = str(d / sub)
+    for flag in extra_drop:
+        i = a.index(flag)
+        del a[i:i + 2]
+    if register is not None:
+        (root / f"register_{name}.json").write_text(json.dumps(register))
+        a += ["--register", str(root / f"register_{name}.json")]
+    rc, e = _run(a)
+    return rc, e, d, root
+
+
+@gate
+def test_sc_register():
+    rc, e, d, root = _register_run("ok", REGISTER)
+    check(rc == 0, "A-SC-REG-RC", f"rc={rc} {e}")
+    reg = json.loads((d / "c.json").read_text())
+    ins = sorted((x["script"], x["name"]) for x in reg["patch"]["inserted"])
+    check(ins == [("step1.py", "flag"), ("step1.py", "mode"), ("worker3.py", "chunk")], "A-SC-REG-SET",
+          f"only the named switches, not worktree additions: {ins}")
+    check(reg["patch"]["base"] == "repaired", "A-SC-REG-BASE", reg["patch"]["base"])
+    R = _load(d / "repair" / "parameter_registry.py.repaired", f"fx_reg_rep_{os.getpid()}")
+    P = _load(d / "patch" / "parameter_registry.py.patched", f"fx_reg_pat_{os.getpid()}")
+    rep = {(k, p.name): p.model_dump() for k, g in R.PARAMETER_REGISTRIES.items() for p in g.parameters}
+    pat = {(k, p.name): p.model_dump() for k, g in P.PARAMETER_REGISTRIES.items() for p in g.parameters}
+    check(all(pat.get(k) == v for k, v in rep.items()) and set(pat) - set(rep) == set(ins), "A-SC-REG-BASE",
+          f"patched = repaired + named: {sorted(set(pat) ^ set(rep))}")
+    check(("step1.py", "gone") not in pat and "nofile.py" not in P.PARAMETER_REGISTRIES, "A-SC-REG-BASE",
+          "a dropped spec came back: the patch was not built on the repaired registry")
+    diff = (d / "patch" / "parameter_registry.py.patch").read_text().splitlines()
+    check(not [x for x in diff if x.startswith("-") and not x.startswith("---")], "A-SC-REG-ADDONLY",
+          "the registration diff against the repaired file must only add lines")
+    m = P.get_registry("step1.py").get_param("mode")
+    check(m.param_type.value == "choice" and m.choices == ["a", "b"] and m.default == "a"
+          and m.validate_value("b") == (True, None) and m.validate_value("c")[0] is False, "A-SC-REG-SPEC", str(m))
+    f = P.get_registry("step1.py").get_param("flag")
+    check(f.param_type.value == "bool" and f.default is False, "A-SC-REG-SPEC", str(f))
+    w = P.get_registry("worker3.py")
+    check(w is not None and w.description == "fixture step 3 worker" and w.get_param("chunk").default == 10,
+          "A-SC-REG-DESC", str(w))
+    frag = json.loads((d / "patch" / "manifest_fragments.json").read_text())["fragments"]
+    check(frag == {"agent_manifests/s1.json": frag.get("agent_manifests/s1.json")}
+          and frag["agent_manifests/s1.json"]["default_params"] == {"mode": "a", "flag": False}, "A-SC-REG-FRAG",
+          f"a wrapper-called worker gets no manifest entry: {frag}")
+    notes = " ".join(frag["agent_manifests/s1.json"]["notes"])
+    check("flag: declares the existing default; at this value WATCHER's command builder leaves the flag off argv" in notes
+          and "mode: declares the existing default; WATCHER would then pass it explicitly" in notes, "A-SC-REG-NOTE", notes)
+
+
+@gate
+def test_sc_register_refusals():
+    for name, ents, want in (
+            ("known", [{"file": "step1.py", "flag": "--trials"}], "is already registered"),
+            ("absent", [{"file": "step1.py", "flag": "--nope"}], "matches 0 argparse options"),
+            ("dup", [{"file": "step1.py", "flag": "--mode"}] * 2, "duplicate entry"),
+            ("empty", [], "'entries' must be a non-empty list")):
+        rc, e, d, root = _register_run(name, {"entries": ents})
+        check(rc == 2 and want in e and not (d / "patch").exists(), "A-SC-REG-REFUSE", f"{name}: rc={rc} {e}")
+    rc, e, d, root = _register_run("nopatch", REGISTER, extra_drop=("--patch-dir",))
+    check(rc == 2 and "--register needs --patch-dir" in e, "A-SC-REG-REFUSE", f"nopatch: rc={rc} {e}")
+
+
+@gate
+def test_sc_fixture_root():
+    """Owner ruling 2026-11-25 19:26: the fixture repository (which commits) must be outside every
+    tree. Pure: only checks paths; creates nothing."""
+    inside = [REPO / "data" / "e2e_grader_selftest" / "x",          # this tree (or a check tree)
+              Path(__file__).resolve().parent / "x",                  # beside the test file
+              MAIN_TREE / "data" / "x"]                               # the TFM main tree
+    for p in inside:
+        why = check_fixture_root(p)
+        check(why is not None and "inside the git work tree" in why, "A-SC-ROOT", f"accepted inside a tree: {p} ({why})")
+    for p in ("/tmp/sc_fixture_x", "/var/tmp/sc_fixture_x", "/dev/shm/sc_fixture_x"):
+        why = check_fixture_root(p)
+        check(why is not None and "box rule 7" in why, "A-SC-ROOT", f"accepted under a tmp root: {p} ({why})")
+    check(check_fixture_root(FIXTURE_BASE / "probe_not_created") is None, "A-SC-ROOT",
+          f"the default base is refused: {check_fixture_root(FIXTURE_BASE / 'probe_not_created')}")
+    check(check_fixture_root(WORK) is None, "A-SC-ROOT", f"this run's root is refused: {check_fixture_root(WORK)}")
+    check(not (REPO / "data" / "e2e_grader_selftest" / "x").exists(), "A-SC-ROOT", "the gate created a path")
+    # main() itself refuses: run this test with a root inside this tree; exit 2, nothing created
+    probe = REPO / "data" / "e2e_grader_selftest" / f"refuse_probe_{os.getpid()}"
+    env = dict(os.environ, E2E_SELFTEST_DIR=str(probe), E2E_SWITCH_CHECK_PATH=str(SC_PATH))
+    # "--only" names no gate, so even if the refusal were broken no fixture (and no commit) is made:
+    # the run would only create the probe directory, which this gate then detects.
+    q = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()), "--only", "no_such_gate_root_probe"],
+                       env=env, capture_output=True, text=True)
+    made = probe.exists()
+    check(q.returncode == 2 and "REFUSED" in q.stdout and not made, "A-SC-ROOT",
+          f"a run rooted inside the tree was not refused before creating anything: rc={q.returncode} "
+          f"created={made} {q.stdout[-200:]}")
+
+
 @gate
 def test_sc_refuse_existing():
     rc, reg, err, root, out, argv = result()
@@ -459,6 +588,11 @@ def test_sc_refuse_existing():
 # ---------------------------------------------------------------------------- runner -----
 def main():
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
+    why = check_fixture_root(WORK)
+    if why:
+        print(f"REFUSED (nothing created): {why}. The fixture makes a git commit; owner ruling "
+              f"2026-11-25 19:26 allows that only outside every tree. Default root: {FIXTURE_BASE}", flush=True)
+        return 2
     WORK.mkdir(parents=True, exist_ok=True)
     sel = [t for t in TESTS if only is None or t.__name__ == only]
     if not sel:

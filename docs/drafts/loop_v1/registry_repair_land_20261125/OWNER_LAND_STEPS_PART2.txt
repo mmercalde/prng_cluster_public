@@ -1,0 +1,138 @@
+OWNER LANDING STEPS: registry repair part 2 (LL switch registrations) and part 3 (manifest entries)
+Written 2026-11-25 by the registry agent (lead 20:18). ONLY MICHAEL RUNS THESE. Agents never commit.
+Base: main ed2d22d (= 579dbb7 + the three Beta R1 exchange records, docs only). Part 1 is landed (579dbb7).
+Every path below was checked on main with `git check-ignore -q --no-index`. 3 paths are ignored (step b).
+The other 20, plus this file, are not ignored (step a).
+
+-------------------------------------------------------------------------------------------------
+BEFORE YOU START
+-------------------------------------------------------------------------------------------------
+- `git status --porcelain` in ~/distributed_prng_analysis must be empty. owner_land refuses any
+  dirty path that is not in the plan (DIRTY-PATH, scripts/owner_land.py:438-442).
+- No relay, selftest or pipeline process may be running (PROCESS-RUNNING, :427-435).
+- The independent proof on ed2d22d should have reported first (lead 20:18).
+
+-------------------------------------------------------------------------------------------------
+STEP 0. In the worktree, put the registered registry in place
+-------------------------------------------------------------------------------------------------
+Today the worktree's agents/registry/parameter_registry.py is the part-1 file (72d00315...).
+Copy the part-2 file over it and check the result:
+
+cd /home/michael/tfm_worktrees/registry-repair && \
+cp docs/drafts/loop_v1/registry_repair_land_20261125/register/parameter_registry.py.patched agents/registry/parameter_registry.py && \
+sha256sum agents/registry/parameter_registry.py
+# must print: bea4fcfe81a1b1cccacbf979f46e0d17aebd58aaecb9411ea8c283fe7920611b
+
+-------------------------------------------------------------------------------------------------
+STEP (a). One owner_land.py commit: the 21 non-ignored paths
+-------------------------------------------------------------------------------------------------
+Run from ser8, as owner_land's usage says: `-t` gives the remote side the terminal it requires.
+owner_land prints the plan with each sha256; type `land` only if they match the table after the
+command.
+
+ssh -t michael@192.168.3.177 'cd /home/michael/distributed_prng_analysis && python3 scripts/owner_land.py --worktree registry-repair agents/registry/parameter_registry.py scripts/diagnostics/switch_check.py tests/test_switch_check.py tests/test_switch_check_units.py tests/test_registry_ll_register.py tests/mutate_e2e_grader.py docs/drafts/loop_v1/READY_REGISTRY_REPAIR_LAND_20261125.md docs/drafts/loop_v1/NOTE_REGISTRY_SUITES_FAILING_ON_MAIN_20261125.md docs/drafts/loop_v1/DESIGN_LL2_WATCHER_ROUTE_20261125.md docs/drafts/loop_v1/DRAFT_X-REGISTRY-REPAIR_R1_REQUEST.md docs/drafts/loop_v1/BETA_R1_REGISTRY_SUMMARY_20261125.md docs/drafts/loop_v1/registry_repair_land_20261125/OWNER_MANIFEST_COMMANDS.txt docs/drafts/loop_v1/registry_repair_land_20261125/OWNER_LAND_STEPS_PART2.txt docs/drafts/loop_v1/registry_repair_land_20261125/switch_check_7f4505a.md docs/drafts/loop_v1/registry_repair_land_20261125/repair/parameter_registry.py.repaired docs/drafts/loop_v1/registry_repair_land_20261125/repair/parameter_registry.py.repair.patch docs/drafts/loop_v1/registry_repair_land_20261125/repair/SHA256SUMS docs/drafts/loop_v1/registry_repair_land_20261125/register/parameter_registry.py.patched docs/drafts/loop_v1/registry_repair_land_20261125/register/parameter_registry.py.patch docs/drafts/loop_v1/registry_repair_land_20261125/register/SHA256SUMS -m "feat: LL-1/2/3 switches registered in the parameter registry on top of the repair (7 ParameterSpecs generated from argparse by switch_check.py R10, defaults unchanged); R10 refuses nargs/unsupported actions and duplicate names; tests: LL registration 9 gates incl. argv behaviour, checker units, switch_check 15 gates with the fixture root outside every tree (owner ruling 2026-11-25 19:26); Beta X-REGISTRY-REPAIR R1 Q5 adopted; registry repair part 2 of 3 (ignored JSON separately); owner approved 2026-11-25"'
+
+Expected sha256 (worktree copy):
+
+  path                                                                                  new/modify  sha256
+  agents/registry/parameter_registry.py                                                 modify      bea4fcfe81a1b1cccacbf979f46e0d17aebd58aaecb9411ea8c283fe7920611b
+  scripts/diagnostics/switch_check.py                                                   modify      fe1ae65a58d3b7d90d28cab3c9d26831e780b18f51ca74408679e5fd4749e10e
+  tests/test_switch_check.py                                                            modify      cf0ef461f5d55b1c814ae66d1efdb2754d75d56817da1eec0b9076d80ff454a5
+  tests/test_switch_check_units.py                                                      new         141e6eab3d97fa34c147044f76b06db56ee25a0680b4c264bfb53cf7f63522e3
+  tests/test_registry_ll_register.py                                                    new         4b181518b242973328a07980ece82e9e4b9d9ebd8bbb14d07787bb8c47f002e3
+  tests/mutate_e2e_grader.py                                                            modify      937d453b6bb9840b571ae6daafa419f37a07a6f195dc7949af0b6c55da15c054
+  docs/drafts/loop_v1/READY_REGISTRY_REPAIR_LAND_20261125.md                            new         e57ae8e4f32a0654af6164d5055516b5b71550ecd910d0c2fabb264fabdd1ee2
+  docs/drafts/loop_v1/NOTE_REGISTRY_SUITES_FAILING_ON_MAIN_20261125.md                  new         2469f9c71c43aa3058184c737f254fb0d2128c911bc1c5b4e7a2cf81b2166bc6
+  docs/drafts/loop_v1/DESIGN_LL2_WATCHER_ROUTE_20261125.md                              new         c6d276db31e4087464f6aa9893b326585c0ad950ef8f67fbd2df4fad412b7a73
+  docs/drafts/loop_v1/DRAFT_X-REGISTRY-REPAIR_R1_REQUEST.md                             new         2e8a6857295e18994ceb66012fd43588cf728eff3a20f507176dd9e789b7a282
+  docs/drafts/loop_v1/BETA_R1_REGISTRY_SUMMARY_20261125.md                              new         4508b8b0a60ff5c31fb206bc18f3dc3aa0c519b22553e917c47283ce04cf152d
+  .../registry_repair_land_20261125/OWNER_MANIFEST_COMMANDS.txt                         new         990fabb33cfdeaff0c73f5d641b7150f06e858362112be91630039659cec4a5c
+  .../registry_repair_land_20261125/OWNER_LAND_STEPS_PART2.txt (this file)              new         (its own sha256; owner_land prints it)
+  .../registry_repair_land_20261125/switch_check_7f4505a.md                             new         5d93b1db86a7a27e2c9384c60e9fedb096ca9e5519948309a093656b455372ef
+  .../registry_repair_land_20261125/repair/parameter_registry.py.repaired               new         72d0031569d42ed5c25d0cf5eaa7ef81a0e1827fe7c3728396d5c9e63956d341
+  .../registry_repair_land_20261125/repair/parameter_registry.py.repair.patch           new         6d4870eb666c024da9836c7161bb7db725382709d17e4c00d470e9f3df0b9d5c
+  .../registry_repair_land_20261125/repair/SHA256SUMS                                   new         d646296ed25440b704a10c8dc0b04d967688d1576aa1c86efd0e96906e18bdff
+  .../registry_repair_land_20261125/register/parameter_registry.py.patched              new         bea4fcfe81a1b1cccacbf979f46e0d17aebd58aaecb9411ea8c283fe7920611b
+  .../registry_repair_land_20261125/register/parameter_registry.py.patch                new         d2f129007fe2a9b504dba7d1f7976ba62e64d329b8b7ad13f2074e2ac0d68889
+  .../registry_repair_land_20261125/register/SHA256SUMS                                 new         9648335f94ab3e2d7e3697f5b80732f57ec611176bc4699504c35cee77c4813a
+
+Notes:
+- DRAFT_X-REGISTRY-REPAIR_R1_REQUEST.md has the same bytes as the request already on main in
+  ed2d22d (docs/exchange/to_beta/X-REGISTRY-REPAIR_R1_ALPHA_REVIEW_REQUEST_registry_parts2_3.md,
+  2e8a6857...). It is the worktree's record of it. Drop it from the list if you prefer one copy.
+- None of these paths is governed or hand-landed (scripts/gate12_parity_gate.py:174-185;
+  scripts/owner_land.py:86-87), so owner_land's GOVERNED check passes.
+
+-------------------------------------------------------------------------------------------------
+BETWEEN (a) AND (b): what fails on main (measured, not inferred)
+-------------------------------------------------------------------------------------------------
+Until step (b) lands register/manifest_fragments.json, these fail:
+- tests/test_registry_ll_register.py: 7/9. test_ll_argv_behaviour and test_ll_manifest_fragments
+  CRASH with FileNotFoundError on manifest_fragments.json. Measured in the worktree with that
+  file pointed at a missing path (E2E_MANIFEST_FRAGMENTS=…/NO_SUCH…):
+  logs/registry_repair_land/I_land_steps/ll_without_fragments.log.
+- tests/mutate_e2e_grader.py --target lw: its baseline gate is test_ll_argv_behaviour, which
+  crashes, so the run reports baseline FAIL. A run with no --target fails the same way.
+  --target lr passes: none of its credited gates reads the fragments.
+Nothing reads REGISTER_LL_20261125.json or repair/repair_record.json from the repository; they
+are the generator's input and record. The repair_record.json read at
+tests/test_switch_check.py:434 is the fixture's own output, not this file. So everything else
+that was green stays green.
+
+Doing (b) FIRST avoids the window: the three JSON files alone break nothing, because the tests
+that read them are not on main yet. Your choice; the order (a) then (b) also works.
+
+-------------------------------------------------------------------------------------------------
+STEP (b). The three ignored JSON files: force-add, in the form used for 7f4505a
+-------------------------------------------------------------------------------------------------
+(.gitignore:41 *.json. owner_land stages with plain `git add -- <path>`, which refuses an ignored
+path, so these go by hand. Afterwards `git ls-files` must list all three: READY_LAND_WF_VOTE_20261125.md:521
+records how a force-added file was once silently lost.)
+
+cd /home/michael/distributed_prng_analysis
+D=docs/drafts/loop_v1/registry_repair_land_20261125
+W=/home/michael/tfm_worktrees/registry-repair
+mkdir -p $D/repair $D/register
+cp -p $W/$D/REGISTER_LL_20261125.json      $D/REGISTER_LL_20261125.json
+cp -p $W/$D/repair/repair_record.json      $D/repair/repair_record.json
+cp -p $W/$D/register/manifest_fragments.json $D/register/manifest_fragments.json
+sha256sum $D/REGISTER_LL_20261125.json $D/repair/repair_record.json $D/register/manifest_fragments.json
+# must print:
+#   abf2a7f2c00de801b8a75619e2f6f71f3e1ca590be9d12656b1dea61874736c5  .../REGISTER_LL_20261125.json
+#   592573e16711791cccd887f35f864569acf040b36353bc2852178f28dc0de4f7  .../repair/repair_record.json
+#   2651c0942ac11a6a02604bdb562ac94bdd2f41b39b79267e688ee77274085c16  .../register/manifest_fragments.json
+git add -f $D/REGISTER_LL_20261125.json $D/repair/repair_record.json $D/register/manifest_fragments.json
+git status --porcelain          # must show exactly these three as A, nothing else
+git commit -m "feat: registry repair JSON records force-added past .gitignore (REGISTER_LL_20261125.json, repair/repair_record.json, register/manifest_fragments.json; test_registry_ll_register.py reads the fragments); registry repair part 2 of 3, second commit; owner approved 2026-11-25"
+git ls-files $D/REGISTER_LL_20261125.json $D/repair/repair_record.json $D/register/manifest_fragments.json   # must list all 3
+git push origin main && git push public main
+
+After (a) and (b): tests/test_registry_ll_register.py must be 9/9 on main.
+
+-------------------------------------------------------------------------------------------------
+PART 3. The two manifest entries (agent_manifests/ is hand-landed: owner_land refuses it, so by hand)
+-------------------------------------------------------------------------------------------------
+Run from the repository root, after part 2. Each command refuses (AssertionError, file untouched)
+unless the file still has its exact formatting and does not already declare the keys. The text is
+the same as OWNER_MANIFEST_COMMANDS.txt (990fabb3...).
+
+cd /home/michael/distributed_prng_analysis
+
+python3 -B -c "import json; p='agent_manifests/prediction.json'; s=open(p).read(); d=json.loads(s); assert json.dumps(d, indent=4) == s, 'format differs: stop'; dp=d['default_params']; assert 'schema_check' not in dp, 'already declared'; dp['schema_check']=None; open(p,'w').write(json.dumps(d, indent=4)); print('ok', p)"
+
+python3 -B -c "import json; p='agent_manifests/reinforcement.json'; s=open(p).read(); d=json.loads(s); assert json.dumps(d, indent=2) == s, 'format differs: stop'; dp=d['default_params']; new={'exclude_features': None, 'include_feature_groups': None, 'exclude_feature_groups': None, 'allow_target_columns_as_features': False}; assert not set(new) & set(dp), 'already declared'; dp.update(new); open(p,'w').write(json.dumps(d, indent=2)); print('ok', p)"
+
+sha256sum agent_manifests/prediction.json agent_manifests/reinforcement.json
+# must print (the files are unchanged from 7f4505a through ed2d22d, so these hold):
+#   fb76fce730d47cd72c667c4d7d5dd96fc4db7093aaa1f26426918d03c409c641  agent_manifests/prediction.json
+#   7536fcb7d33bf18f08c9cbf77873cd831a580404fb9caed1a0b807bd05869a18  agent_manifests/reinforcement.json
+git diff --stat                 # 2 files: prediction.json +2 -1, reinforcement.json +5 -1
+git add agent_manifests/prediction.json agent_manifests/reinforcement.json   # tracked, so no -f
+git status --porcelain          # exactly these two as M
+git commit -m "feat: LL-1 schema_check declared in prediction.json, LL-3 exclude_features/include_feature_groups/exclude_feature_groups/allow_target_columns_as_features declared in reinforcement.json, all at the code defaults (null/false: WATCHER leaves them off argv, Step 5 and 6 default argv unchanged); LL-2 not declared (no Step 3 route); registry repair part 3 of 3; Beta X-REGISTRY-REPAIR R1 Q3/Q4 NO OBJECTION; owner approved 2026-11-25"
+git push origin main && git push public main
+
+After part 3: tests/test_registry_ll_register.py test_ll_argv_behaviour also checks that HEAD's two
+manifests equal the owner commands' output byte for byte. It must still pass, 9/9.
+Open conditions recorded in the READY note ("After Beta R1"): schema_check=fail stays an operator
+choice (Beta Q4); a string "false" must be turned into a real boolean by any future apply step (Beta Q2).

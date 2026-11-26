@@ -1,0 +1,18 @@
+OWNER MANIFEST COMMANDS (TASK_REGISTRY_REPAIR_LAND_20261125 step 3). agent_manifests/ is owner hand-landed
+(scripts/owner_land.py HAND_LANDED_DIRS). Run from the repository root, AFTER landing parts 1 and 2.
+One command per file. Each command refuses (AssertionError, file untouched) unless the file still
+round-trips byte-for-byte with its own formatting and does not already declare the keys; it then adds
+only the new keys at the end of default_params. Nothing else in the file changes.
+
+1) agent_manifests/prediction.json  (LL-1)
+python3 -B -c "import json; p='agent_manifests/prediction.json'; s=open(p).read(); d=json.loads(s); assert json.dumps(d, indent=4) == s, 'format differs: stop'; dp=d['default_params']; assert 'schema_check' not in dp, 'already declared'; dp['schema_check']=None; open(p,'w').write(json.dumps(d, indent=4)); print('ok', p)"
+
+2) agent_manifests/reinforcement.json  (LL-3)
+python3 -B -c "import json; p='agent_manifests/reinforcement.json'; s=open(p).read(); d=json.loads(s); assert json.dumps(d, indent=2) == s, 'format differs: stop'; dp=d['default_params']; new={'exclude_features': None, 'include_feature_groups': None, 'exclude_feature_groups': None, 'allow_target_columns_as_features': False}; assert not set(new) & set(dp), 'already declared'; dp.update(new); open(p,'w').write(json.dumps(d, indent=2)); print('ok', p)"
+
+No command for agent_manifests/full_scoring.json (LL-2): run_step3_full_scoring.sh accepts neither
+--per-seed-sieve-features nor --fallback-metadata-merge (its case list :88-116; unknown options are
+dropped with "Note: Ignoring unknown option", :120-123), and it does not forward them to the worker.
+A manifest key there would reach nothing. LL-2 needs a wrapper route first (AUTONOMY_SWITCH_MAP G-items).
+
+Expected sha256 after each command (from 7f4505a): see READY_REGISTRY_REPAIR_LAND_20261125.md, section "Manifests".
