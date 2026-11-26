@@ -19,9 +19,10 @@ No run H data is read. The oracle for every pool is the real Step 6 CLI
 
 G19 (lead TASK_LAND_WF_VOTE_20261125_ADDENDUM_2): the LL-1 capability check. A config with
 schema_check set refuses (exit-2 HarnessError, no out-dir, switch and file named) on
-prediction_generator files that lack LL-1 (this repo's HEAD copy, and the harness's own repo when
-it lacks it); non-vacuity: the same request passes on files that have it (env
-E2E_VOTE_CAPS_WITH_ROOT, default ~/tfm_worktrees/e2e-map). Mutant M25 disables the check.
+prediction_generator files that lack LL-1 (the copy at a pinned revision, 50cd683, env
+E2E_VOTE_CAPS_WITHOUT_REV; and the harness's own repo when it lacks it); non-vacuity: the same
+request passes on files that have it (env E2E_VOTE_CAPS_WITH_ROOT; default this repo when it
+has LL-1, else ~/tfm_worktrees/e2e-map). Mutant M25 disables the check.
 
 Gates (G*) must pass. Mutants (M*) must each be killed: the mutant was applied, the mutated
 path ran (hit counter > 0), and the credited gate's assertion fired, not some other error.
@@ -963,8 +964,29 @@ def g14_sealed(F, out_root):
 # ---------------------------------------------------------------------------
 # mutants
 # ---------------------------------------------------------------------------
-CAPS_WITH_ROOT = Path(os.environ.get("E2E_VOTE_CAPS_WITH_ROOT",
-                                    str(Path.home() / "tfm_worktrees" / "e2e-map")))
+# G19 "without" side: main at the commit before the LL-1/2/3 pipeline landing (full sha), not
+# HEAD: after that landing HEAD has LL-1 (lead TASK_LL_SWITCHES_ADDENDUM_1). Override by env.
+CAPS_WITHOUT_REV = os.environ.get("E2E_VOTE_CAPS_WITHOUT_REV", "50cd6837abda2821277fc1cf6cc5f2d0e8f35a9a")
+CAPS_FALLBACK_WITH_ROOT = Path.home() / "tfm_worktrees" / "e2e-map"
+
+
+def _caps_module():
+    spec = importlib.util.spec_from_file_location("e2e_pipeline_caps_g19", H.CAPS_PATH)
+    m = importlib.util.module_from_spec(spec)
+    _dwb, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        sys.dont_write_bytecode = _dwb
+    return m
+
+
+def caps_with_root() -> Path:
+    """G19 "with" side: E2E_VOTE_CAPS_WITH_ROOT if set; else this repo when its own
+    prediction_generator has LL-1; else the e2e-map worktree (the only tree with it before landing)."""
+    if os.environ.get("E2E_VOTE_CAPS_WITH_ROOT"):
+        return Path(os.environ["E2E_VOTE_CAPS_WITH_ROOT"])
+    return REPO if _caps_module().capabilities(REPO)["LL-1"]["present"] else CAPS_FALLBACK_WITH_ROOT
 
 
 def g19_ll1_switch(F, out_root):
@@ -976,30 +998,36 @@ def g19_ll1_switch(F, out_root):
     cfg_ll1 = fx / "prediction_config_ll1.json"
     cfg_ll1.write_text(json.dumps(cfg, indent=2))
     check("G19", H.CAPS_PATH.is_file(), f"capability module missing: {H.CAPS_PATH}")
-    # without: this repo's committed prediction_generator (+ manifest if committed) at HEAD
+    # without: the committed prediction_generator (+ manifest if committed) at the pinned revision
     RUN_N["g19"] = RUN_N.get("g19", 0) + 1            # one fresh dir per call (gate, then mutant)
     wo = out_root / f"g19_without_{RUN_N['g19']}"
     (wo / "models").mkdir(parents=True)
     for f in ("prediction_generator.py", "models/feature_manifest.py"):
-        g = subprocess.run(["git", "-C", str(REPO), "show", f"HEAD:{f}"], capture_output=True)
+        g = subprocess.run(["git", "-C", str(REPO), "show", f"{CAPS_WITHOUT_REV}:{f}"], capture_output=True)
         if g.returncode == 0:
             (wo / f).write_bytes(g.stdout)
+    check("G19", (wo / "prediction_generator.py").is_file(),
+          f"cannot read prediction_generator.py at {CAPS_WITHOUT_REV} (E2E_VOTE_CAPS_WITHOUT_REV)")
+    check("G19", not _caps_module().capabilities(wo)["LL-1"]["present"],
+          f"PINNED REVISION {CAPS_WITHOUT_REV} HAS LL-1: the refusal side would test nothing; "
+          f"set E2E_VOTE_CAPS_WITHOUT_REV to a revision without it")
     out = []
     try:
         r = H.ll1_check(cfg_ll1, root=wo)
-        raise GateFail("G19", f"no refusal on HEAD's files (they must lack LL-1): {r}")
+        raise GateFail("G19", f"no refusal on {CAPS_WITHOUT_REV[:12]}'s files (they lack LL-1): {r}")
     except H.HarnessError as e:
         msg = str(e)
         check("G19", "LL-1" in msg and str(wo / "prediction_generator.py") in msg,
               f"refusal does not name the switch and the file: {msg}")
-        out.append("HEAD files: refused, switch and file named")
+        out.append(f"{CAPS_WITHOUT_REV[:12]} files: refused, switch and file named")
     # non-vacuity: same request on files that have the switch
-    check("G19", (CAPS_WITH_ROOT / "prediction_generator.py").is_file(),
-          f"non-vacuity side missing: {CAPS_WITH_ROOT}")
-    r = H.ll1_check(cfg_ll1, root=CAPS_WITH_ROOT)
+    wi = caps_with_root()
+    check("G19", (wi / "prediction_generator.py").is_file(),
+          f"non-vacuity side missing: {wi}")
+    r = H.ll1_check(cfg_ll1, root=wi)
     check("G19", r["pipeline_has_switch"] is True and r["requested"] == {"schema_check": "fail"},
-          f"non-vacuity: same request not accepted on {CAPS_WITH_ROOT}: {r}")
-    out.append(f"{CAPS_WITH_ROOT.name} files: accepted, applied {r['applied']}")
+          f"non-vacuity: same request not accepted on {wi}: {r}")
+    out.append(f"{wi} files: accepted, applied {r['applied']}")
     # end to end on the harness's own repo
     n = len(F["combined"])
     ext = ["--models-dir", str(F["models"]["lightgbm"]), "--block-start", str(n), "--block-end", str(n + 1),
