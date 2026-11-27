@@ -326,6 +326,13 @@ not the Ultra subscription. Read ~/claude-api-agents/README.md before first use.
 - The hard rules in section 1 apply to these agents: they never commit, push or
   launch the pipeline. Say so in each agent's prompt.
 - After a batch, report the total cost and what is left.
+- Use agents in parallel whenever the work splits (owner rule, 2026-11-25,
+  restated 2026-11-27). One worktree per agent. A single agent is the
+  exception and needs a one-line reason.
+- Every build gets an attack agent that did not write the code, before any
+  Beta round.
+- An agent runs only the suites it touched. The full list runs once, in the
+  lead's fresh-copy proof.
 
 ## Gemini reviews
 Gemini (Google Antigravity CLI) is an occasional second reviewer on items Michael
