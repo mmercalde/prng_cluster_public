@@ -128,7 +128,7 @@ Read the hits; a keyword match is not a finding until the surrounding text has b
 7. **Harness discipline (Team Beta enforced):** `inspect.signature()` before
    calling production methods; smoke-test one cycle; synthetic triggers for
    gated paths; test behavioral correctness, not variable assignment.
-8. Every session: write `SESSION_CHANGELOG_YYYYMMDD_SN.md`, commit to `docs/`.
+8. Every session: write the end-of-session handoff (`TFM_SESSION_HANDOFF_YYYYMMDD.md`) to the project documents, and keep the owner's rulings verbatim in `logs/e2e_session/OWNER_RULING_*.txt`. This replaces the per-session `SESSION_CHANGELOG` (owner ruling 2026-11-26; last changelog was S162).
 
 ## 2. Environment
 
