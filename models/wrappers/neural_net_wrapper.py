@@ -437,8 +437,12 @@ class NeuralNetWrapper(TorchModelMixin, GPUMemoryMixin):
         # Backward compatible: old checkpoints have no y_mean/y_std → predict() unchanged
         wrapper._y_mean = checkpoint.get('y_mean', None)
         wrapper._y_std = checkpoint.get('y_std', None)
-        if wrapper._y_mean is not None:
+        if wrapper._y_mean is not None and wrapper._y_std is not None:
             logger.info(f"Y normalization loaded: mean={wrapper._y_mean:.6f} std={wrapper._y_std:.6f}")
+        elif wrapper._y_mean is not None or wrapper._y_std is not None:
+            # [1b] one of the pair is missing: say so here; Step 6 refuses such a net
+            logger.warning(f"Y normalization incomplete in checkpoint: y_mean={wrapper._y_mean!r} "
+                           f"y_std={wrapper._y_std!r}")
 
         logger.info(f"Neural network loaded from {path} (features: {feature_count})")
         return wrapper

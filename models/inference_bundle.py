@@ -49,6 +49,19 @@ class BundleError(ValueError):
     pass
 
 
+# [1b] why load_nn_scaler returned no scaler -> plain words for a refusal message
+SCALER_ABSENT_REASONS = {
+    "torch_unavailable": "PyTorch could not be imported, so the checkpoint could not be read",
+    "checkpoint_missing": "the checkpoint file named in the sidecar does not exist at that path",
+    "checkpoint_unreadable": "the checkpoint file could not be read",
+    "checkpoint_not_dict": "the checkpoint holds no metadata (not a dict), so it has no scaler",
+    "normalize_flag_off": "the checkpoint says the net was trained WITHOUT input normalisation "
+                          "(normalize_features is off or absent)",
+    "scaler_arrays_missing": "the checkpoint says normalize_features=True but holds no "
+                             "scaler_mean/scaler_scale",
+}
+
+
 # ---------------------------------------------------------------------------
 # Step 6's scaler loader (moved from prediction_generator.py, body unchanged)
 # ---------------------------------------------------------------------------
@@ -62,19 +75,29 @@ def load_nn_scaler(checkpoint_path, logger: logging.Logger) -> dict:
       - Zero-scale elements clamped to 1.0 to prevent NaN/inf
       - Only called when model_type == 'neural_net'
 
-    Returns {"scaler_mean", "scaler_scale", "normalize_features"}; the two arrays
-    are None and the flag False in every best-effort exit, as before.
+    Returns {"scaler_mean", "scaler_scale", "normalize_features", "reason"}; the two
+    arrays are None and the flag False in every best-effort exit, as before.
+
+    [1b, owner 2026-11-26 17:16] "reason" is None when the scaler was loaded, else one
+    of SCALER_ABSENT_REASONS naming WHY no scaler came back; "n_clamped" counts the
+    stored scale values the legacy clamp replaced. This function still does
+    not refuse (the attribution path replays it to reproduce what Step 6 did in past
+    runs); Step 6 itself refuses on the reason (prediction_generator.py,
+    _require_nn_normalisation).
     """
-    out = {"scaler_mean": None, "scaler_scale": None, "normalize_features": False}
+    out = {"scaler_mean": None, "scaler_scale": None, "normalize_features": False,
+           "reason": None, "n_clamped": 0}
     try:
         import torch
     except ImportError:
         logger.warning("[CAT-B] PyTorch not available — cannot load NN scaler")
+        out["reason"] = "torch_unavailable"
         return out
 
     if not checkpoint_path or not Path(checkpoint_path).exists():
         logger.warning(f"[CAT-B] NN checkpoint not found: {checkpoint_path}")
         logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
+        out["reason"] = "checkpoint_missing"
         return out
 
     try:
@@ -82,15 +105,18 @@ def load_nn_scaler(checkpoint_path, logger: logging.Logger) -> dict:
     except Exception as e:
         logger.warning(f"[CAT-B] Cannot read checkpoint: {e}")
         logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
+        out["reason"] = "checkpoint_unreadable"
         return out
 
     if not isinstance(checkpoint, dict):
         logger.info("[CAT-B] Checkpoint is not a dict — no scaler metadata")
+        out["reason"] = "checkpoint_not_dict"
         return out
 
     normalize_flag = checkpoint.get('normalize_features', False)
     if not normalize_flag:
         logger.info("[CAT-B] NN checkpoint: normalize_features=False (no scaler needed)")
+        out["reason"] = "normalize_flag_off"
         return out
 
     scaler_mean = checkpoint.get('scaler_mean')
@@ -99,6 +125,7 @@ def load_nn_scaler(checkpoint_path, logger: logging.Logger) -> dict:
     if scaler_mean is None or scaler_scale is None:
         logger.warning("[CAT-B] normalize_features=True but scaler arrays missing!")
         logger.warning("[CAT-B] Proceeding without scaler (best-effort)")
+        out["reason"] = "scaler_arrays_missing"
         return out
 
     scaler_mean = np.asarray(scaler_mean, dtype=np.float32)
@@ -116,6 +143,7 @@ def load_nn_scaler(checkpoint_path, logger: logging.Logger) -> dict:
     logger.info(f"[CAT-B]   scale range: [{scaler_scale.min():.4f}, {scaler_scale.max():.4f}]")
     logger.info(f"[CAT-B]   use_leaky_relu: {use_leaky}")
     out.update(scaler_mean=scaler_mean, scaler_scale=scaler_scale, normalize_features=True)
+    out["n_clamped"] = n_clamped   # [1b] stored scale values the clamp above replaced with 1.0
     return out
 
 

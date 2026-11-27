@@ -55,6 +55,7 @@ sys.path.insert(0, str(REPO / "tests"))
 import test_ll6_inference_bundle as ll6  # noqa: E402
 
 BASELINE_REV = "087bc366fb199dbbe26c1fe918a911158618d358"
+PRE_1B_STEP6_REV = "a85adb196adf703c500a4c0cbdfae505d560fe18"   # main before item 1b (full sha): Step 6 best-effort scaler
 AC_REL = "scripts/diagnostics/attribution_cycle.py"
 A_NORM_ATOL = 1e-5
 RESULTS = []
@@ -639,7 +640,18 @@ def main():
         b_res = ib.load_inference_bundle(str(rel), scaler_source="resolved")
         b_aw = ib.load_inference_bundle(str(rel), scaler_source="as_written")
         Xn = b_res.matrix([r["features"] for r in rows])
-        y6, _gen = ll6.step6_in_process(pg, rel, rows)      # Step 6 run AFTER relocation: unscaled
+        # [1b, 2026-11-26] Step 6 now reads the scaler from the resolved file, so a relocated NN is
+        # scored WITH its scaler. The unscaled scores LL-8 must be able to replay are what Step 6
+        # produced BEFORE 1b: taken here from that Step 6 itself (main before 1b, full sha).
+        pg_hist_src = ll6.git_show(PRE_1B_STEP6_REV, "prediction_generator.py")
+        if pg_hist_src is None:
+            raise SystemExit(f"cannot read prediction_generator.py at {PRE_1B_STEP6_REV}")
+        (w / "pg_pre_1b").mkdir(exist_ok=True)
+        (w / "pg_pre_1b" / "prediction_generator.py").write_bytes(pg_hist_src)
+        pg_hist = ll6.load_as("ll8_pg_pre_1b", w / "pg_pre_1b" / "prediction_generator.py")
+        sys.path[:] = [p for p in sys.path if p != str(w / "pg_pre_1b")]   # the module adds its own dir
+        y6, _gen = ll6.step6_in_process(pg_hist, rel, rows)  # historical Step 6 AFTER relocation: unscaled
+        y6_now, _gen_now = ll6.step6_in_process(pg, rel, rows)   # current Step 6 AFTER relocation: scaled
         ev_after = w / "step6_scores_after.npz"
         np.savez(ev_after, scores=y6, seeds=seeds_n)
         p_res, p_aw = b_res.predict(Xn), b_aw.predict(Xn)
@@ -647,6 +659,7 @@ def main():
         gap_aw = float(np.max(np.abs(y6 - p_aw)))
         gap_first_aw = float(np.max(np.abs(y6_first - p_aw)))
         gap_first_res = float(np.max(np.abs(y6_first - p_res)))
+        gap_now_res = float(np.max(np.abs(y6_now - p_res)))
         M_aw = psa.per_survivor_attribution_signed_matrix(
             b_aw.attribution_model, b_aw.model_type, b_aw.transform(Xn), b_aw.feature_names,
             expected_feature_count=b_aw.feature_count, y_mean=b_aw.y_mean, y_std=b_aw.y_std, ig_steps=64)
@@ -655,6 +668,7 @@ def main():
         allow6 = ac.allowed_gap(ac.STEP6_ATOL_DEFAULT, ac.STEP6_RTOL_DEFAULT, y6, "step6")[0]
         allow6_first = ac.allowed_gap(ac.STEP6_ATOL_DEFAULT, ac.STEP6_RTOL_DEFAULT, y6_first, "step6")[0]
         RUN_INFO["q4_measured"] = {"step6_vs_resolved_max_abs": gap_res, "step6_vs_as_written_max_abs": gap_aw,
+                                   "current_step6_vs_resolved_max_abs": gap_now_res,
                                    "step6_first_vs_as_written_max_abs": gap_first_aw,
                                    "step6_first_vs_resolved_max_abs": gap_first_res,
                                    "as_written_internal_a_norm": anorm_aw, "as_written_a_norm_allowed": allow_aw,
@@ -670,9 +684,12 @@ def main():
         if want("LL8.g_q4_scaler_refuses_relocated_nn"):
             o1, d1 = refused("q4_default", q3spec("q4"), "G-Q4-SCALER")
             o2, d2 = refused("q4_resolved", q3spec("q4r", scaler_source="resolved"), "G-Q4-SCALER")
-            gate("LL8.g_q4_scaler_refuses_relocated_nn", o1 and o2 and gap_res > allow6 and gap_aw <= allow6,
-                 f"{d1}; {d2}; non-vacuity: Step 6 on the relocated dir differs from the resolved-scaler bundle by "
-                 f"{gap_res:.3e} and from the as_written bundle by {gap_aw:.1e}")
+            gate("LL8.g_q4_scaler_refuses_relocated_nn",
+                 o1 and o2 and gap_res > allow6 and gap_aw <= allow6 and gap_now_res <= allow6
+                 and _gen_now._normalize_features is True and _gen._normalize_features is False,
+                 f"{d1}; {d2}; non-vacuity: the pre-1b Step 6 on the relocated dir differs from the "
+                 f"resolved-scaler bundle by {gap_res:.3e} and from the as_written bundle by {gap_aw:.1e}; "
+                 f"the current Step 6 on the relocated dir matches the resolved bundle ({gap_now_res:.1e})")
         if want("LL8.g_q4_as_written_runs_and_labels"):
             sp_aw = q3spec("q4aw", scaler_source="as_written",
                            step6_evidence=ev(ev_after, scaler_applied=False, scores_sha256=step6_hash(y6),

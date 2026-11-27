@@ -46,9 +46,13 @@ LANDING CHANGES (plan PLAN_LAND_LL7_LL8_20261126 §5.2; branch ch14-learn blob f
   - the checkpoint pin is required; run_record.json records the bundle's checkpoint path and
     feature_schema_hash and the sidecar's WRITTEN checkpoint path;
   - G-Q4-SCALER (Beta X-LL6-BUNDLE R1 Q4) and the Step 6 evidence rule (Beta X-LL7-LL8 R1 Q3).
-    Whether Step 6 scaled an NN's input depends on whether the sidecar's WRITTEN checkpoint_path
-    existed WHEN STEP 6 SCORED (models/inference_bundle.py load_nn_scaler, best effort). Its state
-    at report time does not show that: a model can be moved after scoring. So:
+    For a Step 6 run made BEFORE item 1b (2026-11-26), whether Step 6 scaled an NN's input depends
+    on whether the sidecar's WRITTEN checkpoint_path existed WHEN STEP 6 SCORED (best effort, read
+    from the written path). Since 1b, Step 6 reads the scaler from the file the weights were loaded
+    from and refuses an NN it cannot normalise, so a current Step 6 run is always scaled
+    (scaler_source "resolved"). A report cannot tell which Step 6 made a saved run, and the path's
+    state at report time does not show what it was at scoring time: a model can be moved after
+    scoring. So the rules below stay as they were:
       * the spec may name step6_evidence: saved Step 6 scores {path, sha256[, atol, rtol]} (.npy, or
         .npz with key "scores" and optionally "seeds" in survivor order) and/or scores_sha256
         (the vote harness's RankOnce.scores_sha256: sha256 of dtype name + raw score bytes, only

@@ -242,6 +242,19 @@ def setup_logging(config: PredictionConfig) -> logging.Logger:
 # PREDICTION GENERATOR
 # ============================================================================
 
+class NNNormalisationError(RuntimeError):
+    """[1b, owner 2026-11-26 17:16] Step 6 refuses a neural_net it cannot feed the way
+    the net was trained: the input scaler (scaler_mean/scaler_scale) or the output
+    un-scaling (y_mean/y_std) is absent, unusable, or the wrong width.
+
+    Deliberately NOT a FileNotFoundError: __init__ swallows those and would go on to
+    the mean fallback. CLI exit code: EXIT_NN_NORMALISATION_REFUSED.
+    """
+
+
+EXIT_NN_NORMALISATION_REFUSED = 4  # 3 = signal gate (below); any non-zero fails the step in WATCHER
+
+
 class PredictionGenerator:
     """
     Generate Top-K predictions from survivor pools
@@ -288,6 +301,9 @@ class PredictionGenerator:
         self._scaler_mean = None
         self._scaler_scale = None
         self._normalize_features = False
+        self._scaler_absent_reason = None  # [1b] why load_nn_scaler returned no scaler
+        self._scaler_n_clamped = 0         # [1b] stored scale values the loader's clamp replaced
+        self.model_checkpoint_resolved = None  # [1b] the file the weights were loaded from
 
         if MULTI_MODEL_AVAILABLE:
             # === STEP 1: Load sidecar metadata FIRST (no model yet) ===
@@ -361,9 +377,20 @@ class PredictionGenerator:
                 # Category B: Load scaler for NN normalization (Phase 3)
                 # Fix 3A-1: use self.model_checkpoint_path (the actual loaded path)
                 # Fix 3A-4: only for neural_net model type
+                # [1b] the scaler is read from the file the weights came from: the written
+                # path if it exists, else models_dir/<name> (the factory's own rule,
+                # models/model_factory.py). A moved models directory keeps its scaler.
                 model_type_loaded = self.model_meta.get('model_type', 'unknown')
                 if model_type_loaded == 'neural_net':
-                    self._load_nn_scaler(self.model_checkpoint_path)
+                    from models.inference_bundle import resolve_checkpoint_path
+                    self.model_checkpoint_resolved = resolve_checkpoint_path(
+                        config.models_dir, self.model_meta)
+                    try:
+                        self._load_nn_scaler(self.model_checkpoint_resolved)
+                    except Exception as e:
+                        raise self._nn_refusal(
+                            "the input scaler could not be read from the checkpoint "
+                            f"({type(e).__name__}: {e}).")
                 
                 # v6.0: Extract and validate feature schema
                 fs = self.model_meta.get("feature_schema", {})
@@ -375,9 +402,21 @@ class PredictionGenerator:
                     raise ValueError("Feature schema required but not found in sidecar!")
                 else:
                     self.logger.warning("  No feature schema in sidecar - using alphabetical fallback (UNSAFE)")
+
+                # [1b] a neural_net is scored only with its training normalisation
+                if model_type_loaded == 'neural_net':
+                    self._require_nn_normalisation()
                     
             except FileNotFoundError as e:
                 self.logger.warning(f"  Model not found: {e}")
+            except NNNormalisationError as e:
+                self.logger.error("=" * 60)
+                self.logger.error("STEP 6 REFUSED - NEURAL NET NORMALISATION")
+                self.logger.error("=" * 60)
+                for line in str(e).splitlines():
+                    self.logger.error(f"  {line}")
+                self.logger.error("=" * 60)
+                raise
             except Exception as e:
                 self.logger.error(f"  Model loading failed: {e}")
                 raise
@@ -404,6 +443,75 @@ class PredictionGenerator:
             self._scaler_mean = sc["scaler_mean"]
             self._scaler_scale = sc["scaler_scale"]
             self._normalize_features = True
+        self._scaler_absent_reason = sc.get("reason")
+        self._scaler_n_clamped = int(sc.get("n_clamped", 0) or 0)
+
+    def _nn_refusal(self, what: str) -> "NNNormalisationError":
+        meta = self.model_meta or {}
+        return NNNormalisationError(
+            f"neural_net refused: {what}\n"
+            f"checkpoint_path (as written in the sidecar): {self.model_checkpoint_path}\n"
+            f"checkpoint file read: {getattr(self, 'model_checkpoint_resolved', None)}\n"
+            f"sidecar: {Path(self.config.models_dir) / 'best_model.meta.json'}\n"
+            "Step 6 does not score a neural net on inputs or outputs it was not trained on. "
+            "Retrain the net in Step 5 (input and target normalisation are saved in the "
+            "checkpoint), or point the sidecar at the checkpoint that holds them."
+            + (f"\nsidecar model_type: {meta.get('model_type')}" if meta else ""))
+
+    def _require_nn_normalisation(self):
+        """
+        [1b, owner 2026-11-26 17:16: "lets make production quality code"]
+        Refuse a neural_net unless Step 6 can apply the normalisation the net was
+        trained with. Replaces the best-effort rule (warn, then score unscaled).
+        Same conditions as the walk-forward harness's lead rule of 2026-11-23
+        (scripts/diagnostics/e2e_vote_harness.py, check_nn_normalisation):
+          - the input scaler was loaded from the checkpoint;
+          - its width equals the sidecar's feature count (when the sidecar names features);
+          - its values are finite;
+          - the wrapper loaded y_mean and y_std, finite, y_std > 0
+            (models/wrappers/neural_net_wrapper.py: predict() un-scales only when present).
+        Called for model_type == 'neural_net' only. Tree models never reach it.
+        """
+        import math
+        from models.inference_bundle import SCALER_ABSENT_REASONS
+        m, sc = self._scaler_mean, self._scaler_scale
+        if not self._normalize_features or m is None or sc is None:
+            why = SCALER_ABSENT_REASONS.get(self._scaler_absent_reason,
+                                            f"no scaler loaded ({self._scaler_absent_reason})")
+            raise self._nn_refusal(f"the input scaler was not loaded: {why}.")
+        n_clamped = getattr(self, "_scaler_n_clamped", 0)
+        if n_clamped:
+            # checked on what the checkpoint STORES: training replaces a zero scale with 1.0
+            # before it saves (train_single_trial.py), so a stored value below 1e-12 is damage
+            # or a scale the loader's clamp would not reproduce; 1.0 in its place is not the
+            # training transform
+            raise self._nn_refusal(
+                f"the checkpoint's scaler_scale holds {n_clamped} value(s) below 1e-12 "
+                "(zero, negative or damaged); the net was not trained with such a scale.")
+        if getattr(m, "ndim", 1) != 1 or getattr(sc, "ndim", 1) != 1:
+            raise self._nn_refusal("the input scaler arrays are not one-dimensional.")
+        names = self.feature_names or []
+        if names and (len(m) != len(names) or len(sc) != len(names)):
+            raise self._nn_refusal(
+                f"the input scaler has {len(m)} mean / {len(sc)} scale values but the sidecar "
+                f"names {len(names)} features.")
+        if not (np.all(np.isfinite(m)) and np.all(np.isfinite(sc))):
+            raise self._nn_refusal("the input scaler holds values that are not finite.")
+        ym = getattr(self.model, "_y_mean", None)
+        ys = getattr(self.model, "_y_std", None)
+        if ym is None or ys is None:
+            absent = " and ".join(n for n, v in (("y_mean", ym), ("y_std", ys)) if v is None)
+            raise self._nn_refusal(
+                f"the checkpoint has no y_mean/y_std pair (missing: {absent}), so predictions "
+                "cannot be put back on the training target's scale.")
+        try:
+            usable = math.isfinite(float(ym)) and math.isfinite(float(ys)) and float(ys) > 0
+        except (TypeError, ValueError):
+            usable = False
+        if not usable:
+            raise self._nn_refusal(f"y_mean/y_std are not usable: {ym!r}/{ys!r}.")
+        self.logger.debug(f"  [1b] NN normalisation present: scaler {len(m)} features, "
+                         f"y_mean={float(ym):.6f} y_std={float(ys):.6f}")
 
     def _get_signal_explanation(self, status: str) -> str:
         """
@@ -782,17 +890,18 @@ class PredictionGenerator:
 
         # Category B: Apply scaler normalization ONLY for neural_net
         # Fix 3A-4: explicit model_type gate prevents accidental cross-model normalization
-        if (getattr(self, '_normalize_features', False)
-                and self._scaler_mean is not None
-                and self.model_meta.get("model_type") == "neural_net"):
-            if X.shape[1] == len(self._scaler_mean):
-                X = (X - self._scaler_mean) / self._scaler_scale
-                self.logger.debug(f"[CAT-B] Applied input normalization to {X.shape[0]} samples")
-            else:
-                self.logger.warning(
-                    f"[CAT-B] Scaler dimension mismatch: X has {X.shape[1]} features, "
-                    f"scaler has {len(self._scaler_mean)}. Skipping normalization."
-                )
+        # [1b] a loaded neural_net is never scored unscaled: no scaler or a width
+        # mismatch refuses here (it used to warn and score the raw matrix).
+        if self.model is not None and (self.model_meta or {}).get("model_type") == "neural_net":
+            if (not getattr(self, '_normalize_features', False)
+                    or self._scaler_mean is None or self._scaler_scale is None):
+                raise self._nn_refusal("the input scaler is not loaded at scoring time.")
+            if X.shape[1] != len(self._scaler_mean):
+                raise self._nn_refusal(
+                    f"the feature matrix has {X.shape[1]} columns but the input scaler has "
+                    f"{len(self._scaler_mean)}.")
+            X = (X - self._scaler_mean) / self._scaler_scale
+            self.logger.debug(f"[CAT-B] Applied input normalization to {X.shape[0]} samples")
 
         # Score using model or fallback
         if self.model is not None:
@@ -926,6 +1035,23 @@ class PredictionGenerator:
 # ============================================================================
 # CLI INTERFACE
 # ============================================================================
+def _retire_canonical_prediction(logger):
+    """[1b] After a refusal: move predictions/next_draw_prediction.json (an EARLIER run's
+    output) into predictions/history/, unchanged. Returns the new path, or None when there
+    was no canonical file. The canonical path is the one _save_predictions writes."""
+    canonical = Path("predictions") / "next_draw_prediction.json"
+    if not canonical.exists():
+        return None
+    history_dir = canonical.parent / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    target = history_dir / f"retired_after_refusal_{stamp}_next_draw_prediction.json"
+    canonical.replace(target)
+    logger.error(f"STEP 6 REFUSED: the earlier {canonical} was moved to {target}; "
+                 "it is not this run's output")
+    return target
+
+
 def main():
     """CLI interface for Step 6 Prediction Generation"""
     import argparse
@@ -1034,17 +1160,27 @@ def main():
     logger.info(f"Loaded {len(survivors_forward)} forward survivors")
     logger.info(f"Loaded {len(lottery_history)} lottery draws")
     
-    generator = PredictionGenerator(config, logger)
-    
-    if args.parent_run_id:
-        generator.parent_run_id = args.parent_run_id
-    
-    result = generator.generate_predictions(
-        survivors_forward,
-        lottery_history,
-        survivors_reverse,
-        k=config.k
-    )
+    try:
+        generator = PredictionGenerator(config, logger)
+
+        if args.parent_run_id:
+            generator.parent_run_id = args.parent_run_id
+
+        result = generator.generate_predictions(
+            survivors_forward,
+            lottery_history,
+            survivors_reverse,
+            k=config.k
+        )
+    except NNNormalisationError as e:
+        # [1b] no prediction file is written; WATCHER sees a failed step. An earlier
+        # run's canonical file is moved to predictions/history/ so that nothing can
+        # take it for this run's output (WATCHER's freshness check goes by file times).
+        _retire_canonical_prediction(logger)
+        logger.error("STEP 6 REFUSED (exit %d): %s", EXIT_NN_NORMALISATION_REFUSED,
+                     str(e).splitlines()[0])
+        print(f"STEP 6 REFUSED: {e}", file=sys.stderr)
+        return EXIT_NN_NORMALISATION_REFUSED
     
     # v6.1: Handle signal gate exit code
     if result.get('status') in ['prediction_skipped', 'PREDICTION_SKIPPED']:

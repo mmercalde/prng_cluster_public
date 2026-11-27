@@ -698,23 +698,48 @@ def gg2_gpu_walk(F, out_root):
 
 
 def g13_nn_check(F, out_root):
-    """Lead rule: a neural_net sidecar without the input scaler or without y_mean/y_std is
-    refused. The CLI runs best-effort on the same sidecars (recorded as observations)."""
+    """A neural_net sidecar without the input scaler or without y_mean/y_std is refused.
+    [1b, 2026-11-26] Step 6 refuses it itself: the harness reports Step 6's refusal and the
+    CLI exits 4 with no prediction file (it used to exit 0 and score best-effort). The
+    harness's own check (lead rule 2026-11-23) is kept as a second line and is tested with
+    Step 6's refusal switched off in-process."""
+    import prediction_generator as pg
     fx, n = F["fx"], len(F["combined"])
     blk = ["--block-start", str(n), "--block-end", str(n + 1)]
     out = {}
-    for name, needle in (("nn_noscaler", "input scaler not loaded"), ("nn_noy", "y_mean/y_std not loaded")):
+    pred = fx / "predictions" / "next_draw_prediction.json"
+    for name, needle in (("nn_noscaler", "input scaler was not loaded"), ("nn_noy", "no y_mean/y_std")):
         try:
             run_harness(F, out_root, ["--models-dir", str(F["models"][name])] + blk)
             raise GateFail("G13", f"{name}: accepted (no refusal)")
         except H.HarnessError as e:
-            check("G13", needle in str(e), f"{name}: wrong refusal {e}")
-            out[name] = "refused: " + str(e)[:110]
-        cli = run_cli(F, fx / "survivors_with_scores.json", fx / "combined_history.json",
-                      F["models"][name], tag=f"G13 {name}")
-        out[name + "_cli"] = (f"OBSERVED: CLI exit 0, status={cli.get('status')}, "
-                              f"{len(cli.get('predictions', []))} predictions, raw_scores "
-                              f"[{min(cli['raw_scores']):.4g}, {max(cli['raw_scores']):.4g}]")
+            check("G13", "refused by Step 6" in str(e) and needle in str(e), f"{name}: wrong refusal {e}")
+            out[name] = "refused: " + str(e)[:140]
+        try:
+            run_cli(F, fx / "survivors_with_scores.json", fx / "combined_history.json",
+                    F["models"][name], tag=f"G13 {name}")
+            raise GateFail("G13", f"{name}: the CLI scored it (exit 0)")
+        except RuntimeError as e:
+            check("G13", "CLI exit 4" in str(e) and "STEP 6 REFUSED" in str(e) and needle in str(e)
+                  and not pred.exists(), f"{name}: CLI did not refuse as 1b says: {str(e)[:300]}")
+            out[name + "_cli"] = "CLI exit 4, STEP 6 REFUSED, no prediction file"
+    # second line: with Step 6's refusal off, the harness's own check still refuses
+    orig = pg.PredictionGenerator._require_nn_normalisation
+    pg.PredictionGenerator._require_nn_normalisation = lambda self: None
+    try:
+        for name, needle in (("nn_noscaler", "input scaler not loaded"), ("nn_noy", "y_mean/y_std not loaded")):
+            try:
+                run_harness(F, out_root, ["--models-dir", str(F["models"][name])] + blk)
+                raise GateFail("G13", f"{name}: accepted with Step 6's refusal off (no second line)")
+            except GateFail:
+                raise
+            except H.HarnessError as e:
+                check("G13", needle in str(e), f"{name}: wrong second-line refusal {e}")
+                out[name + "_second_line"] = "refused: " + str(e)[:110]
+            except Exception as e:
+                raise GateFail("G13", f"{name}: second line did not refuse; got {type(e).__name__}: {str(e)[:120]}")
+    finally:
+        pg.PredictionGenerator._require_nn_normalisation = orig
     # the complete sidecar is accepted and its report is complete (checked after the refusals)
     rec, _ = run_harness(F, out_root, ["--models-dir", str(F["models"]["nn"])] + blk)
     rep_ = rec["ranking_info"].get("nn_normalisation") or {}
@@ -750,6 +775,15 @@ def gpu_mutants(F, out_root):
         H.check_nn_normalisation = mut
         return (lambda: setattr(H, "check_nn_normalisation", orig)), hits
     res.append(run_mutant("M16 y_mean/y_std part blinded", m16, lambda: g13_nn_check(F, out_root), "G13"))
+
+    def m26():  # [1b] Step 6's own refusal removed: G13 must notice the refusal no longer comes from Step 6
+        import prediction_generator as pg
+        hits = {"n": 0}; orig = pg.PredictionGenerator._require_nn_normalisation
+        def mut(self):
+            hits["n"] += 1
+        pg.PredictionGenerator._require_nn_normalisation = mut
+        return (lambda: setattr(pg.PredictionGenerator, "_require_nn_normalisation", orig)), hits
+    res.append(run_mutant("M26 Step 6 NN refusal removed", m26, lambda: g13_nn_check(F, out_root), "G13"))
     return res
 
 

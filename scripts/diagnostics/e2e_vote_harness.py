@@ -651,12 +651,14 @@ def missing_schema_features(rows, names):
 
 def check_nn_normalisation(gen):
     """Lead rule 2026-11-23 (TODO-E2E-V9). A neural_net sidecar is accepted only if:
-      - the generator loaded the input scaler. pg:385-449 is best-effort: a missing scaler
-        logs a warning and the NN scores unscaled X (:814-824);
-      - the scaler length equals the schema length. Otherwise pg:817-824 skips it silently;
+      - the generator loaded the input scaler;
+      - the scaler length equals the schema length;
       - the wrapper loaded y_mean and y_std (neural_net_wrapper.py:437-441). Without them
         predict() returns normalised outputs, with no inverse transform (:357-359).
-    The check is harness-level only. The module is not edited."""
+    [1b, 2026-11-26] Step 6 now refuses the same cases itself
+    (prediction_generator.py, _require_nn_normalisation), so build_generator normally stops
+    before this is reached. It stays as a second line (a prediction_generator.py without 1b)
+    and it writes the nn_normalisation report."""
     import math
     import numpy as np
     names = gen.feature_names or []
@@ -694,7 +696,11 @@ def build_generator(pg, config, logger, args, rows, npz_map):
     if args.ranking == "sidecar":
         if not pg.MULTI_MODEL_AVAILABLE:
             raise HarnessError("models.model_factory not importable: no sidecar ranking possible")
-        gen = pg.PredictionGenerator(config, logger)
+        try:
+            gen = pg.PredictionGenerator(config, logger)
+        except getattr(pg, "NNNormalisationError", ()) as e:
+            # [1b] Step 6 itself now refuses a neural_net without its training normalisation
+            raise HarnessError("neural_net sidecar refused by Step 6: " + " ".join(str(e).splitlines()[:2]))
         meta_path = Path(config.models_dir) / "best_model.meta.json"
         info["sidecar_path"] = str(meta_path)
         info["sidecar_sha256"] = sha256_file(meta_path)

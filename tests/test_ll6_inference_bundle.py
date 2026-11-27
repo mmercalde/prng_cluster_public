@@ -590,7 +590,9 @@ def main():
                  for v in an.values()) and an["neural_net"]["normalize"],
              {f: f"{v['step6_vs_attribution_forward']:.2e}" for f, v in an.items()} | {"atol": A_NORM_ATOL})
 
-    # ---- G4 relocated NN directory (measured; Step 6 unchanged) -----------
+    # ---- G4 relocated NN directory. [1b, 2026-11-26] Step 6 now reads the scaler from the
+    # file the weights were loaded from (Beta X-1B-STEP6-NN R1 Q2), so Step 6 on a relocated
+    # dir equals the default (resolved) bundle and differs from the as_written replay.
     if want("LL6.relocated_dir_bundle_keeps_scaler"):
         reloc = out / "relocated_nn"
         shutil.copytree(nn_dir, reloc)
@@ -602,12 +604,14 @@ def main():
         bw = ib.load_inference_bundle(str(reloc), scaler_source="as_written")
         y_res, y_asw = br.predict(br.matrix(feats)), bw.predict(bw.matrix(feats))
         gap = float(np.max(np.abs(y6r - y_res)))
+        gap_asw = float(np.max(np.abs(y6r - y_asw)))
         gate("LL6.relocated_dir_bundle_keeps_scaler",
-             (not g6r._normalize_features) and float(np.max(np.abs(y6r - y_asw))) <= A_NORM_ATOL
-             and gap > 1e3 * A_NORM_ATOL and br.normalize_features and br.scaler_source == "resolved",
-             f"Step 6 normalize={g6r._normalize_features} (measured, unchanged); default bundle "
+             g6r._normalize_features is True and gap <= A_NORM_ATOL
+             and gap_asw > 1e3 * A_NORM_ATOL and br.normalize_features and br.scaler_source == "resolved"
+             and not bw.normalize_features,
+             f"Step 6 normalize={g6r._normalize_features} (scaler read from the resolved file); default bundle "
              f"scaler_source={br.scaler_source} normalize={br.normalize_features}; Step 6 vs bundle(default) "
-             f"max |diff| {gap:.3g}; vs bundle(as_written) {float(np.max(np.abs(y6r - y_asw))):.2e}")
+             f"max |diff| {gap:.2e}; vs bundle(as_written, unscaled) {gap_asw:.3g}")
 
     # ---- Chapter 13 -------------------------------------------------------
     def c13_load(mod, models_dir, loader=None, construct=False):
