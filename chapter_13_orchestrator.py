@@ -88,14 +88,15 @@ C13_MODEL_LOADERS = ("legacy", "canonical")
 
 def _c13_model_input(bundle, features):
     """[LL-6] One survivor's model input through the canonical bundle: a name-keyed
-    feature map (LL-5 ranked_predictions format) is read BY NAME; a positional list
-    must have exactly the sidecar's count. Then the training scaler (Blocker 4)."""
-    if isinstance(features, dict):
-        x = bundle.vector(features)
-    else:
-        x = np.asarray(features, dtype=np.float32).reshape(-1)
-        if x.shape[0] != bundle.feature_count:
-            raise ValueError(f"positional feature list of {x.shape[0]} != {bundle.feature_count}")
+    feature map (LL-5 ranked_predictions format) is read BY NAME. Then the training
+    scaler (Blocker 4).
+    [LL-7, Beta X-LL6-BUNDLE R1 Finding 2(a)] A positional list is refused, even at the
+    sidecar's width: a same-width reordered list cannot be told apart from the right one
+    (system map v1.2 §4.5). Only the canonical loader calls this; legacy is untouched."""
+    if not isinstance(features, dict):
+        raise ValueError(f"canonical root cause needs a name-keyed feature map, got "
+                         f"{type(features).__name__} (positional input refused, LL-7)")
+    x = bundle.vector(features)
     return bundle.transform(x.reshape(1, -1))[0]
 
 # LLM server
@@ -843,7 +844,8 @@ class Chapter13Orchestrator:
                     divergence_ratio,
                 )
                 self._run_regime_shift_analysis(
-                    analysis, model, model_type, predictions, _feature_names
+                    analysis, model, model_type, predictions, _feature_names,
+                    bundle=bundle,  # [LL-7] Q3: the tiers use the same input as above
                 )
 
             # Archive
@@ -863,15 +865,21 @@ class Chapter13Orchestrator:
         model_type: str,
         predictions: List[Dict[str, Any]],
         feature_names: List[str],
+        bundle=None,  # [LL-7] canonical inference bundle; None = legacy behaviour
     ) -> None:
         """
         On regime shift: write tier comparison and optionally request LLM analysis.
         Mutates analysis dict in-place to add tier/LLM results.
         Non-fatal — failures are logged but don't break the caller.
+        [LL-7, Beta X-LL6-BUNDLE R1 Q3] With a bundle (canonical loader), every tier input is
+        built by _c13_model_input, the same as the root-cause attribution path. With no
+        bundle the call is today's.
         """
         try:
+            tier_kw = ({} if bundle is None
+                       else {"model_input": (lambda f: _c13_model_input(bundle, f))})
             tier_comparison = compare_pool_tiers(
-                model, model_type, predictions, feature_names,
+                model, model_type, predictions, feature_names, **tier_kw,
             )
             tier_path = "diagnostics_outputs/tier_comparison.json"
             os.makedirs("diagnostics_outputs", exist_ok=True)

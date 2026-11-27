@@ -317,6 +317,259 @@ def per_survivor_attribution(
 
 
 # ===========================================================================
+# [LL-7, Ch14 learning loop, 2026-11-23] Signed attribution, by name
+# ===========================================================================
+# The four functions above are unchanged: they return |contribution| shares
+# that sum to 1. The signed path below is added beside them (system map v1.2 §5;
+# plan LL-7). For every survivor it returns, in the model's TARGET units:
+#   signed[name]          which way and how far each feature pushed
+#   baseline              the model's output at the reference point
+#   prediction            the attribution path's OWN forward pass (A-NORM uses it)
+#   completeness_residual prediction - (baseline + sum(signed))
+# Trees (pred_contribs / pred_contrib / ShapValues) are exactly complete up to
+# float error. The NN uses integrated gradients from a declared reference
+# (input zero in the model's input space = the training mean when a scaler is
+# loaded); its residual is the IG discretisation error and is reported, not hidden.
+# Inputs are name-keyed: X is built from a {name: value} map in the sidecar's
+# order (models.inference_bundle), and counts and names are checked, never zipped
+# blind.
+
+SIGNED_VERSION = "1.0.0"
+SIGNED_METHODS = {"neural_net": ("integrated_gradients", "grad_x_input"),
+                  "xgboost": ("tree_contribs",), "lightgbm": ("tree_contribs",),
+                  "catboost": ("tree_shap",)}
+COMPLETENESS_ATOL_TREE = 1e-4   # declared before measurement; target units
+
+
+def _names_sha(names):
+    import hashlib
+    return hashlib.sha256(",".join(names).encode("utf-8")).hexdigest()
+
+
+class AttributionInputError(ValueError):
+    pass
+
+
+def _check_names(feature_names, x, expected_count=None, model_names=None):
+    names = list(feature_names)
+    if len(set(names)) != len(names):
+        raise AttributionInputError("duplicate feature names")
+    if x.ndim != 1 or x.shape[0] != len(names):
+        raise AttributionInputError(f"x has shape {x.shape}, {len(names)} names")
+    if expected_count is not None and expected_count != len(names):
+        raise AttributionInputError(f"model expects {expected_count} features, got {len(names)} names")
+    status = "none"
+    if model_names:
+        mn = [str(n) for n in model_names]
+        positional = all(n == f"Column_{i}" or n == f"f{i}" or n == str(i) for i, n in enumerate(mn))
+        if positional:
+            status = "positional (model trained on an unnamed matrix in sidecar order)"
+            if len(mn) != len(names):
+                raise AttributionInputError(f"model has {len(mn)} columns, {len(names)} names")
+        elif mn != names:
+            raise AttributionInputError("model feature names differ from the sidecar names")
+        else:
+            status = "equal"
+    return status
+
+
+def _nn_signed(net, z, y_mean, y_std, method, ig_steps):
+    import torch
+    try:
+        dev = next(net.parameters()).device
+    except (StopIteration, AttributeError):
+        dev = torch.device("cpu")
+    was_training = net.training
+    net.eval()
+    ys = 1.0 if y_std is None else float(y_std)
+    ym = 0.0 if y_mean is None else float(y_mean)
+    zt = torch.tensor(z, dtype=torch.float32, device=dev).unsqueeze(0)
+    with torch.no_grad():
+        f_z = float(net(zt).reshape(-1)[0])
+        z0 = torch.zeros_like(zt)
+        f_0 = float(net(z0).reshape(-1)[0])
+    if method == "grad_x_input":
+        x = zt.clone().requires_grad_(True)
+        net.zero_grad(set_to_none=True)
+        net(x).reshape(-1)[0].backward()
+        contrib = (x.grad * x).reshape(-1).detach().cpu().numpy() * ys
+    else:  # integrated gradients, midpoint rule, reference z0 = 0
+        alphas = (torch.arange(ig_steps, dtype=torch.float32, device=dev) + 0.5) / ig_steps
+        path = z0 + alphas.reshape(-1, 1) * (zt - z0)
+        path.requires_grad_(True)
+        net.zero_grad(set_to_none=True)
+        net(path).sum().backward()
+        avg = path.grad.mean(dim=0)
+        contrib = ((zt - z0).reshape(-1) * avg).detach().cpu().numpy() * ys
+    if was_training:
+        net.train()
+    return contrib.astype(np.float64), f_0 * ys + ym, f_z * ys + ym
+
+
+def per_survivor_attribution_signed(model, model_type: str, x_model_input: np.ndarray,
+                                    feature_names: List[str], method: Optional[str] = None,
+                                    expected_feature_count: Optional[int] = None,
+                                    y_mean=None, y_std=None, ig_steps: int = 64) -> Dict:
+    """Signed per-survivor attribution in target units (see block comment).
+
+    x_model_input: ONE row exactly as the model receives it (for the NN: after
+    the training scaler; build it with InferenceBundle.vector + transform).
+    Raises AttributionInputError on a name or count problem (fail closed),
+    unlike the best-effort absolute functions above.
+    """
+    if model_type not in SIGNED_METHODS:
+        raise AttributionInputError(f"unknown model_type {model_type}")
+    method = method or SIGNED_METHODS[model_type][0]
+    if method not in SIGNED_METHODS[model_type]:
+        raise AttributionInputError(f"method {method} not available for {model_type}")
+    x = np.asarray(x_model_input, dtype=np.float32).reshape(-1)
+    names = list(feature_names)
+    exact = model_type != "neural_net"
+    if model_type == "neural_net":
+        status = _check_names(names, x, expected_feature_count)
+        contrib, baseline, pred = _nn_signed(model, x, y_mean, y_std, method, ig_steps)
+    elif model_type == "xgboost":
+        import xgboost as xgb
+        booster = model.get_booster() if hasattr(model, "get_booster") else model
+        status = _check_names(names, x, booster.num_features(), booster.feature_names)
+        dm = xgb.DMatrix(x.reshape(1, -1))   # unnamed, as XGBoostWrapper.predict builds it
+        c = booster.predict(dm, pred_contribs=True)[0].astype(np.float64)
+        contrib, baseline = c[:-1], float(c[-1])
+        pred = float(booster.predict(dm)[0])
+    elif model_type == "lightgbm":
+        status = _check_names(names, x, model.num_feature(), model.feature_name())
+        c = np.asarray(model.predict(x.reshape(1, -1), pred_contrib=True))[0].astype(np.float64)
+        contrib, baseline = c[:-1], float(c[-1])
+        pred = float(np.asarray(model.predict(x.reshape(1, -1))).reshape(-1)[0])
+    else:  # catboost
+        from catboost import Pool
+        _cn = list(getattr(model, "feature_names_", None) or [])
+        status = _check_names(names, x, len(_cn) if _cn else None, _cn)
+        sv = np.asarray(model.get_feature_importance(Pool(x.reshape(1, -1)), type="ShapValues"))[0]
+        contrib, baseline = sv[:-1].astype(np.float64), float(sv[-1])
+        pred = float(np.asarray(model.predict(x.reshape(1, -1))).reshape(-1)[0])
+    if contrib.shape[0] != len(names):
+        raise AttributionInputError(f"{contrib.shape[0]} contributions for {len(names)} names")
+    residual = pred - (baseline + float(contrib.sum()))
+    tot = float(np.abs(contrib).sum())
+    signed = {n: float(contrib[i]) for i, n in enumerate(names)}
+    return {
+        "version": SIGNED_VERSION, "model_type": model_type, "method": method,
+        "ig_steps": ig_steps if method == "integrated_gradients" else None,
+        "reference": ("model-input zero (training mean when scaled)" if model_type == "neural_net"
+                      else "tree expected value"),
+        "n_features": len(names), "feature_names_sha256": _names_sha(names),
+        "model_feature_names": status,
+        "signed": signed,
+        "abs_share": {n: (abs(v) / tot if tot > 0 else 0.0) for n, v in signed.items()},
+        "baseline": baseline, "prediction": pred,
+        "completeness_residual": residual,
+        "completeness_exact_method": exact,
+        "completeness_ok": (abs(residual) <= COMPLETENESS_ATOL_TREE) if exact else None,
+    }
+
+
+def attribute_row(bundle, features: Dict[str, float], method: Optional[str] = None,
+                  ig_steps: int = 64, missing: str = "refuse") -> Dict:
+    """[LL-7] One survivor's signed attribution from a name-keyed feature map,
+    through a models.inference_bundle.InferenceBundle (LL-6)."""
+    z = bundle.transform(bundle.vector(features, missing=missing).reshape(1, -1))[0]
+    out = per_survivor_attribution_signed(
+        bundle.attribution_model, bundle.model_type, z, bundle.feature_names, method=method,
+        expected_feature_count=bundle.feature_count, y_mean=bundle.y_mean, y_std=bundle.y_std,
+        ig_steps=ig_steps)
+    out["checkpoint_hash"] = bundle.checkpoint_hash
+    out["feature_schema_hash"] = bundle.feature_schema_hash
+    return out
+
+
+def per_survivor_attribution_signed_matrix(model, model_type: str, Z: np.ndarray,
+                                           feature_names: List[str], method: Optional[str] = None,
+                                           expected_feature_count: Optional[int] = None,
+                                           y_mean=None, y_std=None, ig_steps: int = 64,
+                                           chunk: int = 256) -> Dict:
+    """[LL-7] Batched form of per_survivor_attribution_signed for many survivors.
+    Z: (n, F) model inputs. Returns arrays: signed (n, F), baseline (n,),
+    prediction (n,), completeness_residual (n,). The test proves it equals the
+    per-row function."""
+    if model_type not in SIGNED_METHODS:
+        raise AttributionInputError(f"unknown model_type {model_type}")
+    method = method or SIGNED_METHODS[model_type][0]
+    if method not in SIGNED_METHODS[model_type]:
+        raise AttributionInputError(f"method {method} not available for {model_type}")
+    Z = np.asarray(Z, dtype=np.float32)
+    names = list(feature_names)
+    if Z.ndim != 2:
+        raise AttributionInputError(f"Z must be 2-D, got {Z.shape}")
+    if model_type == "neural_net":
+        status = _check_names(names, Z[0], expected_feature_count)
+        import torch
+        net = model
+        try:
+            dev = next(net.parameters()).device
+        except (StopIteration, AttributeError):
+            dev = torch.device("cpu")
+        was_training = net.training
+        net.eval()
+        ys = 1.0 if y_std is None else float(y_std)
+        ym = 0.0 if y_mean is None else float(y_mean)
+        S = np.empty(Z.shape, dtype=np.float64)
+        P = np.empty(Z.shape[0]); B0 = np.empty(Z.shape[0])
+        with torch.no_grad():
+            f0 = float(net(torch.zeros((1, Z.shape[1]), device=dev)).reshape(-1)[0])
+        step = max(1, chunk // max(1, ig_steps)) if method == "integrated_gradients" else chunk
+        for i in range(0, Z.shape[0], step):
+            zt = torch.tensor(Z[i:i + step], device=dev)
+            with torch.no_grad():
+                P[i:i + step] = net(zt).reshape(-1).cpu().numpy() * ys + ym
+            B0[i:i + step] = f0 * ys + ym
+            if method == "grad_x_input":
+                x = zt.clone().requires_grad_(True)
+                net.zero_grad(set_to_none=True)
+                net(x).sum().backward()
+                S[i:i + step] = (x.grad * x).detach().cpu().numpy() * ys
+            else:
+                m = zt.shape[0]
+                alphas = (torch.arange(ig_steps, dtype=torch.float32, device=dev) + 0.5) / ig_steps
+                path = (alphas.reshape(1, -1, 1) * zt.reshape(m, 1, -1)).reshape(m * ig_steps, -1)
+                path.requires_grad_(True)
+                net.zero_grad(set_to_none=True)
+                net(path).sum().backward()
+                avg = path.grad.reshape(m, ig_steps, -1).mean(dim=1)
+                S[i:i + step] = (zt * avg).detach().cpu().numpy() * ys
+        if was_training:
+            net.train()
+    elif model_type == "xgboost":
+        import xgboost as xgb
+        booster = model.get_booster() if hasattr(model, "get_booster") else model
+        status = _check_names(names, Z[0], booster.num_features(), booster.feature_names)
+        dm = xgb.DMatrix(Z)
+        c = booster.predict(dm, pred_contribs=True).astype(np.float64)
+        S, B0 = c[:, :-1], c[:, -1]
+        P = booster.predict(dm).astype(np.float64)
+    elif model_type == "lightgbm":
+        status = _check_names(names, Z[0], model.num_feature(), model.feature_name())
+        c = np.asarray(model.predict(Z, pred_contrib=True)).astype(np.float64)
+        S, B0 = c[:, :-1], c[:, -1]
+        P = np.asarray(model.predict(Z)).astype(np.float64).reshape(-1)
+    else:
+        from catboost import Pool
+        _cn = list(getattr(model, "feature_names_", None) or [])
+        status = _check_names(names, Z[0], len(_cn) if _cn else None, _cn)
+        sv = np.asarray(model.get_feature_importance(Pool(Z), type="ShapValues")).astype(np.float64)
+        S, B0 = sv[:, :-1], sv[:, -1]
+        P = np.asarray(model.predict(Z)).astype(np.float64).reshape(-1)
+    if S.shape[1] != len(names):
+        raise AttributionInputError(f"{S.shape[1]} contribution columns for {len(names)} names")
+    R = P - (B0 + S.sum(axis=1))
+    return {"version": SIGNED_VERSION, "model_type": model_type, "method": method,
+            "ig_steps": ig_steps if method == "integrated_gradients" else None,
+            "feature_names": names, "feature_names_sha256": _names_sha(names),
+            "model_feature_names": status, "signed": S, "baseline": B0, "prediction": P,
+            "completeness_residual": R, "completeness_exact_method": model_type != "neural_net"}
+
+
+# ===========================================================================
 # Pool Tier Comparison
 # ===========================================================================
 
@@ -327,6 +580,7 @@ def compare_pool_tiers(
     feature_names: List[str],
     tiers: Optional[Dict[str, int]] = None,
     max_samples_per_tier: Optional[int] = None,
+    model_input=None,
 ) -> Dict:
     """
     Compare what drives predictions for tight vs wide pool.
@@ -345,6 +599,11 @@ def compare_pool_tiers(
         max_samples_per_tier: Optional cap on samples per tier (TB Finding #3).
             Use to limit computational cost for wide tiers. E.g., max_samples_per_tier=50
             computes attribution for at most 50 survivors even in top_300 tier.
+        model_input: [LL-7, Beta X-LL6-BUNDLE R1 Q3] Optional callable(features) -> one
+            model-input row. None (default) = unchanged: np.array(s["features"]) as given.
+            Chapter 13 under --c13-model-loader canonical passes its _c13_model_input
+            (bundle.vector by name, then the training scaler), so the tiers are attributed
+            on the same input as the root-cause attribution path.
 
     Returns:
         dict with keys:
@@ -384,7 +643,10 @@ def compare_pool_tiers(
         attrs = []
         for s in effective_pool:
             _total_attempts += 1
-            features_arr = np.array(s["features"], dtype=np.float32)
+            if model_input is None:
+                features_arr = np.array(s["features"], dtype=np.float32)
+            else:  # [LL-7] Q3: the same model input as the attribution path
+                features_arr = model_input(s["features"])
             attr = per_survivor_attribution(
                 model, model_type, features_arr, feature_names
             )
