@@ -55,6 +55,10 @@ found by its sha256 among the walk-forward frozen dirs (origin summaries under -
 in the flag's own models_dir; not found => no_checkpoint (the flag stays open). The latest line of the flag
 that carries the sha decides; flagged_model.distinct_checkpoints says how many different ones its lines named.
 A flag with no such line is handled exactly as before (the live checkpoint in --models-dir).
+W3 (2026-11-27): when the flag's LATEST line carries binding_schema (written with WATCHER's run id), that line
+decides alone: bound = its checkpoint_sha256, found as above with its explicit checkpoint_path tried (on a sha
+match) before the flag's models_dir; unbound = no_checkpoint (error class FlagUnbound) with the line's reason, and
+no older line's sha and no live model is used (Beta X-W3-BINDING R1 Q2). Lines without binding_schema: as W2.
 
 CLI:
   python3 scripts/diagnostics/why_report_runner.py (--flag-id ID | --all-open) --wf-root DIR [--wf-root DIR]
@@ -205,18 +209,32 @@ def flagged_model(flag_id, root=None):
     of the flag carries it (a flag written before W2, or a failed read at flag time): then the runner behaves
     exactly as before. distinct_checkpoints = how many different checkpoints the flag's lines named."""
     recs, _ = wrf._read_jsonl(wrf._path(root, wrf.FLAGS_PATH))
-    hit, named = None, []
+    hit, named, latest = None, [], None
     for r in recs:
+        if wrf.flag_id_of(r) == flag_id:
+            latest = r
         if wrf.flag_id_of(r) == flag_id and r.get("checkpoint_sha256"):
             hit = {"checkpoint_sha256": r["checkpoint_sha256"], "models_dir": r.get("models_dir"),
                    "flagged_at": r.get("flagged_at")}
             named.append(r["checkpoint_sha256"])
+    if latest is not None and latest.get("binding_schema"):
+        # [W3, Beta X-W3 R1 Q2] the latest occurrence decides ALONE: bound names its checkpoint (with the explicit
+        # path); unbound never falls back to an older line's sha or to the live model, the flag stays open
+        if latest.get("binding") == "bound" and latest.get("checkpoint_sha256"):
+            return {"checkpoint_sha256": latest["checkpoint_sha256"], "models_dir": latest.get("models_dir"),
+                    "checkpoint_path": latest.get("checkpoint_path"), "flagged_at": latest.get("flagged_at"),
+                    "step5_run_id": latest.get("step5_run_id"), "model_id": latest.get("model_id"),
+                    "distinct_checkpoints": len(set(named)), "rule": "W3: latest occurrence decides (bound)"}
+        return {"unbound": True, "flagged_at": latest.get("flagged_at"), "step5_run_id": latest.get("step5_run_id"),
+                "binding_reason": latest.get("binding_reason") or latest.get("flagged_model_error") or "not given",
+                "rule": "W3: latest occurrence decides (unbound: no fallback)"}
     if hit is not None:
         hit.update(distinct_checkpoints=len(set(named)), rule="latest line decides")
     return hit
 
 
-def checkpoint_by_sha(family, ck_sha, wf_roots, root=None, models_dir=None, flag_models_dir=None):
+def checkpoint_by_sha(family, ck_sha, wf_roots, root=None, models_dir=None, flag_models_dir=None,
+                      flag_checkpoint_path=None):
     """[W2] The flagged checkpoint, found by sha256: first in the walk-forward frozen dirs (frozen_families
     [s<seed>][family], the recorded file whose sha256 is ck_sha, re-hashed on disk), then in --models-dir (default
     the Step 6 manifest dir), then (second pass, lead decision 3) in the flag's own recorded models_dir (its
@@ -240,7 +258,18 @@ def checkpoint_by_sha(family, ck_sha, wf_roots, root=None, models_dir=None, flag
                     return {"models_dir": str(f["dir"]), "checkpoint_path": str(p), "checkpoint_sha256": ck_sha,
                             "found_in": "walk_forward_frozen", "origin_summary": str(sp)}
             looked.append(f"{sp} {seed_key}: recorded there, file missing or changed")
-    for where, md in (("models_dir", models_dir), ("flag_models_dir", flag_models_dir)):
+    for where, md in (("models_dir", models_dir), ("flag_checkpoint_path", flag_checkpoint_path),
+                      ("flag_models_dir", flag_models_dir)):
+        if where == "flag_checkpoint_path":
+            # [W3, Beta X-W3 R1 Q6] the bound flag's explicit checkpoint, accepted only on a sha match on disk
+            if not md:
+                continue
+            p = Path(md)
+            if p.is_file() and _sha(p) == ck_sha:
+                return {"models_dir": str(p.parent), "checkpoint_path": str(p), "checkpoint_sha256": ck_sha,
+                        "found_in": "flag_checkpoint_path"}
+            looked.append(f"flag_checkpoint_path {p}: missing or another sha")
+            continue
         if where == "flag_models_dir" and not md:
             looked.append("flag records no models_dir")
             continue
@@ -559,6 +588,11 @@ def run_for_flag(flag_id, wf_roots, root=None, out_root=None, timeout_s=1800, mo
         _log(log_path, f"flag {flag_id} family {family}; wf roots {list(map(str, wf_roots or []))}; "
                        f"timeout {timeout_s}s")
         fm = flagged_model(flag_id, root)
+        if fm is not None and fm.get("unbound"):      # [W3] latest occurrence unbound: no fallback, flag stays open
+            res["flagged_model"] = fm
+            raise RunnerFailure("no_checkpoint", f"latest flag occurrence is unbound ({fm['binding_reason']}); "
+                                                f"no older checkpoint and no live model is used"[:1500],
+                                "FlagUnbound")
         if fm is None:                                # no model on the flag: as before, the live one
             ck = current_checkpoint(family, root, models_dir)
         else:                                         # [W2] the flagged model, not whatever is live
@@ -566,7 +600,8 @@ def run_for_flag(flag_id, wf_roots, root=None, out_root=None, timeout_s=1800, mo
             _log(log_path, f"flag names checkpoint {fm['checkpoint_sha256']} (models_dir {fm['models_dir']}, "
                            f"flagged {fm['flagged_at']}; {fm['distinct_checkpoints']} distinct checkpoint(s) "
                            f"named by the flag's lines, the latest decides); explaining that model")
-            ck = checkpoint_by_sha(family, fm["checkpoint_sha256"], wf_roots, root, models_dir, fm["models_dir"])
+            ck = checkpoint_by_sha(family, fm["checkpoint_sha256"], wf_roots, root, models_dir, fm["models_dir"],
+                                   fm.get("checkpoint_path"))
         res["checkpoint"] = ck
         cand = find_block(family, ck["checkpoint_sha256"], wf_roots)
         cand["children"] = res["children"]

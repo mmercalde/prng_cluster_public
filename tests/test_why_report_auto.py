@@ -152,8 +152,10 @@ MUTANTS = [
      '            hit = {"checkpoint_sha256": r["checkpoint_sha256"]', '            hit = hit or {"checkpoint_sha256": r["checkpoint_sha256"]',
      "W2.runner_latest_line"),
     ("runner_no_flag_dir", "scripts/diagnostics/why_report_runner.py",
-     '    for where, md in (("models_dir", models_dir), ("flag_models_dir", flag_models_dir)):',
-     '    for where, md in (("models_dir", models_dir),):', "W2.runner_flag_models_dir"),
+     # [W3 2026-11-27] the loop now also tries a bound flag's explicit checkpoint_path (Beta X-W3 R1 Q6), so its
+     # last entry is on its own line; the mutant still drops the flag's models_dir route
+     '                      ("flag_models_dir", flag_models_dir)):',
+     '                      ):', "W2.runner_flag_models_dir"),
     # watcher mutants: made from the PATCHED scratch copy (W2.owner_patch) and written next to it
     ("w_hook_unguarded", "agents/watcher_agent.py", GUARD, "        if True:\n", "W2.watcher_hook"),  # decision 1
     ("w_call_drops_dir", "agents/watcher_agent.py",
@@ -961,7 +963,20 @@ def g_owner_patch(m, d):
     # the archived patch's result; anything else means the archive and the tree disagree
     st = owner_state()
     same_owner = all(sha(sc / f) == sha(REPO / f) for f in OWNER_FILES)
-    owner_ok = st == "base" or same_owner
+    # [W3 2026-11-27] a third allowed state: the W2 result with the W3 owner patch
+    # (docs/drafts/unit_w/W3_OWNER_LAND.patch, owner decisions 1-2 of 2026-11-27) applied on top
+    same_owner_w3 = False
+    w3p = REPO / "docs" / "drafts" / "unit_w" / "W3_OWNER_LAND.patch"
+    if not same_owner and w3p.is_file():
+        w3d = d / "w3_owner_check"
+        for f in OWNER_FILES + ("agent_manifests/reinforcement.json",):
+            (w3d / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(sc / f, w3d / f)
+        # outside any repository (GIT_CEILING_DIRECTORIES), so git apply patches w3d itself and nothing else
+        if subprocess.run(["git", "apply", str(w3p)], cwd=str(w3d), capture_output=True,
+                          env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(w3d.parent))).returncode == 0:
+            same_owner_w3 = all(sha(w3d / f) == sha(REPO / f) for f in OWNER_FILES)
+    owner_ok = st == "base" or same_owner or same_owner_w3
     imp = subprocess.run([sys.executable, "-B", "-c",
                           "import sys, importlib.util as u; sys.path[:0] = [sys.argv[1]]; "
                           "s = u.spec_from_file_location('wa_scratch', sys.argv[1] + '/agents/watcher_agent.py'); "
@@ -978,7 +993,8 @@ def g_owner_patch(m, d):
     ok = (changed == sorted(OWNER_FILES) and imp_ok and rb == 0 and rf == 0 and " passed" in lb and " passed" in lf
           and "failed" not in lb + lf and owner_ok)
     return ok, (f"apply --check rc 0; files {changed}; tree owner files: {st}, same as the patched scratch: "
-                f"{same_owner} -> {'ok' if owner_ok else 'MISMATCH'}; WATCHER import ok {imp_ok}; "
+                f"{same_owner}, same as it plus the W3 patch: {same_owner_w3} -> {'ok' if owner_ok else 'MISMATCH'}; "
+                f"WATCHER import ok {imp_ok}; "
                 f"test_benching_switch: rc {rb} '{lb}'; test_why_report_flags: rc {rf} '{lf}'")
 
 
@@ -1111,7 +1127,8 @@ def g_watcher_hook(m, d):
 INSTALLED_MARKERS = {
     "init": '        self._step5_output_dir = None  # [W2',
     "step5_handoff": '        if step == 5: self._step5_output_dir = final_params.get("output_dir")',
-    "health_dir": "_health = check_training_health(models_dir=self._step5_output_dir)",
+    # [W3 2026-11-27] prefix only: the W3 owner patch adds the run id to this call (owner decisions 1-2)
+    "health_dir": "_health = check_training_health(models_dir=self._step5_output_dir",
     "guard_init": "        _why_normal_end = False  # [W2",
     "guard_set": "                _why_normal_end = self._pipeline_running and self.current_step > end_step",
     "guard": GUARD.rstrip("\n"),

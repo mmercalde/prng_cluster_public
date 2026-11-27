@@ -139,6 +139,158 @@ def new_run_id(now: Optional[datetime] = None) -> Tuple[str, str]:
     return f"s5-{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}", now.isoformat()
 
 
+# =============================================================================
+# [W3 2026-11-27] Flag-to-model binding: run-local staging and identity records.
+# Active ONLY with an explicit binding request (--binding-run-id, made by WATCHER). Level 'full'
+# and --diagnostics-run-id alone never turn it on. Design:
+# docs/drafts/unit_w/DESIGN_FLAG_MODEL_BINDING_20261127_REV2.md section 4.
+#   diagnostics_outputs/<run id>/<model id>/   one writer: the final-model writer of that model
+#     <family>_diagnostics.json                the report bytes (same bytes as the public copies)
+#     best_model.<ext>                         the checkpoint bytes (public file is a copy of these)
+#     identity.pending.json                    the pair, written by the final-model writer
+#     identity.json                            published only after exit 0 (single) / child rc 0 (compare)
+# =============================================================================
+W3_SCHEMA = "w3/1"
+W3_PENDING = "identity.pending.json"
+W3_PUBLISHED = "identity.json"
+W3_REQUEST_KEYS = ("binding_run_id", "binding_run_started_at", "binding_model_id")
+
+
+def w3_safe_id(value: Any) -> Optional[str]:
+    """A run id or model id usable as one path component, else None (W3 stays off)."""
+    import re
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,95}", value):
+        return None
+    return value
+
+
+def w3_request(run_id: Any, started: Any = None, model_id: Any = None, family: str = "model",
+               root: str = DEFAULT_OUTPUT_DIR) -> Optional[Dict[str, Any]]:
+    """The binding request for one final model, or None (no request or an unsafe id: W3 off)."""
+    rid = w3_safe_id(run_id)
+    if rid is None:
+        if run_id:
+            logger.warning("[W3] binding run id %r is not a safe path component; binding off", run_id)
+        return None
+    if model_id:
+        mid = w3_safe_id(model_id)
+        if mid is None:
+            logger.warning("[W3] binding model id %r is not a safe path component; binding off", model_id)
+            return None
+    else:
+        import uuid
+        mid = f"{family}-{uuid.uuid4().hex[:8]}"
+    return {"run_id": rid, "run_started_at": started if isinstance(started, str) else None,
+            "model_id": mid, "stage_dir": os.path.join(root, rid, mid)}
+
+
+def w3_sha256_file(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def w3_atomic_write_json(path: str, obj: Dict[str, Any]) -> None:
+    """Temp file in the same dir, fsync, os.replace: the file is visible only when complete."""
+    d = os.path.dirname(path) or "."
+    tmp = os.path.join(d, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(obj, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def w3_make_record(req: Dict[str, Any], model_type: str, checkpoint_file: str, report_file: str,
+                   require_report_checkpoint: bool) -> Dict[str, Any]:
+    """The pair, from the staged files the caller (a final-model writer) wrote itself. Raises ValueError with
+    the reason when the staged files do not agree (then nothing is recorded: the run stays unbound)."""
+    stage = req["stage_dir"]
+    for name in (checkpoint_file, report_file):
+        if os.path.basename(name) != name:
+            raise ValueError(f"staged file name {name!r} is not a basename")
+    ck_sha = w3_sha256_file(os.path.join(stage, checkpoint_file))
+    with open(os.path.join(stage, report_file), "rb") as f:
+        raw = f.read()
+    import hashlib
+    rep = json.loads(raw)
+    if rep.get("diagnostics_run_id") != req["run_id"]:
+        raise ValueError(f"staged report run id {rep.get('diagnostics_run_id')!r} != {req['run_id']!r}")
+    if rep.get("model_type") != model_type:
+        raise ValueError(f"staged report family {rep.get('model_type')!r} != {model_type!r}")
+    if rep.get("binding_model_id") != req["model_id"]:
+        raise ValueError(f"staged report model id {rep.get('binding_model_id')!r} != {req['model_id']!r}")
+    if require_report_checkpoint and rep.get("checkpoint_sha256") != ck_sha:
+        raise ValueError(f"report checkpoint_sha256 {rep.get('checkpoint_sha256')!r} != staged checkpoint {ck_sha}")
+    return {"schema": W3_SCHEMA, "run_id": req["run_id"], "run_started_at": req.get("run_started_at"),
+            "model_id": req["model_id"], "model_type": model_type, "stage_dir": os.path.abspath(stage),
+            "checkpoint_file": checkpoint_file, "checkpoint_sha256": ck_sha,
+            "report_file": report_file, "report_sha256": hashlib.sha256(raw).hexdigest(),
+            "report_checkpoint_sha256": rep.get("checkpoint_sha256"),
+            "recorded_at": datetime.utcnow().isoformat() + "Z"}
+
+
+def w3_write_pending(req: Dict[str, Any], model_type: str, checkpoint_file: str, report_file: str,
+                     require_report_checkpoint: bool) -> Optional[Dict[str, Any]]:
+    """Best-effort: the record, written atomically as identity.pending.json, or None (logged)."""
+    try:
+        rec = w3_make_record(req, model_type, checkpoint_file, report_file, require_report_checkpoint)
+        w3_atomic_write_json(os.path.join(req["stage_dir"], W3_PENDING), rec)
+        return rec
+    except Exception as e:
+        logger.warning("[W3] identity record not written (run stays unbound): %s: %s", type(e).__name__, e)
+        return None
+
+
+W3_EXPECT_KEYS = ("schema", "run_id", "model_id", "model_type", "stage_dir", "checkpoint_file",
+                  "checkpoint_sha256", "report_file", "report_sha256", "recorded_at")
+
+
+def w3_publish(stage_dir: str, run_id: str, model_type: Optional[str] = None,
+               expect: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+    """Publish identity.pending.json as identity.json after re-checking the staged files. Never raises.
+    The caller calls this ONLY after the writer's exit 0 (single) or the child's returncode 0 (compare).
+    expect (single model): the record the accepted final path wrote in this process; the pending file must be
+    that record, else nothing is published (Beta X-W3 R2 Q2)."""
+    try:
+        with open(os.path.join(stage_dir, W3_PENDING)) as f:
+            rec = json.load(f)
+        if expect is not None:
+            _diff = [k for k in W3_EXPECT_KEYS if rec.get(k) != expect.get(k)]
+            if _diff:
+                return False, f"pending record is not the accepted final path's pair (differs in {_diff})"
+        if rec.get("run_id") != run_id:
+            return False, f"pending record run id {rec.get('run_id')!r} != {run_id!r}"
+        if model_type is not None and rec.get("model_type") != model_type:
+            return False, f"pending record family {rec.get('model_type')!r} != {model_type!r}"
+        if w3_sha256_file(os.path.join(stage_dir, rec["checkpoint_file"])) != rec["checkpoint_sha256"]:
+            return False, "staged checkpoint changed after it was recorded"
+        if w3_sha256_file(os.path.join(stage_dir, rec["report_file"])) != rec["report_sha256"]:
+            return False, "staged report changed after it was recorded"
+        w3_atomic_write_json(os.path.join(stage_dir, W3_PUBLISHED),
+                             dict(rec, published_at=datetime.utcnow().isoformat() + "Z"))
+        os.unlink(os.path.join(stage_dir, W3_PENDING))
+        return True, "published"
+    except Exception as e:
+        logger.warning("[W3] identity not published (run stays unbound): %s: %s", type(e).__name__, e)
+        return False, f"{type(e).__name__}: {e}"
+
+
+def w3_sidecar_block(rec: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The sidecar's step5_identity block (owner decision 3, 2026-11-27): the pair as recorded."""
+    if not rec:
+        return None
+    return {k: rec.get(k) for k in ("schema", "run_id", "run_started_at", "model_id", "model_type", "stage_dir",
+                                    "checkpoint_file", "checkpoint_sha256", "report_file", "report_sha256")}
+
+
 def diagnostics_options_from_args(args) -> Optional[Dict[str, Any]]:
     """
     One bundle of report options from a parsed Step 5 / trial-worker namespace.
@@ -529,8 +681,32 @@ class TrainingDiagnostics(ABC):
             logger.info(f"Diagnostics saved to {path}")
         except Exception as e:
             logger.error(f"Failed to save diagnostics: {e}")
-        
+
         return path
+
+    def save_bound(self, stage_path: str, public_paths: List[str], identity: Dict[str, Any]) -> str:
+        """[W3] The report serialized ONCE to bytes (the same text save() writes, plus the identity keys) and
+        written first to the run-local staging path, then to each public path. Returns the sha256 of the
+        bytes. A failure writing the STAGED copy raises (the caller falls back to save(), unbound); a public
+        write failure is logged as save() does."""
+        import hashlib
+        report = self.get_report()
+        report["model_type"] = self.model_type
+        report["generated_at"] = datetime.now().isoformat()
+        report["schema_version"] = SCHEMA_VERSION
+        report.update(identity)
+        data = json.dumps(report, indent=2, default=str)
+        os.makedirs(os.path.dirname(stage_path) or ".", exist_ok=True)
+        with open(stage_path, "w") as f:
+            f.write(data)
+        for p in public_paths:
+            try:
+                with open(p, "w") as f:
+                    f.write(data)
+                logger.info(f"Diagnostics saved to {p}")
+            except Exception as e:
+                logger.error(f"Failed to save diagnostics: {e}")
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 # =============================================================================

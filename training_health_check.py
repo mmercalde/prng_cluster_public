@@ -214,7 +214,8 @@ def check_training_health(diagnostics_path: str = DIAGNOSTICS_PATH,
                           grading_rules: Optional[str] = None,
                           expected_run_id: Optional[str] = None,
                           run_started_at: Optional[str] = None,
-                          models_dir: Any = _MODELS_DIR_NOT_GIVEN) -> Dict[str, Any]:
+                          models_dir: Any = _MODELS_DIR_NOT_GIVEN,
+                          binding_run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Post-Step-5 training health check.
 
@@ -250,10 +251,19 @@ def check_training_health(diagnostics_path: str = DIAGNOSTICS_PATH,
     with flagged_model_error "unbound: ..." (_flagged_model: nothing on 5f6c192 ties a checkpoint to the
     graded run). The flag line on disk is always as before. Not given (default) = every return value as before;
     given, even None or blank, = the returned flag carries the unbound record.
+    [W3 2026-11-27] binding_run_id: the run id WATCHER gave this Step 5 dispatch (explicit binding request).
+    Given: the stale guard is strict (owner decision 2: a report with no run id or another id is stale, no
+    timestamp or mtime rescue), a compare pointer of another run is ignored, the result carries binding_run_id,
+    and a raised why-report flag names the model only when the chain of
+    docs/drafts/unit_w/DESIGN_FLAG_MODEL_BINDING_20261127_REV2.md section 3 holds, on the one flag line (owner
+    decision 1). Not given (default): every path, value and file exactly as on 14815a7.
     """
     run_ctx = {'expected_run_id': expected_run_id, 'run_started_at': run_started_at}
     if models_dir is not _MODELS_DIR_NOT_GIVEN:   # [W2] given, even None: the returned flag gets the identity record
         run_ctx['models_dir'] = models_dir
+    if binding_run_id:   # [W3] explicit binding request; absent = today's run_ctx exactly
+        run_ctx.update(expected_run_id=binding_run_id, strict_run_id=True, binding_run_id=binding_run_id,
+                       diagnostics_dir=os.path.dirname(diagnostics_path) or '.')
     try:
         result = _check_training_health_impl(diagnostics_path, grading_rules, run_ctx)
     except Exception as e:
@@ -268,6 +278,8 @@ def check_training_health(diagnostics_path: str = DIAGNOSTICS_PATH,
             'confidence': 0.5,
             'note': 'Health check failed — proceeding anyway (best-effort)',
         }
+    if binding_run_id:   # [W3] WATCHER reads it: a stale result of ITS run does not reset the skip registry
+        result['binding_run_id'] = binding_run_id
     _write_training_health_log(result, diagnostics_path, run_ctx)
     return result
 
@@ -297,9 +309,13 @@ def _check_training_health_impl(diagnostics_path: str, grading_rules: Optional[s
 
     # ── Load diagnostics ──────────────────────────────────────────────
     try:
-        with open(diagnostics_path) as f:
-            diag = json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+        if run_ctx.get('binding_run_id'):   # [W3] keep the exact bytes graded (no request: as before)
+            diag = _w3_load_report(diagnostics_path, run_ctx, 'legacy')
+        else:
+            with open(diagnostics_path) as f:
+                diag = json.load(f)
+    except ((json.JSONDecodeError, IOError, UnicodeDecodeError) if run_ctx.get('binding_run_id')
+            else (json.JSONDecodeError, IOError)) as e:   # [W3, Beta X-W3 R2 Q4] decode error: binding route only
         logger.error(f"Failed to read diagnostics: {e}")
         return {
             'action': 'PROCEED_WITH_NOTE',
@@ -317,10 +333,13 @@ def _check_training_health_impl(diagnostics_path: str, grading_rules: Optional[s
     # [CH14-DIAG CD-07] only when the caller names its run (today's call passes nothing)
     fr = None
     if run_ctx.get('expected_run_id') or run_ctx.get('run_started_at'):
+        if run_ctx.get('binding_run_id'):
+            run_ctx['graded_report'] = run_ctx.get('_w3_loaded', {}).get(diagnostics_path)
         fr = report_freshness(diag, diagnostics_path, run_ctx)
         if fr['freshness'] == 'stale':
             stale = _stale_result(diag.get('model_type', 'unknown'), fr, policies,
-                                  {'grading_rules': 'legacy', 'report_path': diagnostics_path})
+                                  {'grading_rules': 'legacy', 'report_path': diagnostics_path},
+                                  **({'strict': True} if run_ctx.get('binding_run_id') else {}))
             if stale is not None:
                 return stale
     
@@ -790,8 +809,23 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
     ptr = os.path.join(diag_dir, COMPARE_POINTER_FILENAME)
     winner, report_path, report_source, family_paths, compare_run_id = None, diagnostics_path, 'canonical', {}, None
     pointer_diag_run_id = None
-    if os.path.isfile(ptr):
-        cs = _load_json(ptr)
+    _w3_bind = bool(run_ctx.get('binding_run_id'))
+    _w3_cs = None   # [W3, Beta X-W3 R2 Q5] the one parsed pointer that passed the id check; routing uses it
+    if os.path.isfile(ptr) and _w3_bind:
+        # [W3] strict: a pointer written by another Step 5 run is not this run's; the canonical report is graded
+        try:
+            _w3_cs = _load_json(ptr)
+            _w3_ptr_id = _w3_cs.get('diagnostics_run_id')
+        except Exception as e:
+            _w3_cs, _w3_ptr_id = None, f'unreadable: {type(e).__name__}'
+        if _w3_ptr_id != run_ctx['binding_run_id']:
+            run_ctx['_w3_pointer_ignored'] = (f"compare pointer run id {_w3_ptr_id!r} != this run "
+                                             f"{run_ctx['binding_run_id']!r}; pointer ignored")
+            ptr = None
+    if _w3_bind and ptr is not None and _w3_cs is None:
+        ptr = None   # [W3] no pointer was read and checked: none is used
+    if ptr and (_w3_cs is not None or os.path.isfile(ptr)):
+        cs = _w3_cs if _w3_cs is not None else _load_json(ptr)
         winner = _winner_from_summary(cs)
         compare_run_id = cs.get('run_id')
         pointer_diag_run_id = cs.get('diagnostics_run_id')  # CD-07 stamp (None for older pointers)
@@ -802,22 +836,29 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
             report_source = 'compare_pointer_winner_report'
     base = {'grading_rules': 'fixed', 'report_source': report_source, 'report_path': report_path,
             'compare_run_id': compare_run_id}
+    if run_ctx.get('_w3_pointer_ignored'):
+        base['pointer_ignored'] = run_ctx['_w3_pointer_ignored']
     if not os.path.isfile(report_path):
         note = ('Diagnostics not enabled for this run' if report_source == 'canonical'
                 else f'Winner {winner} has no diagnostics report ({report_path})')
         return {'action': 'PROCEED', 'model_type': winner or 'unknown', 'severity': 'absent',
                 'issues': [], 'suggested_fixes': [], 'confidence': 0.5, 'note': note, **base}
     try:
-        diag = _load_json(report_path)
-    except (json.JSONDecodeError, IOError) as e:
+        diag = _w3_load_report(report_path, run_ctx, 'fixed') if _w3_bind else _load_json(report_path)
+    except ((json.JSONDecodeError, IOError, UnicodeDecodeError) if _w3_bind
+            else (json.JSONDecodeError, IOError)) as e:   # [W3, Beta X-W3 R2 Q4] decode error: binding route only
         return {'action': 'PROCEED_WITH_NOTE', 'model_type': winner or 'unknown', 'severity': 'warning',
                 'issues': [f'Diagnostics file unreadable: {e}'],
                 'suggested_fixes': ['Check diagnostics_outputs/ for corruption'], 'confidence': 0.3, **base}
+    # [W3, Beta X-W3 R2 Q3] the identity tuple of THIS read, kept with the parsed report it describes
+    _w3_winner_tuple = run_ctx.get('_w3_loaded', {}).get(report_path) if _w3_bind else None
+    _w3_family_tuples = {}
     pointer_run_id = pointer_diag_run_id if report_source == 'compare_pointer_winner_report' else None
     fr = report_freshness(diag, report_path, run_ctx, pointer_run_id)
     base['freshness'] = fr
     if fr['freshness'] == 'stale':
-        stale = _stale_result(winner or diag.get('model_type', 'unknown'), fr, policies, base)
+        stale = _stale_result(winner or diag.get('model_type', 'unknown'), fr, policies, base,
+                              **({'strict': True} if _w3_bind else {}))
         if stale is not None:
             return stale
     g = grade_report(diag, policies, 'fixed')
@@ -831,7 +872,13 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
             per_family[m] = {'severity': 'absent', 'path': fp}
             continue
         try:
-            frep = _load_json(fp)
+            if _w3_bind and fp == report_path:   # [W3, Beta X-W3 R2 Q3] the winner read is reused, not reread
+                frep, _w3_ft = diag, _w3_winner_tuple
+            elif _w3_bind:
+                frep = _w3_load_report(fp, run_ctx, 'fixed')
+                _w3_ft = run_ctx.get('_w3_loaded', {}).get(fp)
+            else:
+                frep = _load_json(fp)
             ffr = report_freshness(frep, fp, run_ctx, pointer_diag_run_id)
             if ffr['freshness'] == 'stale':
                 per_family[m] = {'severity': 'stale', 'path': fp, 'freshness': ffr,
@@ -841,6 +888,8 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
             per_family[m] = {'severity': fg['severity'], 'issues': fg['issues'], 'path': fp,
                              'freshness': ffr['freshness']}
             family_reports[m] = (frep, fg, ffr)
+            if _w3_bind:
+                _w3_family_tuples[m] = _w3_ft
         except Exception as e:  # one unreadable family never blocks the check
             per_family[m] = {'severity': 'absent', 'path': fp, 'error': str(e)}
     graded = {k: v for k, v in per_family.items() if v['severity'] not in ('absent', 'stale')}
@@ -862,6 +911,9 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
             out_diag, out_g = {}, {}
             issues = [f"WATCHER: report of {promoted} could not be loaded; its issues, fixes and "
                       f"metrics are not shown"] + [f"[{winner_name}] {i}" for i in g['issues']]
+    if _w3_bind:   # [W3, Beta X-W3 R1 Q2, R2 Q3] the flag follows the tuple of the exact read that set the grade
+        run_ctx['graded_report'] = (_w3_family_tuples.get(promoted) if promoted is not None
+                                    else _w3_winner_tuple)
     if severity == 'ok' and worst_family and graded[worst_family]['severity'] != 'ok' \
             and settings['grade_scope'] == 'winner':
         action, consecutive, severity, why = 'PROCEED_WITH_NOTE', 0, 'warning', None
@@ -922,6 +974,9 @@ def report_freshness(report: Dict[str, Any], report_path: Optional[str],
             return {**out, 'freshness': 'fresh', 'reason': 'run_id matches the run being checked'}
         if rid:
             return {**out, 'freshness': 'stale', 'reason': f'report run_id {rid} != expected {exp}'}
+        if run_ctx.get('strict_run_id'):   # [W3, owner decision 2, 2026-11-27] WATCHER issued an id: strict
+            return {**out, 'freshness': 'stale',
+                    'reason': f'report carries no run id; WATCHER issued {exp} (strict: no timestamp or mtime rescue)'}
     if pointer_run_id:
         if rid == pointer_run_id:
             return {**out, 'freshness': 'fresh', 'reason': 'run_id matches the compare-models pointer'}
@@ -947,12 +1002,21 @@ def report_freshness(report: Dict[str, Any], report_path: Optional[str],
 
 
 def _stale_result(model_type: str, fr: Dict[str, Any], policies: Dict[str, Any],
-                  base: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                  base: Dict[str, Any], strict: bool = False) -> Optional[Dict[str, Any]]:
     """CD-07: result for a stale report, or None when stale_report_action is 'grade'.
-    Never touches the skip registry and never archives: a stale report is no new evidence."""
+    Never touches the skip registry and never archives: a stale report is no new evidence.
+    [W3] strict (WATCHER issued a run id, owner decision 2 of 2026-11-27): a stale report is never graded, so
+    'grade' gives the not-graded PROCEED_WITH_NOTE result instead (Beta X-W3 R2 Q5). Not strict: as before."""
     action = _wave2_settings(policies)['stale_report_action']
+    _w3_overridden = False
+    if action == 'grade' and strict:
+        action, _w3_overridden = 'PROCEED_WITH_NOTE', True
     if action == 'grade':
         return None
+    if _w3_overridden:
+        base = dict(base, stale_report_action_overridden=(
+            "stale_report_action 'grade' not applied: WATCHER issued a run id and a stale report is not graded "
+            "(owner decision 2, 2026-11-27)"))
     logger.warning("Training health check: stale report (%s) -> %s", fr['reason'], action)
     return {'action': action, 'model_type': model_type, 'severity': 'stale',
             'issues': [f"WATCHER: stale diagnostics report: {fr['reason']}"],
@@ -1265,6 +1329,138 @@ def _flagged_model(model_type: str, models_dir: Optional[str]) -> Dict[str, Any]
                                     f"compare ignores --output-dir: Chapter 6 B2)")[:500]}
 
 
+# =============================================================================
+# [W3 2026-11-27] flag-to-model binding (design REV2 section 3). Only with WATCHER's binding_run_id.
+# =============================================================================
+W3_BINDING_SCHEMA = "w3/1"
+W3_DEFAULT_DEADLINE_S = 10.0
+_W3_FIELDS = ('binding_schema', 'binding', 'binding_reason', 'step5_run_id', 'model_id', 'models_dir',
+              'checkpoint_path', 'checkpoint_file', 'checkpoint_sha256', 'report_path', 'report_sha256',
+              'flagged_model_error')
+
+
+def _w3_load_report(path: str, run_ctx: Dict[str, Any], route: str) -> Dict[str, Any]:
+    """[W3] Parse a report from its exact bytes and keep (sha256, path, OWN family before any override, run
+    id, checkpoint sha, model id) in run_ctx['_w3_loaded'][path]. Raises as the plain load would."""
+    import hashlib
+    with open(path, 'rb') as f:
+        raw = f.read()
+    diag = json.loads(raw)
+    if isinstance(diag, dict):
+        run_ctx.setdefault('_w3_loaded', {})[path] = {
+            'report_sha256': hashlib.sha256(raw).hexdigest(), 'report_path': os.path.abspath(path),
+            'family': diag.get('model_type'), 'run_id': diag.get('diagnostics_run_id'),
+            'checkpoint_sha256': diag.get('checkpoint_sha256'), 'model_id': diag.get('binding_model_id'),
+            'route': route}
+    return diag
+
+
+def _w3_deadline(policies: Dict[str, Any]) -> Tuple[float, Optional[str]]:
+    """training_diagnostics.why_flag_binding_deadline_seconds (owner decision 4): default 10 s. A missing,
+    non-number, non-positive or non-finite value uses the default and says so."""
+    import math
+    v = policies.get('why_flag_binding_deadline_seconds')
+    if v is None:
+        return W3_DEFAULT_DEADLINE_S, None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+        return W3_DEFAULT_DEADLINE_S, f"why_flag_binding_deadline_seconds {v!r} invalid; default used"
+    return float(v), None
+
+
+def _w3_unbound(reason: str, run_id: Optional[str], gr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    gr = gr or {}
+    return {'binding_schema': W3_BINDING_SCHEMA, 'binding': 'unbound', 'binding_reason': reason[:500],
+            'step5_run_id': run_id, 'model_id': None, 'models_dir': None, 'checkpoint_path': None,
+            'checkpoint_file': None, 'checkpoint_sha256': None, 'report_path': gr.get('report_path'),
+            'report_sha256': gr.get('report_sha256'), 'flagged_model_error': f"unbound: {reason}"[:500]}
+
+
+def _w3_bind_io(family: str, run_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """The chain of design REV2 section 3, cheapest links first; the checkpoint is hashed last."""
+    rid = run_ctx['binding_run_id']
+    gr = run_ctx.get('graded_report')
+    if not gr:
+        return _w3_unbound("no graded report bytes were kept for this check", rid, gr)
+    if gr.get('run_id') != rid:
+        return _w3_unbound(f"graded report run id {gr.get('run_id')!r} != WATCHER run id {rid!r}", rid, gr)
+    if gr.get('family') != family:
+        return _w3_unbound(f"graded report's own family {gr.get('family')!r} != flagged family {family!r}", rid, gr)
+    import glob as _glob
+    import training_diagnostics as _td
+    root = os.path.join(run_ctx.get('diagnostics_dir') or '.', rid)
+    hits = []
+    for p in sorted(_glob.glob(os.path.join(root, '*', _td.W3_PUBLISHED))):
+        try:
+            with open(p) as f:
+                rec = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("[W3] identity record %s unreadable: %s", p, e)
+            continue
+        if (isinstance(rec, dict) and rec.get('run_id') == rid and rec.get('model_type') == family
+                and rec.get('report_sha256') == gr.get('report_sha256')):
+            hits.append((p, rec))
+    if not hits:
+        why = ("no tree report at level legacy, so no pair" if family in ('xgboost', 'lightgbm', 'catboost')
+               else "the final-model writer published no pair for it")
+        return _w3_unbound(f"no published identity record of run {rid} for {family} with the graded report's "
+                           f"sha256 under {root} ({why}, or the report was rewritten)", rid, gr)
+    if len(hits) > 1:
+        return _w3_unbound(f"ambiguous: {len(hits)} identity records of run {rid} match the graded report", rid, gr)
+    p, rec = hits[0]
+    stage = os.path.dirname(p)
+    if gr.get('model_id') is not None and gr.get('model_id') != rec.get('model_id'):
+        return _w3_unbound(f"graded report model id {gr.get('model_id')!r} != record {rec.get('model_id')!r}", rid, gr)
+    ck_file = rec.get('checkpoint_file')
+    if not isinstance(ck_file, str) or os.path.basename(ck_file) != ck_file or not ck_file:
+        return _w3_unbound(f"identity record names checkpoint file {ck_file!r}, not a basename", rid, gr)
+    if family == 'neural_net' and gr.get('checkpoint_sha256') != rec.get('checkpoint_sha256'):
+        return _w3_unbound(f"NN report's checkpoint_sha256 {gr.get('checkpoint_sha256')!r} != record "
+                           f"{rec.get('checkpoint_sha256')!r}", rid, gr)
+    ck = os.path.join(stage, ck_file)
+    got = _sha256_file(ck)
+    if got != rec.get('checkpoint_sha256'):
+        return _w3_unbound(f"staged checkpoint {ck} hashes to {got}, record says {rec.get('checkpoint_sha256')}",
+                           rid, gr)
+    return {'binding_schema': W3_BINDING_SCHEMA, 'binding': 'bound',
+            'binding_reason': 'run id, family, report sha256 and checkpoint sha256 all match',
+            'step5_run_id': rid, 'model_id': rec.get('model_id'), 'models_dir': os.path.abspath(stage),
+            'checkpoint_path': os.path.abspath(ck), 'checkpoint_file': ck_file, 'checkpoint_sha256': got,
+            'report_path': gr.get('report_path'), 'report_sha256': gr.get('report_sha256'),
+            'flagged_model_error': None}
+
+
+def _bind_flagged_model(family: str, run_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """[W3] The identity fields for a flag line. Never raises, never waits past the deadline: the binding
+    I/O runs in a daemon thread; on expiry or any error the result is unbound with the reason (owner decision 4)."""
+    import threading
+    rid = run_ctx.get('binding_run_id')
+    gr = run_ctx.get('graded_report')
+    try:
+        deadline, note = _w3_deadline(_load_policies())
+    except Exception as e:
+        deadline, note = W3_DEFAULT_DEADLINE_S, f"policies unreadable ({type(e).__name__}); default deadline"
+    box = {}
+
+    def work():
+        try:
+            box['r'] = _w3_bind_io(family, run_ctx)
+        except Exception as e:   # unreadable, missing, permission: unbound with the reason
+            box['r'] = _w3_unbound(f"binding read error: {type(e).__name__}: {e}", rid, gr)
+
+    try:
+        t = threading.Thread(target=work, name='w3-bind', daemon=True)
+        t.start()
+        t.join(deadline)
+        r = box.get('r') if not t.is_alive() else None
+        if r is None:
+            r = _w3_unbound(f"binding did not finish within {deadline:g} s (deadline); not bound", rid, gr)
+    except Exception as e:
+        r = _w3_unbound(f"binding error: {type(e).__name__}: {e}", rid, gr)
+    if note:
+        r['binding_reason'] = f"{r['binding_reason']} [{note}]"[:500]
+    return r
+
+
 def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int,
                     run_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -1276,6 +1472,8 @@ def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int,
     """
     flagged_at = datetime.now(timezone.utc).isoformat()
     since = entry.get('critical_since')
+    _w3 = (run_ctx or {}).get('binding_run_id')
+    _w3_fields = _bind_flagged_model(model_type, run_ctx) if _w3 else None   # [W3] before the append
     flag = {
         'schema': WHY_REPORT_FLAG_SCHEMA,
         'flag_id': why_flag_id(model_type, _why_flag_anchor(entry) or flagged_at),
@@ -1297,6 +1495,8 @@ def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int,
                 'a human or AI checks it (automatic why-report not built, TODO-WHY-1)',
         'health_check_version': MODULE_VERSION,
     }
+    if _w3_fields is not None:   # [W3, owner decision 1] the identity goes on the ONE flag line
+        flag.update(_w3_fields)
     logger.warning(
         "[WHY-REPORT] Model %s hit %d consecutive critical grades (limit %d) since %s; benching off, "
         "family kept in the comparison; why-report needed (flag appended to %s)",
@@ -1311,7 +1511,7 @@ def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int,
     # [W2 third pass, lead decisions 4-5] the line above is exactly as on 5f6c192. The model's identity is NOT
     # put on it: unbound (see _flagged_model), so no second line is written either. The caller that passed
     # models_dir (WATCHER) gets the unbound record on the returned flag, whatever the automatic switch says.
-    if 'models_dir' in (run_ctx or {}):
+    if 'models_dir' in (run_ctx or {}) and _w3_fields is None:
         flag.update(_flagged_model(model_type, run_ctx['models_dir']))
     return flag
 

@@ -19,3 +19,7 @@ Written only by `scripts/beta_relay.py`. One row per `OBJECTION` that Beta label
 | X-BENCHING-SWITCH | R1 | Q3 | 2026-11-26 08:47 PST | With hours mode and benching both enabled, an import failure makes the compare keep an expired skip active. |
 | X-BENCHING-SWITCH | R1 | Q4 | 2026-11-26 08:47 PST | Fixed grading with all-families promotion can identify the promoted family while returning the winner’s report path and freshness. |
 | X-1B-STEP6-NN | R1 | Q1 · Refusal conditions | 2026-11-26 20:42 PST | Step 6 accepts a damaged scaler in a CPU fixture, and I found no evidence that current Step 5 has emitted a negative scale. |
+| X-W3-BINDING | R2 | Q2 | 2026-11-27 13:34 PST | Publishing the rejected NN pair requires the optional single-model CLI fallback, which the installed WATCHER manifest does not pass. |
+| X-W3-BINDING | R2 | Q3 | 2026-11-27 13:34 PST | The winner-report reread requires a fixed-grading full compare and an overlapping write to the public family report. |
+| X-W3-BINDING | R2 | Q4 | 2026-11-27 13:34 PST | The no-ID change needs a report with invalid text encoding, which the normal writers do not emit. |
+| X-W3-BINDING | R2 | Q5 | 2026-11-27 13:34 PST | The pointer reread requires a fixed-grading full compare with an overlapping pointer write, and the separate stale-policy bypass requires the nondefault `grade` policy. |

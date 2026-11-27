@@ -493,7 +493,8 @@ def train_catboost(X_train, y_train, X_val, y_val, params: dict, save_path: str 
 def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: str = None,
                      enable_diagnostics: bool = False, normalize_features: bool = False,
                      use_leaky_relu: bool = False, dropout_override: float = None,
-                     batch_mode: str = 'auto', diagnostics_options: dict = None) -> dict:
+                     batch_mode: str = 'auto', diagnostics_options: dict = None,
+                     binding: dict = None) -> dict:
     """
     Train PyTorch Neural Net with GPU (CUDA).
     
@@ -771,7 +772,24 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
         if scaler_mean is not None:
             checkpoint_data['scaler_mean'] = scaler_mean  # numpy array
             checkpoint_data['scaler_scale'] = scaler_scale  # numpy array
-        torch.save(checkpoint_data, save_path)
+        _w3_ck_sha = None
+        if binding and enable_diagnostics and _nn_diag is not None:
+            # [W3] the checkpoint is saved ONCE into this model's run-local staging dir, hashed there, and the
+            # public trial file is a copy of those bytes. Any failure: the public save as before, unbound.
+            try:
+                import shutil as _w3_sh
+                import training_diagnostics as _w3_td
+                os.makedirs(binding['stage_dir'], exist_ok=True)
+                _w3_staged = os.path.join(binding['stage_dir'], 'best_model.pth')
+                torch.save(checkpoint_data, _w3_staged)
+                _w3_ck_sha = _w3_td.w3_sha256_file(_w3_staged)
+                _w3_sh.copyfile(_w3_staged, save_path)
+            except Exception as _w3_err:
+                print(f"[W3] staged checkpoint failed, unbound (non-fatal): {_w3_err}", file=sys.stderr)
+                _w3_ck_sha = None
+                torch.save(checkpoint_data, save_path)
+        else:
+            torch.save(checkpoint_data, save_path)
         checkpoint_path = save_path
     
 
@@ -789,10 +807,27 @@ def train_neural_net(X_train, y_train, X_val, y_val, params: dict, save_path: st
             _mse_val = locals().get('val_mse', locals().get('mse', None))
             _nn_diag.set_final_metrics({'r2': r2, 'mse': _mse_val})
             os.makedirs('diagnostics_outputs', exist_ok=True)
-            _nn_diag.save('diagnostics_outputs/neural_net_diagnostics.json')
-            # v3 nice-to-have A: check existence before calling
-            if '_write_canonical_diagnostics' in dir() or '_write_canonical_diagnostics' in globals():
-                _write_canonical_diagnostics('diagnostics_outputs/neural_net_diagnostics.json')
+            _w3_saved = False
+            if binding and locals().get('_w3_ck_sha'):
+                # [W3] one byte string to staging, the family file and the canonical copy; it carries the run
+                # id, the model id and the sha256 of the staged checkpoint written above
+                try:
+                    _nn_diag.save_bound(
+                        os.path.join(binding['stage_dir'], 'neural_net_diagnostics.json'),
+                        ['diagnostics_outputs/neural_net_diagnostics.json',
+                         'diagnostics_outputs/training_diagnostics.json'],
+                        {'diagnostics_run_id': binding['run_id'],
+                         'diagnostics_run_started_at': binding.get('run_started_at'),
+                         'binding_model_id': binding['model_id'],
+                         'checkpoint_sha256': _w3_ck_sha})
+                    _w3_saved = True
+                except Exception as _w3_err:
+                    print(f"[W3] staged report failed, unbound (non-fatal): {_w3_err}", file=sys.stderr)
+            if not _w3_saved:
+                _nn_diag.save('diagnostics_outputs/neural_net_diagnostics.json')
+                # v3 nice-to-have A: check existence before calling
+                if '_write_canonical_diagnostics' in dir() or '_write_canonical_diagnostics' in globals():
+                    _write_canonical_diagnostics('diagnostics_outputs/neural_net_diagnostics.json')
             # TB Fix B: try-wrapped private attr access
             try:
                 _rnd_count = len(_nn_diag._round_data)
@@ -938,6 +973,12 @@ def main():
     parser.add_argument('--dead-unit-definition', type=str, default='linear_zero',
                         choices=['linear_zero', 'always_negative_preact'],
                         help='[CH14-DIAG CD-23] NN dead-unit metric (default linear_zero, unchanged)')
+    # [W3 2026-11-27] explicit binding request (final NN model only; passed by Step 5's final-model path)
+    parser.add_argument('--binding-run-id', type=str, default=None,
+                        help='[W3] run id of the binding request; with --enable-diagnostics the NN checkpoint and '
+                             'report go to diagnostics_outputs/<run id>/<model id>/ first (default: off)')
+    parser.add_argument('--binding-run-started-at', type=str, default=None, help='[W3] run start, UTC ISO')
+    parser.add_argument('--binding-model-id', type=str, default=None, help='[W3] model id inside the run')
     parser.add_argument('--unused-gradient-epsilon', type=float, default=None,
                         help='[CH14-DIAG CD-08] NN column unused below this mean |input gradient|')
     parser.add_argument('--feature-manifest', type=str, default=None,
@@ -1022,6 +1063,15 @@ def main():
             'feature_manifest': args.feature_manifest,
         }
 
+    # [W3] binding request: final NN model only; absent = the call below is exactly as before
+    _w3_kw = {}
+    if getattr(args, 'binding_run_id', None) and args.model_type == 'neural_net':
+        import training_diagnostics as _w3_td
+        _w3_req = _w3_td.w3_request(args.binding_run_id, args.binding_run_started_at, args.binding_model_id,
+                                    'neural_net')
+        if _w3_req is not None:
+            _w3_kw = {'binding': _w3_req}
+
     # Train based on model type
     try:
         if args.model_type == 'lightgbm':
@@ -1039,6 +1089,7 @@ def main():
                 dropout_override=getattr(args, 'dropout', None),
                 batch_mode=getattr(args, 'batch_mode', 'auto'),  # [S96A]
                 diagnostics_options=_diag_opts,  # [CH14-DIAG wave 1]
+                **_w3_kw,
             )
         elif args.model_type == 'random_forest':
             result = train_random_forest(X_train, y_train, X_val, y_val, params, save_path, getattr(args, 'enable_diagnostics', False))

@@ -2041,6 +2041,22 @@ class WatcherAgent:
                 else:
                     logger.debug(f"Skipping param '{key}' - not declared in step {step} manifest")
 
+        # [W3 2026-11-27] one run id per Step 5 dispatch, made here (after any freshness skip) when the manifest
+        # declares binding_run_id; always overwrites a caller's value. Stamped on every result returned below.
+        _w3_run = None
+        if step == 5 and 'binding_run_id' in final_params:
+            from training_diagnostics import new_run_id as _w3_new_run_id
+            _w3_run = _w3_new_run_id()
+            final_params['binding_run_id'] = _w3_run[0]
+            if 'binding_run_started_at' in final_params:
+                final_params['binding_run_started_at'] = _w3_run[1]
+            logger.info("[W3] Step 5 binding run id %s (started %s)", _w3_run[0], _w3_run[1])
+
+        def _w3_stamp(res):
+            if _w3_run is not None and isinstance(res, dict):
+                res['step5_run_id'], res['step5_run_started_at'] = _w3_run
+            return res
+
         # [S172 RUN-4 ROUTE-A] WALL 1 -- explicit operator pin.
         # The seven are DECLARED-AND-ROUTABLE, never DEFAULTED: they enter
         # `final_params` from the invocation-local operator bundle, and from
@@ -2479,11 +2495,11 @@ class WatcherAgent:
             if result.returncode != 0:
                 logger.error(f"Step {step} failed with code {result.returncode}")
                 logger.error(f"stderr: {result.stderr[:500]}")
-                return _step1_stamp_pin_provenance({
+                return _step1_stamp_pin_provenance(_w3_stamp({
                     "success": False,
                     "return_code": result.returncode,
                     "error": result.stderr[:500]
-                }, _step1_pin, cmd)
+                }), _step1_pin, cmd)
 
             # POST-STEP CLEANUP (Team Beta Item C)
             self._run_post_step_cleanup(step)
@@ -2491,27 +2507,27 @@ class WatcherAgent:
             # Try to find and load results file
             results = self._find_results(step)
             if results:
-                return _step1_stamp_pin_provenance(results, _step1_pin, cmd)
+                return _step1_stamp_pin_provenance(_w3_stamp(results), _step1_pin, cmd)
 
             # Return basic success
-            return _step1_stamp_pin_provenance({
+            return _step1_stamp_pin_provenance(_w3_stamp({
                 "success": True,
                 "return_code": 0,
                 "stdout": result.stdout[:500]
-            }, _step1_pin, cmd)
+            }), _step1_pin, cmd)
 
         except subprocess.TimeoutExpired:
             logger.error(f"Step {step} timed out after {_timeout_min} minutes")
-            return _step1_stamp_pin_provenance({
+            return _step1_stamp_pin_provenance(_w3_stamp({
                 "success": False,
                 "error": "Timeout"
-            }, _step1_pin, cmd)
+            }), _step1_pin, cmd)
         except Exception as e:
             logger.error(f"Step {step} execution error: {e}")
-            return _step1_stamp_pin_provenance({
+            return _step1_stamp_pin_provenance(_w3_stamp({
                 "success": False,
                 "error": str(e)
-            }, _step1_pin, cmd)
+            }), _step1_pin, cmd)
 
     def _find_results(self, step: int) -> Optional[Dict[str, Any]]:
         """Find and load results file for a step."""
@@ -2584,7 +2600,7 @@ class WatcherAgent:
         
         # -- PROCEED / PROCEED_WITH_NOTE --
         if action in ("PROCEED", "PROCEED_WITH_NOTE"):
-            if severity != "critical":
+            if severity != "critical" and not (severity == "stale" and health.get("binding_run_id")):  # [W3]
                 reset_skip_registry(model_type)
             if action == "PROCEED_WITH_NOTE":
                 logger.warning(
@@ -3197,7 +3213,11 @@ class WatcherAgent:
                         and not _step5_skipped):
 
                     # Single health check call -- cached for both helpers
-                    _health = check_training_health(models_dir=self._step5_output_dir)  # [W2 2026-11-27]
+                    _w3_id = (results or {}).get("step5_run_id")  # [W3] this dispatch's id, never from self
+                    _health = check_training_health(models_dir=self._step5_output_dir,  # [W2 2026-11-27]
+                                                    **({"binding_run_id": _w3_id,
+                                                        "run_started_at": results.get("step5_run_started_at")}
+                                                       if _w3_id else {}))
                     _max_retries = self._get_max_training_retries()
                     health_action = self._handle_training_health(_health)
 

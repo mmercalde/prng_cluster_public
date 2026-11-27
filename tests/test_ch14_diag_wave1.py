@@ -25,6 +25,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -158,6 +159,24 @@ def _run_check(mod, cwd, monkeypatch, files, **kw):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(obj if isinstance(obj, str) else json.dumps(obj))
     monkeypatch.chdir(cwd)
+    # [flake fix 2026-11-27, W3 fix pass 1] the same fix as tests/test_benching_switch.py:313-325 (aefdd74, owner
+    # approved 2026-11-26 11:34): _archive_diagnostics names files <type>_<YYYYmmdd_HHMMSS>.json, so two checks
+    # of one type in the same wall-clock second overwrite one archive, and head and new trees differed only by
+    # where the second boundary fell. Each fresh archive is renamed to a unique, ordered name right after it is
+    # written, so every archive is kept and compared; file contents are untouched. _archive_diagnostics unchanged.
+    orig_archive = getattr(mod._archive_diagnostics, "_orig_archive", mod._archive_diagnostics)
+
+    def archive_kept(*a, **k):
+        out = orig_archive(*a, **k)
+        h = Path(cwd) / "diagnostics_outputs" / "history"
+        n = len([p for p in h.glob("*.json") if not re.fullmatch(r".+_\d{8}_\d{6}\.json", p.name)])
+        for p in sorted(h.glob("*.json")):
+            if re.fullmatch(r".+_\d{8}_\d{6}\.json", p.name):
+                n += 1
+                p.rename(p.with_name(f"{p.stem.rsplit('_', 2)[0]}_{n:04d}.json"))
+        return out
+    archive_kept._orig_archive = orig_archive
+    monkeypatch.setattr(mod, "_archive_diagnostics", archive_kept)
     res = mod.check_training_health(**kw)
     hist = sorted((Path(cwd) / "diagnostics_outputs" / "history").glob("*.json"))
     reg_p = Path(cwd) / "diagnostics_outputs" / "model_skip_registry.json"

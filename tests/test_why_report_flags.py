@@ -372,11 +372,36 @@ W2_RUN_STEP_LINE = ('        if step == 5: self._step5_output_dir = final_params
                     '  # [W2 2026-11-27] for the why-report flag\n')
 
 
+def _w3_patch_lines():
+    """[W3 2026-11-27] (+lines, -lines) of agents/watcher_agent.py in docs/drafts/unit_w/W3_OWNER_LAND.patch."""
+    p = WORKTREE / "docs" / "drafts" / "unit_w" / "W3_OWNER_LAND.patch"
+    plus, minus, sec = [], [], None
+    for l in (p.read_text().splitlines() if p.is_file() else []):
+        if l.startswith("diff --git "):
+            sec = l.split(" b/")[-1]
+        elif sec == "agents/watcher_agent.py" and l.startswith("+") and not l.startswith("+++"):
+            plus.append(l)
+        elif sec == "agents/watcher_agent.py" and l.startswith("-") and not l.startswith("---"):
+            minus.append(l)
+    return plus, minus
+
+
 def test_argv_builders_unchanged(W, W_base):
     """The edit touches no line of the code that builds a step's argv or the retry params."""
+    w3_plus, w3_minus = _w3_patch_lines()
     for name in ("run_step", "_build_retry_params", "_get_max_training_retries"):
         new = inspect.getsource(getattr(W.WatcherAgent, name)).splitlines(keepends=True)
         base = inspect.getsource(getattr(W_base.WatcherAgent, name)).splitlines(keepends=True)
+        if name == "run_step" and any("[W3 2026-11-27]" in l for l in new):
+            # [W3 2026-11-27, owner decisions 1-2] the W3 owner patch makes the Step 5 run id in run_step and
+            # stamps it on every returned result; those lines are its own (+ lines out of new, - lines out of base),
+            # every other line as base
+            i = next(k for k, l in enumerate(new) if "[W3 2026-11-27] one run id per Step 5 dispatch" in l)
+            j = next(k for k, l in enumerate(new) if k > i and l.strip() == "return res")
+            new = new[:i] + new[j + 2:]          # the W3 block and the blank line after it
+            new = [l.replace("_step1_stamp_pin_provenance(_w3_stamp(results)", "_step1_stamp_pin_provenance(results")
+                    .replace("_step1_stamp_pin_provenance(_w3_stamp({", "_step1_stamp_pin_provenance({")
+                    .replace("}), _step1_pin, cmd)", "}, _step1_pin, cmd)") for l in new]
         if name == "run_step" and W2_RUN_STEP_LINE in new:
             # [W2 2026-11-27, lead decision 4(a)(i)] the ONE allowed difference: the owner patch keeps Step 5's
             # output dir on self, the line just before EXEC CMD; every other line (argv builder, EXEC CMD) as base
@@ -400,8 +425,13 @@ def test_argv_builders_unchanged(W, W_base):
         for l in w2:
             if l in rest:
                 rest.remove(l)
+        w3_on = any("[W3 2026-11-27]" in l for l in added)
+        for l in (w3_plus if w3_on else []):   # [W3 2026-11-27] the W3 owner patch's own lines, when installed
+            if l in rest:
+                rest.remove(l)
         assert len(rest) == 9, rest            # 7-line import block (with comment, blank line) + 2 calls
-        assert len(added) in (9, 9 + len(w2)), added
+        w2_replaced = len([l for l in w3_minus if "+" + l[1:] in w2])   # W2 lines the W3 patch rewrites
+        assert len(added) in ((9 + len(w2) - w2_replaced + len(w3_plus),) if w3_on else (9, 9 + len(w2))), added
 
 
 def test_run_start_lists_open_flags_and_reminds_once(W, tmp_path):

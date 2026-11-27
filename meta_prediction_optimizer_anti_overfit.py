@@ -305,9 +305,27 @@ def _s88_run_compare_models(args_dict):
         if m == "lightgbm":
             env["S88_FORCE_LGBM_CPU"] = "1"
 
+        # [W3] binding request: each child stages its own pair under diagnostics_outputs/<run id>/cmp-<family>/
+        _w3_rid = args_dict.get("binding_run_id")
+        if _w3_rid:
+            cmd.extend(["--binding-run-id", str(_w3_rid), "--binding-model-id", f"cmp-{m}"])
+            if args_dict.get("binding_run_started_at"):
+                cmd.extend(["--binding-run-started-at", str(args_dict["binding_run_started_at"])])
+
         print(f"[S88][COMPARE] Running {m} with {trials} trials via single-model Optuna path...")
         proc = subprocess.run(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr)
         rc = proc.returncode
+        if _w3_rid:  # [W3] a child's pair is publishable ONLY when the child exited 0 (Beta X-W3 R1 Q2)
+            try:
+                import training_diagnostics as _w3_td
+                _w3_stage = os.path.join("diagnostics_outputs", str(_w3_rid), f"cmp-{m}")
+                if rc == 0:
+                    _w3_ok, _w3_why = _w3_td.w3_publish(_w3_stage, str(_w3_rid), m)
+                else:
+                    _w3_ok, _w3_why = False, f"child exit {rc}: not published"
+                print(f"[W3][COMPARE] {m} identity {'published' if _w3_ok else 'NOT published'}: {_w3_why}")
+            except Exception as _w3_err:  # never changes the compare run
+                print(f"[W3][COMPARE] {m} identity not published (non-fatal): {_w3_err}")
 
         # Archive artifacts best-effort
         # (we don't assume exact artifact set; we grab common ones)
@@ -1272,10 +1290,13 @@ class MultiModelTrainer:
         data_context: Dict,
         hyperparameters: Dict,
         provenance: Dict,
-        parent_run_id: Optional[str] = None
+        parent_run_id: Optional[str] = None,
+        w3_req: Optional[Dict] = None
     ) -> str:
         """
         Save model with sidecar metadata.
+        [W3] w3_req (tree families, only after the final report was staged): the checkpoint is saved into the
+        run-local staging dir, the public file is a copy of those bytes, and the pair goes into the sidecar.
         
         Args:
             model: Trained model object
@@ -1320,6 +1341,20 @@ class MultiModelTrainer:
                     shutil.copy2(str(existing[0]), str(checkpoint_path))
                 elif not existing and not checkpoint_path.exists():
                     self.logger.warning(f"[S96A] No .pth checkpoint found in {output_path}")
+        elif w3_req and model_type in ('xgboost', 'lightgbm', 'catboost'):
+            _w3_staged = None
+            try:  # [W3] same save call, into the staging dir; the public file is a copy of those bytes
+                import shutil as _w3_sh
+                _w3_staged = os.path.join(w3_req['stage_dir'], f"best_model{ext}")
+                os.makedirs(w3_req['stage_dir'], exist_ok=True)
+                (model.booster_ if model_type == 'lightgbm' else model).save_model(_w3_staged)
+                _w3_sh.copyfile(_w3_staged, str(checkpoint_path))
+            except Exception as _w3_err:
+                self.logger.warning(f"[W3] staged checkpoint failed, unbound (non-fatal): {_w3_err}")
+                _w3_staged = None
+                (model.booster_ if model_type == 'lightgbm' else model).save_model(str(checkpoint_path))
+            if _w3_staged is None:
+                w3_req = None
         elif model_type == 'xgboost':
             model.save_model(str(checkpoint_path))
         elif model_type == 'lightgbm':
@@ -1365,6 +1400,17 @@ class MultiModelTrainer:
             
             "provenance": provenance
         }
+        if w3_req and model_type in ('xgboost', 'lightgbm', 'catboost'):
+            # [W3] the pair, from the staged files this writer wrote (owner decision 3, 2026-11-27)
+            try:
+                import training_diagnostics as _w3_td
+                _w3_rec = _w3_td.w3_write_pending(w3_req, model_type, f"best_model{ext}",
+                                                  f"{model_type}_diagnostics.json", False)
+                if _w3_rec:
+                    sidecar["step5_identity"] = _w3_td.w3_sidecar_block(_w3_rec)
+                    self._w3_record = _w3_rec  # [W3] the pair this final-model writer recorded (Beta X-W3 R2 Q2)
+            except Exception as _w3_err:
+                self.logger.warning(f"[W3] identity record failed, unbound (non-fatal): {_w3_err}")
         
         # Save sidecar
         sidecar_path = output_path / "best_model.meta.json"
@@ -2668,6 +2714,11 @@ class AntiOverfitMetaOptimizer:
                 if self._ch14_full():  # [CH14-DIAG waves 1-2]
                     import training_diagnostics as _td
                     cmd.extend(_td.diagnostics_child_flags(getattr(self, '_cli_diagnostics_options', None)))
+                _w3 = getattr(self, '_w3_req', None)
+                if _w3:  # [W3] final NN model only: the worker stages checkpoint and report
+                    cmd.extend(["--binding-run-id", _w3['run_id'], "--binding-model-id", _w3['model_id']])
+                    if _w3.get('run_started_at'):
+                        cmd.extend(["--binding-run-started-at", _w3['run_started_at']])
             
             self.logger.info("[CAT-B 2.1] Routing NN through train_single_trial.py subprocess")
             self.logger.info(f"[CAT-B 2.1] cmd: {' '.join(cmd)}")
@@ -2701,7 +2752,6 @@ class AntiOverfitMetaOptimizer:
                 self.logger.info(f"[CAT-B 2.1] Renamed {trial_path} → {checkpoint_path}")
             if not os.path.exists(checkpoint_path):
                 raise RuntimeError(f"Expected checkpoint not found: {checkpoint_path}")
-            
             # [S96A] Validate enriched checkpoint via subprocess JSON output
             # NO torch.load in parent — preserves CUDA-clean invariant (S72/S73)
             # train_single_trial.py already emits normalize_features, use_leaky_relu,
@@ -2774,7 +2824,15 @@ class AntiOverfitMetaOptimizer:
                 self.logger.debug(f"[CAT-B 2.1] Cleaned up NPZ: {npz_path}")
             except Exception:
                 pass
-            
+
+            if getattr(self, '_w3_req', None) and getattr(self, '_cli_enable_diagnostics', False):
+                # [W3] the pair from the worker's staged files, written ONLY here, after the worker's result was
+                # accepted (Beta X-W3 R2 Q2): its report's checkpoint_sha256 must equal the staged checkpoint's
+                # (Beta X-W3 R1 Q1). Best-effort: failure = unbound.
+                import training_diagnostics as _w3_td
+                self._w3_record = _w3_td.w3_write_pending(self._w3_req, 'neural_net', 'best_model.pth',
+                                                          'neural_net_diagnostics.json', True)
+
             # Return result matching MultiModelTrainer.train_model() schema
             hp = dict(hyperparameters or {})
             return {
@@ -2837,6 +2895,18 @@ class AntiOverfitMetaOptimizer:
             path = os.path.join('diagnostics_outputs', f'{self.model_type}_diagnostics.json')
             diag.save(path)
             _sh.copyfile(path, os.path.join('diagnostics_outputs', 'training_diagnostics.json'))
+            _w3 = getattr(self, '_w3_req', None)
+            self._w3_tree_report_ok = False
+            if _w3:  # [W3] one byte string to staging, then over the family file and the canonical copy
+                try:
+                    diag.save_bound(os.path.join(_w3['stage_dir'], f'{self.model_type}_diagnostics.json'),
+                                    [path, os.path.join('diagnostics_outputs', 'training_diagnostics.json')],
+                                    {'diagnostics_run_id': _w3['run_id'],
+                                     'diagnostics_run_started_at': _w3.get('run_started_at'),
+                                     'binding_model_id': _w3['model_id']})
+                    self._w3_tree_report_ok = True
+                except Exception as _w3_err:   # the reports written above stay: unbound
+                    self.logger.warning(f"[W3] staged tree report failed, unbound (non-fatal): {_w3_err}")
             self.logger.info(f"[CH14-DIAG] inline {self.model_type} diagnostics saved: {path}")
         except Exception as e:
             self.logger.warning(f"[CH14-DIAG] inline tree report failed (non-fatal): {e}")
@@ -2871,6 +2941,7 @@ class AntiOverfitMetaOptimizer:
             except Exception as e:
                 if getattr(self, '_allow_inline_nn_fallback', False):
                     self.logger.warning(f"[CAT-B 2.1] Subprocess failed, falling back to inline: {e}")
+                    self._w3_record = None  # [W3] the inline model has no pair: it stays unbound (Beta X-W3 R2 Q2)
                     result = self.trainer.train_model(
                         self.model_type, X_train, y_train, X_val, y_val
                     )
@@ -2965,7 +3036,9 @@ class AntiOverfitMetaOptimizer:
             data_context=self.data_context,
             hyperparameters=self.best_config,
             provenance=provenance,
-            parent_run_id=self.parent_run_id
+            parent_run_id=self.parent_run_id,
+            **({'w3_req': self._w3_req} if getattr(self, '_w3_req', None)
+               and getattr(self, '_w3_tree_report_ok', False) else {})
         )
         
         self.logger.info("\n" + "=" * 70)
@@ -3049,6 +3122,13 @@ class AntiOverfitMetaOptimizer:
             },
             "provenance": provenance
         }
+
+        if getattr(self, '_w3_record', None):  # [W3] the NN pair recorded by the final-model path
+            try:
+                import training_diagnostics as _w3_td
+                sidecar["step5_identity"] = _w3_td.w3_sidecar_block(self._w3_record)
+            except Exception as _w3_err:
+                self.logger.warning(f"[W3] sidecar identity block failed (non-fatal): {_w3_err}")
 
         # Canonical invariant check
         if sidecar["signal_quality"].get("prediction_allowed", True):
@@ -3164,6 +3244,19 @@ def _ll3_csv(v):
     return [x.strip() for x in v.split(',') if x.strip()]
 
 
+def _w3_publish_final(optimizer, model_type: str):
+    """[W3] Single model, exit-0 path: publish ONLY the pair the accepted final path recorded in THIS process
+    (NN: after the worker's result was accepted; trees: save_model). Any other identity.pending.json in the
+    staging dir (a rejected worker's, one left before an inline fallback) is never published (Beta X-W3 R2 Q2)."""
+    import training_diagnostics as _w3_td
+    _w3_acc = (getattr(optimizer, '_w3_record', None)
+               or getattr(getattr(optimizer, 'trainer', None), '_w3_record', None))
+    if not _w3_acc:
+        return False, "no pair recorded by the accepted final path"
+    return _w3_td.w3_publish(optimizer._w3_req['stage_dir'], optimizer._w3_req['run_id'], model_type,
+                             expect=_w3_acc)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Anti-Overfit Meta-Prediction Optimizer v3.3'
@@ -3224,6 +3317,15 @@ def main():
                             '(default: generated at level full)')
     parser.add_argument('--diagnostics-run-started-at', type=str, default=None,
                        help='[CH14-DIAG CD-07] run start, UTC ISO (default: now, at level full)')
+    # [W3 2026-11-27] explicit binding request, made by WATCHER. Absent (default) = nothing below changes.
+    parser.add_argument('--binding-run-id', type=str, default=None,
+                       help='[W3] run id of this Step 5 dispatch (set by WATCHER only). Each final model stages '
+                            'its report and checkpoint under diagnostics_outputs/<run id>/<model id>/ and records '
+                            'the pair; also the report run id when --diagnostics-run-id is not given')
+    parser.add_argument('--binding-run-started-at', type=str, default=None,
+                       help='[W3] start of this Step 5 dispatch, UTC ISO (set by WATCHER only)')
+    parser.add_argument('--binding-model-id', type=str, default=None,
+                       help='[W3] model id inside the run (compare passes cmp-<family>; default <family>-<8 hex>)')
     parser.add_argument('--dead-unit-definition', type=str, default='linear_zero',
                        choices=['linear_zero', 'always_negative_preact'],
                        help='[CH14-DIAG CD-23] NN dead-unit metric (default linear_zero, unchanged)')
@@ -3272,6 +3374,14 @@ def main():
     
     args = parser.parse_args()
 
+    # [W3] binding request: the report run id follows it when none was given (absent: nothing changes)
+    import training_diagnostics as _td
+    if _td.w3_safe_id(getattr(args, 'binding_run_id', None)):
+        if not args.diagnostics_run_id:
+            args.diagnostics_run_id = args.binding_run_id
+            if not args.diagnostics_run_started_at:
+                args.diagnostics_run_started_at = args.binding_run_started_at
+
     # [CH14-DIAG wave 2] one report-options bundle (run id generated here at level full; a
     # compare child receives its parent's id by flag). None at level legacy.
     import training_diagnostics as _td
@@ -3303,6 +3413,10 @@ def main():
             'use_leaky_relu': getattr(args, 'use_leaky_relu', False),
     
             'dropout': getattr(args, 'dropout', None),
+
+            'binding_run_id': _td.w3_safe_id(getattr(args, 'binding_run_id', None)),  # [W3] None = off
+
+            'binding_run_started_at': getattr(args, 'binding_run_started_at', None),
     
         })
     # Conditional CUDA initialization (Team Beta design invariant)
@@ -3378,6 +3492,9 @@ def main():
     optimizer._allow_inline_nn_fallback = getattr(args, 'allow_inline_nn_fallback', False)
     # [Phase 3A] Thread enable_vmap into optimizer (0=off, 1=on)
     optimizer._enable_vmap = getattr(args, 'enable_vmap', False)
+    # [W3] binding request for this process's final model (None = off, today's behaviour)
+    optimizer._w3_req = (_td.w3_request(args.binding_run_id, args.binding_run_started_at, args.binding_model_id,
+                                        args.model_type) if getattr(args, 'binding_run_id', None) else None)
 
     best_config, metrics = optimizer.run(n_trials=args.trials)
     
@@ -3418,6 +3535,15 @@ def main():
     print(f"Data Fingerprint: {optimizer.data_context['fingerprint_hash']}")
     print("=" * 70)
     
+    # [W3] single model: the pair is published only on this normal exit-0 path; a compare child's pair is
+    # published by the parent after the child's returncode 0
+    if getattr(optimizer, '_w3_req', None) and not os.environ.get('S88_COMPARE_MODELS_CHILD'):
+        try:
+            _w3_ok, _w3_why = _w3_publish_final(optimizer, args.model_type)
+            print(f"[W3] identity {'published' if _w3_ok else 'NOT published'}: {_w3_why}")
+        except Exception as _w3_err:
+            print(f"[W3] identity not published (non-fatal): {_w3_err}")
+
     # Success exit
     sys.exit(0)
 
