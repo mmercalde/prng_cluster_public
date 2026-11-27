@@ -191,7 +191,8 @@ def test_cli_list_and_attach(tmp_path):
 def test_state_files_are_git_ignored():
     """Review fix (a): every record this package writes is git-ignored, so the first flag never dirties the
     tree and the clean-tree admission gate (scripts/gate12_cleantree_gate.py) is not tripped."""
-    paths = [thc.WHY_REPORT_FLAGS_PATH, wrf.FLAGS_PATH, wrf.ATTACH_PATH, wrf.NOTIFIED_PATH]
+    paths = [thc.WHY_REPORT_FLAGS_PATH, wrf.FLAGS_PATH, wrf.ATTACH_PATH, wrf.NOTIFIED_PATH,
+             wrf.ATTEMPTS_PATH]  # [W1] the runner's attempt record
     for p in paths:
         r = subprocess.run(["git", "-C", str(WORKTREE), "check-ignore", "-q", "--no-index", p])
         assert r.returncode == 0, credit("GITIGNORE") + f" not ignored: {p}"

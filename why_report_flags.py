@@ -50,6 +50,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 FLAGS_PATH = "diagnostics_outputs/why_report_flags.jsonl"   # == training_health_check.WHY_REPORT_FLAGS_PATH
 ATTACH_PATH = "diagnostics_outputs/why_report_attachments.jsonl"
+ATTEMPTS_PATH = "diagnostics_outputs/why_report_attempts.jsonl"   # unit W1 (why_report_runner), append-only
+ATTEMPT_SCHEMA = "ch14_why_report_attempt/1"
+ATTEMPT_OUTCOMES = ("ok", "failed")
+STATUS_OPEN, STATUS_FAILED, STATUS_CLOSED = "open", "why_report_failed", "closed"
 NOTIFIED_PATH = "diagnostics_outputs/why_report_notified.jsonl"
 ATTACH_SCHEMA = "ch14_why_report_attach/1"
 NOTIFIED_SCHEMA = "ch14_why_report_notified/1"
@@ -140,7 +144,71 @@ def read_flags(root: Optional[str] = None) -> Dict[str, Any]:
     for g in groups.values():
         g["open"] = not g["attachments"]
     bad = {k: v for k, v in ((FLAGS_PATH, bad_f), (ATTACH_PATH, bad_a)) if v}
+    # [W1] attempts: only when the attempts file exists, so with no runner attempt every return value is
+    # exactly the a85adb1 one (tests/test_why_report_runner.py proves it against git show a85adb1)
+    ap = _path(root, ATTEMPTS_PATH)
+    if os.path.isfile(ap):
+        try:
+            tries, bad_t = _read_jsonl(ap)
+        except (OSError, ValueError) as e:
+            # [W1 third pass, Beta X-W1-RUNNER R1 Q2] an unreadable attempts file never hides the flags or
+            # their attachments: they are returned as without an attempts file, plus attempts_error
+            logger.error("%s %s unreadable (%r): flags and attachments shown without runner attempts",
+                         TAG, ATTEMPTS_PATH, e)
+            return {"groups": groups, "bad_lines": bad, "orphan_attachments": orphan_atts,
+                    "attempts_error": f"{ATTEMPTS_PATH}: {e!r}"}
+        for g in groups.values():
+            g["attempts"] = []
+        for t in tries:
+            g = groups.get(t.get("flag_id"))
+            if g is not None:
+                g["attempts"].append(t)
+        for g in groups.values():
+            g["attempt_count"] = len(g["attempts"])
+            g["status"] = flag_status(g)
+        if bad_t:
+            bad[ATTEMPTS_PATH] = bad_t
     return {"groups": groups, "bad_lines": bad, "orphan_attachments": orphan_atts}
+
+
+def flag_status(group: Dict[str, Any]) -> str:
+    """[W1] 'closed' when a why-report is attached; 'why_report_failed' when open and the latest runner
+    attempt failed; 'open' otherwise (no attempt, or the latest attempt did not fail)."""
+    if group.get("attachments"):
+        return STATUS_CLOSED
+    tries = group.get("attempts") or []
+    if tries and tries[-1].get("outcome") == "failed":
+        return STATUS_FAILED
+    return STATUS_OPEN
+
+
+def record_attempt(flag_id: str, outcome: str, root: Optional[str] = None, reason: Optional[str] = None,
+                   error_class: Optional[str] = None, message: Optional[str] = None,
+                   log_path: Optional[str] = None, started_at: Optional[str] = None,
+                   ended_at: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
+    """[W1] Append one runner attempt for flag_id to ATTEMPTS_PATH (schema ch14_why_report_attempt/1).
+    The attempt number is the flag's earlier attempt count + 1. message is cut to its first 500 chars.
+    Refuses an unknown flag_id, an outcome not in ATTEMPT_OUTCOMES, and a failed attempt with no reason.
+    A failed attempt never attaches anything: the flag stays open, status why_report_failed."""
+    if outcome not in ATTEMPT_OUTCOMES:
+        raise ValueError(f"record_attempt: outcome {outcome!r} not in {ATTEMPT_OUTCOMES}")
+    if outcome == "failed" and not reason:
+        raise ValueError("record_attempt: a failed attempt needs a reason")
+    rf = read_flags(root)
+    if rf.get("attempts_error"):      # the attempt number would be wrong: refused, not guessed
+        raise ValueError(f"record_attempt: {rf['attempts_error']}")
+    groups = rf["groups"]
+    if flag_id not in groups:
+        raise ValueError(f"record_attempt: unknown flag_id {flag_id!r}")
+    rec = {"schema": ATTEMPT_SCHEMA, "flag_id": flag_id,
+           "attempt": int(groups[flag_id].get("attempt_count", 0)) + 1, "outcome": outcome,
+           "reason": reason, "error_class": error_class,
+           "message": None if message is None else str(message)[:500], "log_path": log_path,
+           "started_at": started_at, "ended_at": ended_at or _now(), "recorded_at": _now()}
+    for k, v in extra.items():
+        rec.setdefault(k, v)
+    _append(_path(root, ATTEMPTS_PATH), rec)
+    return rec
 
 
 def open_flags(root: Optional[str] = None) -> "OrderedDict[str, Dict[str, Any]]":
@@ -149,9 +217,13 @@ def open_flags(root: Optional[str] = None) -> "OrderedDict[str, Dict[str, Any]]"
 
 
 def attach(flag_id: str, report_path: str, by: str, root: Optional[str] = None,
-           note: Optional[str] = None) -> Dict[str, Any]:
+           note: Optional[str] = None, report_sha256: Optional[str] = None,
+           extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Attach a why-report to a flag_id: one appended line in ATTACH_PATH. Refuses an unknown flag_id,
-    a report file that does not exist, an empty `by`, or a flag_id that already has a report."""
+    a report file that does not exist, an empty `by`, or a flag_id that already has a report.
+    [W1] report_sha256 (optional): refused unless it equals the report file's sha256; recorded. extra
+    (optional): more keys recorded (never overriding the base keys). With neither, the record is the
+    a85adb1 one."""
     if not by or not str(by).strip():
         raise ValueError("attach: --by is required (who attached the why-report)")
     groups = read_flags(root)["groups"]
@@ -165,6 +237,15 @@ def attach(flag_id: str, report_path: str, by: str, root: Optional[str] = None,
         raise ValueError(f"attach: report file not found: {report_path}")
     rec = {"schema": ATTACH_SCHEMA, "flag_id": flag_id, "report_path": report_path, "by": str(by),
            "attached_at": _now(), "note": note}
+    if report_sha256 is not None:
+        import hashlib
+        with open(rp, "rb") as f:
+            got = hashlib.sha256(f.read()).hexdigest()
+        if got != report_sha256:
+            raise ValueError(f"attach: report sha256 {got} != declared {report_sha256}")
+        rec["report_sha256"] = report_sha256
+    for k, v in (extra or {}).items():
+        rec.setdefault(k, v)
     _append(_path(root, ATTACH_PATH), rec)
     return rec
 
@@ -173,10 +254,19 @@ def summary_lines(root: Optional[str] = None) -> List[str]:
     """Lines for the top of WATCHER's summary; empty when nothing is open and nothing is unreadable."""
     rf = read_flags(root)
     opened = [g for g in rf["groups"].values() if g["open"]]
+    # [W1] flags whose latest runner attempt failed come FIRST, marked FAILED with the reason (a no-op
+    # with no attempts file: no group has a status then, and the order is the a85adb1 order)
+    failed = [g for g in opened if g.get("status") == STATUS_FAILED]
+    opened = failed + [g for g in opened if g.get("status") != STATUS_FAILED]
     lines = []
     if opened:
         lines.append(f"{TAG} {len(opened)} open why-report flag(s) (benching off: families kept, "
                      f"a human or AI must check them):")
+        for g in failed:
+            t = g["attempts"][-1]
+            lines.append(f"{TAG}   FAILED {g['flag_id']}: automatic why-report failed, reason {t.get('reason')} "
+                         f"({t.get('error_class')}: {str(t.get('message'))[:200]}), attempt {t.get('attempt')} "
+                         f"of {g['attempt_count']}, log {t.get('log_path')}")
         for g in opened:
             since = g["critical_since"] if g["critical_since_known"] else "unknown (count predates the record)"
             lines.append(f"{TAG}   {g['flag_id']}: {g['model_type']} critical {g['max_consecutive_critical']}x "
@@ -187,6 +277,9 @@ def summary_lines(root: Optional[str] = None) -> List[str]:
         lines.append(f"{TAG}   attach a report: python3 why_report_flags.py attach FLAG_ID REPORT_PATH --by NAME")
     for fn, nums in rf["bad_lines"].items():
         lines.append(f"{TAG} {fn}: {len(nums)} unreadable line(s) (first at line {nums[0]}); not shown")
+    if rf.get("attempts_error"):      # [W1] only when the attempts file exists and cannot be read
+        lines.append(f"{TAG} ERROR attempts file unreadable, runner attempt history not shown: "
+                     f"{rf['attempts_error']}")
     return lines
 
 
@@ -355,17 +448,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         rf = read_flags(a.root)
         groups = [g for g in rf["groups"].values() if a.all or g["open"]]
         if a.json:
-            print(json.dumps({"flags": groups, "bad_lines": rf["bad_lines"],
-                              "orphan_attachments": rf["orphan_attachments"]}, indent=2, default=str))
+            js = {"flags": groups, "bad_lines": rf["bad_lines"], "orphan_attachments": rf["orphan_attachments"]}
+            if rf.get("attempts_error"):      # [W1] only when the attempts file cannot be read
+                js["attempts_error"] = rf["attempts_error"]
+            print(json.dumps(js, indent=2, default=str))
         else:
             if not groups:
                 print("no open why-report flags" if not a.all else "no why-report flags")
             for g in groups:
                 state = "OPEN" if g["open"] else f"report {g['attachments'][0].get('report_path')}"
+                if g.get("status") == STATUS_FAILED:      # [W1] only with an attempts file
+                    state = f"WHY_REPORT_FAILED ({g['attempts'][-1].get('reason')}, {g['attempt_count']} attempt(s))"
                 print(f"{g['flag_id']}  {g['model_type']}  {g['max_consecutive_critical']}x/{g['threshold']}  "
                       f"flagged {g['repeats']}x  last {g['last_flagged_at']}  {state}")
             for fn, nums in rf["bad_lines"].items():
                 print(f"WARNING {fn}: unreadable lines {nums}", file=sys.stderr)
+        if rf.get("attempts_error"):
+            print(f"ERROR {rf['attempts_error']}", file=sys.stderr)
         return 0
     try:
         rec = attach(a.flag_id, a.report_path, a.by, a.root, a.note)

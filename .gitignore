@@ -128,6 +128,8 @@ watcher_decisions.jsonl
 diagnostics_outputs/why_report_flags.jsonl
 diagnostics_outputs/why_report_attachments.jsonl
 diagnostics_outputs/why_report_notified.jsonl
+# [W1 2026-11-26] why-report runner attempt record (why_report_flags.record_attempt); append-only
+diagnostics_outputs/why_report_attempts.jsonl
 # [BENCHING R1 F1] skip registry temp file (write then os.replace); exists only if a write was killed
 diagnostics_outputs/.model_skip_registry.json.*.tmp
 

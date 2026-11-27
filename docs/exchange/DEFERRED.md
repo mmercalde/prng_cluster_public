@@ -18,3 +18,4 @@ Written only by `scripts/beta_relay.py`. One row per `OBJECTION` that Beta label
 | X-MINER-SKIP-SWITCH-2 | R1 | Q4 · Validation | 2026-11-21 21:16 PST | A non-current configuration with `skip_min.max=256` and `skip_max.max=250` can pass both preflights and fail inside Optuna when it reaches that endpoint. |
 | X-BENCHING-SWITCH | R1 | Q3 | 2026-11-26 08:47 PST | With hours mode and benching both enabled, an import failure makes the compare keep an expired skip active. |
 | X-BENCHING-SWITCH | R1 | Q4 | 2026-11-26 08:47 PST | Fixed grading with all-families promotion can identify the promoted family while returning the winner’s report path and freshness. |
+| X-1B-STEP6-NN | R1 | Q1 · Refusal conditions | 2026-11-26 20:42 PST | Step 6 accepts a damaged scaler in a CPU fixture, and I found no evidence that current Step 5 has emitted a negative scale. |

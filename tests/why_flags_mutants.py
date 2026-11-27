@@ -50,6 +50,9 @@ MUTANTS = [
      "test_no_flags_identical_to_base", "WIDENT"),
     ("WM9_gitignore_dropped", ".gitignore", "diagnostics_outputs/why_report_notified.jsonl\n", "",
      "test_state_files_are_git_ignored", "GITIGNORE"),
+    # [W1 second pass] the runner's attempt record must stay git-ignored too
+    ("WM24_attempts_gitignore_dropped", ".gitignore", "diagnostics_outputs/why_report_attempts.jsonl\n", "",
+     "test_state_files_are_git_ignored", "GITIGNORE"),
     ("WM10_reader_ignores_attach", WRF, '        g["open"] = not g["attachments"]\n', '        g["open"] = True\n',
      "test_attach_closes_and_is_append_only", "ATTACH"),
     # [R1 F2] Beta Q6: the sender checks the exit status, a failure is recorded as failed and tried again
@@ -119,7 +122,7 @@ def _gitignore_mutant(root, out, mid, old, new, node, tag):
     spec = util.spec_from_file_location("wrf_m", str(WORKTREE / WRF))
     m = util.module_from_spec(spec)
     spec.loader.exec_module(m)
-    for p in (m.FLAGS_PATH, m.ATTACH_PATH, m.NOTIFIED_PATH):
+    for p in (m.FLAGS_PATH, m.ATTACH_PATH, m.NOTIFIED_PATH, m.ATTEMPTS_PATH):   # == the test's list [W1]
         r = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--no-index", p])
         if r.returncode != 0:
             fails.append(p)
