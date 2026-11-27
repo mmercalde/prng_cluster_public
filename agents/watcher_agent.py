@@ -1032,6 +1032,7 @@ class WatcherAgent:
         self.total_retries = 0
         self.running = False
         self._pipeline_running = False
+        self._step5_output_dir = None  # [W2 2026-11-27] the dir Step 5 was told to write; set by run_step
 
         # v1.1.0: Initialize LLM Router if available
         self.llm_router = None
@@ -2464,6 +2465,7 @@ class WatcherAgent:
                 return {"success": False, "error": _msg,
                         "blocked_by": "step1_search_id_not_routed"}
 
+        if step == 5: self._step5_output_dir = final_params.get("output_dir")  # [W2 2026-11-27] for the why-report flag
         logger.info(f"EXEC CMD: {' '.join(cmd)}")
         try:
             # Run the script with live streaming (Team Beta approved)
@@ -3091,6 +3093,7 @@ class WatcherAgent:
             print("="*60 + "\n")
             return
         self._pipeline_running = True
+        _why_normal_end = False  # [W2 2026-11-27] invocation-local; True only at the loop's normal end (below)
         training_health_retries = 0  # Session 76: RETRY param-threading counter
         self.current_step = start_step
 
@@ -3194,7 +3197,7 @@ class WatcherAgent:
                         and not _step5_skipped):
 
                     # Single health check call -- cached for both helpers
-                    _health = check_training_health()
+                    _health = check_training_health(models_dir=self._step5_output_dir)  # [W2 2026-11-27]
                     _max_retries = self._get_max_training_retries()
                     health_action = self._handle_training_health(_health)
 
@@ -3263,6 +3266,8 @@ class WatcherAgent:
 
                 # Small delay between steps
                 time.sleep(1)
+            else:  # [W2] the loop's own condition ended it (no break: no halt, refusal or clean stop)
+                _why_normal_end = self._pipeline_running and self.current_step > end_step  # not a shutdown
 
         finally:
             # Clean up progress display
@@ -3271,6 +3276,13 @@ class WatcherAgent:
 
         self._pipeline_running = False
         logger.info("Pipeline execution finished")
+        if _why_normal_end and getattr(self, "_daemon_state", None) != "SHUTTING_DOWN":
+            try:  # [W2 2026-11-27] automatic why-report (why_report_auto.py); off by default; never changes the run
+                from why_report_auto import auto_run as _why_auto_run
+                _why_auto_run(logger)
+            except Exception as _why_auto_err:
+                logger.error("[WATCHER][WHY-REPORT] automatic why-report hook failed (pipeline result unchanged): "
+                             "%r", _why_auto_err, exc_info=True)
 
     def _get_step_trials(self, step: int, params: dict = None) -> int:
         """Get expected number of trials for a step from manifest."""

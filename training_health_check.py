@@ -124,6 +124,9 @@ BENCHING_SWITCH = ("off", "on")
 DEFAULT_BENCHING = "off"
 WHY_REPORT_FLAGS_PATH = "diagnostics_outputs/why_report_flags.jsonl"
 WHY_REPORT_FLAG_SCHEMA = "ch14_why_report_flag/1"
+# [W2 third pass] default of check_training_health(models_dir=...): "not given" differs from an explicit None
+# (WATCHER passes None for a null output_dir override, which must still get the unbound record with its reason)
+_MODELS_DIR_NOT_GIVEN = object()
 HISTORY_PRUNE_SWITCH = ("off", "on")
 DEFAULT_HISTORY_PRUNE = "off"
 HISTORY_PRUNE_MODES = ("move", "delete")
@@ -210,7 +213,8 @@ def _grading_settings(policies: Dict[str, Any], grading_rules: Optional[str] = N
 def check_training_health(diagnostics_path: str = DIAGNOSTICS_PATH,
                           grading_rules: Optional[str] = None,
                           expected_run_id: Optional[str] = None,
-                          run_started_at: Optional[str] = None) -> Dict[str, Any]:
+                          run_started_at: Optional[str] = None,
+                          models_dir: Any = _MODELS_DIR_NOT_GIVEN) -> Dict[str, Any]:
     """
     Post-Step-5 training health check.
 
@@ -241,8 +245,15 @@ def check_training_health(diagnostics_path: str = DIAGNOSTICS_PATH,
     toward a model skip. Both None (today's call) = no such check on the legacy path.
     [CH14-DIAG CD-11] with training_health_log 'on', every result is appended to
     diagnostics_outputs/training_health_log.jsonl (one writer).
+    [W2 2026-11-27, third pass] models_dir: the dir Step 5 was told to write (WATCHER passes it). Only a
+    raised why-report flag uses it, and only on the RETURNED flag: models_dir and checkpoint_sha256 are None
+    with flagged_model_error "unbound: ..." (_flagged_model: nothing on 5f6c192 ties a checkpoint to the
+    graded run). The flag line on disk is always as before. Not given (default) = every return value as before;
+    given, even None or blank, = the returned flag carries the unbound record.
     """
     run_ctx = {'expected_run_id': expected_run_id, 'run_started_at': run_started_at}
+    if models_dir is not _MODELS_DIR_NOT_GIVEN:   # [W2] given, even None: the returned flag gets the identity record
+        run_ctx['models_dir'] = models_dir
     try:
         result = _check_training_health_impl(diagnostics_path, grading_rules, run_ctx)
     except Exception as e:
@@ -339,10 +350,10 @@ def _check_training_health_impl(diagnostics_path: str, grading_rules: Optional[s
     # ── Determine if multi-model or single-model format ───────────────
     if 'models' in diag:
         # Multi-model format (from --compare-models)
-        result = _evaluate_multi_model(diag, policies, metric_bounds)
+        result = _evaluate_multi_model(diag, policies, metric_bounds, run_ctx)
     else:
         # Single-model format
-        result = _evaluate_single_model(diag, policies, metric_bounds)
+        result = _evaluate_single_model(diag, policies, metric_bounds, run_ctx)
     if fr is not None:  # [CH14-DIAG CD-07] caller named its run: say what was found
         result['freshness'] = fr
         if fr['freshness'] != 'fresh':
@@ -353,14 +364,15 @@ def _check_training_health_impl(diagnostics_path: str, grading_rules: Optional[s
 def _evaluate_single_model(
     diag: Dict[str, Any],
     policies: Dict[str, Any],
-    metric_bounds: Dict[str, Any]
+    metric_bounds: Dict[str, Any],
+    run_ctx: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Evaluate single-model diagnostics."""
     
     model_type, severity, all_issues, fixes = _grade_single(diag, metric_bounds)
     
     # ── Map severity to action ────────────────────────────────────────
-    action, consecutive, why = _severity_to_action(severity, model_type, policies)
+    action, consecutive, why = _severity_to_action(severity, model_type, policies, run_ctx)
     
     # ── Archive diagnostics for Strategy Advisor history ──────────────
     _archive_diagnostics(diag, severity, all_issues, model_type)
@@ -442,7 +454,8 @@ def _grade_multi(diag: Dict[str, Any], metric_bounds: Dict[str, Any],
 def _evaluate_multi_model(
     diag: Dict[str, Any],
     policies: Dict[str, Any],
-    metric_bounds: Dict[str, Any]
+    metric_bounds: Dict[str, Any],
+    run_ctx: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Evaluate multi-model diagnostics (from --compare-models).
@@ -471,7 +484,7 @@ def _evaluate_multi_model(
         severity = 'warning'
         consecutive, why = 0, None
     else:
-        action, consecutive, why = _severity_to_action(winner_severity, winner, policies)
+        action, consecutive, why = _severity_to_action(winner_severity, winner, policies, run_ctx)
         severity = winner_severity
     
     # ── Archive ───────────────────────────────────────────────────────
@@ -853,7 +866,7 @@ def _check_training_health_fixed(diagnostics_path: str, run_ctx: Optional[Dict[s
             and settings['grade_scope'] == 'winner':
         action, consecutive, severity, why = 'PROCEED_WITH_NOTE', 0, 'warning', None
     else:
-        action, consecutive, why = _severity_to_action(severity, model_type, policies)
+        action, consecutive, why = _severity_to_action(severity, model_type, policies, run_ctx)
     for m, v in per_family.items():
         if m != model_type and (promoted is None or m != winner_name):
             issues += [f"[{m}] {i}" for i in v.get('issues', [])]
@@ -1056,7 +1069,8 @@ def _write_training_health_log(result: Dict[str, Any], diagnostics_path: str,
 def _severity_to_action(
     severity: str,
     model_type: str,
-    policies: Dict[str, Any]
+    policies: Dict[str, Any],
+    run_ctx: Optional[Dict[str, Any]] = None
 ) -> tuple:
     """
     Map severity to action, checking skip registry for consecutive failures.
@@ -1080,13 +1094,14 @@ def _severity_to_action(
     
     if severity == 'critical':
         # Check skip registry for consecutive failures
-        return _check_skip_registry(model_type, policies)
+        return _check_skip_registry(model_type, policies, run_ctx)
     
     # Fallback
     return base_action, 0, None
 
 
-def _check_skip_registry(model_type: str, policies: Dict[str, Any]) -> tuple:
+def _check_skip_registry(model_type: str, policies: Dict[str, Any],
+                         run_ctx: Optional[Dict[str, Any]] = None) -> tuple:
     """
     Track consecutive critical failures per model type.
     If threshold exceeded, return SKIP_MODEL instead of RETRY.
@@ -1159,7 +1174,7 @@ def _check_skip_registry(model_type: str, policies: Dict[str, Any]) -> tuple:
         if bench == 'off':
             if consecutive - entry.get('why_flag_base', 0) < max_consecutive:
                 return 'RETRY', consecutive, None   # [R1 F3] after an attached why-report, not yet again
-            return 'RETRY', consecutive, _raise_why_flag(model_type, entry, max_consecutive)
+            return 'RETRY', consecutive, _raise_why_flag(model_type, entry, max_consecutive, run_ctx)
         logger.warning(
             "Model %s hit %d consecutive critical failures — SKIP_MODEL",
             model_type, consecutive
@@ -1228,11 +1243,36 @@ def why_flag_id(model_type: str, anchor: str) -> str:
     return f"{model_type}@{anchor}"
 
 
-def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int) -> Dict[str, Any]:
+def _flagged_model(model_type: str, models_dir: Optional[str]) -> Dict[str, Any]:
+    """[W2 third pass, Beta X-W2-HOOK R2 Q3/Q4, lead decision 4] Which model was flagged.
+    Rule: models_dir and checkpoint_sha256 are recorded ONLY when the checkpoint can be tied to the same Step 5
+    run as the diagnostics that raised the flag. On 5f6c192 nothing written ties them, so this is always
+    unbound: both None, the reason in flagged_model_error. Nothing is hashed or read; a blank models_dir is
+    never taken as the cwd. What is missing (sources in docs/drafts/unit_w/READY_W2_20261127.md, third pass):
+    the default-level report carries no run id (training_diagnostics.py:457-460, level 'full' only; default
+    'legacy' :90); the sidecar's run_id is a local start time that the report does not carry
+    (meta_prediction_optimizer_anti_overfit.py:2941,2997,3122); WATCHER passes the health check no run id
+    (CD-07); compare publishes the winner under models/reinforcement whatever --output-dir says (Chapter 6 B2,
+    meta_prediction_optimizer_anti_overfit.py:226,351-363). Never raises."""
+    if models_dir is None or not str(models_dir).strip():
+        where = "no Step 5 output_dir (none, blank or null; never read as the cwd)"
+    else:
+        where = f"Step 5 was told to write {str(models_dir)[:200]!r}"
+    return {'models_dir': None, 'checkpoint_sha256': None,
+            'flagged_model_error': (f"unbound: {where}; nothing written ties a checkpoint to the Step 5 run that "
+                                    f"produced the graded diagnostics (report has no run id at level legacy, "
+                                    f"sidecar carries no diagnostics run id, WATCHER passes no run id: CD-07; "
+                                    f"compare ignores --output-dir: Chapter 6 B2)")[:500]}
+
+
+def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int,
+                    run_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     [BENCHING off] The family stays in the comparison; a why-report is needed. Logged at warning level
     and appended as one JSON line to WHY_REPORT_FLAGS_PATH (append-only, one writer, like the CD-11
     training health log). Raises the flag only: the automatic why-report is TODO-WHY-1. Never raises.
+    [W2 third pass] the line is always exactly as on 5f6c192. run_ctx['models_dir'] given (even None): the
+    returned flag also carries models_dir, checkpoint_sha256 (both None: unbound) and flagged_model_error.
     """
     flagged_at = datetime.now(timezone.utc).isoformat()
     since = entry.get('critical_since')
@@ -1268,6 +1308,11 @@ def _raise_why_flag(model_type: str, entry: Dict[str, Any], threshold: int) -> D
     except OSError as e:  # the flag file never changes the check's outcome
         logger.warning(f"why-report flag write failed (non-fatal): {e}")
         flag['flag_file_error'] = str(e)
+    # [W2 third pass, lead decisions 4-5] the line above is exactly as on 5f6c192. The model's identity is NOT
+    # put on it: unbound (see _flagged_model), so no second line is written either. The caller that passed
+    # models_dir (WATCHER) gets the unbound record on the returned flag, whatever the automatic switch says.
+    if 'models_dir' in (run_ctx or {}):
+        flag.update(_flagged_model(model_type, run_ctx['models_dir']))
     return flag
 
 

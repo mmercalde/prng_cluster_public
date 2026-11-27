@@ -368,16 +368,40 @@ def test_no_flags_identical_to_base(healths, W, W_base, tmp_path):
         assert new["health_seen"] == ["critical", "critical", "ok"] == base["health_seen"], new["health_seen"]
 
 
+W2_RUN_STEP_LINE = ('        if step == 5: self._step5_output_dir = final_params.get("output_dir")'
+                    '  # [W2 2026-11-27] for the why-report flag\n')
+
+
 def test_argv_builders_unchanged(W, W_base):
     """The edit touches no line of the code that builds a step's argv or the retry params."""
     for name in ("run_step", "_build_retry_params", "_get_max_training_retries"):
-        assert inspect.getsource(getattr(W.WatcherAgent, name)) == \
-            inspect.getsource(getattr(W_base.WatcherAgent, name)), name
+        new = inspect.getsource(getattr(W.WatcherAgent, name)).splitlines(keepends=True)
+        base = inspect.getsource(getattr(W_base.WatcherAgent, name)).splitlines(keepends=True)
+        if name == "run_step" and W2_RUN_STEP_LINE in new:
+            # [W2 2026-11-27, lead decision 4(a)(i)] the ONE allowed difference: the owner patch keeps Step 5's
+            # output dir on self, the line just before EXEC CMD; every other line (argv builder, EXEC CMD) as base
+            assert new.count(W2_RUN_STEP_LINE) == 1, name
+            new.remove(W2_RUN_STEP_LINE)
+        assert new == base, name
     diff = subprocess.run(["git", "-C", str(WORKTREE), "diff", "--no-color", "-U0", BASE_REV, "--",
                            "agents/watcher_agent.py"], capture_output=True, text=True).stdout
     if CODE_ROOT == WORKTREE:
         added = [l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
-        assert len(added) == 9, added          # 7-line import block (with comment, blank line) + 2 calls
+        # [W2 2026-11-27] the owner patch (docs/drafts/unit_w/W2_OWNER_LAND.patch) adds its own lines at the end
+        # of run_pipeline; the tree is right with it applied in full or not at all, and the 9 stay as they were
+        w2p = WORKTREE / "docs" / "drafts" / "unit_w" / "W2_OWNER_LAND.patch"
+        w2, sec = [], None
+        for l in (w2p.read_text().splitlines() if w2p.is_file() else []):
+            if l.startswith("diff --git "):
+                sec = l.split(" b/")[-1]
+            elif sec == "agents/watcher_agent.py" and l.startswith("+") and not l.startswith("+++"):
+                w2.append(l)
+        rest = list(added)
+        for l in w2:
+            if l in rest:
+                rest.remove(l)
+        assert len(rest) == 9, rest            # 7-line import block (with comment, blank line) + 2 calls
+        assert len(added) in (9, 9 + len(w2)), added
 
 
 def test_run_start_lists_open_flags_and_reminds_once(W, tmp_path):

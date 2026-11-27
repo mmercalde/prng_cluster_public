@@ -167,7 +167,10 @@
       "skip_duration_hours": 24,
       "benching": "off",
       "description": "benching off (default, owner ruling 2026-11-24): a model type that hits critical N times consecutively is never skipped; the count is kept and a why-report flag is raised (diagnostics_outputs/why_report_flags.jsonl). benching on: skip it (until a non-critical check, or skip_duration_hours with expiry_mode hours)"
-    }
+    },
+    "why_report_auto": "off",
+    "why_report_wf_roots": [],
+    "why_report_timeout_s": 1800
   },
   "notifications": {
     "description": "Telegram notification policy (Session 77). Advisory only -- does not affect control flow.",

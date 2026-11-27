@@ -25,7 +25,8 @@ MUTANTS = [
      # [R1] anchor moved: the off branch now also holds the F3 segment guard
      "        if bench == 'off':\n            if consecutive - entry.get('why_flag_base', 0) < max_consecutive:\n"
      "                return 'RETRY', consecutive, None   # [R1 F3] after an attached why-report, not yet again\n"
-     "            return 'RETRY', consecutive, _raise_why_flag(model_type, entry, max_consecutive)\n",
+     # [W2 2026-11-27] anchor moved: the call now passes run_ctx (models_dir for the flag line)
+     "            return 'RETRY', consecutive, _raise_why_flag(model_type, entry, max_consecutive, run_ctx)\n",
      "", "test_off_never_skipped_flag_raised[absent]", "OFF_THC"),
     ("M02_no_off_branch_skip_active", THC,
      "    if bench == 'off':\n        info['why_report_needed'] = True\n        return False, info\n",
@@ -71,9 +72,9 @@ MUTANTS = [
      '                    _active, _why = _over and _skip_bench == "on", _over and _skip_bench == "off"\n',
      "                    _active, _why = _over, False\n",
      "test_compare_reader_fallback_without_health_check[off]", "FALLBACK"),
-    ("M16_g2_flag_on_winner", THC,
-     "        action, consecutive, why = _severity_to_action(severity, model_type, policies)\n    for m, v",
-     "        action, consecutive, why = _severity_to_action(severity, winner_name, policies)\n    for m, v",
+    ("M16_g2_flag_on_winner", THC,   # [W2 2026-11-27] anchor moved: run_ctx passed on
+     "        action, consecutive, why = _severity_to_action(severity, model_type, policies, run_ctx)\n    for m, v",
+     "        action, consecutive, why = _severity_to_action(severity, winner_name, policies, run_ctx)\n    for m, v",
      "test_g2_promotion_plus_why_flag", "G2_FLAG"),
     ("M17_fixed_path_drops_flag", THC,
      # [R1] anchor moved: the F4 provenance block now sits between grade_note and this call
